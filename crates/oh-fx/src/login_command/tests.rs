@@ -11,7 +11,7 @@ use serde_json::json;
 use super::*;
 use crate::provider_activation::tests::{ACCESS_TOKEN, Fixture, catalog, release};
 
-struct Forward(Sender<Vec<u8>>);
+pub(crate) struct Forward(pub(crate) Sender<Vec<u8>>);
 
 impl Write for Forward {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -24,7 +24,7 @@ impl Write for Forward {
     }
 }
 
-fn read_until_waiting(receiver: &Receiver<Vec<u8>>) -> String {
+pub(crate) fn read_until_waiting(receiver: &Receiver<Vec<u8>>) -> String {
     let mut printed = Vec::new();
     while !String::from_utf8_lossy(&printed).ends_with("Waiting for browser authorization...\n") {
         printed.extend(receiver.recv_timeout(Duration::from_secs(10)).unwrap());
@@ -38,7 +38,7 @@ fn query<'a>(url: &'a str, key: &str) -> &'a str {
     &rest[..rest.find('&').unwrap_or(rest.len())]
 }
 
-fn approve(printed: &str) {
+pub(crate) fn approve(printed: &str) {
     let url = printed.lines().nth(1).unwrap();
     let state = query(url, "state").to_owned();
     let redirect = query(url, "redirect_uri");
@@ -61,7 +61,7 @@ fn approve(printed: &str) {
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
 }
 
-fn token_reply() -> Reply {
+pub(crate) fn token_reply() -> Reply {
     Reply::status(
         200,
         json!({"access_token": ACCESS_TOKEN, "refresh_token": "rt-refresh-secret-0123456789", "expires_in": 3600})

@@ -21,6 +21,18 @@ impl CatalogFailure {
             Self::HttpStatus => "http_status",
         }
     }
+
+    pub const fn error_name(self) -> &'static str {
+        match self {
+            Self::Authentication => "AuthenticationRejected",
+            Self::RateLimited => "RateLimited",
+            Self::GatewayUnavailable => "GatewayUnavailable",
+            Self::Cancellation => "Cancelled",
+            Self::Transport => "TransportFailure",
+            Self::MalformedResponse => "MalformedResponse",
+            Self::HttpStatus => "Unavailable",
+        }
+    }
 }
 
 pub(crate) fn failure_for_http_status(status: u16) -> CatalogFailure {

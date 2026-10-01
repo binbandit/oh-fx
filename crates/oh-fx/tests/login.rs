@@ -158,3 +158,54 @@ fn login_and_logout_print_their_golden_help() {
         assert_eq!(stdout(&output), golden, "{args:?}");
     }
 }
+
+#[test]
+fn codex_models_need_a_selected_model_and_a_login() {
+    let home = Home::new();
+    let unselected = home.run_with(&["models"], &[("OH_FX_PROVIDER", "codex")]);
+    assert_eq!(unselected.status.code(), Some(1));
+    assert_eq!(stdout(&unselected), "");
+    assert!(
+        stderr(&unselected).starts_with("oh-fx: no Codex model is selected; "),
+        "{}",
+        stderr(&unselected)
+    );
+
+    let environment = [("OH_FX_PROVIDER", "codex"), ("OH_FX_MODEL", "gpt-6.1-sol")];
+    let text = home.run_with(&["models"], &environment);
+    assert_eq!(text.status.code(), Some(1));
+    assert_eq!(stdout(&text), "");
+    assert_eq!(
+        stderr(&text),
+        "oh-fx models: could not list models: AuthenticationRejected\n"
+    );
+    let json = home.run_with(&["models", "--json"], &environment);
+    assert_eq!(json.status.code(), Some(1));
+    assert_eq!(stderr(&json), "");
+    assert_eq!(
+        stdout(&json),
+        "{\"kind\":\"models\",\"error\":\"could not list models: AuthenticationRejected\",\"code\":\"AuthenticationRejected\"}\n"
+    );
+}
+
+#[test]
+fn only_codex_can_be_selected_with_the_provider_command() {
+    let home = Home::new();
+    for name in ["gateway", "grok", "portkey"] {
+        let output = home.run(&["provider", name]);
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert_eq!(stdout(&output), "", "{name}");
+        assert_eq!(
+            stderr(&output),
+            "oh-fx: provider is not available yet\n",
+            "{name}"
+        );
+    }
+    let settings = home.root.join("config/oh-fx");
+    fs::create_dir_all(&settings).expect("create the config directory");
+    fs::write(settings.join("settings.json"), "{\"provider\":").expect("write settings");
+    let output = home.run(&["provider", "codex"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "oh-fx provider: could not load settings\n");
+}
