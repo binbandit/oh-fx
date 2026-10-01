@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use crate::chat_completions::{
-    ChunkSource, SendFailure, excerpt, http_failure, sanitized, send, transport_failure,
+    ChunkSource, SendFailure, http_failure, sanitized, send, transport_failure,
 };
 use crate::chat_completions_protocol::mask_configured_secrets;
 use crate::responses_protocol::{
@@ -370,6 +370,7 @@ async fn consume_stream<S: ChunkSource + Send>(
 ) -> Result<ResponsesCompletion, ProviderError> {
     let mut reducer = Reducer::new(limits);
     let mut decoder = SseDecoder::new(MAX_SSE_EVENT_BYTES);
+    let mut events: usize = 0;
     'stream: loop {
         loop {
             let data = match decoder.next_event() {
@@ -380,6 +381,7 @@ async fn consume_stream<S: ChunkSource + Send>(
             if data == b"[DONE]" {
                 break 'stream;
             }
+            events += 1;
             let (result, deltas) = reducer.apply(data, cancel.is_cancelled());
             for delta in deltas {
                 if cancel.is_cancelled() {
@@ -398,10 +400,10 @@ async fn consume_stream<S: ChunkSource + Send>(
                     if failure.kind == ProviderErrorKind::Cancelled {
                         return Err(failure);
                     }
-                    let event = String::from_utf8_lossy(data).into_owned();
-                    let masked = mask_configured_secrets(event, secrets);
-                    let detail = format!("stream event: {}", excerpt(masked.as_bytes()));
-                    return Err(failure.with_detail(sanitized(detail, secrets)));
+                    return Err(failure.with_detail(format!(
+                        "stream event {events} ({} bytes) was rejected",
+                        data.len()
+                    )));
                 }
             }
         }

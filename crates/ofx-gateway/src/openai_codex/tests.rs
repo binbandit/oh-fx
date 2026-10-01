@@ -553,21 +553,20 @@ async fn a_retried_request_masks_every_token_it_sent() {
 }
 
 #[tokio::test]
-async fn rejected_stream_events_mask_a_token_before_cutting_the_excerpt() {
+async fn rejected_stream_events_are_reported_without_their_bytes() {
     const TOKEN: &str = "codex-stream-credential-0123456789abcdef";
-    let event = json!({
-        "type": "response.output_text.delta",
-        "delta": 5,
-        "padding": "p".repeat(72),
-        "echo": TOKEN,
-    })
-    .to_string();
-    assert!(
-        event
-            .find(TOKEN)
-            .is_some_and(|start| start < 160 && start + TOKEN.len() > 160)
+    let escaped = TOKEN.chars().fold(String::new(), |mut out, c| {
+        let _ = write!(out, "\\u{:04x}", u32::from(c));
+        out
+    });
+    let opened = r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}"#;
+    let rejected = format!(
+        r#"{{"type":"response.output_text.delta","delta":5,"echo":"{escaped}","raw":"{TOKEN}"}}"#
     );
-    let mut chunks = Chunks(VecDeque::from([format!("data: {event}\n\n").into_bytes()]));
+    let mut chunks = Chunks(VecDeque::from([format!(
+        "data: {opened}\n\ndata: {rejected}\n\n"
+    )
+    .into_bytes()]));
     let mut sink = |_: StreamEvent| {};
     let error = consume_stream(
         &mut chunks,
@@ -578,9 +577,15 @@ async fn rejected_stream_events_mask_a_token_before_cutting_the_excerpt() {
     )
     .await
     .unwrap_err();
-    let detail = error.detail.expect("an excerpt");
-    assert!(detail.starts_with("stream event: "), "{detail}");
-    assert!(!detail.contains(&TOKEN[..12]), "{detail}");
+    assert_eq!(error.code, "InvalidOpenAICodexSseEvent");
+    let detail = error.detail.expect("a detail");
+    assert_eq!(
+        detail,
+        format!("stream event 2 ({} bytes) was rejected", rejected.len())
+    );
+    for fragment in [&TOKEN[..8], &escaped[..12], "\\u00"] {
+        assert!(!detail.contains(fragment), "{detail}");
+    }
 }
 
 #[tokio::test]
