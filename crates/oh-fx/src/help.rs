@@ -1,5 +1,4 @@
 use std::env;
-use std::io::{self, IsTerminal};
 
 use ofx_cli::{
     HelpLayout, HelpStyle, TOP_LEVEL_HELP_DEFAULT_WIDTH, parse_column_count, render_top_level_help,
@@ -13,9 +12,8 @@ pub(crate) fn top_level(layout: HelpLayout) -> String {
             HelpStyle::Plain,
         );
     }
-    let stdout = io::stdout();
-    let columns = rustix::termios::tcgetwinsize(&stdout)
-        .ok()
+    let window = rustix::termios::tcgetwinsize(rustix::stdio::stdout()).ok();
+    let columns = window
         .map(|size| usize::from(size.ws_col))
         .filter(|columns| *columns != 0)
         .or_else(|| {
@@ -24,10 +22,11 @@ pub(crate) fn top_level(layout: HelpLayout) -> String {
                 .and_then(|value| parse_column_count(&value))
         })
         .unwrap_or(TOP_LEVEL_HELP_DEFAULT_WIDTH);
+    let is_terminal = window.is_some();
     let style = HelpStyle::for_terminal(
-        stdout.is_terminal(),
-        env::var_os("NO_COLOR").is_some(),
-        env::var_os("TERM").is_some_and(|term| term == "dumb"),
+        is_terminal,
+        is_terminal && env::var_os("NO_COLOR").is_some(),
+        is_terminal && env::var_os("TERM").is_some_and(|term| term == "dumb"),
     );
     render_top_level_help(columns, ofx_upgrade::VERSION, style)
 }

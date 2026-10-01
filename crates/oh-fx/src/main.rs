@@ -19,10 +19,12 @@ use std::process::ExitCode;
 use ofx_cli::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, OutputFormat, TopLevelKind,
 };
+use rustix::io::Errno;
 use signal_hook::consts::SIGPIPE;
 
 const AUTH_MODE_VARIABLE: &str = "OH_FX_AUTH_MODE";
 const NOT_AVAILABLE_CODE: &str = "NotAvailableYet";
+const VERSION_LINE: [u8; ofx_upgrade::VERSION.len() + 1] = version_line();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriteFailure {
@@ -67,16 +69,13 @@ fn run(invocation: Invocation) -> ExitCode {
                 HelpLayout::Terminal => WriteFailure::Unreported,
                 HelpLayout::Plain => WriteFailure::ReportedUnlessPipeClosed,
             };
-            print(&help::top_level(layout), failure)
+            print(help::top_level(layout).as_bytes(), failure)
         }
         Invocation::CommandHelp(kind) => print(
-            &ofx_cli::render_command_help(kind),
+            ofx_cli::render_command_help(kind).as_bytes(),
             command_write_failure(kind),
         ),
-        Invocation::Version => print(
-            &format!("{}\n", ofx_upgrade::VERSION),
-            WriteFailure::ReportedUnlessPipeClosed,
-        ),
+        Invocation::Version => print(&VERSION_LINE, WriteFailure::ReportedUnlessPipeClosed),
         Invocation::Resume => unavailable("resume"),
         Invocation::Interactive => unavailable("interactive mode"),
         Invocation::Command(CommandLaunch { modifiers, command }) => match command {
@@ -186,8 +185,29 @@ pub(crate) fn die_by_signal(signal: i32) -> ExitCode {
     ExitCode::from(u8::try_from(128 + signal).unwrap_or(u8::MAX))
 }
 
-fn print(text: &str, failure: WriteFailure) -> ExitCode {
-    written(write_stdout(text), failure, ExitCode::SUCCESS)
+const fn version_line() -> [u8; ofx_upgrade::VERSION.len() + 1] {
+    let mut line = [b'\n'; ofx_upgrade::VERSION.len() + 1];
+    let (version, _) = line.split_at_mut(ofx_upgrade::VERSION.len());
+    version.copy_from_slice(ofx_upgrade::VERSION.as_bytes());
+    line
+}
+
+fn write_stdout_unbuffered(mut bytes: &[u8]) -> io::Result<()> {
+    let stdout = rustix::stdio::stdout();
+    while !bytes.is_empty() {
+        match rustix::io::write(stdout, bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(count) => bytes = &bytes[count..],
+            Err(Errno::INTR) => {}
+            Err(Errno::BADF) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn print(bytes: &[u8], failure: WriteFailure) -> ExitCode {
+    written(write_stdout_unbuffered(bytes), failure, ExitCode::SUCCESS)
 }
 
 fn fail(text: &str, failure: WriteFailure) -> ExitCode {

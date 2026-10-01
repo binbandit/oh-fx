@@ -19,7 +19,7 @@ ofx-session.workspace = true
 ofx-text.workspace = true
 ofx-tools.workspace = true
 ofx-upgrade.workspace = true
-rustix = { workspace = true, features = ["termios"] }
+rustix = { workspace = true, features = ["stdio", "termios"] }
 serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
@@ -30,6 +30,9 @@ tokio-util.workspace = true
 ofx-testkit.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { workspace = true, features = ["fs", "net", "pty"] }
 
 [lints]
 workspace = true
