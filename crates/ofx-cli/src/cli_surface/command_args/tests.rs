@@ -137,6 +137,7 @@ fn parse_session_list_args_supports_bounded_canonical_pagination() {
         &["--limit", "1_0"][..],
         &["--limit", "100"],
         &["--cursor", "v1:-5:x"],
+        &["--cursor", "v1:20:v2x"],
     ] {
         assert!(parse_session_list(os(args)).is_ok(), "{args:?}");
     }
@@ -149,6 +150,8 @@ fn parse_session_list_args_supports_bounded_canonical_pagination() {
         &["--cursor", "v1:020:session-a"],
         &["--cursor", "v2:20:session-a"],
         &["--cursor", "v1:20:../unsafe"],
+        &["--cursor", "v1:20:v2"],
+        &["--cursor", "v1:20:V2"],
         &["--cursor", "v1:+20:session-a"],
         &["--cursor", "v1:20:a:b"],
         &["--cursor", "v1:1:a", "--cursor", "v1:2:b"],
