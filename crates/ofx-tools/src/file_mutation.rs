@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const MAX_CONTENT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ENCODED_PATH_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_ENCODED_PATH_BYTES: usize = 4 * 1024;
 const WRITE_CHUNK_BYTES: usize = 64 * 1024;
 const STAGE_PREFIX: &str = ".fx-stage-";
 const READ_FLAGS: OFlags = OFlags::RDONLY
@@ -200,6 +200,10 @@ impl PreparedMutation {
 
     pub(crate) fn targets(&self) -> &FileMutationTargets {
         &self.targets
+    }
+
+    pub(crate) fn display_path(&self) -> &str {
+        &self.display_path
     }
 
     pub(crate) fn creates_file(&self) -> bool {

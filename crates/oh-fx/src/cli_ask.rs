@@ -430,7 +430,12 @@ async fn prepare_agent(
         fast_mode,
     };
     let command_timeout = args.timeout_ms.map(Duration::from_millis);
-    let tools = tool_set::ask_tools(&workspace_root, executions, command_timeout);
+    let tools = tool_set::ask_tools(
+        &workspace_root,
+        executions,
+        command_timeout,
+        permission_mode,
+    );
     let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
     let mut agent = Agent::new(

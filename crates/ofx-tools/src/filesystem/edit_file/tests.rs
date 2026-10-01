@@ -172,6 +172,33 @@ fn one_exact_occurrence_is_replaced() {
 }
 
 #[test]
+fn failed_preparations_name_no_target_unless_full_access_defers_them() {
+    let fixture = Fixture::new();
+    fixture.write("note.txt", "alpha\n");
+    let cases = [
+        (arguments("missing.txt", "a", "b"), "Editing file"),
+        (arguments("note.txt", "zz", "b"), "Editing file"),
+        ("[]".to_owned(), "Editing file"),
+    ];
+    for (arguments, expected) in &cases {
+        let run = fixture.run(arguments);
+        assert_eq!(run.description.title, *expected, "{arguments}");
+        assert_eq!(run.description.effect, ToolEffect::None, "{arguments}");
+    }
+    let full_access = EditFile::new(&fixture.workspace).with_full_access(true);
+    let deferred = run(&full_access, &arguments("note.txt", "zz", "b"));
+    assert_eq!(deferred.description.title, "Editing note.txt");
+    assert_eq!(deferred.description.effect, ToolEffect::Irreversible);
+    assert_eq!(
+        deferred.output.content,
+        "edit_file failed: old_string not found in file. Re-read the file to see its current contents; if the change is already applied, do not retry this edit."
+    );
+    let missing = run(&full_access, &arguments("missing.txt", "a", "b"));
+    assert_eq!(missing.description.title, "Editing file");
+    assert_eq!(fixture.read("note.txt"), "alpha\n");
+}
+
+#[test]
 fn matching_is_exact_and_failures_leave_the_file_untouched() {
     let fixture = Fixture::new();
     let original = "same twice same\r\nline two\r\n";
