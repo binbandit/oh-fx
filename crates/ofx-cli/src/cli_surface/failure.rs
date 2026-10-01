@@ -16,32 +16,30 @@ const ECHOED_ARGUMENT_BYTES: usize = 160;
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 pub enum ArgumentErrorCode {
-    LocalSurfaceArgs,
-    UsageArgs,
-    SessionDetailArgs,
-    SessionMigrationArgs,
-    SessionRecoveryArgs,
-    WorkspaceArgs,
-    UpgradeArgs,
-    SlackArguments,
+    LocalSurface,
+    Usage,
+    SessionDetail,
+    SessionMigration,
+    SessionRecovery,
+    Workspace,
+    Upgrade,
 }
 
 impl ArgumentErrorCode {
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Self::LocalSurfaceArgs => "InvalidLocalSurfaceArgs",
-            Self::UsageArgs => "InvalidUsageArgs",
-            Self::SessionDetailArgs => "InvalidSessionDetailArgs",
-            Self::SessionMigrationArgs => "InvalidSessionMigrationArgs",
-            Self::SessionRecoveryArgs => "InvalidSessionRecoveryArgs",
-            Self::WorkspaceArgs => "InvalidWorkspaceArgs",
-            Self::UpgradeArgs => "InvalidUpgradeArgs",
-            Self::SlackArguments => "InvalidSlackArguments",
+            Self::LocalSurface => "InvalidLocalSurfaceArgs",
+            Self::Usage => "InvalidUsageArgs",
+            Self::SessionDetail => "InvalidSessionDetailArgs",
+            Self::SessionMigration => "InvalidSessionMigrationArgs",
+            Self::SessionRecovery => "InvalidSessionRecoveryArgs",
+            Self::Workspace => "InvalidWorkspaceArgs",
+            Self::Upgrade => "InvalidUpgradeArgs",
         }
     }
 
     fn has_json_failure(self) -> bool {
-        !matches!(self, Self::UpgradeArgs | Self::SlackArguments)
+        !matches!(self, Self::Upgrade)
     }
 }
 

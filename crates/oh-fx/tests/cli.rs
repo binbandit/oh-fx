@@ -91,16 +91,25 @@ fn version_prints_the_build_version_and_rejects_extra_arguments() {
 
 #[test]
 fn unknown_commands_print_the_plain_help_on_stderr() {
-    let output = oh_fx(&["frobnicate"], &[("COLUMNS", "60")]);
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stdout(&output), "");
-    assert_eq!(
-        stderr(&output),
-        format!(
-            "oh-fx: unknown subcommand: frobnicate\n\n{}",
-            render_top_level_help(80, ofx_upgrade::VERSION, HelpStyle::Plain)
-        )
-    );
+    for (args, token) in [
+        (&["frobnicate"][..], "frobnicate"),
+        (&["slack"], "slack"),
+        (&["slack", "install"], "slack"),
+        (&["slack", "status", "--json"], "slack"),
+        (&["slack", "--help"], "slack"),
+    ] {
+        let output = oh_fx(args, &[("COLUMNS", "60")]);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            format!(
+                "oh-fx: unknown subcommand: {token}\n\n{}",
+                render_top_level_help(80, ofx_upgrade::VERSION, HelpStyle::Plain)
+            ),
+            "{args:?}"
+        );
+    }
 }
 
 #[test]
@@ -143,7 +152,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
         (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),
         (&["workspace", "--json"], "workspace"),
-        (&["slack", "status", "--json"], "slack"),
         (&["replay", "tape", "--json"], "replay"),
     ] {
         let output = oh_fx(args, &[]);

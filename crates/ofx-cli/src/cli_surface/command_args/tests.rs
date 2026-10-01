@@ -51,7 +51,7 @@ fn usage_arguments_accept_only_rolling_periods_and_one_json_flag() {
     }
     fails(
         parse_usage(os(&["--json", "--json"])),
-        invalid(TopLevelKind::Usage, ArgumentErrorCode::UsageArgs),
+        invalid(TopLevelKind::Usage, ArgumentErrorCode::Usage),
     );
 }
 
@@ -95,7 +95,7 @@ fn parse_local_surface_args_accepts_only_json() {
     );
     fails(
         parse_output_format(TopLevelKind::Credits, &os(&["--json", "--wat"])),
-        invalid(TopLevelKind::Credits, ArgumentErrorCode::LocalSurfaceArgs),
+        invalid(TopLevelKind::Credits, ArgumentErrorCode::LocalSurface),
     );
 }
 
@@ -113,7 +113,7 @@ fn parse_upgrade_args_accept_only_one_json_flag() {
     for args in [&["--json", "--json"][..], &["--json", "--channel", "dev"]] {
         fails(
             parse_upgrade(&os(args)),
-            unhandled(ArgumentErrorCode::UpgradeArgs),
+            unhandled(ArgumentErrorCode::Upgrade),
         );
     }
 }
@@ -167,7 +167,7 @@ fn parse_session_list_args_supports_bounded_canonical_pagination() {
     );
     fails(
         parse_session_list(os(&["--json", "--json"])),
-        invalid(TopLevelKind::Sessions, ArgumentErrorCode::LocalSurfaceArgs),
+        invalid(TopLevelKind::Sessions, ArgumentErrorCode::LocalSurface),
     );
 }
 
@@ -186,7 +186,7 @@ fn parse_session_detail_args_owns_string_ids_and_frees_through_deinit() {
     }
     fails(
         parse_session(os(&["--json"])),
-        invalid(TopLevelKind::Session, ArgumentErrorCode::SessionDetailArgs),
+        invalid(TopLevelKind::Session, ArgumentErrorCode::SessionDetail),
     );
 }
 
@@ -225,10 +225,7 @@ fn parse_session_migration_args_rejects_missing_repeated_and_mixed_targets() {
     }
     fails(
         parse_session(os(&["migrate", "--json"])),
-        invalid(
-            TopLevelKind::Session,
-            ArgumentErrorCode::SessionMigrationArgs,
-        ),
+        invalid(TopLevelKind::Session, ArgumentErrorCode::SessionMigration),
     );
 }
 
@@ -248,10 +245,7 @@ fn parse_session_recovery_args_accepts_exact_ids_and_rejects_ambiguity() {
     }
     fails(
         parse_session(os(&["recover", "--json"])),
-        invalid(
-            TopLevelKind::Session,
-            ArgumentErrorCode::SessionRecoveryArgs,
-        ),
+        invalid(TopLevelKind::Session, ArgumentErrorCode::SessionRecovery),
     );
 }
 
@@ -281,7 +275,7 @@ fn workspace_arguments_accept_one_action_and_one_json_flag() {
     }
     fails(
         parse_workspace(os(&["add", "--json"])),
-        invalid(TopLevelKind::Workspace, ArgumentErrorCode::WorkspaceArgs),
+        invalid(TopLevelKind::Workspace, ArgumentErrorCode::Workspace),
     );
     assert!(parse_workspace(os(&["--json", "--json"])).is_err());
 }
@@ -368,19 +362,4 @@ fn mcp_subcommands_validate_their_operand_shapes() {
     ] {
         fails(validate_mcp(&os(args)), usage(TopLevelKind::Mcp));
     }
-}
-
-#[test]
-fn slack_arguments_take_one_action_and_an_optional_json_flag() {
-    assert_eq!(parse_slack(&os(&["install"])).unwrap(), OutputFormat::Text);
-    assert_eq!(
-        parse_slack(&os(&["refresh", "--json"])).unwrap(),
-        OutputFormat::Json
-    );
-    assert!(parse_slack(&os(&["status"])).is_ok());
-    fails(parse_slack(&os(&["bogus"])), usage(TopLevelKind::Slack));
-    fails(
-        parse_slack(&os(&["bogus", "--json"])),
-        unhandled(ArgumentErrorCode::SlackArguments),
-    );
 }

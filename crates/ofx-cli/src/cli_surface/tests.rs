@@ -98,16 +98,6 @@ const COMMAND_SHAPES: &[(&[&str], TopLevelKind, OutputFormat)] = &[
         OutputFormat::Text,
     ),
     (
-        &["slack", "status"],
-        TopLevelKind::Slack,
-        OutputFormat::Text,
-    ),
-    (
-        &["slack", "status", "--json"],
-        TopLevelKind::Slack,
-        OutputFormat::Json,
-    ),
-    (
         &["ask", "--json", "hi"],
         TopLevelKind::Ask,
         OutputFormat::Json,
@@ -227,9 +217,25 @@ fn per_command_help_wins_over_command_arguments() {
 }
 
 #[test]
-fn mcp_and_slack_without_arguments_print_their_help() {
+fn mcp_without_arguments_prints_its_help() {
     assert_eq!(help(&["mcp"]), Some(TopLevelKind::Mcp));
-    assert_eq!(help(&["slack"]), Some(TopLevelKind::Slack));
+}
+
+#[test]
+fn slack_is_an_unknown_command_in_every_form() {
+    for args in [
+        &["slack"][..],
+        &["slack", "install"],
+        &["slack", "status", "--json"],
+        &["slack", "--help"],
+        &["--sessions-v2", "slack", "refresh"],
+    ] {
+        match parse(args) {
+            Err(CliError::UnknownSubcommand(token)) => assert_eq!(token, "slack", "{args:?}"),
+            other => panic!("expected an unknown subcommand for {args:?}, got {other:?}"),
+        }
+    }
+    assert_eq!(stderr(&["--add-dir", "/tmp", "slack"]), WORKSPACE_MODIFIERS);
 }
 
 #[test]
@@ -589,10 +595,6 @@ fn command_usage_errors_use_the_spec_usage() {
             "usage: oh-fx mcp add NAME COMMAND [ARGS...] | oh-fx mcp add --transport http NAME URL\n",
         ),
         (
-            &["slack", "bogus"],
-            "usage: oh-fx slack <install|status|refresh> [--json]\n",
-        ),
-        (
             &["usage", "--period", "1d"],
             "usage: oh-fx usage [--period <24h|7d|30d>] [--json]\n",
         ),
@@ -615,10 +617,6 @@ fn command_usage_errors_use_the_spec_usage() {
         (
             &["upgrade", "--channel", "dev"],
             "usage: oh-fx upgrade [--json]\n",
-        ),
-        (
-            &["slack", "bogus", "--json"],
-            "oh-fx: InvalidSlackArguments\n",
         ),
     ] {
         assert_eq!(stderr(args), expected, "{args:?}");
