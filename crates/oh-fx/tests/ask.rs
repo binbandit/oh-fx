@@ -1988,6 +1988,18 @@ fn command_result(state: &str, exit_code: &str, signal: &str, error: &str, outpu
     )
 }
 
+fn recorded_calls(result: &Value) -> Value {
+    let mut calls = result["tool_calls"].clone();
+    for call in calls.as_array_mut().expect("tool calls") {
+        if let Some(duration) = call.pointer_mut("/command_result/duration_ms")
+            && duration.is_u64()
+        {
+            *duration = json!(0);
+        }
+    }
+    calls
+}
+
 fn blocked_shell_stderr(command: &str, hint: &str) -> String {
     format!(
         "Running {command}\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Running {command}\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: {hint}\n"
@@ -2020,11 +2032,50 @@ fn full_access_runs_shell_commands_and_sends_their_results_to_the_model() {
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["output"], "Done.");
+    let workspace = canonical(&home.workspace);
     assert_eq!(
-        result["tool_calls"],
+        recorded_calls(&result),
         json!([
-            {"name": "shell", "status": "error"},
-            {"name": "shell", "status": "success"},
+            {
+                "name": "shell",
+                "status": "error",
+                "action": "run",
+                "error": {"category": "command_failed", "code": "nonzero_exit"},
+                "command_result": {
+                    "kind": "command",
+                    "command": "printf 'built\\n'; exit 3",
+                    "cwd": workspace,
+                    "exit_code": 3,
+                    "signal": null,
+                    "timed_out": false,
+                    "duration_ms": 0,
+                    "stdout_bytes": 6,
+                    "stderr_bytes": 0,
+                    "truncated": false,
+                    "output_file": null,
+                    "stdout_file": null,
+                    "stderr_file": null,
+                },
+            },
+            {
+                "name": "shell",
+                "status": "success",
+                "command_result": {
+                    "kind": "command",
+                    "command": "pwd",
+                    "cwd": workspace,
+                    "exit_code": 0,
+                    "signal": null,
+                    "timed_out": false,
+                    "duration_ms": 0,
+                    "stdout_bytes": workspace.len() + 1,
+                    "stderr_bytes": 0,
+                    "truncated": false,
+                    "output_file": null,
+                    "stdout_file": null,
+                    "stderr_file": null,
+                },
+            },
         ])
     );
     let requests = server.requests();
@@ -2072,7 +2123,12 @@ fn ask_mode_blocks_every_shell_command_before_it_runs() {
     assert_eq!(result["error"], "NonInteractivePermissionRequired");
     assert_eq!(
         result["tool_calls"],
-        json!([{"name": "shell", "status": "error"}])
+        json!([{
+            "name": "shell",
+            "status": "error",
+            "action": "run",
+            "error": {"category": "rejected", "code": "rejected"},
+        }])
     );
     assert_eq!(server.requests().len(), 1);
 }
@@ -2113,13 +2169,25 @@ fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands(
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["output"], "Held.");
+    let calls = recorded_calls(&result);
+    assert_eq!(calls[0]["status"], "success");
+    assert_eq!(calls[0]["command_result"]["exit_code"], 0);
     assert_eq!(
-        result["tool_calls"],
-        json!([
-            {"name": "shell", "status": "success"},
-            {"name": "shell", "status": "error"},
-            {"name": "shell", "status": "error"},
-        ])
+        calls.as_array().unwrap()[1..],
+        [
+            json!({
+                "name": "shell",
+                "status": "error",
+                "action": "interact",
+                "error": {"category": "tool_failed", "code": "ExecutionNotFound"},
+            }),
+            json!({
+                "name": "shell",
+                "status": "error",
+                "action": "run",
+                "error": {"category": "rejected", "code": "rejected"},
+            }),
+        ]
     );
     let messages = tool_messages(&requests[3]);
     assert_eq!(
@@ -2173,6 +2241,14 @@ fn the_timeout_flag_sets_the_default_deadline_for_shell_commands() {
 
     let output = home.ask(&["ask", "--json", "--timeout", "0", "run it"], &KEY);
     assert!(output.status.success(), "{}", stderr(&output));
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let calls = recorded_calls(&result);
+    assert_eq!(
+        calls[0]["error"],
+        json!({"category": "command_failed", "code": "timeout"})
+    );
+    assert_eq!(calls[0]["command_result"]["timed_out"], true);
+    assert_eq!(calls[1]["status"], "success");
     let requests = server.requests();
     assert_eq!(
         shell_results(&requests[1]),

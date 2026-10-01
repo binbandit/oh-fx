@@ -8,6 +8,7 @@ mod login_command;
 mod models_command;
 mod provider_activation;
 mod provider_command;
+mod shell_call_record;
 mod tool_set;
 mod upgrade_command;
 

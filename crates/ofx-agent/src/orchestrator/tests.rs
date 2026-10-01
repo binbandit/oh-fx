@@ -1025,6 +1025,7 @@ async fn a_call_that_needs_approval_fails_the_turn_after_earlier_calls_settle() 
         failure,
         TurnFailure::PermissionRequired(BlockedCall {
             tool_name: "echo".to_owned(),
+            arguments: r#"{"path":"outside"}"#.to_owned(),
             title: r#"Echoing {"path":"outside"}"#.to_owned(),
         })
     );
@@ -1188,6 +1189,7 @@ async fn file_mutations_that_need_approval_fail_the_turn_even_when_described_as_
         report.failure,
         Some(TurnFailure::PermissionRequired(BlockedCall {
             tool_name: "echo".to_owned(),
+            arguments: r#"{"changes":1,"inert":true}"#.to_owned(),
             title: r#"Echoing {"changes":1,"inert":true}"#.to_owned(),
         }))
     );
@@ -1482,6 +1484,7 @@ async fn calls_blocked_by_approval_are_dropped_without_letting_a_panic_escape() 
             report.failure,
             Some(TurnFailure::PermissionRequired(BlockedCall {
                 tool_name: "echo".to_owned(),
+                arguments: blocked.to_owned(),
                 title: format!("Echoing {blocked}"),
             })),
             "{later} {carried}"

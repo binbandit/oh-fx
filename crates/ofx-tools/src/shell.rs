@@ -18,7 +18,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::filesystem::tool_spec;
 use request::{Action, ShellRequest};
-use snapshot_format::{format_snapshot, runtime_failure, snapshot_failed, stop_result_failed};
+use snapshot_format::{
+    command_result, format_snapshot, runtime_failure, snapshot_failed, stop_result_failed,
+};
 
 const TOOL_NAME: &str = "shell";
 const DESCRIPTION: &str = "Run every command with shell.run. Fast commands complete in one call; commands still running after yield_time_ms return one owned session_id and remain available across turns. Use shell.interact with that exact session_id: omit chars to observe, or provide chars to send exact input and then observe. Use shell.stop only when termination is requested. output_delta is always terminal-safe; unsafe bytes are escaped while full_output_handle retains exact output, so do not run a separate command merely to test output safety or shell usability. Never detach with &, nohup, setsid, or double-forking.";
@@ -254,21 +256,23 @@ impl ShellContext {
             },
         };
         let body = format_snapshot(&snapshot, MAX_TOOL_RESULT_BYTES);
-        if stop_result_failed(snapshot.state) {
+        let output = if stop_result_failed(snapshot.state) {
             ToolOutput::failure(body)
         } else {
             ToolOutput::success(body)
-        }
+        };
+        output.with_command_result(command_result(&snapshot))
     }
 }
 
 fn finish_command(snapshot: &Snapshot) -> ToolOutput {
     let body = format_snapshot(snapshot, MAX_TOOL_RESULT_BYTES);
-    if snapshot_failed(snapshot) {
+    let output = if snapshot_failed(snapshot) {
         ToolOutput::failure(body)
     } else {
         ToolOutput::success(body)
-    }
+    };
+    output.with_command_result(command_result(snapshot))
 }
 
 fn effective_interact_yield_time(has_input: bool, requested_ms: u32) -> u32 {

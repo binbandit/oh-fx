@@ -18,6 +18,7 @@ const SHELL_PARSE_ERROR_SIGNATURES: [&str; 4] = [
     "unterminated quoted string",
 ];
 const USAGE_BANNER_LINES: usize = 4;
+const TIMEOUT_EXPIRED: &str = "TimeoutExpired";
 
 pub(super) fn format_snapshot(snapshot: &Snapshot, max_tool_result_bytes: usize) -> String {
     let inline_max_bytes = max_tool_result_bytes.min(LARGE_RESULT_THRESHOLD_BYTES);
@@ -109,6 +110,37 @@ fn format_raw(snapshot: &Snapshot, output_delta: &str, output_truncated: bool) -
     object.insert("retry_guidance".to_owned(), json!(retry_guidance));
     object.insert("output_delta".to_owned(), json!(output_delta));
     Value::Object(object).to_string()
+}
+
+pub(super) fn command_result(snapshot: &Snapshot) -> Option<String> {
+    if snapshot.state == SnapshotState::Running {
+        return None;
+    }
+    let projection = projection(snapshot.state);
+    let mut object = Map::new();
+    object.insert("kind".to_owned(), json!("command"));
+    object.insert("command".to_owned(), json!(snapshot.command));
+    object.insert("cwd".to_owned(), json!(snapshot.cwd.to_string_lossy()));
+    object.insert("exit_code".to_owned(), json!(projection.exit_code));
+    object.insert("signal".to_owned(), json!(projection.signal));
+    object.insert(
+        "timed_out".to_owned(),
+        json!(snapshot.error_name == Some(TIMEOUT_EXPIRED)),
+    );
+    if projection.termination_indeterminate {
+        object.insert("termination_indeterminate".to_owned(), json!(true));
+    }
+    if snapshot.output_incomplete {
+        object.insert("output_incomplete".to_owned(), json!(true));
+    }
+    object.insert("duration_ms".to_owned(), json!(snapshot.duration_ms));
+    object.insert("stdout_bytes".to_owned(), json!(snapshot.stdout_bytes));
+    object.insert("stderr_bytes".to_owned(), json!(snapshot.stderr_bytes));
+    object.insert("truncated".to_owned(), json!(snapshot.output_truncated));
+    for name in ["output_file", "stdout_file", "stderr_file"] {
+        object.insert(name.to_owned(), Value::Null);
+    }
+    Some(Value::Object(object).to_string())
 }
 
 pub(super) fn projection(state: SnapshotState) -> StatusProjection {
