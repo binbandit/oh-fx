@@ -707,9 +707,14 @@ fn responses_terminal_failures_retain_provider_diagnostics_as_outcomes() {
         assert_eq!(
             completion.failure,
             Some(ProviderFailure {
-                detail: "server_error: temporarily unavailable".to_owned(),
+                code: "server_error".to_owned(),
+                message: "temporarily unavailable".to_owned(),
                 cause: FailureCause::Retryable,
             })
+        );
+        assert_eq!(
+            completion.failure.unwrap().detail(|text| text),
+            "server_error: temporarily unavailable"
         );
     }
 }
@@ -748,8 +753,9 @@ fn responses_terminal_failure_classification_is_conservative_and_diagnostics_are
         let completion = stream.finish().unwrap();
         let failure = completion.failure.unwrap();
         assert_eq!(failure.cause, cause);
-        assert!(failure.detail.len() <= 256);
-        assert!(failure.detail.starts_with(code));
+        let detail = failure.detail(|text| text);
+        assert!(detail.len() <= 256);
+        assert!(detail.starts_with(code));
         assert_eq!(completion.usage.input_tokens, Some(7));
         assert_eq!(completion.usage.output_tokens, Some(3));
     }
@@ -761,7 +767,7 @@ fn responses_terminal_failure_classification_is_conservative_and_diagnostics_are
     assert_eq!(completion.finish, ResponsesFinish::ProviderError);
     let failure = completion.failure.unwrap();
     assert_eq!(failure.cause, FailureCause::NonRetryable);
-    assert!(!failure.detail.is_empty());
+    assert!(!failure.detail(|text| text).is_empty());
 }
 
 #[test]

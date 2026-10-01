@@ -430,8 +430,20 @@ pub(crate) enum FailureCause {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderFailure {
-    pub(crate) detail: String,
+    pub(crate) code: String,
+    pub(crate) message: String,
     pub(crate) cause: FailureCause,
+}
+
+impl ProviderFailure {
+    pub(crate) fn detail(self, mask: impl Fn(String) -> String) -> String {
+        let text = format!(
+            "{}: {}",
+            ModelFailureDiagnostic::new(&mask(self.code)).as_str(),
+            ModelFailureDiagnostic::new(&mask(self.message)).as_str()
+        );
+        ModelFailureDiagnostic::new(&text).as_str().to_owned()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1085,18 +1097,14 @@ impl Reducer {
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("Provider response failed");
-        let text = format!(
-            "{}: {}",
-            ModelFailureDiagnostic::new(code).as_str(),
-            ModelFailureDiagnostic::new(message).as_str()
-        );
         let cause = match code {
             "server_error" => FailureCause::Retryable,
             "rate_limit_exceeded" => FailureCause::RateLimited,
             _ => FailureCause::NonRetryable,
         };
         self.failure = Some(ProviderFailure {
-            detail: ModelFailureDiagnostic::new(&text).as_str().to_owned(),
+            code: code.to_owned(),
+            message: message.to_owned(),
             cause,
         });
     }

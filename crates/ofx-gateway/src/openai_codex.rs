@@ -453,7 +453,7 @@ fn into_completion(
                         FailureCause::RateLimited => ProviderErrorKind::RateLimited,
                         FailureCause::NonRetryable => ProviderErrorKind::ProviderError,
                     },
-                    failure.detail,
+                    failure.detail(|text| mask_configured_secrets(text, secrets)),
                 ),
                 None => (
                     ProviderErrorKind::ProviderError,

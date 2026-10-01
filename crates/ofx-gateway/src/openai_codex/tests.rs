@@ -583,6 +583,43 @@ async fn rejected_stream_events_mask_a_token_before_cutting_the_excerpt() {
     assert!(!detail.contains(&TOKEN[..12]), "{detail}");
 }
 
+#[tokio::test]
+async fn streamed_failures_mask_a_token_before_bounding_the_diagnostic() {
+    const TOKEN: &str = "codex-failure-credential-0123456789abcdef";
+    let message = format!("{} {TOKEN} was rejected", "x".repeat(215));
+    let start = "server_error: ".len() + message.find(TOKEN).unwrap_or_default();
+    assert!(start + 16 < 253 && start + TOKEN.len() > 253);
+    let failed = json!({"type": "response.failed", "response": {"error": {"code": "server_error", "message": message}}});
+    let server = FakeServer::start([Reply::sse(&[failed.to_string()])]);
+    let codex = CodexProvider::new(
+        CodexAccess::new(TOKEN.to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let messages = [ChatMessage::user("Hello.")];
+    let request = request(&messages, &[], &[]);
+    let mut sink = |_: StreamEvent| {};
+    let error = codex
+        .stream(&request, &mut sink, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::ServerError);
+    let detail = error.detail.expect("a detail");
+    let diagnostic = error.diagnostic.expect("a diagnostic");
+    assert!(
+        detail.starts_with("provider error: server_error: xxx"),
+        "{detail}"
+    );
+    for shown in [&detail, &diagnostic] {
+        assert!(!shown.contains(&TOKEN[..16]), "{shown}");
+        assert!(shown.len() <= 256 + "provider error: ".len(), "{shown}");
+    }
+}
+
 struct Rotating(&'static str);
 
 impl CodexCredentials for Rotating {
