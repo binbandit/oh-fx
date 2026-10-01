@@ -511,6 +511,9 @@ async fn run_group<'c>(
 ) -> Vec<(&'c ToolCall, Option<ToolOutput>)> {
     let mut dispatched = Vec::with_capacity(group.len());
     for (call, prepared) in group {
+        if cancel.is_cancelled() {
+            break;
+        }
         match prepared {
             Prepared::Rejected(output) => {
                 events(UiEvent::ToolRejected {

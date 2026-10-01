@@ -679,6 +679,35 @@ async fn cancelled_tools_that_outlive_the_grace_period_are_aborted_and_dropped_f
 }
 
 #[tokio::test]
+async fn cancelling_while_a_parallel_group_starts_never_starts_the_rest() {
+    let provider = FakeProvider::new(vec![tool_reply(&[
+        ("call-1", r#"{"wait":true}"#),
+        ("call-2", r#"{"text":"later"}"#),
+        ("call-3", r#"{"invalid":true}"#),
+    ])]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, events) = run_cancelled_at(&mut agent, "call-1").await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolRejected { .. }))
+    );
+    assert_eq!(
+        agent.history,
+        [
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![echo_call("call-1", r#"{"wait":true}"#)],
+            },
+            tool_message("call-1", "stopped after cleanup", ToolResultStatus::Failure),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn parallel_calls_overlap_and_report_results_in_call_order() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[("call-1", r#"{"meet":1}"#), ("call-2", r#"{"meet":2}"#)]),
