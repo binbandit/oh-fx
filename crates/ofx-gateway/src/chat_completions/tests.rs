@@ -583,6 +583,44 @@ async fn http_failures_map_status_retry_after_and_mask_details() {
 }
 
 #[tokio::test]
+async fn error_bodies_mask_encoded_echoes_of_the_key() {
+    let plain = [
+        PORTKEY_KEY,
+        "%70%6B%2D%6C%69%76%65%2D%73%65%63%72%65%74",
+        "\\u0070\\u006b-live-secret",
+        "%5Cu0070k-live-secret",
+    ];
+    let nested = [
+        "\\\\u0025\\\\u0037\\\\u0030k-live-secret",
+        "%5Cu0070k-live-secret",
+    ];
+    let server = FakeServer::start([
+        Reply::status_with_headers(
+            500,
+            &[("Content-Type", "text/plain")],
+            format!("upstream rejected {}", plain.join(", ")),
+        ),
+        Reply::status(
+            500,
+            format!(
+                r#"{{"error":{{"message":"upstream rejected {}"}}}}"#,
+                nested.join(", ")
+            ),
+        ),
+    ]);
+    let provider = portkey(&server);
+    for (separator, echoes) in [(": ", &plain[..]), (" · ", &nested[..])] {
+        let (outcome, _) = stream_text(&provider, &test_request()).await;
+        let error = outcome.unwrap_err();
+        let masked: Vec<String> = echoes.iter().map(|echo| "*".repeat(echo.len())).collect();
+        let expected = format!("HTTP 500{separator}upstream rejected {}", masked.join(", "));
+        assert_eq!(error.diagnostic.as_deref(), Some(expected.as_str()));
+        let detail = error.detail.unwrap();
+        assert!(detail.ends_with(&expected), "{detail}");
+    }
+}
+
+#[tokio::test]
 async fn redirects_are_reported_and_never_followed_with_secret_headers() {
     for status in [301, 302, 307, 308] {
         let elsewhere = FakeServer::start([Reply::sse(&chat_text_events(&["owned"]))]);

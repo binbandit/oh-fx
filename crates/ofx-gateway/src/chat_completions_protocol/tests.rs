@@ -1699,24 +1699,6 @@ fn chat_completions_extends_an_echoed_fragment_that_is_not_an_advertised_name() 
 }
 
 #[test]
-fn configured_secrets_are_masked_in_literal_json_and_percent_encoded_forms() {
-    let secrets = ["sk-a+b/c=\\d\"e".to_owned()];
-    for form in [
-        "sk-a+b/c=\\d\"e",
-        "sk-a+b/c=\\\\d\\\"e",
-        "sk-a%2Bb%2Fc%3D%5Cd%22e",
-        "sk-a%2bb%2fc%3d%5cd%22e",
-    ] {
-        let masked = mask_configured_secrets(format!("rejected key {form} here"), &secrets);
-        assert_eq!(
-            masked,
-            format!("rejected key {} here", "*".repeat(form.len())),
-            "{form}"
-        );
-    }
-}
-
-#[test]
 fn reasoning_byte_accounting_matches_serialized_json_lengths() {
     for byte in 0_u8..=0x7f {
         let text = format!("a{}bé", char::from(byte));

@@ -13,6 +13,7 @@ use ofx_contract::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+pub(crate) use crate::secret_mask::mask_configured_secrets;
 use crate::tool_call_ids::{Projection, ProjectionError};
 
 const MAX_SELECTED_TOOLS: usize = 256;
@@ -511,41 +512,6 @@ pub(crate) fn redact_error_detail(raw: &[u8], secrets: &[String]) -> String {
         return DETAIL_LIMIT_NOTICE.to_owned();
     }
     mask_configured_secrets(detail, secrets)
-}
-
-pub(crate) fn mask_configured_secrets(mut text: String, secrets: &[String]) -> String {
-    for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
-        let json_escaped = Value::String(secret.clone()).to_string();
-        let forms = [
-            json_escaped[1..json_escaped.len() - 1].to_owned(),
-            secret.clone(),
-            percent_encoded(secret, UPPER_HEX),
-            percent_encoded(secret, LOWER_HEX),
-        ];
-        for form in &forms {
-            if text.contains(form.as_str()) {
-                text = text.replace(form.as_str(), &"*".repeat(form.len()));
-            }
-        }
-    }
-    text
-}
-
-const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-fn percent_encoded(text: &str, digits: &[u8; 16]) -> String {
-    let mut encoded = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push(char::from(digits[usize::from(byte >> 4)]));
-            encoded.push(char::from(digits[usize::from(byte & 0x0f)]));
-        }
-    }
-    encoded
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

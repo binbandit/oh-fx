@@ -15,12 +15,12 @@ use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat_completions_protocol::{
-    Limits, ProtocolError, Reducer, RequestOptions, build_request, mask_configured_secrets,
-    redact_error_detail,
+    Limits, ProtocolError, Reducer, RequestOptions, build_request, redact_error_detail,
 };
 use crate::gateway_error_format::{
     format_http_error_message, format_http_recovery_diagnostic, sanitize_external_text,
 };
+use crate::secret_mask::mask_configured_secrets;
 
 const RESPONSE_HEAD_TIMEOUT: Duration = Duration::from_mins(2);
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(30);
