@@ -335,16 +335,17 @@ async fn every_split_of_crlf_cr_and_lf_framing_preserves_utf8_text_and_tool_argu
 }
 
 #[tokio::test]
-async fn protocol_failures_carry_a_masked_terminal_safe_excerpt() {
-    let wire = sse(&[TEST_TEXT, "{not json pk-live-secret \u{1b}[31m"]);
+async fn protocol_failures_report_rejected_data_by_position_and_size() {
+    let rejected = format!("{{not json {PORTKEY_KEY} \u{1b}[31m");
+    let wire = sse(&[TEST_TEXT, &rejected]);
     let error = consume_simple(&wire, Limits::default()).await.unwrap_err();
     assert_eq!(error.code, "InvalidChunk");
-    let detail = error.detail.unwrap();
-    assert!(detail.starts_with("stream event: {not json "), "{detail}");
-    assert!(!detail.contains(PORTKEY_KEY), "{detail}");
-    assert!(
-        !detail.contains('\u{1b}') && detail.contains("\\x1b"),
-        "{detail}"
+    assert_eq!(
+        error.detail,
+        Some(format!(
+            "stream event 2 ({} bytes) was rejected",
+            rejected.len()
+        ))
     );
     let wire = sse(&[
         TEST_TEXT,
@@ -363,15 +364,49 @@ async fn protocol_failures_carry_a_masked_terminal_safe_excerpt() {
     assert_eq!(error.code, "IncompleteStream");
     assert_eq!(
         error.detail.as_deref(),
-        Some(
-            "the stream ended before a finish_reason after 1 events; it began: data: {\"choices\":[]}\\x0a\\x0a"
-        )
+        Some("the stream ended before a finish_reason after 1 events and 22 bytes")
     );
-    let long = format!("data: {{{}\n\n", "x".repeat(400));
-    let error = consume_simple(long.as_bytes(), Limits::default())
+}
+
+fn secret_across_byte_160(lead: &str) -> String {
+    format!("{lead}{}{PORTKEY_KEY} tail", "p".repeat(150 - lead.len()))
+}
+
+#[tokio::test]
+async fn a_secret_across_the_old_excerpt_cut_never_reaches_a_stream_failure() {
+    let rejected = secret_across_byte_160("{not json ");
+    let wire = sse(&[TEST_TEXT, &rejected]);
+    let error = consume_simple(&wire, Limits::default()).await.unwrap_err();
+    let detail = error.detail.unwrap();
+    assert_eq!(
+        detail,
+        format!("stream event 2 ({} bytes) was rejected", rejected.len())
+    );
+    assert!(!detail.contains(&PORTKEY_KEY[..10]), "{detail}");
+    let wire = format!(
+        "{}\n\ndata: {{\"choices\":[]}}\n\n",
+        secret_across_byte_160(": ")
+    );
+    for size in [1, 7, wire.len()] {
+        let error = consume_wire(
+            wire.as_bytes(),
+            size,
+            Limits::default(),
+            &mut |_| {},
+            &CancellationToken::new(),
+        )
         .await
         .unwrap_err();
-    assert!(error.detail.unwrap().ends_with("..."));
+        let detail = error.detail.unwrap();
+        assert_eq!(
+            detail,
+            format!(
+                "the stream ended before a finish_reason after 1 events and {} bytes",
+                wire.len()
+            )
+        );
+        assert!(!detail.contains(&PORTKEY_KEY[..10]), "{detail}");
+    }
 }
 
 #[tokio::test]
@@ -604,36 +639,39 @@ async fn redirects_are_reported_without_waiting_for_their_body() {
 }
 
 #[tokio::test]
-async fn non_event_stream_success_bodies_are_reported_with_an_excerpt() {
+async fn non_event_stream_success_bodies_are_reported_by_media_type_and_size() {
     let completion = r#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#;
+    let page = "<html><title>Sign in to Corp SSO</title></html>";
+    let echo = secret_across_byte_160("<html>");
+    let html = [("Content-Type", "text/html; charset=utf-8")];
     let server = FakeServer::start([
         Reply::status(200, completion),
-        Reply::status_with_headers(
-            200,
-            &[("Content-Type", "text/html; charset=utf-8")],
-            "<html><title>Sign in to Corp SSO</title></html>",
-        ),
+        Reply::status_with_headers(200, &html, page),
+        Reply::status_with_headers(200, &html, echo.as_str()),
+        Reply::status_with_headers(200, &html, "x".repeat(MAX_ERROR_BODY_BYTES + 1)),
         Reply::status(
             200,
             r#"{"error":{"message":"quota exhausted for pk-live-secret"}}"#,
         ),
     ]);
     let provider = portkey(&server);
-    let (outcome, _) = stream_text(&provider, &test_request()).await;
-    let error = outcome.unwrap_err();
-    assert_eq!(error.code, "UnexpectedContentType");
-    let detail = error.detail.unwrap();
-    assert!(
-        detail.starts_with(r#"expected text/event-stream but the provider sent application/json: {"id":"x","object":"chat.completion""#),
-        "{detail}"
-    );
-    let (outcome, _) = stream_text(&provider, &test_request()).await;
-    assert_eq!(
-        outcome.unwrap_err().detail.as_deref(),
-        Some(
-            "expected text/event-stream but the provider sent text/html: <html><title>Sign in to Corp SSO</title></html>"
-        )
-    );
+    let expected = [
+        format!("application/json ({} bytes)", completion.len()),
+        format!("text/html ({} bytes)", page.len()),
+        format!("text/html ({} bytes)", echo.len()),
+        format!("text/html (more than {MAX_ERROR_BODY_BYTES} bytes)"),
+    ];
+    for sent in expected {
+        let (outcome, _) = stream_text(&provider, &test_request()).await;
+        let error = outcome.unwrap_err();
+        assert_eq!(error.code, "UnexpectedContentType");
+        let detail = error.detail.unwrap();
+        assert_eq!(
+            detail,
+            format!("expected text/event-stream but the provider sent {sent}")
+        );
+        assert!(!detail.contains(&PORTKEY_KEY[..10]), "{detail}");
+    }
     let (outcome, _) = stream_text(&provider, &test_request()).await;
     let error = outcome.unwrap_err();
     assert_eq!(error.code, "ProviderError");
