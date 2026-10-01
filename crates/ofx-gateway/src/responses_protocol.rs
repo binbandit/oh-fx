@@ -539,6 +539,52 @@ fn serialized_equal(left: &str, right: &str) -> bool {
     }
 }
 
+fn reasoning_digest(fields: &Map<String, Value>) -> IdentityHash {
+    let mut canonical = String::new();
+    write_canonical_object(
+        &mut canonical,
+        fields
+            .iter()
+            .filter(|(key, _)| key.as_str() != "encrypted_content"),
+    );
+    Sha256::digest(canonical.as_bytes()).into()
+}
+
+fn write_canonical(out: &mut String, value: &Value) {
+    match value {
+        Value::Object(fields) => write_canonical_object(out, fields.iter()),
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_canonical(out, item);
+            }
+            out.push(']');
+        }
+        scalar => out.push_str(&scalar.to_string()),
+    }
+}
+
+fn write_canonical_object<'a>(
+    out: &mut String,
+    fields: impl Iterator<Item = (&'a String, &'a Value)>,
+) {
+    let mut sorted: Vec<_> = fields.collect();
+    sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    out.push('{');
+    for (index, (key, value)) in sorted.into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_json_string(out, key);
+        out.push(':');
+        write_canonical(out, value);
+    }
+    out.push('}');
+}
+
 fn optional_index(fields: &Map<String, Value>, name: &str) -> Result<Option<i64>> {
     match fields.get(name) {
         None => Ok(None),
@@ -650,6 +696,7 @@ struct ReasoningItem {
     output_index: i64,
     id_hash: Option<IdentityHash>,
     json: Option<String>,
+    completed_digest: Option<IdentityHash>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -993,19 +1040,24 @@ impl Reducer {
         if !encrypted.is_null() && !encrypted.is_string() {
             return Err(ResponsesError::InvalidEvent);
         }
-        let json = (evidence == Evidence::Completed && encrypted.is_string())
-            .then(|| Value::Object(fields.clone()).to_string());
-        if found && let Some(prior) = &self.reasoning_items[position].json {
-            if let Some(json) = &json
-                && !serialized_equal(prior, json)
+        let completed_digest = (evidence == Evidence::Completed).then(|| reasoning_digest(fields));
+        if found {
+            let prior = &mut self.reasoning_items[position];
+            if let (Some(prior_digest), Some(digest)) = (prior.completed_digest, completed_digest)
+                && prior_digest != digest
             {
                 return Err(ResponsesError::ReasoningConflict);
             }
-            if id_hash.is_some() {
-                self.reasoning_items[position].id_hash = id_hash;
+            if prior.json.is_some() {
+                if id_hash.is_some() {
+                    prior.id_hash = id_hash;
+                }
+                return Ok(());
             }
-            return Ok(());
         }
+        let has_ciphertext = encrypted.as_str().is_some_and(|text| !text.is_empty());
+        let json = (evidence == Evidence::Completed && has_ciphertext)
+            .then(|| Value::Object(fields.clone()).to_string());
         let mut total = self.reasoning_bytes;
         if let Some(json) = &json {
             let overhead = if total == 0 { 2 } else { 1 };
@@ -1019,6 +1071,7 @@ impl Reducer {
                 prior.id_hash = id_hash;
             }
             prior.json = json;
+            prior.completed_digest = prior.completed_digest.or(completed_digest);
         } else {
             if self.reasoning_items.len() >= self.limits.events {
                 return Err(ResponsesError::ResourceLimitExceeded);
@@ -1029,6 +1082,7 @@ impl Reducer {
                     output_index,
                     id_hash,
                     json,
+                    completed_digest,
                 },
             );
         }

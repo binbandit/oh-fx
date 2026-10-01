@@ -601,23 +601,156 @@ fn responses_reasoning_replay_omits_identity_only_items_and_bounds_their_count()
 }
 
 #[test]
+fn responses_reasoning_replay_keeps_the_first_ciphertext_when_a_later_copy_is_reencrypted() {
+    let kept = r#"{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"first"}"#;
+    for later in [
+        r#"{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"second"}"#,
+        r#"{"encrypted_content":"third","summary":[],"type":"reasoning","id":"rs_1"}"#,
+        r#"{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":null}"#,
+        r#"{"id":"rs_1","type":"reasoning","summary":[]}"#,
+    ] {
+        let mut stream = Stream::new();
+        stream
+            .apply(&format!(
+                r#"{{"type":"response.output_item.done","output_index":0,"item":{kept}}}"#
+            ))
+            .unwrap();
+        stream
+            .apply(&format!(
+                r#"{{"type":"response.output_item.done","output_index":0,"item":{later}}}"#
+            ))
+            .unwrap();
+        stream
+            .apply(&format!(
+                r#"{{"type":"response.completed","response":{{"status":"completed","output":[{later}]}}}}"#
+            ))
+            .unwrap();
+        let completion = stream.finish().unwrap();
+        assert_eq!(replay_of(&completion), Some(format!("[{kept}]").as_str()));
+    }
+}
+
+#[test]
+fn responses_reasoning_replay_compares_nested_fields_regardless_of_key_order() {
+    let mut stream = Stream::new();
+    stream.apply(r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"plan"}],"encrypted_content":"first"}}"#).unwrap();
+    stream.apply(r#"{"type":"response.completed","response":{"status":"completed","output":[{"summary":[{"text":"plan","type":"summary_text"}],"encrypted_content":"second","type":"reasoning","id":"rs_1"}]}}"#).unwrap();
+    let completion = stream.finish().unwrap();
+    assert_eq!(
+        replay_of(&completion),
+        Some(
+            r#"[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"plan"}],"encrypted_content":"first"}]"#
+        )
+    );
+}
+
+#[test]
+fn responses_reasoning_replay_treats_an_empty_ciphertext_as_none() {
+    let mut stream = Stream::new();
+    stream.apply(r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":""}}"#).unwrap();
+    stream.apply(r#"{"type":"response.completed","response":{"status":"completed","output":[{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"real"}]}}"#).unwrap();
+    let completion = stream.finish().unwrap();
+    assert_eq!(
+        replay_of(&completion),
+        Some(r#"[{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"real"}]"#)
+    );
+
+    let mut empty = Stream::new();
+    empty.apply(r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":""}}"#).unwrap();
+    empty.apply(TERMINAL).unwrap();
+    assert_eq!(replay_of(&empty.finish().unwrap()), None);
+}
+
+#[test]
+fn responses_reasoning_replay_keeps_the_streamed_copy_of_a_live_reencrypted_item() {
+    let live = include_str!("live_reencrypted_reasoning.sse");
+    let events: Vec<&str> = live
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .collect();
+    let reasoning_copy = |kind: &str| -> Value {
+        events
+            .iter()
+            .map(|event| serde_json::from_str::<Value>(event).unwrap())
+            .find_map(|event| match event["type"].as_str() {
+                Some(found) if found == kind && event["item"]["type"] == "reasoning" => {
+                    Some(event["item"].clone())
+                }
+                Some("response.completed") if kind == "response.completed" => {
+                    Some(event["response"]["output"][0].clone())
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let added = reasoning_copy("response.output_item.added");
+    let done = reasoning_copy("response.output_item.done");
+    let completed = reasoning_copy("response.completed");
+    let ciphertexts = [&added, &done, &completed].map(|item| item["encrypted_content"].clone());
+    assert!(ciphertexts.iter().all(Value::is_string));
+    assert_ne!(ciphertexts[0], ciphertexts[1]);
+    assert_ne!(ciphertexts[1], ciphertexts[2]);
+    assert_ne!(ciphertexts[0], ciphertexts[2]);
+    assert_eq!(done["id"], completed["id"]);
+    assert_eq!(done["summary"], completed["summary"]);
+
+    let mut stream = Stream::new();
+    for event in &events {
+        stream.apply(event).unwrap();
+    }
+    let answer =
+        "When both `text` and `reasoning` are false, `select_replay_parts` returns `Ok(None)`.";
+    assert_eq!(stream.emitted, answer);
+    let completion = stream.finish().unwrap();
+    assert_eq!(completion.content.as_deref(), Some(answer));
+    assert_eq!(completion.finish, ResponsesFinish::Stop);
+    assert_eq!(completion.usage.input_tokens, Some(2967));
+    assert_eq!(completion.usage.output_tokens, Some(79));
+    let state: Value = serde_json::from_str(replay_of(&completion).unwrap()).unwrap();
+    assert_eq!(
+        state,
+        json!([
+            done,
+            {"type": "message", "offset": 0, "length": answer.len(), "phase": "final_answer"},
+        ])
+    );
+}
+
+#[test]
 fn responses_reasoning_replay_rejects_conflicting_final_evidence_and_invalid_supplied_identity() {
     for item in [
         r#"{"id":"different","type":"reasoning","encrypted_content":"opaque"}"#,
+        r#"{"type":"reasoning","encrypted_content":"different"}"#,
+        r#"{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"other"}],"encrypted_content":"different"}"#,
+        r#"{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"other"}],"encrypted_content":"opaque"}"#,
+        r#"{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"other"}]}"#,
+        r#"{"id":"rs_1","type":"reasoning","summary":[],"status":"completed","encrypted_content":"different"}"#,
         r#"{"id":"rs_1","type":"reasoning","encrypted_content":"different"}"#,
+        r#"{"id":"rs_1","type":"reasoning","summary":[],"index":1.0,"encrypted_content":"different"}"#,
     ] {
-        let mut stream = Stream::new();
-        stream.apply(r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","encrypted_content":"opaque"}}"#).unwrap();
-        assert_eq!(
-            stream.apply(&format!(
-                r#"{{"type":"response.completed","response":{{"status":"completed","output":[{item}]}}}}"#
-            )),
-            Err(ResponsesError::ReasoningConflict)
-        );
-        assert_eq!(
-            stream.finish().unwrap_err(),
-            ResponsesError::StreamIncomplete
-        );
+        for streamed in [
+            r#"{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"opaque"}"#,
+            r#"{"id":"rs_1","type":"reasoning","summary":[]}"#,
+            r#"{"id":"rs_1","type":"reasoning","summary":[],"index":1}"#,
+        ] {
+            let mut stream = Stream::new();
+            stream
+                .apply(&format!(
+                    r#"{{"type":"response.output_item.done","output_index":0,"item":{streamed}}}"#
+                ))
+                .unwrap();
+            assert_eq!(
+                stream.apply(&format!(
+                    r#"{{"type":"response.completed","response":{{"status":"completed","output":[{item}]}}}}"#
+                )),
+                Err(ResponsesError::ReasoningConflict),
+                "{streamed} then {item}"
+            );
+            assert_eq!(
+                stream.finish().unwrap_err(),
+                ResponsesError::StreamIncomplete
+            );
+        }
     }
     for item in [
         r#"{"id":42,"type":"reasoning","encrypted_content":"opaque"}"#,
