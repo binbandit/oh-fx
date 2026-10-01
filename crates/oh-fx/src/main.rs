@@ -35,6 +35,9 @@ enum WriteFailure {
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
+    if ofx_exec::is_foreground_session_invocation(&args) {
+        ofx_exec::run_foreground_session(&args);
+    }
     if args == ofx_upgrade::BACKGROUND_UPGRADE_ARGS {
         return upgrade_command::run_in_background();
     }
