@@ -4,18 +4,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, FinishReason,
-    ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest, PreparedCall,
-    ProviderError, ProviderErrorKind, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool,
-    ToolCall, ToolChoice, ToolContext, ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
-    UiEvent, Usage,
+    BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, ExecutionFailure,
+    FinishReason, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
+    PreparedCall, ProviderError, ProviderErrorKind, RouteRecoveryKind, RouteRecoveryStatus,
+    StreamEvent, Tool, ToolCall, ToolChoice, ToolContext, ToolOutput, ToolResultStatus, ToolSpec,
+    TurnId, TurnOutcome, UiEvent, Usage, tool_execution_failure_json,
 };
-use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::model_response_recovery::{DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide};
+use crate::tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 
 const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
@@ -352,12 +352,15 @@ impl Agent {
                 let Some(output) = output else {
                     continue;
                 };
-                let content = escalate_repeated_failure(turn, call, &output);
+                let status = output.status;
+                let model_output =
+                    prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
+                let content = escalate_repeated_failure(turn, call, status, model_output);
                 self.history.push(ChatMessage::Tool {
                     call_id: call.id.clone(),
                     tool_name: call.name.clone(),
                     content,
-                    status: output.status,
+                    status,
                 });
             }
         }
@@ -586,19 +589,22 @@ async fn settle(
 }
 
 fn panicked(tool_name: &str) -> ToolOutput {
-    ToolOutput::failure(
-        json!({"error": {
-            "type": "tool_execution_failed",
-            "tool_name": tool_name,
-            "message": "Tool execution panicked",
-        }})
-        .to_string(),
-    )
+    ToolOutput::failure(tool_execution_failure_json(&ExecutionFailure {
+        tool_name,
+        message: "Tool execution panicked",
+        details: &[],
+        suggestion: None,
+    }))
 }
 
-fn escalate_repeated_failure(turn: &mut Turn, call: &ToolCall, output: &ToolOutput) -> String {
-    if output.status != ToolResultStatus::Failure {
-        return output.content.clone();
+fn escalate_repeated_failure(
+    turn: &mut Turn,
+    call: &ToolCall,
+    status: ToolResultStatus,
+    model_output: String,
+) -> String {
+    if status != ToolResultStatus::Failure {
+        return model_output;
     }
     let count = turn
         .failures
@@ -606,11 +612,10 @@ fn escalate_repeated_failure(turn: &mut Turn, call: &ToolCall, output: &ToolOutp
         .or_insert(0);
     *count += 1;
     if *count < 2 {
-        return output.content.clone();
+        return model_output;
     }
     format!(
-        "{}\n\nThis exact call has already failed {count} times this turn with the same arguments. Do not retry it unchanged.",
-        output.content
+        "{model_output}\n\nThis exact call has already failed {count} times this turn with the same arguments. Do not retry it unchanged."
     )
 }
 

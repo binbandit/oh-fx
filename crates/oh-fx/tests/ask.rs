@@ -8,10 +8,11 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events};
+use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events};
 use serde_json::{Value, json};
 
 const PORTKEY_KEY: &str = "pk-test-0123456789";
+const UPSTREAM_READ_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"read_file","description":"Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}}}"#;
 const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>\n";
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
 
@@ -118,7 +119,10 @@ fn ask_streams_a_portkey_reply_with_the_configured_header_and_body() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(fields, ["model", "stream", "stream_options", "messages"]);
+    assert_eq!(
+        fields,
+        ["model", "stream", "stream_options", "messages", "tools"]
+    );
     assert_eq!(body["model"], "@openai/gpt-4o");
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"], json!({"include_usage": true}));
@@ -704,7 +708,10 @@ fn flags_that_request_the_current_defaults_run_normally() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(fields, ["model", "stream", "stream_options", "messages"]);
+    assert_eq!(
+        fields,
+        ["model", "stream", "stream_options", "messages", "tools"]
+    );
 }
 
 #[test]
@@ -873,4 +880,196 @@ fn json_results_name_a_closed_pipe_like_upstream() {
         .expect("run oh-fx");
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stderr(&output), "oh-fx: BrokenPipe\n");
+}
+
+fn tool_messages(request: &RecordedRequest) -> Vec<Value> {
+    request.json()["messages"]
+        .as_array()
+        .expect("the request carries messages")
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn ask_runs_read_file_and_sends_its_result_to_the_model() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"notes.txt","start_line":2}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "read_file",
+            r#"{"path":"missing.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["The second line is beta."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("notes.txt"), "alpha\nbeta\n").unwrap();
+    let output = home.ask(
+        &["ask", "--json", "what is on line two?"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "Reading notes.txt\nReading missing.txt\n");
+    assert_eq!(
+        stdout(&output),
+        "{\"output\":\"The second line is beta.\",\"final_output\":\"The second line is beta.\",\"exit_code\":0,\"model\":\"@openai/gpt-4o\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":2,\"tool_calls\":[{\"name\":\"read_file\",\"status\":\"success\"},{\"name\":\"read_file\",\"status\":\"error\"}],\"usage\":{\"input_tokens\":36,\"output_tokens\":9}}\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert!(
+            request
+                .body_text()
+                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL}]")),
+            "{}",
+            request.body_text()
+        );
+        let roles: Vec<&str> = request.json()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "system")
+            .map(|_| "system")
+            .collect();
+        assert_eq!(roles.len(), 4);
+    }
+    assert_eq!(
+        tool_messages(&requests[2]),
+        [
+            json!({
+                "role": "tool",
+                "content": "<path>notes.txt</path>\n<content>\n2\tbeta\n... [showing 1 of 2 lines; use start_line/line_count to read more.]\n</content>",
+                "tool_call_id": "call_1",
+            }),
+            json!({
+                "role": "tool",
+                "content": "Path not found: missing.txt",
+                "tool_call_id": "call_2",
+            }),
+        ]
+    );
+}
+
+fn parallel_tool_call_events(calls: &[(&str, &str, &str)]) -> Vec<String> {
+    let chunk = |delta: Value, finish_reason: Value| {
+        json!({
+            "id": "chatcmpl-parallel",
+            "object": "chat.completion.chunk",
+            "model": "testkit-model",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        })
+        .to_string()
+    };
+    let tool_calls: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (call_id, name, arguments))| {
+            json!({
+                "index": index,
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            })
+        })
+        .collect();
+    vec![
+        chunk(
+            json!({"role": "assistant", "tool_calls": tool_calls}),
+            Value::Null,
+        ),
+        chunk(json!({}), json!("tool_calls")),
+        "[DONE]".to_owned(),
+    ]
+}
+
+#[test]
+fn ask_shows_invalid_parallel_read_file_calls_after_the_calls_that_run() {
+    let server = FakeServer::start([
+        Reply::sse(&parallel_tool_call_events(&[
+            ("call_1", "read_file", r#"{"path":"a.txt","start_line":0}"#),
+            ("call_2", "read_file", r#"{"path":"b.txt"}"#),
+            ("call_3", "read_file", r#"{"path":"missing.txt"}"#),
+        ])),
+        Reply::sse(&chat_text_events(&["Read b."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("a.txt"), "alpha\n").unwrap();
+    fs::write(home.workspace.join("b.txt"), "beta\n").unwrap();
+    let output = home.ask(
+        &["ask", "--json", "read the files"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Reading b.txt\nReading missing.txt\nReading a.txt\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["steps"], 3);
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "read_file", "status": "error"},
+            {"name": "read_file", "status": "success"},
+            {"name": "read_file", "status": "error"},
+        ])
+    );
+    assert_eq!(
+        tool_messages(&server.requests()[1]),
+        [
+            json!({
+                "role": "tool",
+                "content": "read_file field \"start_line\" must be a positive integer",
+                "tool_call_id": "call_1",
+            }),
+            json!({
+                "role": "tool",
+                "content": "<path>b.txt</path>\n<content>\n1\tbeta\n</content>",
+                "tool_call_id": "call_2",
+            }),
+            json!({
+                "role": "tool",
+                "content": "Path not found: missing.txt",
+                "tool_call_id": "call_3",
+            }),
+        ]
+    );
+}
+
+#[test]
+fn ask_prints_read_file_progress_and_the_final_answer_in_raw_mode() {
+    let read = chat_tool_call_events("call_1", "read_file", r#"{"path":"notes.txt"}"#);
+    let server = FakeServer::start([
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["It says alpha."])),
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["It says alpha."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("notes.txt"), "alpha\n").unwrap();
+    let output = home.ask(
+        &["ask", "read notes.txt"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "It says alpha.");
+    assert_eq!(stderr(&output), "Reading notes.txt\n");
+    assert_eq!(
+        tool_messages(&server.requests()[1]),
+        [json!({
+            "role": "tool",
+            "content": "<path>notes.txt</path>\n<content>\n1\talpha\n</content>",
+            "tool_call_id": "call_1",
+        })]
+    );
+
+    let quiet = home.ask(&["ask", "--quiet", "read notes.txt"], &KEY);
+    assert!(quiet.status.success(), "{}", stderr(&quiet));
+    assert_eq!(stdout(&quiet), "");
+    assert_eq!(stderr(&quiet), "Reading notes.txt\n");
 }

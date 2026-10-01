@@ -680,6 +680,7 @@ dependencies = [
 name = "ofx-contract"
 version = "0.1.0"
 dependencies = [
+ "ofx-text",
  "serde_json",
  "tokio-util",
 ]
@@ -742,6 +743,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-tools"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "ofx-contract",
+ "ofx-text",
+ "ofx-workspace",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "ofx-upgrade"
 version = "0.1.0"
 dependencies = [
@@ -760,6 +775,7 @@ dependencies = [
 name = "ofx-workspace"
 version = "0.1.0"
 dependencies = [
+ "rustix",
  "tempfile",
  "thiserror",
 ]
@@ -777,6 +793,7 @@ dependencies = [
  "ofx-http",
  "ofx-testkit",
  "ofx-text",
+ "ofx-tools",
  "ofx-upgrade",
  "rustix",
  "serde",

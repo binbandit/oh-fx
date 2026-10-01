@@ -25,6 +25,7 @@ pub enum ToolActivity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolEffect {
+    None,
     ReadOnly,
     Mutating,
     Irreversible,
@@ -34,6 +35,14 @@ pub enum ToolEffect {
 pub enum Concurrency {
     Parallel,
     Serial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallPresentation {
+    pub activity: ToolActivity,
+    pub action_label: &'static str,
+    pub label_argument: &'static str,
+    pub label_default: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

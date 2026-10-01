@@ -23,6 +23,7 @@ ofx-markdown = { path = "crates/ofx-markdown" }
 ofx-session = { path = "crates/ofx-session" }
 ofx-testkit = { path = "crates/ofx-testkit" }
 ofx-text = { path = "crates/ofx-text" }
+ofx-tools = { path = "crates/ofx-tools" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
 ofx-workspace = { path = "crates/ofx-workspace" }
 percent-encoding = "2.3.2"

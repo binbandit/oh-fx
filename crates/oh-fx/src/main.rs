@@ -2,6 +2,7 @@ mod auto_upgrade;
 mod cli_ask;
 mod context;
 mod help;
+mod tool_set;
 mod upgrade_command;
 
 use std::env;

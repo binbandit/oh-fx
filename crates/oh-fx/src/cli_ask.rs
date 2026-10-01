@@ -16,9 +16,10 @@ use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
     ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError, RouteRecoveryStatus,
-    ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
+use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
 use serde::{Serialize, Serializer};
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -26,6 +27,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
+use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
@@ -250,8 +252,9 @@ fn prepare_agent(args: &AskArgs) -> Result<(Agent, String), Failure> {
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
     };
+    let tools = tool_set::ask_tools(&workspace_root);
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
-    let agent = Agent::new(Arc::new(provider), Vec::new(), Arc::new(context), config);
+    let agent = Agent::new(Arc::new(provider), tools, Arc::new(context), config);
     Ok((agent, model))
 }
 
@@ -324,37 +327,16 @@ fn print_result(result: &RunResult<'_>) -> ExitCode {
 struct ToolRecord {
     name: String,
     status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<ToolRecordError>,
-}
-
-#[derive(Serialize)]
-struct ToolRecordError {
-    category: &'static str,
-    code: &'static str,
 }
 
 impl ToolRecord {
     fn new(name: String, status: ToolResultStatus) -> Self {
-        let error = (status == ToolResultStatus::Failure).then_some(ToolRecordError {
-            category: "tool_failed",
-            code: "tool_failed",
-        });
         Self {
             name,
-            status: if error.is_some() { "error" } else { "success" },
-            error,
-        }
-    }
-
-    fn rejected(name: String) -> Self {
-        Self {
-            name,
-            status: "error",
-            error: Some(ToolRecordError {
-                category: "rejected",
-                code: "rejected",
-            }),
+            status: match status {
+                ToolResultStatus::Success => "success",
+                ToolResultStatus::Failure => "error",
+            },
         }
     }
 }
@@ -479,6 +461,7 @@ struct Presenter {
     trailing_newlines: usize,
     steps: u64,
     tool_calls: Vec<ToolRecord>,
+    settling_progress: Vec<(ToolCallId, String)>,
     recovery: Option<RouteRecoveryStatus>,
     write_error: Option<&'static str>,
 }
@@ -507,6 +490,7 @@ impl Presenter {
             trailing_newlines: 0,
             steps: 0,
             tool_calls: Vec::new(),
+            settling_progress: Vec::new(),
             recovery: None,
             write_error: None,
         }
@@ -522,19 +506,36 @@ impl Presenter {
                 self.recovery = Some(status);
                 notice.map_or(Ok(()), |line| write_stderr(&line))
             }
-            UiEvent::ToolStarted { .. } => {
+            UiEvent::ToolStarted {
+                call_id,
+                description,
+                ..
+            } => {
                 self.start_step();
-                Ok(())
+                let line = self.progress_line(&description.title);
+                if description.effect == ToolEffect::None {
+                    self.settling_progress.push((call_id, line));
+                    Ok(())
+                } else {
+                    write_stderr(&line)
+                }
             }
             UiEvent::ToolFinished {
-                tool_name, status, ..
+                call_id,
+                tool_name,
+                status,
+                ..
             } => {
                 self.tool_calls.push(ToolRecord::new(tool_name, status));
-                Ok(())
+                match self.take_settling_progress(&call_id) {
+                    Some(line) => write_stderr(&line),
+                    None => Ok(()),
+                }
             }
             UiEvent::ToolRejected { tool_name, .. } => {
                 self.start_step();
-                self.tool_calls.push(ToolRecord::rejected(tool_name));
+                self.tool_calls
+                    .push(ToolRecord::new(tool_name, ToolResultStatus::Failure));
                 Ok(())
             }
             UiEvent::TurnStarted { .. }
@@ -549,6 +550,25 @@ impl Presenter {
                 false
             }
         }
+    }
+
+    fn progress_line(&self, title: &str) -> String {
+        if self.mode == OutputMode::Terminal {
+            format!(
+                "{}\n",
+                encode_terminal_safe(title.as_bytes(), usize::MAX).text
+            )
+        } else {
+            format!("{title}\n")
+        }
+    }
+
+    fn take_settling_progress(&mut self, call_id: &ToolCallId) -> Option<String> {
+        let index = self
+            .settling_progress
+            .iter()
+            .position(|(settling, _)| settling == call_id)?;
+        Some(self.settling_progress.remove(index).1)
     }
 
     fn start_step(&mut self) {
@@ -709,7 +729,7 @@ impl Presenter {
 mod tests {
     use ofx_contract::{
         CallDescription, Concurrency, ModelFailureDiagnostic, RouteRecoveryKind, ToolActivity,
-        ToolCallId, ToolEffect, TurnId,
+        TurnId,
     };
 
     use super::*;
@@ -731,7 +751,6 @@ mod tests {
         let records = [
             ToolRecord::new("read_file".to_owned(), ToolResultStatus::Success),
             ToolRecord::new("read_file".to_owned(), ToolResultStatus::Failure),
-            ToolRecord::rejected("missing".to_owned()),
         ];
         let recovered = RouteRecoveryStatus {
             kind: RouteRecoveryKind::AutoRecovered,
@@ -751,7 +770,7 @@ mod tests {
         };
         assert_eq!(
             result_json(&result),
-            r#"{"output":"","final_output":"","exit_code":1,"model":"","resolved_provider":null,"session_id":"","steps":0,"tool_calls":[{"name":"read_file","status":"success"},{"name":"read_file","status":"error","error":{"category":"tool_failed","code":"tool_failed"}},{"name":"missing","status":"error","error":{"category":"rejected","code":"rejected"}}],"usage":{"input_tokens":null,"output_tokens":null},"recovery":{"state":"recovered","kind":"auto_recovered","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"✓ recovered · succeeded on attempt 2"}}"#
+            r#"{"output":"","final_output":"","exit_code":1,"model":"","resolved_provider":null,"session_id":"","steps":0,"tool_calls":[{"name":"read_file","status":"success"},{"name":"read_file","status":"error"}],"usage":{"input_tokens":null,"output_tokens":null},"recovery":{"state":"recovered","kind":"auto_recovered","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"✓ recovered · succeeded on attempt 2"}}"#
         );
         let retrying = RouteRecoveryStatus {
             kind: RouteRecoveryKind::AutoRetry,
@@ -769,12 +788,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn raw_output_separates_text_around_tool_steps_and_counts_rejections() {
-        let mut presenter = Presenter::new(AskOutput {
+    fn json_presenter() -> Presenter {
+        Presenter::new(AskOutput {
             json: true,
             ..AskOutput::default()
-        });
+        })
+    }
+
+    #[test]
+    fn terminal_progress_lines_escape_control_sequences_from_tool_arguments() {
+        let title = "Reading \x1b]0;PWNED-TITLE\x07\x1b[2J\x1b[31mred\nnext";
+        let mut presenter = json_presenter();
+        assert_eq!(presenter.progress_line(title), format!("{title}\n"));
+        presenter.mode = OutputMode::Quiet;
+        assert_eq!(presenter.progress_line(title), format!("{title}\n"));
+        presenter.mode = OutputMode::Raw;
+        assert_eq!(presenter.progress_line(title), format!("{title}\n"));
+        presenter.mode = OutputMode::Terminal;
+        assert_eq!(
+            presenter.progress_line(title),
+            "Reading \\x1b]0;PWNED-TITLE\\x07\\x1b[2J\\x1b[31mred\\x0anext\n"
+        );
+        assert_eq!(
+            presenter.progress_line("Reading notes.txt"),
+            "Reading notes.txt\n"
+        );
+    }
+
+    #[test]
+    fn raw_output_separates_text_around_tool_steps_and_counts_rejections() {
+        let mut presenter = json_presenter();
         presenter.push_assistant("Looking.").unwrap();
         assert!(presenter.handle(UiEvent::ToolStarted {
             turn_id: TurnId::new(1),

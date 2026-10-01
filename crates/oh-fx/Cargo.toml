@@ -15,6 +15,7 @@ ofx-contract.workspace = true
 ofx-gateway.workspace = true
 ofx-http.workspace = true
 ofx-text.workspace = true
+ofx-tools.workspace = true
 ofx-upgrade.workspace = true
 rustix = { workspace = true, features = ["termios"] }
 serde.workspace = true
