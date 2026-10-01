@@ -77,7 +77,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - Custom provider connections accept `headers` with `${VAR}` interpolation, `tls.ca_file`, `proxy`, a `models` list, and plain `http://` base URLs on any host, so self-hosted gateways such as Portkey work. The chat-completions stream parser tolerates the empty-choices chunks and missing `[DONE]` markers that gateways emit.
 - There is one release stream, so `oh-fx upgrade` has no `--channel` option.
 - Releases come from GitHub Releases. Every push to `main` publishes `v<version>-dev.<n>`, where `<n>` is the commit count on `main`.
-- Upgrade checks also run from short-lived commands through a detached background process, so every invocation picks up new releases.
+- Upgrade checks run from every command through a detached background process, at most once every five minutes when commands run, instead of upstream's thirty, so each merge reaches users quickly.
 
 ## Parity tracking
 
