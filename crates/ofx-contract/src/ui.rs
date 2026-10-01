@@ -9,6 +9,13 @@ pub enum TurnOutcome {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRejection {
+    Unsupported,
+    Invalid,
+    Panicked,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     TurnStarted {
@@ -49,6 +56,8 @@ pub enum UiEvent {
         turn_id: TurnId,
         call_id: ToolCallId,
         tool_name: String,
+        arguments: String,
+        reason: ToolRejection,
     },
     UsageReported {
         turn_id: TurnId,

@@ -7,12 +7,16 @@ pub fn format_plain_action(
     arguments: &str,
 ) -> String {
     let Ok(arguments) = parse_tool_args_object(arguments) else {
-        return format!("Working: {tool_name}");
+        return format_unknown_action(tool_name);
     };
     let value = arguments
         .optional_string(presentation.label_argument)
         .unwrap_or(presentation.label_default);
     format!("{} {value}", presentation.action_label)
+}
+
+pub fn format_unknown_action(tool_name: &str) -> String {
+    format!("Working: {tool_name}")
 }
 
 #[cfg(test)]
