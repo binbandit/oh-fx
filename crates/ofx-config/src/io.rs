@@ -2,19 +2,16 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use rustix::fs::{self, AtFlags, FileType, FlockOperation, Mode, OFlags, Stat};
 use rustix::io::Errno;
 use zeroize::Zeroizing;
 
-const LOCK_RETRY: Duration = Duration::from_millis(10);
 const TEMP_SUFFIX_BYTES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum DurableError {
+pub enum DurableError {
     #[error("DurablePathUnsafe")]
     PathUnsafe,
     #[error("PrivateStatePermissionsUnsupported")]
@@ -25,8 +22,6 @@ pub(crate) enum DurableError {
     PostRenameFailed,
     #[error("AccessDenied")]
     AccessDenied,
-    #[error("LockBusy")]
-    LockBusy,
     #[error("LockUnsupported")]
     LockUnsupported,
     #[error("InsecureAuthFile")]
@@ -38,24 +33,24 @@ pub(crate) enum DurableError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RemoveOutcome {
+pub enum RemoveOutcome {
     Removed,
     Missing,
     RemovedNotDurable,
 }
 
 #[derive(Debug)]
-pub(crate) struct AdvisoryLock {
+pub struct AdvisoryLock {
     _file: OwnedFd,
 }
 
 #[derive(Debug)]
-pub(crate) struct PrivateDir {
+pub struct PrivateDir {
     fd: OwnedFd,
 }
 
 impl PrivateDir {
-    pub(crate) fn open_existing(path: &Path) -> Result<Option<Self>, DurableError> {
+    pub fn open_existing(path: &Path) -> Result<Option<Self>, DurableError> {
         let (parent, leaf) = split(path)?;
         let parent = match open_directory(parent) {
             Ok(parent) => parent,
@@ -74,7 +69,7 @@ impl PrivateDir {
         Ok(Some(Self { fd }))
     }
 
-    pub(crate) fn open_existing_private(path: &Path) -> Result<Option<Self>, DurableError> {
+    pub fn open_existing_private(path: &Path) -> Result<Option<Self>, DurableError> {
         let Some(directory) = Self::open_existing(path)? else {
             return Ok(None);
         };
@@ -85,7 +80,7 @@ impl PrivateDir {
         Ok(Some(directory))
     }
 
-    pub(crate) fn open_or_create(path: &Path) -> Result<Self, DurableError> {
+    pub fn open_or_create(path: &Path) -> Result<Self, DurableError> {
         let (parent_path, leaf) = split(path)?;
         std::fs::create_dir_all(parent_path).map_err(|_| DurableError::Failed)?;
         let parent = open_directory(parent_path).map_err(|_| DurableError::Failed)?;
@@ -109,11 +104,11 @@ impl PrivateDir {
         Ok(Self { fd })
     }
 
-    pub(crate) fn owner_writable(&self) -> bool {
+    pub fn owner_writable(&self) -> bool {
         fs::fstat(&self.fd).is_ok_and(|stat| permissions(&stat).contains(Mode::WUSR))
     }
 
-    pub(crate) fn private_file_exists(&self, name: &str) -> Result<bool, DurableError> {
+    pub fn private_file_exists(&self, name: &str) -> Result<bool, DurableError> {
         let stat = match fs::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => stat,
             Err(Errno::NOENT) => return Ok(false),
@@ -128,7 +123,7 @@ impl PrivateDir {
         Ok(true)
     }
 
-    pub(crate) fn read_private(
+    pub fn read_private(
         &self,
         name: &str,
         max_bytes: usize,
@@ -157,7 +152,7 @@ impl PrivateDir {
         Ok(Some(bytes))
     }
 
-    pub(crate) fn private_file_present(&self, name: &str, max_bytes: usize) -> Option<bool> {
+    pub fn private_file_present(&self, name: &str, max_bytes: usize) -> Option<bool> {
         let fd = match fs::openat(&self.fd, name, read_flags(), Mode::empty()) {
             Ok(fd) => fd,
             Err(Errno::NOENT) => return Some(false),
@@ -173,7 +168,7 @@ impl PrivateDir {
         usable.then_some(true)
     }
 
-    pub(crate) fn replace(&self, name: &str, bytes: &[u8]) -> Result<(), DurableError> {
+    pub fn replace(&self, name: &str, bytes: &[u8]) -> Result<(), DurableError> {
         self.validate_replace_target(name)?;
         let temp = temp_name(name)?;
         let file = fs::openat(
@@ -198,7 +193,7 @@ impl PrivateDir {
         fs::fsync(&self.fd).map_err(|_| DurableError::PostRenameFailed)
     }
 
-    pub(crate) fn remove(&self, name: &str) -> Result<RemoveOutcome, DurableError> {
+    pub fn remove(&self, name: &str) -> Result<RemoveOutcome, DurableError> {
         match fs::unlinkat(&self.fd, name, AtFlags::empty()) {
             Ok(()) => {}
             Err(Errno::NOENT) => return Ok(RemoveOutcome::Missing),
@@ -211,24 +206,13 @@ impl PrivateDir {
         })
     }
 
-    pub(crate) async fn lock(
-        &self,
-        name: &str,
-        wait: Duration,
-    ) -> Result<AdvisoryLock, DurableError> {
+    pub fn try_lock(&self, name: &str) -> Result<Option<AdvisoryLock>, DurableError> {
         let file = self.open_lock_file(name)?;
-        let started = Instant::now();
-        loop {
-            match fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
-                Ok(()) => return Ok(AdvisoryLock { _file: file }),
-                Err(Errno::WOULDBLOCK | Errno::INTR) => {}
-                Err(Errno::NOLCK | Errno::OPNOTSUPP) => return Err(DurableError::LockUnsupported),
-                Err(_) => return Err(DurableError::Failed),
-            }
-            if started.elapsed() >= wait {
-                return Err(DurableError::LockBusy);
-            }
-            tokio::time::sleep(LOCK_RETRY.min(wait)).await;
+        match fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(Some(AdvisoryLock { _file: file })),
+            Err(Errno::WOULDBLOCK | Errno::INTR) => Ok(None),
+            Err(Errno::NOLCK | Errno::OPNOTSUPP) => Err(DurableError::LockUnsupported),
+            Err(_) => Err(DurableError::Failed),
         }
     }
 
@@ -317,12 +301,6 @@ impl PrivateDir {
     }
 }
 
-pub(crate) fn nearest_existing_ancestor_writable(path: &Path) -> bool {
-    path.ancestors()
-        .find_map(|ancestor| std::fs::metadata(ancestor).ok())
-        .is_some_and(|metadata| metadata.is_dir() && metadata.permissions().mode() & 0o200 != 0)
-}
-
 fn split(path: &Path) -> Result<(&Path, &std::ffi::OsStr), DurableError> {
     match (path.parent(), path.file_name()) {
         (Some(parent), Some(leaf)) if !parent.as_os_str().is_empty() => Ok((parent, leaf)),
@@ -389,7 +367,7 @@ fn temp_name(name: &str) -> Result<String, DurableError> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     use super::*;
 
@@ -525,28 +503,16 @@ mod tests {
         assert_eq!(directory.remove("auth.json"), Ok(RemoveOutcome::Missing));
     }
 
-    #[tokio::test]
-    async fn advisory_locks_exclude_a_second_holder_until_released() {
+    #[test]
+    fn advisory_locks_exclude_a_second_holder_until_released() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("oh-fx");
         let first = PrivateDir::open_or_create(&path).unwrap();
         let second = PrivateDir::open_existing(&path).unwrap().unwrap();
-        let held = first
-            .lock("auth.lock", Duration::from_secs(1))
-            .await
-            .unwrap();
-        assert_eq!(
-            second
-                .lock("auth.lock", Duration::from_millis(30))
-                .await
-                .unwrap_err(),
-            DurableError::LockBusy
-        );
+        let held = first.try_lock("auth.lock").unwrap().unwrap();
+        assert!(second.try_lock("auth.lock").unwrap().is_none());
         drop(held);
-        second
-            .lock("auth.lock", Duration::from_millis(30))
-            .await
-            .unwrap();
+        assert!(second.try_lock("auth.lock").unwrap().is_some());
         assert_eq!(mode(&path.join("auth.lock")), 0o600);
     }
 }
