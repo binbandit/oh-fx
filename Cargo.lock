@@ -648,6 +648,24 @@ dependencies = [
 [[package]]
 name = "ofx-auth"
 version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.4.3",
+ "ofx-config",
+ "ofx-contract",
+ "ofx-http",
+ "ofx-testkit",
+ "reqwest",
+ "rustix",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "zeroize",
+]
 
 [[package]]
 name = "ofx-cli"

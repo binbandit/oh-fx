@@ -285,14 +285,21 @@ fn workspace_arguments_accept_one_action_and_one_json_flag() {
 
 #[test]
 fn login_providers_accept_one_known_slug() {
-    assert!(validate_login(TopLevelKind::Login, &os(&[])).is_ok());
-    assert!(validate_login(TopLevelKind::Login, &os(&["Vercel"])).is_ok());
+    assert_eq!(parse_login(TopLevelKind::Login, &os(&[])).ok(), Some(None));
+    assert_eq!(
+        parse_login(TopLevelKind::Login, &os(&["Vercel"])).ok(),
+        Some(Some(ProviderId::Gateway))
+    );
+    assert_eq!(
+        parse_login(TopLevelKind::Logout, &os(&["CODEX"])).ok(),
+        Some(Some(ProviderId::Codex))
+    );
     fails(
-        validate_login(TopLevelKind::Logout, &os(&["foo"])),
+        parse_login(TopLevelKind::Logout, &os(&["foo"])),
         usage(TopLevelKind::Logout),
     );
     fails(
-        validate_login(TopLevelKind::Login, &os(&["codex", "grok"])),
+        parse_login(TopLevelKind::Login, &os(&["codex", "grok"])),
         usage(TopLevelKind::Login),
     );
 }

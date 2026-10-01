@@ -1,5 +1,22 @@
+pub const HOST_MANAGED_AUTH_MESSAGE: &str = "Authentication is managed by the host.";
+pub const CHATGPT_SOURCE_LABEL: &str = "Codex subscription";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    Local,
+    HostManaged,
+}
+
+pub fn parse_auth_mode(value: Option<&[u8]>) -> Option<AuthMode> {
+    match value {
+        None | Some(b"local") => Some(AuthMode::Local),
+        Some(b"host-managed") => Some(AuthMode::HostManaged),
+        Some(_) => None,
+    }
+}
+
 pub fn is_valid_auth_mode(value: Option<&[u8]>) -> bool {
-    value.is_none_or(|mode| mode == b"local" || mode == b"host-managed")
+    parse_auth_mode(value).is_some()
 }
 
 #[cfg(test)]
@@ -14,5 +31,10 @@ mod tests {
         for invalid in [&b""[..], b"Local", b" local", b"host_managed", b"remote"] {
             assert!(!is_valid_auth_mode(Some(invalid)), "{invalid:?}");
         }
+        assert_eq!(parse_auth_mode(None), Some(AuthMode::Local));
+        assert_eq!(
+            parse_auth_mode(Some(b"host-managed")),
+            Some(AuthMode::HostManaged)
+        );
     }
 }

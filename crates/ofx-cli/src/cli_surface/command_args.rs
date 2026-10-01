@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 
-use ofx_auth::is_login_provider;
-use ofx_config::is_valid_provider_id;
+use ofx_auth::parse_login_provider;
+use ofx_config::{ProviderId, is_valid_provider_id};
 use ofx_session::is_valid_session_id;
 use ofx_text::parse_unsigned;
 
@@ -63,10 +63,17 @@ pub(crate) fn validate_acp(args: Vec<OsString>) -> Result<(), CliError> {
     Ok(())
 }
 
-pub(crate) fn validate_login(command: TopLevelKind, args: &[OsString]) -> Result<(), CliError> {
+pub(crate) fn parse_login(
+    command: TopLevelKind,
+    args: &[OsString],
+) -> Result<Option<ProviderId>, CliError> {
     match args {
-        [] => Ok(()),
-        [provider] if provider.to_str().is_some_and(is_login_provider) => Ok(()),
+        [] => Ok(None),
+        [provider] => provider
+            .to_str()
+            .and_then(parse_login_provider)
+            .map(Some)
+            .ok_or(CliError::Usage(command)),
         _ => Err(CliError::Usage(command)),
     }
 }
