@@ -53,6 +53,31 @@ pub fn filesystem_access_denied_json(tool_name: &str, path: &str, error_name: &s
     })
 }
 
+pub fn review_unavailable_json(tool_name: &str) -> String {
+    let mut error = Map::new();
+    error.insert("type".to_owned(), Value::from("tool_review_held"));
+    error.insert("tool_name".to_owned(), Value::from(tool_name));
+    error.insert(
+        "message".to_owned(),
+        masked("Safety reviewer unavailable; action held"),
+    );
+    error.insert("reason".to_owned(), Value::from("review_unavailable"));
+    error.insert(
+        "review_cause".to_owned(),
+        Value::from("reviewer_unconfigured"),
+    );
+    error.insert("held".to_owned(), Value::Bool(true));
+    error.insert(
+        "suggestion".to_owned(),
+        masked(
+            "The action did not run because safety review was unavailable. Continue with a different safe action or retry later.",
+        ),
+    );
+    let mut envelope = Map::new();
+    envelope.insert("error".to_owned(), Value::Object(error));
+    Value::Object(envelope).to_string()
+}
+
 fn masked(text: &str) -> Value {
     Value::from(mask_secrets(text).into_owned())
 }
@@ -112,6 +137,14 @@ mod tests {
         });
         assert!(body.contains("\"path\":\"API_KEY=[redacted]\""), "{body}");
         assert!(!body.contains("abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn unavailable_reviews_hold_the_action_with_upstream_fields() {
+        assert_eq!(
+            review_unavailable_json("edit_file"),
+            "{\"error\":{\"type\":\"tool_review_held\",\"tool_name\":\"edit_file\",\"message\":\"Safety reviewer unavailable; action held\",\"reason\":\"review_unavailable\",\"review_cause\":\"reviewer_unconfigured\",\"held\":true,\"suggestion\":\"The action did not run because safety review was unavailable. Continue with a different safe action or retry later.\"}}"
+        );
     }
 
     #[test]
