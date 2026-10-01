@@ -661,6 +661,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-gateway"
+version = "0.1.0"
+dependencies = [
+ "ofx-config",
+ "ofx-contract",
+ "ofx-http",
+ "ofx-testkit",
+ "ofx-text",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "ofx-http"
 version = "0.1.0"
 dependencies = [
@@ -668,6 +686,14 @@ dependencies = [
  "rustls",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "ofx-testkit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
