@@ -45,7 +45,7 @@ impl Stream {
                 self.emitted.push_str(&text);
             }
         }
-        result.map(|_| ())
+        result.map(|_| ()).map_err(|rejection| rejection.error)
     }
 
     fn delta(&mut self, item: i64, part: i64, text: &str) -> Result<()> {
@@ -1326,12 +1326,46 @@ fn responses_finalization_checks_correlation_types_and_rejects_unmatched_final_c
 }
 
 #[test]
+fn responses_rejections_carry_the_type_only_of_an_event_that_was_parsed() {
+    let mut reducer = Reducer::new(StreamLimits {
+        events: 2,
+        ..LIMITS
+    });
+    let (semantic, _) = reducer.apply(br#"{"type":"response.output_text.delta","delta":5}"#, false);
+    assert_eq!(
+        semantic,
+        Err(Rejection {
+            error: ResponsesError::InvalidEvent,
+            event_type: Some("response.output_text.delta".to_owned()),
+        })
+    );
+    let (malformed, _) = reducer.apply(br#"{"type":"response.completed""#, false);
+    assert_eq!(malformed, Err(ResponsesError::InvalidEvent.into()));
+    let (over_count, _) = reducer.apply(br#"{"type":"response.completed"}"#, false);
+    assert_eq!(
+        over_count,
+        Err(ResponsesError::ResourceLimitExceeded.into())
+    );
+
+    let event = br#"{"type":"response.completed"}"#;
+    let mut reducer = Reducer::new(StreamLimits {
+        aggregate_bytes: event.len() - 1,
+        ..LIMITS
+    });
+    let (over_bytes, _) = reducer.apply(event, false);
+    assert_eq!(
+        over_bytes,
+        Err(ResponsesError::ResourceLimitExceeded.into())
+    );
+}
+
+#[test]
 fn responses_finalization_retains_cancellation_and_terminal_requirements() {
     let mut stream = Stream::new();
     stream.apply(START).unwrap();
     stream.apply(FINALIZED).unwrap();
     let (cancelled, _) = stream.reducer.apply(TERMINAL.as_bytes(), true);
-    assert_eq!(cancelled, Err(ResponsesError::Cancelled));
+    assert_eq!(cancelled, Err(ResponsesError::Cancelled.into()));
     assert_eq!(
         Stream::new().finish().unwrap_err(),
         ResponsesError::StreamIncomplete

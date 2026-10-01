@@ -637,11 +637,122 @@ async fn rejected_stream_events_are_reported_without_their_bytes() {
     let detail = error.detail.expect("a detail");
     assert_eq!(
         detail,
-        format!("stream event 2 ({} bytes) was rejected", rejected.len())
+        format!(
+            "stream event 2 (response.output_text.delta, {} bytes) was rejected",
+            rejected.len()
+        )
     );
     for fragment in [&TOKEN[..8], &escaped[..12], "\\u00"] {
         assert!(!detail.contains(fragment), "{detail}");
     }
+}
+
+async fn rejected_second_event(rejected: &str, limits: StreamLimits) -> ProviderError {
+    let opened = r#"{"type":"response.created"}"#;
+    let mut chunks = Chunks(VecDeque::from([format!(
+        "data: {opened}\n\ndata: {rejected}\n\n"
+    )
+    .into_bytes()]));
+    let mut sink = |_: StreamEvent| {};
+    consume_stream(
+        &mut chunks,
+        &mut sink,
+        &CancellationToken::new(),
+        limits,
+        &[],
+    )
+    .await
+    .unwrap_err()
+}
+
+#[tokio::test]
+async fn quota_rejected_stream_events_are_named_only_by_position_and_size() {
+    let rejected =
+        json!({"type": "response.completed", "response": {"status": "completed"}}).to_string();
+    for limits in [
+        StreamLimits {
+            events: 1,
+            ..STREAM_LIMITS
+        },
+        StreamLimits {
+            aggregate_bytes: r#"{"type":"response.created"}"#.len() + rejected.len() - 1,
+            ..STREAM_LIMITS
+        },
+    ] {
+        let error = rejected_second_event(&rejected, limits).await;
+        assert_eq!(error.code, "OpenAICodexResourceLimitExceeded");
+        assert_eq!(
+            error.detail,
+            Some(format!(
+                "stream event 2 ({} bytes) was rejected",
+                rejected.len()
+            ))
+        );
+    }
+}
+
+#[tokio::test]
+async fn semantically_rejected_stream_events_name_their_parsed_type() {
+    for (rejected, code, shown) in [
+        (
+            r#"{"type":"response.completed"}"#,
+            "InvalidOpenAICodexSseEvent",
+            Some("response.completed"),
+        ),
+        (
+            r#"{"type":"response.function_call_arguments.done","output_index":0}"#,
+            "InvalidOpenAICodexSseEvent",
+            Some("response.function_call_arguments.done"),
+        ),
+        (
+            r#"{"type":"response.completed","#,
+            "InvalidOpenAICodexSseEvent",
+            None,
+        ),
+    ] {
+        let error = rejected_second_event(rejected, STREAM_LIMITS).await;
+        assert_eq!(error.code, code, "{rejected}");
+        let size = rejected.len();
+        let expected = match shown {
+            Some(kind) => format!("stream event 2 ({kind}, {size} bytes) was rejected"),
+            None => format!("stream event 2 ({size} bytes) was rejected"),
+        };
+        assert_eq!(error.detail, Some(expected), "{rejected}");
+    }
+}
+
+#[test]
+fn rejected_event_details_show_only_a_short_unmasked_type_token() {
+    const SECRET: &str = "codex_stream_secret_0123456789";
+    let secrets = [SECRET.to_owned()];
+    let longest = format!("response.{}", "a".repeat(55));
+    let too_long = format!("{longest}a");
+    for (kind, shown) in [
+        ("response.completed", true),
+        (longest.as_str(), true),
+        (too_long.as_str(), false),
+        ("Response.Completed", false),
+        ("response completed", false),
+        ("response.\u{1b}[2J", false),
+        ("response-completed", false),
+        ("", false),
+        (SECRET, false),
+    ] {
+        let expected = if shown {
+            format!("stream event 3 ({kind}, 10 bytes) was rejected")
+        } else {
+            "stream event 3 (10 bytes) was rejected".to_owned()
+        };
+        assert_eq!(
+            rejected_event_detail(3, 10, Some(kind), &secrets),
+            expected,
+            "{kind}"
+        );
+    }
+    assert_eq!(
+        rejected_event_detail(3, 10, None, &secrets),
+        "stream event 3 (10 bytes) was rejected"
+    );
 }
 
 #[tokio::test]
