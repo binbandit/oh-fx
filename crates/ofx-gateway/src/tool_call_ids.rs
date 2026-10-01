@@ -11,6 +11,7 @@ const ALIAS_DIGEST_BYTES: usize = 20;
 pub(crate) enum ProjectionError {
     InvalidToolCallId,
     ToolCallIdMappingExhausted,
+    ProtectedToolCallId,
 }
 
 #[derive(Debug, Default)]
@@ -20,6 +21,13 @@ pub(crate) struct Projection {
 
 impl Projection {
     pub(crate) fn new(messages: &[ChatMessage]) -> Result<Self, ProjectionError> {
+        Self::protecting(messages, &[])
+    }
+
+    pub(crate) fn protecting(
+        messages: &[ChatMessage],
+        replayed: &[bool],
+    ) -> Result<Self, ProjectionError> {
         let mut known = HashSet::new();
         let mut needed = false;
         for id in all_ids(messages) {
@@ -33,17 +41,34 @@ impl Projection {
         if !needed {
             return Ok(projection);
         }
-        for id in call_ids(messages) {
-            if portable(id) || projection.aliases.contains_key(id) {
+        let is_replayed = |index: usize| replayed.get(index).copied().unwrap_or(false);
+        let protected: HashSet<&str> = messages
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| is_replayed(*index))
+            .flat_map(|(_, message)| call_ids(std::slice::from_ref(message)))
+            .collect();
+        let opaque_history = replayed.contains(&true);
+        for (index, message) in messages.iter().enumerate() {
+            let ChatMessage::Assistant { tool_calls, .. } = message else {
                 continue;
+            };
+            for call in tool_calls {
+                let id = call.id.as_str();
+                if portable(projection.resolve(id)) || is_replayed(index) {
+                    continue;
+                }
+                if protected.contains(id) {
+                    return Err(ProjectionError::ProtectedToolCallId);
+                }
+                let alias = next_alias(id, &known, opaque_history)?;
+                known.insert(alias.clone());
+                projection.aliases.insert(id.to_owned(), alias);
             }
-            let alias =
-                next_alias(id, &known).ok_or(ProjectionError::ToolCallIdMappingExhausted)?;
-            known.insert(alias.clone());
-            projection.aliases.insert(id.to_owned(), alias);
         }
         for message in messages {
             if let ChatMessage::Tool { call_id, .. } = message
+                && !protected.contains(call_id.as_str())
                 && !portable(projection.resolve(call_id.as_str()))
             {
                 return Err(ProjectionError::InvalidToolCallId);
@@ -75,15 +100,26 @@ fn all_ids(messages: &[ChatMessage]) -> impl Iterator<Item = &str> {
     call_ids(messages).chain(results)
 }
 
-fn next_alias(id: &str, known: &HashSet<String>) -> Option<String> {
+fn next_alias(
+    id: &str,
+    known: &HashSet<String>,
+    opaque_history: bool,
+) -> Result<String, ProjectionError> {
     let digest = Sha256::digest(id.as_bytes());
     let mut hex = String::with_capacity(ALIAS_DIGEST_BYTES * 2);
     for byte in &digest[..ALIAS_DIGEST_BYTES] {
         let _ = write!(hex, "{byte:02x}");
     }
-    (0..=known.len())
-        .map(|attempt| format!("fx_{hex}_{attempt}"))
-        .find(|candidate| !known.contains(candidate))
+    for attempt in 0..=known.len() {
+        let candidate = format!("fx_{hex}_{attempt}");
+        if !known.contains(&candidate) {
+            return Ok(candidate);
+        }
+        if opaque_history {
+            return Err(ProjectionError::ProtectedToolCallId);
+        }
+    }
+    Err(ProjectionError::ToolCallIdMappingExhausted)
 }
 
 fn portable(id: &str) -> bool {
@@ -185,6 +221,21 @@ mod tests {
         assert_eq!(projection.aliases.len(), 1);
         let alias = projection.resolve("call:0");
         assert!(alias.starts_with("fx_"));
+    }
+
+    #[test]
+    fn tool_call_id_projection_never_rewrites_protected_identities() {
+        let replayed = [assistant(vec![call("native:0")]), result("native:0", "")];
+        let projection = Projection::protecting(&replayed, &[true, false]).unwrap();
+        assert_eq!(projection.resolve("native:0"), "native:0");
+        let reused = [
+            assistant(vec![call("native:0")]),
+            assistant(vec![call("native:0")]),
+        ];
+        assert_eq!(
+            Projection::protecting(&reused, &[false, true]).unwrap_err(),
+            ProjectionError::ProtectedToolCallId
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "macros"] }
 tokio-util.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 ofx-testkit.workspace = true

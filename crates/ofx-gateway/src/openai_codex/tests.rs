@@ -1,0 +1,418 @@
+use std::collections::VecDeque;
+use std::fmt::Write;
+
+use ofx_contract::{ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
+use serde_json::json;
+
+use super::*;
+
+struct Chunks(VecDeque<Vec<u8>>);
+
+impl ChunkSource for Chunks {
+    async fn next_chunk(&mut self) -> Result<Option<impl AsRef<[u8]> + Send>, String> {
+        Ok(self.0.pop_front())
+    }
+}
+
+fn request<'a>(
+    messages: &'a [ChatMessage],
+    instructions: &'a [&'a str],
+    tools: &'a [ToolSpec],
+) -> ModelRequest<'a> {
+    ModelRequest {
+        model: "gpt-5.6-sol",
+        instructions,
+        messages,
+        tools,
+        tool_choice: ToolChoice::Auto,
+        max_output_tokens: Some(1024),
+    }
+}
+
+fn build(messages: &[ChatMessage], replays: &[Option<&str>]) -> Result<String, ProviderError> {
+    build_request(&request(messages, &[], &[]), replays).map_err(codex_failure)
+}
+
+fn assistant_calls(calls: Vec<ToolCall>) -> ChatMessage {
+    ChatMessage::Assistant {
+        content: None,
+        tool_calls: calls,
+    }
+}
+
+fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
+    ToolCall {
+        id: ToolCallId::new(id),
+        name: name.to_owned(),
+        arguments: arguments.to_owned(),
+    }
+}
+
+fn sized_state(size: usize) -> String {
+    let prefix = r#"[{"type":"reasoning","encrypted_content":""#;
+    let suffix = r#""}]"#;
+    format!(
+        "{prefix}{}{suffix}",
+        "x".repeat(size - prefix.len() - suffix.len())
+    )
+}
+
+fn sized_arguments(size: usize) -> String {
+    let prefix = r#"{"value":""#;
+    let suffix = r#""}"#;
+    format!(
+        "{prefix}{}{suffix}",
+        "x".repeat(size - prefix.len() - suffix.len())
+    )
+}
+
+async fn consume(sse: &str, limits: StreamLimits) -> Result<ResponsesCompletion, ProviderError> {
+    let mut chunks = Chunks(VecDeque::from([sse.as_bytes().to_vec()]));
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    consume_stream(
+        &mut chunks,
+        &mut sink,
+        &CancellationToken::new(),
+        limits,
+        &[],
+    )
+    .await
+}
+
+async fn expect_sse_error(code: &str, sse: &str, limits: StreamLimits) {
+    assert_eq!(consume(sse, limits).await.unwrap_err().code, code, "{sse}");
+}
+
+#[test]
+fn openai_codex_request_uses_responses_input_and_converts_ai_sdk_tool_schemas() {
+    let tools = [ToolSpec {
+        name: "read_file".to_owned(),
+        description: "Read".to_owned(),
+        input_schema: json!({"type": "object", "properties": {}}),
+    }];
+    let messages = [
+        ChatMessage::user("Read it."),
+        assistant_calls(vec![call("call_1", "read_file", r#"{"path":"README.md"}"#)]),
+        ChatMessage::Tool {
+            call_id: ToolCallId::new("call_1"),
+            tool_name: "read_file".to_owned(),
+            content: "contents".to_owned(),
+            status: ToolResultStatus::Success,
+        },
+    ];
+    let body = build_request(
+        &request(&messages, &["Be concise."], &tools),
+        &[
+            None,
+            Some(r#"[{"id":"rs_1","type":"reasoning","encrypted_content":"opaque"}]"#),
+            None,
+        ],
+    )
+    .unwrap();
+    assert!(body.contains(r#""model":"gpt-5.6-sol""#));
+    assert!(body.contains(r#""instructions":"Be concise.""#));
+    assert!(body.contains(r#""type":"function_call_output""#));
+    assert!(body.contains(r#""encrypted_content":"opaque""#));
+    assert!(body.contains(r#""parameters":{"type":"object","properties":{}}"#));
+    assert!(!body.contains("max_output_tokens"));
+}
+
+#[test]
+fn openai_codex_replay_provider_state_accepts_the_limit_and_rejects_one_byte_beyond() {
+    let message = [ChatMessage::Assistant {
+        content: Some("a".to_owned()),
+        tool_calls: Vec::new(),
+    }];
+    let state = sized_state(MAX_PROVIDER_STATE_BYTES);
+    assert!(build(&message, &[Some(&state)]).is_ok());
+    let state = sized_state(MAX_PROVIDER_STATE_BYTES + 1);
+    assert_eq!(
+        build(&message, &[Some(&state)]).unwrap_err().code,
+        "OpenAICodexProviderStateTooLarge"
+    );
+}
+
+#[test]
+fn openai_codex_replay_tool_count_accepts_the_limit_and_rejects_one_call_beyond() {
+    let calls = |count| {
+        (0..count)
+            .map(|_| call("call", "read_file", "{}"))
+            .collect()
+    };
+    assert!(build(&[assistant_calls(calls(MAX_TOOL_CALLS))], &[None]).is_ok());
+    assert_eq!(
+        build(&[assistant_calls(calls(MAX_TOOL_CALLS + 1))], &[None])
+            .unwrap_err()
+            .code,
+        "OpenAICodexToolCallLimitExceeded"
+    );
+}
+
+#[test]
+fn openai_codex_replay_tool_identities_accept_the_limit_and_reject_one_byte_beyond() {
+    let fits = "i".repeat(MAX_TOOL_IDENTITY_BYTES);
+    let over = "i".repeat(MAX_TOOL_IDENTITY_BYTES + 1);
+    assert!(build(&[assistant_calls(vec![call(&fits, "read", "{}")])], &[None]).is_ok());
+    assert!(build(&[assistant_calls(vec![call("call", &fits, "{}")])], &[None]).is_ok());
+    for calls in [
+        vec![call(&over, "read", "{}")],
+        vec![call("call", &over, "{}")],
+    ] {
+        assert_eq!(
+            build(&[assistant_calls(calls)], &[None]).unwrap_err().code,
+            "OpenAICodexToolCallLimitExceeded"
+        );
+    }
+}
+
+#[test]
+fn openai_codex_replay_tool_arguments_accept_the_limit_and_reject_one_byte_beyond() {
+    let fits = sized_arguments(MAX_TOOL_ARGUMENTS_BYTES);
+    assert!(
+        build(
+            &[assistant_calls(vec![call("call", "read", &fits)])],
+            &[None]
+        )
+        .is_ok()
+    );
+    let over = sized_arguments(MAX_TOOL_ARGUMENTS_BYTES + 1);
+    assert_eq!(
+        build(
+            &[assistant_calls(vec![call("call", "read", &over)])],
+            &[None]
+        )
+        .unwrap_err()
+        .code,
+        "OpenAICodexToolArgumentsTooLarge"
+    );
+}
+
+#[test]
+fn openai_codex_standard_requests_omit_the_priority_service_tier() {
+    let body = build(&[ChatMessage::user("Hello.")], &[None]).unwrap();
+    assert!(!body.contains("service_tier"));
+    assert!(!body.contains("\"reasoning\""));
+}
+
+#[test]
+fn openai_codex_rejects_invalid_models_and_system_messages() {
+    for model in ["", "gpt 5", "gpt\u{7f}"] {
+        let messages = [ChatMessage::user("Hello.")];
+        let mut invalid = request(&messages, &[], &[]);
+        invalid.model = model;
+        assert_eq!(
+            codex_failure(build_request(&invalid, &[None]).unwrap_err()).code,
+            "InvalidOpenAICodexModel"
+        );
+    }
+    assert_eq!(
+        build(
+            &[ChatMessage::System {
+                content: "x".to_owned()
+            }],
+            &[None]
+        )
+        .unwrap_err()
+        .code,
+        "InvalidProviderPrompt"
+    );
+}
+
+#[tokio::test]
+async fn openai_codex_sse_maps_text_reasoning_tools_and_usage() {
+    let sse = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"thinking\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque\"}}\n\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"hello\"}\n\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\"}}\n\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"delta\":\"{\\\"path\\\":\\\"README.md\\\"}\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4}}}\n\n",
+    );
+    let mut chunks = Chunks(VecDeque::from([sse.as_bytes().to_vec()]));
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let completion = consume_stream(
+        &mut chunks,
+        &mut sink,
+        &CancellationToken::new(),
+        STREAM_LIMITS,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        events,
+        [
+            StreamEvent::ReasoningDelta {
+                text: "thinking".to_owned()
+            },
+            StreamEvent::TextDelta {
+                text: "hello".to_owned()
+            },
+        ]
+    );
+    assert_eq!(completion.tool_calls.len(), 1);
+    assert_eq!(completion.tool_calls[0].id.as_str(), "call_1");
+    assert_eq!(
+        completion.tool_calls[0].arguments,
+        r#"{"path":"README.md"}"#
+    );
+    assert_eq!(completion.usage.input_tokens, Some(10));
+    assert!(
+        completion
+            .provider_state
+            .as_deref()
+            .is_some_and(|state| state.contains(r#""encrypted_content":"opaque""#))
+    );
+    assert_eq!(completion.finish, ResponsesFinish::ToolCalls);
+}
+
+#[tokio::test]
+async fn openai_codex_rejects_cumulative_event_and_byte_limits() {
+    let terminal = r#"{"type":"response.completed","response":{"status":"completed"}}"#;
+    let terminal_event = format!("data: {terminal}\n\n");
+    consume(
+        &terminal_event,
+        StreamLimits {
+            events: 1,
+            aggregate_bytes: terminal.len(),
+            ..STREAM_LIMITS
+        },
+    )
+    .await
+    .unwrap();
+    let event = "data: {\"type\":\"response.reasoning_summary_part.done\"}\n\n";
+    expect_sse_error(
+        "OpenAICodexResourceLimitExceeded",
+        &format!("{event}{event}"),
+        StreamLimits {
+            events: 1,
+            ..STREAM_LIMITS
+        },
+    )
+    .await;
+    expect_sse_error(
+        "OpenAICodexResourceLimitExceeded",
+        &terminal_event,
+        StreamLimits {
+            aggregate_bytes: terminal.len() - 1,
+            ..STREAM_LIMITS
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn openai_codex_rejects_oversized_streamed_tool_identities() {
+    let limits = StreamLimits {
+        tool_identity_bytes: 3,
+        ..STREAM_LIMITS
+    };
+    expect_sse_error(
+        "OpenAICodexToolCallLimitExceeded",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call\",\"name\":\"ok\"}}\n\n",
+        limits,
+    )
+    .await;
+    expect_sse_error(
+        "OpenAICodexToolCallLimitExceeded",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"ok\",\"name\":\"read\"}}\n\n",
+        limits,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn openai_codex_bounds_every_streamed_argument_representation_and_cleans_staged_state() {
+    let prefix = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\"}}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n\n",
+    );
+    for event in [
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"four\"}\n\n",
+        "data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"arguments\":\"four\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"arguments\":\"four\"}}\n\n",
+    ] {
+        expect_sse_error(
+            "OpenAICodexToolArgumentsTooLarge",
+            &format!("{prefix}{event}"),
+            StreamLimits {
+                tool_arguments_bytes: 3,
+                ..STREAM_LIMITS
+            },
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn openai_codex_rejects_oversized_encrypted_provider_state() {
+    expect_sse_error(
+        "OpenAICodexResourceLimitExceeded",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n\n",
+        StreamLimits {
+            provider_state_bytes: 16,
+            ..STREAM_LIMITS
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn openai_codex_provider_state_accepts_the_exact_framed_limit() {
+    let expected = r#"[{"type":"reasoning","encrypted_content":"a"},{"type":"reasoning","encrypted_content":"b"}]"#;
+    let sse = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"a\"}}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"b\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+    );
+    let completion = consume(
+        sse,
+        StreamLimits {
+            provider_state_bytes: expected.len(),
+            ..STREAM_LIMITS
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(completion.provider_state.as_deref(), Some(expected));
+    expect_sse_error(
+        "OpenAICodexResourceLimitExceeded",
+        sse,
+        StreamLimits {
+            provider_state_bytes: expected.len() - 1,
+            ..STREAM_LIMITS
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn openai_codex_rejects_a_129th_streamed_tool_call() {
+    let mut sse = String::new();
+    for index in 0..=MAX_TOOL_CALLS {
+        let _ = write!(
+            sse,
+            "data: {{\"type\":\"response.output_item.added\",\"output_index\":{index},\"item\":{{\"type\":\"function_call\",\"call_id\":\"call_{index}\",\"name\":\"read_file\"}}}}\n\n"
+        );
+    }
+    sse.push_str(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+    );
+    expect_sse_error("OpenAICodexToolCallLimitExceeded", &sse, STREAM_LIMITS).await;
+}
+
+#[test]
+fn replay_fingerprints_distinguish_text_and_tool_identity() {
+    let read = vec![call("call_1", "read_file", "{}")];
+    assert_eq!(fingerprint(Some("a"), &read), fingerprint(Some("a"), &read));
+    assert_ne!(fingerprint(Some("a"), &read), fingerprint(None, &read));
+    assert_ne!(fingerprint(Some(""), &[]), fingerprint(None, &[]));
+    assert_ne!(
+        fingerprint(None, &read),
+        fingerprint(None, &[call("call_1", "read_file", "{ }")])
+    );
+}

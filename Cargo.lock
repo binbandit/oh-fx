@@ -719,6 +719,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "zeroize",
 ]
 
 [[package]]

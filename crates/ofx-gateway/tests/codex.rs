@@ -1,0 +1,394 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use ofx_contract::{
+    BoxFuture, ChatMessage, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
+    ProviderErrorKind, StreamEvent, ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec,
+};
+use ofx_gateway::{CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh};
+use ofx_testkit::{FakeServer, RecordedRequest, Reply};
+use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
+
+const TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzZWNyZXQtYWNjZXNzIn0.c2lnbmF0dXJl";
+const FRESH_TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmcmVzaC1hY2Nlc3MifQ.ZnJlc2g";
+const ACCOUNT: &str = "acct_test";
+const FAR_FUTURE_MS: i64 = 4_102_444_800_000;
+const TOOL_STEP_GOLDEN: &str = include_str!("golden/codex_tool_step.json");
+const AFTER_TOOL_GOLDEN: &str = include_str!("golden/codex_after_tool.json");
+
+#[derive(Default)]
+struct FakeCredentials {
+    replies: Mutex<VecDeque<Option<(String, i64)>>>,
+    calls: Mutex<Vec<(CodexRefresh, String)>>,
+}
+
+impl FakeCredentials {
+    fn replying(replies: impl IntoIterator<Item = Option<(&'static str, i64)>>) -> Arc<Self> {
+        Arc::new(Self {
+            replies: Mutex::new(
+                replies
+                    .into_iter()
+                    .map(|reply| reply.map(|(token, after)| (token.to_owned(), after)))
+                    .collect(),
+            ),
+            calls: Mutex::default(),
+        })
+    }
+
+    fn calls(&self) -> Vec<(CodexRefresh, String)> {
+        self.calls.lock().expect("calls lock").clone()
+    }
+}
+
+impl CodexCredentials for FakeCredentials {
+    fn refresh<'a>(
+        &'a self,
+        mode: CodexRefresh,
+        account_id: &'a str,
+    ) -> BoxFuture<'a, Option<CodexAccess>> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((mode, account_id.to_owned()));
+        let reply = self
+            .replies
+            .lock()
+            .expect("replies lock")
+            .pop_front()
+            .flatten();
+        Box::pin(async move {
+            reply.map(|(token, after)| CodexAccess::new(token, ACCOUNT.to_owned(), after))
+        })
+    }
+}
+
+fn provider(
+    server: &FakeServer,
+    credentials: Arc<FakeCredentials>,
+    refresh_after_ms: i64,
+) -> CodexProvider {
+    CodexProvider::new(
+        CodexAccess::new(TOKEN.to_owned(), ACCOUNT.to_owned(), refresh_after_ms),
+        credentials,
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .expect("build the Codex provider")
+}
+
+fn user(text: &str) -> Vec<ChatMessage> {
+    vec![ChatMessage::user(text)]
+}
+
+async fn run(
+    provider: &CodexProvider,
+    instructions: &[&str],
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+) -> (Result<Completion, ProviderError>, Vec<StreamEvent>) {
+    let request = ModelRequest {
+        model: "gpt-5.4",
+        instructions,
+        messages,
+        tools,
+        tool_choice: ToolChoice::Auto,
+        max_output_tokens: Some(4096),
+    };
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let result = provider
+        .stream(&request, &mut sink, &CancellationToken::new())
+        .await;
+    (result, events)
+}
+
+fn tool_step_events() -> Vec<String> {
+    [
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}),
+        json!({"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"Thinking"}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"opaque-cipher"}}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","phase":"commentary"}}),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":"I will read it."}),
+        json!({"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":""}}),
+        json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"path\":\"README.md\"}"}),
+        json!({"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"path\":\"README.md\"}"}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+    ]
+    .iter()
+    .map(Value::to_string)
+    .collect()
+}
+
+fn text_events(text: &str) -> Vec<String> {
+    [
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_2","phase":"final_answer"}}),
+        json!({"type":"response.output_text.delta","output_index":0,"delta":text}),
+        json!({"type":"response.completed","response":{"id":"resp_2","status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}),
+    ]
+    .iter()
+    .map(Value::to_string)
+    .collect()
+}
+
+fn golden_tools(golden: &Value) -> Vec<ToolSpec> {
+    golden["tools"]
+        .as_array()
+        .expect("golden tools")
+        .iter()
+        .map(|tool| ToolSpec {
+            name: tool["name"].as_str().expect("tool name").to_owned(),
+            description: tool["description"].as_str().unwrap_or_default().to_owned(),
+            input_schema: tool["parameters"].clone(),
+        })
+        .collect()
+}
+
+fn assert_codex_headers(request: &RecordedRequest, token: &str) {
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path, "/v1/backend-api/codex/responses");
+    assert_eq!(
+        request.header("authorization"),
+        Some(format!("Bearer {token}").as_str())
+    );
+    assert_eq!(request.header("chatgpt-account-id"), Some(ACCOUNT));
+    assert_eq!(request.header("originator"), Some("fx"));
+    assert_eq!(
+        request.header("openai-beta"),
+        Some("responses=experimental")
+    );
+    assert_eq!(request.header("accept"), Some("text/event-stream"));
+    assert_eq!(request.header("content-type"), Some("application/json"));
+    assert_eq!(request.header("user-agent"), Some("oh-fx/test"));
+}
+
+#[tokio::test]
+async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
+    let server = FakeServer::start([
+        Reply::sse(&tool_step_events()),
+        Reply::sse(&text_events("Done reading.")),
+    ]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let golden: Value = serde_json::from_str(AFTER_TOOL_GOLDEN).expect("golden parses");
+    let instructions = [golden["instructions"].as_str().expect("instructions")];
+    let tools = golden_tools(&golden);
+    let mut history = user("Read README.md");
+
+    let (first, events) = run(&codex, &instructions, &history, &tools).await;
+    let first = first.expect("tool step completes");
+    assert_eq!(first.finish_reason, FinishReason::ToolCalls);
+    assert_eq!(first.content.as_deref(), Some("I will read it."));
+    assert_eq!(
+        first.tool_calls,
+        [ToolCall {
+            id: ToolCallId::new("call_1"),
+            name: "read_file".to_owned(),
+            arguments: r#"{"path":"README.md"}"#.to_owned(),
+        }]
+    );
+    assert_eq!(first.usage.input_tokens, Some(10));
+    assert_eq!(
+        events,
+        [
+            StreamEvent::ReasoningDelta {
+                text: "Thinking".to_owned()
+            },
+            StreamEvent::TextDelta {
+                text: "I will read it.".to_owned()
+            },
+        ]
+    );
+
+    let output = golden["input"][4]["output"].as_str().expect("tool output");
+    history.push(ChatMessage::Assistant {
+        content: first.content.clone(),
+        tool_calls: first.tool_calls.clone(),
+    });
+    history.push(ChatMessage::Tool {
+        call_id: ToolCallId::new("call_1"),
+        tool_name: "read_file".to_owned(),
+        content: output.to_owned(),
+        status: ToolResultStatus::Success,
+    });
+    let (second, _) = run(&codex, &instructions, &history, &tools).await;
+    let second = second.expect("final step completes");
+    assert_eq!(second.content.as_deref(), Some("Done reading."));
+    assert_eq!(second.finish_reason, FinishReason::Stop);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_codex_headers(&requests[0], TOKEN);
+    assert_eq!(requests[0].body_text(), TOOL_STEP_GOLDEN);
+    assert_eq!(requests[1].body_text(), AFTER_TOOL_GOLDEN);
+}
+
+#[tokio::test]
+async fn requests_without_instructions_or_tools_use_upstream_defaults() {
+    let server = FakeServer::start([Reply::sse(&text_events("hi"))]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let (result, _) = run(&codex, &["", ""], &user("Hello."), &[]).await;
+    result.expect("completes");
+    assert_eq!(
+        server.requests()[0].body_text(),
+        r#"{"model":"gpt-5.4","store":false,"stream":true,"instructions":"You are a helpful assistant.","input":[{"role":"user","content":[{"type":"input_text","text":"Hello."}]}],"tool_choice":"auto","parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"text":{"verbosity":"low"}}"#
+    );
+}
+
+#[tokio::test]
+async fn an_unauthorized_response_refreshes_once_and_replays_the_request() {
+    let server = FakeServer::start([
+        Reply::status(
+            401,
+            r#"{"error":{"code":"token_expired","message":"expired"}}"#,
+        ),
+        Reply::sse(&text_events("after refresh")),
+    ]);
+    let credentials = FakeCredentials::replying([Some((FRESH_TOKEN, FAR_FUTURE_MS))]);
+    let codex = provider(&server, Arc::clone(&credentials), FAR_FUTURE_MS);
+    let (result, _) = run(&codex, &[], &user("Hello."), &[]).await;
+    assert_eq!(
+        result.expect("replay succeeds").content.as_deref(),
+        Some("after refresh")
+    );
+    assert_eq!(
+        credentials.calls(),
+        [(CodexRefresh::Force, ACCOUNT.to_owned())]
+    );
+    let requests = server.requests();
+    assert_codex_headers(&requests[0], TOKEN);
+    assert_codex_headers(&requests[1], FRESH_TOKEN);
+    assert_eq!(requests[0].body, requests[1].body);
+}
+
+#[tokio::test]
+async fn a_rejected_refresh_reports_the_unauthorized_response_without_the_token() {
+    let body = format!(r#"{{"error":{{"code":"invalid_token","message":"bad token {TOKEN}"}}}}"#);
+    let server = FakeServer::start([Reply::status(401, body)]);
+    let credentials = FakeCredentials::replying([None]);
+    let codex = provider(&server, credentials, FAR_FUTURE_MS);
+    let (result, _) = run(&codex, &[], &user("Hello."), &[]).await;
+    let error = result.expect_err("unauthorized");
+    assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
+    assert_eq!(error.status, Some(401));
+    let rendered = format!("{error:?}");
+    assert!(!rendered.contains(TOKEN), "{rendered}");
+    assert!(
+        error.detail.as_deref().is_some_and(
+            |detail| detail.starts_with("API access denied · HTTP 401 · invalid_token")
+        )
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn rate_limits_carry_retry_after_for_the_agent_recovery() {
+    let server = FakeServer::start([Reply::status_with_headers(
+        429,
+        &[("Retry-After", "7")],
+        r#"{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}"#,
+    )]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let (result, _) = run(&codex, &[], &user("Hello."), &[]).await;
+    let error = result.expect_err("rate limited");
+    assert_eq!(error.kind, ProviderErrorKind::RateLimited);
+    assert_eq!(error.retry_after, Some(Duration::from_secs(7)));
+    assert_eq!(
+        error.detail.as_deref(),
+        Some(
+            "API request failed · HTTP 429 · usage_limit_reached: The usage limit has been reached"
+        )
+    );
+}
+
+#[tokio::test]
+async fn an_expired_access_token_is_refreshed_before_the_request() {
+    let server = FakeServer::start([
+        Reply::sse(&text_events("fresh")),
+        Reply::sse(&text_events("still fresh")),
+    ]);
+    let credentials = FakeCredentials::replying([Some((FRESH_TOKEN, FAR_FUTURE_MS))]);
+    let codex = provider(&server, Arc::clone(&credentials), 0);
+    run(&codex, &[], &user("Hello."), &[])
+        .await
+        .0
+        .expect("completes");
+    assert_eq!(
+        credentials.calls(),
+        [(CodexRefresh::IfNeeded, ACCOUNT.to_owned())]
+    );
+    assert_codex_headers(&server.requests()[0], FRESH_TOKEN);
+    run(&codex, &[], &user("Again."), &[])
+        .await
+        .0
+        .expect("completes");
+    assert_eq!(credentials.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn stream_failures_map_to_retryable_and_terminal_provider_errors() {
+    let failed = |code: &str| {
+        vec![json!({"type":"response.failed","response":{"error":{"code":code,"message":"try later"}}}).to_string()]
+    };
+    let server = FakeServer::start([
+        Reply::sse(&failed("server_error")),
+        Reply::sse(&failed("rate_limit_exceeded")),
+        Reply::sse(&failed("invalid_prompt")),
+        Reply::sse(&["{\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}"]),
+    ]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    for expected in [
+        ProviderErrorKind::ServerError,
+        ProviderErrorKind::RateLimited,
+        ProviderErrorKind::ProviderError,
+    ] {
+        let error = run(&codex, &[], &user("Hello."), &[])
+            .await
+            .0
+            .expect_err("failure");
+        assert_eq!(error.kind, expected);
+        assert_eq!(error.code, "ProviderError");
+        assert!(
+            error
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.ends_with(": try later"))
+        );
+    }
+    let incomplete = run(&codex, &[], &user("Hello."), &[])
+        .await
+        .0
+        .expect_err("incomplete");
+    assert_eq!(incomplete.code, "OpenAICodexStreamIncomplete");
+}
+
+#[tokio::test]
+async fn invalid_models_fail_before_any_request() {
+    let server = FakeServer::start([]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let request = ModelRequest {
+        model: "gpt 5",
+        instructions: &[],
+        messages: &user("Hello."),
+        tools: &[],
+        tool_choice: ToolChoice::Auto,
+        max_output_tokens: None,
+    };
+    let error = codex
+        .stream(&request, &mut |_| {}, &CancellationToken::new())
+        .await
+        .expect_err("invalid model");
+    assert_eq!(error.code, "InvalidOpenAICodexModel");
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn access_tokens_never_appear_in_debug_output() {
+    let server = FakeServer::start([]);
+    let access = CodexAccess::new(TOKEN.to_owned(), ACCOUNT.to_owned(), 0);
+    assert!(!format!("{access:?}").contains(TOKEN));
+    let codex = provider(&server, FakeCredentials::replying([]), 0);
+    assert!(!format!("{codex:?}").contains(TOKEN));
+}

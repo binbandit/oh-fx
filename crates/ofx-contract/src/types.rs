@@ -190,6 +190,10 @@ impl ModelFailureDiagnostic {
         Self(format!("{}{}", &text[..prefix], Self::MARKER))
     }
 
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     fn human_text(&self) -> &str {
         const PAIRS: [(&str, &str); 15] = [
             ("ReadFailed", "connection dropped"),
@@ -445,5 +449,6 @@ mod tests {
             ModelFailureDiagnostic::new("Timeout").human_text(),
             "timed out"
         );
+        assert_eq!(ModelFailureDiagnostic::new("Timeout").as_str(), "Timeout");
     }
 }
