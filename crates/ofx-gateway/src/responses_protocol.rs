@@ -66,6 +66,21 @@ impl From<ProjectionError> for ResponsesError {
 
 type Result<T> = std::result::Result<T, ResponsesError>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Rejection {
+    pub(crate) error: ResponsesError,
+    pub(crate) event_type: Option<String>,
+}
+
+impl From<ResponsesError> for Rejection {
+    fn from(error: ResponsesError) -> Self {
+        Self {
+            error,
+            event_type: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReplayLimits {
     pub(crate) tool_calls: usize,
@@ -517,6 +532,22 @@ impl ToolAccumulator {
     }
 }
 
+fn string_member<'a>(fields: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    fields.get(key).and_then(Value::as_str)
+}
+
+fn error_event_failure(event: &Map<String, Value>) -> (Option<&str>, Option<&str>) {
+    let code = string_member(event, "code");
+    let message = string_member(event, "message");
+    match event.get("error") {
+        Some(Value::Object(error)) if code.is_none() && message.is_none() => (
+            string_member(error, "code").or_else(|| string_member(error, "type")),
+            string_member(error, "message"),
+        ),
+        _ => (code, message),
+    }
+}
+
 fn check_optional_identity(fields: &Map<String, Value>, key: &str, expected: &str) -> Result<()> {
     match fields.get(key) {
         None => Ok(()),
@@ -749,14 +780,22 @@ impl Reducer {
         }
     }
 
-    pub(crate) fn apply(&mut self, json: &[u8], cancelled: bool) -> (Result<bool>, Vec<Delta>) {
+    pub(crate) fn apply(
+        &mut self,
+        json: &[u8],
+        cancelled: bool,
+    ) -> (std::result::Result<bool, Rejection>, Vec<Delta>) {
         let terminal = self.apply_event(json, cancelled);
         (terminal, std::mem::take(&mut self.deltas))
     }
 
-    fn apply_event(&mut self, json: &[u8], cancelled: bool) -> Result<bool> {
+    fn apply_event(
+        &mut self,
+        json: &[u8],
+        cancelled: bool,
+    ) -> std::result::Result<bool, Rejection> {
         if cancelled {
-            return Err(ResponsesError::Cancelled);
+            return Err(ResponsesError::Cancelled.into());
         }
         if self.terminal_seen {
             return Ok(true);
@@ -774,17 +813,25 @@ impl Reducer {
         let Some(event_type) = event.get("type").and_then(Value::as_str) else {
             return Ok(false);
         };
+        self.dispatch(event_type, &event)
+            .map_err(|error| Rejection {
+                error,
+                event_type: Some(event_type.to_owned()),
+            })
+    }
+
+    fn dispatch(&mut self, event_type: &str, event: &Map<String, Value>) -> Result<bool> {
         match event_type {
-            "response.output_item.added" => self.item_added(&event)?,
+            "response.output_item.added" => self.item_added(event)?,
             "response.output_text.delta" | "response.refusal.delta" => {
                 let text = event
                     .get("delta")
                     .and_then(Value::as_str)
                     .ok_or(ResponsesError::InvalidEvent)?;
                 self.accept_text(&TextUpdate {
-                    key: text_key(&event)?,
+                    key: text_key(event)?,
                     kind: text_kind(event_type == "response.refusal.delta"),
-                    item_id_hash: text_identity(&event, "item_id")?,
+                    item_id_hash: text_identity(event, "item_id")?,
                     text,
                     mode: TextMode::Delta,
                 })?;
@@ -796,9 +843,9 @@ impl Reducer {
                     .and_then(Value::as_str)
                     .ok_or(ResponsesError::InvalidEvent)?;
                 self.accept_text(&TextUpdate {
-                    key: text_key(&event)?,
+                    key: text_key(event)?,
                     kind: text_kind(refusal),
-                    item_id_hash: text_identity(&event, "item_id")?,
+                    item_id_hash: text_identity(event, "item_id")?,
                     text,
                     mode: TextMode::Final,
                 })?;
@@ -807,14 +854,10 @@ impl Reducer {
                 let Some(Value::Object(part)) = event.get("part") else {
                     return Err(ResponsesError::InvalidEvent);
                 };
-                self.finalize_text_part(
-                    text_key(&event)?,
-                    text_identity(&event, "item_id")?,
-                    part,
-                )?;
+                self.finalize_text_part(text_key(event)?, text_identity(event, "item_id")?, part)?;
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                if let Some(index) = optional_index(&event, "output_index")? {
+                if let Some(index) = optional_index(event, "output_index")? {
                     self.check_output_kind(index, OutputKind::Reasoning)?;
                 }
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
@@ -822,20 +865,21 @@ impl Reducer {
                 }
             }
             "response.reasoning_summary_part.done" => {
-                if let Some(index) = optional_index(&event, "output_index")? {
+                if let Some(index) = optional_index(event, "output_index")? {
                     self.check_output_kind(index, OutputKind::Reasoning)?;
                 }
                 self.deltas.push(Delta::Reasoning("\n\n".to_owned()));
             }
-            "response.function_call_arguments.delta" => self.arguments_delta(&event)?,
-            "response.function_call_arguments.done" => self.arguments_done(&event)?,
-            "response.output_item.done" => self.item_done(&event)?,
+            "response.function_call_arguments.delta" => self.arguments_delta(event)?,
+            "response.function_call_arguments.done" => self.arguments_done(event)?,
+            "response.output_item.done" => self.item_done(event)?,
             "response.completed" | "response.done" | "response.incomplete" | "response.failed" => {
-                self.terminal(event_type, &event)?;
+                self.terminal(event_type, event)?;
                 return Ok(true);
             }
             "error" => {
-                self.accept_failure(&event);
+                let (code, message) = error_event_failure(event);
+                self.accept_failure(code, message);
                 self.terminal_seen = true;
                 self.finish = Some(ResponsesFinish::ProviderError);
                 return Ok(true);
@@ -963,12 +1007,14 @@ impl Reducer {
         let status = terminal_status(event_type, response)?;
         let output = response.get("output").unwrap_or(&Value::Null);
         if status == TerminalStatus::Failed {
-            let empty = Map::new();
-            let failure = match response.get("error") {
-                Some(Value::Object(failure)) => failure,
-                _ => &empty,
+            let (code, message) = match response.get("error") {
+                Some(Value::Object(failure)) => (
+                    string_member(failure, "code"),
+                    string_member(failure, "message"),
+                ),
+                _ => (None, None),
             };
-            self.accept_failure(failure);
+            self.accept_failure(code, message);
         } else if !output.is_null() {
             let Value::Array(items) = output else {
                 return Err(ResponsesError::InvalidEvent);
@@ -1142,15 +1188,9 @@ impl Reducer {
         Ok(position)
     }
 
-    fn accept_failure(&mut self, fields: &Map<String, Value>) {
-        let code = fields
-            .get("code")
-            .and_then(Value::as_str)
-            .unwrap_or("provider_error");
-        let message = fields
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("Provider response failed");
+    fn accept_failure(&mut self, code: Option<&str>, message: Option<&str>) {
+        let code = code.unwrap_or("provider_error");
+        let message = message.unwrap_or("Provider response failed");
         let cause = match code {
             "server_error" => FailureCause::Retryable,
             "rate_limit_exceeded" => FailureCause::RateLimited,
