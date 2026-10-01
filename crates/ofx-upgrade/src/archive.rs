@@ -2,7 +2,9 @@ use std::fs::{self, Permissions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::thread;
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -12,6 +14,8 @@ use crate::error::UpgradeError;
 const BINARY_NAME: &str = "oh-fx";
 const EXECUTABLE_MODE: u32 = 0o755;
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+const BUSY_RETRY_LIMIT: u32 = 50;
+const BUSY_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 pub(crate) fn verify_checksum(archive: &[u8], checksum_file: &str) -> Result<(), UpgradeError> {
     let actual = lowercase_hex(&Sha256::digest(archive));
@@ -85,11 +89,27 @@ fn stage(directory: &Path, binary: &[u8]) -> io::Result<tempfile::TempPath> {
 }
 
 fn reported_version(executable: &Path) -> Option<String> {
-    let output = Command::new(executable).arg("--version").output().ok()?;
+    let output = run_version_command(executable).ok()?;
     output
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn run_version_command(executable: &Path) -> io::Result<Output> {
+    let mut busy_retries = 0;
+    loop {
+        match Command::new(executable).arg("--version").output() {
+            Err(error)
+                if error.kind() == io::ErrorKind::ExecutableFileBusy
+                    && busy_retries < BUSY_RETRY_LIMIT =>
+            {
+                busy_retries += 1;
+                thread::sleep(BUSY_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
 }
 
 fn is_root_binary_entry(path: &Path) -> bool {
@@ -229,6 +249,26 @@ mod tests {
         ));
         assert_eq!(fs::read(&target).unwrap(), version_script("0.1.0-dev.1"));
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn waits_for_a_staged_binary_to_close_for_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged = directory.path().join("oh-fx");
+        let mut writer = fs::File::create(&staged).unwrap();
+        writer.write_all(&version_script("0.1.0-dev.2")).unwrap();
+        fs::set_permissions(&staged, Permissions::from_mode(EXECUTABLE_MODE)).unwrap();
+        assert_eq!(
+            Command::new(&staged).output().unwrap_err().kind(),
+            io::ErrorKind::ExecutableFileBusy
+        );
+        let release = thread::spawn(move || {
+            thread::sleep(BUSY_RETRY_DELAY * 5);
+            drop(writer);
+        });
+        assert_eq!(reported_version(&staged).as_deref(), Some("0.1.0-dev.2"));
+        release.join().unwrap();
     }
 
     #[test]
