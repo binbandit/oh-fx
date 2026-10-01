@@ -456,6 +456,13 @@ impl fmt::Debug for BundleVerifier {
     }
 }
 
+fn other_roots_could_verify(error: &CertificateError) -> bool {
+    !matches!(
+        error,
+        CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. }
+    )
+}
+
 fn load_error(failure: &Arc<CertificateBundleLoadFailure>) -> Error {
     Error::InvalidCertificate(CertificateError::Other(OtherError(failure.clone())))
 }
@@ -476,11 +483,9 @@ impl ServerCertVerifier for BundleVerifier {
             ocsp_response,
             now,
         );
-        if !matches!(
-            verified,
-            Err(Error::InvalidCertificate(CertificateError::UnknownIssuer))
-        ) {
-            return verified;
+        match &verified {
+            Err(Error::InvalidCertificate(error)) if other_roots_could_verify(error) => {}
+            _ => return verified,
         }
         if let Some(widened) = self.widened() {
             return widened.verify_server_cert(
@@ -491,9 +496,11 @@ impl ServerCertVerifier for BundleVerifier {
                 now,
             );
         }
-        match &self.system.load().roots {
-            Err(failure) => Err(load_error(failure)),
-            Ok(_) => verified,
+        match (&self.system.load().roots, &verified) {
+            (Err(failure), Err(Error::InvalidCertificate(CertificateError::UnknownIssuer))) => {
+                Err(load_error(failure))
+            }
+            _ => verified,
         }
     }
 

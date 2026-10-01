@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use ofx_testkit::{FakeServer, OTHER_CA_PEM, Reply, TEST_CA_PEM, TEST_SERVER_CERTIFICATE_PEM};
 use rustls::pki_types::pem::PemObject;
@@ -13,6 +14,9 @@ const DEBIAN_BUNDLE: &str = "etc/ssl/certs/ca-certificates.crt";
 const FEDORA_BUNDLE: &str = "etc/pki/tls/certs/ca-bundle.crt";
 const RHEL_BUNDLE: &str = "etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem";
 const ALPINE_BUNDLE: &str = "etc/ssl/cert.pem";
+const STALE_TEST_CA_PEM: &str = include_str!("fixtures/stale-ca.pem");
+const CROSS_SIGNED_TEST_CA_PEM: &str = include_str!("fixtures/cross-signed-ca.pem");
+const AFTER_BOTH_ONE_YEAR_CAS_EXPIRED: Duration = Duration::from_hours(525_960);
 
 struct Filesystem {
     root: TempDir,
@@ -64,16 +68,33 @@ fn certificate(pem: &str) -> CertificateDer<'static> {
 }
 
 fn verify(system: &Arc<SystemRoots>, extra: RootCertStore) -> Result<(), Error> {
+    verify_as(system, extra, &[], "127.0.0.1", UnixTime::now())
+}
+
+fn verify_as(
+    system: &Arc<SystemRoots>,
+    extra: RootCertStore,
+    intermediates: &[CertificateDer<'static>],
+    name: &'static str,
+    now: UnixTime,
+) -> Result<(), Error> {
     let verifier = BundleVerifier::new(Arc::clone(system), extra, provider());
     verifier
         .verify_server_cert(
             &certificate(TEST_SERVER_CERTIFICATE_PEM),
+            intermediates,
+            &ServerName::try_from(name).unwrap(),
             &[],
-            &ServerName::try_from("127.0.0.1").unwrap(),
-            &[],
-            UnixTime::now(),
+            now,
         )
         .map(|_| ())
+}
+
+fn bundle_only(system: &Arc<SystemRoots>) -> Arc<WebPkiServerVerifier> {
+    let roots = Arc::clone(system.load().roots.as_ref().unwrap());
+    WebPkiServerVerifier::builder_with_provider(roots, provider())
+        .build()
+        .unwrap()
 }
 
 fn failure_message(error: &Error) -> String {
@@ -194,6 +215,96 @@ fn a_ca_only_in_the_certificate_directory_is_found_through_the_fallback() {
     assert_eq!(widened.len(), 2);
     fs::remove_file(filesystem.path("etc/ssl/certs/5e17d00d.0")).unwrap();
     verify(&system, RootCertStore::empty()).unwrap();
+}
+
+#[test]
+fn a_replacement_ca_with_the_same_subject_in_the_directory_is_found_through_the_fallback() {
+    let filesystem = Filesystem::new();
+    filesystem.write(DEBIAN_BUNDLE, STALE_TEST_CA_PEM);
+    filesystem.write("etc/ssl/certs/5e17d00d.0", TEST_CA_PEM);
+    let system = filesystem.distribution();
+    let server = certificate(TEST_SERVER_CERTIFICATE_PEM);
+    let name = ServerName::try_from("127.0.0.1").unwrap();
+    let rejected = bundle_only(&system)
+        .verify_server_cert(&server, &[], &name, &[], UnixTime::now())
+        .unwrap_err();
+    assert_eq!(
+        rejected,
+        Error::InvalidCertificate(CertificateError::BadSignature)
+    );
+    verify(&system, RootCertStore::empty()).unwrap();
+    assert!(system.widened.get().unwrap().is_some());
+    let stale_ca_expired = UnixTime::since_unix_epoch(AFTER_BOTH_ONE_YEAR_CAS_EXPIRED);
+    verify_as(
+        &system,
+        RootCertStore::empty(),
+        &[],
+        "127.0.0.1",
+        stale_ca_expired,
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_expired_cross_signature_is_bypassed_by_a_renewed_root_in_the_directory() {
+    let filesystem = Filesystem::new();
+    filesystem.write(DEBIAN_BUNDLE, OTHER_CA_PEM);
+    filesystem.write("etc/ssl/certs/5e17d00d.0", TEST_CA_PEM);
+    let system = filesystem.distribution();
+    let server = certificate(TEST_SERVER_CERTIFICATE_PEM);
+    let cross_signed = [certificate(CROSS_SIGNED_TEST_CA_PEM)];
+    let name = ServerName::try_from("127.0.0.1").unwrap();
+    let after_expiry = UnixTime::since_unix_epoch(AFTER_BOTH_ONE_YEAR_CAS_EXPIRED);
+    let rejected = bundle_only(&system)
+        .verify_server_cert(&server, &cross_signed, &name, &[], after_expiry)
+        .unwrap_err();
+    assert!(
+        matches!(
+            rejected,
+            Error::InvalidCertificate(CertificateError::ExpiredContext { .. })
+        ),
+        "{rejected:?}"
+    );
+    verify_as(
+        &system,
+        RootCertStore::empty(),
+        &cross_signed,
+        "127.0.0.1",
+        after_expiry,
+    )
+    .unwrap();
+    verify_as(
+        &system,
+        RootCertStore::empty(),
+        &cross_signed,
+        "127.0.0.1",
+        UnixTime::now(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn name_mismatches_never_read_the_certificate_directories() {
+    let filesystem = Filesystem::new();
+    filesystem.write(DEBIAN_BUNDLE, TEST_CA_PEM);
+    filesystem.write("etc/ssl/certs/5e17d00d.0", OTHER_CA_PEM);
+    let system = filesystem.distribution();
+    let error = verify_as(
+        &system,
+        RootCertStore::empty(),
+        &[],
+        "gateway.example.com",
+        UnixTime::now(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::InvalidCertificate(CertificateError::NotValidForNameContext { .. })
+        ),
+        "{error:?}"
+    );
+    assert!(system.widened.get().is_none());
 }
 
 #[test]
