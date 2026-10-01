@@ -2,6 +2,7 @@ mod display_width;
 mod fmt;
 mod model_context_encoding;
 mod text_utils;
+mod token_estimate;
 mod unicode_display_data;
 
 pub use display_width::{
@@ -16,3 +17,4 @@ pub use text_utils::{
     is_model_safe_text, is_terminal_safe_char, mask_secrets, normalize_line_endings_in_place,
     sanitize_assistant_text, sanitize_model_text_owned,
 };
+pub use token_estimate::StreamingEstimator;
