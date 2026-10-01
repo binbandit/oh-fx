@@ -184,6 +184,13 @@ pub fn discover(workspace_root: &Path, options: &DiscoveryOptions<'_>) -> Discov
     discover_with_git(workspace_root, options, trusted_git_executable())
 }
 
+pub(crate) fn discover_in_work_tree(
+    workspace_root: &Path,
+    options: &DiscoveryOptions<'_>,
+) -> Discovery {
+    discover_listed_by(workspace_root, options, trusted_git_executable(), |_| true)
+}
+
 pub fn path_contains_hidden_directory_component(path: &[u8]) -> bool {
     let Some(last_separator) = path.iter().rposition(|byte| *byte == b'/') else {
         return false;
@@ -250,6 +257,17 @@ fn discover_with_git(
     options: &DiscoveryOptions<'_>,
     git_executable: Option<&Path>,
 ) -> Discovery {
+    discover_listed_by(workspace_root, options, git_executable, |git| {
+        work_tree_contains(git, workspace_root)
+    })
+}
+
+fn discover_listed_by(
+    workspace_root: &Path,
+    options: &DiscoveryOptions<'_>,
+    git_executable: Option<&Path>,
+    work_tree_holds_root: impl Fn(&Path) -> bool,
+) -> Discovery {
     if workspace_root.as_os_str().is_empty() {
         return Discovery::new(
             CandidatePaths::default(),
@@ -259,7 +277,7 @@ fn discover_with_git(
     }
     if !options.force_fallback
         && let Some(raw) = git_executable
-            .filter(|git| work_tree_contains(git, workspace_root))
+            .filter(|git| work_tree_holds_root(git))
             .and_then(|git| git_raw_list(workspace_root, options, git))
     {
         let parsed = parse_raw_list(raw, options);

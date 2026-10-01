@@ -19,7 +19,7 @@ use crate::pathing::{MAX_PATH_BYTES, path_inside};
 use crate::regular_file::{RegularFileError, open_regular_file};
 use crate::workspace_files::{
     CandidatePaths, CandidateStats, DiscoveryOptions, MAX_RELATIVE_PATH_BYTES, UntrackedFiles,
-    discover, git_command, git_work_tree_contains, trim_trailing_carriage_returns,
+    discover_in_work_tree, git_command, git_work_tree_contains, trim_trailing_carriage_returns,
 };
 
 pub const OUTPUT_CAP: usize = 200;
@@ -134,7 +134,7 @@ fn collect_directory_matches_with_options(
 }
 
 trait GrepSink {
-    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> bool;
+    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> Option<bool>;
 
     fn scan(
         &mut self,
@@ -159,15 +159,21 @@ fn search_directory(
     options: &DiscoveryOptions<'_>,
     sink: &mut impl GrepSink,
 ) -> CandidateStats {
-    let root_status = if options.force_fallback {
-        RootStatus::OutsideRepository
+    let in_work_tree = !options.force_fallback && git_work_tree_contains(absolute_root);
+    let tracked_matches = if in_work_tree {
+        sink.git_grep(query, absolute_root)
     } else {
-        probe_git_root(absolute_root)
+        None
+    };
+    let root_status = match (in_work_tree, tracked_matches) {
+        (false, _) => RootStatus::OutsideRepository,
+        (true, Some(true)) => RootStatus::InRepository,
+        (true, _) => probe_ignored_root(absolute_root),
     };
     let mut stats = CandidateStats::default();
-    if root_status == RootStatus::InRepository && sink.git_grep(query, absolute_root) {
+    if root_status == RootStatus::InRepository && tracked_matches.is_some() {
         if !sink.is_full() {
-            let untracked = discover(
+            let untracked = discover_in_work_tree(
                 absolute_root,
                 &DiscoveryOptions {
                     untracked: UntrackedFiles::Only,
@@ -179,7 +185,7 @@ fn search_directory(
         }
         return stats;
     }
-    let candidates = discover(
+    let candidates = discover_in_work_tree(
         absolute_root,
         &DiscoveryOptions {
             untracked: UntrackedFiles::Include,
@@ -207,10 +213,7 @@ fn search_regular_file(
     Ok(CandidateStats::default())
 }
 
-fn probe_git_root(absolute_root: &Path) -> RootStatus {
-    if !git_work_tree_contains(absolute_root) {
-        return RootStatus::OutsideRepository;
-    }
+fn probe_ignored_root(absolute_root: &Path) -> RootStatus {
     let status = git_command(absolute_root).and_then(|mut command| {
         command
             .args(["check-ignore", "-q", "--", "."])
@@ -434,12 +437,10 @@ impl MatchCollector {
 }
 
 impl GrepSink for MatchCollector {
-    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> bool {
-        let Some(raw) = run_git_grep(query, absolute_root, GitGrepOutput::Lines) else {
-            return false;
-        };
+    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> Option<bool> {
+        let raw = run_git_grep(query, absolute_root, GitGrepOutput::Lines)?;
         self.parse_git_grep(query, absolute_root, &raw);
-        true
+        Some(!raw.is_empty())
     }
 
     fn scan(
@@ -533,12 +534,10 @@ impl LineCounter {
 }
 
 impl GrepSink for LineCounter {
-    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> bool {
-        let Some(raw) = run_git_grep(query, absolute_root, GitGrepOutput::Counts) else {
-            return false;
-        };
+    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> Option<bool> {
+        let raw = run_git_grep(query, absolute_root, GitGrepOutput::Counts)?;
         self.parse_git_grep(query, absolute_root, &raw);
-        true
+        Some(!raw.is_empty())
     }
 
     fn scan(
@@ -1042,6 +1041,40 @@ mod tests {
                 .ends_with("node_modules/pkg/ignored.txt")
         );
         assert_eq!(result.matches[0].line, "needle ignored");
+    }
+
+    #[test]
+    fn grep_search_walks_a_gitignored_root_without_tracked_files() {
+        let workspace = Workspace::new();
+        if !workspace.git(&["init", "--quiet"]) {
+            return;
+        }
+        workspace.write(".gitignore", "build/\n");
+        workspace.write("build/out.txt", "needle built\n");
+
+        let query = query(&workspace.root, None);
+        let result = collect_directory_matches(&query, &workspace.root.join("build"));
+
+        assert_eq!(lines(&result), ["needle built"]);
+    }
+
+    #[test]
+    fn grep_search_leaves_untracked_files_out_of_a_gitignored_root_with_tracked_matches() {
+        let workspace = Workspace::new();
+        if !workspace.git(&["init", "--quiet"]) {
+            return;
+        }
+        workspace.write("build/kept.txt", "needle kept\n");
+        if !workspace.git(&["add", "build/kept.txt"]) {
+            return;
+        }
+        workspace.write(".gitignore", "build/\n");
+        workspace.write("build/out.txt", "needle built\n");
+
+        let query = query(&workspace.root, None);
+        let result = collect_directory_matches(&query, &workspace.root.join("build"));
+
+        assert_eq!(lines(&result), ["needle kept"]);
     }
 
     #[test]
