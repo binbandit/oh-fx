@@ -106,6 +106,9 @@ jobs:
     needs: [version, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
@@ -120,15 +123,13 @@ jobs:
       - name: Create release
         run: |
           printf 'v%s' "$VERSION" > dist/latest.txt
-          current="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
-          newest="$(printf '%s\n%s\n' "$current" "v$VERSION" | sort -V | tail -n 1)"
-          latest=false
-          if [ "$newest" = "v$VERSION" ]; then
-            latest=true
-          fi
           gh release create "v$VERSION" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$HEAD_SHA" \
             --title "oh-fx $VERSION" \
             --generate-notes \
-            --latest="$latest"
+            --latest=false
+      - name: Mark the highest release latest
+        run: |
+          highest="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' | sort -V | tail -n 1)"
+          gh release edit "$highest" --repo "$GITHUB_REPOSITORY" --latest
