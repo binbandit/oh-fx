@@ -143,7 +143,8 @@ async fn fetch(
         profile.paths.as_ref().map(|paths| paths.cache.clone()),
     )
     .map_err(|_| CatalogFailure::Transport)?;
-    catalog.fetch(credential, &CancellationToken::new()).await
+    let models = catalog.fetch(credential, &CancellationToken::new()).await?;
+    Ok(models.into_iter().map(|model| model.id).collect())
 }
 
 fn failure_message(failure: CatalogFailure) -> String {

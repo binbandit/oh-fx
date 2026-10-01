@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read};
 
-use ofx_contract::PermissionMode;
+use ofx_contract::{PermissionMode, ReasoningEffort};
 use ofx_text::parse_unsigned;
 
 use crate::cli_surface::{
@@ -53,6 +53,8 @@ pub struct AskArgs {
     prompt: AskPrompt,
     pub permissions: AskPermissions,
     pub model: Option<OsString>,
+    pub effort: Option<ReasoningEffort>,
+    pub fast: Option<bool>,
     pub system_prompt: Option<String>,
     pub output: AskOutput,
     pub session: AskSession,
@@ -208,6 +210,8 @@ pub(crate) fn parse_ask(args: Vec<OsString>) -> Result<AskArgs, AskError> {
             prompt: AskPrompt::Stdin,
             permissions: AskPermissions::default(),
             model: None,
+            effort: None,
+            fast: None,
             system_prompt: None,
             output: AskOutput::default(),
             session: AskSession::default(),
@@ -334,6 +338,8 @@ impl AskParser {
     }
 
     fn finish(mut self) -> Result<AskArgs, AskError> {
+        self.args.effort = self.model_overrides.effort.take();
+        self.args.fast = self.model_overrides.fast;
         if self.args.session.continue_recovery {
             let session = &self.args.session;
             if session.resume_flag.is_none()

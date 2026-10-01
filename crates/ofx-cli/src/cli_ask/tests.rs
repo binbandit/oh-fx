@@ -113,9 +113,29 @@ fn parse_options_preserves_model_effort_and_fast_overrides() {
         Some(OsStr::new("provider/override-model"))
     );
     assert_eq!(prompt(&options), "hello");
-    assert_eq!(prompt(&parsed(&["--no-fast", "hello"])), "hello");
-    assert_eq!(prompt(&parsed(&["--effort", "auto", "hello"])), "hello");
-    assert_eq!(parsed(&["hello"]).model, None);
+    assert_eq!(
+        options.effort,
+        Some(ReasoningEffort::Named("high".to_owned()))
+    );
+    assert_eq!(options.fast, Some(true));
+    let off = parsed(&["--no-fast", "hello"]);
+    assert_eq!(prompt(&off), "hello");
+    assert_eq!(off.fast, Some(false));
+    let auto = parsed(&["--effort", "Default", "hello"]);
+    assert_eq!(prompt(&auto), "hello");
+    assert_eq!(auto.effort, Some(ReasoningEffort::Auto));
+    let defaulted = parsed(&["hello"]);
+    assert_eq!(defaulted.model, None);
+    assert_eq!(defaulted.effort, None);
+    assert_eq!(defaulted.fast, None);
+    let last_effort = parsed(&[
+        "--effort", "low", "--effort", "xhigh", "--fast", "--fast", "hi",
+    ]);
+    assert_eq!(
+        last_effort.effort,
+        Some(ReasoningEffort::Named("xhigh".to_owned()))
+    );
+    assert_eq!(last_effort.fast, Some(true));
 
     let last_model = parsed(&["--model", "first/model", "--model", "second/model", "hello"]);
     assert_eq!(
@@ -191,6 +211,7 @@ fn parse_options_rejects_invalid_model_effort_and_fast_flag_forms() {
     }
     let literal = parsed(&["--", "--model", "--fast"]);
     assert_eq!(literal.model, None);
+    assert_eq!(literal.fast, None);
     assert_eq!(prompt(&literal), "--model --fast");
 }
 

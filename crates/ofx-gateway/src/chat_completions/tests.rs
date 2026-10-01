@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use ofx_config::{MaxTokensParameter, ToolChoiceMode};
-use ofx_contract::{ChatMessage, FinishReason, ToolChoice, ToolSpec};
+use ofx_contract::{ChatMessage, FinishReason, ProviderOptions, ToolChoice, ToolSpec};
 use ofx_testkit::{FakeServer, Reply, chat_text_events};
 
 use super::*;
@@ -27,6 +27,7 @@ impl OwnedRequest {
             tools: &self.tools,
             tool_choice: ToolChoice::Auto,
             max_output_tokens: self.max_output_tokens,
+            provider_options: ProviderOptions::default(),
         }
     }
 }

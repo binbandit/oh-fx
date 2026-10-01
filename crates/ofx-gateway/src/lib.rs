@@ -15,4 +15,6 @@ pub use model_catalog::CatalogFailure;
 pub use openai_codex::{
     CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh,
 };
-pub use openai_codex_models::{CatalogCredential, CodexModelCatalog, CodexModelsEndpoints};
+pub use openai_codex_models::{
+    CatalogCredential, CodexModel, CodexModelCatalog, CodexModelsEndpoints,
+};

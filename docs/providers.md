@@ -277,6 +277,16 @@ Model ids are the slugs from the Codex model list that ChatGPT offers your plan,
 
 The `model` key belongs to the gateway and is never used for Codex. Without a Codex model, `oh-fx ask` and `oh-fx models` stop with ``no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL``. As upstream does, `ask` never picks a model from the catalog on its own; `oh-fx login codex` and `oh-fx provider codex` save one.
 
+### Reasoning effort and Fast mode
+
+`oh-fx ask --effort <level>` asks the model to reason at that level, and `--fast` asks for ChatGPT's faster priority tier; `--no-fast` turns it off for the run. A level must be one the Codex model list gives the model, such as `low`, `medium`, or `high`, spelled exactly as the list spells it, letter case included. `minimal` is sent as `low`. `auto`, `adaptive`, and `default` in any letter case leave the effort to the model.
+
+```sh
+oh-fx ask --effort high --fast "Find the flaky test"
+```
+
+When a run asks for an effort other than `auto` or for Fast mode, `ask` loads the model list once before its first request to see what the model supports; otherwise it does not load it. A level the model does not list, or Fast mode for a model without the fast tier, is left out of the request without a message. When the list cannot be loaded, both are left out, and if Fast mode was asked for, `ask` prints `Fast mode is unavailable for this model right now; continuing at standard speed.` When ChatGPT answers a Fast request with a server error before any reply text, oh-fx retries at standard speed for the rest of the run.
+
 ### List the models
 
 ```sh
@@ -296,8 +306,8 @@ With Codex selected, this loads the same model list that `oh-fx login codex` use
 
 ### What is sent where
 
-- Requests go to `https://chatgpt.com/backend-api/codex/responses` with the access token, the ChatGPT account id, `originator: oh-fx`, and `OpenAI-Beta: responses=experimental`. The body uses `store: false` and asks for encrypted reasoning, which oh-fx replays on the next step of the same run.
-- Signing in and `oh-fx models` load the model list from `https://chatgpt.com/backend-api/codex/models` with the same token, account id, and `originator`, and a `client_version` query naming the current Codex CLI release. oh-fx looks that release up at `https://registry.npmjs.org/@openai/codex/latest` and caches it for a minute in `$XDG_CACHE_HOME/oh-fx/provider-versions/codex.json`; when the lookup fails it uses the last cached release, and without one the model list fails as `transport`.
+- Requests go to `https://chatgpt.com/backend-api/codex/responses` with the access token, the ChatGPT account id, `originator: oh-fx`, and `OpenAI-Beta: responses=experimental`. The body uses `store: false` and asks for encrypted reasoning, which oh-fx replays on the next step of the same run. A supported effort is sent as `reasoning` with an `auto` summary, and Fast mode as `service_tier: priority`.
+- Signing in, `oh-fx models`, and an `oh-fx ask` run that asks for an effort other than `auto` or for Fast mode load the model list from `https://chatgpt.com/backend-api/codex/models` with the same token, account id, and `originator`, and a `client_version` query naming the current Codex CLI release. oh-fx looks that release up at `https://registry.npmjs.org/@openai/codex/latest` and caches it for a minute in `$XDG_CACHE_HOME/oh-fx/provider-versions/codex.json`; when the lookup fails it uses the last cached release, and without one the model list fails as `transport`.
 - The sign-in code and refresh token go only to `https://auth.openai.com/oauth/token`.
 - Redirects are never followed, and tokens are masked in every error and never printed.
 - oh-fx refreshes the access token a minute before it expires and saves the new tokens before the request. When ChatGPT answers 401, oh-fx refreshes once and resends the request.
