@@ -154,6 +154,10 @@ impl ProviderDefinition {
         format!("{}/chat/completions", self.base_url)
     }
 
+    pub fn models(&self) -> &[String] {
+        &self.models
+    }
+
     pub fn capabilities(&self, model: &str) -> Capabilities {
         self.model_metadata
             .iter()
