@@ -5,7 +5,7 @@ use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, OnceLock};
-use std::{env, fmt, fs};
+use std::{env, fmt, fs, thread};
 
 use rustix::fs::OFlags;
 use rustls::client::WebPkiServerVerifier;
@@ -46,6 +46,18 @@ pub(crate) fn client_config(extra: RootCertStore) -> Result<ClientConfig, Error>
         Arc::clone,
     );
     configured(Arc::clone(&SYSTEM_ROOTS), extra, provider)
+}
+
+pub(crate) fn warm() {
+    if SYSTEM_ROOTS.loaded.get().is_some() {
+        return;
+    }
+    let roots = Arc::clone(&SYSTEM_ROOTS);
+    let _ = thread::Builder::new()
+        .name("tls-roots".to_owned())
+        .spawn(move || {
+            roots.load();
+        });
 }
 
 pub(crate) fn load_failure(error: &(dyn StdError + 'static)) -> Option<String> {
