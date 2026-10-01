@@ -40,7 +40,7 @@ jobs:
         id: changes
         run: |
           previous="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
-          if [ -z "$previous" ] || git diff --name-only "$previous" HEAD | grep -qvE '^docs/|\.md$'; then
+          if [ -z "$previous" ] || ! git diff --quiet "$previous" HEAD -- . ':(exclude)docs/' ':(exclude)*.md'; then
             echo "release=true" >> "$GITHUB_OUTPUT"
           else
             echo "release=false" >> "$GITHUB_OUTPUT"
