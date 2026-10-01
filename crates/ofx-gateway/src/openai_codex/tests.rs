@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt::Write;
 
-use ofx_contract::{ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
+use ofx_contract::{ProviderOptions, ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
 use ofx_testkit::{FakeServer, Reply};
 use serde_json::{Value, json};
 
@@ -27,6 +27,7 @@ fn request<'a>(
         tools,
         tool_choice: ToolChoice::Auto,
         max_output_tokens: Some(1024),
+        provider_options: ProviderOptions::default(),
     }
 }
 
@@ -881,5 +882,46 @@ impl CodexCredentials for NoRefresh {
         _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<CodexAccess>> {
         Box::pin(async { None })
+    }
+}
+
+#[test]
+fn reasoning_effort_and_fast_mode_follow_the_text_settings() {
+    let messages = [ChatMessage::user("Hi")];
+    let tail = |options: ProviderOptions<'_>| {
+        let request = ModelRequest {
+            provider_options: options,
+            ..request(&messages, &[], &[])
+        };
+        let body = build_request(&request, &[None]).unwrap();
+        body[body.find(",\"parallel_tool_calls\"").unwrap()..].to_owned()
+    };
+    assert_eq!(
+        tail(ProviderOptions::default()),
+        r#","parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"text":{"verbosity":"low"}}"#
+    );
+    assert_eq!(
+        tail(ProviderOptions {
+            reasoning_effort: Some("high"),
+            fast: true,
+        }),
+        r#","parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"service_tier":"priority","text":{"verbosity":"low"},"reasoning":{"effort":"high","summary":"auto"}}"#
+    );
+    for (effort, sent) in [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("xhigh", "xhigh"),
+        ("Minimal", "Minimal"),
+    ] {
+        assert_eq!(
+            tail(ProviderOptions {
+                reasoning_effort: Some(effort),
+                fast: false,
+            }),
+            format!(
+                r#","parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"text":{{"verbosity":"low"}},"reasoning":{{"effort":"{sent}","summary":"auto"}}}}"#
+            ),
+            "{effort}"
+        );
     }
 }

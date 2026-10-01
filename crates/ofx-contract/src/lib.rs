@@ -1,4 +1,5 @@
 mod ids;
+mod model_capabilities;
 mod permission_gate;
 mod stream_provider;
 mod tool_args;
@@ -9,10 +10,11 @@ mod types;
 mod ui;
 
 pub use ids::{ToolCallId, TurnId};
+pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use permission_gate::{Admission, FileMutation, FileMutationState, PathAccess, PermissionGate};
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
-    StreamEvent, StreamSink,
+    ProviderOptions, StreamEvent, StreamSink,
 };
 pub use tool_args::{ToolArgValue, ToolArgs, ToolArgsError, parse_tool_args_object};
 pub use tool_dispatch::{
@@ -26,8 +28,8 @@ pub use tool_result_errors::{
 };
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction,
-    ModelRecoveryCause, PermissionMode, ProviderReplay, ReplaySource, RouteRecoveryKind,
-    RouteRecoveryStatus, ToolCall, ToolChoice, ToolResultStatus, Usage, is_valid_reasoning_effort,
-    valid_credential_account_id,
+    ModelRecoveryCause, PermissionMode, ProviderReplay, ReasoningEffort, ReplaySource,
+    RouteRecoveryKind, RouteRecoveryStatus, ToolCall, ToolChoice, ToolResultStatus, Usage,
+    is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{TurnOutcome, UiEvent};

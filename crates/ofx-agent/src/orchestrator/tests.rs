@@ -28,6 +28,8 @@ struct SeenRequest {
     messages: Vec<ChatMessage>,
     tools: Vec<ToolSpec>,
     max_output_tokens: Option<u32>,
+    reasoning_effort: Option<String>,
+    fast: bool,
 }
 
 struct FakeProvider {
@@ -71,6 +73,8 @@ impl ModelProvider for FakeProvider {
             messages: request.messages.to_vec(),
             tools: request.tools.to_vec(),
             max_output_tokens: request.max_output_tokens,
+            reasoning_effort: request.provider_options.reasoning_effort.map(str::to_owned),
+            fast: request.provider_options.fast,
         });
         let script = self.scripts.lock().unwrap().pop_front();
         Box::pin(async move {
@@ -410,6 +414,8 @@ fn config() -> AgentConfig {
         system_prompt: SYSTEM_PROMPT.to_owned(),
         max_output_tokens: Some(64),
         step_limit: 0,
+        reasoning_effort: None,
+        fast_mode: false,
     }
 }
 
@@ -485,6 +491,8 @@ async fn final_answers_stream_raw_text_and_complete_the_turn() {
             messages: vec![ChatMessage::user("hi")],
             tools: Vec::new(),
             max_output_tokens: Some(64),
+            reasoning_effort: None,
+            fast: false,
         }]
     );
 }
@@ -1758,3 +1766,5 @@ async fn an_interrupted_summary_keeps_the_replay_only_answer() {
         ]
     );
 }
+
+mod capabilities;

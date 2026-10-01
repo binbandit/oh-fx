@@ -28,31 +28,37 @@ const MODEL: &str = "gpt-5.4";
 
 struct Fixture {
     _directory: tempfile::TempDir,
-    data: PathBuf,
+    paths: ProfilePaths,
     workspace: PathBuf,
 }
 
 impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().expect("create a temporary home");
-        let data = directory.path().join("data/oh-fx");
-        let workspace = directory.path().join("workspace");
+        let root = directory.path();
+        let paths = ProfilePaths {
+            config: root.join("config/oh-fx"),
+            data: root.join("data/oh-fx"),
+            state: root.join("state/oh-fx"),
+            cache: root.join("cache/oh-fx"),
+        };
+        let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).expect("create the workspace");
         fs::write(workspace.join("README.md"), "# Readme\n").expect("write the readme");
         Self {
             _directory: directory,
-            data,
+            paths,
             workspace,
         }
     }
 
     fn credential_file(&self) -> PathBuf {
-        self.data.join("chatgpt-auth.json")
+        self.paths.data.join("chatgpt-auth.json")
     }
 
     fn write_session(&self, expires_at_ms: i64, mode: u32) {
-        fs::create_dir_all(&self.data).expect("create the data directory");
-        fs::set_permissions(&self.data, fs::Permissions::from_mode(0o700))
+        fs::create_dir_all(&self.paths.data).expect("create the data directory");
+        fs::set_permissions(&self.paths.data, fs::Permissions::from_mode(0o700))
             .expect("make the data directory private");
         let session = json!({
             "version": 1,
@@ -76,19 +82,17 @@ impl Fixture {
         auth: &FakeServer,
         codex: &FakeServer,
     ) -> Result<CodexProvider, CodexUnavailable> {
-        let endpoints = SubscriptionEndpoints {
-            chatgpt: ChatGptEndpoints {
-                issuer: auth.base_url(),
-                token_url: format!("{}/oauth/token", auth.base_url()),
-                callback_ports: vec![0],
-            },
-            codex: CodexEndpoints {
-                responses: format!("{}/backend-api/codex/responses", codex.base_url()),
-            },
-            ..SubscriptionEndpoints::default()
-        };
-        codex_provider(
-            Some(self.data.clone()),
+        self.subscription(subscription_endpoints(auth, codex))
+            .await
+            .map(|subscription| subscription.provider)
+    }
+
+    async fn subscription(
+        &self,
+        endpoints: SubscriptionEndpoints,
+    ) -> Result<CodexSubscription, CodexUnavailable> {
+        codex_subscription(
+            Some(&self.paths),
             "oh-fx/test",
             endpoints,
             &CancellationToken::new(),
@@ -101,12 +105,10 @@ impl Fixture {
     }
 
     fn agent(&self, provider: CodexProvider) -> Agent {
-        let config = AgentConfig {
-            model: MODEL.to_owned(),
-            system_prompt: GATEWAY_SYSTEM_PROMPT.to_owned(),
-            max_output_tokens: None,
-            step_limit: 0,
-        };
+        self.agent_with(provider, agent_config(MODEL, None, false))
+    }
+
+    fn agent_with(&self, provider: CodexProvider, config: AgentConfig) -> Agent {
         let workspace = self.canonical_workspace();
         let tools = tool_set::ask_tools(&workspace);
         let permissions = PermissionPolicy::new(PermissionMode::Auto, workspace.clone());
@@ -118,6 +120,31 @@ impl Fixture {
             Arc::new(permissions),
             config,
         )
+    }
+}
+
+fn subscription_endpoints(auth: &FakeServer, codex: &FakeServer) -> SubscriptionEndpoints {
+    SubscriptionEndpoints {
+        chatgpt: ChatGptEndpoints {
+            issuer: auth.base_url(),
+            token_url: format!("{}/oauth/token", auth.base_url()),
+            callback_ports: vec![0],
+        },
+        codex: CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", codex.base_url()),
+        },
+        ..SubscriptionEndpoints::default()
+    }
+}
+
+fn agent_config(model: &str, effort: Option<&str>, fast_mode: bool) -> AgentConfig {
+    AgentConfig {
+        model: model.to_owned(),
+        system_prompt: GATEWAY_SYSTEM_PROMPT.to_owned(),
+        max_output_tokens: None,
+        step_limit: 0,
+        reasoning_effort: effort.map(str::to_owned),
+        fast_mode,
     }
 }
 
@@ -313,7 +340,7 @@ async fn ask_refreshes_an_expired_login_and_streams_a_tool_step_through_response
     assert_eq!(saved["refresh_token"], ROTATED_REFRESH_TOKEN);
     assert_eq!(saved["account_id"], ACCOUNT);
     assert_eq!(mode(&fixture.credential_file()), 0o600);
-    assert_eq!(mode(&fixture.data), 0o700);
+    assert_eq!(mode(&fixture.paths.data), 0o700);
 
     let shown = format!("{debug}{seen:?}{report:?}");
     for secret in [
@@ -488,7 +515,7 @@ async fn missing_expired_and_unsafe_logins_never_build_a_provider() {
     ));
 
     assert!(matches!(
-        codex_provider(
+        codex_subscription(
             None,
             "oh-fx/test",
             SubscriptionEndpoints::default(),
@@ -501,3 +528,5 @@ async fn missing_expired_and_unsafe_logins_never_build_a_provider() {
     ));
     assert!(unused.requests().is_empty());
 }
+
+mod capabilities;

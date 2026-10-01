@@ -1,4 +1,4 @@
-use ofx_contract::{ProviderReplay, ReplaySource, ToolResultStatus, ToolSpec};
+use ofx_contract::{ProviderOptions, ProviderReplay, ReplaySource, ToolResultStatus, ToolSpec};
 use serde_json::json;
 
 use super::*;
@@ -27,6 +27,7 @@ impl OwnedRequest {
             tools: &self.tools,
             tool_choice: self.tool_choice,
             max_output_tokens: self.max_output_tokens,
+            provider_options: ProviderOptions::default(),
         }
     }
 }

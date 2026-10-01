@@ -17,6 +17,13 @@ pub struct ModelRequest<'a> {
     pub tools: &'a [ToolSpec],
     pub tool_choice: ToolChoice,
     pub max_output_tokens: Option<u32>,
+    pub provider_options: ProviderOptions<'a>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderOptions<'a> {
+    pub reasoning_effort: Option<&'a str>,
+    pub fast: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

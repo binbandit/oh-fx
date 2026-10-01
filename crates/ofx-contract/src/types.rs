@@ -139,6 +139,31 @@ impl PermissionMode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Auto,
+    Named(String),
+}
+
+impl ReasoningEffort {
+    pub fn parse(raw: &str) -> Option<Self> {
+        if ["auto", "adaptive", "default"]
+            .iter()
+            .any(|alias| raw.eq_ignore_ascii_case(alias))
+        {
+            return Some(Self::Auto);
+        }
+        is_valid_reasoning_effort(raw).then(|| Self::Named(raw.to_owned()))
+    }
+
+    pub fn into_named(self) -> Option<String> {
+        match self {
+            Self::Auto => None,
+            Self::Named(name) => Some(name),
+        }
+    }
+}
+
 pub fn is_valid_reasoning_effort(raw: &str) -> bool {
     (1..=MAX_REASONING_EFFORT_NAME_BYTES).contains(&raw.len())
         && raw
@@ -409,6 +434,23 @@ mod tests {
             assert_eq!(PermissionMode::parse(spelling), Some(PermissionMode::Yolo));
         }
         assert_eq!(PermissionMode::parse("full_access"), None);
+    }
+
+    #[test]
+    fn reasoning_effort_parsing_folds_the_default_aliases_into_auto() {
+        for alias in ["auto", "AUTO", "Adaptive", "default"] {
+            assert_eq!(ReasoningEffort::parse(alias), Some(ReasoningEffort::Auto));
+        }
+        assert_eq!(
+            ReasoningEffort::parse("xHigh"),
+            Some(ReasoningEffort::Named("xHigh".to_owned()))
+        );
+        assert_eq!(ReasoningEffort::parse("very high"), None);
+        assert_eq!(ReasoningEffort::Auto.into_named(), None);
+        assert_eq!(
+            ReasoningEffort::Named("low".to_owned()).into_named(),
+            Some("low".to_owned())
+        );
     }
 
     #[test]

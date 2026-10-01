@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use ofx_gateway::{CatalogCredential, CatalogFailure, CodexModelCatalog, CodexModelsEndpoints};
+use ofx_contract::ModelCapabilities;
+use ofx_gateway::{
+    CatalogCredential, CatalogFailure, CodexModel, CodexModelCatalog, CodexModelsEndpoints,
+};
 use ofx_testkit::{FakeServer, Reply};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -30,7 +33,13 @@ fn catalog_reply() -> Reply {
             listed("gpt-6.1-sol"),
             {"slug": "internal", "visibility": "hide", "supported_in_api": true},
             listed("gpt-5.6-terra"),
-            listed("gpt-5.6-luna"),
+            {
+                "slug": "gpt-5.6-luna",
+                "visibility": "list",
+                "supported_in_api": true,
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+                "additional_speed_tiers": ["fast"],
+            },
         ]})
         .to_string(),
     )
@@ -58,12 +67,19 @@ async fn the_catalog_is_fetched_with_the_subscription_and_the_live_client_versio
     let models = catalog(&server, None)
         .fetch(Some(&credential()), &CancellationToken::new())
         .await;
+    let model = |id: &str, efforts: &[&str], fast| CodexModel {
+        id: id.to_owned(),
+        capabilities: ModelCapabilities {
+            reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
+            supports_fast_mode: fast,
+        },
+    };
     assert_eq!(
         models,
         Ok(vec![
-            "gpt-6.1-sol".to_owned(),
-            "gpt-5.6-terra".to_owned(),
-            "gpt-5.6-luna".to_owned(),
+            model("gpt-6.1-sol", &["medium"], false),
+            model("gpt-5.6-terra", &["medium"], false),
+            model("gpt-5.6-luna", &["low", "high"], true),
         ])
     );
     let requests = server.requests();

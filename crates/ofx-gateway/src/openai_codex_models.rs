@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ofx_config::parse_strict_json;
-use ofx_contract::{CODEX_ORIGINATOR, is_valid_reasoning_effort};
+use ofx_contract::{CODEX_ORIGINATOR, ModelCapabilities, is_valid_reasoning_effort};
 use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
 use reqwest::StatusCode;
 use reqwest::header::ACCEPT;
@@ -38,6 +38,12 @@ impl Default for CodexModelsEndpoints {
             client_version: CLIENT_VERSION_URL.to_owned(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexModel {
+    pub id: String,
+    pub capabilities: ModelCapabilities,
 }
 
 pub struct CatalogCredential {
@@ -93,7 +99,7 @@ impl CodexModelCatalog {
         &self,
         credential: Option<&CatalogCredential>,
         cancel: &CancellationToken,
-    ) -> Result<Vec<String>, CatalogFailure> {
+    ) -> Result<Vec<CodexModel>, CatalogFailure> {
         let deadline = Instant::now() + FETCH_TIMEOUT;
         let version = match credential {
             Some(_) => Some(self.client_version(cancel, deadline).await?),
@@ -147,7 +153,7 @@ fn models_url(base: &str, version: Option<&Version>) -> String {
     format!("{base}{separator}client_version={}", version.as_str())
 }
 
-fn parse_catalog(body: &[u8]) -> Option<Vec<String>> {
+fn parse_catalog(body: &[u8]) -> Option<Vec<CodexModel>> {
     let Value::Object(root) = parse_strict_json(body).ok()? else {
         return None;
     };
@@ -157,16 +163,16 @@ fn parse_catalog(body: &[u8]) -> Option<Vec<String>> {
     if models.len() > MAX_CATALOG_MODELS {
         return None;
     }
-    let mut ids = Vec::new();
+    let mut listed_models = Vec::new();
     for model in models {
         let Value::Object(model) = model else {
             return None;
         };
         if listed(model)? {
-            ids.push(listed_model_id(model)?);
+            listed_models.push(listed_model(model)?);
         }
     }
-    Some(ids)
+    Some(listed_models)
 }
 
 fn listed(model: &Map<String, Value>) -> Option<bool> {
@@ -175,14 +181,21 @@ fn listed(model: &Map<String, Value>) -> Option<bool> {
     Some(supported && visibility == "list")
 }
 
-fn listed_model_id(model: &Map<String, Value>) -> Option<String> {
-    let slug = required_string(model, "slug")?;
-    let valid = valid_model_id(slug)
-        && valid_reasoning_levels(model)
-        && valid_context_window(model)
-        && valid_string_list(model, "input_modalities", "image")
-        && valid_string_list(model, "additional_speed_tiers", "fast");
-    valid.then(|| slug.to_owned())
+fn listed_model(model: &Map<String, Value>) -> Option<CodexModel> {
+    let slug = required_string(model, "slug").filter(|slug| valid_model_id(slug))?;
+    let reasoning_efforts = reasoning_levels(model)?;
+    if !valid_context_window(model) {
+        return None;
+    }
+    lists_value(model, "input_modalities", "image")?;
+    let supports_fast_mode = lists_value(model, "additional_speed_tiers", "fast")?;
+    Some(CodexModel {
+        id: slug.to_owned(),
+        capabilities: ModelCapabilities {
+            reasoning_efforts,
+            supports_fast_mode,
+        },
+    })
 }
 
 fn required_string<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -194,20 +207,23 @@ fn valid_model_id(id: &str) -> bool {
         && id.bytes().all(|byte| byte > 0x20 && byte != 0x7f)
 }
 
-fn valid_reasoning_levels(model: &Map<String, Value>) -> bool {
+fn reasoning_levels(model: &Map<String, Value>) -> Option<Vec<String>> {
     let Some(levels) = model.get("supported_reasoning_levels") else {
-        return true;
+        return Some(Vec::new());
     };
     let Value::Array(levels) = levels else {
-        return false;
+        return None;
     };
-    levels.len() <= MAX_REASONING_EFFORTS
-        && levels.iter().all(|level| {
-            level
-                .as_object()
-                .and_then(|level| required_string(level, "effort"))
-                .is_some_and(is_valid_reasoning_effort)
+    if levels.len() > MAX_REASONING_EFFORTS {
+        return None;
+    }
+    levels
+        .iter()
+        .map(|level| {
+            let effort = required_string(level.as_object()?, "effort")?;
+            is_valid_reasoning_effort(effort).then(|| effort.to_owned())
         })
+        .collect()
 }
 
 fn valid_context_window(model: &Map<String, Value>) -> bool {
@@ -219,24 +235,22 @@ fn valid_context_window(model: &Map<String, Value>) -> bool {
     }
 }
 
-fn valid_string_list(model: &Map<String, Value>, key: &str, checked_until: &str) -> bool {
+fn lists_value(model: &Map<String, Value>, key: &str, expected: &str) -> Option<bool> {
     let Some(values) = model.get(key) else {
-        return true;
+        return Some(false);
     };
     let Value::Array(values) = values else {
-        return false;
+        return None;
     };
     if values.len() > MAX_LISTED_VALUES {
-        return false;
+        return None;
     }
     for value in values {
-        match value.as_str() {
-            None => return false,
-            Some(value) if value == checked_until => return true,
-            Some(_) => {}
+        if value.as_str()? == expected {
+            return Some(true);
         }
     }
-    true
+    Some(false)
 }
 
 #[cfg(test)]

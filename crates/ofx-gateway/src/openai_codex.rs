@@ -357,9 +357,17 @@ pub(crate) fn build_request(
     write_tools(&mut out, request.tools)?;
     out.push_str(",\"tool_choice\":");
     push_json_string(&mut out, request.tool_choice.as_str());
-    out.push_str(
-        ",\"parallel_tool_calls\":true,\"include\":[\"reasoning.encrypted_content\"],\"text\":{\"verbosity\":\"low\"}}",
-    );
+    out.push_str(",\"parallel_tool_calls\":true,\"include\":[\"reasoning.encrypted_content\"]");
+    if request.provider_options.fast {
+        out.push_str(",\"service_tier\":\"priority\"");
+    }
+    out.push_str(",\"text\":{\"verbosity\":\"low\"}");
+    if let Some(effort) = request.provider_options.reasoning_effort {
+        out.push_str(",\"reasoning\":{\"effort\":");
+        push_json_string(&mut out, if effort == "minimal" { "low" } else { effort });
+        out.push_str(",\"summary\":\"auto\"}");
+    }
+    out.push('}');
     Ok(out)
 }
 
