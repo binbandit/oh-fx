@@ -421,21 +421,27 @@ fn numbers_are_only_checked_when_the_save_changes_the_file() {
 }
 
 #[test]
-fn an_exhausted_backup_sequence_still_backs_up_the_settings() {
-    let original = "{\"theme\":\"dark\"}";
+fn an_exhausted_backup_sequence_never_prunes_the_new_backup() {
+    let original = "{\"theme\":\"must-survive\"}";
     let fixture = Fixture::with_settings(original);
     let backups = fixture.paths.config.join(BACKUPS_DIRECTORY);
     fs::create_dir_all(&backups).unwrap();
-    let leftover = backups.join("settings.json.backup.1-ffffffffffffffff-00");
-    fs::write(&leftover, "{}").unwrap();
+    for suffix in ["a1", "b2", "c3", "d4", "e5"] {
+        let name = format!("settings.json.backup.9223372036854775807-ffffffffffffffff-{suffix}");
+        fs::write(backups.join(name), "{}").unwrap();
+    }
     fixture.save(MODEL).unwrap();
     let copies = fixture.copies("backup");
-    assert_eq!(copies.len(), 2);
-    let saved: Vec<String> = copies
+    assert_eq!(copies.len(), BACKUP_KEEP_COUNT);
+    let kept: Vec<String> = copies
         .iter()
         .map(|name| fs::read_to_string(backups.join(name)).unwrap())
         .collect();
-    assert!(saved.contains(&original.to_owned()));
+    assert_eq!(
+        kept.iter().filter(|text| text.as_str() == original).count(),
+        1
+    );
+    assert!(fixture.read().contains("\"provider\":\"codex\""));
 }
 
 #[test]

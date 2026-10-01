@@ -408,7 +408,7 @@ fn create_sequenced_copy(
         let _ = write!(name, "{byte:02x}");
     }
     backups.replace(&name, bytes)?;
-    prune_copies(&backups, copy);
+    prune_copies(&backups, copy, &name);
     Ok(())
 }
 
@@ -425,14 +425,16 @@ fn contains_copy(backups: &PrivateDir, names: &[String], copy: SettingsCopy, byt
         })
 }
 
-fn prune_copies(backups: &PrivateDir, copy: SettingsCopy) {
+fn prune_copies(backups: &PrivateDir, copy: SettingsCopy, written: &str) {
     let prefix = copy.prefix();
     let Ok(names) = backups.names() else {
         return;
     };
     let mut names: Vec<String> = names
         .into_iter()
-        .filter(|name| name.starts_with(&prefix) && parse_backup_timestamp(name).is_some())
+        .filter(|name| {
+            name != written && name.starts_with(&prefix) && parse_backup_timestamp(name).is_some()
+        })
         .collect();
     names.sort_by(|left, right| {
         if backup_name_newer_than(left, right) {
@@ -443,7 +445,7 @@ fn prune_copies(backups: &PrivateDir, copy: SettingsCopy) {
             std::cmp::Ordering::Equal
         }
     });
-    for name in names.iter().skip(copy.keep()) {
+    for name in names.iter().skip(copy.keep().saturating_sub(1)) {
         if backups.is_single_link_file(name) {
             let _ = backups.remove(name);
         }
