@@ -2093,7 +2093,10 @@ fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands(
     ]);
     let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
 
-    let output = home.ask(&["ask", "--json", "run them"], &KEY);
+    let output = home.ask(
+        &["ask", "--json", "run them"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY), ("PATH", "/usr/bin:/bin")],
+    );
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stderr(&output),
