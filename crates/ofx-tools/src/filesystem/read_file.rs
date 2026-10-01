@@ -270,7 +270,7 @@ impl LineSelection {
         }
     }
 
-    fn keep_line(&mut self, line_number: usize, line: Range<usize>) -> bool {
+    fn keep_line(&mut self, line_number: usize, start: usize, line: &[u8]) -> bool {
         if line_number < self.start_line {
             return true;
         }
@@ -284,7 +284,7 @@ impl LineSelection {
             self.budget_width = width;
         }
         let truncated = line.len() > self.max_line_len;
-        let clipped_len = line.len().min(self.max_line_len);
+        let clipped_len = clip_at_char_boundary(line, self.max_line_len);
         let display_len = clipped_len
             + if truncated {
                 LINE_TRUNCATED_SUFFIX.len()
@@ -300,7 +300,7 @@ impl LineSelection {
         self.display_truncated |= truncated;
         self.records.push(LineRecord {
             number: line_number,
-            range: line.start..line.start + clipped_len,
+            range: start..start + clipped_len,
             truncated,
         });
         self.budget_bytes = rendered_bytes;
@@ -326,7 +326,7 @@ fn select_lines(
     let mut start = 0;
     while start < content.len() {
         let end = memchr(b'\n', &content[start..]).map_or(content.len(), |offset| start + offset);
-        if !selection.keep_line(line_number, start..end) {
+        if !selection.keep_line(line_number, start, &content[start..end]) {
             break;
         }
         start = end + 1;
@@ -388,6 +388,14 @@ fn format_read_output(
     out
 }
 
+fn clip_at_char_boundary(line: &[u8], max_len: usize) -> usize {
+    let mut end = max_len.min(line.len());
+    while line.get(end).is_some_and(|byte| byte & 0xC0 == 0x80) {
+        end -= 1;
+    }
+    end
+}
+
 fn rendered_line_bytes(width: usize, text_len: usize) -> usize {
     width + 1 + text_len + 1
 }
@@ -407,6 +415,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::filesystem::DEFAULT_MAX_READ_FILE_LINE_LEN;
     use crate::filesystem::tests::{run_tool, run_tool_with};
 
     struct Workspace {
@@ -828,12 +837,12 @@ mod tests {
     fn read_file_display_budget_tracks_line_number_width_growth() {
         let mut selection = LineSelection::new(1, MAX_LINE_COUNT, MAX_MODEL_OUTPUT_BYTES);
 
-        assert!(selection.keep_line(9, 0..2));
+        assert!(selection.keep_line(9, 0, b"l9"));
         assert!(!selection.display_truncated);
         assert_eq!(selection.budget_width, 1);
         assert_eq!(selection.budget_bytes, rendered_line_bytes(1, 2));
 
-        assert!(selection.keep_line(10, 0..3));
+        assert!(selection.keep_line(10, 3, b"l10"));
         assert!(!selection.display_truncated);
         assert_eq!(selection.budget_width, 2);
         assert_eq!(
@@ -853,6 +862,38 @@ mod tests {
         assert!(output.ends_with(
             "... [showing 1 of 1 lines; use start_line/line_count to read more.]\n</content>"
         ));
+    }
+
+    #[test]
+    fn read_file_clips_long_lines_at_a_character_boundary() {
+        let workspace = Workspace::new();
+        let ascii = "a".repeat(1999);
+        workspace.write("accent.txt", format!("{ascii}\u{e9}tail\nsecond\n"));
+
+        assert_eq!(
+            text(&workspace.context(), r#"{"path":"accent.txt"}"#),
+            format!(
+                "<path>accent.txt</path>\n<content>\n1\t{ascii}... (line truncated)\n2\tsecond\n... [showing 2 of 2 lines; use start_line/line_count to read more.]\n</content>"
+            )
+        );
+    }
+
+    #[test]
+    fn line_clipping_keeps_whole_characters_up_to_the_cap() {
+        let cases = [
+            (format!("{}\u{e9}x", "a".repeat(1998)), 2000),
+            (format!("{}\u{1f600}", "a".repeat(1998)), 1998),
+            (format!("{}\u{1f600}", "a".repeat(1996)), 2000),
+            ("\u{e9}".repeat(1001), 2000),
+            ("short".to_owned(), 5),
+        ];
+        for (line, clipped) in cases {
+            assert_eq!(
+                clip_at_char_boundary(line.as_bytes(), DEFAULT_MAX_READ_FILE_LINE_LEN),
+                clipped,
+                "{line}"
+            );
+        }
     }
 
     #[test]
