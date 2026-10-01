@@ -700,6 +700,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-markdown"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "ofx-text",
+ "unicode-properties",
+]
+
+[[package]]
 name = "ofx-testkit"
 version = "0.1.0"
 dependencies = [

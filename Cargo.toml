@@ -12,11 +12,13 @@ publish = false
 [workspace.dependencies]
 flate2 = "1.1.10"
 lexopt = "0.3.2"
+memchr = "2.8.3"
 ofx-agent = { path = "crates/ofx-agent" }
 ofx-config = { path = "crates/ofx-config" }
 ofx-contract = { path = "crates/ofx-contract" }
 ofx-gateway = { path = "crates/ofx-gateway" }
 ofx-http = { path = "crates/ofx-http" }
+ofx-markdown = { path = "crates/ofx-markdown" }
 ofx-testkit = { path = "crates/ofx-testkit" }
 ofx-text = { path = "crates/ofx-text" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
@@ -37,6 +39,7 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["rt"] }
 tokio-util = "0.7.19"
+unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 
