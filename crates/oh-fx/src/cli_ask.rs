@@ -488,10 +488,7 @@ impl Presenter {
 
     fn handle(&mut self, event: UiEvent) -> bool {
         let written = match event {
-            UiEvent::AssistantText { text, .. } => {
-                self.push_assistant(&text);
-                Ok(())
-            }
+            UiEvent::AssistantText { text, .. } => self.push_assistant(&text),
             UiEvent::Operational { text, .. } => write_stderr(&text),
             UiEvent::Recovery { status, .. } => {
                 let line = format!("[notice] {}\n", status.label());
@@ -534,9 +531,9 @@ impl Presenter {
         }
     }
 
-    fn push_assistant(&mut self, text: &str) {
+    fn push_assistant(&mut self, text: &str) -> io::Result<()> {
         if text.is_empty() {
-            return;
+            return Ok(());
         }
         if self.boundary_pending && self.has_output {
             let separator = match self.trailing_newlines {
@@ -544,20 +541,20 @@ impl Presenter {
                 1 => "\n",
                 _ => "",
             };
-            self.write_assistant(separator);
+            self.write_assistant(separator)?;
         }
         self.boundary_pending = false;
-        self.write_assistant(text);
+        self.write_assistant(text)
     }
 
-    fn write_assistant(&mut self, text: &str) {
+    fn write_assistant(&mut self, text: &str) -> io::Result<()> {
         if text.is_empty() {
-            return;
+            return Ok(());
         }
         if self.mode == OutputMode::Json {
             self.output.push_str(text);
         } else {
-            let _ = crate::write_stdout(text);
+            crate::write_stdout(text)?;
         }
         self.has_output = true;
         let trailing = text.bytes().rev().take_while(|byte| *byte == b'\n').count();
@@ -566,6 +563,7 @@ impl Presenter {
         } else {
             trailing.min(2)
         };
+        Ok(())
     }
 
     fn describe_failure(&mut self, failure: &TurnFailure) -> FailureSummary {
@@ -641,6 +639,9 @@ impl Presenter {
             && self.write_error.is_none()
             && summary.error.is_none();
         if self.mode != OutputMode::Json {
+            if let Some(code) = self.write_error {
+                let _ = write_stderr(&format!("oh-fx: {code}\n"));
+            }
             if completed && self.has_output && self.mode == OutputMode::Terminal {
                 let _ = crate::write_stdout("\n");
             }
@@ -744,7 +745,7 @@ mod tests {
     #[test]
     fn raw_output_separates_text_around_tool_steps_and_counts_rejections() {
         let mut presenter = Presenter::new(true);
-        presenter.push_assistant("Looking.");
+        presenter.push_assistant("Looking.").unwrap();
         assert!(presenter.handle(UiEvent::ToolStarted {
             turn_id: TurnId::new(1),
             call_id: ToolCallId::new("call-1"),
@@ -756,13 +757,13 @@ mod tests {
                 concurrency: Concurrency::Parallel,
             },
         }));
-        presenter.push_assistant("Found it.");
+        presenter.push_assistant("Found it.").unwrap();
         assert!(presenter.handle(UiEvent::ToolRejected {
             turn_id: TurnId::new(1),
             call_id: ToolCallId::new("call-2"),
             tool_name: "missing".to_owned(),
         }));
-        presenter.push_assistant("\nDone");
+        presenter.push_assistant("\nDone").unwrap();
         assert_eq!(presenter.output, "Looking.\n\nFound it.\n\n\nDone");
         assert_eq!(presenter.steps, 2);
         assert_eq!(presenter.tool_calls.len(), 1);

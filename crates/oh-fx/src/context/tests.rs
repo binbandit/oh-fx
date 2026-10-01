@@ -1,4 +1,6 @@
 use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::time::{Duration, SystemTime};
 
 use super::*;
 
@@ -263,6 +265,53 @@ fn git_worktree_reports_dirty_for_obvious_metadata_and_tracked_file_changes() {
     assert_eq!(
         collect_git_info(&temp.path().join("tracked")).worktree,
         GitWorktreeState::Dirty
+    );
+}
+
+#[test]
+fn git_facts_come_from_the_repository_enclosing_the_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(temp.path(), "repo/.git/HEAD", b"ref: refs/heads/main\n");
+    write_file(temp.path(), "repo/tracked.txt", b"tracked\n");
+    write_single_path_git_index(
+        temp.path(),
+        "repo/.git/index",
+        "repo/tracked.txt",
+        "tracked.txt",
+    );
+    let workspace = temp.path().join("repo/src/nested");
+    fs::create_dir_all(&workspace).unwrap();
+    let info = collect_git_info(&workspace);
+    assert_eq!(info.branch.as_deref(), Some("main"));
+    assert_eq!(info.worktree, GitWorktreeState::Unknown);
+    write_file(temp.path(), "repo/tracked.txt", b"changed, longer\n");
+    assert_eq!(
+        collect_git_info(&workspace).worktree,
+        GitWorktreeState::Dirty
+    );
+}
+
+#[test]
+fn touching_a_tracked_file_without_changing_its_size_is_not_reported_dirty() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(temp.path(), "repo/.git/HEAD", b"ref: refs/heads/main\n");
+    write_file(temp.path(), "repo/tracked.txt", b"tracked\n");
+    write_single_path_git_index(
+        temp.path(),
+        "repo/.git/index",
+        "repo/tracked.txt",
+        "tracked.txt",
+    );
+    let tracked = fs::File::options()
+        .write(true)
+        .open(temp.path().join("repo/tracked.txt"))
+        .unwrap();
+    tracked
+        .set_modified(SystemTime::now() + Duration::from_hours(1))
+        .unwrap();
+    assert_eq!(
+        collect_git_info(&temp.path().join("repo")).worktree,
+        GitWorktreeState::Unknown
     );
 }
 

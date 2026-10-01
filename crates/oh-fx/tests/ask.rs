@@ -3,6 +3,8 @@ use std::io::{self, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ofx_testkit::{FakeServer, Reply, chat_text_events};
 use serde_json::{Value, json};
@@ -484,6 +486,39 @@ fn closed_stderr_still_reports_the_json_envelope() {
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["error"], "BrokenPipe");
     assert_eq!(result["output"], "");
+}
+
+#[test]
+fn a_closed_stdout_while_streaming_stops_the_request_and_reports_the_write_error() {
+    let server = FakeServer::start([Reply::held_sse(&[text_chunk("Hello")])]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let mut child = home
+        .command(&["ask", "hi"])
+        .env("PORTKEY_API_KEY", PORTKEY_KEY)
+        .stdout(closed_pipe())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("ask kept waiting after stdout closed");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut errors = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut errors)
+        .unwrap();
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(errors, "oh-fx: BrokenPipe\n");
 }
 
 #[test]

@@ -1,7 +1,6 @@
 use std::env;
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -234,7 +233,7 @@ fn collect_git_info(workspace_root: &Path) -> GitInfo {
     let budget = GitBudget {
         started: Instant::now(),
     };
-    let Some(git_dir) = resolve_git_dir(workspace_root) else {
+    let Some((repository_root, git_dir)) = find_repository(workspace_root, &budget) else {
         return GitInfo::default();
     };
     if budget.expired() {
@@ -256,13 +255,29 @@ fn collect_git_info(workspace_root: &Path) -> GitInfo {
     };
     GitInfo {
         branch: branch_from_head(&String::from_utf8_lossy(&head)),
-        worktree: detect_worktree_state(workspace_root, &git_dir, &budget),
+        worktree: detect_worktree_state(&repository_root, &git_dir, &budget),
         remote,
     }
 }
 
-fn resolve_git_dir(workspace_root: &Path) -> Option<PathBuf> {
-    let dot_git = workspace_root.join(".git");
+fn find_repository(workspace_root: &Path, budget: &GitBudget) -> Option<(PathBuf, PathBuf)> {
+    for directory in workspace_root.ancestors() {
+        if budget.expired() {
+            return None;
+        }
+        match fs::symlink_metadata(directory.join(".git")) {
+            Ok(_) => {
+                return resolve_git_dir(directory).map(|git_dir| (directory.to_owned(), git_dir));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn resolve_git_dir(repository_root: &Path) -> Option<PathBuf> {
+    let dot_git = repository_root.join(".git");
     let metadata = fs::symlink_metadata(&dot_git).ok()?;
     if metadata.is_dir() {
         return Some(dot_git);
@@ -276,7 +291,7 @@ fn resolve_git_dir(workspace_root: &Path) -> Option<PathBuf> {
     if raw.is_empty() {
         return None;
     }
-    Some(workspace_root.join(raw))
+    Some(repository_root.join(raw))
 }
 
 fn resolve_common_git_dir(git_dir: &Path) -> PathBuf {
@@ -513,8 +528,6 @@ fn entry_matches_worktree(
     if mode & 0o170_000 != 0o100_000 {
         return None;
     }
-    let index_seconds = read_u32(entry, 8)?;
-    let index_nanos = read_u32(entry, 12)?;
     let index_size = read_u32(entry, 36)?;
     let metadata = match fs::symlink_metadata(workspace_root.join(path)) {
         Ok(metadata) => metadata,
@@ -524,11 +537,6 @@ fn entry_matches_worktree(
         Err(_) => return None,
     };
     if !metadata.is_file() || metadata.len() != u64::from(index_size) {
-        return Some(GitWorktreeState::Dirty);
-    }
-    let seconds = u32::try_from(metadata.mtime()).ok()?;
-    let nanos = u32::try_from(metadata.mtime_nsec()).ok()?;
-    if seconds != index_seconds || nanos != index_nanos {
         return Some(GitWorktreeState::Dirty);
     }
     Some(GitWorktreeState::Unknown)
