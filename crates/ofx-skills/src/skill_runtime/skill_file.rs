@@ -11,11 +11,9 @@ use rustix::fs::CWD;
 
 use super::SymlinkAuthorities;
 use crate::skill_contract::{
-    InvalidMetadataCause, MetadataPrefixError, SkillMetadata, parse_skill_file,
+    InvalidMetadataCause, MetadataPrefixError, SKILL_FILE_NAME, SkillMetadata, parse_skill_file,
     read_metadata_prefix, resolve_metadata,
 };
-
-pub(crate) const SKILL_FILE_NAME: &str = "SKILL.md";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectoryOpenError {

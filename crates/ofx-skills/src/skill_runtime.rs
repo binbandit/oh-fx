@@ -1,3 +1,4 @@
+mod candidate;
 mod catalog;
 mod diagnostics;
 mod discovery;
@@ -6,6 +7,7 @@ mod resolution;
 mod skill_file;
 mod symlink_authorities;
 
+pub(crate) use candidate::{CandidateOpen, OpenedSkillCandidate, open_validated_skill_candidate};
 pub use catalog::{SkillCatalog, build_skill_prompt};
 pub(crate) use diagnostics::diagnostic_summary;
 pub use discovery::{SkillDiscovery, SkillDiscoveryContext};
