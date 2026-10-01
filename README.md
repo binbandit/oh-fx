@@ -1,5 +1,17 @@
 # oh-fx
 
+A Rust port of [fx](https://github.com/vercel-labs/fx), the terminal coding agent.
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/binbandit/oh-fx/main/install.sh | sh
+```
+
+This installs `oh-fx` and an `ofx` alias into `~/.local/bin`. Set `OH_FX_INSTALL_DIR` to install elsewhere, or install a specific release by passing its tag with `sh -s v0.1.0-dev.12`.
+
+Every push to `main` that passes CI publishes a release. Installed binaries check for a newer release in the background at most every five minutes and replace themselves, so the next launch runs it. Run `oh-fx upgrade` to upgrade immediately, or set `OH_FX_AUTO_UPGRADE=0` to turn background upgrades off and stay on the installed release.
+
 ## Automated pull requests
 
 Open a ready-for-review PR against `main`. Pullfrog reviews it and re-reviews

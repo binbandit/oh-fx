@@ -54,3 +54,9 @@ This points git at `.githooks/`: `pre-commit` runs `cargo xtask style`, `commit-
 - Format with `cargo fmt`. Do not hand-format against it.
 - No `unsafe` code.
 - Keep modules small and focused. Each crate owns one concern and exposes a narrow public API.
+
+## Releases
+
+Every push to `main` that passes CI publishes a GitHub release tagged `v<version>-dev.<n>`, where `<version>` is `workspace.package.version` in `Cargo.toml` and `<n>` is the commit count on `main`. Each release carries `oh-fx-<os>-<arch>.tar.gz` archives with `.sha256` files and a `latest.txt` pointer. Installed binaries upgrade themselves from these releases, so every merge reaches users.
+
+Never rewrite `main`'s history: installed binaries only upgrade to a higher version, so the dev number must keep increasing.
