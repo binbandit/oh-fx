@@ -34,12 +34,11 @@ pub enum TopLevelKind {
     Upgrade,
     Replay,
     Workspace,
-    Slack,
 }
 
 impl TopLevelKind {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 24] = [
+    pub(crate) const ALL: [Self; 23] = [
         Self::Help,
         Self::Ask,
         Self::Acp,
@@ -63,7 +62,6 @@ impl TopLevelKind {
         Self::Upgrade,
         Self::Replay,
         Self::Workspace,
-        Self::Slack,
     ];
 
     pub(crate) fn spec(self) -> &'static TopLevelSpec {

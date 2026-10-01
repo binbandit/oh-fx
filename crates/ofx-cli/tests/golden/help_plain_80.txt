@@ -9,41 +9,39 @@ Usage:
   oh-fx <command> [...flags] [...args]
 
 Commands:
-  ask <prompt>                    Run one noninteractive request
+  ask <prompt>                   Run one noninteractive request
 
-  pr [context]                    Draft or publish a pull request
-  issue [context]                 Draft or publish a GitHub issue
+  pr [context]                   Draft or publish a pull request
+  issue [context]                Draft or publish a GitHub issue
 
-  sessions                        List saved sessions for the current workspace
-  session <last|id>               Inspect, resume, migrate, or recover saved
-                                  sessions
-  session resume [last|id]        Resume the latest workspace session or a
-                                  session by id
-  session migrate <id>            Migrate a saved session to the current format
-  session recover <id>            Copy a recoverable corrupt session
+  sessions                       List saved sessions for the current workspace
+  session <last|id>              Inspect, resume, migrate, or recover saved
+                                 sessions
+  session resume [last|id]       Resume the latest workspace session or a
+                                 session by id
+  session migrate <id>           Migrate a saved session to the current format
+  session recover <id>           Copy a recoverable corrupt session
 
-  login [vercel|codex|grok]       Sign in to a model provider
-  logout [vercel|codex|grok]      Sign out of a model provider
-  provider <name>                 Choose the active model provider
-  models                          List available models
+  login [vercel|codex|grok]      Sign in to a model provider
+  logout [vercel|codex|grok]     Sign out of a model provider
+  provider <name>                Choose the active model provider
+  models                         List available models
 
-  setup                           Configure a Vercel AI Gateway API key
-  teams                           Choose a Vercel AI Gateway team
-  credits|balance                 Show Vercel AI Gateway credits
+  setup                          Configure a Vercel AI Gateway API key
+  teams                          Choose a Vercel AI Gateway team
+  credits|balance                Show Vercel AI Gateway credits
 
-  usage [--period <24h|7d|30d>]   Show locally recorded token usage and spend
+  usage [--period <24h|7d|30d>]  Show locally recorded token usage and spend
 
-  status                          Show configuration and runtime information
-  doctor                          Run local health and preflight checks
-  mcp <command> ...               Manage MCP servers without opening the
-                                  interactive shell
-  slack <install|status|refresh>  Install and manage the workspace Slack bot
-                                  locally
-  permissions                     Show the permission mode and rules
-  workspace                       Manage additional workspace directories
-  upgrade                         Upgrade oh-fx to the latest release
-  acp                             Start an ACP server over stdio
-  help                            Show this help
+  status                         Show configuration and runtime information
+  doctor                         Run local health and preflight checks
+  mcp <command> ...              Manage MCP servers without opening the
+                                 interactive shell
+  permissions                    Show the permission mode and rules
+  workspace                      Manage additional workspace directories
+  upgrade                        Upgrade oh-fx to the latest release
+  acp                            Start an ACP server over stdio
+  help                           Show this help
 
 Flags:
   --context-limit <spec>  Set name=bytes|off; repeatable

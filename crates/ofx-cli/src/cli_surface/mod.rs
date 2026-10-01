@@ -61,7 +61,6 @@ pub enum Command {
     Status(OutputFormat),
     Permissions(OutputFormat),
     Mcp,
-    Slack(OutputFormat),
     Models(OutputFormat),
     Provider,
     Doctor(OutputFormat),
@@ -88,7 +87,6 @@ impl Command {
             Self::Status(_) => TopLevelKind::Status,
             Self::Permissions(_) => TopLevelKind::Permissions,
             Self::Mcp => TopLevelKind::Mcp,
-            Self::Slack(_) => TopLevelKind::Slack,
             Self::Models(_) => TopLevelKind::Models,
             Self::Provider => TopLevelKind::Provider,
             Self::Doctor(_) => TopLevelKind::Doctor,
@@ -107,7 +105,6 @@ impl Command {
         match self {
             Self::Status(format)
             | Self::Permissions(format)
-            | Self::Slack(format)
             | Self::Models(format)
             | Self::Doctor(format)
             | Self::Session(format)
@@ -240,7 +237,7 @@ fn parse_command(
         TopLevelKind::Session if session => {
             return launch_session(validate_resume_subcommand(&rest[1..]));
         }
-        TopLevelKind::Mcp | TopLevelKind::Slack if rest.is_empty() => {
+        TopLevelKind::Mcp if rest.is_empty() => {
             return Ok(Invocation::CommandHelp(kind));
         }
         TopLevelKind::Ask => Command::Ask(parse_ask(rest)?),
@@ -263,7 +260,6 @@ fn parse_command(
         TopLevelKind::Doctor => Command::Doctor(command_args::parse_output_format(kind, &rest)?),
         TopLevelKind::Credits => Command::Credits(command_args::parse_output_format(kind, &rest)?),
         TopLevelKind::Mcp => command_args::validate_mcp(&rest).map(|()| Command::Mcp)?,
-        TopLevelKind::Slack => Command::Slack(command_args::parse_slack(&rest)?),
         TopLevelKind::Provider => {
             command_args::validate_provider(&rest).map(|()| Command::Provider)?
         }
