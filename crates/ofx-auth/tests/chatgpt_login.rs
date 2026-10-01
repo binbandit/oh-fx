@@ -428,7 +428,7 @@ async fn preparation_refreshes_an_expired_session_and_persists_it() {
     let server = FakeServer::start([token_reply(&fresh)]);
     let fixture = Fixture::new();
     fixture.write_session(&access_token("acct_test", "stale"), now_ms() - 1);
-    let access = prepare_chatgpt_credential(&fixture.oauth(&server))
+    let access = prepare_chatgpt_credential(&fixture.oauth(&server), &CancellationToken::new())
         .await
         .unwrap()
         .unwrap();
@@ -450,9 +450,15 @@ async fn preparation_reports_missing_and_expired_logins_as_absent() {
     )]);
     let fixture = Fixture::new();
     let oauth = fixture.oauth(&server);
-    assert_eq!(prepare_chatgpt_credential(&oauth).await, Ok(None));
+    assert_eq!(
+        prepare_chatgpt_credential(&oauth, &CancellationToken::new()).await,
+        Ok(None)
+    );
     fixture.write_session(&access_token("acct_test", "stale"), now_ms() - 1);
-    assert_eq!(prepare_chatgpt_credential(&oauth).await, Ok(None));
+    assert_eq!(
+        prepare_chatgpt_credential(&oauth, &CancellationToken::new()).await,
+        Ok(None)
+    );
     assert!(!fixture.credential_file().exists());
 }
 
@@ -467,7 +473,7 @@ async fn preparation_refuses_credentials_readable_by_others() {
     )
     .unwrap();
     assert_eq!(
-        prepare_chatgpt_credential(&fixture.oauth(&server)).await,
+        prepare_chatgpt_credential(&fixture.oauth(&server), &CancellationToken::new()).await,
         Err(PreparationError::CredentialStorageUnavailable)
     );
     assert!(server.requests().is_empty());
@@ -480,9 +486,14 @@ async fn forced_refreshes_must_keep_the_signed_in_account() {
     fixture.write_session(&access_token("acct_test", "current"), now_ms() + 3_600_000);
     let oauth = fixture.oauth(&server);
     assert_eq!(
-        refresh_chatgpt_credential(&oauth, RefreshMode::Force, "acct_other")
-            .await
-            .unwrap_err(),
+        refresh_chatgpt_credential(
+            &oauth,
+            RefreshMode::Force,
+            "acct_other",
+            &CancellationToken::new()
+        )
+        .await
+        .unwrap_err(),
         ChatGptError::ChatGptAccountChanged
     );
     assert_eq!(server.requests().len(), 1);
@@ -495,7 +506,10 @@ async fn credentials_never_appear_in_debug_output_or_errors() {
     let fixture = Fixture::new();
     fixture.write_session(&secret, now_ms() + 3_600_000);
     let oauth = fixture.oauth(&server);
-    let access = prepare_chatgpt_credential(&oauth).await.unwrap().unwrap();
+    let access = prepare_chatgpt_credential(&oauth, &CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
     for rendered in [format!("{access:?}"), format!("{oauth:?}")] {
         assert!(!rendered.contains(&secret), "{rendered}");
         assert!(!rendered.contains(REFRESH_TOKEN), "{rendered}");

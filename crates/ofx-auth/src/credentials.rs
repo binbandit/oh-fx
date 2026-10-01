@@ -1,3 +1,6 @@
+pub const MISSING_CHATGPT_CREDENTIAL_MESSAGE: &str =
+    "oh-fx needs a Codex subscription login for this model. Run oh-fx login codex.";
+pub const CHATGPT_RELOGIN_MESSAGE: &str = "Run oh-fx login codex to sign in again.";
 pub const HOST_MANAGED_AUTH_MESSAGE: &str = "Authentication is managed by the host.";
 pub const CHATGPT_SOURCE_LABEL: &str = "Codex subscription";
 
@@ -36,5 +39,12 @@ mod tests {
             parse_auth_mode(Some(b"host-managed")),
             Some(AuthMode::HostManaged)
         );
+    }
+
+    #[test]
+    fn public_credential_guidance_spells_oh_fx_lowercase() {
+        for message in [MISSING_CHATGPT_CREDENTIAL_MESSAGE, CHATGPT_RELOGIN_MESSAGE] {
+            assert!(message.contains("Run oh-fx login codex"), "{message}");
+        }
     }
 }

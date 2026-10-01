@@ -1,5 +1,6 @@
 mod auto_upgrade;
 mod cli_ask;
+mod codex_provider;
 mod context;
 mod help;
 mod login_command;
