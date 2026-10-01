@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
-fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
+pub fn contains_ignore_case(haystack: impl AsRef<[u8]>, needle: impl AsRef<[u8]>) -> bool {
+    let (haystack, needle) = (haystack.as_ref(), needle.as_ref());
     needle.is_empty()
         || haystack
             .windows(needle.len())
@@ -10,6 +11,30 @@ fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
 
 fn is_posix_space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c')
+}
+
+pub fn is_model_safe_text(text: &[u8]) -> bool {
+    !text.contains(&0) && std::str::from_utf8(text).is_ok()
+}
+
+pub fn normalize_line_endings_in_place(bytes: &mut Vec<u8>) {
+    let mut read = 0;
+    let mut write = 0;
+    while read < bytes.len() {
+        if bytes[read] == b'\r' {
+            bytes[write] = b'\n';
+            write += 1;
+            read += 1;
+            if read < bytes.len() && bytes[read] == b'\n' {
+                read += 1;
+            }
+            continue;
+        }
+        bytes[write] = bytes[read];
+        write += 1;
+        read += 1;
+    }
+    bytes.truncate(write);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,11 +168,47 @@ fn terminal_safe_token(raw: &[u8], index: usize) -> (usize, SafeToken<'_>) {
     let Ok(sequence) = std::str::from_utf8(&raw[index..index + sequence_len]) else {
         return (1, SafeToken::ByteEscape(byte));
     };
-    let codepoint = sequence.chars().next().map_or(0, u32::from);
-    if is_non_printing_codepoint(codepoint) {
-        return (sequence_len, SafeToken::CodepointEscape(codepoint));
+    match sequence.chars().next() {
+        Some(character) if !is_terminal_safe_char(character) => (
+            sequence_len,
+            SafeToken::CodepointEscape(u32::from(character)),
+        ),
+        _ => (sequence_len, SafeToken::Literal(sequence)),
     }
-    (sequence_len, SafeToken::Literal(sequence))
+}
+
+pub fn is_terminal_safe_char(character: char) -> bool {
+    let codepoint = u32::from(character);
+    codepoint >= 0x20 && codepoint != 0x7f && !is_non_printing_codepoint(codepoint)
+}
+
+pub fn escape_terminal_controls(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(is_terminal_control) {
+        return Cow::Borrowed(text);
+    }
+    let mut escaped = String::with_capacity(text.len() + 16);
+    for character in text.chars() {
+        if is_terminal_control(character) {
+            control_escape(character).write(&mut escaped);
+        } else {
+            escaped.push(character);
+        }
+    }
+    Cow::Owned(escaped)
+}
+
+fn is_terminal_control(character: char) -> bool {
+    matches!(
+        u32::from(character),
+        0x00..=0x08 | 0x0a..=0x1f | 0x7f..=0x9f | 0x2028..=0x202e | 0x2066..=0x2069
+    )
+}
+
+fn control_escape(character: char) -> SafeToken<'static> {
+    match u8::try_from(character) {
+        Ok(byte) if byte.is_ascii() => SafeToken::ByteEscape(byte),
+        _ => SafeToken::CodepointEscape(u32::from(character)),
+    }
 }
 
 fn is_non_printing_codepoint(codepoint: u32) -> bool {
@@ -802,11 +863,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn is_model_safe_text_rejects_nul_bytes_and_invalid_utf_8() {
+        assert!(is_model_safe_text(b"hello"));
+        assert!(!is_model_safe_text(b"hello\x00world"));
+        assert!(!is_model_safe_text(b"\xff"));
+    }
+
+    #[test]
+    fn normalize_line_endings_in_place_compacts_crlf_and_normalizes_lone_cr() {
+        let cases = [
+            ("", ""),
+            ("alpha\nbeta", "alpha\nbeta"),
+            ("alpha\r\nbeta", "alpha\nbeta"),
+            ("alpha\rbeta", "alpha\nbeta"),
+            ("\r\n\r\n", "\n\n"),
+            ("\r\r\n\n", "\n\n\n"),
+            ("é\r\n🙂\r尾", "é\n🙂\n尾"),
+        ];
+        for (input, expected) in cases {
+            let mut storage = input.as_bytes().to_vec();
+            normalize_line_endings_in_place(&mut storage);
+            assert_eq!(storage, expected.as_bytes());
+        }
+    }
+
+    #[test]
     fn contains_ignore_case_handles_empty_needles_and_oversized_needles() {
         assert!(contains_ignore_case(b"Haystack", b""));
         assert!(!contains_ignore_case(b"short", b"longer needle"));
         assert!(contains_ignore_case(b"Local Coding Assistant", b"coding"));
         assert!(contains_ignore_case(b"\xffPARSE error\xfe", b"parse ERROR"));
+        assert!(contains_ignore_case("openai/GPT-5", "gpt"));
     }
 
     #[test]
@@ -1022,6 +1109,57 @@ mod tests {
             "مرحبا",
         ] {
             assert_eq!(encode_terminal_safe(text.as_bytes(), 128).text, text);
+        }
+    }
+
+    #[test]
+    fn terminal_safe_characters_are_exactly_those_the_encoder_keeps() {
+        for codepoint in (0..=0x3_0000).chain(0xe_0000..=0xe_1000) {
+            let Some(character) = char::from_u32(codepoint) else {
+                continue;
+            };
+            let mut buffer = [0; 4];
+            let encoded = encode_terminal_safe(character.encode_utf8(&mut buffer).as_bytes(), 64);
+            assert_eq!(
+                is_terminal_safe_char(character),
+                encoded.text == character.to_string(),
+                "{codepoint:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_terminal_controls_escapes_controls_and_bidi_reordering_once() {
+        assert_eq!(
+            escape_terminal_controls("a\x1b[31mb\x07c\rd\u{7f}"),
+            "a\\x1b[31mb\\x07c\\x0dd\\x7f"
+        );
+        assert_eq!(
+            escape_terminal_controls("\u{9b}2J \u{85} \u{2028}\u{2029}"),
+            "\\u{009b}2J \\u{0085} \\u{2028}\\u{2029}"
+        );
+        assert_eq!(
+            escape_terminal_controls("\u{202a}\u{202e}gpj.exe\u{2066}\u{2069}"),
+            "\\u{202a}\\u{202e}gpj.exe\\u{2066}\\u{2069}"
+        );
+        let escaped = escape_terminal_controls("\x1b]8;;http://evil\x07");
+        assert_eq!(escape_terminal_controls(&escaped), escaped);
+    }
+
+    #[test]
+    fn escape_terminal_controls_keeps_tabs_scripts_and_emoji_joiners() {
+        for text in [
+            "tab\tseparated",
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "\u{0645}\u{06cc}\u{200c}\u{062e}\u{0648}\u{0627}\u{0647}\u{0645}",
+            "\u{05e9}\u{200f}abc\u{200e}",
+            "soft\u{ad}hyphen \u{2764}\u{fe0f}",
+            "caf\u{e9} \u{65e5}\u{672c}",
+        ] {
+            assert!(
+                matches!(escape_terminal_controls(text), Cow::Borrowed(_)),
+                "{text:?}"
+            );
         }
     }
 

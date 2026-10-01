@@ -1,5 +1,16 @@
+mod display_width;
 mod model_context_encoding;
 mod text_utils;
+mod unicode_display_data;
 
+pub use display_width::{
+    DisplayUnit, display_unit_at, next_tab_stop_column, prefix_by_width, should_wrap_at,
+    status_prefix_end, suffix_by_width, trim_break_whitespace, visible_width,
+    wrap_cut_ignoring_ansi,
+};
 pub use model_context_encoding::write_scalar;
-pub use text_utils::{EncodedText, encode_terminal_safe, mask_secrets, sanitize_assistant_text};
+pub use text_utils::{
+    EncodedText, contains_ignore_case, encode_terminal_safe, escape_terminal_controls,
+    is_model_safe_text, is_terminal_safe_char, mask_secrets, normalize_line_endings_in_place,
+    sanitize_assistant_text,
+};
