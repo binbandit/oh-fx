@@ -49,15 +49,28 @@ Point requests at a Portkey config with `x-portkey-config`:
 
 ### Provider header with your own provider key
 
-To route through a provider directly and forward that provider's key, set `x-portkey-provider` and send the key as a bearer token:
+To route through a provider directly and forward that provider's key, set `x-portkey-provider` to the provider's name, send the key as a bearer token, and use the provider's own model ids:
 
 ```json
-"auth": {"type": "bearer", "env": "OPENAI_API_KEY"},
-"headers": {
-  "x-portkey-api-key": "${PORTKEY_API_KEY}",
-  "x-portkey-provider": "openai"
+{
+  "provider": "portkey",
+  "model": "gpt-4o",
+  "providers": {
+    "portkey": {
+      "protocol": "openai-chat-completions",
+      "base_url": "https://portkey.internal.example.com/v1",
+      "auth": {"type": "bearer", "env": "OPENAI_API_KEY"},
+      "headers": {
+        "x-portkey-api-key": "${PORTKEY_API_KEY}",
+        "x-portkey-provider": "openai"
+      },
+      "models": ["gpt-4o"]
+    }
+  }
 }
 ```
+
+A plain provider name such as `openai` takes the key from the `Authorization` header. Model ids prefixed with `@`, as in the first example, select a provider saved in Portkey's Model Catalog instead, so the two styles are not mixed in one connection.
 
 With `auth.type` set to `bearer`, oh-fx owns the `Authorization` header and refuses an `Authorization` entry under `headers`. If you prefer to build that header yourself, keep `auth` as `none` and write `"Authorization": "Bearer ${OPENAI_API_KEY}"` under `headers`.
 
@@ -75,7 +88,7 @@ With `auth.type` set to `bearer`, oh-fx owns the `Authorization` header and refu
 | `tool_choice_mode` | no | `"omit"` (default) never sends `tool_choice`; `"send"` sends `"auto"` or `"required"` when tools are offered. |
 | `max_tokens_parameter` | no | The request field that carries the output limit: `"max_tokens"` (default) or `"max_completion_tokens"`, which OpenAI reasoning models and Azure OpenAI require. |
 | `reviewer_model` | no | Model id for the automatic permission reviewer. It is validated now and used once the reviewer lands. |
-| `model_metadata` | no | Per-model `context_window`, `max_output_tokens`, `supports_tool_use`, `supports_vision`. `max_output_tokens` becomes the request's output limit; when it is not below `context_window`, oh-fx sends the smaller of 32768 and an eighth of the window, as upstream does. The `supports_*` flags are validated but not used yet. |
+| `model_metadata` | no | Per-model `context_window`, `max_output_tokens`, `supports_tool_use`, `supports_vision`. `max_output_tokens` becomes the request's output limit and must be smaller than `context_window`; otherwise the connection fails to load with `InvalidModelMetadata`. The `supports_*` flags are validated but not used yet. |
 
 Unknown fields are rejected so that a typo cannot silently change where requests go. Validation errors keep upstream's names, for example `oh-fx: InvalidBaseUrl` or `oh-fx: UnknownField`.
 
@@ -159,7 +172,9 @@ oh-fx: InvalidChunk
 oh-fx ask: stream event: {not json ...
 ```
 
-With `--json`, the name goes in the result's `error` field and the detail line still goes to stderr. An HTTP error prints one line with the gateway's code and message, and a 401 adds the gateway's own explanation on a second line.
+With `--json`, the name goes in the result's `error` field and the detail line still goes to stderr.
+
+An HTTP error from the gateway is reported differently. It prints one `oh-fx ask:` line with the status, the gateway's code and its message, and a 401 adds the gateway's own explanation on a second line. With `--json`, the result has no `error` field. `exit_code` is `1`, the message line is in `output`, and a 401 also sets `auth_failure`.
 
 ## Troubleshooting
 
@@ -168,7 +183,7 @@ With `--json`, the name goes in the result's `error` field and the detail line s
 | `the gateway provider is not available in oh-fx yet; ...` | No `provider` is selected. Add a connection and select it. |
 | `oh-fx: UnknownConfiguredProvider` | `provider` or `OH_FX_PROVIDER` names a connection that is not under `providers`. |
 | `The configured provider credential is unavailable. ...` | `auth.type` is `bearer` and its environment variable is unset or blank. |
-| `oh-fx: InvalidConfiguredProviderCredential` | The bearer token is longer than 16 KiB or contains spaces, control characters, or non-ASCII characters. |
+| `the configured provider credential is not a valid bearer token; ...` | The bearer token is longer than 16 KiB or contains spaces, control characters, or non-ASCII characters. With `--json`, `error` is `InvalidConfiguredProviderCredential`. |
 | `configured provider authentication failed · HTTP 401` | The gateway rejected the key. Check the key variable and the header name. |
 | `API request failed · HTTP 4xx/5xx · ...` | The gateway answered with an error; the message shows its code and text, with secrets masked. |
 | `HTTP 302: redirect to https://sso.example.com was not followed; ...` | `base_url` points at a sign-in page or a proxy that redirects. Use the gateway's API URL. |
