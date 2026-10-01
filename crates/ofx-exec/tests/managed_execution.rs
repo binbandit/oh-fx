@@ -5,12 +5,14 @@ use std::io::Read;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_exec::{
-    CommandStatus, Environment, ExecutionError, ManagedExecutions, SessionSupervisor, Snapshot,
-    SnapshotState, StartCaptured, is_foreground_session_invocation, run_foreground_session,
+    CommandStatus, Environment, ExecutionError, ManagedExecutions, OutputEcho, SessionSupervisor,
+    Snapshot, SnapshotState, StartCaptured, is_foreground_session_invocation,
+    run_foreground_session,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -20,10 +22,14 @@ const LONG: Duration = Duration::from_secs(20);
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 16] = [
+const TESTS: [(&str, Test); 17] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
+    ),
+    (
+        "echoed_output_arrives_in_whole_lines_before_the_command_completes",
+        echoed_output_arrives_in_whole_lines_before_the_command_completes,
     ),
     (
         "a_slow_command_yields_a_retained_session_that_stop_ends",
@@ -229,6 +235,72 @@ fn a_fast_command_completes_inside_its_yield_window() {
     assert!(snapshot.duration_ms.is_some());
     assert_eq!(snapshot.error_name, None);
     assert!(!snapshot.output_truncated);
+}
+
+fn echoed_output_arrives_in_whole_lines_before_the_command_completes() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let echo: OutputEcho = Arc::new(move |chunk: &[u8]| {
+        recorded
+            .lock()
+            .expect("the test step succeeds")
+            .push(String::from_utf8_lossy(chunk).into_owned());
+        Ok(())
+    });
+    let echoed_lines = || {
+        let mut lines: Vec<String> = seen
+            .lock()
+            .expect("the test step succeeds")
+            .iter()
+            .flat_map(|chunk| chunk.lines().map(str::to_owned).collect::<Vec<_>>())
+            .collect();
+        lines.sort_unstable();
+        lines
+    };
+    block_on(async {
+        let directory = tempfile::tempdir().expect("the test step succeeds");
+        let gate = fifo(directory.path(), "gate");
+        let executions = executions().with_output_echo(echo);
+        let command = format!(
+            "printf 'err\\n' >&2; printf 'one\\ntwo\\n'; read line < {}; printf 'three'",
+            gate.display()
+        );
+        let first = executions
+            .start_captured(run(&command, Duration::ZERO), &CancellationToken::new())
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(first.state, SnapshotState::Running);
+        let started = Instant::now();
+        while echoed_lines() != ["err", "one", "two"] {
+            assert!(
+                started.elapsed() < LONG,
+                "the running command's lines were not echoed: {:?}",
+                echoed_lines()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (sender, opened) = std::sync::mpsc::channel();
+        let path = gate.clone();
+        thread::spawn(move || {
+            let _ = sender.send(fs::write(path, "go\n").is_ok());
+        });
+        assert_eq!(opened.recv_timeout(LONG), Ok(true));
+        let (last, _) = observe_until(&executions, &first.execution_id, |snapshot, _| {
+            snapshot.state != SnapshotState::Running
+        })
+        .await;
+        assert_eq!(
+            last.state,
+            SnapshotState::Completed(CommandStatus::ExitCode(0))
+        );
+    });
+    let mut chunks = seen.lock().expect("the test step succeeds").clone();
+    assert_eq!(chunks.last().map(String::as_str), Some("three"));
+    chunks.pop();
+    assert!(
+        chunks.iter().all(|chunk| chunk.ends_with('\n')),
+        "{chunks:?}"
+    );
 }
 
 fn a_slow_command_yields_a_retained_session_that_stop_ends() {

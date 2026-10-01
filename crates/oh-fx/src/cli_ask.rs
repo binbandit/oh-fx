@@ -20,8 +20,8 @@ use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
     CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    ProviderError, RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome,
-    UiEvent, Usage,
+    ProviderError, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolResultStatus,
+    TurnOutcome, UiEvent, Usage,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::ChatCompletionsProvider;
@@ -35,6 +35,7 @@ use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
 use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
+use crate::command_echo::CommandEcho;
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
 use crate::tool_set;
 
@@ -284,10 +285,23 @@ async fn ask(args: &AskArgs, prompt: &str, endpoints: SubscriptionEndpoints) -> 
     let Ok(supervisor) = SessionSupervisor::current_executable() else {
         return Failure::code("SelfExeNotFound").report(args.output.json);
     };
-    let executions = ManagedExecutions::new(supervisor);
+    let echo = (output_mode(args.output) != OutputMode::Terminal).then(Arc::default);
+    let mut executions = ManagedExecutions::new(supervisor);
+    if let Some(echo) = &echo {
+        executions = executions.with_output_echo(CommandEcho::output(echo));
+    }
     let cancel = CancellationToken::new();
     let received = watch_signals(cancel.clone());
-    let answered = answer(args, prompt, endpoints, &executions, &cancel, &received).await;
+    let answered = answer(
+        args,
+        prompt,
+        endpoints,
+        &executions,
+        echo,
+        &cancel,
+        &received,
+    )
+    .await;
     executions.shutdown().await;
     settle(answered, &received)
 }
@@ -307,6 +321,7 @@ async fn answer(
     prompt: &str,
     endpoints: SubscriptionEndpoints,
     executions: &ManagedExecutions,
+    echo: Option<Arc<CommandEcho>>,
     cancel: &CancellationToken,
     received: &ReceivedSignals,
 ) -> Result<ExitCode, Signalled> {
@@ -316,7 +331,7 @@ async fn answer(
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
     };
-    let mut presenter = Presenter::new(args.output, permission_mode, source);
+    let mut presenter = Presenter::new(args.output, permission_mode, source).echoing(echo);
     let report = agent
         .run_turn(
             prompt,
@@ -686,6 +701,18 @@ enum OutputMode {
     Terminal,
 }
 
+fn output_mode(output: AskOutput) -> OutputMode {
+    if output.json {
+        OutputMode::Json
+    } else if output.quiet {
+        OutputMode::Quiet
+    } else if io::stdout().is_terminal() {
+        OutputMode::Terminal
+    } else {
+        OutputMode::Raw
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatusBlock {
     Progress,
@@ -709,6 +736,8 @@ struct Presenter {
     settling_progress: Vec<(ToolCallId, String)>,
     recovery: Option<RouteRecoveryStatus>,
     write_error: Option<&'static str>,
+    command_echo: Option<Arc<CommandEcho>>,
+    command_calls: Vec<ToolCallId>,
 }
 
 struct FailureSummary {
@@ -718,17 +747,8 @@ struct FailureSummary {
 
 impl Presenter {
     fn new(output: AskOutput, permission_mode: PermissionMode, source: CredentialSource) -> Self {
-        let mode = if output.json {
-            OutputMode::Json
-        } else if output.quiet {
-            OutputMode::Quiet
-        } else if io::stdout().is_terminal() {
-            OutputMode::Terminal
-        } else {
-            OutputMode::Raw
-        };
         Self {
-            mode,
+            mode: output_mode(output),
             permission_mode,
             source,
             stdout: Box::new(io::stdout()),
@@ -743,7 +763,14 @@ impl Presenter {
             settling_progress: Vec::new(),
             recovery: None,
             write_error: None,
+            command_echo: None,
+            command_calls: Vec::new(),
         }
+    }
+
+    fn echoing(mut self, echo: Option<Arc<CommandEcho>>) -> Self {
+        self.command_echo = echo;
+        self
     }
 
     fn handle(&mut self, event: UiEvent) -> bool {
@@ -762,6 +789,9 @@ impl Presenter {
                 ..
             } => {
                 self.start_step();
+                if description.activity == ToolActivity::Command {
+                    self.command_calls.push(call_id.clone());
+                }
                 let line = self.progress_line(&description.title);
                 if description.effect == ToolEffect::None {
                     self.settling_progress.push((call_id, line));
@@ -781,6 +811,7 @@ impl Presenter {
                     Some(line) => self.write_status(StatusBlock::Progress, &line),
                     None => Ok(()),
                 }
+                .and_then(|()| self.finish_command_output(&call_id))
             }
             UiEvent::ToolRejected { tool_name, .. } => {
                 self.start_step();
@@ -824,6 +855,20 @@ impl Presenter {
             "oh-fx ask: {PERMISSION_REQUIRED_HEADLINE}\noh-fx ask: blocked action: {}\noh-fx ask: reason={PERMISSION_PROMPT_UNAVAILABLE}\noh-fx ask: {hint}\n",
             self.display_title(title)
         )
+    }
+
+    fn finish_command_output(&mut self, call_id: &ToolCallId) -> io::Result<()> {
+        let Some(index) = self
+            .command_calls
+            .iter()
+            .position(|command| command == call_id)
+        else {
+            return Ok(());
+        };
+        self.command_calls.remove(index);
+        self.command_echo
+            .as_ref()
+            .map_or(Ok(()), |echo| echo.finish_line())
     }
 
     fn take_settling_progress(&mut self, call_id: &ToolCallId) -> Option<String> {
@@ -1300,6 +1345,7 @@ mod tests {
             "Hello",
             endpoints(&auth),
             &executions,
+            None,
             &cancel,
             &received,
         ));
