@@ -18,6 +18,7 @@ const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] 
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
 const UPSTREAM_GLOB_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"glob_files","description":"Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match, such as src/**/*.zig or *.md."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"mode":{"type":"string","enum":["matches","count"],"description":"Use matches to return sample paths, or count to return an exact matching path count without listing entries."}},"required":["pattern"]}}}"#;
 const UPSTREAM_GREP_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"grep_files","description":"Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported; avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Literal plain-text pattern to search for."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"include":{"type":"string","description":"Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts."},"case_insensitive":{"type":"boolean","description":"Search case-insensitively when true."},"mode":{"type":"string","enum":["matches","files_with_matches","count"],"description":"Use matches for line matches, files_with_matches for unique matching paths, or count for exact matching-line and matching-file counts."},"head_limit":{"type":"integer","description":"Optional positive maximum results to return for matches or files_with_matches. Defaults to the normal output cap."},"offset":{"type":"integer","description":"Optional zero-based result offset for matches or files_with_matches pagination. Defaults to 0."},"context_lines":{"type":"integer","description":"Optional non-negative number of lines before and after each emitted match in matches mode. Bounded by the tool."}},"required":["pattern"]}}}"#;
+const UPSTREAM_EDIT_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"edit_file","description":"Edit an existing file by replacing one exact old_string occurrence with new_string. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: make a focused patch after reading the file. When NOT to use: broad rewrites, ambiguous repeated text, generated formatting, missing files, or cross-file refactors.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"old_string":{"type":"string","description":"Exact text to find in the file. Must match exactly once."},"new_string":{"type":"string","description":"Text to replace old_string with."}},"required":["path","old_string","new_string"]}}}"#;
 const UPSTREAM_WRITE_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"write_file","description":"Create or overwrite a file using complete contents. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: add a new file or intentionally replace an entire generated/small file. When NOT to use: targeted edits to existing files, partial replacements, deleting files, or unapproved external paths.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"content":{"type":"string","description":"Complete file contents to write."}},"required":["path","content"]}}}"#;
 
 struct Home {
@@ -1113,7 +1114,7 @@ fn ask_runs_read_file_and_sends_its_result_to_the_model() {
         assert!(
             request
                 .body_text()
-                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL},{UPSTREAM_GLOB_FILES_TOOL},{UPSTREAM_GREP_FILES_TOOL},{UPSTREAM_WRITE_FILE_TOOL}]")),
+                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL},{UPSTREAM_GLOB_FILES_TOOL},{UPSTREAM_GREP_FILES_TOOL},{UPSTREAM_EDIT_FILE_TOOL},{UPSTREAM_WRITE_FILE_TOOL}]")),
             "{}",
             request.body_text()
         );
@@ -1862,6 +1863,84 @@ fn full_access_writes_an_external_file() {
         [json!({
             "role": "tool",
             "content": format!("wrote {} (9 bytes)", outside.path),
+            "tool_call_id": "call_1",
+        })]
+    );
+}
+
+#[test]
+fn ask_mode_reports_a_failed_workspace_edit_to_the_model_before_any_approval() {
+    let edit = |call_id: &str, old_string: &str| {
+        chat_tool_call_events(
+            call_id,
+            "edit_file",
+            &json!({"path": "notes.txt", "old_string": old_string, "new_string": "BETA"})
+                .to_string(),
+        )
+    };
+    let server = FakeServer::start([
+        Reply::sse(&edit("call_1", "missing")),
+        Reply::sse(&edit("call_2", "beta")),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+    fs::write(home.workspace.join("notes.txt"), "alpha\nbeta\n").unwrap();
+
+    let output = home.ask(
+        &["ask", "--json", "edit notes.txt"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "Editing notes.txt\nEditing notes.txt\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Editing notes.txt\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        tool_messages(&requests[1]),
+        [json!({
+            "role": "tool",
+            "content": "edit_file failed: old_string not found in file. Re-read the file to see its current contents; if the change is already applied, do not retry this edit.",
+            "tool_call_id": "call_1",
+        })]
+    );
+    assert_eq!(
+        fs::read_to_string(home.workspace.join("notes.txt")).unwrap(),
+        "alpha\nbeta\n"
+    );
+}
+
+#[test]
+fn auto_mode_edits_workspace_files() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "edit_file",
+            &json!({"path": "notes.txt", "old_string": "beta", "new_string": "BETA"}).to_string(),
+        )),
+        Reply::sse(&chat_text_events(&["Edited."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
+    fs::write(home.workspace.join("notes.txt"), "alpha\nbeta\n").unwrap();
+
+    let output = home.ask(
+        &["ask", "edit notes.txt"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Edited.");
+    assert_eq!(
+        fs::read_to_string(home.workspace.join("notes.txt")).unwrap(),
+        "alpha\nBETA\n"
+    );
+    assert_eq!(
+        tool_messages(&server.requests()[1]),
+        [json!({
+            "role": "tool",
+            "content": "edited notes.txt (11 bytes)",
             "tool_call_id": "call_1",
         })]
     );
