@@ -2193,6 +2193,70 @@ fn ask_mode_blocks_every_shell_command_before_it_runs() {
 }
 
 #[test]
+fn shell_calls_that_fail_validation_are_rejected_before_the_permission_gate() {
+    let refused = [
+        ("call_1", json!({"action": "run"})),
+        ("call_2", json!({"action": "stop"})),
+        (
+            "call_3",
+            json!({"action": "run", "command": "ls", "cwd": "missing-directory"}),
+        ),
+    ]
+    .map(|(call_id, request)| (call_id, "shell", shell_call(&request)));
+    let server = FakeServer::start([
+        Reply::sse(&parallel_tool_call_events(&refused.each_ref().map(
+            |(call_id, name, arguments)| (*call_id, *name, arguments.as_str()),
+        ))),
+        shell_reply("call_4", &json!({"action": "run", "command": "which sh"})),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+
+    let output = home.ask(&["ask", "--json", "run it"], &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "Running command\nStopping shell execution\nRunning ls\n{}",
+            blocked_shell_stderr("which sh", ASK_MODE_HINT)
+        )
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "NonInteractivePermissionRequired");
+    let rejected = |action: &str| {
+        json!({
+            "name": "shell",
+            "status": "error",
+            "action": action,
+            "error": {"category": "rejected", "code": "rejected"},
+        })
+    };
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            rejected("run"),
+            rejected("stop"),
+            rejected("run"),
+            rejected("run")
+        ])
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let contents: Vec<Value> = tool_messages(&requests[1])
+        .iter()
+        .map(|message| message["content"].clone())
+        .collect();
+    assert_eq!(
+        contents,
+        [
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["request.command is required.","request.command is required."]}}"#,
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["request.session_id is required."]}}"#,
+            "shell run cwd is invalid: FileNotFound",
+        ]
+    );
+}
+
+#[test]
 fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands() {
     let server = FakeServer::start([
         shell_reply(

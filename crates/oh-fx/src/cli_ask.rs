@@ -21,7 +21,7 @@ use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, reques
 use ofx_contract::{
     CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
     ProviderError, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection,
-    ToolResultStatus, TurnOutcome, UiEvent, Usage, format_unknown_action,
+    ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::ChatCompletionsProvider;
@@ -884,25 +884,25 @@ impl Presenter {
                 tool_name,
                 arguments,
                 reason,
+                title,
                 ..
             } => {
                 self.start_step();
                 match reason {
-                    ToolRejection::Unsupported => {
-                        let line = self.progress_line(&format_unknown_action(&tool_name));
-                        self.write_status(StatusBlock::Progress, &line)
-                    }
+                    ToolRejection::Unsupported => {}
                     ToolRejection::Invalid => {
                         self.tool_calls
                             .push(ToolRecord::rejected(tool_name, &arguments));
-                        Ok(())
                     }
                     ToolRejection::Panicked => {
                         self.tool_calls
                             .push(ToolRecord::preflight_failed(tool_name, &arguments));
-                        Ok(())
                     }
                 }
+                title.map_or(Ok(()), |title| {
+                    let line = self.progress_line(&title);
+                    self.write_status(StatusBlock::Progress, &line)
+                })
             }
             UiEvent::TurnStarted { .. }
             | UiEvent::ReasoningText { .. }
@@ -1719,13 +1719,20 @@ mod tests {
         }
     }
 
-    fn rejected(call_id: &str, tool_name: &str, arguments: &str, reason: ToolRejection) -> UiEvent {
+    fn rejected(
+        call_id: &str,
+        tool_name: &str,
+        arguments: &str,
+        reason: ToolRejection,
+        title: Option<&str>,
+    ) -> UiEvent {
         UiEvent::ToolRejected {
             turn_id: TurnId::new(1),
             call_id: ToolCallId::new(call_id),
             tool_name: tool_name.to_owned(),
             arguments: arguments.to_owned(),
             reason,
+            title: title.map(str::to_owned),
         }
     }
 
@@ -1793,7 +1800,8 @@ mod tests {
             "call-2",
             "missing",
             "{}",
-            ToolRejection::Unsupported
+            ToolRejection::Unsupported,
+            Some("Working: missing")
         )));
         presenter.push_assistant("\nDone").unwrap();
         assert_eq!(presenter.output, "Looking.\n\nFound it.\n\n\nDone");
@@ -1809,11 +1817,23 @@ mod tests {
         present(
             &mut presenter,
             [
-                rejected("call-1", "missing", run, ToolRejection::Unsupported),
-                rejected("call-2", "shell", run, ToolRejection::Invalid),
-                rejected("call-3", "read_file", "{}", ToolRejection::Invalid),
-                rejected("call-4", "shell", stop, ToolRejection::Panicked),
-                rejected("call-5", "read_file", "{}", ToolRejection::Panicked),
+                rejected(
+                    "call-1",
+                    "missing",
+                    run,
+                    ToolRejection::Unsupported,
+                    Some("Working: missing"),
+                ),
+                rejected(
+                    "call-2",
+                    "shell",
+                    run,
+                    ToolRejection::Invalid,
+                    Some("Running command"),
+                ),
+                rejected("call-3", "read_file", "{}", ToolRejection::Invalid, None),
+                rejected("call-4", "shell", stop, ToolRejection::Panicked, None),
+                rejected("call-5", "read_file", "{}", ToolRejection::Panicked, None),
             ],
         );
         assert_eq!(presenter.steps, 5);
@@ -1829,22 +1849,35 @@ mod tests {
     }
 
     #[test]
-    fn terminal_output_shows_unknown_tools_as_safe_progress_lines() {
+    fn terminal_output_shows_rejected_calls_with_titles_as_safe_progress_lines() {
         let (mut presenter, screen) = terminal_presenter();
         present(
             &mut presenter,
             [
                 assistant("Looking."),
-                rejected("call-1", "missing\x1b[2J", "{}", ToolRejection::Unsupported),
-                rejected("call-2", "read_file", "{}", ToolRejection::Invalid),
+                rejected(
+                    "call-1",
+                    "missing\x1b[2J",
+                    "{}",
+                    ToolRejection::Unsupported,
+                    Some("Working: missing\x1b[2J"),
+                ),
+                rejected(
+                    "call-2",
+                    "shell",
+                    r#"{"action":"run"}"#,
+                    ToolRejection::Invalid,
+                    Some("Running command"),
+                ),
+                rejected("call-3", "read_file", "{}", ToolRejection::Invalid, None),
                 assistant("Done."),
             ],
         );
         assert_eq!(
             screen.text(),
-            "Looking.\n\nWorking: missing\\x1b[2J\n\nDone."
+            "Looking.\n\nWorking: missing\\x1b[2J\nRunning command\n\nDone."
         );
-        assert_eq!(presenter.steps, 2);
+        assert_eq!(presenter.steps, 3);
     }
 
     #[test]
@@ -2116,6 +2149,7 @@ mod tests {
                 "missing",
                 "{}",
                 ToolRejection::Unsupported,
+                Some("Working: missing"),
             )],
             3 => vec![UiEvent::Recovery {
                 turn_id: TurnId::new(1),
