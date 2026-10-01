@@ -1,4 +1,5 @@
 use std::env;
+use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
@@ -9,7 +10,8 @@ pub(crate) fn announce_and_schedule() {
         return;
     };
     if let Some(version) = ofx_upgrade::version_change_since_last_run(&paths.state) {
-        eprintln!(
+        let _ = writeln!(
+            io::stderr(),
             "✓ oh-fx has been updated to v{version} (notes: {})",
             ofx_upgrade::release_notes_url(version)
         );
