@@ -134,6 +134,10 @@ pub trait PreparedCall: Send {
         None
     }
 
+    fn refusal(&self) -> Option<&ToolOutput> {
+        None
+    }
+
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput>;
 }
 

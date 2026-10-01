@@ -196,6 +196,7 @@ struct EchoCall {
     arguments: String,
     mutation: Option<FileMutation>,
     command: Option<CommandRequest>,
+    refusal: Option<ToolOutput>,
     cleaned_up: Arc<AtomicBool>,
     meeting: Arc<tokio::sync::Barrier>,
 }
@@ -234,6 +235,9 @@ impl Tool for EchoTool {
             arguments: arguments.to_owned(),
             mutation,
             command,
+            refusal: arguments
+                .contains("refused")
+                .then(|| ToolOutput::failure("refused arguments")),
             cleaned_up: Arc::clone(&self.cleaned_up),
             meeting: Arc::clone(&self.meeting),
         }))
@@ -263,6 +267,14 @@ impl PreparedCall for EchoCall {
             "command request panicked"
         );
         self.command.as_ref()
+    }
+
+    fn refusal(&self) -> Option<&ToolOutput> {
+        assert!(
+            !self.arguments.contains("refusal_panic"),
+            "refusal panicked"
+        );
+        self.refusal.as_ref()
     }
 
     fn describe(&self) -> CallDescription {
@@ -632,24 +644,47 @@ async fn unknown_tools_and_rejected_arguments_are_reported_and_panics_become_fai
         tool_reply(&[
             ("call-1", r#"{"invalid":true}"#),
             ("call-2", r#"{"panic":true}"#),
+            ("call-3", r#"{"refused":true}"#),
         ]),
         text_reply("ok"),
     ]);
-    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let gate = Arc::new(RecordingGate::default());
+    let mut agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn ModelProvider>,
+        vec![echo_tool()],
+        Arc::new(FixedContext),
+        Arc::clone(&gate) as Arc<dyn PermissionGate>,
+        config(),
+    );
     let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(
         rejections(&events),
         [
-            ("call-0", "missing", "{}", ToolRejection::Unsupported),
+            (
+                "call-0",
+                "missing",
+                "{}",
+                ToolRejection::Unsupported,
+                Some("Working: missing")
+            ),
             (
                 "call-1",
                 "echo",
                 r#"{"invalid":true}"#,
-                ToolRejection::Invalid
+                ToolRejection::Invalid,
+                None
+            ),
+            (
+                "call-3",
+                "echo",
+                r#"{"refused":true}"#,
+                ToolRejection::Invalid,
+                Some(r#"Echoing {"refused":true}"#)
             ),
         ]
     );
+    assert_eq!(*gate.admitted.lock().unwrap(), ["echo"]);
     let started = events
         .iter()
         .filter(|event| matches!(event, UiEvent::ToolStarted { .. }))
@@ -669,6 +704,7 @@ async fn unknown_tools_and_rejected_arguments_are_reported_and_panics_become_fai
         results[2],
         r#"{"error":{"type":"tool_execution_failed","tool_name":"echo","message":"Tool execution panicked"}}"#
     );
+    assert_eq!(results[3], "refused arguments");
 }
 
 #[tokio::test]
@@ -725,7 +761,8 @@ async fn modern_mixed_batch_materializes_unsupported_terminal_before_admission()
             "terminal_unsupported",
             "missing_tool",
             "{}",
-            ToolRejection::Unsupported
+            ToolRejection::Unsupported,
+            Some("Working: missing_tool")
         )]
     );
     assert_eq!(
@@ -940,7 +977,9 @@ fn dispatch_order(events: &[UiEvent]) -> Vec<String> {
         .collect()
 }
 
-fn rejections(events: &[UiEvent]) -> Vec<(&str, &str, &str, ToolRejection)> {
+type Rejected<'a> = (&'a str, &'a str, &'a str, ToolRejection, Option<&'a str>);
+
+fn rejections(events: &[UiEvent]) -> Vec<Rejected<'_>> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -949,12 +988,14 @@ fn rejections(events: &[UiEvent]) -> Vec<(&str, &str, &str, ToolRejection)> {
                 tool_name,
                 arguments,
                 reason,
+                title,
                 ..
             } => Some((
                 call_id.as_str(),
                 tool_name.as_str(),
                 arguments.as_str(),
                 *reason,
+                title.as_deref(),
             )),
             _ => None,
         })
@@ -1424,7 +1465,8 @@ async fn panics_while_preparing_describing_or_inspecting_a_call_become_rejected_
             ("call-1", r#"{"prepare_panic":true}"#),
             ("call-2", r#"{"describe_panic":true}"#),
             ("call-3", r#"{"mutation_panic":true}"#),
-            ("call-4", r#"{"text":"after"}"#),
+            ("call-4", r#"{"refused":true,"refusal_panic":true}"#),
+            ("call-5", r#"{"text":"after"}"#),
         ]),
         text_reply("ok"),
     ]);
@@ -1438,19 +1480,29 @@ async fn panics_while_preparing_describing_or_inspecting_a_call_become_rejected_
                 "call-1",
                 "echo",
                 r#"{"prepare_panic":true}"#,
-                ToolRejection::Panicked
+                ToolRejection::Panicked,
+                None
             ),
             (
                 "call-2",
                 "echo",
                 r#"{"describe_panic":true}"#,
-                ToolRejection::Panicked
+                ToolRejection::Panicked,
+                None
             ),
             (
                 "call-3",
                 "echo",
                 r#"{"mutation_panic":true}"#,
-                ToolRejection::Panicked
+                ToolRejection::Panicked,
+                None
+            ),
+            (
+                "call-4",
+                "echo",
+                r#"{"refused":true,"refusal_panic":true}"#,
+                ToolRejection::Panicked,
+                None
             ),
         ]
     );
@@ -1460,8 +1512,9 @@ async fn panics_while_preparing_describing_or_inspecting_a_call_become_rejected_
             tool_message("call-1", PANICKED, ToolResultStatus::Failure),
             tool_message("call-2", PANICKED, ToolResultStatus::Failure),
             tool_message("call-3", PANICKED, ToolResultStatus::Failure),
+            tool_message("call-4", PANICKED, ToolResultStatus::Failure),
             tool_message(
-                "call-4",
+                "call-5",
                 r#"echo {"text":"after"}"#,
                 ToolResultStatus::Success
             ),
@@ -1487,7 +1540,7 @@ async fn calls_whose_drop_panics_after_their_inspection_panicked_are_rejected() 
     assert_eq!(report.outcome, TurnOutcome::Completed);
     let reasons: Vec<(&str, ToolRejection)> = rejections(&events)
         .into_iter()
-        .map(|(call_id, _, _, reason)| (call_id, reason))
+        .map(|(call_id, _, _, reason, _)| (call_id, reason))
         .collect();
     assert_eq!(
         reasons,

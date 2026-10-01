@@ -299,6 +299,10 @@ impl PreparedCall for ShellCall {
         self.request.as_ref()
     }
 
+    fn refusal(&self) -> Option<&ToolOutput> {
+        self.validated.as_ref().err()
+    }
+
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         let ShellCall {
             validated,
