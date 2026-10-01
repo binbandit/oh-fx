@@ -247,20 +247,53 @@ fn echoed_output_arrives_in_whole_lines_before_the_command_completes() {
             .push(String::from_utf8_lossy(chunk).into_owned());
         Ok(())
     });
-    let snapshot = block_on(async {
-        executions()
-            .with_output_echo(echo)
-            .start_captured(
-                run("printf 'err\\n' >&2; printf 'one\\ntwo\\nthree'", LONG),
-                &CancellationToken::new(),
-            )
-            .await
+    let echoed_lines = || {
+        let mut lines: Vec<String> = seen
+            .lock()
             .expect("the test step succeeds")
+            .iter()
+            .flat_map(|chunk| chunk.lines().map(str::to_owned).collect::<Vec<_>>())
+            .collect();
+        lines.sort_unstable();
+        lines
+    };
+    block_on(async {
+        let directory = tempfile::tempdir().expect("the test step succeeds");
+        let gate = fifo(directory.path(), "gate");
+        let executions = executions().with_output_echo(echo);
+        let command = format!(
+            "printf 'err\\n' >&2; printf 'one\\ntwo\\n'; read line < {}; printf 'three'",
+            gate.display()
+        );
+        let first = executions
+            .start_captured(run(&command, Duration::ZERO), &CancellationToken::new())
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(first.state, SnapshotState::Running);
+        let started = Instant::now();
+        while echoed_lines() != ["err", "one", "two"] {
+            assert!(
+                started.elapsed() < LONG,
+                "the running command's lines were not echoed: {:?}",
+                echoed_lines()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (sender, opened) = std::sync::mpsc::channel();
+        let path = gate.clone();
+        thread::spawn(move || {
+            let _ = sender.send(fs::write(path, "go\n").is_ok());
+        });
+        assert_eq!(opened.recv_timeout(LONG), Ok(true));
+        let (last, _) = observe_until(&executions, &first.execution_id, |snapshot, _| {
+            snapshot.state != SnapshotState::Running
+        })
+        .await;
+        assert_eq!(
+            last.state,
+            SnapshotState::Completed(CommandStatus::ExitCode(0))
+        );
     });
-    assert_eq!(
-        snapshot.state,
-        SnapshotState::Completed(CommandStatus::ExitCode(0))
-    );
     let mut chunks = seen.lock().expect("the test step succeeds").clone();
     assert_eq!(chunks.last().map(String::as_str), Some("three"));
     chunks.pop();
@@ -268,9 +301,6 @@ fn echoed_output_arrives_in_whole_lines_before_the_command_completes() {
         chunks.iter().all(|chunk| chunk.ends_with('\n')),
         "{chunks:?}"
     );
-    let mut lines: Vec<&str> = chunks.iter().flat_map(|chunk| chunk.lines()).collect();
-    lines.sort_unstable();
-    assert_eq!(lines, ["err", "one", "two"]);
 }
 
 fn a_slow_command_yields_a_retained_session_that_stop_ends() {
