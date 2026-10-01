@@ -20,6 +20,7 @@ ofx-http = { path = "crates/ofx-http" }
 ofx-testkit = { path = "crates/ofx-testkit" }
 ofx-text = { path = "crates/ofx-text" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
+ofx-workspace = { path = "crates/ofx-workspace" }
 percent-encoding = "2.3.2"
 ra-ap-rustc_lexer = "0.174.0"
 regex = "1.13"
