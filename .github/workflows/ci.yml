@@ -99,13 +99,84 @@ jobs:
       - name: Test
         run: cargo xtask test
 
+  footprint:
+    name: Footprint
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 50
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      MEASURE: ${{ !(github.event.pull_request.user.login == 'mergify[bot]' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'mergify/merge-queue/')) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: env.MEASURE == 'true'
+        timeout-minutes: 5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install musl, valgrind, and strace
+        if: env.MEASURE == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools valgrind strace
+      - name: Install toolchain
+        if: env.MEASURE == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: env.MEASURE == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          key: footprint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Resolve the comparison base
+        if: env.MEASURE == 'true'
+        id: base
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          if [ "$EVENT_NAME" = pull_request ] && git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then
+            base="$(git rev-parse 'HEAD^1')"
+          elif [ "$EVENT_NAME" = push ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2> /dev/null; then
+            base="$PUSH_BEFORE"
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - name: Report size and startup cost
+        id: report
+        if: env.MEASURE == 'true'
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.txt"
+          set -- --summary "$GITHUB_STEP_SUMMARY" --pr-body "$RUNNER_TEMP/pr-body.txt"
+          if [ -n "$BASE_SHA" ]; then
+            set -- "$@" --base "$BASE_SHA"
+          fi
+          cargo xtask footprint "$@"
+      - name: Note a missing report
+        if: ${{ !cancelled() && env.MEASURE == 'true' && steps.report.outcome != 'success' }}
+        timeout-minutes: 2
+        run: |
+          printf '## Footprint\n\nNo report: a setup or measurement step failed, so nothing was measured. See the job log.\n' >> "$GITHUB_STEP_SUMMARY"
+
   repository:
     name: Repository checks
-    needs: [automation, rust-lint, rust-test]
+    needs: [automation, rust-lint, rust-test, footprint]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every check
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        if: needs.automation.result != 'success' || needs.rust-lint.result != 'success' || needs.rust-test.result != 'success'
         run: exit 1

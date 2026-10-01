@@ -13,6 +13,14 @@ const CLIPPY: &[&str] = &[
     "warnings",
 ];
 const TEST: &[&str] = &["test", "--workspace", "--locked"];
+const FOOTPRINT: &[&str] = &[
+    "run",
+    "--quiet",
+    "--locked",
+    "--package",
+    "xtask-footprint",
+    "--",
+];
 const GIT_REPOSITORY_VARIABLES: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -35,6 +43,10 @@ pub(crate) fn lint() -> Result<(), String> {
 
 pub(crate) fn test() -> Result<(), String> {
     cargo(TEST)
+}
+
+pub(crate) fn footprint(options: &[&str]) -> Result<(), String> {
+    cargo(&[FOOTPRINT, options].concat())
 }
 
 pub(crate) fn install_hooks() -> Result<(), String> {
