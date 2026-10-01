@@ -97,6 +97,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - A heading with no text at the end of a stream produces no line. Upstream writes only its style codes.
 - A level-six heading whose whole text is `• `, `☐ ` or `[1] ` has no hanging indent. Upstream's wrap parser reads its dim text as a list, task or footnote marker; the line is too short to wrap either way.
 - `flush` never changes events an earlier `push` returned, and the footnote separator counts blank lines already emitted, as upstream's assistant stream does. Upstream's processor trims trailing blank lines from a buffer it shares with earlier pushes.
+- The syntax highlighter never splits a multi-byte character. Upstream can cut one after a backslash inside a string, which shows replacement characters.
 
 ## Parity tracking
 

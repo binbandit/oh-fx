@@ -1,6 +1,8 @@
 pub(crate) mod ansi;
 pub(crate) mod block_parse;
 pub(crate) mod block_render;
+pub(crate) mod code_highlight;
+pub(crate) mod code_highlight_languages;
 pub(crate) mod inline_render;
 pub(crate) mod payload;
 pub(crate) mod text_util;
