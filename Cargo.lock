@@ -821,6 +821,7 @@ dependencies = [
  "ofx-gateway",
  "ofx-http",
  "ofx-permissions",
+ "ofx-session",
  "ofx-testkit",
  "ofx-text",
  "ofx-tools",

@@ -20,6 +20,7 @@ use ofx_contract::{
 };
 use ofx_gateway::ChatCompletionsProvider;
 use ofx_permissions::PermissionPolicy;
+use ofx_session::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
 use serde::{Serialize, Serializer};
@@ -166,6 +167,21 @@ fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<St
     first_requested(ask)
         .or(args.session.resume_flag)
         .map(|flag| format!("ask {flag}"))
+        .or_else(|| sessions_v2_source(args, modifiers).map(str::to_owned))
+}
+
+fn sessions_v2_source(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<&'static str> {
+    if args.session.no_save {
+        return None;
+    }
+    first_requested([
+        (modifiers.selects_sessions_v2(), "--sessions-v2"),
+        (args.session.sessions_v2, "ask --sessions-v2"),
+    ])
+    .or_else(|| {
+        let variable = env::var(SESSIONS_V2_VARIABLE).ok();
+        sessions_v2_variable_is_on(variable.as_deref()).then_some(SESSIONS_V2_VARIABLE)
+    })
 }
 
 fn first_requested<const N: usize>(flags: [(bool, &'static str); N]) -> Option<&'static str> {

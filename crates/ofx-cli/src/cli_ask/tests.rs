@@ -207,6 +207,27 @@ fn parse_options_rejects_unknown_flags_and_accepts_dash_prompts_after_sentinel()
 }
 
 #[test]
+fn parse_options_accept_sessions_v2_anywhere_before_the_delimiter() {
+    for args in [
+        &["--sessions-v2", "hello"][..],
+        &["hello", "--sessions-v2"],
+        &["--sessions-v2", "--no-save", "--sessions-v2", "hello"],
+    ] {
+        let options = parsed(args);
+        assert!(options.session.sessions_v2, "{args:?}");
+        assert_eq!(prompt(&options), "hello", "{args:?}");
+    }
+    assert!(!parsed(&["hello"]).session.sessions_v2);
+    let options = parsed(&["--", "--sessions-v2"]);
+    assert!(!options.session.sessions_v2);
+    assert_eq!(prompt(&options), "--sessions-v2");
+    assert_eq!(
+        error(&["--sessions-v2=1", "hello"]),
+        AskErrorKind::InvalidAskArgs
+    );
+}
+
+#[test]
 fn parse_options_reports_missing_operands_and_empty_tty_input_as_missing_prompt() {
     for args in [&["--image"][..], &["--system"], &["--timeout"], &[]] {
         assert_eq!(error(args), AskErrorKind::MissingPrompt, "{args:?}");

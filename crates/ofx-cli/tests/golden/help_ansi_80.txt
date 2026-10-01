@@ -60,6 +60,8 @@
   [39m--resume [last|<id>][0m    Resume the latest workspace session or an exact ID
   [39m--resume-last[0m           Resume the latest workspace session
   [39m--resume-<id>[0m           Resume a session by exact ID
+  [39m--sessions-v2[0m           Use the experimental v2 session store, also set by
+                          OH_FX_SESSIONS_V2=1
   [39m-h, --help[0m              Display this help and exit
   [39m-v, --version[0m           Print the oh-fx version and exit
 
