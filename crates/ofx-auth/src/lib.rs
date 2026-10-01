@@ -3,7 +3,6 @@ mod browser_callback;
 mod chatgpt_oauth;
 mod chatgpt_session;
 mod credentials;
-mod io;
 mod oauth;
 mod oauth_transport;
 mod provider_catalog;

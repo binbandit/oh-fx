@@ -656,7 +656,6 @@ dependencies = [
  "ofx-http",
  "ofx-testkit",
  "reqwest",
- "rustix",
  "serde_json",
  "sha2",
  "subtle",
@@ -685,13 +684,16 @@ dependencies = [
 name = "ofx-config"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "ofx-contract",
  "ofx-text",
  "percent-encoding",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]

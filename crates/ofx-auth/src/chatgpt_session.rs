@@ -1,13 +1,12 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ofx_config::parse_strict_json;
+use ofx_config::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome, parse_strict_json};
 use ofx_contract::valid_credential_account_id;
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::chatgpt_oauth::ChatGptError;
-use crate::io::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 use crate::secret::Secret;
 use crate::session_presence::{self, Presence};
 
@@ -17,6 +16,7 @@ const EXPIRY_SKEW_MS: i64 = 60 * 1000;
 pub(crate) const AUTH_FILE_NAME: &str = "chatgpt-auth.json";
 const MUTATION_LOCK_FILE_NAME: &str = "chatgpt-auth.lock";
 const MUTATION_LOCK_WAIT: Duration = Duration::from_secs(2);
+const MUTATION_LOCK_RETRY: Duration = Duration::from_millis(10);
 
 pub(crate) fn refresh_deadline_ms(expires_at_ms: i64) -> i64 {
     expires_at_ms.saturating_sub(EXPIRY_SKEW_MS).max(0)
@@ -120,14 +120,22 @@ impl SessionStore {
 }
 
 async fn lock_mutation(directory: PrivateDir) -> Result<Mutation, ChatGptError> {
-    let lock = directory
-        .lock(MUTATION_LOCK_FILE_NAME, MUTATION_LOCK_WAIT)
-        .await
-        .map_err(storage_error)?;
-    Ok(Mutation {
-        directory,
-        _lock: lock,
-    })
+    let started = Instant::now();
+    loop {
+        if let Some(lock) = directory
+            .try_lock(MUTATION_LOCK_FILE_NAME)
+            .map_err(storage_error)?
+        {
+            return Ok(Mutation {
+                directory,
+                _lock: lock,
+            });
+        }
+        if started.elapsed() >= MUTATION_LOCK_WAIT {
+            return Err(ChatGptError::LockBusy);
+        }
+        tokio::time::sleep(MUTATION_LOCK_RETRY).await;
+    }
 }
 
 fn load_from_dir(directory: &PrivateDir) -> Result<Option<Session>, ChatGptError> {
@@ -140,11 +148,8 @@ fn load_from_dir(directory: &PrivateDir) -> Result<Option<Session>, ChatGptError
     parse(&bytes).map(Some)
 }
 
-fn storage_error(error: DurableError) -> ChatGptError {
-    match error {
-        DurableError::LockBusy => ChatGptError::LockBusy,
-        _ => ChatGptError::CredentialStorageUnavailable,
-    }
+fn storage_error(_: DurableError) -> ChatGptError {
+    ChatGptError::CredentialStorageUnavailable
 }
 
 fn durable_error(error: DurableError) -> ChatGptError {
@@ -211,6 +216,30 @@ fn required_string(object: &Map<String, Value>, key: &str) -> Result<Secret, Cha
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mutations_wait_for_the_lock_and_report_a_busy_holder() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("oh-fx");
+        let store = SessionStore::new(path.clone());
+        let holder = PrivateDir::open_or_create(&path).unwrap();
+        let held = holder.try_lock(MUTATION_LOCK_FILE_NAME).unwrap().unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(held);
+        });
+        store.begin_mutation().await.unwrap();
+        release.await.unwrap();
+
+        let held = holder.try_lock(MUTATION_LOCK_FILE_NAME).unwrap().unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            store.begin_mutation().await.unwrap_err(),
+            ChatGptError::LockBusy
+        );
+        assert!(started.elapsed() >= MUTATION_LOCK_WAIT);
+        drop(held);
+    }
 
     #[test]
     fn chatgpt_auth_session_round_trips_without_exposing_token_fields_to_structure() {
