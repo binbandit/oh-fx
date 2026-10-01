@@ -14,6 +14,12 @@ pub(crate) const MAX_PATH_BYTES: usize = 4096;
 pub const PATH_ENTRY_WHITESPACE: &[char] = &[' ', '\t', '\r', '\n'];
 const SEPARATOR: u8 = b'/';
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathScope {
+    InsideOnly,
+    External,
+}
+
 struct ResolvedInput {
     absolute: Vec<u8>,
     external_intent: bool,
@@ -23,6 +29,13 @@ enum ExternalPathInput<'a> {
     Absolute(&'a [u8]),
     HomeRelative(&'a [u8]),
     WorkspaceRelative(&'a [u8]),
+}
+
+pub fn resolve_workspace_path(
+    workspace_root: &Path,
+    input_path: &str,
+) -> Result<PathBuf, PathError> {
+    resolve_path(workspace_root, input_path, None, PathScope::InsideOnly)
 }
 
 pub fn resolve_workspace_or_external_path(
@@ -59,12 +72,21 @@ fn resolve_workspace_or_external_path_with_home(
     input_path: &str,
     home: Option<&OsStr>,
 ) -> Result<PathBuf, PathError> {
+    resolve_path(workspace_root, input_path, home, PathScope::External)
+}
+
+fn resolve_path(
+    workspace_root: &Path,
+    input_path: &str,
+    home: Option<&OsStr>,
+    scope: PathScope,
+) -> Result<PathBuf, PathError> {
     let path = input_path.trim_matches(PATH_ENTRY_WHITESPACE);
     if path.is_empty() || path.contains('\0') {
         return Err(PathError::InvalidPath);
     }
     let root = workspace_root.as_os_str().as_bytes();
-    let input = resolve_external_input(root, path.as_bytes(), home.map(OsStrExt::as_bytes))?;
+    let input = resolve_input(root, path.as_bytes(), home.map(OsStrExt::as_bytes), scope)?;
     let resolved = realpath(&input.absolute)?;
     if !input.external_intent {
         ensure_inside(root, &resolved)?;
@@ -72,11 +94,24 @@ fn resolve_workspace_or_external_path_with_home(
     Ok(PathBuf::from(OsString::from_vec(resolved)))
 }
 
-fn resolve_external_input(
+fn resolve_input(
     workspace_root: &[u8],
     cleaned: &[u8],
     home: Option<&[u8]>,
+    scope: PathScope,
 ) -> Result<ResolvedInput, PathError> {
+    if scope == PathScope::InsideOnly {
+        let absolute = if is_absolute(cleaned) {
+            resolve_lexically(&[cleaned])
+        } else {
+            resolve_lexically(&[workspace_root, cleaned])
+        };
+        return Ok(ResolvedInput {
+            absolute,
+            external_intent: false,
+        });
+    }
+
     Ok(match classify_external_path_input(cleaned)? {
         ExternalPathInput::Absolute(absolute) => ResolvedInput {
             absolute: resolve_lexically(&[absolute]),
@@ -325,6 +360,48 @@ mod tests {
             Path::new("/etc/passwd")
         );
         assert_eq!(workspace_relative_path(root, root), Path::new(""));
+    }
+
+    #[test]
+    fn resolve_workspace_path_rejects_empty_and_whitespace_only_inputs() {
+        let root = Path::new("/tmp/ws");
+        assert_eq!(
+            resolve_workspace_path(root, ""),
+            Err(PathError::InvalidPath)
+        );
+        assert_eq!(
+            resolve_workspace_path(root, "   \t\n  "),
+            Err(PathError::InvalidPath)
+        );
+    }
+
+    #[test]
+    fn resolve_workspace_path_rejects_absolute_paths_outside_the_workspace() {
+        let fixture = Fixture::new();
+        let workspace = fixture.dir("workspace");
+        let outside = fixture.file("external/file.txt", "outside");
+
+        assert_eq!(
+            resolve_workspace_path(&workspace, outside.to_str().unwrap()),
+            Err(PathError::PathOutsideWorkspace)
+        );
+    }
+
+    #[test]
+    fn workspace_only_resolver_keeps_tilde_literal_and_rejects_relative_escapes() {
+        let fixture = Fixture::new();
+        let workspace = fixture.dir("workspace");
+        let literal = fixture.file("workspace/~/literal.txt", "literal");
+        fixture.file("external/outside.txt", "outside");
+
+        assert_eq!(
+            resolve_workspace_path(&workspace, "~/literal.txt"),
+            Ok(literal)
+        );
+        assert_eq!(
+            resolve_workspace_path(&workspace, "../external/outside.txt"),
+            Err(PathError::PathOutsideWorkspace)
+        );
     }
 
     #[test]

@@ -15,6 +15,17 @@ pub(crate) fn admit_existing_path(
         })
 }
 
+pub(crate) fn admit_optional_path(
+    tool_name: &str,
+    workspace_root: &Path,
+    requested: &str,
+) -> Result<(), ToolOutput> {
+    if requested.is_empty() || requested == "." {
+        return Ok(());
+    }
+    admit_existing_path(tool_name, workspace_root, requested)
+}
+
 fn target_resolution_failure(tool_name: &str, path: &str, error: PathError) -> String {
     let path = path.replace('\0', "\\u0000");
     let reason = match error {
