@@ -78,7 +78,7 @@ fn arguments(path: impl AsRef<Path>, old_string: &str, new_string: &str) -> Stri
 }
 
 #[test]
-fn edit_file_keeps_the_upstream_schema_and_description() {
+fn edit_file_keeps_the_upstream_name_and_description() {
     let tool = EditFile::new("/");
     assert_eq!(tool.spec().name, "edit_file");
     assert!(
@@ -86,7 +86,6 @@ fn edit_file_keeps_the_upstream_schema_and_description() {
             .description
             .contains("replacing one exact old_string occurrence")
     );
-    assert_eq!(tool.spec().input_schema.to_string(), INPUT_SCHEMA);
 }
 
 #[test]

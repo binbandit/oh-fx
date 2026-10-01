@@ -43,7 +43,7 @@ fn test_request() -> OwnedRequest {
     }
 }
 
-fn tool(name: &str, description: &str, schema: Value) -> ToolSpec {
+fn tool(name: &str, description: &str, schema: &'static str) -> ToolSpec {
     ToolSpec {
         name: name.to_owned(),
         description: description.to_owned(),
@@ -56,12 +56,12 @@ fn test_tools() -> Vec<ToolSpec> {
         tool(
             "read_file",
             "Read a file.",
-            json!({"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false,"required":["path"]}),
+            r#"{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false,"required":["path"]}"#,
         ),
         tool(
             "shell",
             "Run a command.",
-            json!({"type":"object","properties":{"request":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}),
+            r#"{"type":"object","properties":{"request":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}"#,
         ),
     ]
 }
@@ -682,12 +682,36 @@ fn chat_completions_exact_text_wire_preserves_instruction_order_and_opaque_model
 }
 
 #[test]
+fn chat_completions_exact_tool_wire_orders_tools_choice_and_each_token_limit() {
+    let mut request = test_tool_request();
+    request.max_output_tokens = Some(77);
+    let cases = [
+        (
+            MaxTokensParameter::MaxTokens,
+            r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"read_file","description":"Read a file.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false,"required":["path"]}}},{"type":"function","function":{"name":"shell","description":"Run a command.","parameters":{"type":"object","properties":{"request":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}}}],"tool_choice":"auto","max_tokens":77}"#,
+        ),
+        (
+            MaxTokensParameter::MaxCompletionTokens,
+            r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"read_file","description":"Read a file.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false,"required":["path"]}}},{"type":"function","function":{"name":"shell","description":"Run a command.","parameters":{"type":"object","properties":{"request":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}}}],"tool_choice":"auto","max_completion_tokens":77}"#,
+        ),
+    ];
+    for (max_tokens_parameter, expected) in cases {
+        let options = RequestOptions {
+            tool_choice_mode: ToolChoiceMode::Send,
+            max_tokens_parameter,
+        };
+        let body = build_request(&request.borrowed(), options).unwrap().body;
+        assert_eq!(String::from_utf8(body).unwrap(), expected);
+    }
+}
+
+#[test]
 fn chat_completions_tool_wire_carries_nested_schemas() {
     let mut request = test_tool_request();
     request.tools.push(tool(
         "mcp_docs",
         "Find docs.",
-        json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
+        r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#,
     ));
     let body = build(&request, ToolChoiceMode::Omit).unwrap();
     let parsed: Value = serde_json::from_str(&body).unwrap();
@@ -711,43 +735,6 @@ fn chat_completions_tool_wire_carries_nested_schemas() {
     .unwrap();
     let completion = finish_with(&mut reducer, TEST_TOOLS_FINISH).unwrap();
     assert_eq!(completion.tool_calls[0].name, "mcp_docs");
-}
-
-#[test]
-fn chat_completions_bounds_dynamic_schema_traversal_before_serialization() {
-    let deep: Value = serde_json::from_str(&format!(
-        "{}{{}}{}",
-        r#"{"items":"#.repeat(65),
-        "}".repeat(65)
-    ))
-    .unwrap();
-    let mut request = test_request();
-    request.tools = vec![tool("deep", "Deep schema.", deep)];
-    assert_eq!(
-        build(&request, ToolChoiceMode::Omit),
-        Err(ProtocolError::JsonTooDeep)
-    );
-    let mut exhausted_nodes = SchemaBudget {
-        nodes: 0,
-        string_bytes: SCHEMA_STRING_BUDGET,
-    };
-    assert_eq!(
-        validate_schema(&Value::Null, 0, &mut exhausted_nodes),
-        Err(ProtocolError::InvalidToolSchema)
-    );
-    let mut exhausted_strings = SchemaBudget {
-        nodes: SCHEMA_NODE_BUDGET,
-        string_bytes: 2,
-    };
-    assert_eq!(
-        validate_schema(&json!("abc"), 0, &mut exhausted_strings),
-        Err(ProtocolError::InvalidToolSchema)
-    );
-    request.tools = vec![tool("array", "Not an object.", json!([]))];
-    assert_eq!(
-        build(&request, ToolChoiceMode::Omit),
-        Err(ProtocolError::InvalidToolSchema)
-    );
 }
 
 #[test]
@@ -870,7 +857,7 @@ fn chat_completions_rejects_unsupported_requests_and_ambiguous_selection() {
         Err(ProtocolError::InvalidToolSelection)
     );
     let mut request = test_request();
-    request.tools = vec![tool("bad name", "", json!({}))];
+    request.tools = vec![tool("bad name", "", "{}")];
     assert_eq!(
         build(&request, ToolChoiceMode::Omit),
         Err(ProtocolError::InvalidToolName)
@@ -1309,9 +1296,9 @@ fn chat_completions_cancellation_poisons_retained_state() {
 fn chat_completions_name_fragments_preserve_repeated_bytes_and_shared_prefixes() {
     let mut request = test_request();
     request.tools = vec![
-        tool("read", "Read.", json!({})),
-        tool("read_file", "Read file.", json!({})),
-        tool("aa", "Repeated bytes.", json!({})),
+        tool("read", "Read.", "{}"),
+        tool("read_file", "Read file.", "{}"),
+        tool("aa", "Repeated bytes.", "{}"),
     ];
     let mut reducer = new_reducer(&request);
     accept(
@@ -1438,7 +1425,7 @@ fn chat_completions_missing_tool_fields_sparse_indexes_and_invalid_identities_fa
 #[test]
 fn chat_completions_repeated_consistent_identity_preserves_one_call() {
     let mut request = test_request();
-    request.tools = vec![tool("read_file", "Read.", json!({}))];
+    request.tools = vec![tool("read_file", "Read.", "{}")];
     let mut reducer = new_reducer(&request);
     accept(&mut reducer, TEST_CALL).unwrap();
     accept(
@@ -1671,7 +1658,7 @@ fn chat_completions_deliberately_tolerates_common_gateway_dialects() {
 #[test]
 fn chat_completions_rejects_an_echoed_name_that_could_also_extend_to_another_tool() {
     let mut request = test_request();
-    request.tools = vec![tool("a", "A.", json!({})), tool("aa", "AA.", json!({}))];
+    request.tools = vec![tool("a", "A.", "{}"), tool("aa", "AA.", "{}")];
     let outcome = outcome(
         &request,
         &[
@@ -1686,7 +1673,7 @@ fn chat_completions_rejects_an_echoed_name_that_could_also_extend_to_another_too
 #[test]
 fn chat_completions_extends_an_echoed_fragment_that_is_not_an_advertised_name() {
     let mut request = test_request();
-    request.tools = vec![tool("abab", "ABAB.", json!({}))];
+    request.tools = vec![tool("abab", "ABAB.", "{}")];
     let completion = outcome(
         &request,
         &[

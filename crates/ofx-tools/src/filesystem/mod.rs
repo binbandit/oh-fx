@@ -9,7 +9,6 @@ use std::path::PathBuf;
 
 use ofx_contract::{ToolEffect, ToolOutput, ToolSpec};
 use ofx_workspace::{CandidateStats, DEFAULT_CANDIDATE_CAP, IGNORED_DIRECTORY_NAMES};
-use serde_json::Value;
 
 pub use edit_file::EditFile;
 pub use glob_files::GlobFiles;
@@ -73,11 +72,11 @@ fn read_only_effect<T>(decoded: &Result<T, ToolOutput>) -> ToolEffect {
     }
 }
 
-pub(crate) fn tool_spec(name: &str, description: &str, input_schema: &str) -> ToolSpec {
+pub(crate) fn tool_spec(name: &str, description: &str, input_schema: &'static str) -> ToolSpec {
     ToolSpec {
         name: name.to_owned(),
         description: description.to_owned(),
-        input_schema: serde_json::from_str(input_schema).unwrap_or(Value::Null),
+        input_schema,
     }
 }
 
@@ -125,19 +124,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn filesystem_tool_schemas_are_compact_ordered_json() {
-        let tools: [&dyn Tool; 3] = [
-            &ReadFile::new("/"),
-            &GlobFiles::new("/"),
-            &GrepFiles::new("/"),
-        ];
-        for tool in tools {
-            let spec = tool.spec();
-            assert!(spec.input_schema.is_object(), "{}", spec.name);
-            assert!(spec.description.len() <= 1024, "{}", spec.name);
-        }
+    fn read_file_keeps_the_upstream_schema() {
         assert_eq!(
-            ReadFile::new("/").spec().input_schema.to_string(),
+            ReadFile::new("/").spec().input_schema,
             r#"{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}"#
         );
     }

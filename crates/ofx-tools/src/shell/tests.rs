@@ -27,10 +27,8 @@ fn the_process_only_schema_matches_upstream_ask_without_a_saved_session() {
     let spec = shell().spec().clone();
     assert_eq!(spec.name, "shell");
     assert_eq!(spec.description, DESCRIPTION);
-    assert_eq!(spec.input_schema.to_string(), INPUT_SCHEMA);
-    let alternatives = spec.input_schema["properties"]["request"]["oneOf"]
-        .as_array()
-        .unwrap();
+    let schema: serde_json::Value = serde_json::from_str(spec.input_schema).unwrap();
+    let alternatives = schema["properties"]["request"]["oneOf"].as_array().unwrap();
     let actions: Vec<&str> = alternatives
         .iter()
         .map(|schema| schema["properties"]["action"]["enum"][0].as_str().unwrap())

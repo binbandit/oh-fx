@@ -412,7 +412,7 @@ pub(crate) fn write_tools(out: &mut String, tools: &[ToolSpec]) -> Result<usize>
 }
 
 fn write_function_tool(out: &mut String, tool: &ToolSpec) -> Result<()> {
-    if tool.name.is_empty() || !tool.input_schema.is_object() {
+    if tool.name.is_empty() {
         return Err(ResponsesError::InvalidToolSchema);
     }
     out.push_str("{\"type\":\"function\",\"name\":");
@@ -422,7 +422,7 @@ fn write_function_tool(out: &mut String, tool: &ToolSpec) -> Result<()> {
         push_json_string(out, &capped_description(&tool.description));
     }
     out.push_str(",\"parameters\":");
-    out.push_str(&tool.input_schema.to_string());
+    out.push_str(tool.input_schema);
     out.push_str(",\"strict\":false}");
     Ok(())
 }

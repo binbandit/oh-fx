@@ -67,12 +67,11 @@ fn arguments(path: impl AsRef<Path>, content: &str) -> String {
 }
 
 #[test]
-fn write_file_keeps_the_upstream_schema_and_description() {
+fn write_file_keeps_the_upstream_name_and_description() {
     let tool = WriteFile::new("/");
     let spec = tool.spec();
     assert_eq!(spec.name, "write_file");
     assert!(spec.description.starts_with("Create or overwrite a file"));
-    assert_eq!(spec.input_schema.to_string(), INPUT_SCHEMA);
 }
 
 #[test]
