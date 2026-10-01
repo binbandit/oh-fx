@@ -1,4 +1,4 @@
-use ofx_contract::{ToolResultStatus, ToolSpec};
+use ofx_contract::{ProviderReplay, ReplaySource, ToolResultStatus, ToolSpec};
 use serde_json::json;
 
 use super::*;
@@ -757,6 +757,7 @@ fn chat_completions_history_correlation_preserves_canonical_ids_and_json_strings
         ChatMessage::Assistant {
             content: Some("reading".to_owned()),
             tool_calls: vec![call.clone()],
+            provider_replay: None,
         },
         tool_result("functions/read:0", "read_file", "result"),
         ChatMessage::user("continue"),
@@ -771,6 +772,30 @@ fn chat_completions_history_correlation_preserves_canonical_ids_and_json_strings
     assert_eq!(messages[3]["role"], "tool");
     assert_eq!(wire_call["function"]["arguments"], call.arguments);
     assert_eq!(call.id.as_str(), "functions/read:0");
+}
+
+#[test]
+fn chat_completions_requests_ignore_provider_replay_state() {
+    let mut request = test_request();
+    let answer = |provider_replay| ChatMessage::Assistant {
+        content: Some("answer".to_owned()),
+        tool_calls: Vec::new(),
+        provider_replay,
+    };
+    request.messages = vec![
+        ChatMessage::user("question"),
+        answer(None),
+        ChatMessage::user("continue"),
+    ];
+    let plain = build(&request, ToolChoiceMode::Omit).unwrap();
+    request.messages[1] = answer(Some(ProviderReplay {
+        source: ReplaySource {
+            provider: "codex".to_owned(),
+            model: "model".to_owned(),
+        },
+        parts_json: r#"[{"type":"reasoning","encrypted_content":"cipher"}]"#.to_owned(),
+    }));
+    assert_eq!(build(&request, ToolChoiceMode::Omit).unwrap(), plain);
 }
 
 #[test]
@@ -859,6 +884,7 @@ fn chat_completions_rejects_unmatched_malformed_and_duplicate_history_calls() {
             ChatMessage::Assistant {
                 content: None,
                 tool_calls: calls,
+                provider_replay: None,
             },
             tool_result(result_id, "read_file", "result"),
         ];

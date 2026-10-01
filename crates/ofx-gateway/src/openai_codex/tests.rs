@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt::Write;
 
-use ofx_contract::{ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
+use ofx_contract::{ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
 use serde_json::json;
 
 use super::*;
@@ -37,6 +37,7 @@ fn assistant_calls(calls: Vec<ToolCall>) -> ChatMessage {
     ChatMessage::Assistant {
         content: None,
         tool_calls: calls,
+        provider_replay: None,
     }
 }
 
@@ -123,6 +124,7 @@ fn openai_codex_replay_provider_state_accepts_the_limit_and_rejects_one_byte_bey
     let message = [ChatMessage::Assistant {
         content: Some("a".to_owned()),
         tool_calls: Vec::new(),
+        provider_replay: None,
     }];
     let state = sized_state(MAX_PROVIDER_STATE_BYTES);
     assert!(build(&message, &[Some(&state)]).is_ok());
@@ -406,13 +408,78 @@ async fn openai_codex_rejects_a_129th_streamed_tool_call() {
 }
 
 #[test]
-fn replay_fingerprints_distinguish_text_and_tool_identity() {
-    let read = vec![call("call_1", "read_file", "{}")];
-    assert_eq!(fingerprint(Some("a"), &read), fingerprint(Some("a"), &read));
-    assert_ne!(fingerprint(Some("a"), &read), fingerprint(None, &read));
-    assert_ne!(fingerprint(Some(""), &[]), fingerprint(None, &[]));
-    assert_ne!(
-        fingerprint(None, &read),
-        fingerprint(None, &[call("call_1", "read_file", "{ }")])
+fn replay_comes_only_from_assistant_messages_of_the_same_codex_model() {
+    let replayed = |provider: &str, model: &str, parts: &str| ChatMessage::Assistant {
+        content: Some("OK".to_owned()),
+        tool_calls: Vec::new(),
+        provider_replay: Some(ProviderReplay {
+            source: ReplaySource {
+                provider: provider.to_owned(),
+                model: model.to_owned(),
+            },
+            parts_json: parts.to_owned(),
+        }),
+    };
+    let messages = [
+        ChatMessage::user("one"),
+        replayed("codex", "gpt-5.6-sol", "[\"same\"]"),
+        replayed("codex", "gpt-5.4", "[\"other model\"]"),
+        replayed("grok", "gpt-5.6-sol", "[\"other provider\"]"),
+        ChatMessage::Assistant {
+            content: Some("OK".to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        },
+    ];
+    assert_eq!(
+        replay_parts(&request(&messages, &[], &[])),
+        [None, Some("[\"same\"]"), None, None, None]
     );
+}
+
+#[test]
+fn codex_replay_projection_keeps_the_source_and_selects_parts() {
+    let source = replay_source("gpt-5.6-sol");
+    let replay = ProviderReplay {
+        source: source.clone(),
+        parts_json: r#"[{"type":"reasoning","encrypted_content":"cipher"},{"type":"message","phase":"commentary"}]"#.to_owned(),
+    };
+    let codex = CodexProvider::new(
+        CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        codex.project_replay(&replay, false, true),
+        Ok(Some(ProviderReplay {
+            source,
+            parts_json: r#"[{"type":"reasoning","encrypted_content":"cipher"}]"#.to_owned(),
+        }))
+    );
+    assert_eq!(codex.project_replay(&replay, false, false), Ok(None));
+    let invalid = ProviderReplay {
+        parts_json: "{}".to_owned(),
+        ..replay
+    };
+    assert_eq!(
+        codex
+            .project_replay(&invalid, false, true)
+            .unwrap_err()
+            .code,
+        "InvalidProviderState"
+    );
+}
+
+struct NoRefresh;
+
+impl CodexCredentials for NoRefresh {
+    fn refresh<'a>(
+        &'a self,
+        _mode: CodexRefresh,
+        _account_id: &'a str,
+    ) -> BoxFuture<'a, Option<CodexAccess>> {
+        Box::pin(async { None })
+    }
 }

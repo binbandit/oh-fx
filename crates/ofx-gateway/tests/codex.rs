@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use ofx_contract::{
     BoxFuture, ChatMessage, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, StreamEvent, ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec,
+    ProviderErrorKind, ProviderReplay, ReplaySource, StreamEvent, ToolCall, ToolCallId, ToolChoice,
+    ToolResultStatus, ToolSpec,
 };
 use ofx_gateway::{CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh};
 use ofx_testkit::{FakeServer, RecordedRequest, Reply};
@@ -134,6 +135,36 @@ fn text_events(text: &str) -> Vec<String> {
     .collect()
 }
 
+fn reasoned_text_events(cipher: &str, text: &str) -> Vec<String> {
+    [
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":format!("rs_{cipher}")}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":format!("rs_{cipher}"),"type":"reasoning","summary":[],"encrypted_content":cipher}}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":format!("msg_{cipher}"),"phase":"final_answer"}}),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":text}),
+        json!({"type":"response.completed","response":{"id":format!("resp_{cipher}"),"status":"completed","usage":{"input_tokens":5,"output_tokens":1}}}),
+    ]
+    .iter()
+    .map(Value::to_string)
+    .collect()
+}
+
+fn answered(completion: &Completion) -> ChatMessage {
+    ChatMessage::Assistant {
+        content: completion.content.clone(),
+        tool_calls: completion.tool_calls.clone(),
+        provider_replay: completion.provider_replay.clone(),
+    }
+}
+
+fn ciphers(request: &RecordedRequest) -> Vec<String> {
+    request.json()["input"]
+        .as_array()
+        .expect("input items")
+        .iter()
+        .filter_map(|item| item["encrypted_content"].as_str().map(str::to_owned))
+        .collect()
+}
+
 fn golden_tools(golden: &Value) -> Vec<ToolSpec> {
     golden["tools"]
         .as_array()
@@ -203,10 +234,14 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
     );
 
     let output = golden["input"][4]["output"].as_str().expect("tool output");
-    history.push(ChatMessage::Assistant {
-        content: first.content.clone(),
-        tool_calls: first.tool_calls.clone(),
-    });
+    assert_eq!(
+        first.provider_replay.as_ref().map(|replay| &replay.source),
+        Some(&ReplaySource {
+            provider: "codex".to_owned(),
+            model: "gpt-5.4".to_owned(),
+        })
+    );
+    history.push(answered(&first));
     history.push(ChatMessage::Tool {
         call_id: ToolCallId::new("call_1"),
         tool_name: "read_file".to_owned(),
@@ -391,4 +426,87 @@ fn access_tokens_never_appear_in_debug_output() {
     assert!(!format!("{access:?}").contains(TOKEN));
     let codex = provider(&server, FakeCredentials::replying([]), 0);
     assert!(!format!("{codex:?}").contains(TOKEN));
+}
+
+#[tokio::test]
+async fn interleaved_conversations_keep_their_own_encrypted_reasoning() {
+    let server = FakeServer::start([
+        Reply::sse(&reasoned_text_events("cipher-a", "A answers.")),
+        Reply::sse(&reasoned_text_events("cipher-b", "B answers.")),
+        Reply::sse(&text_events("A again.")),
+        Reply::sse(&text_events("B again.")),
+    ]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let mut first = user("A?");
+    let mut second = user("B?");
+    for conversation in [&mut first, &mut second] {
+        let (result, _) = run(&codex, &[], conversation, &[]).await;
+        conversation.push(answered(&result.expect("answers")));
+        conversation.push(ChatMessage::user("And then?"));
+    }
+    for conversation in [&first, &second] {
+        run(&codex, &[], conversation, &[])
+            .await
+            .0
+            .expect("follows up");
+    }
+    let requests = server.requests();
+    assert_eq!(ciphers(&requests[2]), ["cipher-a"]);
+    assert_eq!(ciphers(&requests[3]), ["cipher-b"]);
+}
+
+#[tokio::test]
+async fn identical_replies_replay_their_own_reasoning_in_order() {
+    let server = FakeServer::start([
+        Reply::sse(&reasoned_text_events("cipher-1", "OK")),
+        Reply::sse(&reasoned_text_events("cipher-2", "OK")),
+        Reply::sse(&text_events("Done.")),
+    ]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let mut history = user("First?");
+    for follow_up in ["Second?", "Third?"] {
+        let (result, _) = run(&codex, &[], &history, &[]).await;
+        history.push(answered(&result.expect("answers")));
+        history.push(ChatMessage::user(follow_up));
+    }
+    run(&codex, &[], &history, &[]).await.0.expect("answers");
+    assert_eq!(ciphers(&server.requests()[2]), ["cipher-1", "cipher-2"]);
+}
+
+#[tokio::test]
+async fn replay_from_another_model_or_provider_is_omitted() {
+    let server = FakeServer::start([Reply::sse(&text_events("Done."))]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let replayed = |provider: &str, model: &str, cipher: &str| ChatMessage::Assistant {
+        content: Some("OK".to_owned()),
+        tool_calls: Vec::new(),
+        provider_replay: Some(ProviderReplay {
+            source: ReplaySource {
+                provider: provider.to_owned(),
+                model: model.to_owned(),
+            },
+            parts_json: json!([{"type": "reasoning", "encrypted_content": cipher}]).to_string(),
+        }),
+    };
+    let history = [
+        ChatMessage::user("One?"),
+        replayed("codex", "gpt-5.3", "other-model"),
+        ChatMessage::user("Two?"),
+        replayed("grok", "gpt-5.4", "other-provider"),
+        ChatMessage::user("Three?"),
+        replayed("codex", "gpt-5.4", "same-route"),
+        ChatMessage::user("Four?"),
+    ];
+    run(&codex, &[], &history, &[]).await.0.expect("answers");
+    let request = &server.requests()[0];
+    assert_eq!(ciphers(request), ["same-route"]);
+    let input = request.json()["input"].clone();
+    let texts: Vec<&str> = input
+        .as_array()
+        .expect("input items")
+        .iter()
+        .filter(|item| item["role"] == "assistant")
+        .map(|item| item["content"][0]["text"].as_str().expect("assistant text"))
+        .collect();
+    assert_eq!(texts, ["OK", "OK", "OK"]);
 }

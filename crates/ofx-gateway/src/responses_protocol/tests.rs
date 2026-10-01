@@ -86,6 +86,7 @@ fn assistant(content: Option<&str>, tool_calls: Vec<ToolCall>) -> ChatMessage {
     ChatMessage::Assistant {
         content: content.map(str::to_owned),
         tool_calls,
+        provider_replay: None,
     }
 }
 
@@ -151,6 +152,62 @@ fn responses_replay_retains_phase_through_storage_and_projection() {
     assert_eq!(items[0]["encrypted_content"], "cipher");
     assert_eq!(items[1]["phase"], "commentary");
     assert_eq!(items[1]["content"][0]["text"], "original");
+    assert_eq!(
+        select_replay_parts(parts, 4096, true, false)
+            .unwrap()
+            .as_deref(),
+        Some(r#"[{"type":"message","phase":"commentary"}]"#)
+    );
+    assert_eq!(
+        select_replay_parts(parts, 4096, false, true)
+            .unwrap()
+            .as_deref(),
+        Some(r#"[{"type":"reasoning","encrypted_content":"cipher"}]"#)
+    );
+}
+
+#[test]
+fn responses_unchanged_replay_projection_keeps_the_stored_parts() {
+    let parts = r#"[ {"type":"reasoning","encrypted_content":"kept"} ]"#;
+    assert_eq!(
+        select_replay_parts(parts, 4096, false, true)
+            .unwrap()
+            .as_deref(),
+        Some(parts)
+    );
+    assert_eq!(
+        select_replay_parts(parts, 4096, true, true)
+            .unwrap()
+            .as_deref(),
+        Some(parts)
+    );
+    assert_eq!(select_replay_parts(parts, 4096, true, false).unwrap(), None);
+    assert_eq!(
+        select_replay_parts(parts, 4096, false, false).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn responses_replay_projection_rejects_invalid_and_oversized_state() {
+    for invalid in [
+        "{}",
+        "not json",
+        r#"[{"type":"function_call"}]"#,
+        r#"[{"kind":"reasoning"}]"#,
+        r#"["reasoning"]"#,
+    ] {
+        assert_eq!(
+            select_replay_parts(invalid, 4096, false, true),
+            Err(ResponsesError::InvalidProviderState),
+            "{invalid}"
+        );
+    }
+    let parts = r#"[{"type":"reasoning","encrypted_content":"kept"}]"#;
+    assert_eq!(
+        select_replay_parts(parts, parts.len() - 1, false, true),
+        Err(ResponsesError::ProviderStateTooLarge)
+    );
 }
 
 #[test]

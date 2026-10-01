@@ -1,16 +1,15 @@
-use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
     BoxFuture, ChatMessage, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, StreamEvent, StreamSink, ToolCall, valid_credential_account_id,
+    ProviderErrorKind, ProviderReplay, ReplaySource, StreamEvent, StreamSink,
+    valid_credential_account_id,
 };
 use ofx_http::{ClientError, ConnectionOptions, SseDecoder, build_connection_client};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use reqwest::{Response, StatusCode};
-use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
@@ -19,10 +18,11 @@ use crate::chat_completions::{
 };
 use crate::responses_protocol::{
     Delta, FailureCause, Reducer, ReplayLimits, ResponsesCompletion, ResponsesError,
-    ResponsesFinish, StreamLimits, push_json_string, write_input, write_tools,
+    ResponsesFinish, StreamLimits, push_json_string, select_replay_parts, write_input, write_tools,
 };
 
 const RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+const REPLAY_PROVIDER: &str = "codex";
 const ORIGINATOR: &str = "fx";
 const EVENT_STREAM: &str = "text/event-stream";
 const DEFAULT_INSTRUCTIONS: &str = "You are a helpful assistant.";
@@ -46,8 +46,6 @@ const STREAM_LIMITS: StreamLimits = StreamLimits {
     tool_arguments_bytes: MAX_TOOL_ARGUMENTS_BYTES,
     provider_state_bytes: MAX_PROVIDER_STATE_BYTES,
 };
-
-type Fingerprint = [u8; 32];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexEndpoints {
@@ -103,17 +101,11 @@ pub trait CodexCredentials: Send + Sync {
     ) -> BoxFuture<'a, Option<CodexAccess>>;
 }
 
-struct Replay {
-    model: String,
-    parts: String,
-}
-
 pub struct CodexProvider {
     client: reqwest::Client,
     responses_url: String,
     credentials: Arc<dyn CodexCredentials>,
     access: Mutex<CodexAccess>,
-    replay: Mutex<HashMap<Fingerprint, Replay>>,
 }
 
 impl fmt::Debug for CodexProvider {
@@ -142,7 +134,6 @@ impl CodexProvider {
             responses_url: endpoints.responses,
             credentials,
             access: Mutex::new(access),
-            replay: Mutex::new(HashMap::new()),
         })
     }
 
@@ -155,7 +146,7 @@ impl CodexProvider {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
-        let (body, history) = self.prepare(request)?;
+        let body = build_request(request, &replay_parts(request)).map_err(codex_failure)?;
         self.refresh_if_due().await;
         let mut response = self.post(&body, cancel).await?;
         if response.status() == StatusCode::UNAUTHORIZED
@@ -167,59 +158,7 @@ impl CodexProvider {
             return Err(http_failure(response, cancel, &self.secrets(), None).await);
         }
         let completion = self.consume(&mut response, sink, cancel).await?;
-        let provider_state = completion.provider_state.clone();
-        let completion = into_completion(completion, &self.secrets())?;
-        if let Some(parts) = provider_state {
-            self.remember(&history, &completion, request.model, parts);
-        }
-        Ok(completion)
-    }
-
-    fn prepare(
-        &self,
-        request: &ModelRequest<'_>,
-    ) -> Result<(String, Vec<Fingerprint>), ProviderError> {
-        let memory = lock(&self.replay);
-        let fingerprints: Vec<Option<Fingerprint>> = request
-            .messages
-            .iter()
-            .map(|message| match message {
-                ChatMessage::Assistant {
-                    content,
-                    tool_calls,
-                } => Some(fingerprint(content.as_deref(), tool_calls)),
-                _ => None,
-            })
-            .collect();
-        let replays: Vec<Option<&str>> = fingerprints
-            .iter()
-            .map(|key| {
-                key.and_then(|key| memory.get(&key))
-                    .filter(|replay| replay.model == request.model)
-                    .map(|replay| replay.parts.as_str())
-            })
-            .collect();
-        let body = build_request(request, &replays).map_err(codex_failure)?;
-        Ok((body, fingerprints.into_iter().flatten().collect()))
-    }
-
-    fn remember(
-        &self,
-        history: &[Fingerprint],
-        completion: &Completion,
-        model: &str,
-        parts: String,
-    ) {
-        let kept: HashSet<&Fingerprint> = history.iter().collect();
-        let mut memory = lock(&self.replay);
-        memory.retain(|key, _| kept.contains(key));
-        memory.insert(
-            fingerprint(completion.content.as_deref(), &completion.tool_calls),
-            Replay {
-                model: model.to_owned(),
-                parts,
-            },
-        );
+        into_completion(completion, &self.secrets(), request.model)
     }
 
     fn secrets(&self) -> Vec<String> {
@@ -304,6 +243,47 @@ impl ModelProvider for CodexProvider {
     ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
         Box::pin(self.complete(request, sink, cancel))
     }
+
+    fn project_replay(
+        &self,
+        replay: &ProviderReplay,
+        text: bool,
+        reasoning: bool,
+    ) -> Result<Option<ProviderReplay>, ProviderError> {
+        let parts = select_replay_parts(
+            &replay.parts_json,
+            MAX_PROVIDER_STATE_BYTES,
+            text,
+            reasoning,
+        )
+        .map_err(|error| ProviderError::new(ProviderErrorKind::Protocol, error.to_string()))?;
+        Ok(parts.map(|parts_json| ProviderReplay {
+            source: replay.source.clone(),
+            parts_json,
+        }))
+    }
+}
+
+fn replay_source(model: &str) -> ReplaySource {
+    ReplaySource {
+        provider: REPLAY_PROVIDER.to_owned(),
+        model: model.to_owned(),
+    }
+}
+
+fn replay_parts<'a>(request: &ModelRequest<'a>) -> Vec<Option<&'a str>> {
+    let source = replay_source(request.model);
+    request
+        .messages
+        .iter()
+        .map(|message| match message {
+            ChatMessage::Assistant {
+                provider_replay: Some(replay),
+                ..
+            } if replay.matches(&source) => Some(replay.parts_json.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -316,22 +296,6 @@ fn now_ms() -> i64 {
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
         .unwrap_or(0)
-}
-
-fn fingerprint(content: Option<&str>, tool_calls: &[ToolCall]) -> Fingerprint {
-    let mut digest = Sha256::new();
-    let mut field = |bytes: &[u8]| {
-        digest.update((bytes.len() as u64).to_le_bytes());
-        digest.update(bytes);
-    };
-    field(content.unwrap_or_default().as_bytes());
-    field(&[u8::from(content.is_some())]);
-    for call in tool_calls {
-        field(call.id.as_str().as_bytes());
-        field(call.name.as_bytes());
-        field(call.arguments.as_bytes());
-    }
-    digest.finalize().into()
 }
 
 fn validate_model(model: &str) -> Result<(), ResponsesError> {
@@ -447,6 +411,7 @@ async fn consume_stream<S: ChunkSource + Send>(
 fn into_completion(
     completion: ResponsesCompletion,
     secrets: &[String],
+    model: &str,
 ) -> Result<Completion, ProviderError> {
     let finish_reason = match completion.finish {
         ResponsesFinish::Stop => FinishReason::Stop,
@@ -490,6 +455,10 @@ fn into_completion(
         tool_calls: completion.tool_calls,
         finish_reason,
         usage: completion.usage,
+        provider_replay: completion.provider_state.map(|parts_json| ProviderReplay {
+            source: replay_source(model),
+            parts_json,
+        }),
     })
 }
 

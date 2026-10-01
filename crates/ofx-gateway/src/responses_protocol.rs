@@ -111,6 +111,49 @@ fn assistant_message_phase(fields: &Map<String, Value>) -> Result<Option<Assista
     }
 }
 
+pub(crate) fn select_replay_parts(
+    parts: &str,
+    max_bytes: usize,
+    text: bool,
+    reasoning: bool,
+) -> Result<Option<String>> {
+    if text && reasoning {
+        return Ok(Some(parts.to_owned()));
+    }
+    if !text && !reasoning {
+        return Ok(None);
+    }
+    if parts.len() > max_bytes {
+        return Err(ResponsesError::ProviderStateTooLarge);
+    }
+    let Ok(Value::Array(items)) = parse_strict_json(parts.as_bytes()) else {
+        return Err(ResponsesError::InvalidProviderState);
+    };
+    let total = items.len();
+    let mut kept = Vec::with_capacity(total);
+    for item in items {
+        let kind = item
+            .as_object()
+            .and_then(|fields| fields.get("type"))
+            .and_then(Value::as_str);
+        let keep = match kind {
+            Some("reasoning") => reasoning,
+            Some("message") => text,
+            _ => return Err(ResponsesError::InvalidProviderState),
+        };
+        if keep {
+            kept.push(item);
+        }
+    }
+    if kept.is_empty() {
+        return Ok(None);
+    }
+    if kept.len() == total {
+        return Ok(Some(parts.to_owned()));
+    }
+    Ok(Some(Value::Array(kept).to_string()))
+}
+
 pub(crate) fn push_json_string(out: &mut String, text: &str) {
     out.push_str(&Value::String(text.to_owned()).to_string());
 }
@@ -156,6 +199,7 @@ pub(crate) fn write_input(
             ChatMessage::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 write_assistant(
                     out,

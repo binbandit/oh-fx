@@ -212,6 +212,7 @@ fn validate_request(request: &ModelRequest<'_>) -> ProtocolResult<()> {
             ChatMessage::Assistant {
                 content: None,
                 tool_calls,
+                ..
             } if tool_calls.is_empty() => return Err(ProtocolError::InvalidProviderPrompt),
             _ => {}
         }
@@ -448,6 +449,7 @@ fn encode_message<'a>(message: &'a ChatMessage, projection: &'a Projection) -> W
         ChatMessage::Assistant {
             content,
             tool_calls,
+            ..
         } => WireMessage::Assistant {
             content: content.as_deref(),
             tool_calls: tool_calls
@@ -1102,6 +1104,7 @@ impl Reducer {
                 input_tokens: self.usage.input,
                 output_tokens: self.usage.output,
             },
+            provider_replay: None,
         })
     }
 }

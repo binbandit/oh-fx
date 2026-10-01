@@ -148,6 +148,7 @@ mod tests {
         ChatMessage::Assistant {
             content: None,
             tool_calls: calls,
+            provider_replay: None,
         }
     }
 
