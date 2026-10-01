@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
-use ofx_contract::PermissionMode;
+use ofx_contract::{PermissionMode, ReasoningEffort};
 use serde_json::{Map, Value};
 
 use crate::configured_provider::{
@@ -141,6 +141,14 @@ pub enum LayerError {
     InvalidMaxAgentStepsType,
     #[error("InvalidMaxAgentStepsValue")]
     InvalidMaxAgentStepsValue,
+    #[error("InvalidEffortType")]
+    InvalidEffortType,
+    #[error("InvalidEffortValue")]
+    InvalidEffortValue,
+    #[error("InvalidFastModeType")]
+    InvalidFastModeType,
+    #[error("InvalidFastModeBindingType")]
+    InvalidFastModeBindingType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -180,6 +188,8 @@ struct Layer {
     permission_mode: Option<PermissionMode>,
     yolo_acknowledged: Option<bool>,
     max_agent_steps: Option<u64>,
+    effort: Option<ReasoningEffort>,
+    fast_mode: Option<bool>,
 }
 
 impl Layer {
@@ -250,6 +260,22 @@ impl Settings {
         self.workspace
             .yolo_acknowledged
             .or(self.global.yolo_acknowledged)
+            .unwrap_or(false)
+    }
+
+    pub fn reasoning_effort(&self) -> ReasoningEffort {
+        self.workspace
+            .effort
+            .as_ref()
+            .or(self.global.effort.as_ref())
+            .cloned()
+            .unwrap_or(ReasoningEffort::Auto)
+    }
+
+    pub fn fast_mode(&self) -> bool {
+        self.workspace
+            .fast_mode
+            .or(self.global.fast_mode)
             .unwrap_or(false)
     }
 
@@ -489,16 +515,39 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
             PermissionMode::parse(mode).ok_or(LayerError::InvalidPermissionMode)
         })
         .transpose()?;
-    layer.yolo_acknowledged = object
-        .get("yolo_acknowledged")
-        .map(|value| {
-            value
-                .as_bool()
-                .ok_or(LayerError::InvalidYoloAcknowledgedType)
-        })
-        .transpose()?;
+    layer.yolo_acknowledged = parse_switch(
+        object,
+        "yolo_acknowledged",
+        LayerError::InvalidYoloAcknowledgedType,
+    )?;
     layer.max_agent_steps = parse_steps(object)?;
+    layer.effort = object.get("effort").map(parse_effort).transpose()?;
+    layer.fast_mode = parse_switch(object, "fast_mode", LayerError::InvalidFastModeType)?;
+    parse_switch(
+        object,
+        "fast_mode_model_bound",
+        LayerError::InvalidFastModeBindingType,
+    )?;
     Ok(layer)
+}
+
+fn parse_switch(
+    object: &Map<String, Value>,
+    key: &str,
+    invalid: LayerError,
+) -> Result<Option<bool>, LayerError> {
+    object
+        .get(key)
+        .map(|value| value.as_bool().ok_or(invalid))
+        .transpose()
+}
+
+fn parse_effort(value: &Value) -> Result<ReasoningEffort, LayerError> {
+    match value {
+        Value::String(raw) => ReasoningEffort::parse(raw).ok_or(LayerError::InvalidEffortValue),
+        Value::Null => Ok(ReasoningEffort::Auto),
+        _ => Err(LayerError::InvalidEffortType),
+    }
 }
 
 fn parse_routing(object: &Map<String, Value>) -> Result<Layer, LayerError> {
@@ -800,6 +849,16 @@ mod tests {
                 r#"{"yolo_acknowledged":"yes"}"#,
                 DiagnosticCause::MalformedSettings,
             ),
+            (r#"{"effort":42}"#, DiagnosticCause::MalformedSettings),
+            (
+                r#"{"effort":"very high"}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
+            (r#"{"fast_mode":"yes"}"#, DiagnosticCause::MalformedSettings),
+            (
+                r#"{"fast_mode_model_bound":1}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
             (r#"{"model":" bad"}"#, DiagnosticCause::InvalidModelId),
         ] {
             let settings = load(&fixture(Some(json), None)).unwrap();
@@ -838,6 +897,47 @@ mod tests {
         let settings = load(&fixture).unwrap();
         assert_eq!(settings.permission_mode(), PermissionMode::Yolo);
         assert!(!settings.yolo_acknowledged());
+    }
+
+    #[test]
+    fn effort_and_fast_mode_follow_workspace_overrides() {
+        let defaults = fixture_settings("{}");
+        assert_eq!(defaults.reasoning_effort(), ReasoningEffort::Auto);
+        assert!(!defaults.fast_mode());
+        let saved =
+            fixture_settings(r#"{"effort":"xHigh","fast_mode":true,"fast_mode_model_bound":true}"#);
+        assert!(saved.diagnostics().is_empty());
+        assert_eq!(
+            saved.reasoning_effort(),
+            ReasoningEffort::Named("xHigh".to_owned())
+        );
+        assert!(saved.fast_mode());
+        assert_eq!(
+            fixture_settings(r#"{"effort":"Adaptive"}"#).reasoning_effort(),
+            ReasoningEffort::Auto
+        );
+        let fixture = fixture(None, None);
+        let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+        for (entry, effort, fast) in [
+            (
+                r#"{"effort":null,"fast_mode":false}"#,
+                ReasoningEffort::Auto,
+                false,
+            ),
+            (
+                r#"{"effort":"low"}"#,
+                ReasoningEffort::Named("low".to_owned()),
+                true,
+            ),
+        ] {
+            let json = format!(
+                r#"{{"effort":"high","fast_mode":true,"workspaces":{{{workspace}:{entry}}}}}"#
+            );
+            fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+            let settings = load(&fixture).unwrap();
+            assert_eq!(settings.reasoning_effort(), effort, "{entry}");
+            assert_eq!(settings.fast_mode(), fast, "{entry}");
+        }
     }
 
     #[test]

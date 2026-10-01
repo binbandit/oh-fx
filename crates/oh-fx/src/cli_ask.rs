@@ -19,8 +19,8 @@ use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
     CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    ProviderError, ReasoningEffort, RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus,
-    TurnOutcome, UiEvent, Usage,
+    ProviderError, RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome,
+    UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
 use ofx_permissions::PermissionPolicy;
@@ -391,6 +391,7 @@ async fn prepare_agent(
         ofx_http::warm_tls_roots();
     }
     let model = route.model;
+    let (reasoning_effort, fast_mode) = requested_reasoning(args, &settings);
     let config = AgentConfig {
         system_prompt: args
             .system_prompt
@@ -399,8 +400,8 @@ async fn prepare_agent(
         max_output_tokens: route.max_output_tokens,
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
-        reasoning_effort: args.effort.clone().and_then(ReasoningEffort::into_named),
-        fast_mode: args.fast.unwrap_or(false),
+        reasoning_effort,
+        fast_mode,
     };
     let tools = tool_set::ask_tools(&workspace_root);
     let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
@@ -416,6 +417,15 @@ async fn prepare_agent(
         agent = agent.with_capability_resolver(capabilities);
     }
     Ok((agent, model, permission_mode, route.source))
+}
+
+fn requested_reasoning(args: &AskArgs, settings: &Settings) -> (Option<String>, bool) {
+    let effort = args
+        .effort
+        .clone()
+        .unwrap_or_else(|| settings.reasoning_effort());
+    let fast_mode = args.fast.unwrap_or_else(|| settings.fast_mode());
+    (effort.into_named(), fast_mode)
 }
 
 async fn codex_route(
@@ -1296,6 +1306,57 @@ mod tests {
 
     fn no_environment(_: &str) -> Option<String> {
         None
+    }
+
+    fn ask_args(args: &[&str]) -> AskArgs {
+        let Ok(Invocation::Command(CommandLaunch {
+            command: ofx_cli::Command::Ask(args),
+            ..
+        })) = ofx_cli::parse_args(args.iter().copied())
+        else {
+            panic!("ask arguments");
+        };
+        args
+    }
+
+    #[test]
+    fn flags_override_the_saved_effort_and_fast_mode() {
+        let login = ExpiredLogin::new();
+        fs::write(
+            login.paths.config.join("settings.json"),
+            r#"{"provider":"codex","models":{"codex":"gpt-6.1-sol"},"effort":"high","fast_mode":true,"fast_mode_model_bound":true}"#,
+        )
+        .unwrap();
+        let saved = login.settings();
+        let cases: [(&[&str], Option<&str>, bool); 4] = [
+            (&["ask", "hi"], Some("high"), true),
+            (
+                &["ask", "--effort", "low", "--no-fast", "hi"],
+                Some("low"),
+                false,
+            ),
+            (&["ask", "--effort", "auto", "hi"], None, true),
+            (
+                &["ask", "--model", "gpt-5.6-terra", "hi"],
+                Some("high"),
+                true,
+            ),
+        ];
+        for (args, effort, fast) in cases {
+            assert_eq!(
+                requested_reasoning(&ask_args(args), &saved),
+                (effort.map(str::to_owned), fast),
+                "{args:?}"
+            );
+        }
+        assert_eq!(
+            requested_reasoning(&ask_args(&["ask", "--fast", "hi"]), &Settings::default()),
+            (None, true)
+        );
+        assert_eq!(
+            requested_reasoning(&ask_args(&["ask", "hi"]), &Settings::default()),
+            (None, false)
+        );
     }
 
     #[tokio::test]
