@@ -237,7 +237,12 @@ mod tests {
         routes: Vec<(String, Vec<u8>)>,
         installation: &Installation,
     ) -> Result<UpgradeOutcome, UpgradeError> {
-        let client = ofx_http::build_client("oh-fx/test").unwrap();
+        let client = ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
+            user_agent: "oh-fx/test".to_owned(),
+            follow_redirects: true,
+            ..ofx_http::ConnectionOptions::default()
+        })
+        .unwrap();
         let source = ReleaseSource::at(serve(routes));
         upgrade_installation(&client, &source, installation, |_| {}).await
     }
