@@ -10,6 +10,7 @@ use ofx_agent::{
     Agent, AgentConfig, TurnFailure, TurnReport, normalize_assistant_text_for_display,
     text_for_completed_presentation,
 };
+use ofx_cli::LaunchModifiers;
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
     ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError, RouteRecoveryStatus,
@@ -28,6 +29,7 @@ const STDIN_PROMPT_LIMIT: u64 = 8 * 1024 * 1024;
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
+const UNAVAILABLE_CODE: &str = "NotAvailableYet";
 
 struct Failure {
     code: String,
@@ -107,7 +109,7 @@ impl From<ConnectionError> for Failure {
     }
 }
 
-pub(crate) fn run(arguments: &AskArguments) -> ExitCode {
+pub(crate) fn run(arguments: &AskArguments, modifiers: &LaunchModifiers) -> ExitCode {
     let options_json = arguments.requests_json();
     let options = match arguments.options() {
         Ok(options) => options,
@@ -122,6 +124,9 @@ pub(crate) fn run(arguments: &AskArguments) -> ExitCode {
         Ok(prompt) => prompt,
         Err(failure) => return failure.report(options_json),
     };
+    if let Some(feature) = unavailable_modifier(modifiers) {
+        return unavailable(feature, options.json);
+    }
     if prompt.is_empty() {
         return Failure::code("InvalidConversationEvent").report(options.json);
     }
@@ -133,6 +138,24 @@ pub(crate) fn run(arguments: &AskArguments) -> ExitCode {
         Ok(runtime) => runtime.block_on(ask(&options, &prompt)),
         Err(_) => Failure::code("RuntimeUnavailable").report(options.json),
     }
+}
+
+fn unavailable_modifier(modifiers: &LaunchModifiers) -> Option<&'static str> {
+    if modifiers.sets_context_limits() {
+        Some("--context-limit")
+    } else if modifiers.adds_directories() {
+        Some("--add-dir")
+    } else {
+        None
+    }
+}
+
+fn unavailable(feature: &str, json: bool) -> ExitCode {
+    crate::write_unavailable(feature);
+    if json {
+        return print_result(&RunResult::error(UNAVAILABLE_CODE));
+    }
+    ExitCode::FAILURE
 }
 
 fn invalid_prompt_text() -> Failure {

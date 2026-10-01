@@ -2,8 +2,6 @@ use std::ffi::OsString;
 
 pub(crate) const ASK_USAGE: &str = "usage: oh-fx ask [--model <id>] [--json] [--] <prompt>";
 
-const UPGRADE_USAGE: &str = "usage: oh-fx upgrade [--json]";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AskArguments(Vec<OsString>);
 
@@ -18,14 +16,6 @@ pub(crate) struct AskOptions {
 pub(crate) enum AskArgsError {
     InvalidAskArgs,
     InvalidPromptText,
-}
-
-pub(crate) fn upgrade_json(args: &[OsString]) -> Result<bool, &'static str> {
-    match args {
-        [] => Ok(false),
-        [flag] if flag == "--json" => Ok(true),
-        _ => Err(UPGRADE_USAGE),
-    }
 }
 
 impl AskArguments {
@@ -90,19 +80,6 @@ mod tests {
 
     fn ask_arguments(words_after_ask: &[&str]) -> AskArguments {
         AskArguments::new(words(words_after_ask))
-    }
-
-    #[test]
-    fn upgrade_accepts_one_json_flag() {
-        assert_eq!(upgrade_json(&[]), Ok(false));
-        assert_eq!(upgrade_json(&words(&["--json"])), Ok(true));
-        for rejected in [
-            &["--json", "--json"][..],
-            &["--channel", "dev"],
-            &["--background"],
-        ] {
-            assert_eq!(upgrade_json(&words(rejected)), Err(UPGRADE_USAGE));
-        }
     }
 
     #[test]

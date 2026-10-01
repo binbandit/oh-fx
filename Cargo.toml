@@ -13,12 +13,14 @@ publish = false
 flate2 = "1.1.10"
 memchr = "2.8.3"
 ofx-agent = { path = "crates/ofx-agent" }
+ofx-auth = { path = "crates/ofx-auth" }
 ofx-cli = { path = "crates/ofx-cli" }
 ofx-config = { path = "crates/ofx-config" }
 ofx-contract = { path = "crates/ofx-contract" }
 ofx-gateway = { path = "crates/ofx-gateway" }
 ofx-http = { path = "crates/ofx-http" }
 ofx-markdown = { path = "crates/ofx-markdown" }
+ofx-session = { path = "crates/ofx-session" }
 ofx-testkit = { path = "crates/ofx-testkit" }
 ofx-text = { path = "crates/ofx-text" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }

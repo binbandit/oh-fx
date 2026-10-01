@@ -33,6 +33,10 @@ impl ProviderId {
     }
 }
 
+pub fn is_valid_provider_id(text: &str) -> bool {
+    ProviderId::parse(text).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,6 +53,15 @@ mod tests {
             Some(ProviderId::Configured("portkey".to_owned()))
         );
         assert_eq!(ProviderId::parse("bad name"), None);
+        assert_eq!(ProviderId::parse("bad/name"), None);
         assert_eq!(ProviderId::parse(""), None);
+        assert_eq!(ProviderId::parse("9lives"), None);
+        assert!(is_valid_provider_id("my-llm"));
+        assert!(!is_valid_provider_id("bogus name"));
+        assert_eq!(ProviderId::parse(&"a".repeat(65)), None);
+        assert_eq!(
+            ProviderId::parse(&"a".repeat(64)),
+            Some(ProviderId::Configured("a".repeat(64)))
+        );
     }
 }

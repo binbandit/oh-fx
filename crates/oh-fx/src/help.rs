@@ -1,9 +1,18 @@
 use std::env;
 use std::io::{self, IsTerminal};
 
-use ofx_cli::{HelpStyle, TOP_LEVEL_HELP_DEFAULT_WIDTH, parse_column_count, render_top_level_help};
+use ofx_cli::{
+    HelpLayout, HelpStyle, TOP_LEVEL_HELP_DEFAULT_WIDTH, parse_column_count, render_top_level_help,
+};
 
-pub(crate) fn top_level() -> String {
+pub(crate) fn top_level(layout: HelpLayout) -> String {
+    if matches!(layout, HelpLayout::Plain) {
+        return render_top_level_help(
+            TOP_LEVEL_HELP_DEFAULT_WIDTH,
+            ofx_upgrade::VERSION,
+            HelpStyle::Plain,
+        );
+    }
     let stdout = io::stdout();
     let columns = rustix::termios::tcgetwinsize(&stdout)
         .ok()

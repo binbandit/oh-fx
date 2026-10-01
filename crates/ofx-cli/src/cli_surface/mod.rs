@@ -1,19 +1,138 @@
+mod arg_stream;
+mod command_args;
 mod failure;
+mod launch_modifiers;
+mod model_overrides;
+mod resume;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 
+use crate::cli_replay::parse_replay;
 use crate::command_specs::TopLevelKind;
 
-pub use failure::CliError;
+use arg_stream::ArgStream;
+pub(crate) use arg_stream::requests_json;
+pub use command_args::OutputFormat;
+pub(crate) use failure::Report;
+pub use failure::{CliError, command_failure_json};
+pub use launch_modifiers::LaunchModifiers;
+use launch_modifiers::parse_launch_modifiers;
+use resume::{
+    InvalidResumeArgs, RESUME_ID_ALIAS_PREFIX, validate_resume_alias, validate_resume_subcommand,
+};
 
 #[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
 pub enum Invocation {
     Interactive,
-    TopLevelHelp,
+    Resume,
+    TopLevelHelp(HelpLayout),
     CommandHelp(TopLevelKind),
     Version,
-    Command(TopLevelKind, Vec<OsString>),
+    Command(CommandLaunch),
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub enum HelpLayout {
+    Terminal,
+    Plain,
+}
+
+#[derive(Debug)]
+pub struct CommandLaunch {
+    pub modifiers: LaunchModifiers,
+    pub command: Command,
+}
+
+#[derive(Debug)]
+pub enum Command {
+    Ask(Vec<OsString>),
+    Acp,
+    Pr,
+    Issue,
+    Login,
+    Logout,
+    Setup,
+    Status(OutputFormat),
+    Permissions(OutputFormat),
+    Mcp,
+    Slack(OutputFormat),
+    Models(OutputFormat),
+    Provider,
+    Doctor(OutputFormat),
+    Teams,
+    Session(OutputFormat),
+    Sessions(OutputFormat),
+    Credits(OutputFormat),
+    Usage(OutputFormat),
+    Upgrade(OutputFormat),
+    Replay(OutputFormat),
+    Workspace(OutputFormat),
+}
+
+impl Command {
+    pub fn kind(&self) -> TopLevelKind {
+        match self {
+            Self::Ask(_) => TopLevelKind::Ask,
+            Self::Acp => TopLevelKind::Acp,
+            Self::Pr => TopLevelKind::Pr,
+            Self::Issue => TopLevelKind::Issue,
+            Self::Login => TopLevelKind::Login,
+            Self::Logout => TopLevelKind::Logout,
+            Self::Setup => TopLevelKind::Setup,
+            Self::Status(_) => TopLevelKind::Status,
+            Self::Permissions(_) => TopLevelKind::Permissions,
+            Self::Mcp => TopLevelKind::Mcp,
+            Self::Slack(_) => TopLevelKind::Slack,
+            Self::Models(_) => TopLevelKind::Models,
+            Self::Provider => TopLevelKind::Provider,
+            Self::Doctor(_) => TopLevelKind::Doctor,
+            Self::Teams => TopLevelKind::Teams,
+            Self::Session(_) => TopLevelKind::Session,
+            Self::Sessions(_) => TopLevelKind::Sessions,
+            Self::Credits(_) => TopLevelKind::Credits,
+            Self::Usage(_) => TopLevelKind::Usage,
+            Self::Upgrade(_) => TopLevelKind::Upgrade,
+            Self::Replay(_) => TopLevelKind::Replay,
+            Self::Workspace(_) => TopLevelKind::Workspace,
+        }
+    }
+
+    pub fn output_format(&self) -> OutputFormat {
+        match self {
+            Self::Status(format)
+            | Self::Permissions(format)
+            | Self::Slack(format)
+            | Self::Models(format)
+            | Self::Doctor(format)
+            | Self::Session(format)
+            | Self::Sessions(format)
+            | Self::Credits(format)
+            | Self::Usage(format)
+            | Self::Upgrade(format)
+            | Self::Replay(format)
+            | Self::Workspace(format) => *format,
+            Self::Ask(args)
+                if args
+                    .split(|arg| arg == "--")
+                    .next()
+                    .is_some_and(requests_json) =>
+            {
+                OutputFormat::Json
+            }
+            Self::Ask(_)
+            | Self::Acp
+            | Self::Pr
+            | Self::Issue
+            | Self::Login
+            | Self::Logout
+            | Self::Setup
+            | Self::Mcp
+            | Self::Provider
+            | Self::Teams => OutputFormat::Text,
+        }
+    }
 }
 
 pub fn parse_args<I, T>(args: I) -> Result<Invocation, CliError>
@@ -21,21 +140,28 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let mut args = args.into_iter().map(Into::into);
-    let Some(first) = args.next() else {
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    if args
+        .first()
+        .and_then(|first| first.to_str())
+        .is_some_and(|first| TopLevelKind::Help.spec().matches(first))
+    {
+        return Ok(Invocation::TopLevelHelp(HelpLayout::Terminal));
+    }
+    let mut stream = ArgStream::new(args);
+    let modifiers = parse_launch_modifiers(&mut stream)?;
+    let Some(first) = stream.next() else {
         return Ok(Invocation::Interactive);
     };
-    let rest: Vec<OsString> = args.collect();
+    let rest: Vec<OsString> = stream.collect();
     match first.to_str().and_then(TopLevelKind::from_token) {
-        Some(TopLevelKind::Help) => Ok(Invocation::TopLevelHelp),
-        Some(kind) if requests_command_help(&rest) => Ok(Invocation::CommandHelp(kind)),
-        Some(kind @ (TopLevelKind::Mcp | TopLevelKind::Slack)) if rest.is_empty() => {
+        Some(kind) if kind != TopLevelKind::Help && requests_command_help(&rest) => {
+            let workspace = supports_workspace_modifiers(kind) || launches_session(kind, &rest);
+            check_noninteractive(&modifiers, workspace)?;
             Ok(Invocation::CommandHelp(kind))
         }
-        Some(kind) => Ok(Invocation::Command(kind, rest)),
-        None if first != "--version" && first != "-v" => Err(CliError::UnknownSubcommand(first)),
-        None if rest.is_empty() => Ok(Invocation::Version),
-        None => Err(CliError::VersionUsage),
+        Some(kind) => parse_command(kind, &first, rest, modifiers),
+        None => parse_unclassified(first, &rest, &modifiers),
     }
 }
 
@@ -43,99 +169,120 @@ fn requests_command_help(args: &[OsString]) -> bool {
     args.iter().any(|arg| arg == "--help" || arg == "-h")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::command_specs::{HelpStyle, TOP_LEVEL_HELP_DEFAULT_WIDTH, render_top_level_help};
-
-    fn parse(args: &[&str]) -> Result<Invocation, CliError> {
-        parse_args(args.iter().copied())
+fn check_noninteractive(
+    modifiers: &LaunchModifiers,
+    supports_workspace_modifiers: bool,
+) -> Result<(), CliError> {
+    if modifiers.has_workspace_modifiers() && !supports_workspace_modifiers {
+        return Err(CliError::WorkspaceModifiersUnsupported);
     }
-
-    fn stderr(args: &[&str]) -> String {
-        parse(args).unwrap_err().report("0.0.0")
+    if modifiers.has_model_overrides() {
+        return Err(CliError::ModelModifiersUnsupported);
     }
+    Ok(())
+}
 
-    #[test]
-    fn no_arguments_launch_the_interactive_session() {
-        assert_eq!(parse(&[]), Ok(Invocation::Interactive));
-    }
+fn supports_workspace_modifiers(kind: TopLevelKind) -> bool {
+    matches!(
+        kind,
+        TopLevelKind::Ask | TopLevelKind::Acp | TopLevelKind::Pr | TopLevelKind::Issue
+    )
+}
 
-    #[test]
-    fn help_aliases_route_to_help() {
-        for alias in ["help", "--help", "-h", "help \t"] {
-            assert_eq!(parse(&[alias, "ignored"]), Ok(Invocation::TopLevelHelp));
-        }
-    }
-
-    #[test]
-    fn commands_and_aliases_keep_their_arguments() {
-        assert_eq!(
-            parse(&["ask", "hello", "world"]),
-            Ok(Invocation::Command(
-                TopLevelKind::Ask,
-                vec![OsString::from("hello"), OsString::from("world")]
-            ))
-        );
-        assert_eq!(
-            parse(&["balance"]),
-            Ok(Invocation::Command(TopLevelKind::Credits, Vec::new()))
-        );
-        assert_eq!(
-            parse(&["-c"]),
-            Ok(Invocation::Command(TopLevelKind::Resume, Vec::new()))
-        );
-    }
-
-    #[test]
-    fn per_command_help_wins_over_command_arguments() {
-        assert_eq!(
-            parse(&["ask", "--help"]),
-            Ok(Invocation::CommandHelp(TopLevelKind::Ask))
-        );
-        assert_eq!(
-            parse(&["ask", "--", "-h"]),
-            Ok(Invocation::CommandHelp(TopLevelKind::Ask))
-        );
-        assert_eq!(
-            parse(&["credits", "-h", "extra"]),
-            Ok(Invocation::CommandHelp(TopLevelKind::Credits))
-        );
-        assert_eq!(
-            parse(&["-c", "--help"]),
-            Ok(Invocation::CommandHelp(TopLevelKind::Resume))
-        );
-    }
-
-    #[test]
-    fn mcp_and_slack_without_arguments_print_their_help() {
-        assert_eq!(
-            parse(&["mcp"]),
-            Ok(Invocation::CommandHelp(TopLevelKind::Mcp))
-        );
-        assert_eq!(
-            parse(&["slack"]),
-            Ok(Invocation::CommandHelp(TopLevelKind::Slack))
-        );
-    }
-
-    #[test]
-    fn version_flags_reject_extra_arguments() {
-        assert_eq!(parse(&["--version"]), Ok(Invocation::Version));
-        assert_eq!(parse(&["-v"]), Ok(Invocation::Version));
-        for args in [&["--version", "extra"][..], &["-v", "extra"]] {
-            assert_eq!(stderr(args), "usage: oh-fx --version\n");
-        }
-    }
-
-    #[test]
-    fn unknown_commands_print_the_plain_help_at_the_default_width() {
-        let help = render_top_level_help(TOP_LEVEL_HELP_DEFAULT_WIDTH, "0.0.0", HelpStyle::Plain);
-        for unknown in ["wat", "version", "--record", "-cr"] {
-            assert_eq!(
-                stderr(&[unknown]),
-                format!("oh-fx: unknown subcommand: {unknown}\n\n{help}")
-            );
-        }
+fn launches_session(kind: TopLevelKind, rest: &[OsString]) -> bool {
+    match kind {
+        TopLevelKind::Resume => true,
+        TopLevelKind::Session => rest.first().is_some_and(|arg| arg == "resume"),
+        _ => false,
     }
 }
+
+fn launch_session(request: Result<(), InvalidResumeArgs>) -> Result<Invocation, CliError> {
+    request.map_err(|InvalidResumeArgs| CliError::Usage(TopLevelKind::Resume))?;
+    Ok(Invocation::Resume)
+}
+
+fn parse_unclassified(
+    first: OsString,
+    rest: &[OsString],
+    modifiers: &LaunchModifiers,
+) -> Result<Invocation, CliError> {
+    if first
+        .as_bytes()
+        .starts_with(RESUME_ID_ALIAS_PREFIX.as_bytes())
+    {
+        return launch_session(validate_resume_alias(&first, rest));
+    }
+    check_noninteractive(modifiers, false)?;
+    if first != "--version" && first != "-v" {
+        return Err(CliError::UnknownSubcommand(first));
+    }
+    if rest.is_empty() {
+        Ok(Invocation::Version)
+    } else {
+        Err(CliError::VersionUsage)
+    }
+}
+
+fn parse_command(
+    kind: TopLevelKind,
+    first: &OsStr,
+    rest: Vec<OsString>,
+    modifiers: LaunchModifiers,
+) -> Result<Invocation, CliError> {
+    let session = launches_session(kind, &rest);
+    if !session {
+        check_noninteractive(&modifiers, supports_workspace_modifiers(kind))?;
+    }
+    let command = match kind {
+        TopLevelKind::Help => return Ok(Invocation::TopLevelHelp(HelpLayout::Plain)),
+        TopLevelKind::Resume if first.as_bytes().starts_with(b"-") => {
+            return launch_session(validate_resume_alias(first, &rest));
+        }
+        TopLevelKind::Resume => return launch_session(validate_resume_subcommand(&rest)),
+        TopLevelKind::Session if session => {
+            return launch_session(validate_resume_subcommand(&rest[1..]));
+        }
+        TopLevelKind::Mcp | TopLevelKind::Slack if rest.is_empty() => {
+            return Ok(Invocation::CommandHelp(kind));
+        }
+        TopLevelKind::Ask => Command::Ask(rest),
+        TopLevelKind::Acp => command_args::validate_acp(rest).map(|()| Command::Acp)?,
+        TopLevelKind::Pr => Command::Pr,
+        TopLevelKind::Issue => Command::Issue,
+        TopLevelKind::Login => {
+            command_args::validate_login(kind, &rest).map(|()| Command::Login)?
+        }
+        TopLevelKind::Logout => {
+            command_args::validate_login(kind, &rest).map(|()| Command::Logout)?
+        }
+        TopLevelKind::Setup => {
+            command_args::require_no_args(kind, &rest).map(|()| Command::Setup)?
+        }
+        TopLevelKind::Teams => {
+            command_args::require_no_args(kind, &rest).map(|()| Command::Teams)?
+        }
+        TopLevelKind::Status => Command::Status(command_args::parse_output_format(kind, &rest)?),
+        TopLevelKind::Permissions => {
+            Command::Permissions(command_args::parse_output_format(kind, &rest)?)
+        }
+        TopLevelKind::Models => Command::Models(command_args::parse_output_format(kind, &rest)?),
+        TopLevelKind::Doctor => Command::Doctor(command_args::parse_output_format(kind, &rest)?),
+        TopLevelKind::Credits => Command::Credits(command_args::parse_output_format(kind, &rest)?),
+        TopLevelKind::Mcp => command_args::validate_mcp(&rest).map(|()| Command::Mcp)?,
+        TopLevelKind::Slack => Command::Slack(command_args::parse_slack(&rest)?),
+        TopLevelKind::Provider => {
+            command_args::validate_provider(&rest).map(|()| Command::Provider)?
+        }
+        TopLevelKind::Session => Command::Session(command_args::parse_session(rest)?),
+        TopLevelKind::Sessions => Command::Sessions(command_args::parse_session_list(rest)?),
+        TopLevelKind::Usage => Command::Usage(command_args::parse_usage(rest)?),
+        TopLevelKind::Upgrade => Command::Upgrade(command_args::parse_upgrade(&rest)?),
+        TopLevelKind::Replay => Command::Replay(parse_replay(rest)?),
+        TopLevelKind::Workspace => Command::Workspace(command_args::parse_workspace(rest)?),
+    };
+    Ok(Invocation::Command(CommandLaunch { modifiers, command }))
+}
+
+#[cfg(test)]
+mod tests;

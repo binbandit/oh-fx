@@ -646,10 +646,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-auth"
+version = "0.1.0"
+
+[[package]]
 name = "ofx-cli"
 version = "0.1.0"
 dependencies = [
+ "ofx-auth",
+ "ofx-config",
+ "ofx-contract",
+ "ofx-session",
  "ofx-text",
+ "ofx-upgrade",
+ "serde_json",
  "thiserror",
 ]
 
@@ -658,6 +668,7 @@ name = "ofx-config"
 version = "0.1.0"
 dependencies = [
  "ofx-contract",
+ "ofx-text",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -711,6 +722,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-session"
+version = "0.1.0"
+
+[[package]]
 name = "ofx-testkit"
 version = "0.1.0"
 dependencies = [
@@ -754,6 +769,7 @@ name = "oh-fx"
 version = "0.1.0"
 dependencies = [
  "ofx-agent",
+ "ofx-auth",
  "ofx-cli",
  "ofx-config",
  "ofx-contract",
