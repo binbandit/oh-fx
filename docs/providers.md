@@ -6,10 +6,12 @@ oh-fx talks to any OpenAI-compatible Chat Completions endpoint through a *custom
 
 | File | Purpose |
 | --- | --- |
-| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps`, `effort`, `fast_mode`, `fast_mode_model_bound` |
-| `<workspace>/.oh-fx.json` | Project settings. Only project-safe keys such as `max_agent_steps` apply; `provider`, `model`, `providers` and other profile keys are ignored with a `config project: ignored_project_user_only_setting` notice |
+| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps`, `effort`, `fast_mode`, `fast_mode_model_bound`, `context`, `context_limits` |
+| `<workspace>/.oh-fx.json` | Project settings. Only project-safe keys such as `max_agent_steps` and `context` apply; `provider`, `model`, `providers` and other profile keys are ignored with a `config project: ignored_project_user_only_setting` notice |
 
 Settings files are JSON objects of at most 64 KiB. A leading UTF-8 byte order mark is ignored. Duplicate keys are rejected anywhere in the document.
+
+`context_limits` maps limit names such as `project_instruction_file_bytes` to a non-negative byte count or `"off"`. An unknown name or a malformed value prints `config user: invalid_context_limits`. The run continues, but every other key in that settings layer except its provider routing is ignored.
 
 When oh-fx saves a setting, such as the provider and model that `oh-fx login codex` selects, it rewrites `settings.json` compactly, keeps unknown keys in their order, makes the folder `0700` and the file `0600`, and keeps the previous file in `backups/` next to it (the last five). It does not rewrite a file that is not valid JSON, is a symbolic link, or has a second hard link, a file holding a number it would write back with a different value, or a file whose backup it cannot write. Workspace entries keep their own `provider` and `models`, which still win in their workspace; only retired keys and fast-mode bindings are removed from them, and an entry left empty by that is dropped.
 

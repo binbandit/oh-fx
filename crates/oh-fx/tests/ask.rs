@@ -553,6 +553,28 @@ fn config_diagnostics_print_only_for_usable_profiles_in_every_mode() {
 }
 
 #[test]
+fn invalid_context_limits_print_a_diagnostic_and_discard_the_profile_layer() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["ok"]))]);
+    let mut settings = portkey_settings(&server.base_url());
+    settings["permission_mode"] = json!("ask");
+    settings["context_limits"] = json!({"unknown_limit": 10});
+    let home = Home::with_settings(&settings);
+    let output = home.ask(&["ask", "hi"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "oh-fx ask: config user: invalid_context_limits; context_limits keys must be documented limit names with a non-negative integer or \"off\" value\n"
+    );
+    let body = server.requests()[0].json();
+    assert!(
+        body["messages"][2]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Runtime context: permission mode is auto.")
+    );
+}
+
+#[test]
 fn missing_credentials_explain_themselves_in_json_mode_too() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&portkey_settings(&server.base_url()));

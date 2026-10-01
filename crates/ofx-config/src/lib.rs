@@ -19,7 +19,10 @@ pub use configured_provider::{
     ToolChoiceMode, is_valid_model_id,
 };
 pub use connection::{ConnectionError, ResolvedConnection};
-pub use context_limits::{ContextLimitError, validate_context_limit_override};
+pub use context_limits::{
+    ContextLimit, ContextLimitError, ContextLimitName, ContextLimitOverride, ContextLimitSource,
+    ContextLimitValue, ContextLimits, parse_context_limit_override,
+};
 pub use io::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 pub use model_capabilities::{Capabilities, request_output_tokens};
 pub use model_provider::{ProviderId, is_valid_provider_id};
