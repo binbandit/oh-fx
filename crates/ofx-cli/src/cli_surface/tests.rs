@@ -299,7 +299,7 @@ fn workspace_launch_modifiers_preserve_supported_command_help() {
     let pr = launch(&["--add-dir", "/tmp/shared", "pr", "context"]);
     assert_eq!(pr.command.kind(), TopLevelKind::Pr);
     assert!(pr.modifiers.adds_directories());
-    assert!(!pr.modifiers.sets_context_limits());
+    assert!(pr.modifiers.context_limit_overrides().is_empty());
 }
 
 #[test]

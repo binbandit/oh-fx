@@ -238,7 +238,10 @@ pub(crate) fn report_argument_error(error: AskError) -> ExitCode {
 
 fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
     let launch = [
-        (modifiers.sets_context_limits(), "--context-limit"),
+        (
+            !modifiers.context_limit_overrides().is_empty(),
+            "--context-limit",
+        ),
         (modifiers.adds_directories(), "--add-dir"),
     ];
     let ask = [
