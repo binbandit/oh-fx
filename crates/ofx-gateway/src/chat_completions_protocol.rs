@@ -99,7 +99,9 @@ pub(crate) enum ProtocolError {
 impl From<ProjectionError> for ProtocolError {
     fn from(error: ProjectionError) -> Self {
         match error {
-            ProjectionError::InvalidToolCallId => Self::InvalidToolCallId,
+            ProjectionError::InvalidToolCallId | ProjectionError::ProtectedToolCallId => {
+                Self::InvalidToolCallId
+            }
             ProjectionError::ToolCallIdMappingExhausted => Self::ToolCallIdMappingExhausted,
         }
     }
@@ -210,6 +212,7 @@ fn validate_request(request: &ModelRequest<'_>) -> ProtocolResult<()> {
             ChatMessage::Assistant {
                 content: None,
                 tool_calls,
+                ..
             } if tool_calls.is_empty() => return Err(ProtocolError::InvalidProviderPrompt),
             _ => {}
         }
@@ -446,6 +449,7 @@ fn encode_message<'a>(message: &'a ChatMessage, projection: &'a Projection) -> W
         ChatMessage::Assistant {
             content,
             tool_calls,
+            ..
         } => WireMessage::Assistant {
             content: content.as_deref(),
             tool_calls: tool_calls
@@ -480,7 +484,7 @@ fn encode_tool(tool: &ToolSpec) -> WireTool<'_> {
     }
 }
 
-fn capped_description(text: &str) -> Cow<'_, str> {
+pub(crate) fn capped_description(text: &str) -> Cow<'_, str> {
     if text.len() <= DESCRIPTION_MAX_BYTES {
         return Cow::Borrowed(text);
     }
@@ -1100,6 +1104,7 @@ impl Reducer {
                 input_tokens: self.usage.input,
                 output_tokens: self.usage.output,
             },
+            provider_replay: None,
         })
     }
 }

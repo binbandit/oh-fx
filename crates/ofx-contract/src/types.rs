@@ -16,6 +16,24 @@ pub enum ToolResultStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaySource {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderReplay {
+    pub source: ReplaySource,
+    pub parts_json: String,
+}
+
+impl ProviderReplay {
+    pub fn matches(&self, source: &ReplaySource) -> bool {
+        self.source == *source
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatMessage {
     System {
         content: String,
@@ -26,6 +44,7 @@ pub enum ChatMessage {
     Assistant {
         content: Option<String>,
         tool_calls: Vec<ToolCall>,
+        provider_replay: Option<ProviderReplay>,
     },
     Tool {
         call_id: ToolCallId,
@@ -190,6 +209,10 @@ impl ModelFailureDiagnostic {
         Self(format!("{}{}", &text[..prefix], Self::MARKER))
     }
 
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     fn human_text(&self) -> &str {
         const PAIRS: [(&str, &str); 15] = [
             ("ReadFailed", "connection dropped"),
@@ -298,6 +321,26 @@ impl RouteRecoveryStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_replay_matches_only_its_own_provider_and_model() {
+        let source = |provider: &str, model: &str| ReplaySource {
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+        };
+        let replay = ProviderReplay {
+            source: source("codex", "model"),
+            parts_json: "[]".to_owned(),
+        };
+        assert!(replay.matches(&source("codex", "model")));
+        for other in [
+            source("grok", "model"),
+            source("gateway", "model"),
+            source("codex", "different"),
+        ] {
+            assert!(!replay.matches(&other), "{other:?}");
+        }
+    }
 
     fn retry(cause: ModelRecoveryCause, delay_seconds: u64, diagnostic: Option<&str>) -> String {
         RouteRecoveryStatus {
@@ -445,5 +488,6 @@ mod tests {
             ModelFailureDiagnostic::new("Timeout").human_text(),
             "timed out"
         );
+        assert_eq!(ModelFailureDiagnostic::new("Timeout").as_str(), "Timeout");
     }
 }
