@@ -33,7 +33,7 @@ pub(crate) fn parse_output_format(
     command: TopLevelKind,
     args: &[OsString],
 ) -> Result<OutputFormat, CliError> {
-    let error = argument_error(command, ArgumentErrorCode::LocalSurfaceArgs, args);
+    let error = argument_error(command, ArgumentErrorCode::LocalSurface, args);
     match args {
         [] => Ok(OutputFormat::Text),
         _ if args.iter().all(|arg| arg == "--json") => Ok(OutputFormat::Json),
@@ -103,7 +103,7 @@ pub(crate) fn parse_upgrade(args: &[OsString]) -> Result<OutputFormat, CliError>
         [flag] if flag == "--json" => Ok(OutputFormat::Json),
         _ => Err(CliError::invalid_arguments(
             TopLevelKind::Upgrade,
-            ArgumentErrorCode::UpgradeArgs,
+            ArgumentErrorCode::Upgrade,
             requests_json(args),
         )),
     }
@@ -112,7 +112,7 @@ pub(crate) fn parse_upgrade(args: &[OsString]) -> Result<OutputFormat, CliError>
 pub(crate) fn parse_session_list(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
     let error = argument_error(
         TopLevelKind::Sessions,
-        ArgumentErrorCode::LocalSurfaceArgs,
+        ArgumentErrorCode::LocalSurface,
         &args,
     );
     let mut stream = ArgStream::new(args);
@@ -176,7 +176,7 @@ fn is_valid_session_cursor(raw: &str) -> bool {
 }
 
 pub(crate) fn parse_usage(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
-    let error = argument_error(TopLevelKind::Usage, ArgumentErrorCode::UsageArgs, &args);
+    let error = argument_error(TopLevelKind::Usage, ArgumentErrorCode::Usage, &args);
     let mut stream = ArgStream::new(args);
     let mut json = false;
     let mut period = false;
@@ -199,11 +199,7 @@ pub(crate) fn parse_usage(args: Vec<OsString>) -> Result<OutputFormat, CliError>
 }
 
 pub(crate) fn parse_workspace(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
-    let error = argument_error(
-        TopLevelKind::Workspace,
-        ArgumentErrorCode::WorkspaceArgs,
-        &args,
-    );
+    let error = argument_error(TopLevelKind::Workspace, ArgumentErrorCode::Workspace, &args);
     let mut json = false;
     let mut positional = Vec::new();
     for arg in args {
@@ -236,9 +232,9 @@ enum SessionAction {
 impl SessionAction {
     fn error_code(self) -> ArgumentErrorCode {
         match self {
-            Self::Detail => ArgumentErrorCode::SessionDetailArgs,
-            Self::Migrate => ArgumentErrorCode::SessionMigrationArgs,
-            Self::Recover => ArgumentErrorCode::SessionRecoveryArgs,
+            Self::Detail => ArgumentErrorCode::SessionDetail,
+            Self::Migrate => ArgumentErrorCode::SessionMigration,
+            Self::Recover => ArgumentErrorCode::SessionRecovery,
         }
     }
 }
@@ -314,19 +310,6 @@ fn is_valid_mcp_trust(tokens: &[OsString]) -> bool {
         [action] => action == "approve-all" || action == "reset",
         [action, name] => (action == "approve" || action == "reject") && !name.is_empty(),
         _ => false,
-    }
-}
-
-pub(crate) fn parse_slack(args: &[OsString]) -> Result<OutputFormat, CliError> {
-    let error = argument_error(TopLevelKind::Slack, ArgumentErrorCode::SlackArguments, args);
-    let (action, format) = match args {
-        [action] => (action, OutputFormat::Text),
-        [action, flag] if flag == "--json" => (action, OutputFormat::Json),
-        _ => return Err(error()),
-    };
-    match action.to_str() {
-        Some("install" | "status" | "refresh") => Ok(format),
-        _ => Err(error()),
     }
 }
 

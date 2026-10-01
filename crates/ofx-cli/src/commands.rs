@@ -301,23 +301,6 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
         JSON_OPTION,
     ])
     .with_details(&["Additional directories are stored for the current primary workspace."]),
-    TopLevelSpec::new(
-        TopLevelKind::Slack,
-        "slack",
-        "slack <install|status|refresh> [--json]",
-        "Install and manage the workspace Slack bot locally",
-    )
-    .with_options(&[OptionDoc::new(
-        "--json",
-        "Emit installation metadata without credentials",
-    )])
-    .with_details(&[
-        "install opens Slack authorization through fx.sh and saves the bot credentials on this computer.",
-        "status shows local installation metadata; refresh renews tokens without browser authorization.",
-        "This is a workspace bot installer. Employee MCP login remains oh-fx mcp auth NAME.",
-        "Credentials are saved in ~/.local/share/oh-fx/slack/installation.json with owner-only permissions.",
-        "Refresh runs only when requested; no background service is installed.",
-    ]),
 ];
 
 const TOP_LEVEL_HELP_GROUPS: &[&[TopLevelHelpEntry]] = &[
@@ -386,7 +369,6 @@ const TOP_LEVEL_HELP_GROUPS: &[&[TopLevelHelpEntry]] = &[
         TopLevelHelpEntry::command(TopLevelKind::Status, "status"),
         TopLevelHelpEntry::command(TopLevelKind::Doctor, "doctor"),
         TopLevelHelpEntry::command(TopLevelKind::Mcp, "mcp <command> ..."),
-        TopLevelHelpEntry::command(TopLevelKind::Slack, "slack <install|status|refresh>"),
         TopLevelHelpEntry::command(TopLevelKind::Permissions, "permissions"),
         TopLevelHelpEntry::command(TopLevelKind::Workspace, "workspace"),
         TopLevelHelpEntry::command(TopLevelKind::Upgrade, "upgrade"),
