@@ -47,11 +47,23 @@ pub(crate) fn failed_call(
 }
 
 pub(crate) fn rejected_call(tool_name: &str, arguments: &str) -> Option<ShellFailure> {
+    unexecuted_call(tool_name, arguments, "rejected")
+}
+
+pub(crate) fn preflight_failed_call(tool_name: &str, arguments: &str) -> Option<ShellFailure> {
+    unexecuted_call(tool_name, arguments, "tool_failed")
+}
+
+fn unexecuted_call(
+    tool_name: &str,
+    arguments: &str,
+    outcome: &'static str,
+) -> Option<ShellFailure> {
     (tool_name == SHELL_TOOL).then(|| ShellFailure {
         action: shell_action(arguments),
         error: CallError {
-            category: "rejected",
-            code: "rejected".to_owned(),
+            category: outcome,
+            code: outcome.to_owned(),
         },
     })
 }
@@ -250,7 +262,12 @@ mod tests {
             ),
             Some(failure(Some("run"), "rejected", "rejected"))
         );
+        assert_eq!(
+            preflight_failed_call("shell", run),
+            Some(failure(Some("run"), "tool_failed", "tool_failed"))
+        );
         assert_eq!(failed_call("read_file", "{}", "{}", None), None);
         assert_eq!(rejected_call("read_file", "{}"), None);
+        assert_eq!(preflight_failed_call("read_file", "{}"), None);
     }
 }

@@ -174,6 +174,18 @@ impl PermissionGate for ReadOnlyGate {
     }
 }
 
+#[derive(Default)]
+struct RecordingGate {
+    admitted: Mutex<Vec<String>>,
+}
+
+impl PermissionGate for RecordingGate {
+    fn admit(&self, call: &ToolCall) -> Admission {
+        self.admitted.lock().unwrap().push(call.name.clone());
+        Admission::Allowed(PathAccess::WorkspaceOnly)
+    }
+}
+
 struct EchoTool {
     spec: ToolSpec,
     cleaned_up: Arc<AtomicBool>,
@@ -626,14 +638,18 @@ async fn unknown_tools_and_rejected_arguments_are_reported_and_panics_become_fai
     let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
     let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    let rejected: Vec<&str> = events
-        .iter()
-        .filter_map(|event| match event {
-            UiEvent::ToolRejected { call_id, .. } => Some(call_id.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(rejected, ["call-0", "call-1"]);
+    assert_eq!(
+        rejections(&events),
+        [
+            ("call-0", "missing", "{}", ToolRejection::Unsupported),
+            (
+                "call-1",
+                "echo",
+                r#"{"invalid":true}"#,
+                ToolRejection::Invalid
+            ),
+        ]
+    );
     let started = events
         .iter()
         .filter(|event| matches!(event, UiEvent::ToolStarted { .. }))
@@ -652,6 +668,81 @@ async fn unknown_tools_and_rejected_arguments_are_reported_and_panics_become_fai
     assert_eq!(
         results[2],
         r#"{"error":{"type":"tool_execution_failed","tool_name":"echo","message":"Tool execution panicked"}}"#
+    );
+}
+
+#[tokio::test]
+async fn modern_mixed_batch_materializes_unsupported_terminal_before_admission() {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            Vec::new(),
+            completion(
+                None,
+                vec![
+                    echo_call("candidate_read", r#"{"text":"input"}"#),
+                    ToolCall {
+                        id: ToolCallId::new("terminal_unsupported"),
+                        name: "missing_tool".to_owned(),
+                        arguments: "{}".to_owned(),
+                    },
+                ],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply("Final"),
+    ]);
+    let gate = Arc::new(RecordingGate::default());
+    let mut agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn ModelProvider>,
+        vec![echo_tool()],
+        Arc::new(FixedContext),
+        Arc::clone(&gate) as Arc<dyn PermissionGate>,
+        config(),
+    );
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(*gate.admitted.lock().unwrap(), ["echo"]);
+    let lifecycle: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolStarted { call_id, .. } => Some(format!("start {}", call_id.as_str())),
+            UiEvent::ToolFinished { call_id, .. } => Some(format!("finish {}", call_id.as_str())),
+            UiEvent::ToolRejected { call_id, .. } => Some(format!("reject {}", call_id.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lifecycle,
+        [
+            "start candidate_read",
+            "finish candidate_read",
+            "reject terminal_unsupported"
+        ]
+    );
+    assert_eq!(
+        rejections(&events),
+        [(
+            "terminal_unsupported",
+            "missing_tool",
+            "{}",
+            ToolRejection::Unsupported
+        )]
+    );
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message(
+                "candidate_read",
+                r#"echo {"text":"input"}"#,
+                ToolResultStatus::Success
+            ),
+            ChatMessage::Tool {
+                call_id: ToolCallId::new("terminal_unsupported"),
+                tool_name: "missing_tool".to_owned(),
+                content: "Unsupported tool: missing_tool".to_owned(),
+                status: ToolResultStatus::Failure,
+            },
+        ]
     );
 }
 
@@ -844,6 +935,27 @@ fn dispatch_order(events: &[UiEvent]) -> Vec<String> {
         .filter_map(|event| match event {
             UiEvent::ToolStarted { call_id, .. } => Some(format!("start {}", call_id.as_str())),
             UiEvent::ToolFinished { call_id, .. } => Some(format!("finish {}", call_id.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn rejections(events: &[UiEvent]) -> Vec<(&str, &str, &str, ToolRejection)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolRejected {
+                call_id,
+                tool_name,
+                arguments,
+                reason,
+                ..
+            } => Some((
+                call_id.as_str(),
+                tool_name.as_str(),
+                arguments.as_str(),
+                *reason,
+            )),
             _ => None,
         })
         .collect()
@@ -1319,14 +1431,29 @@ async fn panics_while_preparing_describing_or_inspecting_a_call_become_rejected_
     let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
     let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    let rejected: Vec<&str> = events
-        .iter()
-        .filter_map(|event| match event {
-            UiEvent::ToolRejected { call_id, .. } => Some(call_id.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(rejected, ["call-1", "call-2", "call-3"]);
+    assert_eq!(
+        rejections(&events),
+        [
+            (
+                "call-1",
+                "echo",
+                r#"{"prepare_panic":true}"#,
+                ToolRejection::Panicked
+            ),
+            (
+                "call-2",
+                "echo",
+                r#"{"describe_panic":true}"#,
+                ToolRejection::Panicked
+            ),
+            (
+                "call-3",
+                "echo",
+                r#"{"mutation_panic":true}"#,
+                ToolRejection::Panicked
+            ),
+        ]
+    );
     assert_eq!(
         provider.requests()[1].messages[2..],
         [
@@ -1358,14 +1485,17 @@ async fn calls_whose_drop_panics_after_their_inspection_panicked_are_rejected() 
     let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
     let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    let rejected: Vec<&str> = events
-        .iter()
-        .filter_map(|event| match event {
-            UiEvent::ToolRejected { call_id, .. } => Some(call_id.as_str()),
-            _ => None,
-        })
+    let reasons: Vec<(&str, ToolRejection)> = rejections(&events)
+        .into_iter()
+        .map(|(call_id, _, _, reason)| (call_id, reason))
         .collect();
-    assert_eq!(rejected, ["call-1", "call-2"]);
+    assert_eq!(
+        reasons,
+        [
+            ("call-1", ToolRejection::Panicked),
+            ("call-2", ToolRejection::Panicked)
+        ]
+    );
     assert_eq!(
         provider.requests()[1].messages[2..],
         [

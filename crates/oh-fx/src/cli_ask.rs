@@ -20,8 +20,8 @@ use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
     CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    ProviderError, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolResultStatus,
-    TurnOutcome, UiEvent, Usage,
+    ProviderError, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection,
+    ToolResultStatus, TurnOutcome, UiEvent, Usage, format_unknown_action,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::ChatCompletionsProvider;
@@ -38,7 +38,9 @@ use tokio_util::sync::CancellationToken;
 use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
 use crate::command_echo::CommandEcho;
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
-use crate::shell_call_record::{CallError, ShellFailure, failed_call, rejected_call};
+use crate::shell_call_record::{
+    CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
+};
 use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
@@ -628,6 +630,11 @@ impl ToolRecord {
         Self::new(name, ToolResultStatus::Failure).with_failure(failure)
     }
 
+    fn preflight_failed(name: String, arguments: &str) -> Self {
+        let failure = preflight_failed_call(&name, arguments);
+        Self::new(name, ToolResultStatus::Failure).with_failure(failure)
+    }
+
     fn with_failure(self, failure: Option<ShellFailure>) -> Self {
         match failure {
             Some(failure) => Self {
@@ -873,11 +880,29 @@ impl Presenter {
                 }
                 .and_then(|()| self.finish_command_output(&call_id))
             }
-            UiEvent::ToolRejected { tool_name, .. } => {
+            UiEvent::ToolRejected {
+                tool_name,
+                arguments,
+                reason,
+                ..
+            } => {
                 self.start_step();
-                self.tool_calls
-                    .push(ToolRecord::new(tool_name, ToolResultStatus::Failure));
-                Ok(())
+                match reason {
+                    ToolRejection::Unsupported => {
+                        let line = self.progress_line(&format_unknown_action(&tool_name));
+                        self.write_status(StatusBlock::Progress, &line)
+                    }
+                    ToolRejection::Invalid => {
+                        self.tool_calls
+                            .push(ToolRecord::rejected(tool_name, &arguments));
+                        Ok(())
+                    }
+                    ToolRejection::Panicked => {
+                        self.tool_calls
+                            .push(ToolRecord::preflight_failed(tool_name, &arguments));
+                        Ok(())
+                    }
+                }
             }
             UiEvent::TurnStarted { .. }
             | UiEvent::ReasoningText { .. }
@@ -1694,6 +1719,16 @@ mod tests {
         }
     }
 
+    fn rejected(call_id: &str, tool_name: &str, arguments: &str, reason: ToolRejection) -> UiEvent {
+        UiEvent::ToolRejected {
+            turn_id: TurnId::new(1),
+            call_id: ToolCallId::new(call_id),
+            tool_name: tool_name.to_owned(),
+            arguments: arguments.to_owned(),
+            reason,
+        }
+    }
+
     fn assistant(text: &str) -> UiEvent {
         UiEvent::AssistantText {
             turn_id: TurnId::new(1),
@@ -1754,15 +1789,62 @@ mod tests {
         presenter.push_assistant("Looking.").unwrap();
         assert!(presenter.handle(started("call-1", "Reading", ToolEffect::ReadOnly)));
         presenter.push_assistant("Found it.").unwrap();
-        assert!(presenter.handle(UiEvent::ToolRejected {
-            turn_id: TurnId::new(1),
-            call_id: ToolCallId::new("call-2"),
-            tool_name: "missing".to_owned(),
-        }));
+        assert!(presenter.handle(rejected(
+            "call-2",
+            "missing",
+            "{}",
+            ToolRejection::Unsupported
+        )));
         presenter.push_assistant("\nDone").unwrap();
         assert_eq!(presenter.output, "Looking.\n\nFound it.\n\n\nDone");
         assert_eq!(presenter.steps, 2);
-        assert_eq!(presenter.tool_calls.len(), 1);
+        assert!(presenter.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn calls_that_never_run_are_recorded_as_upstream_records_them() {
+        let mut presenter = json_presenter();
+        let run = r#"{"request":{"action":"run"}}"#;
+        let stop = r#"{"action":"stop","session_id":"shell-1"}"#;
+        present(
+            &mut presenter,
+            [
+                rejected("call-1", "missing", run, ToolRejection::Unsupported),
+                rejected("call-2", "shell", run, ToolRejection::Invalid),
+                rejected("call-3", "read_file", "{}", ToolRejection::Invalid),
+                rejected("call-4", "shell", stop, ToolRejection::Panicked),
+                rejected("call-5", "read_file", "{}", ToolRejection::Panicked),
+            ],
+        );
+        assert_eq!(presenter.steps, 5);
+        assert_eq!(
+            serde_json::to_string(&presenter.tool_calls).unwrap(),
+            concat!(
+                r#"[{"name":"shell","status":"error","action":"run","error":{"category":"rejected","code":"rejected"}},"#,
+                r#"{"name":"read_file","status":"error"},"#,
+                r#"{"name":"shell","status":"error","action":"stop","error":{"category":"tool_failed","code":"tool_failed"}},"#,
+                r#"{"name":"read_file","status":"error"}]"#,
+            )
+        );
+    }
+
+    #[test]
+    fn terminal_output_shows_unknown_tools_as_safe_progress_lines() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Looking."),
+                rejected("call-1", "missing\x1b[2J", "{}", ToolRejection::Unsupported),
+                rejected("call-2", "read_file", "{}", ToolRejection::Invalid),
+                assistant("Done."),
+            ],
+        );
+        assert_eq!(
+            screen.text(),
+            "Looking.\n\nWorking: missing\\x1b[2J\n\nDone."
+        );
+        assert_eq!(presenter.steps, 2);
     }
 
     #[test]
@@ -2029,11 +2111,12 @@ mod tests {
                 started(&call_id, "Reading b.txt", ToolEffect::None),
                 finished(&call_id),
             ],
-            2 => vec![UiEvent::ToolRejected {
-                turn_id: TurnId::new(1),
-                call_id: ToolCallId::new(call_id),
-                tool_name: "missing".to_owned(),
-            }],
+            2 => vec![rejected(
+                &call_id,
+                "missing",
+                "{}",
+                ToolRejection::Unsupported,
+            )],
             3 => vec![UiEvent::Recovery {
                 turn_id: TurnId::new(1),
                 status: RouteRecoveryStatus {
@@ -2056,7 +2139,7 @@ mod tests {
 
     fn status_kind(line: &str) -> Option<StatusBlock> {
         match line {
-            "Reading a.txt" | "Reading b.txt" => Some(StatusBlock::Progress),
+            "Reading a.txt" | "Reading b.txt" | "Working: missing" => Some(StatusBlock::Progress),
             "Done." => Some(StatusBlock::Operational),
             line if line.starts_with("[notice] ") => Some(StatusBlock::Notice),
             _ => None,
@@ -2079,7 +2162,7 @@ mod tests {
             let kind = status_kind(line);
             assert!(
                 kind.is_some()
-                    || !["Reading", "Done.", "[notice]"]
+                    || !["Reading", "Working", "Done.", "[notice]"]
                         .iter()
                         .any(|status| line.contains(status)),
                 "{label}: a status line shares a line with text in {screen:?}"
