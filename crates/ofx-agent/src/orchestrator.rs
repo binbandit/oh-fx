@@ -12,7 +12,7 @@ use ofx_contract::{
     PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
     RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext,
     ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
-    UiEvent, Usage, review_unavailable_json, tool_execution_failure_json,
+    UiEvent, Usage, format_unknown_action, review_unavailable_json, tool_execution_failure_json,
 };
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -472,23 +472,39 @@ impl Agent {
             .zip(&self.tool_specs)
             .find(|(_, spec)| spec.name == call.name)
         else {
-            return Prepared::Rejected(
-                ToolRejection::Unsupported,
-                ToolOutput::failure(format!("Unsupported tool: {}", call.name)),
-            );
+            return Prepared::Rejected(Rejection {
+                reason: ToolRejection::Unsupported,
+                title: Some(format_unknown_action(&call.name)),
+                output: ToolOutput::failure(format!("Unsupported tool: {}", call.name)),
+            });
         };
         let prepared = match contained(|| tool.prepare(&call.arguments)) {
             Some(Ok(prepared)) => prepared,
-            Some(Err(output)) => return Prepared::Rejected(ToolRejection::Invalid, output),
-            None => return Prepared::Rejected(ToolRejection::Panicked, panicked(&call.name)),
+            Some(Err(output)) => {
+                return Prepared::Rejected(Rejection {
+                    reason: ToolRejection::Invalid,
+                    title: None,
+                    output,
+                });
+            }
+            None => return Prepared::Rejected(Rejection::panicked(&call.name)),
         };
         let inspected = contained(|| prepared.describe())
             .zip(contained(|| prepared.file_mutation().cloned()))
-            .zip(contained(|| prepared.command_request().cloned()));
-        let Some(((description, mutation), command)) = inspected else {
+            .zip(contained(|| prepared.command_request().cloned()))
+            .zip(contained(|| prepared.refusal().cloned()));
+        let Some((((description, mutation), command), refusal)) = inspected else {
             discard(prepared);
-            return Prepared::Rejected(ToolRejection::Panicked, panicked(&call.name));
+            return Prepared::Rejected(Rejection::panicked(&call.name));
         };
+        if let Some(output) = refusal {
+            discard(prepared);
+            return Prepared::Rejected(Rejection {
+                reason: ToolRejection::Invalid,
+                title: Some(description.title),
+                output,
+            });
+        }
         Prepared::Ready(prepared, description, mutation, command)
     }
 
@@ -622,8 +638,24 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
     }
 }
 
+struct Rejection {
+    reason: ToolRejection,
+    title: Option<String>,
+    output: ToolOutput,
+}
+
+impl Rejection {
+    fn panicked(tool_name: &str) -> Self {
+        Self {
+            reason: ToolRejection::Panicked,
+            title: None,
+            output: panicked(tool_name),
+        }
+    }
+}
+
 enum Prepared {
-    Rejected(ToolRejection, ToolOutput),
+    Rejected(Rejection),
     Ready(
         Box<dyn PreparedCall>,
         CallDescription,
@@ -692,13 +724,18 @@ async fn run_group<'c>(
             break;
         }
         match prepared {
-            Prepared::Rejected(reason, output) => {
+            Prepared::Rejected(Rejection {
+                reason,
+                title,
+                output,
+            }) => {
                 events(UiEvent::ToolRejected {
                     turn_id,
                     call_id: call.id.clone(),
                     tool_name: call.name.clone(),
                     arguments: call.arguments.clone(),
                     reason,
+                    title,
                 });
                 dispatched.push((call, Dispatched::Rejected(output)));
             }

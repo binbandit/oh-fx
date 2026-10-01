@@ -58,6 +58,7 @@ pub enum UiEvent {
         tool_name: String,
         arguments: String,
         reason: ToolRejection,
+        title: Option<String>,
     },
     UsageReported {
         turn_id: TurnId,

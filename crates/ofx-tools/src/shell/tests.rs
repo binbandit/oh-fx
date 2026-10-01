@@ -125,6 +125,47 @@ fn invalid_working_directories_fail_before_admission() {
 }
 
 #[test]
+fn calls_the_shell_cannot_validate_are_refused_before_admission() {
+    let refusal = |arguments: &str| {
+        let prepared = shell().prepare(arguments).unwrap();
+        (
+            prepared.describe().title,
+            prepared.refusal().map(|output| output.content.clone()),
+        )
+    };
+    for (arguments, title, content) in [
+        (
+            r#"{"request":{"action":"run"}}"#,
+            "Running command",
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["request.command is required.","request.command is required."]}}"#,
+        ),
+        (
+            r#"{"request":{"action":"stop"}}"#,
+            "Stopping shell execution",
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["request.session_id is required."]}}"#,
+        ),
+        (
+            r#"{"request":{"action":"run","command":"ls","cwd":"missing-directory"}}"#,
+            "Running ls",
+            "shell run cwd is invalid: FileNotFound",
+        ),
+    ] {
+        assert_eq!(
+            refusal(arguments),
+            (title.to_owned(), Some(content.to_owned())),
+            "{arguments}"
+        );
+    }
+    for valid in [
+        r#"{"request":{"action":"run","command":"ls"}}"#,
+        r#"{"request":{"action":"stop","session_id":"shell-1"}}"#,
+        r#"{"action":"run","command":"ls","cwd":"/nonexistent/oh-fx-missing-directory"}"#,
+    ] {
+        assert_eq!(refusal(valid).1, None, "{valid}");
+    }
+}
+
+#[test]
 fn shell_interaction_wait_bounds_empty_observations_without_delaying_writes() {
     for (has_input, requested, expected) in [
         (false, 0, 5_000),

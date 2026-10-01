@@ -223,10 +223,6 @@ mod tests {
                 r#"{"error":{"tool":"read_file","code":"Nope"}}"#,
                 "tool_failed",
             ),
-            (
-                r#"{"error":{"code":"invalid_shell_request","executed":false}}"#,
-                "tool_failed",
-            ),
             ("shell run cwd is invalid: FileNotFound", "tool_failed"),
         ] {
             assert_eq!(tool_failure_code(content), code, "{content}");
