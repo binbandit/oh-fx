@@ -23,9 +23,8 @@ const MAX_HISTORY_ARGUMENTS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_DEPTH: usize = 64;
 const MAX_REPLAY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_DETAIL_BYTES: usize = 64 * 1024;
-const SCHEMA_NODE_BUDGET: usize = 16 * 1024;
-const SCHEMA_STRING_BUDGET: usize = 1024 * 1024;
 const DESCRIPTION_MAX_BYTES: usize = 1024;
+const INITIAL_BODY_BYTES: usize = 128;
 const TRUNCATION_MARKER: &str = "... [truncated]";
 const REASONING_FIELDS: [&str; 2] = ["reasoning", "reasoning_content"];
 const DETAIL_LIMIT_NOTICE: &str = "Provider error details exceeded the local limit";
@@ -42,8 +41,6 @@ pub(crate) enum ProtocolError {
     InvalidOutputLimit,
     #[error("InvalidToolSelection")]
     InvalidToolSelection,
-    #[error("InvalidToolSchema")]
-    InvalidToolSchema,
     #[error("InvalidToolCallId")]
     InvalidToolCallId,
     #[error("InvalidToolName")]
@@ -131,74 +128,18 @@ fn select_functions(tools: &[ToolSpec], choice: ToolChoice) -> ProtocolResult<Ve
     if tools.len() > MAX_SELECTED_TOOLS {
         return Err(ProtocolError::TooManyTools);
     }
-    let mut budget = SchemaBudget::default();
     let mut functions: Vec<&ToolSpec> = Vec::with_capacity(tools.len());
     for tool in tools {
         validate_name(&tool.name)?;
         if functions.iter().any(|prior| prior.name == tool.name) {
             return Err(ProtocolError::InvalidToolSelection);
         }
-        if !tool.input_schema.is_object() {
-            return Err(ProtocolError::InvalidToolSchema);
-        }
-        validate_schema(&tool.input_schema, 0, &mut budget)?;
         functions.push(tool);
     }
     if choice == ToolChoice::Required && functions.is_empty() {
         return Err(ProtocolError::RequiredToolMissing);
     }
     Ok(functions)
-}
-
-struct SchemaBudget {
-    nodes: usize,
-    string_bytes: usize,
-}
-
-impl Default for SchemaBudget {
-    fn default() -> Self {
-        Self {
-            nodes: SCHEMA_NODE_BUDGET,
-            string_bytes: SCHEMA_STRING_BUDGET,
-        }
-    }
-}
-
-impl SchemaBudget {
-    fn consume_string(&mut self, text: &str) -> ProtocolResult<()> {
-        if text.len() > self.string_bytes {
-            return Err(ProtocolError::InvalidToolSchema);
-        }
-        self.string_bytes -= text.len();
-        Ok(())
-    }
-}
-
-fn validate_schema(value: &Value, depth: usize, budget: &mut SchemaBudget) -> ProtocolResult<()> {
-    if depth > MAX_JSON_DEPTH {
-        return Err(ProtocolError::JsonTooDeep);
-    }
-    if budget.nodes == 0 {
-        return Err(ProtocolError::InvalidToolSchema);
-    }
-    budget.nodes -= 1;
-    match value {
-        Value::Object(fields) => {
-            for (key, child) in fields {
-                budget.consume_string(key)?;
-                validate_schema(child, depth + 1, budget)?;
-            }
-            Ok(())
-        }
-        Value::Array(items) => items
-            .iter()
-            .try_for_each(|item| validate_schema(item, depth + 1, budget)),
-        Value::String(text) => budget.consume_string(text),
-        Value::Number(number) if number.as_f64().is_some_and(|float| !float.is_finite()) => {
-            Err(ProtocolError::InvalidToolSchema)
-        }
-        Value::Number(_) | Value::Bool(_) | Value::Null => Ok(()),
-    }
 }
 
 fn validate_request(request: &ModelRequest<'_>) -> ProtocolResult<()> {
@@ -327,27 +268,6 @@ pub(crate) struct Selection {
 }
 
 #[derive(Serialize)]
-struct WireRequest<'a> {
-    model: &'a str,
-    stream: bool,
-    stream_options: WireStreamOptions,
-    messages: Vec<WireMessage<'a>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<WireTool<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,
-}
-
-#[derive(Serialize)]
-struct WireStreamOptions {
-    include_usage: bool,
-}
-
-#[derive(Serialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
 enum WireMessage<'a> {
     System {
@@ -381,20 +301,6 @@ struct WireFunctionCall<'a> {
     arguments: &'a str,
 }
 
-#[derive(Serialize)]
-struct WireTool<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    function: WireFunction<'a>,
-}
-
-#[derive(Serialize)]
-struct WireFunction<'a> {
-    name: &'a str,
-    description: Cow<'a, str>,
-    parameters: &'a Value,
-}
-
 pub(crate) fn build_request(
     request: &ModelRequest<'_>,
     options: RequestOptions,
@@ -403,7 +309,7 @@ pub(crate) fn build_request(
     validate_history(request.messages)?;
     let functions = select_functions(request.tools, request.tool_choice)?;
     let projection = Projection::new(request.messages)?;
-    let messages = request
+    let messages: Vec<WireMessage<'_>> = request
         .instructions
         .iter()
         .map(|instruction| WireMessage::System {
@@ -416,25 +322,27 @@ pub(crate) fn build_request(
                 .map(|message| encode_message(message, &projection)),
         )
         .collect();
-    let tool_choice = (!functions.is_empty() && options.tool_choice_mode == ToolChoiceMode::Send)
-        .then(|| request.tool_choice.as_str());
-    let (max_tokens, max_completion_tokens) = match options.max_tokens_parameter {
-        MaxTokensParameter::MaxTokens => (request.max_output_tokens, None),
-        MaxTokensParameter::MaxCompletionTokens => (None, request.max_output_tokens),
-    };
-    let wire = WireRequest {
-        model: request.model,
-        stream: true,
-        stream_options: WireStreamOptions {
-            include_usage: true,
-        },
-        messages,
-        tools: functions.iter().map(|tool| encode_tool(tool)).collect(),
-        tool_choice,
-        max_tokens,
-        max_completion_tokens,
-    };
-    let body = serde_json::to_vec(&wire).map_err(|_| ProtocolError::InvalidToolSchema)?;
+    let mut body = Vec::with_capacity(INITIAL_BODY_BYTES);
+    body.extend_from_slice(b"{\"model\":");
+    write_json(&mut body, request.model)?;
+    body.extend_from_slice(
+        b",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":",
+    );
+    write_json(&mut body, &messages)?;
+    if !functions.is_empty() {
+        write_tools(&mut body, &functions)?;
+        if options.tool_choice_mode == ToolChoiceMode::Send {
+            body.extend_from_slice(b",\"tool_choice\":");
+            write_json(&mut body, request.tool_choice.as_str())?;
+        }
+    }
+    if let Some(limit) = request.max_output_tokens {
+        body.push(b',');
+        write_json(&mut body, options.max_tokens_parameter.field())?;
+        body.push(b':');
+        write_json(&mut body, &limit)?;
+    }
+    body.push(b'}');
     Ok(PreparedRequest {
         body,
         selection: Selection {
@@ -475,15 +383,25 @@ fn encode_message<'a>(message: &'a ChatMessage, projection: &'a Projection) -> W
     }
 }
 
-fn encode_tool(tool: &ToolSpec) -> WireTool<'_> {
-    WireTool {
-        kind: "function",
-        function: WireFunction {
-            name: &tool.name,
-            description: capped_description(&tool.description),
-            parameters: &tool.input_schema,
-        },
+fn write_tools(body: &mut Vec<u8>, functions: &[&ToolSpec]) -> ProtocolResult<()> {
+    let mut separator = ",\"tools\":[";
+    for tool in functions {
+        body.extend_from_slice(separator.as_bytes());
+        body.extend_from_slice(b"{\"type\":\"function\",\"function\":{\"name\":");
+        write_json(body, &tool.name)?;
+        body.extend_from_slice(b",\"description\":");
+        write_json(body, &capped_description(&tool.description))?;
+        body.extend_from_slice(b",\"parameters\":");
+        body.extend_from_slice(tool.input_schema.as_bytes());
+        body.extend_from_slice(b"}}");
+        separator = ",";
     }
+    body.push(b']');
+    Ok(())
+}
+
+fn write_json<T: Serialize + ?Sized>(body: &mut Vec<u8>, value: &T) -> ProtocolResult<()> {
+    serde_json::to_writer(body, value).map_err(|_| ProtocolError::InvalidProviderPrompt)
 }
 
 pub(crate) fn capped_description(text: &str) -> Cow<'_, str> {

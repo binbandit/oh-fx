@@ -92,7 +92,7 @@ fn openai_codex_request_uses_responses_input_and_converts_ai_sdk_tool_schemas() 
     let tools = [ToolSpec {
         name: "read_file".to_owned(),
         description: "Read".to_owned(),
-        input_schema: json!({"type": "object", "properties": {}}),
+        input_schema: r#"{"type":"object","properties":{}}"#,
     }];
     let messages = [
         ChatMessage::user("Read it."),

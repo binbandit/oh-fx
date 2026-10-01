@@ -46,7 +46,7 @@ fn tool_request() -> OwnedRequest {
         tools: vec![ToolSpec {
             name: "read_file".to_owned(),
             description: "Read a file.".to_owned(),
-            input_schema: serde_json::json!({"type":"object"}),
+            input_schema: r#"{"type":"object"}"#,
         }],
         ..test_request()
     }
