@@ -91,6 +91,12 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - There is one release stream, so `oh-fx upgrade` has no `--channel` option.
 - Releases come from GitHub Releases. Every push to `main` that changes more than documentation publishes `v<version>-dev.<n>`, where `<n>` is the commit count on `main`.
 - Upgrade checks run from every command through a detached background process, at most once every five minutes when commands run, instead of upstream's thirty, so each merge reaches users quickly.
+- Assistant markdown escapes terminal controls once, as text enters a span: C0 controls other than tab, DEL, C1 controls, line and paragraph separators, and bidi embedding, override and isolate controls appear as `\xNN` or `\u{NNNN}`, and table widths and hanging indents measure that escaped text. Link targets and numeric entities stay literal text unless every code point is one the terminal-safe encoder keeps. Upstream passes these code points to the terminal.
+- Pipe tables take their column count from the header row and drop extra cells, as GitHub-flavoured Markdown does, and a table that would render more than 16 cells per source byte stays plain lines. Upstream widens to the longest row and pads every row, so 32 KiB of pipes rendered hundreds of megabytes.
+- `MarkdownProcessor::push` takes `&str`, so callers replace invalid UTF-8 before markdown sees it. Upstream processes raw bytes.
+- A heading with no text at the end of a stream produces no line. Upstream writes only its style codes.
+- A level-six heading whose whole text is `• `, `☐ ` or `[1] ` has no hanging indent. Upstream's wrap parser reads its dim text as a list, task or footnote marker; the line is too short to wrap either way.
+- `flush` never changes events an earlier `push` returned, and the footnote separator counts blank lines already emitted, as upstream's assistant stream does. Upstream's processor trims trailing blank lines from a buffer it shares with earlier pushes.
 
 ## Parity tracking
 
