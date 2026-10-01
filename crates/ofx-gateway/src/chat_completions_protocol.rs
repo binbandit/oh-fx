@@ -7,11 +7,10 @@ use ofx_config::{
     MAX_MODEL_BYTES, MaxTokensParameter, ToolChoiceMode, is_valid_model_id, parse_strict_json,
 };
 use ofx_contract::{
-    ChatMessage, Completion, FinishReason, ModelRequest, ToolCall, ToolCallId, ToolChoice,
-    ToolSpec, Usage,
+    ChatMessage, Completion, FinishReason, ModelRequest, ToolArgumentIntegrity, ToolCall,
+    ToolCallId, ToolChoice, ToolSpec, Usage,
 };
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::borrowed_json::{self, Json, Object};
 pub(crate) use crate::secret_mask::mask_configured_secrets;
@@ -195,9 +194,10 @@ pub(crate) fn check_json_depth(text: &[u8]) -> ProtocolResult<()> {
 
 fn validate_arguments(text: &str) -> ProtocolResult<()> {
     check_json_depth(text.as_bytes())?;
-    match parse_strict_json(text.as_bytes()) {
-        Ok(Value::Object(_)) => Ok(()),
-        _ => Err(ProtocolError::InvalidToolArguments),
+    if ToolArgumentIntegrity::classify_function_input(text) == ToolArgumentIntegrity::Valid {
+        Ok(())
+    } else {
+        Err(ProtocolError::InvalidToolArguments)
     }
 }
 
