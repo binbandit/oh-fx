@@ -1,8 +1,19 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
+#[cfg(target_os = "linux")]
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::ExitStatusExt;
+#[cfg(target_os = "linux")]
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::process::Child;
 use std::process::{Command, Output, Stdio};
+
+#[cfg(target_os = "linux")]
+use rustix::io::Errno;
+#[cfg(target_os = "linux")]
+use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
 
 use ofx_cli::{HelpStyle, TopLevelKind, render_command_help, render_top_level_help};
 
@@ -251,6 +262,16 @@ fn full_disk_writes_follow_each_upstream_path() {
 }
 
 #[test]
+fn read_only_stdout_is_treated_like_a_closed_one() {
+    for args in [&["--help"][..], &["--version"], &["status", "--help"]] {
+        let read_only = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let output = run(args, &[], Stdio::from(read_only));
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        assert_eq!(stderr(&output), "", "{args:?}");
+    }
+}
+
+#[test]
 fn closed_pipes_follow_each_upstream_path() {
     for args in [
         &["--help"][..],
@@ -377,5 +398,59 @@ fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
     assert_eq!(
         stdout(&output),
         "{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":\"\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{\"input_tokens\":null,\"output_tokens\":null},\"error\":\"NotAvailableYet\"}\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_into(home: &Path, args: &[&str], environment: &[(&str, &str)], stdout: OwnedFd) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        .args(args)
+        .current_dir(home)
+        .env_clear()
+        .env("HOME", home)
+        .env("OH_FX_AUTO_UPGRADE", "0")
+        .envs(environment.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run oh-fx")
+}
+
+#[cfg(target_os = "linux")]
+fn stdout_records(args: &[&str]) -> Vec<Vec<u8>> {
+    let (reader, writer) = socketpair(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .expect("create a packet socket pair");
+    let home = tempfile::tempdir().expect("create a temporary home");
+    let mut child = spawn_into(home.path(), args, &[], writer);
+    let mut records = Vec::new();
+    let mut buffer = vec![0; 1 << 16];
+    loop {
+        match rustix::io::read(&reader, &mut buffer) {
+            Ok(0) => break,
+            Ok(count) => records.push(buffer[..count].to_vec()),
+            Err(Errno::INTR) => {}
+            Err(error) => panic!("read stdout: {error}"),
+        }
+    }
+    assert!(child.wait().expect("wait for oh-fx").success());
+    records
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn help_and_version_reach_stdout_in_one_write() {
+    assert_eq!(
+        stdout_records(&["--help"]),
+        [render_top_level_help(80, ofx_upgrade::VERSION, HelpStyle::Plain).into_bytes()]
+    );
+    assert_eq!(
+        stdout_records(&["--version"]),
+        [format!("{}\n", ofx_upgrade::VERSION).into_bytes()]
     );
 }
