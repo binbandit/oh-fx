@@ -96,6 +96,20 @@ impl RuntimeContext for FixedContext {
     }
 }
 
+struct ArgumentGate;
+
+impl PermissionGate for ArgumentGate {
+    fn admit(&self, call: &ToolCall) -> Admission {
+        if call.arguments.contains("outside") {
+            Admission::ApprovalRequired
+        } else if call.arguments.contains("external") {
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        } else {
+            Admission::Allowed(PathAccess::WorkspaceOnly)
+        }
+    }
+}
+
 struct EchoTool {
     spec: ToolSpec,
     cleaned_up: Arc<AtomicBool>,
@@ -135,7 +149,11 @@ impl PreparedCall for EchoCall {
         CallDescription {
             title: format!("Echoing {}", self.arguments),
             activity: ToolActivity::Read,
-            effect: ToolEffect::ReadOnly,
+            effect: if self.arguments.contains("inert") {
+                ToolEffect::None
+            } else {
+                ToolEffect::ReadOnly
+            },
             concurrency: if self.arguments.contains("serial") {
                 Concurrency::Serial
             } else {
@@ -158,6 +176,9 @@ impl PreparedCall for EchoCall {
                 tokio::task::yield_now().await;
                 self.cleaned_up.store(true, Ordering::SeqCst);
                 return ToolOutput::failure("stopped after cleanup");
+            }
+            if self.arguments.contains("access") {
+                return ToolOutput::success(format!("{:?}", context.path_access));
             }
             if self.arguments.contains("fail") {
                 ToolOutput::failure("echo failed")
@@ -239,7 +260,13 @@ fn config() -> AgentConfig {
 }
 
 fn new_agent(provider: Arc<FakeProvider>, tools: Vec<Arc<dyn Tool>>) -> Agent {
-    Agent::new(provider, tools, Arc::new(FixedContext), config())
+    Agent::new(
+        provider,
+        tools,
+        Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
+        config(),
+    )
 }
 
 async fn run(agent: &mut Agent, prompt: &str) -> (TurnReport, Vec<UiEvent>) {
@@ -316,7 +343,13 @@ async fn an_empty_system_prompt_is_left_out_of_the_instructions() {
         ..config()
     };
     let shared: Arc<FakeProvider> = Arc::clone(&provider);
-    let mut agent = Agent::new(shared, Vec::new(), Arc::new(FixedContext), config);
+    let mut agent = Agent::new(
+        shared,
+        Vec::new(),
+        Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
+        config,
+    );
     run(&mut agent, "hi").await;
     assert_eq!(
         provider.requests()[0].instructions,
@@ -448,6 +481,7 @@ async fn step_limits_stop_the_loop_with_the_upstream_notice_and_keep_the_turn() 
         provider,
         vec![echo_tool()],
         Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
         AgentConfig {
             step_limit: 1,
             ..config()
@@ -750,6 +784,83 @@ async fn parallel_calls_overlap_and_report_results_in_call_order() {
             tool_message("call-2", r#"echo {"meet":2}"#, ToolResultStatus::Success),
         ]
     );
+}
+
+#[tokio::test]
+async fn admitted_calls_run_with_the_path_access_their_admission_grants() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"access":"workspace"}"#),
+            ("call-2", r#"{"access":"external"}"#),
+            ("call-3", r#"{"access":"outside","inert":true}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message("call-1", "WorkspaceOnly", ToolResultStatus::Success),
+            tool_message("call-2", "WorkspaceOrExternal", ToolResultStatus::Success),
+            tool_message("call-3", "WorkspaceOnly", ToolResultStatus::Success),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_call_that_needs_approval_fails_the_turn_after_earlier_calls_settle() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"text":"before"}"#),
+            ("call-2", r#"{"path":"outside"}"#),
+            ("call-3", r#"{"text":"after"}"#),
+        ]),
+        text_reply("never"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    let failure = report.failure.unwrap();
+    assert_eq!(failure.code(), "NonInteractivePermissionRequired");
+    assert_eq!(
+        failure,
+        TurnFailure::PermissionRequired(BlockedCall {
+            tool_name: "echo".to_owned(),
+            title: r#"Echoing {"path":"outside"}"#.to_owned(),
+        })
+    );
+    assert_eq!(
+        dispatch_order(&events),
+        ["start call-1", "start call-2", "finish call-1"]
+    );
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        agent.history,
+        [
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![echo_call("call-1", r#"{"text":"before"}"#)],
+            },
+            tool_message(
+                "call-1",
+                r#"echo {"text":"before"}"#,
+                ToolResultStatus::Success
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_lone_call_that_needs_approval_leaves_no_history() {
+    let provider = FakeProvider::new(vec![tool_reply(&[("call-1", r#"{"path":"outside"}"#)])]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(dispatch_order(&events), ["start call-1"]);
+    assert!(agent.history.is_empty());
 }
 
 #[tokio::test]

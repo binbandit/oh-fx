@@ -84,6 +84,18 @@ pub fn encode_terminal_safe(raw: &[u8], max_encoded_bytes: usize) -> EncodedText
     EncodedText { text, truncated }
 }
 
+pub fn sanitize_model_text_owned(text: Vec<u8>) -> String {
+    match String::from_utf8(text) {
+        Ok(valid) if !valid.contains('\0') => valid,
+        Ok(valid) => omitted_binary_output(valid.len()),
+        Err(invalid) => omitted_binary_output(invalid.as_bytes().len()),
+    }
+}
+
+fn omitted_binary_output(len: usize) -> String {
+    format!("binary or non-utf8 tool output omitted ({len} bytes)")
+}
+
 pub fn mask_secrets(text: &str) -> Cow<'_, str> {
     let bytes = text.as_bytes();
     let spans = union_of_spans(
@@ -894,6 +906,23 @@ mod tests {
         assert!(contains_ignore_case(b"Local Coding Assistant", b"coding"));
         assert!(contains_ignore_case(b"\xffPARSE error\xfe", b"parse ERROR"));
         assert!(contains_ignore_case("openai/GPT-5", "gpt"));
+    }
+
+    #[test]
+    fn sanitize_model_text_owned_reuses_valid_buffers_and_replaces_unsafe_ones() {
+        let valid = b"plain text".to_vec();
+        let pointer = valid.as_ptr();
+        let sanitized = sanitize_model_text_owned(valid);
+        assert_eq!(sanitized, "plain text");
+        assert_eq!(sanitized.as_ptr(), pointer);
+        assert_eq!(
+            sanitize_model_text_owned(b"bad\xff".to_vec()),
+            "binary or non-utf8 tool output omitted (4 bytes)"
+        );
+        assert_eq!(
+            sanitize_model_text_owned(b"nul\0".to_vec()),
+            "binary or non-utf8 tool output omitted (4 bytes)"
+        );
     }
 
     #[test]

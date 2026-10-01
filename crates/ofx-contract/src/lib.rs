@@ -1,17 +1,28 @@
 mod ids;
+mod permission_gate;
 mod stream_provider;
+mod tool_args;
 mod tool_dispatch;
+mod tool_presentation;
+mod tool_result_errors;
 mod types;
 mod ui;
 
 pub use ids::{ToolCallId, TurnId};
+pub use permission_gate::{Admission, PathAccess, PermissionGate};
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
     StreamEvent, StreamSink,
 };
+pub use tool_args::{ToolArgValue, ToolArgs, ToolArgsError, parse_tool_args_object};
 pub use tool_dispatch::{
-    CallDescription, Concurrency, PreparedCall, Tool, ToolActivity, ToolContext, ToolEffect,
-    ToolOutput, ToolSpec,
+    CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity, ToolContext,
+    ToolEffect, ToolOutput, ToolSpec,
+};
+pub use tool_presentation::format_plain_action;
+pub use tool_result_errors::{
+    ExecutionFailure, filesystem_access_denied_json, format_tool_execution_error_json,
+    tool_execution_failure_json,
 };
 pub use types::{
     ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause,

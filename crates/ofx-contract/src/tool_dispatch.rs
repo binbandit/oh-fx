@@ -1,6 +1,7 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::ids::ToolCallId;
+use crate::permission_gate::PathAccess;
 use crate::stream_provider::BoxFuture;
 use crate::types::ToolResultStatus;
 
@@ -25,6 +26,7 @@ pub enum ToolActivity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolEffect {
+    None,
     ReadOnly,
     Mutating,
     Irreversible,
@@ -34,6 +36,14 @@ pub enum ToolEffect {
 pub enum Concurrency {
     Parallel,
     Serial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallPresentation {
+    pub activity: ToolActivity,
+    pub action_label: &'static str,
+    pub label_argument: &'static str,
+    pub label_default: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,13 +81,19 @@ impl ToolOutput {
 pub struct ToolContext {
     pub call_id: ToolCallId,
     pub cancellation: CancellationToken,
+    pub path_access: PathAccess,
 }
 
 impl ToolContext {
-    pub fn new(call_id: ToolCallId, cancellation: CancellationToken) -> Self {
+    pub fn new(
+        call_id: ToolCallId,
+        cancellation: CancellationToken,
+        path_access: PathAccess,
+    ) -> Self {
         Self {
             call_id,
             cancellation,
+            path_access,
         }
     }
 }

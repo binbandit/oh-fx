@@ -47,6 +47,13 @@ pub fn workspace_relative_path(workspace_root: &Path, absolute: &Path) -> PathBu
     bytes_path(&relative[start..]).to_path_buf()
 }
 
+pub fn path_inside(root: &Path, candidate: &Path) -> bool {
+    inside(
+        root.as_os_str().as_bytes(),
+        candidate.as_os_str().as_bytes(),
+    )
+}
+
 fn resolve_workspace_or_external_path_with_home(
     workspace_root: &Path,
     input_path: &str,
@@ -249,6 +256,11 @@ mod tests {
         assert!(inside(b"", b""));
         assert!(!inside(b"", b"/workspace"));
         assert!(!inside(b"/workspace", b"/workspace-evil/file.txt"));
+        assert!(path_inside(
+            Path::new("/workspace"),
+            Path::new("/workspace/file.txt")
+        ));
+        assert!(!path_inside(Path::new("/workspace"), Path::new("/other")));
     }
 
     #[test]
