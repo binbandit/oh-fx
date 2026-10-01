@@ -3,6 +3,7 @@ use std::io;
 const EPERM: i32 = 1;
 const EIO: i32 = 5;
 const ENXIO: i32 = 6;
+const ENOMEM: i32 = 12;
 const ENODEV: i32 = 19;
 const ENFILE: i32 = 23;
 const EMFILE: i32 = 24;
@@ -57,6 +58,8 @@ pub enum PathError {
     NoDevice,
     #[error("SystemResources")]
     SystemResources,
+    #[error("OutOfMemory")]
+    OutOfMemory,
     #[error("ProcessFdQuotaExceeded")]
     ProcessFdQuotaExceeded,
     #[error("SystemFdQuotaExceeded")]
@@ -68,6 +71,24 @@ pub enum PathError {
 impl PathError {
     pub fn is_access_denied(self) -> bool {
         matches!(self, Self::AccessDenied | Self::PermissionDenied)
+    }
+
+    pub(crate) fn from_realpath(error: &io::Error) -> Self {
+        match error.raw_os_error() {
+            Some(EPERM) => return Self::PermissionDenied,
+            Some(EIO) => return Self::InputOutput,
+            Some(ENOMEM) => return Self::OutOfMemory,
+            Some(ELOOP) => return Self::SymLinkLoop,
+            _ => {}
+        }
+        match error.kind() {
+            io::ErrorKind::NotFound => Self::FileNotFound,
+            io::ErrorKind::PermissionDenied => Self::AccessDenied,
+            io::ErrorKind::NotADirectory => Self::NotDir,
+            io::ErrorKind::InvalidFilename => Self::NameTooLong,
+            io::ErrorKind::InvalidInput => Self::BadPathName,
+            _ => Self::Unexpected,
+        }
     }
 }
 
@@ -125,7 +146,40 @@ mod tests {
             PathError::AccessDenied
         );
         assert!(PathError::AccessDenied.is_access_denied());
+        assert_eq!(
+            PathError::from(io::Error::from_raw_os_error(ENOMEM)),
+            PathError::SystemResources
+        );
         assert!(PathError::PermissionDenied.is_access_denied());
         assert!(!PathError::FileNotFound.is_access_denied());
+    }
+
+    #[test]
+    fn realpath_failures_follow_upstream_realpath_alloc() {
+        for (error, expected) in [
+            (io::ErrorKind::NotFound.into(), PathError::FileNotFound),
+            (io::ErrorKind::NotADirectory.into(), PathError::NotDir),
+            (
+                io::ErrorKind::PermissionDenied.into(),
+                PathError::AccessDenied,
+            ),
+            (
+                io::ErrorKind::InvalidFilename.into(),
+                PathError::NameTooLong,
+            ),
+            (io::ErrorKind::InvalidInput.into(), PathError::BadPathName),
+            (io::Error::from_raw_os_error(ELOOP), PathError::SymLinkLoop),
+            (
+                io::Error::from_raw_os_error(EPERM),
+                PathError::PermissionDenied,
+            ),
+            (io::Error::from_raw_os_error(EIO), PathError::InputOutput),
+            (io::Error::from_raw_os_error(ENOMEM), PathError::OutOfMemory),
+            (io::Error::from_raw_os_error(ENXIO), PathError::Unexpected),
+            (io::Error::from_raw_os_error(EMFILE), PathError::Unexpected),
+        ] {
+            let error: io::Error = error;
+            assert_eq!(PathError::from_realpath(&error), expected, "{error}");
+        }
     }
 }

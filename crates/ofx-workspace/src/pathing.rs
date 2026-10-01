@@ -143,7 +143,8 @@ fn realpath(path: &[u8]) -> Result<Vec<u8>, PathError> {
     if path.len() >= MAX_PATH_BYTES {
         return Err(PathError::NameTooLong);
     }
-    Ok(fs::canonicalize(bytes_path(path))?
+    Ok(fs::canonicalize(bytes_path(path))
+        .map_err(|error| PathError::from_realpath(&error))?
         .into_os_string()
         .into_vec())
 }
