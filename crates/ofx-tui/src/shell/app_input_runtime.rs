@@ -54,6 +54,9 @@ impl Shell<'_> {
         event: InputEvent,
     ) -> Result<(), crate::terminal::TerminalError> {
         self.invalidate();
+        if self.approval.is_some() {
+            return self.handle_approval_input(&event);
+        }
         match event {
             InputEvent::Raw(raw) => self.handle_raw(raw)?,
             InputEvent::Text(character) => {

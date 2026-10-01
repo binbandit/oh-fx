@@ -1,5 +1,6 @@
 mod app_input_runtime;
 mod app_worker_runtime;
+mod approval_runtime;
 mod event_loop;
 mod input_submit_runtime;
 #[cfg(test)]
@@ -12,6 +13,8 @@ use ofx_contract::{PermissionMode, TurnId, UiCommand};
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
+
+use approval_runtime::ApprovalPrompt;
 
 use crate::composer::Composer;
 use crate::footer::input_presentation::ComposerView;
@@ -112,6 +115,7 @@ pub(crate) struct Shell<'a> {
     outstanding: VecDeque<Submission>,
     submitted_prompts: u64,
     turn: Option<ActiveTurn>,
+    approval: Option<ApprovalPrompt>,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
     signals: SignalPipe,
@@ -247,6 +251,7 @@ impl<'a> Shell<'a> {
             outstanding: VecDeque::new(),
             submitted_prompts: 0,
             turn: None,
+            approval: None,
             events,
             send,
             signals: setup.signals,
@@ -356,14 +361,18 @@ impl<'a> Shell<'a> {
         let activity = self.activity_rows(now_ms);
         let banner = self.banner_rows();
         let tail_gap = self.transcript.tail_wants_footer_gap();
-        let composer = self.frame.composer.get_or_insert_with(|| {
-            composer_view(
-                &self.composer,
-                self.layout.cols,
-                input_row_limit(usize::from(self.layout.content_bottom)),
-                &self.theme,
-            )
-        });
+        let composer = self
+            .frame
+            .composer
+            .get_or_insert_with(|| match &self.approval {
+                Some(prompt) => prompt.view(&self.theme, self.layout.cols, self.layout.rows),
+                None => composer_view(
+                    &self.composer,
+                    self.layout.cols,
+                    input_row_limit(usize::from(self.layout.content_bottom)),
+                    &self.theme,
+                ),
+            });
         let live = solve(
             LiveParts {
                 tail_gap,
@@ -379,7 +388,7 @@ impl<'a> Shell<'a> {
             &Frame {
                 appended: &appended,
                 live: &live.rows,
-                cursor: Some(live.cursor),
+                cursor: live.cursor,
             },
             &mut self.output,
         );

@@ -106,9 +106,12 @@ impl Shell<'_> {
                     turn.phase = TurnPhase::Running;
                 }
             }
+            UiEvent::ApprovalRequested { turn_id, request } => {
+                self.end_assistant_step(turn_id);
+                self.approval_requested(turn_id, request);
+            }
             UiEvent::ToolRejected { turn_id, .. } => self.end_assistant_step(turn_id),
             UiEvent::ToolFinished { .. }
-            | UiEvent::ApprovalRequested { .. }
             | UiEvent::ContextNotice { .. }
             | UiEvent::Recovery { .. } => {}
             UiEvent::UsageReported { turn_id, usage } => {
@@ -152,11 +155,12 @@ impl Shell<'_> {
             }
         }
         self.turn = None;
+        self.dismiss_approval();
         self.start_fresh_transcript(FreshScreen::KeepScrollback);
         self.promote_next();
     }
 
-    fn is_visible_turn(&self, turn_id: TurnId) -> bool {
+    pub(super) fn is_visible_turn(&self, turn_id: TurnId) -> bool {
         self.turn
             .as_ref()
             .is_some_and(|turn| turn.turn_id == Some(turn_id))
@@ -250,6 +254,7 @@ impl Shell<'_> {
             .remove(index)
             .is_some_and(|submission| submission.state == SubmissionState::Active);
         if was_visible && let Some(turn) = self.turn.take() {
+            self.dismiss_approval();
             self.finish_visible_turn(turn, outcome);
         }
         self.promote_next();
@@ -305,6 +310,7 @@ impl Shell<'_> {
         if self.turn.take().is_none() {
             return;
         }
+        self.dismiss_approval();
         let mut started = None;
         if let Some(submission) = self
             .outstanding
