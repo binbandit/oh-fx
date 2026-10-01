@@ -46,7 +46,6 @@ fn open_failure(errno: Errno) -> RegularFileError {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 mod no_symlinks {
     use std::ffi::OsStr;
     use std::fs::File;
@@ -57,7 +56,12 @@ mod no_symlinks {
 
     use super::{OPEN_FLAGS, PathError, RegularFileError, open_failure};
 
-    const DIRECTORY_FLAGS: OFlags = OFlags::PATH
+    #[cfg(target_os = "linux")]
+    const DIRECTORY_ACCESS: OFlags = OFlags::PATH;
+    #[cfg(not(target_os = "linux"))]
+    const DIRECTORY_ACCESS: OFlags = OFlags::RDONLY;
+
+    const DIRECTORY_FLAGS: OFlags = DIRECTORY_ACCESS
         .union(OFlags::DIRECTORY)
         .union(OFlags::NOFOLLOW)
         .union(OFlags::CLOEXEC);
@@ -94,32 +98,6 @@ mod no_symlinks {
 
     pub(super) fn open_entry(directory: &OwnedFd, name: &OsStr) -> Result<File, RegularFileError> {
         let file = openat(directory, name, OPEN_FLAGS, Mode::empty()).map_err(open_failure)?;
-        Ok(File::from(file))
-    }
-}
-
-#[cfg(target_os = "macos")]
-mod no_symlinks {
-    use std::fs::{self, File};
-    use std::path::Path;
-
-    use rustix::fs::{Mode, OFlags};
-
-    use super::{OPEN_FLAGS, PathError, RegularFileError, open_failure};
-
-    pub(super) fn open(path: &Path) -> Result<File, RegularFileError> {
-        if !path.is_absolute() {
-            return Err(RegularFileError::Path(PathError::InvalidPath));
-        }
-        if !fs::symlink_metadata(path)?.is_file() {
-            return Err(RegularFileError::NotRegularFile);
-        }
-        open_path(path)
-    }
-
-    pub(super) fn open_path(path: &Path) -> Result<File, RegularFileError> {
-        let flags = OPEN_FLAGS.union(OFlags::NOFOLLOW_ANY);
-        let file = rustix::fs::open(path, flags, Mode::empty()).map_err(open_failure)?;
         Ok(File::from(file))
     }
 }
@@ -183,15 +161,9 @@ mod tests {
         content
     }
 
-    #[cfg(not(target_os = "macos"))]
     fn open_after_the_check(path: &Path) -> Result<(File, Metadata), RegularFileError> {
         let (directory, name) = no_symlinks::open_parent(path)?;
         verified(no_symlinks::open_entry(&directory, name)?)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn open_after_the_check(path: &Path) -> Result<(File, Metadata), RegularFileError> {
-        verified(no_symlinks::open_path(path)?)
     }
 
     fn open_within(path: PathBuf, seconds: u64) -> Option<RegularFileError> {
@@ -283,7 +255,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn an_opened_parent_keeps_reading_the_checked_directory_after_a_swap() {
         let fixture = Fixture::new();
