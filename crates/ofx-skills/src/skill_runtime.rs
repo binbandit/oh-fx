@@ -7,7 +7,10 @@ mod resolution;
 mod skill_file;
 mod symlink_authorities;
 
-pub(crate) use candidate::{CandidateOpen, OpenedSkillCandidate, open_validated_skill_candidate};
+pub(crate) use candidate::{
+    CandidateOpen, OpenedSkillCandidate, ResourceOpenError, open_validated_skill_candidate,
+    resource_is_skill_file,
+};
 pub use catalog::{SkillCatalog, build_skill_prompt};
 pub(crate) use diagnostics::diagnostic_summary;
 pub use discovery::{SkillDiscovery, SkillDiscoveryContext};
