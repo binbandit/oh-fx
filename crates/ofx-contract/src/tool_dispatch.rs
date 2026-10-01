@@ -1,7 +1,7 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::ids::ToolCallId;
-use crate::permission_gate::PathAccess;
+use crate::permission_gate::{FileMutation, PathAccess};
 use crate::stream_provider::BoxFuture;
 use crate::types::ToolResultStatus;
 
@@ -106,6 +106,10 @@ pub trait Tool: Send + Sync {
 
 pub trait PreparedCall: Send {
     fn describe(&self) -> CallDescription;
+
+    fn file_mutation(&self) -> Option<&FileMutation> {
+        None
+    }
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput>;
 }

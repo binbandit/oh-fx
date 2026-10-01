@@ -9,7 +9,7 @@ mod types;
 mod ui;
 
 pub use ids::{ToolCallId, TurnId};
-pub use permission_gate::{Admission, PathAccess, PermissionGate};
+pub use permission_gate::{Admission, FileMutation, FileMutationState, PathAccess, PermissionGate};
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
     StreamEvent, StreamSink,
@@ -22,7 +22,7 @@ pub use tool_dispatch::{
 pub use tool_presentation::format_plain_action;
 pub use tool_result_errors::{
     ExecutionFailure, filesystem_access_denied_json, format_tool_execution_error_json,
-    tool_execution_failure_json,
+    review_unavailable_json, tool_execution_failure_json,
 };
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction,
