@@ -310,6 +310,43 @@ fn workspace_launch_modifiers_still_reject_unsupported_local_command_help() {
 }
 
 #[test]
+fn sessions_v2_reaches_every_command_and_the_ask_options() {
+    assert!(
+        launch(&["--sessions-v2", "ask", "hi"])
+            .modifiers
+            .selects_sessions_v2()
+    );
+    for args in [
+        &["--sessions-v2", "status"][..],
+        &["--sessions-v2", "upgrade"],
+        &["--sessions-v2", "login", "codex"],
+        &["--sessions-v2", "sessions", "--json"],
+    ] {
+        assert!(launch(args).modifiers.selects_sessions_v2(), "{args:?}");
+    }
+    assert!(matches!(
+        parse(&["--sessions-v2", "--version"]),
+        Ok(Invocation::Version)
+    ));
+    assert_eq!(
+        top_level_help(&["--sessions-v2", "help"]),
+        Some(HelpLayout::Plain)
+    );
+    assert_eq!(
+        help(&["--sessions-v2", "ask", "--help"]),
+        Some(TopLevelKind::Ask)
+    );
+    assert!(is_interactive(&["--sessions-v2"]));
+    assert!(resumes(&["--sessions-v2", "--resume", "last"]));
+    let ask = launch(&["ask", "--sessions-v2", "hi"]);
+    assert!(!ask.modifiers.selects_sessions_v2());
+    let Command::Ask(args) = ask.command else {
+        panic!("expected ask");
+    };
+    assert!(args.session.sessions_v2);
+}
+
+#[test]
 fn model_launch_modifiers_apply_only_to_interactive_sessions() {
     for args in [
         &["--model", "x", "ask", "hi"][..],
