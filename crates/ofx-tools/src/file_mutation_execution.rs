@@ -145,7 +145,7 @@ impl Plan {
             };
         }
         match prepared.apply(&context.cancellation) {
-            Ok(()) => ToolOutput::success(prepared.success_message()),
+            Ok(committed) => ToolOutput::success(committed.annotate(prepared.success_message())),
             Err(rejection) => ToolOutput::failure(rejection.message()),
         }
     }

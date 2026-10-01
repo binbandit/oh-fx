@@ -42,6 +42,13 @@ const DEFAULT_FILE_MODE: Mode = Mode::RUSR
     .union(Mode::WOTH);
 const DEFAULT_DIRECTORY_MODE: Mode = Mode::RWXU.union(Mode::RWXG).union(Mode::RWXO);
 const WRITE_BITS: Mode = Mode::WUSR.union(Mode::WGRP).union(Mode::WOTH);
+const EXCLUSIVE_RENAME_UNSUPPORTED: [Errno; 5] = [
+    Errno::INVAL,
+    Errno::NOSYS,
+    Errno::NOTSUP,
+    Errno::OPNOTSUPP,
+    Errno::PERM,
+];
 
 const IDENTITY_CHANGED: &str =
     "file mutation preparation failed: approved filesystem identity changed";
@@ -194,7 +201,7 @@ impl PreparedMutation {
         format!("{verb} {} ({} bytes)", encoded.text, self.after.len())
     }
 
-    pub(crate) fn apply(&self, cancel: &CancellationToken) -> Result<(), Rejection> {
+    pub(crate) fn apply(&self, cancel: &CancellationToken) -> Result<Committed, Rejection> {
         self.apply_with(cancel, &mut |_| {}, rename_new)
     }
 
@@ -203,14 +210,17 @@ impl PreparedMutation {
         cancel: &CancellationToken,
         checkpoint: &mut dyn FnMut(Checkpoint),
         create_new: CreateNew,
-    ) -> Result<(), Rejection> {
+    ) -> Result<Committed, Rejection> {
         if cancel.is_cancelled() {
             return Err(Rejection::new(RejectReason::Cancelled, Vec::new()));
         }
         let mut transaction = Transaction::new(self, create_new);
         transaction
             .commit(cancel, checkpoint)
-            .map_err(|reason| transaction.reject(reason))
+            .map_err(|reason| transaction.reject(reason))?;
+        Ok(Committed {
+            stage_residue: transaction.stage_residue,
+        })
     }
 
     fn target_name(&self) -> &OsStr {
@@ -224,6 +234,13 @@ impl PreparedMutation {
     fn parent_components(&self) -> &[OsString] {
         let components = &self.targets.target.components;
         &components[..components.len().saturating_sub(1)]
+    }
+
+    fn sibling_path(&self, name: &OsStr) -> PathBuf {
+        let mut path = self.targets.target.anchor.clone();
+        path.extend(self.parent_components());
+        path.push(name);
+        path
     }
 
     fn component_path(&self, index: usize) -> PathBuf {
@@ -337,6 +354,24 @@ struct Residue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Committed {
+    stage_residue: Option<Residue>,
+}
+
+impl Committed {
+    pub(crate) fn annotate(&self, mut message: String) -> String {
+        if let Some(residue) = &self.stage_residue {
+            push_residue(
+                &mut message,
+                "; staged file cleanup residue:",
+                std::slice::from_ref(residue),
+            );
+        }
+        message
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Rejection {
     reason: RejectReason,
     residue: Vec<Residue>,
@@ -363,21 +398,27 @@ impl Rejection {
         }
         .to_owned();
         if !self.residue.is_empty() {
-            message.push_str("; approved parent cleanup residue:");
-            for residue in &self.residue {
-                let path = encode_terminal_safe(
-                    residue.path.as_os_str().as_bytes(),
-                    MAX_ENCODED_PATH_BYTES,
-                );
-                let reason = match residue.reason {
-                    ResidueReason::NotEmpty => "not_empty",
-                    ResidueReason::IdentityChanged => "identity_changed",
-                    ResidueReason::RemoveFailed => "remove_failed",
-                };
-                let _ = write!(message, " {} ({reason})", path.text);
-            }
+            push_residue(
+                &mut message,
+                "; approved parent cleanup residue:",
+                &self.residue,
+            );
         }
         message
+    }
+}
+
+fn push_residue(message: &mut String, label: &str, residue: &[Residue]) {
+    message.push_str(label);
+    for residue in residue {
+        let path =
+            encode_terminal_safe(residue.path.as_os_str().as_bytes(), MAX_ENCODED_PATH_BYTES);
+        let reason = match residue.reason {
+            ResidueReason::NotEmpty => "not_empty",
+            ResidueReason::IdentityChanged => "identity_changed",
+            ResidueReason::RemoveFailed => "remove_failed",
+        };
+        let _ = write!(message, " {} ({reason})", path.text);
     }
 }
 
@@ -422,7 +463,8 @@ struct Stage {
     identity: Option<FileIdentity>,
 }
 
-type CreateNew = fn(&OwnedFd, &OsStr, &OsStr) -> Result<(), RejectReason>;
+type CreateNew = fn(&OwnedFd, &OsStr, &OsStr, FileIdentity) -> Created;
+type Created = Result<Option<ResidueReason>, RejectReason>;
 
 struct Transaction<'a> {
     mutation: &'a PreparedMutation,
@@ -430,6 +472,7 @@ struct Transaction<'a> {
     realized: Vec<FileIdentity>,
     created: Vec<(usize, FileIdentity)>,
     stage: Option<Stage>,
+    stage_residue: Option<Residue>,
 }
 
 impl<'a> Transaction<'a> {
@@ -440,6 +483,7 @@ impl<'a> Transaction<'a> {
             realized: Vec::new(),
             created: Vec::new(),
             stage: None,
+            stage_residue: None,
         }
     }
 
@@ -524,7 +568,11 @@ impl<'a> Transaction<'a> {
             return Err(RejectReason::Cancelled);
         }
         if mutation.creates_file() {
-            (self.create_new)(&commit_parent, &stage_name, name)?;
+            let left = (self.create_new)(&commit_parent, &stage_name, name, identity)?;
+            self.stage_residue = left.map(|reason| Residue {
+                path: mutation.sibling_path(&stage_name),
+                reason,
+            });
         } else {
             renameat(&commit_parent, &stage_name, &commit_parent, name)
                 .map_err(|_| RejectReason::IoFailure)?;
@@ -674,26 +722,45 @@ fn create_directory(
     created.map_err(|_| RejectReason::IoFailure)
 }
 
-fn rename_new(parent: &OwnedFd, stage: &OsStr, name: &OsStr) -> Result<(), RejectReason> {
-    match renameat_with(parent, stage, parent, name, RenameFlags::NOREPLACE) {
-        Err(Errno::INVAL | Errno::NOSYS | Errno::NOTSUP | Errno::PERM) => {
-            link_new(parent, stage, name)
-        }
-        result => exclusive(result),
+fn rename_new(parent: &OwnedFd, stage: &OsStr, name: &OsStr, identity: FileIdentity) -> Created {
+    place_new(
+        renameat_with(parent, stage, parent, name, RenameFlags::NOREPLACE),
+        || link_new(parent, stage, name, identity),
+    )
+}
+
+fn place_new(renamed: Result<(), Errno>, link: impl FnOnce() -> Created) -> Created {
+    match renamed {
+        Ok(()) => Ok(None),
+        Err(errno) if EXCLUSIVE_RENAME_UNSUPPORTED.contains(&errno) => link(),
+        Err(errno) => Err(exclusive_failure(errno)),
     }
 }
 
-fn link_new(parent: &OwnedFd, stage: &OsStr, name: &OsStr) -> Result<(), RejectReason> {
-    exclusive(linkat(parent, stage, parent, name, AtFlags::empty()))?;
-    let _ = unlinkat(parent, stage, AtFlags::empty());
-    Ok(())
+fn link_new(parent: &OwnedFd, stage: &OsStr, name: &OsStr, identity: FileIdentity) -> Created {
+    match linkat(parent, stage, parent, name, AtFlags::empty()) {
+        Ok(()) => {}
+        Err(Errno::EXIST) if entry_identity(parent, name).ok() == Some(identity) => {}
+        Err(errno) => return Err(exclusive_failure(errno)),
+    }
+    Ok(release_stage(parent, stage, identity))
 }
 
-fn exclusive(result: Result<(), Errno>) -> Result<(), RejectReason> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(Errno::EXIST) => Err(RejectReason::StalePreimage),
-        Err(_) => Err(RejectReason::IoFailure),
+fn release_stage(parent: &OwnedFd, stage: &OsStr, identity: FileIdentity) -> Option<ResidueReason> {
+    match entry_identity(parent, stage) {
+        Ok(observed) if observed == identity => unlinkat(parent, stage, AtFlags::empty())
+            .err()
+            .map(|_| ResidueReason::RemoveFailed),
+        Err(PathError::FileNotFound) => None,
+        _ => Some(ResidueReason::IdentityChanged),
+    }
+}
+
+fn exclusive_failure(errno: Errno) -> RejectReason {
+    if errno == Errno::EXIST {
+        RejectReason::StalePreimage
+    } else {
+        RejectReason::IoFailure
     }
 }
 

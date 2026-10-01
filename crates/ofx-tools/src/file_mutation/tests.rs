@@ -50,7 +50,7 @@ impl Fixture {
     }
 }
 
-fn apply(prepared: &PreparedMutation) -> Result<(), Rejection> {
+fn apply(prepared: &PreparedMutation) -> Result<Committed, Rejection> {
     prepared.apply(&CancellationToken::new())
 }
 
@@ -506,7 +506,7 @@ fn apply_at(
     prepared: &PreparedMutation,
     at: Checkpoint,
     action: impl FnMut(),
-) -> Result<(), Rejection> {
+) -> Result<Committed, Rejection> {
     apply_at_with(prepared, at, rename_new, action)
 }
 
@@ -515,7 +515,7 @@ fn apply_at_with(
     at: Checkpoint,
     create_new: CreateNew,
     mut action: impl FnMut(),
-) -> Result<(), Rejection> {
+) -> Result<Committed, Rejection> {
     prepared.apply_with(
         &CancellationToken::new(),
         &mut |checkpoint| {
@@ -701,6 +701,122 @@ fn without_an_exclusive_rename_a_new_file_is_linked_into_place() {
     assert_eq!(fs::read_to_string(&path).unwrap(), "mine\n");
     assert_eq!(fs::metadata(&path).unwrap().nlink(), 1);
     assert!(stage_files(&fixture.root).is_empty());
+}
+
+#[test]
+fn only_an_unsupported_exclusive_rename_falls_back_to_linking() {
+    for errno in [
+        Errno::INVAL,
+        Errno::NOSYS,
+        Errno::NOTSUP,
+        Errno::OPNOTSUPP,
+        Errno::PERM,
+    ] {
+        let mut linked = false;
+        let placed = place_new(Err(errno), || {
+            linked = true;
+            Ok(None)
+        });
+        assert_eq!(placed, Ok(None), "{errno:?}");
+        assert!(linked, "{errno:?}");
+    }
+    let outcomes = [
+        (Ok(()), Ok(None)),
+        (Err(Errno::EXIST), Err(RejectReason::StalePreimage)),
+        (Err(Errno::IO), Err(RejectReason::IoFailure)),
+        (Err(Errno::ACCESS), Err(RejectReason::IoFailure)),
+    ];
+    for (renamed, expected) in outcomes {
+        let mut linked = false;
+        let placed = place_new(renamed, || {
+            linked = true;
+            Ok(None)
+        });
+        assert_eq!(placed, expected, "{renamed:?}");
+        assert!(!linked, "{renamed:?}");
+    }
+}
+
+fn stage_identity(directory: &Path, name: &str) -> (OwnedFd, FileIdentity) {
+    let parent = open_directory(directory).unwrap();
+    let identity = entry_identity(&parent, OsStr::new(name)).unwrap();
+    (parent, identity)
+}
+
+#[test]
+fn a_link_that_already_landed_counts_as_installed_and_drops_the_stage() {
+    let fixture = Fixture::new();
+    let stage = fixture.write("workspace/.fx-stage-landed", "mine\n");
+    let target = fixture.workspace.join("new.txt");
+    fs::hard_link(&stage, &target).unwrap();
+    let (parent, identity) = stage_identity(&fixture.workspace, ".fx-stage-landed");
+
+    let linked = link_new(
+        &parent,
+        OsStr::new(".fx-stage-landed"),
+        OsStr::new("new.txt"),
+        identity,
+    );
+
+    assert_eq!(linked, Ok(None));
+    assert!(!stage.exists());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "mine\n");
+    assert_eq!(fs::metadata(&target).unwrap().nlink(), 1);
+}
+
+#[test]
+fn a_stage_name_that_no_longer_holds_the_stage_is_left_and_reported() {
+    let fixture = Fixture::new();
+    fixture.write("workspace/.fx-stage-ours", "mine\n");
+    let swapped = fixture.write("workspace/.fx-stage-swapped", "theirs\n");
+    let (parent, identity) = stage_identity(&fixture.workspace, ".fx-stage-ours");
+
+    assert_eq!(
+        release_stage(&parent, OsStr::new(".fx-stage-swapped"), identity),
+        Some(ResidueReason::IdentityChanged)
+    );
+    assert_eq!(fs::read_to_string(&swapped).unwrap(), "theirs\n");
+    assert_eq!(
+        release_stage(&parent, OsStr::new(".fx-stage-missing"), identity),
+        None
+    );
+    assert_eq!(
+        release_stage(&parent, OsStr::new(".fx-stage-ours"), identity),
+        None
+    );
+    assert!(!fixture.workspace.join(".fx-stage-ours").exists());
+}
+
+fn link_keeping_stage(
+    parent: &OwnedFd,
+    stage: &OsStr,
+    name: &OsStr,
+    _identity: FileIdentity,
+) -> Created {
+    linkat(parent, stage, parent, name, AtFlags::empty()).map_err(|_| RejectReason::IoFailure)?;
+    Ok(Some(ResidueReason::RemoveFailed))
+}
+
+#[test]
+fn a_stage_left_after_installing_is_named_in_the_success_message() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepared("new.txt", "mine\n");
+
+    let committed =
+        apply_at_with(&prepared, Checkpoint::Validated, link_keeping_stage, || {}).unwrap();
+
+    let stage = stage_file(&fixture.root);
+    assert_eq!(
+        committed.annotate(prepared.success_message()),
+        format!(
+            "wrote new.txt (5 bytes); staged file cleanup residue: {} (remove_failed)",
+            stage.display()
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("new.txt")).unwrap(),
+        "mine\n"
+    );
 }
 
 #[test]
