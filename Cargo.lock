@@ -833,11 +833,15 @@ dependencies = [
 name = "ofx-mcp"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "ofx-config",
+ "ofx-jsonrpc",
+ "ofx-text",
  "rustix",
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
