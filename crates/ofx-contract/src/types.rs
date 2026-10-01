@@ -315,6 +315,19 @@ mod tests {
     }
 
     #[test]
+    fn usage_skips_unreported_steps_and_stays_unknown_when_never_reported() {
+        let mut usage = Usage::default();
+        for input_tokens in [Some(10), None, Some(5)] {
+            usage.accumulate(Usage {
+                input_tokens,
+                output_tokens: None,
+            });
+        }
+        assert_eq!(usage.input_tokens, Some(15));
+        assert_eq!(usage.output_tokens, None);
+    }
+
+    #[test]
     fn permission_mode_parse_accepts_upstream_spellings() {
         assert_eq!(PermissionMode::parse("ASK"), Some(PermissionMode::Ask));
         assert_eq!(PermissionMode::parse("auto"), Some(PermissionMode::Auto));
