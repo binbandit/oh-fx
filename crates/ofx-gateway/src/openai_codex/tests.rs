@@ -710,6 +710,37 @@ async fn a_nested_server_error_event_is_retryable_and_keeps_its_message() {
     );
 }
 
+#[tokio::test]
+async fn a_chatgpt_detail_body_renders_as_an_api_failure() {
+    let server = FakeServer::start([Reply::status(
+        400,
+        r#"{"detail":"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."}"#,
+    )]);
+    let codex = CodexProvider::new(
+        CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let messages = [ChatMessage::user("Hello.")];
+    let request = request(&messages, &[], &[]);
+    let mut sink = |_: StreamEvent| {};
+    let error = codex
+        .stream(&request, &mut sink, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, Some(400));
+    assert_eq!(
+        error.detail.as_deref(),
+        Some(
+            "API request failed · HTTP 400 · The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."
+        )
+    );
+}
+
 struct Rotating(&'static str);
 
 impl CodexCredentials for Rotating {
