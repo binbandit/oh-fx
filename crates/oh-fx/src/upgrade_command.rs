@@ -22,14 +22,14 @@ pub(crate) fn run(options: UpgradeOptions) -> ExitCode {
     let outcome = UpgradeLock::acquire(&state_directory)
         .map_err(|_| UpgradeError::ReplaceFailed)
         .and_then(|lock| block_on_upgrade(options, &lock));
-    println!(
-        "{}",
-        if options.json {
-            json_report(&outcome)
-        } else {
-            text_report(&outcome)
-        }
-    );
+    let report = if options.json {
+        json_report(&outcome)
+    } else {
+        text_report(&outcome)
+    };
+    if crate::write_stdout(&format!("{report}\n")).is_err() {
+        return crate::write_failed();
+    }
     if outcome.is_ok() {
         ExitCode::SUCCESS
     } else {
@@ -53,7 +53,7 @@ async fn upgrade(
     lock: &UpgradeLock,
 ) -> Result<UpgradeOutcome, UpgradeError> {
     let client = ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
-        user_agent: format!("oh-fx/{}", ofx_upgrade::VERSION),
+        user_agent: crate::user_agent(),
         follow_redirects: true,
         ..ofx_http::ConnectionOptions::default()
     })

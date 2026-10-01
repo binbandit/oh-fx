@@ -8,11 +8,24 @@ publish.workspace = true
 
 [dependencies]
 lexopt.workspace = true
+ofx-agent.workspace = true
 ofx-config.workspace = true
+ofx-contract.workspace = true
+ofx-gateway.workspace = true
 ofx-http.workspace = true
+ofx-text.workspace = true
 ofx-upgrade.workspace = true
+rustix.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+signal-hook.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+ofx-testkit.workspace = true
+tokio = { workspace = true, features = ["macros", "signal"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true
