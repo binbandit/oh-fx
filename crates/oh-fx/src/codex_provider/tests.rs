@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ofx_agent::{Agent, AgentConfig, TurnFailure, TurnReport};
 use ofx_contract::{
@@ -347,6 +347,43 @@ async fn an_unauthorized_reply_refreshes_the_login_once_and_replays_the_request(
     assert_codex_request(&requests[1], FRESH_TOKEN);
     assert_eq!(requests[0].body, requests[1].body);
     assert_eq!(fixture.saved()["access_token"], FRESH_TOKEN);
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_stops_waiting_for_a_stalled_refresh_after_unauthorized() {
+    let fixture = Fixture::new();
+    fixture.write_session(FAR_FUTURE_MS, 0o600);
+    let auth = FakeServer::start([Reply::held_status_with_headers(200, &[], "")]);
+    let codex = FakeServer::start([Reply::status(
+        401,
+        r#"{"error":{"message":"token expired"}}"#,
+    )]);
+    let provider = fixture.provider(&auth, &codex).await.expect("provider");
+    let mut agent = fixture.agent(provider);
+    let cancel = CancellationToken::new();
+    let interrupt = async {
+        let started = Instant::now();
+        while auth.requests().is_empty() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the turn never asked to refresh the login"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        cancel.cancel();
+        Instant::now()
+    };
+    let mut seen = Vec::new();
+    let mut record = |event| seen.push(event);
+    let turn = agent.run_turn("Hello", &mut record, &cancel);
+    let (report, cancelled) = tokio::join!(turn, interrupt);
+
+    assert!(cancelled.elapsed() < Duration::from_secs(10));
+    assert_eq!(report.outcome, TurnOutcome::Interrupted, "{report:?}");
+    assert_eq!(codex.requests().len(), 1);
+    assert_eq!(auth.requests().len(), 1);
+    assert_eq!(fixture.saved()["refresh_token"], REFRESH_TOKEN);
+    assert!(!format!("{seen:?}").contains(REFRESH_TOKEN));
 }
 
 #[tokio::test]

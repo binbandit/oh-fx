@@ -499,7 +499,7 @@ async fn errors_mask_the_token_their_request_sent_after_another_request_rotates_
         let cancel = CancellationToken::new();
         let mut sent = Vec::new();
         let response = codex.post("{}", &mut sent, &cancel).await.unwrap();
-        assert!(codex.replace_access(CodexRefresh::Force).await);
+        assert!(codex.replace_access(CodexRefresh::Force, &cancel).await);
         assert_eq!(*codex.secrets(&sent), [SENT, ROTATED]);
         let mut sink = |_: StreamEvent| {};
         let error = codex
@@ -632,6 +632,7 @@ impl CodexCredentials for Rotating {
         &'a self,
         _mode: CodexRefresh,
         account_id: &'a str,
+        _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<CodexAccess>> {
         Box::pin(async move {
             Some(CodexAccess::new(
@@ -650,6 +651,7 @@ impl CodexCredentials for NoRefresh {
         &'a self,
         _mode: CodexRefresh,
         _account_id: &'a str,
+        _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<CodexAccess>> {
         Box::pin(async { None })
     }

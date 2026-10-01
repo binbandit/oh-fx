@@ -32,13 +32,14 @@ impl CodexCredentials for SubscriptionCredentials {
         &'a self,
         mode: CodexRefresh,
         account_id: &'a str,
+        cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<CodexAccess>> {
         let mode = match mode {
             CodexRefresh::IfNeeded => RefreshMode::IfNeeded,
             CodexRefresh::Force => RefreshMode::Force,
         };
         Box::pin(async move {
-            refresh_chatgpt_credential(&self.oauth, mode, account_id)
+            refresh_chatgpt_credential(&self.oauth, mode, account_id, cancel)
                 .await
                 .ok()
                 .flatten()

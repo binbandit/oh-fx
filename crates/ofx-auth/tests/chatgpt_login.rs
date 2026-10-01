@@ -486,9 +486,14 @@ async fn forced_refreshes_must_keep_the_signed_in_account() {
     fixture.write_session(&access_token("acct_test", "current"), now_ms() + 3_600_000);
     let oauth = fixture.oauth(&server);
     assert_eq!(
-        refresh_chatgpt_credential(&oauth, RefreshMode::Force, "acct_other")
-            .await
-            .unwrap_err(),
+        refresh_chatgpt_credential(
+            &oauth,
+            RefreshMode::Force,
+            "acct_other",
+            &CancellationToken::new()
+        )
+        .await
+        .unwrap_err(),
         ChatGptError::ChatGptAccountChanged
     );
     assert_eq!(server.requests().len(), 1);

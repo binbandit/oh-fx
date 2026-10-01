@@ -136,9 +136,9 @@ pub async fn refresh_chatgpt_credential(
     oauth: &ChatGptOAuth,
     mode: RefreshMode,
     expected_account_id: &str,
+    cancel: &CancellationToken,
 ) -> Result<Option<ChatGptAccess>, ChatGptError> {
-    let Some(access) = load_chatgpt_credential(oauth, mode, &CancellationToken::new()).await?
-    else {
+    let Some(access) = load_chatgpt_credential(oauth, mode, cancel).await? else {
         return Ok(None);
     };
     if access.account_id() != expected_account_id {
