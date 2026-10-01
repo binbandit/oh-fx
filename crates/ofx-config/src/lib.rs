@@ -3,6 +3,7 @@ mod configured_provider;
 mod connection;
 mod context_limits;
 mod header_template;
+mod io;
 mod model_capabilities;
 mod model_provider;
 mod paths;
@@ -19,6 +20,7 @@ pub use configured_provider::{
 };
 pub use connection::{ConnectionError, ResolvedConnection};
 pub use context_limits::{ContextLimitError, validate_context_limit_override};
+pub use io::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 pub use model_capabilities::{Capabilities, request_output_tokens};
 pub use model_provider::{ProviderId, is_valid_provider_id};
 pub use paths::ProfilePaths;

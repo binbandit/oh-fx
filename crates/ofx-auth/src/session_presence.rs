@@ -1,6 +1,7 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::io::{DurableError, PrivateDir, nearest_existing_ancestor_writable};
+use ofx_config::{DurableError, PrivateDir};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Presence {
@@ -59,10 +60,14 @@ pub(crate) fn require_writable_in_dir(
         .map_err(|_: DurableError| StorageUnavailable)
 }
 
+fn nearest_existing_ancestor_writable(path: &Path) -> bool {
+    path.ancestors()
+        .find_map(|ancestor| std::fs::metadata(ancestor).ok())
+        .is_some_and(|metadata| metadata.is_dir() && metadata.permissions().mode() & 0o200 != 0)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     #[test]
