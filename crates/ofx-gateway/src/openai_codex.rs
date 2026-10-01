@@ -27,6 +27,7 @@ const REPLAY_PROVIDER: &str = "codex";
 const EVENT_STREAM: &str = "text/event-stream";
 const DEFAULT_INSTRUCTIONS: &str = "You are a helpful assistant.";
 const MAX_MODEL_BYTES: usize = 1024;
+const MAX_EVENT_TYPE_BYTES: usize = 64;
 const MAX_SSE_EVENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 128;
 const MAX_TOOL_IDENTITY_BYTES: usize = 1024;
@@ -396,14 +397,16 @@ async fn consume_stream<S: ChunkSource + Send>(
             match result {
                 Ok(true) => break 'stream,
                 Ok(false) => {}
-                Err(error) => {
-                    let failure = codex_failure(error);
+                Err(rejection) => {
+                    let failure = codex_failure(rejection.error);
                     if failure.kind == ProviderErrorKind::Cancelled {
                         return Err(failure);
                     }
-                    return Err(failure.with_detail(format!(
-                        "stream event {events} ({} bytes) was rejected",
-                        data.len()
+                    return Err(failure.with_detail(rejected_event_detail(
+                        events,
+                        data.len(),
+                        rejection.event_type.as_deref(),
+                        secrets,
                     )));
                 }
             }
@@ -426,6 +429,31 @@ async fn consume_stream<S: ChunkSource + Send>(
         }
     }
     reducer.finish(cancel.is_cancelled()).map_err(codex_failure)
+}
+
+fn rejected_event_detail(
+    position: usize,
+    size: usize,
+    event_type: Option<&str>,
+    secrets: &[String],
+) -> String {
+    match event_type.and_then(|kind| shown_event_type(kind, secrets)) {
+        Some(kind) => format!("stream event {position} ({kind}, {size} bytes) was rejected"),
+        None => format!("stream event {position} ({size} bytes) was rejected"),
+    }
+}
+
+fn shown_event_type(kind: &str, secrets: &[String]) -> Option<String> {
+    let token = !kind.is_empty()
+        && kind.len() <= MAX_EVENT_TYPE_BYTES
+        && kind.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.' || byte == b'_'
+        });
+    if !token {
+        return None;
+    }
+    let shown = sanitized(kind.to_owned(), secrets);
+    (shown == kind).then_some(shown)
 }
 
 fn into_completion(
