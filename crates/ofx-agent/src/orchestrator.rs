@@ -9,9 +9,9 @@ use ofx_contract::{
     Admission, BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, ExecutionFailure,
     FileMutation, FinishReason, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause,
     ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext,
-    ToolEffect, ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
-    review_unavailable_json, tool_execution_failure_json,
+    ProviderOptions, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall,
+    ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolResultStatus, ToolSpec, TurnId,
+    TurnOutcome, UiEvent, Usage, review_unavailable_json, tool_execution_failure_json,
 };
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -227,6 +227,7 @@ impl Agent {
                 tools: &self.tool_specs,
                 tool_choice: ToolChoice::Auto,
                 max_output_tokens: self.config.max_output_tokens,
+                provider_options: ProviderOptions::default(),
             };
             let completion = self.complete(turn.id, &request, events, cancel).await?;
             turn.usage.accumulate(completion.usage);

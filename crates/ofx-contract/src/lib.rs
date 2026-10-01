@@ -12,7 +12,7 @@ pub use ids::{ToolCallId, TurnId};
 pub use permission_gate::{Admission, FileMutation, FileMutationState, PathAccess, PermissionGate};
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
-    StreamEvent, StreamSink,
+    ProviderOptions, StreamEvent, StreamSink,
 };
 pub use tool_args::{ToolArgValue, ToolArgs, ToolArgsError, parse_tool_args_object};
 pub use tool_dispatch::{

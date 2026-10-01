@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ofx_contract::{
     BoxFuture, ChatMessage, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, ProviderReplay, ReplaySource, StreamEvent, ToolCall, ToolCallId, ToolChoice,
-    ToolResultStatus, ToolSpec,
+    ProviderErrorKind, ProviderOptions, ProviderReplay, ReplaySource, StreamEvent, ToolCall,
+    ToolCallId, ToolChoice, ToolResultStatus, ToolSpec,
 };
 use ofx_gateway::{CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh};
 use ofx_testkit::{FakeServer, RecordedRequest, Reply};
@@ -99,6 +99,7 @@ async fn run(
         tools,
         tool_choice: ToolChoice::Auto,
         max_output_tokens: Some(4096),
+        provider_options: ProviderOptions::default(),
     };
     let mut events = Vec::new();
     let mut sink = |event: StreamEvent| events.push(event);
@@ -411,6 +412,7 @@ async fn invalid_models_fail_before_any_request() {
         tools: &[],
         tool_choice: ToolChoice::Auto,
         max_output_tokens: None,
+        provider_options: ProviderOptions::default(),
     };
     let error = codex
         .stream(&request, &mut |_| {}, &CancellationToken::new())
