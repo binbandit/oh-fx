@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    BoxFuture, CallDescription, CommandRequest, Concurrency, PathAccess, PreparedCall, Tool,
-    ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
+    ApplicableTarget, BoxFuture, CallDescription, CommandRequest, Concurrency, PathAccess,
+    PreparedCall, TargetKind, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
 };
 use ofx_exec::{
     Environment, ManagedExecutions, Snapshot, StartCaptured, configured_login_shell, environment,
@@ -305,6 +305,17 @@ impl PreparedCall for ShellCall {
 
     fn refusal(&self) -> Option<&ToolOutput> {
         self.validated.as_ref().err()
+    }
+
+    fn applicable_target(&self) -> Option<ApplicableTarget> {
+        let Ok(Validated::Run { request, .. }) = &self.validated else {
+            return None;
+        };
+        let cwd = self.context.resolve_cwd(request.cwd.as_deref()).ok()?;
+        Some(ApplicableTarget {
+            path: cwd,
+            kind: TargetKind::Directory,
+        })
     }
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {

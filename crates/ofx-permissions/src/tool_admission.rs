@@ -2,13 +2,13 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
-    Admission, CommandRequest, FileMutation, FileMutationState, PathAccess, PermissionGate,
-    PermissionMode, ToolCall,
+    Admission, ApplicableTarget, CommandRequest, FileMutation, FileMutationState, PathAccess,
+    PermissionGate, PermissionMode, ToolCall,
 };
 use ofx_workspace::path_inside;
 
 use crate::command_admission::{command_admission, undescribed_shell_call_admission};
-use crate::permissions::external_path_target;
+use crate::permissions::{applicable_target, external_path_target};
 
 const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
     &[".git"],
@@ -72,6 +72,10 @@ impl PermissionGate for PermissionPolicy {
 
     fn admit_command(&self, request: &CommandRequest) -> Admission {
         command_admission(self.mode, &self.workspace_root, request)
+    }
+
+    fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget> {
+        applicable_target(&self.workspace_root, call)
     }
 
     fn admit_file_mutation(&self, mutation: &FileMutation) -> Admission {

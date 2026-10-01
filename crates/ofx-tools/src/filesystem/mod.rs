@@ -109,7 +109,8 @@ pub(crate) mod tests {
         arguments: &str,
         path_access: PathAccess,
     ) -> (CallDescription, ToolOutput) {
-        let prepared = tool.prepare(arguments).unwrap();
+        let mut prepared = tool.prepare(arguments).unwrap();
+        prepared.complete();
         let description = prepared.describe();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()

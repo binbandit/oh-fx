@@ -60,6 +60,10 @@ pub enum UiEvent {
         reason: ToolRejection,
         title: Option<String>,
     },
+    ContextNotice {
+        turn_id: TurnId,
+        text: String,
+    },
     UsageReported {
         turn_id: TurnId,
         usage: Usage,

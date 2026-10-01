@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use ofx_contract::{
-    CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess, ToolCallId,
-    ToolContext, ToolEffect,
+    ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess,
+    TargetKind, ToolCallId, ToolContext, ToolEffect,
 };
 use ofx_workspace::MAX_PATH_BYTES;
 use tempfile::TempDir;
@@ -50,7 +50,8 @@ struct Run {
 }
 
 fn run(tool: &EditFile, arguments: &str) -> Run {
-    let prepared = tool.prepare(arguments).unwrap();
+    let mut prepared = tool.prepare(arguments).unwrap();
+    prepared.complete();
     let description = prepared.describe();
     let mutation = prepared.file_mutation().cloned();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -195,6 +196,75 @@ fn failed_preparations_name_no_target_unless_full_access_defers_them() {
     let missing = run(&full_access, &arguments("missing.txt", "a", "b"));
     assert_eq!(missing.description.title, "Editing file");
     assert_eq!(fixture.read("note.txt"), "alpha\n");
+}
+
+#[test]
+fn edits_are_checked_against_the_content_read_when_they_complete() {
+    let fixture = Fixture::new();
+    fixture.write("note.txt", "alpha\n");
+    let mut prepared = EditFile::new(&fixture.workspace)
+        .prepare(&arguments("note.txt", "beta", "BETA"))
+        .unwrap();
+    assert_eq!(prepared.describe().effect, ToolEffect::Irreversible);
+    fixture.write("note.txt", "beta\n");
+    prepared.complete();
+    assert_eq!(prepared.describe().title, "Editing note.txt");
+    assert_eq!(
+        prepared.file_mutation().map(|mutation| mutation.state),
+        Some(FileMutationState::Changes)
+    );
+    let mut stale = EditFile::new(&fixture.workspace)
+        .prepare(&arguments("note.txt", "gamma", "GAMMA"))
+        .unwrap();
+    stale.complete();
+    assert_eq!(stale.describe().title, "Editing file");
+    assert_eq!(stale.describe().effect, ToolEffect::None);
+    assert_eq!(stale.file_mutation(), None);
+    assert_eq!(
+        stale.applicable_target(),
+        Some(ApplicableTarget {
+            path: fixture.workspace.join("note.txt"),
+            kind: TargetKind::File,
+        })
+    );
+    let mut vanished = EditFile::new(&fixture.workspace)
+        .prepare(&arguments("note.txt", "beta", "BETA"))
+        .unwrap();
+    fs::remove_file(fixture.workspace.join("note.txt")).unwrap();
+    vanished.complete();
+    assert_eq!(vanished.file_mutation(), None);
+    assert_eq!(vanished.applicable_target(), None);
+}
+
+#[test]
+fn a_second_edit_prepared_before_the_first_ran_reads_the_file_it_finds() {
+    let fixture = Fixture::new();
+    fixture.write("note.txt", "old\n");
+    let tool = EditFile::new(&fixture.workspace);
+    let first = tool.prepare(&arguments("note.txt", "old", "new")).unwrap();
+    let second = tool
+        .prepare(&arguments("note.txt", "old", "newer"))
+        .unwrap();
+    let execute = |mut prepared: Box<dyn PreparedCall>| {
+        prepared.complete();
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(prepared.execute(ToolContext::new(
+                ToolCallId::new("call-1"),
+                CancellationToken::new(),
+                PathAccess::WorkspaceOnly,
+            )))
+    };
+    assert_eq!(
+        execute(first),
+        ToolOutput::success("edited note.txt (4 bytes)")
+    );
+    assert_eq!(
+        execute(second).content,
+        "edit_file failed: old_string not found in file. Re-read the file to see its current contents; if the change is already applied, do not retry this edit."
+    );
+    assert_eq!(fixture.read("note.txt"), "new\n");
 }
 
 #[test]

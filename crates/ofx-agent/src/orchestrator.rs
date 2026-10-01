@@ -19,7 +19,14 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::model_response_recovery::{DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide};
+use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
+
+mod project_gate;
+
+use project_gate::GatedGroup;
+#[cfg(test)]
+use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
 
 const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
@@ -61,6 +68,7 @@ pub enum TurnFailure {
     StepLimitReached,
     InvalidCompletion,
     PermissionRequired(BlockedCall),
+    ProjectContext,
 }
 
 impl TurnFailure {
@@ -70,6 +78,7 @@ impl TurnFailure {
             Self::StepLimitReached => "StepLimitReached",
             Self::InvalidCompletion => "ModelError",
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
+            Self::ProjectContext => "ProjectContextFailed",
         }
     }
 }
@@ -118,6 +127,13 @@ struct Turn {
     fast_notice_shown: bool,
 }
 
+struct ProjectInstructions {
+    provider: Arc<dyn ProjectContextProvider>,
+    snapshot: Option<String>,
+    deltas: Vec<String>,
+    delivery: DeliveryState,
+}
+
 struct KnownCapabilities {
     model: ModelCapabilities,
     catalog_unavailable: bool,
@@ -132,7 +148,7 @@ pub struct Agent {
     config: AgentConfig,
     capability_resolver: Option<Arc<dyn CapabilityResolver>>,
     capabilities: Option<KnownCapabilities>,
-    project_context: Option<String>,
+    project: Option<ProjectInstructions>,
     history: Vec<ChatMessage>,
     turns: u64,
 }
@@ -155,7 +171,7 @@ impl Agent {
             config,
             capability_resolver: None,
             capabilities: None,
-            project_context: None,
+            project: None,
             history: Vec::new(),
             turns: 0,
         }
@@ -168,8 +184,17 @@ impl Agent {
     }
 
     #[must_use]
-    pub fn with_project_context(mut self, content: String) -> Self {
-        self.project_context = Some(content);
+    pub fn with_project_context(
+        mut self,
+        provider: Arc<dyn ProjectContextProvider>,
+        snapshot: ProjectContext,
+    ) -> Self {
+        self.project = Some(ProjectInstructions {
+            provider,
+            delivery: DeliveryState::from_snapshot(&snapshot),
+            snapshot: snapshot.content,
+            deltas: Vec::new(),
+        });
         self
     }
 
@@ -249,11 +274,18 @@ impl Agent {
                 return Err(Stop::interrupted());
             }
             let context = self.context.runtime_context().await;
-            let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + 3);
+            let deltas = self
+                .project
+                .as_ref()
+                .map_or(0, |project| project.deltas.len());
+            let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 3);
             if !self.config.system_prompt.is_empty() {
                 instructions.push(&self.config.system_prompt);
             }
-            instructions.extend(self.project_context.as_deref());
+            if let Some(project) = &self.project {
+                instructions.extend(project.snapshot.as_deref());
+                instructions.extend(project.deltas.iter().map(String::as_str));
+            }
             instructions.extend(context.iter().map(String::as_str));
             instructions.push(RESPONSE_LANGUAGE_CONTROL);
             let request = ModelRequest {
@@ -432,28 +464,28 @@ impl Agent {
             tool_calls: history_calls,
             provider_replay: completion.provider_replay,
         });
+        let mut gate = match self.project {
+            Some(_) => Some(self.open_gate(turn.id, &calls, events, cancel)?),
+            None => None,
+        };
         let mut next = 0;
         let mut carried = Deferred(None);
         while next < calls.len() {
             if cancel.is_cancelled() {
                 return Err(Stop::interrupted());
             }
-            let head = carried
-                .0
-                .take()
-                .unwrap_or_else(|| self.prepare(&calls[next]));
-            let parallel = head.is_parallel();
-            let mut group = vec![(&calls[next], head)];
-            next += 1;
-            while parallel && next < calls.len() {
-                let prepared = self.prepare(&calls[next]);
-                if !prepared.is_parallel() {
-                    carried.0 = Some(prepared);
-                    break;
-                }
-                group.push((&calls[next], prepared));
-                next += 1;
-            }
+            let group = match &mut gate {
+                Some(gate) => match self.gated_group(gate, &calls, next) {
+                    GatedGroup::Run(group) => group,
+                    GatedGroup::Unexecuted(description, output) => {
+                        self.settle_unexecuted(turn.id, &calls[next], description, output, events);
+                        next += 1;
+                        continue;
+                    }
+                },
+                None => self.lazy_group(&calls, next, &mut carried),
+            };
+            next += group.len();
             let settled = run_group(turn.id, group, &*self.permissions, events, cancel).await;
             for (call, output) in settled.outcomes {
                 let Some(output) = output else {
@@ -497,42 +529,63 @@ impl Agent {
         }
     }
 
+    fn lazy_group<'c>(
+        &self,
+        calls: &'c [ToolCall],
+        start: usize,
+        carried: &mut Deferred,
+    ) -> Vec<(&'c ToolCall, Prepared)> {
+        let head = carried
+            .0
+            .take()
+            .unwrap_or_else(|| self.prepare(&calls[start]));
+        let parallel = head.is_parallel();
+        let mut group = vec![(&calls[start], head)];
+        for call in &calls[start + 1..] {
+            if !parallel {
+                break;
+            }
+            let prepared = self.prepare(call);
+            if !prepared.is_parallel() {
+                carried.0 = Some(prepared);
+                break;
+            }
+            group.push((call, prepared));
+        }
+        group
+    }
+
     fn prepare(&self, call: &ToolCall) -> Prepared {
+        match self.prepared_call(call) {
+            Ok(prepared) => completed(prepared, &call.name),
+            Err(rejection) => Prepared::Rejected(rejection),
+        }
+    }
+
+    fn prepare_uncompleted(&self, call: &ToolCall) -> Prepared {
+        match self.prepared_call(call) {
+            Ok(prepared) => inspected(prepared, &call.name),
+            Err(rejection) => Prepared::Rejected(rejection),
+        }
+    }
+
+    fn prepared_call(&self, call: &ToolCall) -> Result<Box<dyn PreparedCall>, Rejection> {
         let Some(tool) = self.tool(&call.name) else {
-            return Prepared::Rejected(Rejection {
+            return Err(Rejection {
                 reason: ToolRejection::Unsupported,
                 title: Some(format_unknown_action(&call.name)),
                 output: ToolOutput::failure(format!("Unsupported tool: {}", call.name)),
             });
         };
-        let prepared = match contained(|| tool.prepare(&call.arguments)) {
-            Some(Ok(prepared)) => prepared,
-            Some(Err(output)) => {
-                return Prepared::Rejected(Rejection {
-                    reason: ToolRejection::Invalid,
-                    title: None,
-                    output,
-                });
-            }
-            None => return Prepared::Rejected(Rejection::panicked(&call.name)),
-        };
-        let inspected = contained(|| prepared.describe())
-            .zip(contained(|| prepared.file_mutation().cloned()))
-            .zip(contained(|| prepared.command_request().cloned()))
-            .zip(contained(|| prepared.refusal().cloned()));
-        let Some((((description, mutation), command), refusal)) = inspected else {
-            discard(prepared);
-            return Prepared::Rejected(Rejection::panicked(&call.name));
-        };
-        if let Some(output) = refusal {
-            discard(prepared);
-            return Prepared::Rejected(Rejection {
+        match contained(|| tool.prepare(&call.arguments)) {
+            Some(Ok(prepared)) => Ok(prepared),
+            Some(Err(output)) => Err(Rejection {
                 reason: ToolRejection::Invalid,
-                title: Some(description.title),
+                title: None,
                 output,
-            });
+            }),
+            None => Err(Rejection::panicked(&call.name)),
         }
-        Prepared::Ready(prepared, description, mutation, command)
     }
 
     fn finish(
@@ -679,6 +732,34 @@ impl Rejection {
             output: panicked(tool_name),
         }
     }
+}
+
+fn completed(mut prepared: Box<dyn PreparedCall>, tool_name: &str) -> Prepared {
+    if contained(|| prepared.complete()).is_none() {
+        discard(prepared);
+        return Prepared::Rejected(Rejection::panicked(tool_name));
+    }
+    inspected(prepared, tool_name)
+}
+
+fn inspected(prepared: Box<dyn PreparedCall>, tool_name: &str) -> Prepared {
+    let inspected = contained(|| prepared.describe())
+        .zip(contained(|| prepared.file_mutation().cloned()))
+        .zip(contained(|| prepared.command_request().cloned()))
+        .zip(contained(|| prepared.refusal().cloned()));
+    let Some((((description, mutation), command), refusal)) = inspected else {
+        discard(prepared);
+        return Prepared::Rejected(Rejection::panicked(tool_name));
+    };
+    if let Some(output) = refusal {
+        discard(prepared);
+        return Prepared::Rejected(Rejection {
+            reason: ToolRejection::Invalid,
+            title: Some(description.title),
+            output,
+        });
+    }
+    Prepared::Ready(prepared, description, mutation, command)
 }
 
 enum Prepared {

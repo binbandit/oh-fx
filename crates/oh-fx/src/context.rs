@@ -4,15 +4,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ofx_agent::RuntimeContext;
-use ofx_contract::{BoxFuture, PermissionMode};
+use ofx_agent::{DeliveryState, ProjectContext, ProjectContextProvider, RuntimeContext};
+use ofx_contract::{ApplicableTarget, BoxFuture, PermissionMode};
 use ofx_text::write_scalar;
 
 mod project_instructions;
 
-pub(crate) use project_instructions::{
-    InstructionLimits, ProfileLocation, ProjectContext, gather_project_context,
-};
+use project_instructions::select_applicable_project_context;
+pub(crate) use project_instructions::{InstructionLimits, ProfileLocation, gather_project_context};
 
 pub(crate) const GATEWAY_SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
@@ -60,6 +59,26 @@ impl RuntimeContext for HostRuntimeContext {
             .await
             .unwrap_or_default()
         })
+    }
+}
+
+pub(crate) struct HostProjectContext {
+    workspace_root: PathBuf,
+    limits: InstructionLimits,
+}
+
+impl HostProjectContext {
+    pub(crate) fn new(workspace_root: PathBuf, limits: InstructionLimits) -> Self {
+        Self {
+            workspace_root,
+            limits,
+        }
+    }
+}
+
+impl ProjectContextProvider for HostProjectContext {
+    fn select(&self, targets: &[ApplicableTarget], delivery: &DeliveryState) -> ProjectContext {
+        select_applicable_project_context(&self.workspace_root, targets, delivery, self.limits)
     }
 }
 
