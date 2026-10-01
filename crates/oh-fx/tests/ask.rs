@@ -2013,7 +2013,10 @@ fn full_access_runs_shell_commands_and_sends_their_results_to_the_model() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stderr(&output),
-        "Running printf 'built\\n'; exit 3\nRunning pwd\n"
+        format!(
+            "Running printf 'built\\n'; exit 3\nbuilt\nRunning pwd\n{}\n",
+            canonical(&home.workspace)
+        )
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["output"], "Done.");
@@ -2098,9 +2101,15 @@ fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands(
         &[("PORTKEY_API_KEY", PORTKEY_KEY), ("PATH", "/usr/bin:/bin")],
     );
     assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let which: Value = serde_json::from_str(&shell_results(&requests[1])[0]).unwrap();
+    assert_eq!(which["exit_code"], 0);
+    let found = which["output_delta"].as_str().unwrap();
+    assert!(found.ends_with("/sh\n"), "{found}");
     assert_eq!(
         stderr(&output),
-        "Running which sh\nWaiting for session shell-9\nRunning touch marker\n"
+        format!("Running which sh\n{found}Waiting for session shell-9\nRunning touch marker\n")
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["output"], "Held.");
@@ -2112,11 +2121,6 @@ fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands(
             {"name": "shell", "status": "error"},
         ])
     );
-    let requests = server.requests();
-    assert_eq!(requests.len(), 4);
-    let which: Value = serde_json::from_str(&shell_results(&requests[1])[0]).unwrap();
-    assert_eq!(which["exit_code"], 0);
-    assert!(which["output_delta"].as_str().unwrap().ends_with("/sh\n"));
     let messages = tool_messages(&requests[3]);
     assert_eq!(
         messages[1]["content"],
@@ -2241,4 +2245,36 @@ fn interrupting_ask_stops_the_running_shell_command() {
         .and_then(Result::ok);
     assert_eq!(remaining.as_deref(), Some(""), "the command outlived oh-fx");
     assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn shell_output_is_echoed_on_stderr_outside_the_terminal() {
+    for mode in [&["--json"][..], &["--quiet"], &[]] {
+        let server = FakeServer::start([
+            shell_reply(
+                "call_1",
+                &json!({"action": "run", "command": "printf 'one\\ntwo'", "profile": "clean"}),
+            ),
+            shell_reply(
+                "call_2",
+                &json!({"action": "run", "command": "printf 'three\\n'", "profile": "clean"}),
+            ),
+            Reply::sse(&chat_text_events(&["Done."])),
+        ]);
+        let home = Home::with_settings(&settings_in_mode(&server.base_url(), "yolo"));
+        let args: Vec<&str> = ["ask"]
+            .iter()
+            .chain(mode)
+            .chain(&["run it"])
+            .copied()
+            .collect();
+
+        let output = home.ask(&args, &KEY);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(
+            stderr(&output),
+            "Running printf 'one\\ntwo'\none\ntwo\nRunning printf 'three\\n'\nthree\n",
+            "{mode:?}"
+        );
+    }
 }

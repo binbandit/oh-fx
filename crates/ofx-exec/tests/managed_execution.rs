@@ -5,12 +5,14 @@ use std::io::Read;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_exec::{
-    CommandStatus, Environment, ExecutionError, ManagedExecutions, SessionSupervisor, Snapshot,
-    SnapshotState, StartCaptured, is_foreground_session_invocation, run_foreground_session,
+    CommandStatus, Environment, ExecutionError, ManagedExecutions, OutputEcho, SessionSupervisor,
+    Snapshot, SnapshotState, StartCaptured, is_foreground_session_invocation,
+    run_foreground_session,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -20,10 +22,14 @@ const LONG: Duration = Duration::from_secs(20);
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 16] = [
+const TESTS: [(&str, Test); 17] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
+    ),
+    (
+        "echoed_output_arrives_in_whole_lines_before_the_command_completes",
+        echoed_output_arrives_in_whole_lines_before_the_command_completes,
     ),
     (
         "a_slow_command_yields_a_retained_session_that_stop_ends",
@@ -229,6 +235,42 @@ fn a_fast_command_completes_inside_its_yield_window() {
     assert!(snapshot.duration_ms.is_some());
     assert_eq!(snapshot.error_name, None);
     assert!(!snapshot.output_truncated);
+}
+
+fn echoed_output_arrives_in_whole_lines_before_the_command_completes() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let echo: OutputEcho = Arc::new(move |chunk: &[u8]| {
+        recorded
+            .lock()
+            .expect("the test step succeeds")
+            .push(String::from_utf8_lossy(chunk).into_owned());
+        Ok(())
+    });
+    let snapshot = block_on(async {
+        executions()
+            .with_output_echo(echo)
+            .start_captured(
+                run("printf 'err\\n' >&2; printf 'one\\ntwo\\nthree'", LONG),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("the test step succeeds")
+    });
+    assert_eq!(
+        snapshot.state,
+        SnapshotState::Completed(CommandStatus::ExitCode(0))
+    );
+    let mut chunks = seen.lock().expect("the test step succeeds").clone();
+    assert_eq!(chunks.last().map(String::as_str), Some("three"));
+    chunks.pop();
+    assert!(
+        chunks.iter().all(|chunk| chunk.ends_with('\n')),
+        "{chunks:?}"
+    );
+    let mut lines: Vec<&str> = chunks.iter().flat_map(|chunk| chunk.lines()).collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["err", "one", "two"]);
 }
 
 fn a_slow_command_yields_a_retained_session_that_stop_ends() {

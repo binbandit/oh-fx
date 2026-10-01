@@ -13,6 +13,7 @@ use crate::command_runner::{
     CapturedCommand, CapturedOutcome, OutputStream, RunError, SessionSupervisor, StopIntent,
     TERMINATION_SETTLE_TIMEOUT, run_captured,
 };
+use crate::output_echo::{LineEcho, OutputEcho};
 use crate::shell_resolver::captured_invocation;
 
 const MAX_LIVE_ENTRIES: usize = 64;
@@ -244,6 +245,7 @@ impl Drop for Shared {
 #[derive(Clone)]
 pub struct ManagedExecutions {
     shared: Arc<Shared>,
+    echo: Option<OutputEcho>,
 }
 
 impl ManagedExecutions {
@@ -256,7 +258,14 @@ impl ManagedExecutions {
                     ..Registry::default()
                 }),
             }),
+            echo: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_output_echo(mut self, echo: OutputEcho) -> Self {
+        self.echo = Some(echo);
+        self
     }
 
     pub async fn start_captured(
@@ -400,10 +409,16 @@ impl ManagedExecutions {
         let entry = Arc::clone(entry);
         let shared = Arc::downgrade(&self.shared);
         let supervisor = self.shared.supervisor.clone();
+        let mut echo = self.echo.clone().map(LineEcho::new);
         tokio::spawn(async move {
             let deadline = limit.and_then(|limit| Instant::now().checked_add(limit));
             let mut stop = entry.stop.subscribe();
-            let mut sink = |stream, bytes: &[u8]| entry.append(stream, bytes);
+            let mut sink = |stream, bytes: &[u8]| {
+                entry.append(stream, bytes);
+                if let Some(echo) = echo.as_mut() {
+                    echo.push(stream, bytes);
+                }
+            };
             let command = CapturedCommand {
                 argv: &invocation,
                 cwd: &entry.cwd,
@@ -411,6 +426,9 @@ impl ManagedExecutions {
                 supervisor: &supervisor,
             };
             let result = run_captured(command, &mut stop, &mut sink).await;
+            if let Some(echo) = echo.as_mut() {
+                echo.flush();
+            }
             settle(&shared, &entry, result);
         });
     }
