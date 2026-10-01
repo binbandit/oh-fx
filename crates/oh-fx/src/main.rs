@@ -2,6 +2,7 @@ mod auto_upgrade;
 mod cli_ask;
 mod context;
 mod help;
+mod login_command;
 mod tool_set;
 mod upgrade_command;
 
@@ -77,6 +78,8 @@ fn run(invocation: Invocation) -> ExitCode {
         Invocation::Command(CommandLaunch { modifiers, command }) => match command {
             Command::Ask(args) => cli_ask::run(&args, &modifiers),
             Command::Upgrade(format) => upgrade_command::run(matches!(format, OutputFormat::Json)),
+            Command::Login(provider) => login_command::login(provider.as_ref()),
+            Command::Logout(provider) => login_command::logout(provider.as_ref()),
             other => unavailable_command(&other),
         },
     }

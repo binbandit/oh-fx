@@ -1,7 +1,7 @@
 use crate::configured_provider::validate_id;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderId {
+pub enum ProviderId {
     Gateway,
     Codex,
     Grok,

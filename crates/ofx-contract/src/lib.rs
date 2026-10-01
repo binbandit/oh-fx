@@ -27,6 +27,6 @@ pub use tool_result_errors::{
 pub use types::{
     ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause,
     PermissionMode, RouteRecoveryKind, RouteRecoveryStatus, ToolCall, ToolChoice, ToolResultStatus,
-    Usage, is_valid_reasoning_effort,
+    Usage, is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{TurnOutcome, UiEvent};
