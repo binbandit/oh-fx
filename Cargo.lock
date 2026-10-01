@@ -727,6 +727,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-workspace"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "oh-fx"
 version = "0.1.0"
 dependencies = [
