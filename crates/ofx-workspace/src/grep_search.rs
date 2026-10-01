@@ -634,13 +634,11 @@ fn validate_matched_git_file(
 
 fn safe_git_include_pathspec(include: Option<&Pattern>) -> Option<&[u8]> {
     let raw = include?.raw();
-    if raw.is_empty() || raw.contains(&b'/') {
-        return None;
-    }
-    if raw.iter().any(|byte| matches!(byte, b'\\' | b'{' | b'}')) {
-        return None;
-    }
-    Some(raw)
+    let widens_to_every_basename_match = raw.first() == Some(&b'*')
+        && !raw
+            .iter()
+            .any(|byte| matches!(byte, b'/' | b'\\' | b'[' | b'{' | b'}' | 0));
+    widens_to_every_basename_match.then_some(raw)
 }
 
 fn find_byte(haystack: &[u8], start: usize, needle: u8) -> Option<usize> {
@@ -841,6 +839,75 @@ mod tests {
             ]
             .concat()
         );
+    }
+
+    #[test]
+    fn grep_search_passes_git_only_includes_that_keep_every_basename_match() {
+        let pathspec = |include: &str| {
+            let compiled = Pattern::compile(include.as_bytes()).unwrap();
+            safe_git_include_pathspec(Some(&compiled)).map(<[u8]>::to_vec)
+        };
+        for kept in ["*.zig", "*", "*test?.rs", "**.txt", "*]x"] {
+            assert_eq!(pathspec(kept), Some(kept.as_bytes().to_vec()), "{kept}");
+        }
+        for dropped in [
+            "main.rs",
+            "foo*.rs",
+            "?.rs",
+            "*[ab].txt",
+            "*\\x",
+            "*.{md,txt}",
+            "*/x.rs",
+            ":!*.rs",
+            "*.rs\0x",
+            "",
+        ] {
+            assert_eq!(pathspec(dropped), None, "{dropped:?}");
+        }
+        assert_eq!(safe_git_include_pathspec(None), None);
+    }
+
+    #[test]
+    fn grep_search_includes_match_tracked_and_untracked_files_as_the_local_matcher_does() {
+        let workspace = Workspace::new();
+        workspace.write("foo[ab].txt", "needle tracked bracket\n");
+        workspace.write("fooa.txt", "needle tracked class\n");
+        workspace.write("main.rs", "needle top main\n");
+        workspace.write("src/main.rs", "needle nested main\n");
+        if !workspace.git(&["init", "--quiet"]) || !workspace.git(&["add", "."]) {
+            return;
+        }
+        workspace.write("bar[ab].txt", "needle untracked bracket\n");
+        workspace.write("src/untracked[ab].txt", "needle nested untracked bracket\n");
+
+        for (include, expected) in [
+            (
+                "*[ab].txt",
+                [
+                    "needle nested untracked bracket",
+                    "needle tracked bracket",
+                    "needle untracked bracket",
+                ]
+                .as_slice(),
+            ),
+            (
+                "main.rs",
+                ["needle nested main", "needle top main"].as_slice(),
+            ),
+        ] {
+            let include = Pattern::compile(include.as_bytes()).unwrap();
+            let query = query(&workspace.root, Some(&include));
+            let result = collect_directory_matches(&query, &workspace.root);
+            let count = count_directory_matches(&query, &workspace.root);
+            let mut found = lines(&result);
+            found.sort_unstable();
+
+            assert_eq!(found, expected);
+            assert_eq!(
+                (count.matching_lines, count.matching_files),
+                (expected.len(), expected.len())
+            );
+        }
     }
 
     #[test]

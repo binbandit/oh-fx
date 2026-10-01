@@ -138,13 +138,18 @@ impl GlobFilesArgs {
         base_options: &DiscoveryOptions<'_>,
         path_access: PathAccess,
     ) -> Result<String, ToolOutput> {
-        let Some((root, pattern)) = self.effective_root(context, path_access)? else {
+        let Some((root, scoped)) = self.effective_root(context, path_access)? else {
             return Ok(self.format(&[], 0, false, &CandidateStats::default(), context));
         };
         let root_relative = workspace_relative_path(&context.workspace_root, &root.absolute);
         let root_relative = root_relative.as_os_str().as_bytes();
+        let compile = if scoped.base.is_empty() {
+            Pattern::compile
+        } else {
+            Pattern::compile_anchored
+        };
         let compiled =
-            Pattern::compile(pattern.as_bytes()).map_err(|CompileError::PatternTooLong| {
+            compile(scoped.pattern.as_bytes()).map_err(|CompileError::PatternTooLong| {
                 ToolOutput::failure(format!(
                     "glob_files field \"pattern\" must be at most {MAX_PATTERN_BYTES} bytes"
                 ))
@@ -185,11 +190,15 @@ impl GlobFilesArgs {
         &self,
         context: &FilesystemContext,
         path_access: PathAccess,
-    ) -> Result<Option<(SearchRoot, &str)>, ToolOutput> {
+    ) -> Result<Option<(SearchRoot, StaticGlobBase<'_>)>, ToolOutput> {
         let requested_root = resolve_search_root(&context.workspace_root, &self.path, path_access)
             .map_err(|error| self.root_failure(error, &self.path))?;
         if !requested_root.is_directory {
-            return Ok(Some((requested_root, &self.pattern)));
+            let whole = StaticGlobBase {
+                base: "",
+                pattern: &self.pattern,
+            };
+            return Ok(Some((requested_root, whole)));
         }
         let static_base = extract_static_glob_base(&self.pattern);
         let root = resolve_static_base_root(&requested_root.absolute, static_base.base).map_err(
@@ -201,7 +210,7 @@ impl GlobFilesArgs {
                 }
             },
         )?;
-        Ok(root.map(|root| (root, static_base.pattern)))
+        Ok(root.map(|root| (root, static_base)))
     }
 
     fn candidates(
@@ -776,6 +785,35 @@ mod tests {
             args.search(&context, &options, PathAccess::WorkspaceOrExternal)
                 .unwrap(),
             "[glob] 1 matches for src/tools/**/*.zig\n - src/tools/target.zig\n"
+        );
+    }
+
+    #[test]
+    fn glob_files_patterns_with_a_directory_match_only_at_that_depth() {
+        let workspace = Workspace::new();
+        workspace.write("src/direct.rs", "direct\n");
+        workspace.write("src/nested/other.rs", "other\n");
+        workspace.write("src/nested/direct.rs", "nested direct\n");
+
+        assert_eq!(
+            workspace.glob("src/*.rs", None).unwrap(),
+            "[glob] 1 matches for src/*.rs\n - src/direct.rs\n"
+        );
+        assert_eq!(
+            workspace.glob("src/**/*.rs", None).unwrap(),
+            "[glob] 3 matches for src/**/*.rs\n - src/direct.rs\n - src/nested/direct.rs\n - src/nested/other.rs\n"
+        );
+        assert_eq!(
+            workspace.glob("src/direct.rs", None).unwrap(),
+            "[glob] 1 matches for src/direct.rs\n - src/direct.rs\n"
+        );
+        assert_eq!(
+            workspace.glob("./*.rs", Some("src")).unwrap(),
+            "[glob] 1 matches for ./*.rs\n - src/direct.rs\n"
+        );
+        assert_eq!(
+            workspace.glob("*.rs", Some("src")).unwrap(),
+            "[glob] 3 matches for *.rs\n - src/direct.rs\n - src/nested/direct.rs\n - src/nested/other.rs\n"
         );
     }
 

@@ -19,13 +19,20 @@ pub struct Pattern {
 
 impl Pattern {
     pub fn compile(raw: &[u8]) -> Result<Self, CompileError> {
+        Self::compile_with_segments(raw, raw.contains(&SEPARATOR))
+    }
+
+    pub fn compile_anchored(raw: &[u8]) -> Result<Self, CompileError> {
+        Self::compile_with_segments(raw, true)
+    }
+
+    fn compile_with_segments(raw: &[u8], segmented: bool) -> Result<Self, CompileError> {
         if raw.len() > MAX_PATTERN_BYTES {
             return Err(CompileError::PatternTooLong);
         }
-        let segments = raw.contains(&SEPARATOR).then(|| split_segments(raw));
         Ok(Self {
             raw: raw.to_vec(),
-            segments,
+            segments: segmented.then(|| split_segments(raw)),
         })
     }
 
@@ -196,6 +203,22 @@ mod tests {
         assert_eq!(
             Pattern::compile(&rejected),
             Err(CompileError::PatternTooLong)
+        );
+    }
+
+    #[test]
+    fn anchored_patterns_match_whole_relative_paths_even_without_a_separator() {
+        let anchored = Pattern::compile_anchored(b"*.rs").unwrap();
+        assert!(anchored.matches_path(b"direct.rs"));
+        assert!(!anchored.matches_path(b"nested/other.rs"));
+        assert!(!anchored.matches_basename(b"direct.rs"));
+        let recursive = Pattern::compile_anchored(b"**/*.rs").unwrap();
+        assert!(recursive.matches_path(b"direct.rs"));
+        assert!(recursive.matches_path(b"nested/other.rs"));
+        assert!(
+            Pattern::compile(b"*.rs")
+                .unwrap()
+                .matches_path(b"nested/other.rs")
         );
     }
 
