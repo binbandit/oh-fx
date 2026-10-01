@@ -55,6 +55,7 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
     "skill_symlink_authorities",
 ];
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
+const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; save one as \"codex\" under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
 
 type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -124,6 +125,10 @@ pub enum LayerError {
     InvalidProviderType,
     #[error("InvalidProviderValue")]
     InvalidProviderValue,
+    #[error("InvalidCodexModelType")]
+    InvalidCodexModelType,
+    #[error("InvalidCodexModelValue")]
+    InvalidCodexModelValue,
     #[error("TooManyModelPreferences")]
     TooManyModelPreferences,
     #[error("InvalidPermissionModeType")]
@@ -150,6 +155,8 @@ pub enum SelectionError {
     ProviderUnavailable(String),
     #[error("{MODEL_NOT_SELECTED}")]
     ModelNotSelected,
+    #[error("{CODEX_MODEL_NOT_SELECTED}")]
+    CodexModelNotSelected,
 }
 
 impl SelectionError {
@@ -159,6 +166,7 @@ impl SelectionError {
             Self::UnknownConfiguredProvider => "UnknownConfiguredProvider",
             Self::ProviderUnavailable(_) => "ProviderUnavailable",
             Self::ModelNotSelected => "ConfiguredModelNotSelected",
+            Self::CodexModelNotSelected => "CodexModelNotSelected",
         }
     }
 }
@@ -167,6 +175,7 @@ impl SelectionError {
 struct Layer {
     provider: Option<String>,
     model: Option<String>,
+    codex_model: Option<String>,
     models: Vec<(ProviderId, String)>,
     permission_mode: Option<PermissionMode>,
     yolo_acknowledged: Option<bool>,
@@ -254,6 +263,31 @@ impl Settings {
         Ok(provider)
     }
 
+    pub fn codex_selected(&self, lookup: EnvironmentLookup<'_>) -> Result<bool, SelectionError> {
+        Ok(self.selected_provider(lookup)? == ProviderId::Codex)
+    }
+
+    pub fn selected_codex_model(
+        &self,
+        run_model: Option<&str>,
+        lookup: EnvironmentLookup<'_>,
+    ) -> Result<String, SelectionError> {
+        let saved = |layer: &Layer| {
+            layer
+                .models
+                .iter()
+                .find(|(id, _)| *id == ProviderId::Codex)
+                .map(|(_, model)| model.clone())
+                .or_else(|| layer.codex_model.clone())
+        };
+        run_model
+            .map(str::to_owned)
+            .or_else(|| environment_model(lookup))
+            .or_else(|| saved(&self.workspace))
+            .or_else(|| saved(&self.global))
+            .ok_or(SelectionError::CodexModelNotSelected)
+    }
+
     pub fn selected_connection(
         &self,
         lookup: EnvironmentLookup<'_>,
@@ -286,11 +320,7 @@ impl Settings {
         };
         run_model
             .map(str::to_owned)
-            .or_else(|| {
-                lookup(MODEL_VARIABLE)
-                    .map(|model| model.trim().to_owned())
-                    .filter(|model| !model.is_empty())
-            })
+            .or_else(|| environment_model(lookup))
             .or_else(|| saved(&self.workspace))
             .or_else(|| saved(&self.global))
             .or_else(|| connection.models.first().cloned())
@@ -407,6 +437,12 @@ pub fn is_valid_provider_order_list(raw: &str) -> bool {
     !slugs.is_empty()
 }
 
+fn environment_model(lookup: EnvironmentLookup<'_>) -> Option<String> {
+    lookup(MODEL_VARIABLE)
+        .map(|model| model.trim().to_owned())
+        .filter(|model| !model.is_empty())
+}
+
 fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, DiagnosticCause> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -460,6 +496,14 @@ fn parse_routing(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         Some(Value::String(provider)) => Some(provider.clone()),
         Some(_) => return Err(LayerError::InvalidProviderType),
     };
+    let codex_model = match object.get("codex_model") {
+        None => None,
+        Some(Value::String(model)) => {
+            validate_model_id(model).map_err(|_| LayerError::InvalidCodexModelValue)?;
+            Some(model.clone())
+        }
+        Some(_) => return Err(LayerError::InvalidCodexModelType),
+    };
     let models = match object.get("models") {
         None => Vec::new(),
         Some(Value::Object(models)) => {
@@ -479,6 +523,7 @@ fn parse_routing(object: &Map<String, Value>) -> Result<Layer, LayerError> {
     };
     Ok(Layer {
         provider,
+        codex_model,
         models,
         ..Layer::default()
     })
@@ -708,6 +753,11 @@ mod tests {
                 LayerError::InvalidModelValue,
             ),
             (r#"{"model":7,"models":7}"#, LayerError::InvalidModelType),
+            (r#"{"codex_model":7}"#, LayerError::InvalidCodexModelType),
+            (
+                r#"{"codex_model":" gpt"}"#,
+                LayerError::InvalidCodexModelValue,
+            ),
         ];
         for (json, error) in cases {
             let loaded = load(&fixture(Some(json), None));
@@ -838,6 +888,68 @@ mod tests {
         ] {
             assert!(!is_valid_provider_order_list(invalid), "{invalid:?}");
         }
+    }
+
+    #[test]
+    fn provider_settings_keep_independent_provider_models() {
+        let settings = fixture_settings(
+            r#"{"provider":"codex","model":"gateway/model","codex_model":"gpt-5.4-mini"}"#,
+        );
+        assert_eq!(settings.codex_selected(&no_environment), Ok(true));
+        assert_eq!(
+            settings.selected_codex_model(None, &no_environment),
+            Ok("gpt-5.4-mini".to_owned())
+        );
+        let current = fixture_settings(
+            r#"{"provider":"CODEX","model":"legacy/gateway","codex_model":"legacy-codex","models":{"gateway":"current/gateway","codex":"current-codex"}}"#,
+        );
+        assert_eq!(current.codex_selected(&no_environment), Ok(true));
+        assert_eq!(
+            current.selected_codex_model(None, &no_environment),
+            Ok("current-codex".to_owned())
+        );
+    }
+
+    #[test]
+    fn codex_model_precedence_runs_from_flag_to_environment_to_workspace_to_global() {
+        let fixture = fixture(None, None);
+        let json = format!(
+            r#"{{"model":"gateway/model","models":{{"codex":"global-codex"}},"workspaces":{{{}:{{"codex_model":"workspace-codex"}}}}}}"#,
+            serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap()
+        );
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+        let settings = load(&fixture).unwrap();
+        let codex = |name: &str| match name {
+            PROVIDER_VARIABLE => Some("codex".to_owned()),
+            MODEL_VARIABLE => Some(" gpt-env ".to_owned()),
+            _ => None,
+        };
+        assert_eq!(settings.codex_selected(&no_environment), Ok(false));
+        assert_eq!(settings.codex_selected(&codex), Ok(true));
+        assert_eq!(
+            settings.selected_codex_model(Some("gpt-flag"), &codex),
+            Ok("gpt-flag".to_owned())
+        );
+        assert_eq!(
+            settings.selected_codex_model(None, &codex),
+            Ok("gpt-env".to_owned())
+        );
+        assert_eq!(
+            settings.selected_codex_model(None, &no_environment),
+            Ok("workspace-codex".to_owned())
+        );
+        let global = fixture_settings(r#"{"provider":"codex","models":{"codex":"global-codex"}}"#);
+        assert_eq!(
+            global.selected_codex_model(None, &no_environment),
+            Ok("global-codex".to_owned())
+        );
+        let unsaved = fixture_settings(r#"{"provider":"codex","model":"gateway/model"}"#);
+        let error = unsaved
+            .selected_codex_model(None, &no_environment)
+            .unwrap_err();
+        assert_eq!(error, SelectionError::CodexModelNotSelected);
+        assert_eq!(error.code(), "CodexModelNotSelected");
+        assert_eq!(error.to_string(), CODEX_MODEL_NOT_SELECTED);
     }
 
     #[test]

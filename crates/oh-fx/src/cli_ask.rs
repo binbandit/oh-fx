@@ -12,11 +12,12 @@ use ofx_agent::{
     Agent, AgentConfig, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
     text_for_completed_presentation,
 };
+use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, MISSING_CHATGPT_CREDENTIAL_MESSAGE};
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
-    ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError, RouteRecoveryStatus,
-    ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError,
+    RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
 use ofx_permissions::PermissionPolicy;
@@ -28,6 +29,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
+use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_provider};
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
 use crate::tool_set;
 
@@ -101,7 +103,9 @@ impl Failure {
 impl From<SelectionError> for Failure {
     fn from(error: SelectionError) -> Self {
         match error {
-            SelectionError::ModelNotSelected | SelectionError::ProviderUnavailable(_) => {
+            SelectionError::ModelNotSelected
+            | SelectionError::CodexModelNotSelected
+            | SelectionError::ProviderUnavailable(_) => {
                 Self::notice(error.code(), error.to_string())
             }
             SelectionError::InvalidProviderValue | SelectionError::UnknownConfiguredProvider => {
@@ -119,6 +123,50 @@ impl From<ConnectionError> for Failure {
             ..Self::notice(error.code(), error.to_string())
         }
     }
+}
+
+impl From<CodexUnavailable> for Failure {
+    fn from(error: CodexUnavailable) -> Self {
+        match error {
+            CodexUnavailable::MissingLogin => Self {
+                notice_in_json: true,
+                ..Self::notice("MissingCredentials", MISSING_CHATGPT_CREDENTIAL_MESSAGE)
+            },
+            CodexUnavailable::Preparation(error) => Self::notice(error.to_string(), error.notice()),
+            CodexUnavailable::Client(error) => {
+                Self::notice("TransportUnavailable", error.to_string())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialSource {
+    Configured,
+    Codex,
+}
+
+impl CredentialSource {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Configured => CONFIGURED_SOURCE_LABEL,
+            Self::Codex => CHATGPT_SOURCE_LABEL,
+        }
+    }
+
+    const fn relogin(self) -> Option<&'static str> {
+        match self {
+            Self::Configured => None,
+            Self::Codex => Some(CHATGPT_RELOGIN_MESSAGE),
+        }
+    }
+}
+
+struct Route {
+    provider: Arc<dyn ModelProvider>,
+    model: Result<String, Vec<u8>>,
+    max_output_tokens: Option<u32>,
+    source: CredentialSource,
 }
 
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -201,11 +249,11 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
 async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
     let cancel = CancellationToken::new();
     let received_signal = watch_signals(cancel.clone());
-    let (mut agent, model, permission_mode) = match prepare_agent(args) {
+    let (mut agent, model, permission_mode, source) = match prepare_agent(args).await {
         Ok(prepared) => prepared,
         Err(failure) => return failure.report(args.output.json),
     };
-    let mut presenter = Presenter::new(args.output, permission_mode);
+    let mut presenter = Presenter::new(args.output, permission_mode, source);
     let report = agent
         .run_turn(
             prompt,
@@ -226,10 +274,13 @@ async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
     }
 }
 
-fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Failure> {
+async fn prepare_agent(
+    args: &AskArgs,
+) -> Result<(Agent, String, PermissionMode, CredentialSource), Failure> {
     let workspace_root = workspace_root()?;
-    let settings = match ProfilePaths::from_environment() {
-        Some(paths) => Settings::load(&paths, &workspace_root)
+    let paths = ProfilePaths::from_environment();
+    let settings = match &paths {
+        Some(paths) => Settings::load(paths, &workspace_root)
             .map_err(|error| Failure::code(error.to_string()))?,
         None => Settings::default(),
     };
@@ -254,23 +305,48 @@ fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Fail
     }
     drop(stderr);
     let lookup = |name: &str| env::var(name).ok();
-    let connection = settings.selected_connection(&lookup)?;
-    let model = match args.model.as_deref() {
-        Some(requested) if requested.to_str().is_none() => Err(requested.as_bytes().to_vec()),
-        requested => {
-            Ok(settings.selected_model(connection, requested.and_then(OsStr::to_str), &lookup)?)
+    let requested = args.model.as_deref();
+    let route = if settings.codex_selected(&lookup)? {
+        let model = select_model(requested, |model| {
+            settings.selected_codex_model(model, &lookup)
+        })?;
+        let provider = codex_provider(
+            paths.map(|paths| paths.data),
+            &crate::user_agent(),
+            SubscriptionEndpoints::default(),
+        )
+        .await?;
+        Route {
+            provider: Arc::new(provider),
+            model,
+            max_output_tokens: None,
+            source: CredentialSource::Codex,
+        }
+    } else {
+        let connection = settings.selected_connection(&lookup)?;
+        let model = select_model(requested, |model| {
+            settings.selected_model(connection, model, &lookup)
+        })?;
+        let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
+        let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
+            .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
+        Route {
+            provider: Arc::new(provider),
+            max_output_tokens: model
+                .as_ref()
+                .ok()
+                .and_then(|model| request_output_tokens(connection.capabilities(model))),
+            model,
+            source: CredentialSource::Configured,
         }
     };
-    let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
-    let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
-        .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
-    let model = model.map_err(Failure::invalid_model)?;
+    let model = route.model.map_err(Failure::invalid_model)?;
     let config = AgentConfig {
         system_prompt: args
             .system_prompt
             .clone()
             .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
-        max_output_tokens: request_output_tokens(connection.capabilities(&model)),
+        max_output_tokens: route.max_output_tokens,
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
     };
@@ -278,13 +354,23 @@ fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Fail
     let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
     let agent = Agent::new(
-        Arc::new(provider),
+        route.provider,
         tools,
         Arc::new(context),
         Arc::new(permissions),
         config,
     );
-    Ok((agent, model, permission_mode))
+    Ok((agent, model, permission_mode, route.source))
+}
+
+fn select_model(
+    requested: Option<&OsStr>,
+    select: impl FnOnce(Option<&str>) -> Result<String, SelectionError>,
+) -> Result<Result<String, Vec<u8>>, SelectionError> {
+    match requested {
+        Some(requested) if requested.to_str().is_none() => Ok(Err(requested.as_bytes().to_vec())),
+        requested => select(requested.and_then(OsStr::to_str)).map(Ok),
+    }
 }
 
 fn workspace_root() -> Result<PathBuf, Failure> {
@@ -485,6 +571,7 @@ enum OutputMode {
 struct Presenter {
     mode: OutputMode,
     permission_mode: PermissionMode,
+    source: CredentialSource,
     output: String,
     has_output: bool,
     boundary_pending: bool,
@@ -502,7 +589,7 @@ struct FailureSummary {
 }
 
 impl Presenter {
-    fn new(output: AskOutput, permission_mode: PermissionMode) -> Self {
+    fn new(output: AskOutput, permission_mode: PermissionMode, source: CredentialSource) -> Self {
         let mode = if output.json {
             OutputMode::Json
         } else if output.quiet {
@@ -515,6 +602,7 @@ impl Presenter {
         Self {
             mode,
             permission_mode,
+            source,
             output: String::new(),
             has_output: false,
             boundary_pending: false,
@@ -698,13 +786,16 @@ impl Presenter {
         let detail = error.detail.as_deref().unwrap_or(&bare);
         let auth_failure = status == 401;
         let message = if auth_failure {
-            format!("{CONFIGURED_SOURCE_LABEL} authentication failed · HTTP 401")
+            format!("{} authentication failed · HTTP 401", self.source.label())
         } else {
             detail.to_owned()
         };
         write_stderr(&format!("oh-fx ask: {message}\n"))?;
         if auth_failure && detail != bare {
             write_stderr(&format!("oh-fx ask: {detail}\n"))?;
+        }
+        if let Some(guidance) = self.source.relogin().filter(|_| auth_failure) {
+            write_stderr(&format!("oh-fx ask: {guidance}\n"))?;
         }
         if self.mode == OutputMode::Json {
             self.output.push_str(&message);
@@ -767,7 +858,7 @@ impl Presenter {
             usage: usage_record(report.usage),
             error: summary.error.as_deref(),
             auth_failure: summary.auth_failure.then_some(AuthFailureRecord {
-                source: CONFIGURED_SOURCE_LABEL,
+                source: self.source.label(),
                 reason: "http_unauthorized",
                 http_status: 401,
             }),
@@ -798,9 +889,10 @@ impl Presenter {
 
 #[cfg(test)]
 mod tests {
+    use ofx_auth::PreparationError;
     use ofx_contract::{
-        CallDescription, Concurrency, ModelFailureDiagnostic, RouteRecoveryKind, ToolActivity,
-        TurnId,
+        CallDescription, Concurrency, ModelFailureDiagnostic, ProviderErrorKind, RouteRecoveryKind,
+        ToolActivity, TurnId,
     };
 
     use super::*;
@@ -866,6 +958,7 @@ mod tests {
                 ..AskOutput::default()
             },
             PermissionMode::Auto,
+            CredentialSource::Configured,
         )
     }
 
@@ -903,6 +996,61 @@ mod tests {
             presenter.blocked_action_guidance("Reading /tmp/\x1b[2Jx"),
             "oh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Reading /tmp/\\x1b[2Jx\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule\n"
         );
+    }
+
+    #[test]
+    fn codex_unauthorized_failures_name_the_subscription_source() {
+        let mut presenter = Presenter::new(
+            AskOutput {
+                json: true,
+                ..AskOutput::default()
+            },
+            PermissionMode::Auto,
+            CredentialSource::Codex,
+        );
+        let error = ProviderError {
+            status: Some(401),
+            ..ProviderError::new(ProviderErrorKind::Unauthorized, "HttpError")
+                .with_detail("API access denied · HTTP 401 · invalid_token")
+        };
+        let summary = presenter.describe_failure(&TurnFailure::Provider(error));
+        assert!(summary.auth_failure);
+        assert_eq!(summary.error, None);
+        assert_eq!(
+            presenter.output,
+            "Codex subscription authentication failed · HTTP 401\n"
+        );
+        assert_eq!(CredentialSource::Codex.label(), "Codex subscription");
+        assert_eq!(
+            CredentialSource::Codex.relogin(),
+            Some("Run oh-fx login codex to sign in again.")
+        );
+        assert_eq!(CredentialSource::Configured.relogin(), None);
+    }
+
+    #[test]
+    fn codex_preparation_failures_follow_the_upstream_codes_and_notices() {
+        let missing = Failure::from(CodexUnavailable::MissingLogin);
+        assert_eq!(missing.code, "MissingCredentials");
+        assert_eq!(
+            missing.notice.as_deref(),
+            Some("oh-fx needs a Codex subscription login for this model. Run oh-fx login codex.")
+        );
+        assert!(missing.notice_in_json);
+        let storage = Failure::from(CodexUnavailable::Preparation(
+            PreparationError::CredentialStorageUnavailable,
+        ));
+        assert_eq!(storage.code, "CredentialStorageUnavailable");
+        assert_eq!(
+            storage.notice.as_deref(),
+            Some(
+                "Saved credential storage is unavailable. Check the saved credential, then retry."
+            )
+        );
+        assert!(!storage.notice_in_json);
+        let unselected = Failure::from(SelectionError::CodexModelNotSelected);
+        assert_eq!(unselected.code, "CodexModelNotSelected");
+        assert!(unselected.notice.is_some());
     }
 
     #[test]
