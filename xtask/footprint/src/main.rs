@@ -12,6 +12,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::budgets::Budgets;
+
 const BUDGETS: &str = "budgets.toml";
 const DEFAULT_BASE_BRANCH: &str = "origin/main";
 const USAGE: &str =
@@ -54,28 +56,37 @@ fn run(args: &[&str]) -> Result<(), String> {
         None => None,
     };
     let builds = build::Builds::prepare(&invoked_from)?;
-    let head_release = builds.head()?;
-    let head_readings = measure::measure(&head_release);
-    let base_readings = if base == head {
-        Ok(head_readings.clone())
-    } else {
-        builds.base(&base).map(|release| measure::measure(&release))
+    let head_readings = builds.head().map(|release| measure::measure(&release));
+    let base_readings = match &head_readings {
+        Err(_) => Err("not built, because the head could not be built".to_owned()),
+        Ok(readings) if base == head => Ok(readings.clone()),
+        Ok(_) => builds.base(&base).map(|release| measure::measure(&release)),
     };
-    let text = report::render(
+    publish(
         &budgets,
         &report::Side {
             commit: &head,
-            readings: Ok(&head_readings),
+            readings: head_readings.as_ref().map_err(String::as_str),
         },
         &report::Side {
             commit: &base,
             readings: base_readings.as_ref().map_err(String::as_str),
         },
-        build::TARGET,
         trailer.as_deref(),
-    );
+        options.summary.as_deref(),
+    )
+}
+
+fn publish(
+    budgets: &Budgets,
+    head: &report::Side<'_>,
+    base: &report::Side<'_>,
+    trailer: Option<&str>,
+    summary: Option<&Path>,
+) -> Result<(), String> {
+    let text = report::render(budgets, head, base, build::TARGET, trailer);
     print!("{text}");
-    if let Some(path) = &options.summary {
+    if let Some(path) = summary {
         append(path, &text)?;
     }
     Ok(())
@@ -155,6 +166,32 @@ mod tests {
     fn rejects_unknown_or_incomplete_flags() {
         assert_eq!(parse_options(&["--base"]), Err(USAGE.to_owned()));
         assert_eq!(parse_options(&["--enforce", "yes"]), Err(USAGE.to_owned()));
+    }
+
+    #[test]
+    fn a_head_that_fails_to_build_still_writes_a_summary() {
+        let budgets =
+            budgets::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../budgets.toml"))
+                .expect("budgets.toml loads");
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let summary = dir.path().join("summary.md");
+        publish(
+            &budgets,
+            &report::Side {
+                commit: "0123456789abcdef",
+                readings: Err("cargo build failed in ."),
+            },
+            &report::Side {
+                commit: "fedcba9876543210",
+                readings: Err("not built, because the head could not be built"),
+            },
+            None,
+            Some(&summary),
+        )
+        .expect("the summary is written");
+        let written = repository::read(&summary).expect("the summary exists");
+        assert!(written.starts_with("## Footprint"));
+        assert!(written.contains("The head could not be measured: cargo build failed in ."));
     }
 
     #[test]
