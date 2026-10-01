@@ -1,0 +1,6 @@
+oh-fx login
+
+Sign in to Vercel or a selected provider
+
+Usage:
+  oh-fx login [vercel|codex|grok]

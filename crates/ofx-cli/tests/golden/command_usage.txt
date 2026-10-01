@@ -1,0 +1,13 @@
+oh-fx usage
+
+Show local oh-fx token usage and spend
+
+Usage:
+  oh-fx usage [--period <24h|7d|30d>] [--json]
+
+Options:
+  --period <24h|7d|30d>  Select a rolling window (default: 30d)
+  --json                 Emit machine-readable JSON instead of text
+
+Reports only usage recorded by oh-fx on this machine.
+This command reads local state and does not query account-wide Gateway reports.

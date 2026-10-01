@@ -1,0 +1,12 @@
+oh-fx sessions
+
+List saved sessions for the current workspace
+
+Usage:
+  oh-fx sessions [--all] [--limit <1-100>] [--cursor <cursor>] [--json]
+
+Options:
+  --all              List saved sessions across every workspace in this profile
+  --limit <1-100>    Set the maximum sessions returned per page
+  --cursor <cursor>  Continue from a prior sessions result
+  --json             Emit machine-readable JSON instead of text

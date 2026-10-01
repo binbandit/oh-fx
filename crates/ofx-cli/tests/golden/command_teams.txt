@@ -1,0 +1,6 @@
+oh-fx teams
+
+Choose the Vercel team used by AI Gateway
+
+Usage:
+  oh-fx teams

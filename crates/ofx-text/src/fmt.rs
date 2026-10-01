@@ -1,0 +1,38 @@
+pub fn parse_unsigned<T: TryFrom<u64>>(text: &str) -> Option<T> {
+    if text.is_empty() || text.starts_with('_') || text.ends_with('_') {
+        return None;
+    }
+    let value = text
+        .bytes()
+        .filter(|byte| *byte != b'_')
+        .try_fold(0_u64, |value, byte| {
+            let digit = char::from(byte).to_digit(10)?;
+            value.checked_mul(10)?.checked_add(u64::from(digit))
+        })?;
+    T::try_from(value).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_unsigned_accepts_digit_separators_but_no_sign() {
+        assert_eq!(parse_unsigned::<u64>("050124"), Some(50124));
+        assert_eq!(parse_unsigned::<u64>("65_535"), Some(65535));
+        assert_eq!(parse_unsigned::<u64>("_10"), None);
+        assert_eq!(parse_unsigned::<u64>("10_"), None);
+        assert_eq!(parse_unsigned::<u64>("+0"), None);
+        assert_eq!(parse_unsigned::<u64>("-0"), None);
+        assert_eq!(parse_unsigned::<u64>(" 10"), None);
+        assert_eq!(parse_unsigned::<u64>(""), None);
+        assert_eq!(parse_unsigned::<u64>("18446744073709551616"), None);
+    }
+
+    #[test]
+    fn parse_unsigned_rejects_values_outside_the_target_type() {
+        assert_eq!(parse_unsigned::<u8>("255"), Some(255));
+        assert_eq!(parse_unsigned::<u8>("256"), None);
+        assert_eq!(parse_unsigned::<usize>("100"), Some(100));
+    }
+}

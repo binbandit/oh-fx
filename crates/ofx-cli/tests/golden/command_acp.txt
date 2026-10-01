@@ -1,0 +1,10 @@
+oh-fx acp
+
+Start an ACP server over stdio
+
+Usage:
+  oh-fx acp [--model <id>] [--log-file <path>]
+
+Options:
+  --model <id>       Override the default model
+  --log-file <path>  Write ACP logs to a file

@@ -1,0 +1,15 @@
+oh-fx workspace
+
+Manage additional workspace directories
+
+Usage:
+  oh-fx workspace [list|add PATH|remove PATH|clear] [--json]
+
+Options:
+  list         List the primary and additional directories (default)
+  add PATH     Persist an existing additional directory
+  remove PATH  Remove an additional directory
+  clear        Remove all additional directories
+  --json       Emit machine-readable JSON instead of text
+
+Additional directories are stored for the current primary workspace.

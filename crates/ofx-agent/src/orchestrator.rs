@@ -201,6 +201,7 @@ impl Agent {
             }
             let context = self.context.runtime_context().await;
             let instructions: Vec<&str> = std::iter::once(self.config.system_prompt.as_str())
+                .filter(|system_prompt| !system_prompt.is_empty())
                 .chain(context.iter().map(String::as_str))
                 .chain(std::iter::once(RESPONSE_LANGUAGE_CONTROL))
                 .collect();

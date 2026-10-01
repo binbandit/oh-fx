@@ -1,0 +1,9 @@
+oh-fx upgrade
+
+Upgrade oh-fx to the latest release
+
+Usage:
+  oh-fx upgrade [--json]
+
+Options:
+  --json  Emit machine-readable JSON instead of text

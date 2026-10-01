@@ -1,0 +1,350 @@
+use std::ffi::{OsStr, OsString};
+use std::io;
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::process::ExitStatusExt;
+use std::process::{Command, Output, Stdio};
+
+use ofx_cli::{HelpStyle, TopLevelKind, render_command_help, render_top_level_help};
+
+const SIGPIPE: i32 = 13;
+
+fn run<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)], stdout: Stdio) -> Output {
+    let home = tempfile::tempdir().expect("create a temporary home");
+    Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        .args(args)
+        .current_dir(home.path())
+        .env_clear()
+        .env("HOME", home.path())
+        .env("OH_FX_AUTO_UPGRADE", "0")
+        .envs(environment.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .output()
+        .expect("run oh-fx")
+}
+
+fn oh_fx<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)]) -> Output {
+    run(args, environment, Stdio::piped())
+}
+
+#[cfg(target_os = "linux")]
+fn into_full_device(args: &[&str]) -> Output {
+    let full = std::fs::File::create("/dev/full").expect("open /dev/full");
+    run(args, &[], Stdio::from(full))
+}
+
+fn into_closed_pipe(args: &[&str]) -> Output {
+    let (reader, writer) = io::pipe().expect("create a pipe");
+    drop(reader);
+    run(args, &[], Stdio::from(writer))
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn top_level_help_follows_the_columns_variable_when_stdout_is_not_a_terminal() {
+    for (args, columns, width) in [
+        (&["--help"][..], "60", 60),
+        (&["-h"], " 120\t", 120),
+        (&["help", "ignored"], "0", 80),
+        (&["help \t"], "wide", 80),
+    ] {
+        let output = oh_fx(args, &[("COLUMNS", columns)]);
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(
+            stdout(&output),
+            render_top_level_help(width, ofx_upgrade::VERSION, HelpStyle::Plain),
+            "{args:?} {columns:?}"
+        );
+    }
+}
+
+#[test]
+fn command_help_comes_from_the_spec_table() {
+    for (args, kind) in [
+        (&["ask", "--help"][..], TopLevelKind::Ask),
+        (&["upgrade", "-h"], TopLevelKind::Upgrade),
+        (&["balance", "--help"], TopLevelKind::Credits),
+        (&["mcp"], TopLevelKind::Mcp),
+    ] {
+        let output = oh_fx(args, &[]);
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(stdout(&output), render_command_help(kind), "{args:?}");
+    }
+}
+
+#[test]
+fn version_prints_the_build_version_and_rejects_extra_arguments() {
+    let output = oh_fx(&["-v"], &[]);
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), format!("{}\n", ofx_upgrade::VERSION));
+    let output = oh_fx(&["--version", "extra"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "usage: oh-fx --version\n");
+}
+
+#[test]
+fn unknown_commands_print_the_plain_help_on_stderr() {
+    let output = oh_fx(&["frobnicate"], &[("COLUMNS", "60")]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "oh-fx: unknown subcommand: frobnicate\n\n{}",
+            render_top_level_help(80, ofx_upgrade::VERSION, HelpStyle::Plain)
+        )
+    );
+}
+
+#[test]
+fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
+    for (args, feature) in [
+        (&[][..], "interactive mode"),
+        (&["--model", "x", "--fast"], "interactive mode"),
+        (&["-c"], "resume"),
+        (&["--resume-abc"], "resume"),
+        (&["session", "resume", "last"], "resume"),
+        (&["login", "vercel"], "login"),
+        (&["replay", "tape"], "replay"),
+        (&["status"], "status"),
+        (&["balance"], "credits"),
+        (&["sessions"], "sessions"),
+        (&["mcp", "list"], "mcp"),
+    ] {
+        let output = oh_fx(args, &[]);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            format!("oh-fx: {feature} is not available yet\n"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelope() {
+    for (args, kind) in [
+        (&["status", "--json"][..], "status"),
+        (&["permissions", "--json"], "permissions"),
+        (&["models", "--json"], "models"),
+        (&["doctor", "--json"], "doctor"),
+        (&["balance", "--json"], "credits"),
+        (&["usage", "--json"], "usage"),
+        (&["sessions", "--json"], "sessions"),
+        (&["session", "last", "--json"], "session"),
+        (&["session", "migrate", "x", "--json"], "session"),
+        (&["session", "recover", "x", "--json"], "session"),
+        (&["workspace", "--json"], "workspace"),
+        (&["slack", "status", "--json"], "slack"),
+        (&["replay", "tape", "--json"], "replay"),
+    ] {
+        let output = oh_fx(args, &[]);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            format!("oh-fx: {kind} is not available yet\n"),
+            "{args:?}"
+        );
+        assert_eq!(
+            stdout(&output),
+            format!(
+                "{{\"kind\":\"{kind}\",\"error\":\"{kind} is not available yet\",\"code\":\"NotAvailableYet\"}}\n"
+            ),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn unknown_commands_echo_a_terminal_safe_token() {
+    for (raw, echoed) in [
+        (&b"\x1b]0;pwned\x07"[..], "\\x1b]0;pwned\\x07"),
+        (b"b\xffd", "b\\xffd"),
+    ] {
+        let output = oh_fx(&[OsString::from_vec(raw.to_vec())], &[]);
+        assert_eq!(output.status.code(), Some(1));
+        let text = stderr(&output);
+        assert!(
+            text.starts_with(&format!("oh-fx: unknown subcommand: {echoed}\n\n")),
+            "{text:?}"
+        );
+        assert!(!output.stderr.contains(&0x1b), "{text:?}");
+        assert!(!output.stderr.contains(&0xff), "{text:?}");
+    }
+}
+
+#[test]
+fn invalid_auth_modes_fail_every_command_except_top_level_help() {
+    let invalid = [("OH_FX_AUTH_MODE", "bogus")];
+    for args in [
+        &["status"][..],
+        &["--version"],
+        &["ask", "--help"],
+        &["status", "--bogus"],
+        &["bogus"],
+        &["--context-limit", "skill_chunk_bytes=1", "help"],
+        &[],
+    ] {
+        let output = oh_fx(args, &invalid);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            "oh-fx: OH_FX_AUTH_MODE must be local or host-managed\n",
+            "{args:?}"
+        );
+    }
+    let empty = oh_fx(&["--version"], &[("OH_FX_AUTH_MODE", "")]);
+    assert_eq!(empty.status.code(), Some(1));
+    for args in [&["--help"][..], &["-h"], &["help", "--json"]] {
+        let output = oh_fx(args, &invalid);
+        assert!(output.status.success(), "{args:?}");
+        assert!(stdout(&output).starts_with("oh-fx v"), "{args:?}");
+    }
+    for mode in ["local", "host-managed"] {
+        let output = oh_fx(&["--version"], &[("OH_FX_AUTH_MODE", mode)]);
+        assert!(output.status.success(), "{mode}");
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn full_disk_writes_follow_each_upstream_path() {
+    for (args, expected) in [
+        (&["--help"][..], ""),
+        (&["help", "--json"], ""),
+        (
+            &["--context-limit", "skill_chunk_bytes=1", "help"],
+            "oh-fx: WriteFailed\n",
+        ),
+        (&["--version"], "oh-fx: WriteFailed\n"),
+        (&["status", "--help"], "oh-fx: WriteFailed\n"),
+        (&["sessions", "--help"], "oh-fx: WriteFailed\n"),
+        (&["status", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
+        (&["sessions", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
+        (
+            &["session", "last", "--json"],
+            "oh-fx: session is not available yet\noh-fx: WriteFailed\n",
+        ),
+        (&["replay", "--json"], ""),
+    ] {
+        let output = into_full_device(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stderr(&output), expected, "{args:?}");
+    }
+}
+
+#[test]
+fn closed_pipes_follow_each_upstream_path() {
+    for args in [
+        &["--help"][..],
+        &["--version"],
+        &["sessions", "--help"],
+        &["sessions", "--json", "--bogus"],
+        &["replay", "--json"],
+    ] {
+        let output = into_closed_pipe(args);
+        assert_eq!(output.status.signal(), Some(SIGPIPE), "{args:?}");
+    }
+    for args in [
+        &["status", "--help"][..],
+        &["status", "--json", "--bogus"],
+        &["models", "--json"],
+    ] {
+        let output = into_closed_pipe(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(
+            stderr(&output).ends_with("oh-fx: WriteFailed\n"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn upgrade_rejects_unknown_arguments_like_upstream() {
+    for (args, expected) in [
+        (
+            &["upgrade", "--channel", "dev"][..],
+            "usage: oh-fx upgrade [--json]\n",
+        ),
+        (
+            &["upgrade", "--json", "--json"],
+            "oh-fx: InvalidUpgradeArgs\n",
+        ),
+        (
+            &["upgrade", "--background", "x"],
+            "usage: oh-fx upgrade [--json]\n",
+        ),
+    ] {
+        let output = oh_fx(args, &[]);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stderr(&output), expected, "{args:?}");
+    }
+}
+
+#[test]
+fn launch_modifiers_before_help_select_the_plain_layout() {
+    let output = oh_fx(
+        &["--context-limit", "skill_chunk_bytes=1", "help"],
+        &[("COLUMNS", "60")],
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        render_top_level_help(80, ofx_upgrade::VERSION, HelpStyle::Plain)
+    );
+}
+
+#[test]
+fn invalid_command_arguments_fail_before_the_availability_check() {
+    let output = oh_fx(&["status", "--wat"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "usage: oh-fx status [--json]\n");
+    let output = oh_fx(&["status", "--json", "--wat"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stdout(&output),
+        "{\"kind\":\"status\",\"error\":\"invalid arguments\",\"code\":\"InvalidLocalSurfaceArgs\"}\n"
+    );
+    let output = oh_fx(&["--model", "x", "ask", "hi"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "oh-fx: --provider, --model, --effort, --fast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `oh-fx ask`\n"
+    );
+}
+
+#[test]
+fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
+    for (args, feature) in [
+        (
+            &["--context-limit", "skill_chunk_bytes=1", "ask", "hi"][..],
+            "--context-limit",
+        ),
+        (&["--add-dir", "/tmp", "ask", "hi"], "--add-dir"),
+    ] {
+        let output = oh_fx(args, &[]);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            format!("oh-fx: {feature} is not available yet\n"),
+            "{args:?}"
+        );
+    }
+    let output = oh_fx(&["--add-dir=/tmp", "ask", "--json", "hi"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "oh-fx: --add-dir is not available yet\n");
+    assert_eq!(
+        stdout(&output),
+        "{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":\"\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{\"input_tokens\":null,\"output_tokens\":null},\"error\":\"NotAvailableYet\"}\n"
+    );
+}

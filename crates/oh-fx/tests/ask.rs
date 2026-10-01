@@ -1,15 +1,19 @@
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, Reply, chat_text_events};
+use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events};
 use serde_json::{Value, json};
 
 const PORTKEY_KEY: &str = "pk-test-0123456789";
+const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>\n";
+const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -33,7 +37,7 @@ impl Home {
         }
     }
 
-    fn command(&self, args: &[&str]) -> Command {
+    fn command<S: AsRef<OsStr>>(&self, args: &[S]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
         command
             .args(args)
@@ -50,7 +54,7 @@ impl Home {
         command
     }
 
-    fn ask(&self, args: &[&str], environment: &[(&str, &str)]) -> Output {
+    fn ask<S: AsRef<OsStr>>(&self, args: &[S], environment: &[(&str, &str)]) -> Output {
         let mut command = self.command(args);
         command.envs(environment.iter().copied());
         command.output().expect("run oh-fx")
@@ -239,11 +243,20 @@ fn ask_usage_errors_follow_the_upstream_shapes() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "oh-fx ask: missing prompt\nusage: oh-fx ask [--model <id>] [--json] [--] <prompt>\n"
+        format!("oh-fx ask: missing prompt\n{ASK_USAGE}")
     );
+    let output = home.ask(&["ask", "--bogus", "hi"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), ASK_USAGE);
     let output = home.ask(&["ask", "--json", "--bogus"], &[]);
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["error"], "InvalidAskArgs");
+    assert_eq!(stderr(&output), "");
+    let output = home.ask(&["ask", "--no-save", "--resume", "last", "hi"], &[]);
+    assert_eq!(
+        stderr(&output),
+        format!("oh-fx ask: --no-save cannot be used with --resume or --resume-id\n{ASK_USAGE}")
+    );
     let output = home.ask(&["ask", "--help"], &[]);
     assert!(output.status.success());
     assert!(stdout(&output).starts_with("oh-fx ask\n\nRun one noninteractive request\n"));
@@ -545,4 +558,319 @@ fn interrupts_flush_partial_output_and_end_the_process_by_signal() {
         let status = child.wait().unwrap();
         assert_eq!(status.signal(), Some(number));
     }
+}
+
+fn messages(request: &RecordedRequest) -> Vec<Value> {
+    request.json()["messages"]
+        .as_array()
+        .expect("the request carries messages")
+        .clone()
+}
+
+fn system_texts(messages: &[Value]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .map(|message| {
+            message["content"]
+                .as_str()
+                .expect("system messages carry text")
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn permission_flags_override_the_configured_mode_for_one_request() {
+    let replies: Vec<Reply> = (0..4)
+        .map(|_| Reply::sse(&chat_text_events(&["ok"])))
+        .collect();
+    let server = FakeServer::start(replies);
+    let mut settings = portkey_settings(&server.base_url());
+    settings["permission_mode"] = json!("ask");
+    let home = Home::with_settings(&settings);
+    let warning = "Full access enabled: oh-fx permission checks disabled\n";
+    for (flags, expected_stderr) in [
+        (&[][..], ""),
+        (&["--auto"], ""),
+        (&["--full-access"], warning),
+        (&["--yolo", "--no-color"], warning),
+    ] {
+        let args = [&["ask"], flags, &["hi"]].concat();
+        let output = home.ask(&args, &KEY);
+        assert!(output.status.success(), "{flags:?}: {}", stderr(&output));
+        assert_eq!(stdout(&output), "ok", "{flags:?}");
+        assert_eq!(stderr(&output), expected_stderr, "{flags:?}");
+    }
+    let modes: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|request| system_texts(&messages(request))[2].clone())
+        .collect();
+    for (mode, expected) in modes
+        .iter()
+        .zip(["ask", "auto", "full access", "full access"])
+    {
+        assert!(
+            mode.starts_with(&format!("Runtime context: permission mode is {expected}.")),
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn system_flag_replaces_only_the_base_prompt() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["ok"])),
+        Reply::sse(&chat_text_events(&["ok"])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    for system in ["Answer in one word.", ""] {
+        let output = home.ask(&["ask", "--system", system, "hi"], &KEY);
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    let requests = server.requests();
+    let replaced = system_texts(&messages(&requests[0]));
+    assert_eq!(replaced.len(), 4);
+    assert_eq!(replaced[0], "Answer in one word.");
+    assert!(replaced[1].starts_with("<fx-turn-context>\n"));
+    assert!(replaced[2].starts_with("Runtime context: permission mode is auto."));
+    assert!(replaced[3].starts_with("<response_language_control>"));
+    assert_eq!(system_texts(&messages(&requests[1])), replaced[1..]);
+    assert_eq!(
+        messages(&requests[1]).last().unwrap(),
+        &json!({"role": "user", "content": "hi"})
+    );
+}
+
+#[test]
+fn quiet_suppresses_assistant_output_and_retry_notices_but_not_json() {
+    let failure = r#"{"error":{"message":"boom"}}"#;
+    let server = FakeServer::start([
+        Reply::status(500, failure),
+        Reply::sse(&chat_text_events(&["Hi"])),
+        Reply::sse(&chat_text_events(&["Hi"])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(&["ask", "--quiet", "hi"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "");
+    let output = home.ask(&["ask", "--quiet", "--json", "hi"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["output"], "Hi");
+    assert_eq!(result["final_output"], "Hi");
+}
+
+#[test]
+fn quiet_failures_still_report_on_stderr() {
+    let server = FakeServer::start([Reply::status(401, r#"{"error":{"message":"no"}}"#)]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(&["ask", "--quiet", "hi"], &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert!(
+        stderr(&output)
+            .starts_with("oh-fx ask: configured provider authentication failed · HTTP 401\n")
+    );
+}
+
+#[test]
+fn flags_that_request_the_current_defaults_run_normally() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["ok"]))]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(
+        &[
+            "ask",
+            "--effort",
+            "auto",
+            "--no-fast",
+            "--no-provider-strict",
+            "--no-save",
+            "--verbose",
+            "--timeout",
+            "never",
+            "hi",
+        ],
+        &KEY,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "ok");
+    let body = server.requests()[0].json();
+    let fields: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(fields, ["model", "stream", "stream_options", "messages"]);
+}
+
+#[test]
+fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    for (args, feature) in [
+        (&["ask", "--image", "shot.png", "hi"][..], "ask --image"),
+        (
+            &["ask", "--prompt-permissions", "hi"],
+            "ask --prompt-permissions",
+        ),
+        (&["ask", "--timeout", "5", "hi"], "ask --timeout"),
+        (&["ask", "--resume", "last", "hi"], "ask --resume"),
+        (
+            &["ask", "--resume-id", "session.v3", "hi"],
+            "ask --resume-id",
+        ),
+        (
+            &["ask", "--resume", "last", "--continue-recovery"],
+            "ask --continue-recovery",
+        ),
+        (&["--add-dir", "/tmp", "ask", "--fast", "hi"], "--add-dir"),
+    ] {
+        let output = home.ask(args, &KEY);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            format!("oh-fx: {feature} is not available yet\n"),
+            "{args:?}"
+        );
+    }
+    let output = home.ask(&["ask", "--json", "--image", "shot.png", "hi"], &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "oh-fx: ask --image is not available yet\n");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "NotAvailableYet");
+    assert_eq!(result["exit_code"], 1);
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn model_routing_flags_are_validated_and_leave_the_custom_connection_request_unchanged() {
+    let cases: [&[&str]; 6] = [
+        &[],
+        &["--effort", "high"],
+        &["--fast"],
+        &["--provider-order", "azure,anthropic"],
+        &["--provider-order=bedrock", "--provider-strict"],
+        &["--effort", "xhigh", "--fast", "--provider-strict"],
+    ];
+    let replies: Vec<Reply> = cases
+        .iter()
+        .map(|_| Reply::sse(&chat_text_events(&["ok"])))
+        .collect();
+    let server = FakeServer::start(replies);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    for flags in cases {
+        let args = [&["ask"], flags, &["hi"]].concat();
+        let output = home.ask(&args, &KEY);
+        assert!(output.status.success(), "{flags:?}: {}", stderr(&output));
+        assert_eq!(stdout(&output), "ok", "{flags:?}");
+        assert_eq!(stderr(&output), "", "{flags:?}");
+    }
+    let requests = server.requests();
+    assert_eq!(requests.len(), cases.len());
+    for request in &requests[1..] {
+        assert_eq!(request.body, requests[0].body);
+    }
+    for args in [
+        &["ask", "--effort", "not an effort", "hi"][..],
+        &["ask", "--provider-order", "Bad Slug", "hi"],
+        &["ask", "--fast", "--no-fast", "hi"],
+        &["ask", "--provider-strict", "--no-provider-strict", "hi"],
+    ] {
+        let output = home.ask(args, &KEY);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stderr(&output), ASK_USAGE, "{args:?}");
+    }
+    assert_eq!(server.requests().len(), cases.len());
+}
+
+#[test]
+fn non_utf8_models_fail_as_invalid_models_before_any_request() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let model = OsString::from_vec(b" m\xff ".to_vec());
+    let args = |json: bool| {
+        let mut args = vec![
+            OsString::from("ask"),
+            OsString::from("--model"),
+            model.clone(),
+        ];
+        if json {
+            args.push(OsString::from("--json"));
+        }
+        args.push(OsString::from("hi"));
+        args
+    };
+    let output = home.ask(&args(false), &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "oh-fx: InvalidModel\n");
+    let output = home.ask(&args(true), &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        stdout(&output),
+        "{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":[109,255],\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{\"input_tokens\":null,\"output_tokens\":null},\"error\":\"InvalidModel\"}\n"
+    );
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn non_utf8_system_prompts_fail_as_invalid_arguments_before_any_request() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let args = |json: bool| {
+        let mut args = vec![OsString::from("ask")];
+        if json {
+            args.push(OsString::from("--json"));
+        }
+        args.extend([
+            OsString::from("--system"),
+            OsString::from_vec(b"s\xff".to_vec()),
+            OsString::from("hi"),
+        ]);
+        args
+    };
+    let output = home.ask(&args(false), &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), ASK_USAGE);
+    let output = home.ask(&args(true), &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "InvalidAskArgs");
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn json_results_name_a_full_disk_like_upstream() {
+    let home = Home::with_settings(&json!({}));
+    let full = fs::File::create("/dev/full").expect("open /dev/full");
+    let output = home
+        .command(&["ask", "--json", "--bogus"])
+        .stdout(full)
+        .output()
+        .expect("run oh-fx");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "oh-fx: NoSpaceLeft\n");
+}
+
+#[test]
+fn json_results_name_a_closed_pipe_like_upstream() {
+    let home = Home::with_settings(&json!({}));
+    let (reader, writer) = io::pipe().expect("create a pipe");
+    drop(reader);
+    let output = home
+        .command(&["ask", "--json", "--bogus"])
+        .stdout(writer)
+        .output()
+        .expect("run oh-fx");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "oh-fx: BrokenPipe\n");
 }

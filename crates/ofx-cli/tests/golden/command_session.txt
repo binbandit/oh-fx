@@ -1,0 +1,15 @@
+oh-fx session
+
+Inspect, resume, migrate, or recover saved sessions
+
+Usage:
+  oh-fx session <last|id>|--id <id> [--json] | session resume [last|<id>] | session resume --id <id> | session migrate <id>|--id <id> [--allow-large] [--json] | session recover <id>|--id <id> [--json]
+
+Options:
+  last                Inspect the current workspace session
+  --id <id>           Inspect a saved session by exact id
+  resume [last|<id>]  Resume the latest workspace session or a session by id
+  migrate <id>        Migrate a saved session to the current format
+  recover <id>        Copy a recoverable corrupt session into a new session
+  --allow-large       Permit migrating an oversized session
+  --json              Emit machine-readable JSON instead of text

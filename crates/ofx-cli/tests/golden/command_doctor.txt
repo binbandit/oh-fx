@@ -1,0 +1,9 @@
+oh-fx doctor
+
+Run local health and preflight checks
+
+Usage:
+  oh-fx doctor [--json]
+
+Options:
+  --json  Emit machine-readable JSON instead of text

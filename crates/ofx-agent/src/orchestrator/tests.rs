@@ -309,6 +309,22 @@ async fn final_answers_stream_raw_text_and_complete_the_turn() {
 }
 
 #[tokio::test]
+async fn an_empty_system_prompt_is_left_out_of_the_instructions() {
+    let provider = FakeProvider::new(vec![text_reply("ok")]);
+    let config = AgentConfig {
+        system_prompt: String::new(),
+        ..config()
+    };
+    let shared: Arc<FakeProvider> = Arc::clone(&provider);
+    let mut agent = Agent::new(shared, Vec::new(), Arc::new(FixedContext), config);
+    run(&mut agent, "hi").await;
+    assert_eq!(
+        provider.requests()[0].instructions,
+        [TURN_CONTEXT, RESPONSE_LANGUAGE_CONTROL]
+    );
+}
+
+#[tokio::test]
 async fn tool_calls_run_and_feed_results_back() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[("call-1", r#"{"text":"a"}"#)]),
