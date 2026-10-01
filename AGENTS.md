@@ -15,7 +15,7 @@ Never credit an AI agent, model, or tool anywhere in the history or on a pull re
 ## Commit messages and PR titles
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/) for every commit subject and PR title: `type(optional-scope): subject`, where type is one of `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, or `test`. Example: `feat(gateway): stream chat completions`.
-- The `commit-msg` hook checks commit subjects, and the `Rust lint` CI job checks the PR title and every commit subject. Mergify uses the PR title as the squash commit subject on `main`. Mergify's own `merge queue:` integration PRs are exempt from the title check.
+- The `commit-msg` hook checks commit subjects, and the `Rust lint` CI job checks the PR title and every commit subject. Mergify uses the PR title as the squash commit subject on `main`. Only the `merge queue:` integration PRs that Mergify opens in this repository are exempt from the title check.
 
 ## Pull requests
 

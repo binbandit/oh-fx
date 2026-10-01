@@ -64,7 +64,12 @@ jobs:
           git log --format=%s -n "$PR_COMMITS" "$HEAD_SHA" > "$RUNNER_TEMP/subjects.txt"
           cargo xtask subjects "$RUNNER_TEMP/subjects.txt"
       - name: Conventional PR title
-        if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/')
+        if: >-
+          github.event_name == 'pull_request' && !(
+            github.event.pull_request.user.login == 'mergify[bot]' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            startsWith(github.head_ref, 'mergify/merge-queue/')
+          )
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
