@@ -1,5 +1,11 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Profile {
+    Clean,
+    User,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Environment {
     Clean(PathBuf),

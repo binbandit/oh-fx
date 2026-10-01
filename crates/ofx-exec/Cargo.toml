@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 getrandom.workspace = true
+nix = { workspace = true, features = ["user"] }
 rustix = { workspace = true, features = ["event", "process"] }
 signal-hook.workspace = true
 thiserror.workspace = true

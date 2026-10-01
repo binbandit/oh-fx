@@ -17,6 +17,46 @@ pub fn is_model_safe_text(text: &[u8]) -> bool {
     !text.contains(&0) && std::str::from_utf8(text).is_ok()
 }
 
+pub fn write_head_tail_bounded(text: &[u8], max_content_bytes: usize, marker: &str) -> Vec<u8> {
+    if text.len() <= max_content_bytes {
+        return text.to_vec();
+    }
+    let marker = marker.as_bytes();
+    if max_content_bytes <= marker.len() {
+        return marker[..max_content_bytes].to_vec();
+    }
+    let retained_bytes = max_content_bytes - marker.len();
+    let head_bytes = retained_bytes.div_ceil(2);
+    let tail_bytes = retained_bytes - head_bytes;
+    let head_end = utf8_backward_boundary(text, head_bytes);
+    let tail_start = utf8_forward_boundary(text, text.len() - tail_bytes);
+    let mut bounded = Vec::with_capacity(head_end + marker.len() + text.len() - tail_start);
+    bounded.extend_from_slice(&text[..head_end]);
+    bounded.extend_from_slice(marker);
+    bounded.extend_from_slice(&text[tail_start..]);
+    bounded
+}
+
+fn is_utf8_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
+}
+
+fn utf8_backward_boundary(text: &[u8], index: usize) -> usize {
+    let mut boundary = index.min(text.len());
+    while boundary > 0 && boundary < text.len() && is_utf8_continuation(text[boundary]) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+fn utf8_forward_boundary(text: &[u8], index: usize) -> usize {
+    let mut boundary = index.min(text.len());
+    while boundary < text.len() && is_utf8_continuation(text[boundary]) {
+        boundary += 1;
+    }
+    boundary
+}
+
 pub fn normalize_line_endings_in_place(bytes: &mut Vec<u8>) {
     let mut read = 0;
     let mut write = 0;
@@ -1621,5 +1661,35 @@ mod tests {
             let text = unit.repeat(10_000);
             let _ = mask_secrets(&text);
         }
+    }
+
+    #[test]
+    fn utf8_forward_boundary_snaps_past_the_codepoint_tail() {
+        let text = b"ab\xc3\xa9z";
+        assert_eq!(utf8_forward_boundary(text, 0), 0);
+        assert_eq!(utf8_forward_boundary(text, 2), 2);
+        assert_eq!(utf8_forward_boundary(text, 3), 4);
+        assert_eq!(utf8_forward_boundary(text, 4), 4);
+        assert_eq!(utf8_forward_boundary(text, text.len() + 3), text.len());
+    }
+
+    #[test]
+    fn utf8_backward_boundary_keeps_whole_codepoints() {
+        let text = b"ab\xc3\xa9z";
+        assert_eq!(utf8_backward_boundary(text, 3), 2);
+        assert_eq!(utf8_backward_boundary(text, 4), 4);
+        assert_eq!(utf8_backward_boundary(text, 9), 5);
+    }
+
+    #[test]
+    fn head_tail_bounds_keep_both_ends_around_the_marker() {
+        assert_eq!(write_head_tail_bounded(b"short", 5, "|"), b"short");
+        assert_eq!(write_head_tail_bounded(b"abcdefghij", 6, "|"), b"abc|ij");
+        assert_eq!(write_head_tail_bounded(b"abcdefghij", 7, "|"), b"abc|hij");
+        assert_eq!(write_head_tail_bounded(b"abcdefghij", 2, "<->"), b"<-");
+        assert_eq!(write_head_tail_bounded(b"abcdefghij", 3, "<->"), b"<->");
+        let text = "\u{e9}".repeat(10);
+        let bounded = write_head_tail_bounded(text.as_bytes(), 8, "|");
+        assert_eq!(bounded, "\u{e9}\u{e9}|\u{e9}".as_bytes());
     }
 }
