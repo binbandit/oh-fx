@@ -150,7 +150,7 @@ The stream parser follows upstream fx's rules, with deliberate exceptions for di
 - tool call deltas without an `index`, with an empty `id` on continuation deltas, or that repeat the function name in every delta;
 - finish chunks without a `delta`.
 
-A `finish_reason` of `length` or `content_filter`, tool calls for tools that were not offered, malformed tool arguments, and errors inside the stream (an `error` object, `{"object": "error", ...}`, or a `finish_reason` of `error`) still fail the request. A response whose `Content-Type` is not `text/event-stream` fails with the provider's JSON error when there is one, and otherwise with `oh-fx: UnexpectedContentType` and an excerpt of the body.
+A `finish_reason` of `length` or `content_filter`, tool calls for tools that were not offered, malformed tool arguments, and errors inside the stream (an `error` object, `{"object": "error", ...}`, or a `finish_reason` of `error`) still fail the request. A response whose `Content-Type` is not `text/event-stream` fails with the provider's JSON error when there is one, and otherwise with `oh-fx: UnexpectedContentType`, the media type it sent, and the body's size.
 
 ## Retries
 
@@ -165,11 +165,11 @@ Other HTTP errors, TLS failures, and failures after text has streamed are not re
 
 ## Errors
 
-A failed request prints the error's name and a detail line on stderr, with configured secrets and anything that looks like a credential masked and control characters escaped:
+A failed request prints the error's name and a detail line on stderr. The detail describes rejected stream data by its position and size and never repeats it. Error messages from the provider are shown with configured secrets and anything that looks like a credential masked and control characters escaped:
 
 ```
 oh-fx: InvalidChunk
-oh-fx ask: stream event: {not json ...
+oh-fx ask: stream event 2 (28 bytes) was rejected
 ```
 
 With `--json`, the name goes in the result's `error` field and the detail line still goes to stderr.

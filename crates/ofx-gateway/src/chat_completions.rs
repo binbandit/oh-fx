@@ -15,19 +15,18 @@ use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat_completions_protocol::{
-    Limits, ProtocolError, Reducer, RequestOptions, build_request, mask_configured_secrets,
-    redact_error_detail,
+    Limits, ProtocolError, Reducer, RequestOptions, build_request, redact_error_detail,
 };
 use crate::gateway_error_format::{
     format_http_error_message, format_http_recovery_diagnostic, sanitize_external_text,
 };
+use crate::secret_mask::mask_configured_secrets;
 
 const RESPONSE_HEAD_TIMEOUT: Duration = Duration::from_mins(2);
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const MAX_DISPLAYED_BODY_BYTES: usize = 4096;
 const MAX_DETAIL_BYTES: usize = 512;
-const EXCERPT_BYTES: usize = 160;
 const EVENT_STREAM: &str = "text/event-stream";
 const ERROR_BODY_LIMIT_NOTICE: &str = "Provider error response exceeded the local limit";
 const RETRYABLE_CONNECT_ERRORS: [io::ErrorKind; 9] = [
@@ -134,10 +133,10 @@ impl ChatCompletionsProvider {
         cancel: &CancellationToken,
     ) -> ProviderError {
         let body = match read_body(&mut response, cancel).await {
-            Ok(body) => body.unwrap_or_default(),
+            Ok(body) => body,
             Err(failure) => return failure,
         };
-        if let Some(error) = provider_error_body(&body) {
+        if let Some(error) = body.as_deref().and_then(provider_error_body) {
             let detail = redact_error_detail(error.as_bytes(), &self.secrets);
             return ProviderError::new(ProviderErrorKind::ProviderError, "ProviderError")
                 .with_detail(sanitized(
@@ -145,10 +144,11 @@ impl ChatCompletionsProvider {
                     &self.secrets,
                 ));
         }
-        let detail = format!(
-            "expected {EVENT_STREAM} but the provider sent {media_type}: {}",
-            excerpt(&body)
+        let size = body.map_or_else(
+            || format!("more than {MAX_ERROR_BODY_BYTES} bytes"),
+            |body| format!("{} bytes", body.len()),
         );
+        let detail = format!("expected {EVENT_STREAM} but the provider sent {media_type} ({size})");
         ProviderError::new(ProviderErrorKind::Protocol, "UnexpectedContentType")
             .with_detail(sanitized(detail, &self.secrets))
     }
@@ -184,7 +184,11 @@ pub(crate) async fn http_failure(
         None => match read_body(&mut response, cancel).await {
             Ok(Some(body)) => redact_error_detail(&body, secrets),
             Ok(None) => ERROR_BODY_LIMIT_NOTICE.to_owned(),
-            Err(failure) => return failure,
+            Err(failure) if failure.kind == ProviderErrorKind::Cancelled => return failure,
+            Err(mut failure) => {
+                failure.retry_after = retry_after;
+                return failure;
+            }
         },
     };
     let kind = failure_kind(status);
@@ -239,20 +243,39 @@ async fn read_body(
         biased;
         () = cancel.cancelled() => Err(ProviderError::cancelled()),
         body = tokio::time::timeout(ERROR_BODY_TIMEOUT, read_bounded_body(response)) => {
-            body.map_err(|_| ProviderError::new(ProviderErrorKind::Timeout, "Timeout"))
+            body.unwrap_or_else(|_| Err(ProviderError::new(ProviderErrorKind::Timeout, "Timeout")))
         }
     }
 }
 
-async fn read_bounded_body(response: &mut Response) -> Option<Vec<u8>> {
+async fn read_bounded_body(response: &mut Response) -> Result<Option<Vec<u8>>, ProviderError> {
     let mut body = Vec::new();
-    while let Ok(Some(chunk)) = response.chunk().await {
-        if body.len() + chunk.len() > MAX_ERROR_BODY_BYTES {
-            return None;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() > MAX_ERROR_BODY_BYTES => return Ok(None),
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            Ok(None) => return Ok(Some(body)),
+            Err(error) => {
+                let detail = format!(
+                    "the HTTP {} response body failed with {:?} after {} bytes",
+                    response.status().as_u16(),
+                    read_error_kind(&error),
+                    body.len()
+                );
+                return Err(ProviderError::new(
+                    ProviderErrorKind::TransportInterrupted,
+                    "ReadFailed",
+                )
+                .with_detail(detail));
+            }
         }
-        body.extend_from_slice(&chunk);
     }
-    Some(body)
+}
+
+fn read_error_kind(error: &reqwest::Error) -> io::ErrorKind {
+    std::iter::successors(error.source(), |&cause| cause.source())
+        .find_map(|cause| cause.downcast_ref::<io::Error>().map(io::Error::kind))
+        .unwrap_or(io::ErrorKind::Other)
 }
 
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
@@ -306,19 +329,6 @@ fn provider_error_body(body: &[u8]) -> Option<String> {
     }
     (root.get("object").and_then(serde_json::Value::as_str) == Some("error"))
         .then(|| serde_json::Value::Object(root).to_string())
-}
-
-pub(crate) fn excerpt(data: &[u8]) -> String {
-    if data.is_empty() {
-        return "no data".to_owned();
-    }
-    let text = String::from_utf8_lossy(data);
-    let end = text.floor_char_boundary(EXCERPT_BYTES);
-    if end == text.len() {
-        text.into_owned()
-    } else {
-        format!("{}...", &text[..end])
-    }
 }
 
 fn is_connectivity_loss(error: &reqwest::Error) -> bool {
@@ -416,7 +426,8 @@ impl Stream<'_> {
         }
         let limits = self.limits;
         let mut decoder = SseDecoder::new(limits.event_bytes);
-        let mut head = Vec::new();
+        let mut events = 0;
+        let mut received = 0;
         loop {
             let remaining = limits
                 .total_wire_bytes
@@ -427,9 +438,10 @@ impl Stream<'_> {
             ));
             match decoder.next_event() {
                 Ok(Some(data)) => {
+                    events += 1;
                     let deltas = reducer
                         .accept(data, cancel.is_cancelled())
-                        .map_err(|error| self.event_failure(error, reducer, data))?;
+                        .map_err(|error| self.event_failure(error, reducer, events, data.len()))?;
                     for text in deltas.reasoning {
                         if cancel.is_cancelled() {
                             return Err(ProviderError::cancelled());
@@ -443,7 +455,7 @@ impl Stream<'_> {
                         sink.emit(StreamEvent::TextDelta { text });
                     }
                     if reducer.is_done() {
-                        return self.finish(reducer, cancel, &head);
+                        return self.finish(reducer, cancel, received);
                     }
                     continue;
                 }
@@ -461,15 +473,14 @@ impl Stream<'_> {
             match chunk {
                 Ok(Some(bytes)) => {
                     let bytes = bytes.as_ref();
-                    let wanted = EXCERPT_BYTES.saturating_sub(head.len()).min(bytes.len());
-                    head.extend_from_slice(&bytes[..wanted]);
+                    received += bytes.len();
                     decoder.push(bytes);
                 }
                 Ok(None) => {
                     reducer
                         .end_of_stream()
-                        .map_err(|error| self.completion_failure(error, reducer, &head))?;
-                    return self.finish(reducer, cancel, &head);
+                        .map_err(|error| self.completion_failure(error, reducer, received))?;
+                    return self.finish(reducer, cancel, received);
                 }
                 Err(detail) => {
                     return Err(ProviderError::new(
@@ -486,18 +497,19 @@ impl Stream<'_> {
         &self,
         reducer: &mut Reducer,
         cancel: &CancellationToken,
-        head: &[u8],
+        received: usize,
     ) -> Result<Completion, ProviderError> {
         reducer
             .finish(cancel.is_cancelled())
-            .map_err(|error| self.completion_failure(error, reducer, head))
+            .map_err(|error| self.completion_failure(error, reducer, received))
     }
 
     fn event_failure(
         &self,
         error: ProtocolError,
         reducer: &mut Reducer,
-        data: &[u8],
+        index: usize,
+        size: usize,
     ) -> ProviderError {
         let failure = protocol_failure(error);
         if matches!(
@@ -511,7 +523,7 @@ impl Stream<'_> {
                 "provider error: {}",
                 redact_error_detail(error.as_bytes(), self.secrets)
             ),
-            None => format!("stream event: {}", excerpt(data)),
+            None => format!("stream event {index} ({size} bytes) was rejected"),
         };
         failure.with_detail(sanitized(detail, self.secrets))
     }
@@ -520,14 +532,13 @@ impl Stream<'_> {
         &self,
         error: ProtocolError,
         reducer: &mut Reducer,
-        head: &[u8],
+        received: usize,
     ) -> ProviderError {
         let failure = protocol_failure(error);
         let detail = match error {
             ProtocolError::IncompleteStream => format!(
-                "the stream ended before a finish_reason after {} events; it began: {}",
-                reducer.event_count(),
-                excerpt(head)
+                "the stream ended before a finish_reason after {} events and {received} bytes",
+                reducer.event_count()
             ),
             _ => match reducer.take_failure_detail() {
                 Some(detail) => detail,

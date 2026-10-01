@@ -349,7 +349,7 @@ fn empty_prompts_fail_like_upstream_before_any_request() {
 }
 
 #[test]
-fn protocol_failures_name_the_error_and_show_a_masked_excerpt() {
+fn protocol_failures_name_the_error_and_the_rejected_event() {
     let events = vec![text_chunk("Hello"), format!("{{not json {PORTKEY_KEY}")];
     let server = FakeServer::start([Reply::sse(&events), Reply::sse(&events)]);
     let home = Home::with_settings(&portkey_settings(&server.base_url()));
@@ -359,7 +359,7 @@ fn protocol_failures_name_the_error_and_show_a_masked_excerpt() {
     assert_eq!(stdout(&output), "Hello");
     assert_eq!(
         stderr(&output),
-        "oh-fx: InvalidChunk\noh-fx ask: stream event: {not json ******************\n"
+        "oh-fx: InvalidChunk\noh-fx ask: stream event 2 (28 bytes) was rejected\n"
     );
     let output = home.ask(&["ask", "--json", "hi"], &key);
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -367,7 +367,7 @@ fn protocol_failures_name_the_error_and_show_a_masked_excerpt() {
     assert_eq!(result["output"], "Hello");
     assert_eq!(
         stderr(&output),
-        "oh-fx ask: stream event: {not json ******************\n"
+        "oh-fx ask: stream event 2 (28 bytes) was rejected\n"
     );
 }
 
