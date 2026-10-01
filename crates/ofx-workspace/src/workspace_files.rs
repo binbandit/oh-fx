@@ -1,5 +1,5 @@
-use std::ffi::OsStr;
-use std::fs::{self, ReadDir};
+use std::ffi::{CStr, OsStr};
+use std::fs;
 use std::iter;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -7,6 +7,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use memchr::{memchr, memchr_iter};
+use rustix::fs::{AtFlags, Dir, DirEntry, FileType, Mode, OFlags, open, openat, statat};
 
 use crate::bounded_process::run_bounded;
 use crate::ignored_dirs::IGNORED_DIRECTORY_NAMES;
@@ -44,6 +45,11 @@ pub const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 ];
+const WALK_ROOT_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NONBLOCK)
+    .union(OFlags::CLOEXEC);
+const WALK_CHILD_FLAGS: OFlags = WALK_ROOT_FLAGS.union(OFlags::NOFOLLOW);
 const TRUSTED_GIT_EXECUTABLES: &[&str] = &[
     "/usr/bin/git",
     "/bin/git",
@@ -338,14 +344,37 @@ fn parse_raw_list(raw: Vec<u8>, options: &DiscoveryOptions<'_>) -> Discovery {
 }
 
 struct WalkFrame {
-    entries: ReadDir,
+    entries: Dir,
     prefix: Vec<u8>,
+}
+
+fn open_walk_root(workspace_root: &Path) -> Option<Dir> {
+    Dir::new(open(workspace_root, WALK_ROOT_FLAGS, Mode::empty()).ok()?).ok()
+}
+
+fn open_walk_child(parent: &Dir, name: &CStr) -> Option<Dir> {
+    Dir::new(openat(parent.fd().ok()?, name, WALK_CHILD_FLAGS, Mode::empty()).ok()?).ok()
+}
+
+fn walk_entry_type(parent: &Dir, entry: &DirEntry) -> Option<FileType> {
+    match entry.file_type() {
+        FileType::Unknown => {
+            let stat = statat(
+                parent.fd().ok()?,
+                entry.file_name(),
+                AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .ok()?;
+            Some(FileType::from_raw_mode(stat.st_mode))
+        }
+        known => Some(known),
+    }
 }
 
 fn walk_workspace(workspace_root: &Path, options: &DiscoveryOptions<'_>) -> Discovery {
     let mut files = CandidatePaths::default();
     let mut stats = CandidateStats::default();
-    let Ok(entries) = fs::read_dir(workspace_root) else {
+    let Some(entries) = open_walk_root(workspace_root) else {
         return Discovery::new(files, Source::Recursive, stats);
     };
     let mut stack = vec![WalkFrame {
@@ -358,13 +387,15 @@ fn walk_workspace(workspace_root: &Path, options: &DiscoveryOptions<'_>) -> Disc
             stack.pop();
             continue;
         };
-        let Ok(file_type) = entry.file_type() else {
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        let Some(file_type) = walk_entry_type(&top.entries, &entry) else {
             continue;
         };
-        let file_name = entry.file_name();
-        let name = file_name.as_bytes();
 
-        if file_type.is_file() || file_type.is_symlink() {
+        if matches!(file_type, FileType::RegularFile | FileType::Symlink) {
             if is_ignored_name(options.ignored_names, name) {
                 continue;
             }
@@ -377,14 +408,14 @@ fn walk_workspace(workspace_root: &Path, options: &DiscoveryOptions<'_>) -> Disc
                 continue;
             }
             files.push_joined(&top.prefix, name);
-        } else if file_type.is_dir() {
+        } else if file_type == FileType::Directory {
             if !options.include_hidden && is_hidden_name(name) {
                 continue;
             }
             if is_ignored_name(options.ignored_names, name) {
                 continue;
             }
-            let Ok(entries) = fs::read_dir(entry.path()) else {
+            let Some(entries) = open_walk_child(&top.entries, entry.file_name()) else {
                 continue;
             };
             let prefix = if top.prefix.is_empty() {
@@ -416,9 +447,12 @@ fn is_ignored_name(ignored: &[&str], name: &[u8]) -> bool {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::io::Write;
+    use std::os::fd::OwnedFd;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::PathBuf;
 
+    use rustix::fs::mkdirat;
     use tempfile::TempDir;
 
     use super::*;
@@ -433,6 +467,22 @@ pub(crate) mod tests {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
+    }
+
+    fn write_nested_test_file(root: &Path, directories: &[&str], name: &str, content: &str) {
+        let mut directory: OwnedFd = open(root, WALK_ROOT_FLAGS, Mode::empty()).unwrap();
+        for component in directories {
+            mkdirat(&directory, *component, Mode::from_raw_mode(0o755)).unwrap();
+            directory = openat(&directory, *component, WALK_CHILD_FLAGS, Mode::empty()).unwrap();
+        }
+        let file = openat(
+            &directory,
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o644),
+        )
+        .unwrap();
+        fs::File::from(file).write_all(content.as_bytes()).unwrap();
     }
 
     fn contains_path(files: &CandidatePaths, needle: &str) -> bool {
@@ -690,8 +740,7 @@ pub(crate) mod tests {
     fn workspace_file_provider_recursive_fallback_skips_overlong_nested_paths() {
         let (_temp, root) = workspace();
         let deep = "d".repeat(200);
-        let nested = [deep.as_str(); 11].join("/");
-        write_test_file(&root, &format!("{nested}/file.txt"), "deep\n");
+        write_nested_test_file(&root, &[deep.as_str(); 11], "file.txt", "deep\n");
         write_test_file(&root, "short.txt", "short\n");
 
         let options = DiscoveryOptions {
@@ -703,6 +752,39 @@ pub(crate) mod tests {
 
         assert_eq!(listed(&result.files), ["short.txt"]);
         assert_eq!(result.stats.skipped_overlong, 1);
+    }
+
+    #[test]
+    fn workspace_file_provider_recursive_fallback_lists_files_past_the_platform_path_limit() {
+        let (_temp, base) = workspace();
+        let deep = "d".repeat(200);
+        let directories = [deep.as_str(); 9];
+        let kept = format!("{}/kept.txt", directories.join("/"));
+        let padding_depth = MAX_PATH_BYTES.saturating_sub(base.as_os_str().len() + kept.len())
+            / (deep.len() + 1)
+            + 1;
+        let padding = vec![deep.as_str(); padding_depth];
+        write_nested_test_file(
+            &base,
+            &[&padding[..], &directories[..]].concat(),
+            "kept.txt",
+            "kept\n",
+        );
+        let root = base.join(padding.join("/"));
+        fs::write(root.join("short.txt"), "short\n").unwrap();
+        assert!(root.as_os_str().len() < MAX_PATH_BYTES);
+        assert!(root.join(&kept).as_os_str().len() > MAX_PATH_BYTES);
+        assert!(kept.len() <= MAX_RELATIVE_PATH_BYTES);
+
+        let options = DiscoveryOptions {
+            force_fallback: true,
+            sort_paths: true,
+            ..DiscoveryOptions::default()
+        };
+        let result = discover(&root, &options);
+
+        assert_eq!(listed(&result.files), [kept.as_str(), "short.txt"]);
+        assert_eq!(result.stats.skipped_overlong, 0);
     }
 
     #[test]
