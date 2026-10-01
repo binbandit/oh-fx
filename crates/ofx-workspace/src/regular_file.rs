@@ -7,6 +7,16 @@ use rustix::io::Errno;
 
 use crate::path_error::PathError;
 
+#[cfg(target_os = "linux")]
+const DIRECTORY_ACCESS: OFlags = OFlags::PATH;
+#[cfg(not(target_os = "linux"))]
+const DIRECTORY_ACCESS: OFlags = OFlags::RDONLY;
+
+pub(crate) const DIRECTORY_FLAGS: OFlags = DIRECTORY_ACCESS
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
 const OPEN_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::NONBLOCK)
@@ -52,19 +62,9 @@ mod no_symlinks {
     use std::os::fd::OwnedFd;
     use std::path::{Component, Path};
 
-    use rustix::fs::{AtFlags, FileType, Mode, OFlags, openat, statat};
+    use rustix::fs::{AtFlags, FileType, Mode, openat, statat};
 
-    use super::{OPEN_FLAGS, PathError, RegularFileError, open_failure};
-
-    #[cfg(target_os = "linux")]
-    const DIRECTORY_ACCESS: OFlags = OFlags::PATH;
-    #[cfg(not(target_os = "linux"))]
-    const DIRECTORY_ACCESS: OFlags = OFlags::RDONLY;
-
-    const DIRECTORY_FLAGS: OFlags = DIRECTORY_ACCESS
-        .union(OFlags::DIRECTORY)
-        .union(OFlags::NOFOLLOW)
-        .union(OFlags::CLOEXEC);
+    use super::{DIRECTORY_FLAGS, OPEN_FLAGS, PathError, RegularFileError, open_failure};
 
     pub(super) fn open(path: &Path) -> Result<File, RegularFileError> {
         let (directory, name) = open_parent(path)?;

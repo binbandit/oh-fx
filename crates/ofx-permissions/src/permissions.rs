@@ -3,6 +3,13 @@ use std::path::{Path, PathBuf};
 use ofx_contract::{ToolCall, parse_tool_args_object};
 use ofx_workspace::resolve_workspace_or_external_path;
 
+mod file_mutation_targets;
+
+pub use file_mutation_targets::{
+    FileMutationKind, FileMutationTargets, FileTargetFailure, TraversalDirectory,
+    prepare_file_mutation_targets,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionTargetKind {
     PathExisting,

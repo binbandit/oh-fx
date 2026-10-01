@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use ofx_contract::{ToolOutput, format_tool_execution_error_json};
+use ofx_permissions::FileTargetFailure;
 use ofx_workspace::{PathError, resolve_workspace_or_external_path};
 
 pub(crate) fn admit_existing_path(
@@ -24,6 +25,17 @@ pub(crate) fn admit_optional_path(
         return Ok(());
     }
     admit_existing_path(tool_name, workspace_root, requested)
+}
+
+pub(crate) fn file_target_failure(tool_name: &str, failure: FileTargetFailure) -> String {
+    match failure {
+        FileTargetFailure::Resolution(tag) => {
+            format!("file mutation target resolution failed: {tag}")
+        }
+        FileTargetFailure::Operational(error) => {
+            format_tool_execution_error_json(tool_name, &error.to_string())
+        }
+    }
 }
 
 fn target_resolution_failure(tool_name: &str, path: &str, error: PathError) -> String {
@@ -89,6 +101,24 @@ mod tests {
         assert_eq!(
             target_resolution_failure("read_file", "missing.txt", PathError::SystemResources),
             "{\"error\":{\"type\":\"tool_execution_failed\",\"tool_name\":\"read_file\",\"message\":\"Tool execution failed\",\"details\":{\"error\":\"SystemResources\"}}}"
+        );
+    }
+
+    #[test]
+    fn file_target_failures_name_the_upstream_tag_or_the_operational_error() {
+        assert_eq!(
+            file_target_failure(
+                "write_file",
+                FileTargetFailure::Resolution("file_not_found")
+            ),
+            "file mutation target resolution failed: file_not_found"
+        );
+        assert_eq!(
+            file_target_failure(
+                "write_file",
+                FileTargetFailure::Operational(PathError::SystemResources)
+            ),
+            format_tool_execution_error_json("write_file", "SystemResources")
         );
     }
 

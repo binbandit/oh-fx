@@ -84,6 +84,52 @@ pub fn encode_terminal_safe(raw: &[u8], max_encoded_bytes: usize) -> EncodedText
     EncodedText { text, truncated }
 }
 
+pub fn encode_terminal_safe_path_tail(raw: &[u8], max_encoded_bytes: usize) -> Option<String> {
+    let basename_len = path_basename(raw).len();
+    if basename_len == 0 {
+        return None;
+    }
+    let basename_source_start = raw.len() - basename_len;
+    let mut encoded = String::new();
+    let mut boundaries = vec![0];
+    let mut encoded_basename_start = None;
+    let mut index = 0;
+    while index < raw.len() {
+        if index == basename_source_start {
+            encoded_basename_start = Some(encoded.len());
+        }
+        let (source_len, token) = terminal_safe_token(raw, index);
+        token.write(&mut encoded);
+        index += source_len;
+        boundaries.push(encoded.len());
+    }
+    let basename_start = encoded_basename_start?;
+    let basename_bytes = encoded.len() - basename_start;
+    if basename_bytes > max_encoded_bytes {
+        return None;
+    }
+    if encoded.len() <= max_encoded_bytes {
+        return Some(encoded);
+    }
+    let marker = "\u{2026}";
+    let suffix_budget =
+        max_encoded_bytes.checked_sub(marker.len() + basename_bytes)? + basename_bytes;
+    let start = boundaries
+        .into_iter()
+        .find(|boundary| encoded.len() - boundary <= suffix_budget)?;
+    (start <= basename_start).then(|| format!("{marker}{}", &encoded[start..]))
+}
+
+fn path_basename(path: &[u8]) -> &[u8] {
+    let trimmed_len = path.len() - path.iter().rev().take_while(|byte| **byte == b'/').count();
+    let trimmed = &path[..trimmed_len];
+    let start = trimmed
+        .iter()
+        .rposition(|byte| *byte == b'/')
+        .map_or(0, |separator| separator + 1);
+    &trimmed[start..]
+}
+
 pub fn sanitize_model_text_owned(text: Vec<u8>) -> String {
     match String::from_utf8(text) {
         Ok(valid) if !valid.contains('\0') => valid,
@@ -1198,6 +1244,29 @@ mod tests {
         assert_eq!(encoded.text, "ab...");
         assert_eq!(encoded.text.len(), 5);
         assert!(encoded.truncated);
+    }
+
+    #[test]
+    fn path_tails_keep_the_basename_and_cut_leading_directories_with_an_ellipsis() {
+        assert_eq!(
+            encode_terminal_safe_path_tail(b"src/a\x1bb.rs", 64).as_deref(),
+            Some("src/a\\x1bb.rs")
+        );
+        assert_eq!(
+            encode_terminal_safe_path_tail(b"alpha/beta/gamma.txt", 16).as_deref(),
+            Some("\u{2026}eta/gamma.txt")
+        );
+        assert_eq!(
+            encode_terminal_safe_path_tail(b"alpha/beta/gamma.txt", 12).as_deref(),
+            Some("\u{2026}gamma.txt")
+        );
+        assert_eq!(encode_terminal_safe_path_tail(b"alpha/gamma.txt", 9), None);
+        assert_eq!(encode_terminal_safe_path_tail(b"/", 64), None);
+        assert_eq!(encode_terminal_safe_path_tail(b"", 64), None);
+        assert_eq!(
+            encode_terminal_safe_path_tail(b"dir/", 64).as_deref(),
+            Some("dir/")
+        );
     }
 
     fn assert_masks(cases: &[(&str, &str)]) {
