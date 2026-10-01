@@ -39,6 +39,7 @@ pub enum SkillSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillDiagnosticCause {
     InvalidMetadata(InvalidMetadataCause),
+    LinkedCandidateUnavailable,
     Unreadable,
     Oversized,
 }

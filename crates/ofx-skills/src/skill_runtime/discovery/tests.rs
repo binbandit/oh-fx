@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::skill_contract::InvalidMetadataCause;
+use crate::skill_runtime::skill_file::LinkedSkillFile;
 
 const TEST_WORKSPACE_ROOTS: [RootSpec; 3] = [
     RootSpec {
@@ -113,6 +114,7 @@ impl Fixture {
             workspace_root: Some(self.real(workspace)),
             home: Some(self.real("home")),
             managed_root: self.real("home/.oh-fx/skills"),
+            symlink_authorities: SymlinkAuthorities::default(),
         }
     }
 
@@ -121,6 +123,7 @@ impl Fixture {
             workspace_root: None,
             home: None,
             managed_root: self.path(managed),
+            symlink_authorities: SymlinkAuthorities::default(),
         }
         .load_visible_skills(&TEST_MANAGED_ROOT_POLICY)
     }
@@ -589,4 +592,340 @@ fn workspace_roots_report_a_file_in_place_of_a_skill_directory() {
     );
     assert_eq!(diagnostic.source, SkillSource::WorkspaceShared);
     assert_eq!(diagnostic.scope, SkillDiagnosticScope::Root);
+}
+
+fn linked_discovery(fixture: &Fixture, authorities: SymlinkAuthorities) -> SkillDiscovery {
+    let mut context = fixture.home_context("home/workspace");
+    context.symlink_authorities = authorities;
+    context.load_visible_skills(&TEST_ROOT_POLICY)
+}
+
+fn candidate_directory(fixture: &Fixture, sub_path: &str) -> (PathBuf, OwnedFd) {
+    let path = fixture.real("home/workspace").join(sub_path);
+    let directory = open_directory(&path).unwrap();
+    (path, directory)
+}
+
+fn open_linked_metadata(fixture: &Fixture, sub_path: &str) -> PrimarySkillFile {
+    let (path, directory) = candidate_directory(fixture, sub_path);
+    let authority = fixture.real("home/workspace");
+    let candidate = SkillCandidate {
+        directory: &directory,
+        path: &path,
+        read_authority: Some(&authority),
+    };
+    open_primary_skill_file(&candidate, &SymlinkAuthorities::default())
+}
+
+#[test]
+fn load_visible_skills_discovers_contained_linked_metadata() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/workspace/skill-source/linked-leaf/SKILL.md",
+        "---\nname: linked-leaf\ndescription: contained metadata link\n---\n\nLINKED_LEAF_BODY\n",
+    );
+    fixture.symlink(
+        "../../../skill-source/linked-leaf/SKILL.md",
+        "home/workspace/.codex/skills/linked-leaf/SKILL.md",
+    );
+
+    let discovery = linked_discovery(&fixture, SymlinkAuthorities::default());
+    assert_eq!(discovery.skills.len(), 1);
+    assert!(discovery.diagnostics.is_empty());
+    assert_eq!(discovery.skills[0].name, "linked-leaf");
+    assert_eq!(
+        discovery.skills[0].path,
+        fixture
+            .real("home/workspace")
+            .join(".codex/skills/linked-leaf")
+    );
+}
+
+#[test]
+fn linked_metadata_reauthorizes_a_target_changed_after_preflight() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/workspace/source/SKILL.md",
+        "---\nname: linked-leaf\n---\ninside\n",
+    );
+    fixture.write(
+        "home/outside/SKILL.md",
+        "---\nname: linked-leaf\n---\noutside\n",
+    );
+    fixture.symlink(
+        "../../../source/SKILL.md",
+        "home/workspace/.codex/skills/linked-leaf/SKILL.md",
+    );
+    let (path, directory) = candidate_directory(&fixture, ".codex/skills/linked-leaf");
+    let preflight = LinkedSkillFile::preflight(
+        &path,
+        &fixture.real("home/workspace"),
+        &SymlinkAuthorities::default(),
+    )
+    .unwrap();
+
+    fs::remove_file(path.join("SKILL.md")).unwrap();
+    symlink("../../../../outside/SKILL.md", path.join("SKILL.md")).unwrap();
+
+    assert!(preflight.open(&directory).is_none());
+}
+
+#[test]
+fn linked_metadata_outside_authority_is_rejected_before_descriptor_open() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/outside/SKILL.md",
+        "---\nname: linked-leaf\n---\noutside\n",
+    );
+    fixture.symlink(
+        "../../../../outside/SKILL.md",
+        "home/workspace/.codex/skills/linked-leaf/SKILL.md",
+    );
+
+    assert!(matches!(
+        open_linked_metadata(&fixture, ".codex/skills/linked-leaf"),
+        PrimarySkillFile::Rejected
+    ));
+}
+
+#[test]
+fn linked_metadata_fifo_is_rejected_before_descriptor_open() {
+    let fixture = Fixture::new();
+    fixture.mkdir("home/workspace");
+    rustix::fs::mknodat(
+        CWD,
+        fixture.path("home/workspace/metadata.fifo"),
+        FileType::Fifo,
+        Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    fixture.symlink(
+        "../../../metadata.fifo",
+        "home/workspace/.codex/skills/fifo/SKILL.md",
+    );
+
+    assert!(matches!(
+        open_linked_metadata(&fixture, ".codex/skills/fifo"),
+        PrimarySkillFile::Rejected
+    ));
+}
+
+#[test]
+fn load_visible_skills_discovers_a_contained_linked_workspace_candidate() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/workspace/skill-source/linked-skill/SKILL.md",
+        "---\nname: linked-skill\ndescription: contained link\n---\n\nLINKED_SKILL_BODY\n",
+    );
+    fixture.symlink(
+        "../../skill-source/linked-skill",
+        "home/workspace/.codex/skills/linked-skill",
+    );
+
+    let discovery = linked_discovery(&fixture, SymlinkAuthorities::default());
+    assert_eq!(discovery.skills.len(), 1);
+    assert_eq!(discovery.skills[0].name, "linked-skill");
+    assert_eq!(
+        discovery.skills[0].path,
+        fixture
+            .real("home/workspace")
+            .join(".codex/skills/linked-skill")
+    );
+    assert_eq!(discovery.skills[0].source, SkillSource::WorkspaceCodex);
+    assert!(discovery.diagnostics.is_empty());
+}
+
+#[test]
+fn load_visible_skills_diagnoses_an_unavailable_linked_workspace_candidate() {
+    let fixture = Fixture::new();
+    fixture.symlink(
+        "../../skill-source/missing-skill",
+        "home/workspace/.codex/skills/missing-skill",
+    );
+
+    let discovery = linked_discovery(&fixture, SymlinkAuthorities::default());
+    assert!(discovery.skills.is_empty());
+    let diagnostic = only_diagnostic(&discovery);
+    assert_eq!(
+        diagnostic.path,
+        fixture
+            .real("home/workspace")
+            .join(".codex/skills/missing-skill")
+    );
+    assert_eq!(diagnostic.source, SkillSource::WorkspaceCodex);
+    assert_eq!(diagnostic.scope, SkillDiagnosticScope::Candidate);
+    assert_eq!(
+        diagnostic.cause,
+        SkillDiagnosticCause::LinkedCandidateUnavailable
+    );
+}
+
+#[test]
+fn load_visible_skills_discovers_a_contained_linked_workspace_root() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/workspace/skill-root/root-linked/SKILL.md",
+        "---\nname: root-linked\ndescription: linked root\n---\n\nROOT_LINKED_BODY\n",
+    );
+    fixture.symlink("../skill-root", "home/workspace/.codex/skills");
+
+    let discovery = linked_discovery(&fixture, SymlinkAuthorities::default());
+    let skill = named(&discovery, "root-linked").unwrap();
+    assert_eq!(skill.source, SkillSource::WorkspaceCodex);
+    assert_eq!(
+        skill.read_authority.as_deref(),
+        Some(fixture.real("home/workspace").as_path())
+    );
+    assert!(discovery.diagnostics.is_empty());
+}
+
+#[test]
+fn load_visible_skills_diagnoses_an_escaping_linked_workspace_candidate() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/outside-skill/SKILL.md",
+        "---\nname: escaping-skill\ndescription: outside\n---\n\nOUTSIDE_BODY_MUST_NOT_LOAD\n",
+    );
+    fixture.symlink(
+        "../../../outside-skill",
+        "home/workspace/.codex/skills/escaping-skill",
+    );
+
+    let discovery = linked_discovery(&fixture, SymlinkAuthorities::default());
+    assert!(discovery.skills.is_empty());
+    let diagnostic = only_diagnostic(&discovery);
+    assert_eq!(
+        diagnostic.path,
+        fixture
+            .real("home/workspace")
+            .join(".codex/skills/escaping-skill")
+    );
+    assert_eq!(diagnostic.scope, SkillDiagnosticScope::Candidate);
+    assert_eq!(
+        diagnostic.cause,
+        SkillDiagnosticCause::LinkedCandidateUnavailable
+    );
+}
+
+#[test]
+fn load_visible_skills_discovers_linked_metadata_through_external_authority() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "external-store/linked-leaf/SKILL.md",
+        "---\nname: linked-leaf\ndescription: external metadata link\n---\n\nEXTERNAL_LEAF_BODY\n",
+    );
+    fixture.symlink(
+        "../../../../../external-store/linked-leaf/SKILL.md",
+        "home/workspace/.codex/skills/linked-leaf/SKILL.md",
+    );
+    let external = fixture.real("external-store");
+
+    let discovery = linked_discovery(
+        &fixture,
+        SymlinkAuthorities::new(&[], Some(external.as_os_str())),
+    );
+    assert_eq!(discovery.skills.len(), 1);
+    assert!(discovery.diagnostics.is_empty());
+    assert_eq!(discovery.skills[0].name, "linked-leaf");
+}
+
+#[test]
+fn load_visible_skills_discovers_a_linked_candidate_resolved_via_external_symlink_authority() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "external-store/linked-skill/SKILL.md",
+        "---\nname: linked-skill\ndescription: external link\n---\n\nEXTERNAL_BODY\n",
+    );
+    fixture.symlink(
+        "../../../../external-store/linked-skill",
+        "home/workspace/.codex/skills/linked-skill",
+    );
+    let external = fixture.real("external-store");
+
+    let discovery = linked_discovery(
+        &fixture,
+        SymlinkAuthorities::new(&[], Some(external.as_os_str())),
+    );
+    assert_eq!(discovery.skills.len(), 1);
+    assert_eq!(discovery.skills[0].name, "linked-skill");
+    assert!(discovery.diagnostics.is_empty());
+}
+
+#[test]
+fn load_visible_skills_discovers_a_linked_candidate_through_configured_symlink_authorities() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "external-store/configured-skill/SKILL.md",
+        "---\nname: configured-skill\ndescription: configured external link\n---\n\nCONFIGURED_BODY\n",
+    );
+    fixture.symlink(
+        "../../../../external-store/configured-skill",
+        "home/workspace/.codex/skills/configured-skill",
+    );
+    let external = fixture.real("external-store");
+    let dotdot = external.join("..").join("external-store");
+
+    let rejected = linked_discovery(
+        &fixture,
+        SymlinkAuthorities::new(&[PathBuf::from("external-store"), dotdot], None),
+    );
+    assert!(rejected.skills.is_empty());
+    assert_eq!(
+        only_diagnostic(&rejected).cause,
+        SkillDiagnosticCause::LinkedCandidateUnavailable
+    );
+
+    let accepted = linked_discovery(&fixture, SymlinkAuthorities::new(&[external], None));
+    assert_eq!(accepted.skills.len(), 1);
+    assert_eq!(accepted.skills[0].name, "configured-skill");
+    assert!(accepted.diagnostics.is_empty());
+
+    let cleared = linked_discovery(&fixture, SymlinkAuthorities::new(&[], None));
+    assert!(cleared.skills.is_empty());
+    assert_eq!(
+        only_diagnostic(&cleared).cause,
+        SkillDiagnosticCause::LinkedCandidateUnavailable
+    );
+}
+
+#[test]
+fn load_visible_skills_still_rejects_external_symlinks_without_an_authority() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "external-store/escaping-skill/SKILL.md",
+        "---\nname: escaping-skill\ndescription: outside\n---\n\nOUTSIDE_BODY_MUST_NOT_LOAD\n",
+    );
+    fixture.symlink(
+        "../../../../external-store/escaping-skill",
+        "home/workspace/.codex/skills/escaping-skill",
+    );
+
+    let discovery = linked_discovery(&fixture, SymlinkAuthorities::default());
+    assert!(discovery.skills.is_empty());
+    let diagnostic = only_diagnostic(&discovery);
+    assert_eq!(
+        diagnostic.path,
+        fixture
+            .real("home/workspace")
+            .join(".codex/skills/escaping-skill")
+    );
+    assert_eq!(diagnostic.scope, SkillDiagnosticScope::Candidate);
+    assert_eq!(
+        diagnostic.cause,
+        SkillDiagnosticCause::LinkedCandidateUnavailable
+    );
+}
+
+#[test]
+fn managed_roots_never_follow_linked_candidates() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "elsewhere/linked/SKILL.md",
+        "---\nname: linked\ndescription: must not load\n---\nbody\n",
+    );
+    fixture.symlink("../elsewhere/linked", "root/linked");
+
+    let discovery = fixture.managed_discovery("root");
+    assert_eq!(discovery, SkillDiscovery::default());
 }

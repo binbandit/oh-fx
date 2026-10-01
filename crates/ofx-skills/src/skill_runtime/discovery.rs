@@ -12,9 +12,10 @@ use ofx_workspace::{
 };
 use rustix::fs::{CWD, Dir, FileType, Mode, OFlags, openat};
 
+use super::SymlinkAuthorities;
 use super::skill_file::{
-    DirectoryOpenError, Inspection, PrimarySkillFile, inspect_skill_file, open_contained_directory,
-    open_primary_skill_file,
+    DirectoryOpenError, Inspection, PrimarySkillFile, SkillCandidate, inspect_skill_file,
+    open_contained_directory, open_primary_skill_file,
 };
 use crate::skill_contract::{
     RootPolicy, RootSpec, Skill, SkillDiagnostic, SkillDiagnosticCause, SkillDiagnosticScope,
@@ -30,6 +31,7 @@ pub struct SkillDiscoveryContext {
     pub workspace_root: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub managed_root: PathBuf,
+    pub symlink_authorities: SymlinkAuthorities,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -46,7 +48,11 @@ struct SkillRoot {
 
 impl SkillDiscoveryContext {
     pub fn load_visible_skills(&self, policy: &RootPolicy) -> SkillDiscovery {
-        let mut scan = DiscoveryScan::default();
+        let mut scan = DiscoveryScan {
+            authorities: &self.symlink_authorities,
+            discovery: SkillDiscovery::default(),
+            canonical_paths: HashSet::new(),
+        };
         for root in self.roots(policy) {
             scan.append_root(&root);
         }
@@ -115,13 +121,18 @@ fn push_root(
     });
 }
 
-#[derive(Default)]
-struct DiscoveryScan {
+struct DiscoveryScan<'a> {
+    authorities: &'a SymlinkAuthorities,
     discovery: SkillDiscovery,
     canonical_paths: HashSet<PathBuf>,
 }
 
-impl DiscoveryScan {
+struct CandidateEntry {
+    name: Vec<u8>,
+    linked: bool,
+}
+
+impl DiscoveryScan<'_> {
     fn diagnose(
         &mut self,
         path: PathBuf,
@@ -148,7 +159,7 @@ impl DiscoveryScan {
 
     fn append_root(&mut self, root: &SkillRoot) {
         let opened = match &root.read_authority {
-            Some(authority) => open_contained_directory(&root.path, authority),
+            Some(authority) => open_contained_directory(&root.path, authority, self.authorities),
             None => open_directory(&root.path).map_err(DirectoryOpenError::Path),
         };
         let directory = match opened {
@@ -160,26 +171,61 @@ impl DiscoveryScan {
                 return;
             }
         };
-        let Ok(names) = candidate_names(&directory) else {
+        let Ok(entries) = candidate_entries(&directory, root.read_authority.is_some()) else {
             self.diagnose_unreadable_root(root);
             return;
         };
-        for name in names {
-            self.append_candidate(root, &directory, OsStr::from_bytes(&name));
+        for entry in entries {
+            let name = OsStr::from_bytes(&entry.name);
+            let candidate = if entry.linked {
+                self.open_linked_candidate(root, name)
+            } else {
+                self.open_candidate(root, &directory, name)
+            };
+            if let Some(candidate) = candidate {
+                self.append_candidate(root, &candidate, name);
+            }
         }
     }
 
-    fn append_candidate(&mut self, root: &SkillRoot, root_directory: &OwnedFd, name: &OsStr) {
-        let path = root.path.join(name);
-        let candidate = match open_child_directory(root_directory, name) {
-            Ok(candidate) => candidate,
-            Err(PathError::FileNotFound) => return,
+    fn open_candidate(
+        &mut self,
+        root: &SkillRoot,
+        root_directory: &OwnedFd,
+        name: &OsStr,
+    ) -> Option<OwnedFd> {
+        match open_child_directory(root_directory, name) {
+            Ok(candidate) => Some(candidate),
+            Err(PathError::FileNotFound) => None,
             Err(_) => {
-                self.diagnose_candidate(root, path, SkillDiagnosticCause::Unreadable);
-                return;
+                self.diagnose_candidate(
+                    root,
+                    root.path.join(name),
+                    SkillDiagnosticCause::Unreadable,
+                );
+                None
             }
+        }
+    }
+
+    fn open_linked_candidate(&mut self, root: &SkillRoot, name: &OsStr) -> Option<OwnedFd> {
+        let authority = root.read_authority.as_deref()?;
+        let path = root.path.join(name);
+        let opened = open_contained_directory(&path, authority, self.authorities);
+        if opened.is_err() {
+            self.diagnose_candidate(root, path, SkillDiagnosticCause::LinkedCandidateUnavailable);
+        }
+        opened.ok()
+    }
+
+    fn append_candidate(&mut self, root: &SkillRoot, candidate: &OwnedFd, name: &OsStr) {
+        let path = root.path.join(name);
+        let candidate = SkillCandidate {
+            directory: candidate,
+            path: &path,
+            read_authority: root.read_authority.as_deref(),
         };
-        let file = match open_primary_skill_file(&candidate) {
+        let file = match open_primary_skill_file(&candidate, self.authorities) {
             PrimarySkillFile::Opened(file) => file,
             PrimarySkillFile::Missing => return,
             PrimarySkillFile::Rejected => {
@@ -220,9 +266,9 @@ impl DiscoveryScan {
     }
 }
 
-fn candidate_names(directory: &OwnedFd) -> io::Result<Vec<Vec<u8>>> {
+fn candidate_entries(directory: &OwnedFd, allow_linked: bool) -> io::Result<Vec<CandidateEntry>> {
     let listing = openat(directory, ".", LISTING_FLAGS, Mode::empty())?;
-    let mut names = Vec::new();
+    let mut entries = Vec::new();
     for entry in Dir::new(listing)? {
         let entry = entry?;
         let name = entry.file_name().to_bytes();
@@ -234,14 +280,19 @@ fn candidate_names(directory: &OwnedFd) -> io::Result<Vec<Vec<u8>>> {
                 .map(FileIdentity::kind)
                 .ok(),
             FileType::Directory => Some(FileKind::Directory),
+            FileType::Symlink => Some(FileKind::Symlink),
             _ => None,
         };
-        if kind == Some(FileKind::Directory) {
-            names.push(name.to_vec());
+        let linked = kind == Some(FileKind::Symlink);
+        if kind == Some(FileKind::Directory) || (linked && allow_linked) {
+            entries.push(CandidateEntry {
+                name: name.to_vec(),
+                linked,
+            });
         }
     }
-    names.sort_unstable();
-    Ok(names)
+    entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
 }
 
 fn root_path_is_missing(path: &Path) -> bool {

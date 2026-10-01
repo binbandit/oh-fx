@@ -4,10 +4,12 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 
 use ofx_workspace::{
-    FileIdentity, FileKind, PathError, RegularFileError, entry_identity, open_directory,
-    open_regular_file_at, path_inside,
+    FileIdentity, FileKind, PathError, RegularFileError, descriptor_identity, entry_identity,
+    open_directory, open_regular_file_at, open_regular_file_following_at,
 };
+use rustix::fs::CWD;
 
+use super::SymlinkAuthorities;
 use crate::skill_contract::{
     InvalidMetadataCause, MetadataPrefixError, SkillMetadata, parse_skill_file,
     read_metadata_prefix, resolve_metadata,
@@ -33,10 +35,11 @@ impl DirectoryOpenError {
 pub(crate) fn open_contained_directory(
     logical_path: &Path,
     read_authority: &Path,
+    authorities: &SymlinkAuthorities,
 ) -> Result<OwnedFd, DirectoryOpenError> {
     let canonical = fs::canonicalize(logical_path)
         .map_err(|error| DirectoryOpenError::Path(PathError::from(error)))?;
-    if !path_inside(read_authority, &canonical) {
+    if !authorities.allows(read_authority, &canonical) {
         return Err(DirectoryOpenError::OutsideReadAuthority);
     }
     open_directory(&canonical).map_err(DirectoryOpenError::Path)
@@ -48,16 +51,57 @@ pub(crate) enum PrimarySkillFile {
     Rejected,
 }
 
-pub(crate) fn open_primary_skill_file(candidate: &OwnedFd) -> PrimarySkillFile {
+pub(crate) struct SkillCandidate<'a> {
+    pub(crate) directory: &'a OwnedFd,
+    pub(crate) path: &'a Path,
+    pub(crate) read_authority: Option<&'a Path>,
+}
+
+pub(crate) fn open_primary_skill_file(
+    candidate: &SkillCandidate<'_>,
+    authorities: &SymlinkAuthorities,
+) -> PrimarySkillFile {
     let name = OsStr::new(SKILL_FILE_NAME);
-    match entry_identity(candidate, name).map(FileIdentity::kind) {
-        Ok(FileKind::RegularFile) => match open_regular_file_at(candidate, name) {
+    match entry_identity(candidate.directory, name).map(FileIdentity::kind) {
+        Ok(FileKind::RegularFile) => match open_regular_file_at(candidate.directory, name) {
             Ok((file, _)) => PrimarySkillFile::Opened(file),
             Err(RegularFileError::Path(PathError::FileNotFound)) => PrimarySkillFile::Missing,
             Err(_) => PrimarySkillFile::Rejected,
         },
+        Ok(FileKind::Symlink) => candidate
+            .read_authority
+            .and_then(|authority| {
+                LinkedSkillFile::preflight(candidate.path, authority, authorities)
+            })
+            .and_then(|linked| linked.open(candidate.directory))
+            .map_or(PrimarySkillFile::Rejected, PrimarySkillFile::Opened),
         Err(PathError::FileNotFound) => PrimarySkillFile::Missing,
         Ok(_) | Err(_) => PrimarySkillFile::Rejected,
+    }
+}
+
+pub(super) struct LinkedSkillFile {
+    target: FileIdentity,
+}
+
+impl LinkedSkillFile {
+    pub(super) fn preflight(
+        candidate_path: &Path,
+        read_authority: &Path,
+        authorities: &SymlinkAuthorities,
+    ) -> Option<Self> {
+        let target = fs::canonicalize(candidate_path.join(SKILL_FILE_NAME)).ok()?;
+        if !authorities.allows(read_authority, &target) {
+            return None;
+        }
+        let identity = entry_identity(CWD, target.as_os_str()).ok()?;
+        (identity.kind() == FileKind::RegularFile).then_some(Self { target: identity })
+    }
+
+    pub(super) fn open(&self, candidate: &OwnedFd) -> Option<File> {
+        let name = OsStr::new(SKILL_FILE_NAME);
+        let (file, _) = open_regular_file_following_at(candidate, name).ok()?;
+        (descriptor_identity(&file).ok()? == self.target).then_some(file)
     }
 }
 

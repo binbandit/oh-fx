@@ -4,7 +4,7 @@ use std::io;
 use std::os::fd::AsFd;
 use std::path::Path;
 
-use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, fcntl_getfl, fcntl_setfl, openat, statat};
 use rustix::io::Errno;
 
 use crate::path_error::PathError;
@@ -47,6 +47,19 @@ pub fn open_regular_file_at(
     name: &OsStr,
 ) -> Result<(File, Metadata), RegularFileError> {
     verified(no_symlinks::open_regular_entry(directory, name)?)
+}
+
+pub fn open_regular_file_following_at(
+    directory: impl AsFd,
+    name: &OsStr,
+) -> Result<(File, Metadata), RegularFileError> {
+    let entry = statat(&directory, name, AtFlags::empty()).map_err(open_failure)?;
+    if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile {
+        return Err(RegularFileError::NotRegularFile);
+    }
+    let following = OPEN_FLAGS.difference(OFlags::NOFOLLOW);
+    let file = openat(directory, name, following, Mode::empty()).map_err(open_failure)?;
+    verified(File::from(file))
 }
 
 fn verified(file: File) -> Result<(File, Metadata), RegularFileError> {
@@ -231,6 +244,33 @@ mod tests {
         assert_eq!(
             open_regular_file(Path::new("relative.txt")).err(),
             Some(RegularFileError::Path(PathError::InvalidPath))
+        );
+    }
+
+    #[test]
+    fn a_following_open_reads_a_linked_regular_file_and_rejects_other_targets() {
+        let fixture = Fixture::new();
+        let target = fixture.file("target.txt", "target\n");
+        symlink(&target, fixture.root.join("link.txt")).unwrap();
+        fs::create_dir(fixture.root.join("dir")).unwrap();
+        symlink(fixture.root.join("dir"), fixture.root.join("dir-link")).unwrap();
+        symlink(fixture.fifo("pipe"), fixture.root.join("pipe-link")).unwrap();
+        let directory = rustix::fs::open(&fixture.root, DIRECTORY_FLAGS, Mode::empty()).unwrap();
+
+        let (file, metadata) =
+            open_regular_file_following_at(&directory, OsStr::new("link.txt")).unwrap();
+        assert!(metadata.is_file());
+        assert_eq!(content(file), "target\n");
+        for name in ["dir-link", "pipe-link"] {
+            assert_eq!(
+                open_regular_file_following_at(&directory, OsStr::new(name)).err(),
+                Some(RegularFileError::NotRegularFile),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            open_regular_file_following_at(&directory, OsStr::new("missing.txt")).err(),
+            Some(RegularFileError::Path(PathError::FileNotFound))
         );
     }
 
