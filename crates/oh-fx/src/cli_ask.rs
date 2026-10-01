@@ -9,16 +9,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use ofx_agent::{
-    Agent, AgentConfig, TurnFailure, TurnReport, normalize_assistant_text_for_display,
+    Agent, AgentConfig, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
     text_for_completed_presentation,
 };
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
     ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError, RouteRecoveryStatus,
-    ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
+use ofx_permissions::PermissionPolicy;
+use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
 use serde::{Serialize, Serializer};
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -26,11 +28,17 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
+use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
+const PERMISSION_REQUIRED_HEADLINE: &str =
+    "permission required for tool execution in noninteractive mode";
+const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_unavailable";
+const ASK_MODE_APPROVAL_HINT: &str = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
+const AUTO_MODE_APPROVAL_HINT: &str = "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule";
 
 struct Failure {
     code: String,
@@ -177,11 +185,11 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
 async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
     let cancel = CancellationToken::new();
     let received_signal = watch_signals(cancel.clone());
-    let (mut agent, model) = match prepare_agent(args) {
+    let (mut agent, model, permission_mode) = match prepare_agent(args) {
         Ok(prepared) => prepared,
         Err(failure) => return failure.report(args.output.json),
     };
-    let mut presenter = Presenter::new(args.output);
+    let mut presenter = Presenter::new(args.output, permission_mode);
     let report = agent
         .run_turn(
             prompt,
@@ -202,7 +210,7 @@ async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
     }
 }
 
-fn prepare_agent(args: &AskArgs) -> Result<(Agent, String), Failure> {
+fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Failure> {
     let workspace_root = workspace_root()?;
     let settings = match ProfilePaths::from_environment() {
         Some(paths) => Settings::load(&paths, &workspace_root)
@@ -250,9 +258,17 @@ fn prepare_agent(args: &AskArgs) -> Result<(Agent, String), Failure> {
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
     };
+    let tools = tool_set::ask_tools(&workspace_root);
+    let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
-    let agent = Agent::new(Arc::new(provider), Vec::new(), Arc::new(context), config);
-    Ok((agent, model))
+    let agent = Agent::new(
+        Arc::new(provider),
+        tools,
+        Arc::new(context),
+        Arc::new(permissions),
+        config,
+    );
+    Ok((agent, model, permission_mode))
 }
 
 fn workspace_root() -> Result<PathBuf, Failure> {
@@ -324,37 +340,16 @@ fn print_result(result: &RunResult<'_>) -> ExitCode {
 struct ToolRecord {
     name: String,
     status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<ToolRecordError>,
-}
-
-#[derive(Serialize)]
-struct ToolRecordError {
-    category: &'static str,
-    code: &'static str,
 }
 
 impl ToolRecord {
     fn new(name: String, status: ToolResultStatus) -> Self {
-        let error = (status == ToolResultStatus::Failure).then_some(ToolRecordError {
-            category: "tool_failed",
-            code: "tool_failed",
-        });
         Self {
             name,
-            status: if error.is_some() { "error" } else { "success" },
-            error,
-        }
-    }
-
-    fn rejected(name: String) -> Self {
-        Self {
-            name,
-            status: "error",
-            error: Some(ToolRecordError {
-                category: "rejected",
-                code: "rejected",
-            }),
+            status: match status {
+                ToolResultStatus::Success => "success",
+                ToolResultStatus::Failure => "error",
+            },
         }
     }
 }
@@ -473,12 +468,14 @@ enum OutputMode {
 
 struct Presenter {
     mode: OutputMode,
+    permission_mode: PermissionMode,
     output: String,
     has_output: bool,
     boundary_pending: bool,
     trailing_newlines: usize,
     steps: u64,
     tool_calls: Vec<ToolRecord>,
+    settling_progress: Vec<(ToolCallId, String)>,
     recovery: Option<RouteRecoveryStatus>,
     write_error: Option<&'static str>,
 }
@@ -489,7 +486,7 @@ struct FailureSummary {
 }
 
 impl Presenter {
-    fn new(output: AskOutput) -> Self {
+    fn new(output: AskOutput, permission_mode: PermissionMode) -> Self {
         let mode = if output.json {
             OutputMode::Json
         } else if output.quiet {
@@ -501,12 +498,14 @@ impl Presenter {
         };
         Self {
             mode,
+            permission_mode,
             output: String::new(),
             has_output: false,
             boundary_pending: false,
             trailing_newlines: 0,
             steps: 0,
             tool_calls: Vec::new(),
+            settling_progress: Vec::new(),
             recovery: None,
             write_error: None,
         }
@@ -522,19 +521,36 @@ impl Presenter {
                 self.recovery = Some(status);
                 notice.map_or(Ok(()), |line| write_stderr(&line))
             }
-            UiEvent::ToolStarted { .. } => {
+            UiEvent::ToolStarted {
+                call_id,
+                description,
+                ..
+            } => {
                 self.start_step();
-                Ok(())
+                let line = self.progress_line(&description.title);
+                if description.effect == ToolEffect::None {
+                    self.settling_progress.push((call_id, line));
+                    Ok(())
+                } else {
+                    write_stderr(&line)
+                }
             }
             UiEvent::ToolFinished {
-                tool_name, status, ..
+                call_id,
+                tool_name,
+                status,
+                ..
             } => {
                 self.tool_calls.push(ToolRecord::new(tool_name, status));
-                Ok(())
+                match self.take_settling_progress(&call_id) {
+                    Some(line) => write_stderr(&line),
+                    None => Ok(()),
+                }
             }
             UiEvent::ToolRejected { tool_name, .. } => {
                 self.start_step();
-                self.tool_calls.push(ToolRecord::rejected(tool_name));
+                self.tool_calls
+                    .push(ToolRecord::new(tool_name, ToolResultStatus::Failure));
                 Ok(())
             }
             UiEvent::TurnStarted { .. }
@@ -549,6 +565,38 @@ impl Presenter {
                 false
             }
         }
+    }
+
+    fn progress_line(&self, title: &str) -> String {
+        format!("{}\n", self.display_title(title))
+    }
+
+    fn display_title(&self, title: &str) -> String {
+        if self.mode == OutputMode::Terminal {
+            encode_terminal_safe(title.as_bytes(), usize::MAX).text
+        } else {
+            title.to_owned()
+        }
+    }
+
+    fn blocked_action_guidance(&self, title: &str) -> String {
+        let hint = if self.permission_mode == PermissionMode::Auto {
+            AUTO_MODE_APPROVAL_HINT
+        } else {
+            ASK_MODE_APPROVAL_HINT
+        };
+        format!(
+            "oh-fx ask: {PERMISSION_REQUIRED_HEADLINE}\noh-fx ask: blocked action: {}\noh-fx ask: reason={PERMISSION_PROMPT_UNAVAILABLE}\noh-fx ask: {hint}\n",
+            self.display_title(title)
+        )
+    }
+
+    fn take_settling_progress(&mut self, call_id: &ToolCallId) -> Option<String> {
+        let index = self
+            .settling_progress
+            .iter()
+            .position(|(settling, _)| settling == call_id)?;
+        Some(self.settling_progress.remove(index).1)
     }
 
     fn start_step(&mut self) {
@@ -601,7 +649,9 @@ impl Presenter {
             TurnFailure::Provider(error) => {
                 self.describe_error(&error.code, error.detail.as_deref())
             }
-            TurnFailure::InvalidCompletion => self.describe_error(failure.code(), None),
+            TurnFailure::InvalidCompletion | TurnFailure::PermissionRequired(_) => {
+                self.describe_error(failure.code(), None)
+            }
             TurnFailure::StepLimitReached => Ok(FailureSummary {
                 error: None,
                 auth_failure: false,
@@ -651,6 +701,11 @@ impl Presenter {
     }
 
     fn finish(mut self, report: &TurnReport, model: &str) -> ExitCode {
+        if let (None, Some(failure @ TurnFailure::PermissionRequired(blocked))) =
+            (self.write_error, &report.failure)
+        {
+            return self.finish_blocked(failure.code(), blocked, report.usage);
+        }
         let summary = match (self.write_error, &report.failure) {
             (Some(code), _) => FailureSummary {
                 error: Some(code.to_owned()),
@@ -703,13 +758,33 @@ impl Presenter {
             recovery: self.recovery.as_ref().map(RecoveryRecord::new),
         })
     }
+
+    fn finish_blocked(mut self, code: &str, blocked: &BlockedCall, usage: Usage) -> ExitCode {
+        let error = match write_stderr(&self.blocked_action_guidance(&blocked.title)) {
+            Ok(()) => code,
+            Err(error) => write_error_name(&error),
+        };
+        self.tool_calls.push(ToolRecord::new(
+            blocked.tool_name.clone(),
+            ToolResultStatus::Failure,
+        ));
+        if self.mode != OutputMode::Json {
+            return ExitCode::FAILURE;
+        }
+        print_result(&RunResult {
+            output: &self.output,
+            tool_calls: &self.tool_calls,
+            usage: usage_record(usage),
+            ..RunResult::error(error)
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
         CallDescription, Concurrency, ModelFailureDiagnostic, RouteRecoveryKind, ToolActivity,
-        ToolCallId, ToolEffect, TurnId,
+        TurnId,
     };
 
     use super::*;
@@ -731,7 +806,6 @@ mod tests {
         let records = [
             ToolRecord::new("read_file".to_owned(), ToolResultStatus::Success),
             ToolRecord::new("read_file".to_owned(), ToolResultStatus::Failure),
-            ToolRecord::rejected("missing".to_owned()),
         ];
         let recovered = RouteRecoveryStatus {
             kind: RouteRecoveryKind::AutoRecovered,
@@ -751,7 +825,7 @@ mod tests {
         };
         assert_eq!(
             result_json(&result),
-            r#"{"output":"","final_output":"","exit_code":1,"model":"","resolved_provider":null,"session_id":"","steps":0,"tool_calls":[{"name":"read_file","status":"success"},{"name":"read_file","status":"error","error":{"category":"tool_failed","code":"tool_failed"}},{"name":"missing","status":"error","error":{"category":"rejected","code":"rejected"}}],"usage":{"input_tokens":null,"output_tokens":null},"recovery":{"state":"recovered","kind":"auto_recovered","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"✓ recovered · succeeded on attempt 2"}}"#
+            r#"{"output":"","final_output":"","exit_code":1,"model":"","resolved_provider":null,"session_id":"","steps":0,"tool_calls":[{"name":"read_file","status":"success"},{"name":"read_file","status":"error"}],"usage":{"input_tokens":null,"output_tokens":null},"recovery":{"state":"recovered","kind":"auto_recovered","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"✓ recovered · succeeded on attempt 2"}}"#
         );
         let retrying = RouteRecoveryStatus {
             kind: RouteRecoveryKind::AutoRetry,
@@ -769,12 +843,55 @@ mod tests {
         );
     }
 
+    fn json_presenter() -> Presenter {
+        Presenter::new(
+            AskOutput {
+                json: true,
+                ..AskOutput::default()
+            },
+            PermissionMode::Auto,
+        )
+    }
+
+    #[test]
+    fn terminal_progress_lines_escape_control_sequences_from_tool_arguments() {
+        let title = "Reading \x1b]0;PWNED-TITLE\x07\x1b[2J\x1b[31mred\nnext";
+        let mut presenter = json_presenter();
+        assert_eq!(presenter.progress_line(title), format!("{title}\n"));
+        presenter.mode = OutputMode::Quiet;
+        assert_eq!(presenter.progress_line(title), format!("{title}\n"));
+        presenter.mode = OutputMode::Raw;
+        assert_eq!(presenter.progress_line(title), format!("{title}\n"));
+        presenter.mode = OutputMode::Terminal;
+        assert_eq!(
+            presenter.progress_line(title),
+            "Reading \\x1b]0;PWNED-TITLE\\x07\\x1b[2J\\x1b[31mred\\x0anext\n"
+        );
+        assert_eq!(
+            presenter.progress_line("Reading notes.txt"),
+            "Reading notes.txt\n"
+        );
+    }
+
+    #[test]
+    fn blocked_actions_print_upstream_guidance_for_the_permission_mode() {
+        let mut presenter = json_presenter();
+        presenter.permission_mode = PermissionMode::Ask;
+        assert_eq!(
+            presenter.blocked_action_guidance("Reading /etc/hosts"),
+            "oh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Reading /etc/hosts\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+        );
+        presenter.permission_mode = PermissionMode::Auto;
+        presenter.mode = OutputMode::Terminal;
+        assert_eq!(
+            presenter.blocked_action_guidance("Reading /tmp/\x1b[2Jx"),
+            "oh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Reading /tmp/\\x1b[2Jx\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule\n"
+        );
+    }
+
     #[test]
     fn raw_output_separates_text_around_tool_steps_and_counts_rejections() {
-        let mut presenter = Presenter::new(AskOutput {
-            json: true,
-            ..AskOutput::default()
-        });
+        let mut presenter = json_presenter();
         presenter.push_assistant("Looking.").unwrap();
         assert!(presenter.handle(UiEvent::ToolStarted {
             turn_id: TurnId::new(1),
