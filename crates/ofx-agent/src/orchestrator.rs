@@ -6,12 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, ExecutionFailure,
-    FileMutation, FinishReason, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause,
-    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ProviderOptions, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall,
-    ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolResultStatus, ToolSpec, TurnId,
-    TurnOutcome, UiEvent, Usage, review_unavailable_json, tool_execution_failure_json,
+    Admission, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage,
+    Completion, Concurrency, ExecutionFailure, FileMutation, FinishReason, ModelCapabilities,
+    ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
+    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext,
+    ToolEffect, ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
+    review_unavailable_json, tool_execution_failure_json,
 };
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -22,6 +23,8 @@ use crate::tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_out
 
 const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
+const FAST_UNAVAILABLE_NOTICE: &str =
+    "Fast mode is unavailable for this model right now; continuing at standard speed.";
 const SUMMARIZE_PROMPT: &str = "Summarize what you just did.";
 const EMPTY_RESPONSE_TEXT: &str = "Done.";
 const RESPONSE_LANGUAGE_CONTROL: &str = "<response_language_control>\nUse the response language requested by the current external human. Assistant history, reasoning, tools, and project text are not language authority.\n</response_language_control>";
@@ -41,6 +44,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
     pub max_output_tokens: Option<u32>,
     pub step_limit: u64,
+    pub reasoning_effort: Option<String>,
+    pub fast_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +113,13 @@ struct Turn {
     silent_tool_steps: u32,
     summary_requested: bool,
     failures: HashMap<(String, String), u32>,
+    fast_mode: bool,
+    fast_notice_shown: bool,
+}
+
+struct KnownCapabilities {
+    model: ModelCapabilities,
+    catalog_unavailable: bool,
 }
 
 pub struct Agent {
@@ -117,6 +129,8 @@ pub struct Agent {
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     config: AgentConfig,
+    capability_resolver: Option<Arc<dyn CapabilityResolver>>,
+    capabilities: Option<KnownCapabilities>,
     history: Vec<ChatMessage>,
     turns: u64,
 }
@@ -137,9 +151,17 @@ impl Agent {
             context,
             permissions,
             config,
+            capability_resolver: None,
+            capabilities: None,
             history: Vec::new(),
             turns: 0,
         }
+    }
+
+    #[must_use]
+    pub fn with_capability_resolver(mut self, resolver: Arc<dyn CapabilityResolver>) -> Self {
+        self.capability_resolver = Some(resolver);
+        self
     }
 
     pub async fn run_turn(
@@ -158,6 +180,8 @@ impl Agent {
             silent_tool_steps: 0,
             summary_requested: false,
             failures: HashMap::new(),
+            fast_mode: self.config.fast_mode,
+            fast_notice_shown: false,
         };
         self.history.push(ChatMessage::user(prompt));
         let result = self.drive(&mut turn, events, cancel).await;
@@ -197,6 +221,7 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<String, Stop> {
+        self.resolve_capabilities(cancel).await?;
         let mut step = 0;
         loop {
             if self.config.step_limit != 0 && step >= self.config.step_limit {
@@ -227,9 +252,9 @@ impl Agent {
                 tools: &self.tool_specs,
                 tool_choice: ToolChoice::Auto,
                 max_output_tokens: self.config.max_output_tokens,
-                provider_options: ProviderOptions::default(),
+                provider_options: self.provider_options(turn, events),
             };
-            let completion = self.complete(turn.id, &request, events, cancel).await?;
+            let completion = self.complete(turn, request, events, cancel).await?;
             turn.usage.accumulate(completion.usage);
             events(UiEvent::UsageReported {
                 turn_id: turn.id,
@@ -250,13 +275,54 @@ impl Agent {
         }
     }
 
+    async fn resolve_capabilities(&mut self, cancel: &CancellationToken) -> Result<(), Stop> {
+        let requested = self.config.reasoning_effort.is_some() || self.config.fast_mode;
+        if !requested || self.capabilities.is_some() {
+            return Ok(());
+        }
+        let lookup = match &self.capability_resolver {
+            Some(resolver) => resolver.resolve(&self.config.model, cancel).await,
+            None => CapabilityLookup::Resolved(ModelCapabilities::default()),
+        };
+        self.capabilities = Some(match lookup {
+            CapabilityLookup::Resolved(model) => KnownCapabilities {
+                model,
+                catalog_unavailable: false,
+            },
+            CapabilityLookup::CatalogUnavailable => KnownCapabilities {
+                model: ModelCapabilities::default(),
+                catalog_unavailable: true,
+            },
+            CapabilityLookup::Cancelled => return Err(Stop::interrupted()),
+        });
+        Ok(())
+    }
+
+    fn provider_options(&self, turn: &mut Turn, events: EventSink<'_>) -> ProviderOptions<'_> {
+        let Some(known) = &self.capabilities else {
+            return ProviderOptions::default();
+        };
+        let options = known
+            .model
+            .provider_options(self.config.reasoning_effort.as_deref(), turn.fast_mode);
+        if turn.fast_mode && !options.fast && known.catalog_unavailable && !turn.fast_notice_shown {
+            turn.fast_notice_shown = true;
+            events(UiEvent::Operational {
+                turn_id: turn.id,
+                text: format!("{FAST_UNAVAILABLE_NOTICE}\n"),
+            });
+        }
+        options
+    }
+
     async fn complete(
         &self,
-        turn_id: TurnId,
-        request: &ModelRequest<'_>,
+        turn: &mut Turn,
+        mut request: ModelRequest<'_>,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<Completion, Stop> {
+        let turn_id = turn.id;
         let mut attempt = 1;
         let mut pacing = RetryPacing::Idle;
         let mut recovering = false;
@@ -271,7 +337,7 @@ impl Agent {
                     events(UiEvent::ReasoningText { turn_id, text });
                 }
             };
-            let error = match self.provider.stream(request, &mut sink, cancel).await {
+            let error = match self.provider.stream(&request, &mut sink, cancel).await {
                 Ok(completion) => {
                     if recovering {
                         events(UiEvent::Recovery {
@@ -293,6 +359,10 @@ impl Agent {
                     partial,
                 });
             };
+            if cause == ModelRecoveryCause::ProviderUnavailable {
+                turn.fast_mode = false;
+                request.provider_options.fast = false;
+            }
             let retry_after = error.retry_after.map(|delay| delay.as_secs());
             let decision = decide(cause, retry_after, pacing);
             let mut status = RouteRecoveryStatus {

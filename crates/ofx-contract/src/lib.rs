@@ -1,4 +1,5 @@
 mod ids;
+mod model_capabilities;
 mod permission_gate;
 mod stream_provider;
 mod tool_args;
@@ -9,6 +10,7 @@ mod types;
 mod ui;
 
 pub use ids::{ToolCallId, TurnId};
+pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use permission_gate::{Admission, FileMutation, FileMutationState, PathAccess, PermissionGate};
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,

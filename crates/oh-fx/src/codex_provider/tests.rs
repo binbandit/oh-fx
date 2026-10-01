@@ -106,6 +106,8 @@ impl Fixture {
             system_prompt: GATEWAY_SYSTEM_PROMPT.to_owned(),
             max_output_tokens: None,
             step_limit: 0,
+            reasoning_effort: None,
+            fast_mode: false,
         };
         let workspace = self.canonical_workspace();
         let tools = tool_set::ask_tools(&workspace);

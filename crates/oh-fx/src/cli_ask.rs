@@ -396,6 +396,8 @@ async fn prepare_agent(
         max_output_tokens: route.max_output_tokens,
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
+        reasoning_effort: None,
+        fast_mode: false,
     };
     let tools = tool_set::ask_tools(&workspace_root);
     let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
