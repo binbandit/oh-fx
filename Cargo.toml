@@ -15,6 +15,7 @@ lexopt = "0.3.2"
 ofx-config = { path = "crates/ofx-config" }
 ofx-contract = { path = "crates/ofx-contract" }
 ofx-http = { path = "crates/ofx-http" }
+ofx-text = { path = "crates/ofx-text" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
 percent-encoding = "2.3.2"
 ra-ap-rustc_lexer = "0.174.0"
