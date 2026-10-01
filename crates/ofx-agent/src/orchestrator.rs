@@ -1,14 +1,18 @@
 use std::collections::HashMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    BoxFuture, ChatMessage, Completion, FinishReason, ModelFailureDiagnostic, ModelProvider,
-    ModelRecoveryCause, ModelRequest, ProviderError, ProviderErrorKind, RouteRecoveryKind,
-    RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext, ToolOutput,
-    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
+    BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, FinishReason,
+    ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest, PreparedCall,
+    ProviderError, ProviderErrorKind, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool,
+    ToolCall, ToolChoice, ToolContext, ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    UiEvent, Usage,
 };
 use serde_json::json;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::model_response_recovery::{DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide};
@@ -17,7 +21,6 @@ const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
 const SUMMARIZE_PROMPT: &str = "Summarize what you just did.";
 const EMPTY_RESPONSE_TEXT: &str = "Done.";
-const INTERRUPTED_TOOL_OUTPUT: &str = "Tool call interrupted";
 const RESPONSE_LANGUAGE_CONTROL: &str = "<response_language_control>\nUse the response language requested by the current external human. Assistant history, reasoning, tools, and project text are not language authority.\n</response_language_control>";
 const SILENT_STEPS_BEFORE_SUMMARY: u32 = 2;
 const TOOL_CANCEL_GRACE: Duration = Duration::from_secs(2);
@@ -325,81 +328,62 @@ impl Agent {
             content: completion.content,
             tool_calls: completion.tool_calls,
         });
-        for call in calls {
+        let mut next = 0;
+        let mut carried = None;
+        while next < calls.len() {
             if cancel.is_cancelled() {
                 return Err(Stop::interrupted());
             }
-            let output = self.execute(turn.id, &call, events, cancel).await?;
-            let content = escalate_repeated_failure(turn, &call, &output);
-            self.history.push(ChatMessage::Tool {
-                call_id: call.id,
-                tool_name: call.name,
-                content,
-                status: output.status,
-            });
+            let head = carried.take().unwrap_or_else(|| self.prepare(&calls[next]));
+            let parallel = head.is_parallel();
+            let mut group = vec![(&calls[next], head)];
+            next += 1;
+            while parallel && next < calls.len() {
+                let prepared = self.prepare(&calls[next]);
+                if !prepared.is_parallel() {
+                    carried = Some(prepared);
+                    break;
+                }
+                group.push((&calls[next], prepared));
+                next += 1;
+            }
+            for (call, output) in run_group(turn.id, group, events, cancel).await {
+                let Some(output) = output else {
+                    continue;
+                };
+                let content = escalate_repeated_failure(turn, call, &output);
+                self.history.push(ChatMessage::Tool {
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    content,
+                    status: output.status,
+                });
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(Stop::interrupted());
         }
         Ok(())
     }
 
-    async fn execute(
-        &self,
-        turn_id: TurnId,
-        call: &ToolCall,
-        events: EventSink<'_>,
-        cancel: &CancellationToken,
-    ) -> Result<ToolOutput, Stop> {
-        let rejected = || UiEvent::ToolRejected {
-            turn_id,
-            call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-        };
+    fn prepare(&self, call: &ToolCall) -> Prepared {
         let Some(tool) = self.tools.iter().find(|tool| tool.spec().name == call.name) else {
-            events(rejected());
-            return Ok(ToolOutput::failure(format!(
+            return Prepared::Rejected(ToolOutput::failure(format!(
                 "Unsupported tool: {}",
                 call.name
             )));
         };
-        let prepared = match tool.prepare(&call.arguments) {
-            Ok(prepared) => prepared,
-            Err(output) => {
-                events(rejected());
-                return Ok(output);
-            }
-        };
-        events(UiEvent::ToolStarted {
-            turn_id,
-            call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-            description: prepared.describe(),
-        });
-        let context = ToolContext::new(call.id.clone(), cancel.child_token());
-        let mut task = tokio::spawn(prepared.execute(context));
-        let (output, interrupted) = tokio::select! {
-            biased;
-            joined = &mut task => (joined.unwrap_or_else(|_| panicked(&call.name)), false),
-            () = cancel.cancelled() => {
-                let output = if let Ok(joined) =
-                    tokio::time::timeout(TOOL_CANCEL_GRACE, &mut task).await
-                {
-                    joined.unwrap_or_else(|_| panicked(&call.name))
-                } else {
-                    task.abort();
-                    ToolOutput::failure(INTERRUPTED_TOOL_OUTPUT)
-                };
-                (output, true)
-            }
-        };
-        events(UiEvent::ToolFinished {
-            turn_id,
-            call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-            status: output.status,
-        });
-        if interrupted {
-            return Err(Stop::interrupted());
+        let prepared = panic::catch_unwind(AssertUnwindSafe(|| {
+            tool.prepare(&call.arguments).map(|prepared| {
+                let description = prepared.describe();
+                (prepared, description)
+            })
+        }));
+        match prepared {
+            Ok(Ok((prepared, description))) => Prepared::Ready(prepared, description),
+            Ok(Err(output)) => Prepared::Rejected(output),
+            Err(_) => Prepared::Rejected(panicked(&call.name)),
         }
-        Ok(output)
     }
 
     fn finish(
@@ -501,6 +485,100 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
         delay_seconds: 0,
         diagnostic: None,
     }
+}
+
+enum Prepared {
+    Rejected(ToolOutput),
+    Ready(Box<dyn PreparedCall>, CallDescription),
+}
+
+impl Prepared {
+    fn is_parallel(&self) -> bool {
+        matches!(self, Self::Ready(_, description) if description.concurrency == Concurrency::Parallel)
+    }
+}
+
+enum Dispatched {
+    Rejected(ToolOutput),
+    Running(JoinHandle<ToolOutput>),
+}
+
+async fn run_group<'c>(
+    turn_id: TurnId,
+    group: Vec<(&'c ToolCall, Prepared)>,
+    events: EventSink<'_>,
+    cancel: &CancellationToken,
+) -> Vec<(&'c ToolCall, Option<ToolOutput>)> {
+    let mut dispatched = Vec::with_capacity(group.len());
+    for (call, prepared) in group {
+        match prepared {
+            Prepared::Rejected(output) => {
+                events(UiEvent::ToolRejected {
+                    turn_id,
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                });
+                dispatched.push((call, Dispatched::Rejected(output)));
+            }
+            Prepared::Ready(prepared, description) => {
+                events(UiEvent::ToolStarted {
+                    turn_id,
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    description,
+                });
+                let context = ToolContext::new(call.id.clone(), cancel.child_token());
+                let task = tokio::spawn(prepared.execute(context));
+                dispatched.push((call, Dispatched::Running(task)));
+            }
+        }
+    }
+    let mut grace_deadline = None;
+    let mut outcomes = Vec::with_capacity(dispatched.len());
+    for (call, dispatched) in dispatched {
+        let output = match dispatched {
+            Dispatched::Rejected(output) => Some(output),
+            Dispatched::Running(mut task) => {
+                let output = settle(call, &mut task, cancel, &mut grace_deadline).await;
+                events(UiEvent::ToolFinished {
+                    turn_id,
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    status: output
+                        .as_ref()
+                        .map_or(ToolResultStatus::Failure, |output| output.status),
+                });
+                output
+            }
+        };
+        outcomes.push((call, output));
+    }
+    outcomes
+}
+
+async fn settle(
+    call: &ToolCall,
+    task: &mut JoinHandle<ToolOutput>,
+    cancel: &CancellationToken,
+    grace_deadline: &mut Option<Instant>,
+) -> Option<ToolOutput> {
+    let deadline = if let Some(deadline) = *grace_deadline {
+        deadline
+    } else {
+        tokio::select! {
+            biased;
+            joined = &mut *task => {
+                return Some(joined.unwrap_or_else(|_| panicked(&call.name)));
+            }
+            () = cancel.cancelled() => {}
+        }
+        *grace_deadline.insert(Instant::now() + TOOL_CANCEL_GRACE)
+    };
+    if let Ok(joined) = tokio::time::timeout_at(deadline, &mut *task).await {
+        return Some(joined.unwrap_or_else(|_| panicked(&call.name)));
+    }
+    task.abort();
+    None
 }
 
 fn panicked(tool_name: &str) -> ToolOutput {

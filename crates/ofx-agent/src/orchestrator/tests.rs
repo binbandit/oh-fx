@@ -99,11 +99,13 @@ impl RuntimeContext for FixedContext {
 struct EchoTool {
     spec: ToolSpec,
     cleaned_up: Arc<AtomicBool>,
+    meeting: Arc<tokio::sync::Barrier>,
 }
 
 struct EchoCall {
     arguments: String,
     cleaned_up: Arc<AtomicBool>,
+    meeting: Arc<tokio::sync::Barrier>,
 }
 
 impl Tool for EchoTool {
@@ -115,26 +117,42 @@ impl Tool for EchoTool {
         if arguments.contains("invalid") {
             return Err(ToolOutput::failure("invalid arguments"));
         }
+        assert!(!arguments.contains("prepare_panic"), "prepare panicked");
         Ok(Box::new(EchoCall {
             arguments: arguments.to_owned(),
             cleaned_up: Arc::clone(&self.cleaned_up),
+            meeting: Arc::clone(&self.meeting),
         }))
     }
 }
 
 impl PreparedCall for EchoCall {
     fn describe(&self) -> CallDescription {
+        assert!(
+            !self.arguments.contains("describe_panic"),
+            "describe panicked"
+        );
         CallDescription {
             title: format!("Echoing {}", self.arguments),
             activity: ToolActivity::Read,
             effect: ToolEffect::ReadOnly,
-            concurrency: Concurrency::Parallel,
+            concurrency: if self.arguments.contains("serial") {
+                Concurrency::Serial
+            } else {
+                Concurrency::Parallel
+            },
         }
     }
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         Box::pin(async move {
             assert!(!self.arguments.contains("panic"), "echo panicked");
+            if self.arguments.contains("meet") {
+                self.meeting.wait().await;
+            }
+            if self.arguments.contains("hang") {
+                std::future::pending::<()>().await;
+            }
             if self.arguments.contains("wait") {
                 context.cancellation.cancelled().await;
                 tokio::task::yield_now().await;
@@ -162,6 +180,7 @@ fn echo_tool_with(cleaned_up: Arc<AtomicBool>) -> Arc<dyn Tool> {
             input_schema: serde_json::json!({"type": "object"}),
         },
         cleaned_up,
+        meeting: Arc::new(tokio::sync::Barrier::new(2)),
     })
 }
 
@@ -534,22 +553,16 @@ async fn cancellation_interrupts_the_turn_and_keeps_the_prompt() {
     assert_eq!(agent.history, [ChatMessage::user("go")]);
 }
 
-#[tokio::test]
-async fn cancelling_a_tool_lets_it_clean_up_and_reports_its_finish() {
-    let cleaned_up = Arc::new(AtomicBool::new(false));
-    let provider = FakeProvider::new(vec![tool_reply(&[
-        ("call-1", r#"{"text":"before"}"#),
-        ("call-2", r#"{"wait":true}"#),
-    ])]);
-    let mut agent = new_agent(provider, vec![echo_tool_with(Arc::clone(&cleaned_up))]);
+async fn run_cancelled_at(agent: &mut Agent, cancel_at: &str) -> (TurnReport, Vec<UiEvent>) {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
+    let cancel_at = cancel_at.to_owned();
     let mut events = Vec::new();
     let report = agent
         .run_turn(
             "go",
             &mut |event| {
-                if matches!(&event, UiEvent::ToolStarted { call_id, .. } if call_id.as_str() == "call-2")
+                if matches!(&event, UiEvent::ToolStarted { call_id, .. } if call_id.as_str() == cancel_at)
                 {
                     trigger.cancel();
                 }
@@ -558,23 +571,204 @@ async fn cancelling_a_tool_lets_it_clean_up_and_reports_its_finish() {
             &cancel,
         )
         .await;
-    assert_eq!(report.outcome, TurnOutcome::Interrupted);
-    assert!(cleaned_up.load(Ordering::SeqCst));
-    let finished: Vec<&str> = events
+    (report, events)
+}
+
+fn finished(events: &[UiEvent]) -> Vec<(&str, ToolResultStatus)> {
+    events
         .iter()
         .filter_map(|event| match event {
-            UiEvent::ToolFinished { call_id, .. } => Some(call_id.as_str()),
+            UiEvent::ToolFinished {
+                call_id, status, ..
+            } => Some((call_id.as_str(), *status)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn dispatch_order(events: &[UiEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolStarted { call_id, .. } => Some(format!("start {}", call_id.as_str())),
+            UiEvent::ToolFinished { call_id, .. } => Some(format!("finish {}", call_id.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tool_message(id: &str, content: &str, status: ToolResultStatus) -> ChatMessage {
+    ChatMessage::Tool {
+        call_id: ToolCallId::new(id),
+        tool_name: "echo".to_owned(),
+        content: content.to_owned(),
+        status,
+    }
+}
+
+#[tokio::test]
+async fn cancelled_tools_that_finish_within_the_grace_period_keep_their_results() {
+    let cleaned_up = Arc::new(AtomicBool::new(false));
+    let provider = FakeProvider::new(vec![tool_reply(&[
+        ("call-1", r#"{"text":"before"}"#),
+        ("call-2", r#"{"wait":true}"#),
+    ])]);
+    let mut agent = new_agent(provider, vec![echo_tool_with(Arc::clone(&cleaned_up))]);
+    let (report, events) = run_cancelled_at(&mut agent, "call-2").await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert!(cleaned_up.load(Ordering::SeqCst));
+    assert_eq!(
+        finished(&events),
+        [
+            ("call-1", ToolResultStatus::Success),
+            ("call-2", ToolResultStatus::Failure)
+        ]
+    );
+    assert_eq!(
+        agent.history,
+        [
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![
+                    echo_call("call-1", r#"{"text":"before"}"#),
+                    echo_call("call-2", r#"{"wait":true}"#),
+                ],
+            },
+            tool_message(
+                "call-1",
+                r#"echo {"text":"before"}"#,
+                ToolResultStatus::Success
+            ),
+            tool_message("call-2", "stopped after cleanup", ToolResultStatus::Failure),
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_tools_that_outlive_the_grace_period_are_aborted_and_dropped_from_history() {
+    let provider = FakeProvider::new(vec![tool_reply(&[
+        ("call-1", r#"{"text":"before"}"#),
+        ("call-2", r#"{"hang":true}"#),
+    ])]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, events) = run_cancelled_at(&mut agent, "call-2").await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert_eq!(
+        finished(&events),
+        [
+            ("call-1", ToolResultStatus::Success),
+            ("call-2", ToolResultStatus::Failure)
+        ]
+    );
+    assert_eq!(
+        agent.history,
+        [
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![echo_call("call-1", r#"{"text":"before"}"#)],
+            },
+            tool_message(
+                "call-1",
+                r#"echo {"text":"before"}"#,
+                ToolResultStatus::Success
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn parallel_calls_overlap_and_report_results_in_call_order() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"meet":1}"#), ("call-2", r#"{"meet":2}"#)]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = tokio::time::timeout(Duration::from_secs(10), run(&mut agent, "go"))
+        .await
+        .expect("parallel calls overlap");
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        dispatch_order(&events),
+        [
+            "start call-1",
+            "start call-2",
+            "finish call-1",
+            "finish call-2"
+        ]
+    );
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message("call-1", r#"echo {"meet":1}"#, ToolResultStatus::Success),
+            tool_message("call-2", r#"echo {"meet":2}"#, ToolResultStatus::Success),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn serial_calls_never_overlap_their_neighbours() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"text":"a"}"#),
+            ("call-2", r#"{"serial":true}"#),
+            ("call-3", r#"{"text":"b"}"#),
+            ("call-4", r#"{"text":"c"}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        dispatch_order(&events),
+        [
+            "start call-1",
+            "finish call-1",
+            "start call-2",
+            "finish call-2",
+            "start call-3",
+            "start call-4",
+            "finish call-3",
+            "finish call-4"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn panics_while_preparing_or_describing_a_call_become_rejected_failures() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"prepare_panic":true}"#),
+            ("call-2", r#"{"describe_panic":true}"#),
+            ("call-3", r#"{"text":"after"}"#),
+        ]),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let rejected: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolRejected { call_id, .. } => Some(call_id.as_str()),
             _ => None,
         })
         .collect();
-    assert_eq!(finished, ["call-1", "call-2"]);
-    assert_eq!(agent.history.len(), 3);
+    assert_eq!(rejected, ["call-1", "call-2"]);
+    let panicked = r#"{"error":{"type":"tool_execution_failed","tool_name":"echo","message":"Tool execution panicked"}}"#;
     assert_eq!(
-        agent.history[1],
-        ChatMessage::Assistant {
-            content: None,
-            tool_calls: vec![echo_call("call-1", r#"{"text":"before"}"#)],
-        }
+        provider.requests()[1].messages[2..],
+        [
+            tool_message("call-1", panicked, ToolResultStatus::Failure),
+            tool_message("call-2", panicked, ToolResultStatus::Failure),
+            tool_message(
+                "call-3",
+                r#"echo {"text":"after"}"#,
+                ToolResultStatus::Success
+            ),
+        ]
     );
 }
 
@@ -591,7 +785,7 @@ async fn retryable_failures_retry_with_upstream_pacing_and_report_recovery() {
         text_reply("ok"),
     ]);
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
-    let started = tokio::time::Instant::now();
+    let started = Instant::now();
     let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(provider.requests().len(), 3);
