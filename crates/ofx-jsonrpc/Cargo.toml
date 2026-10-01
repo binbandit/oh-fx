@@ -1,0 +1,18 @@
+[package]
+name = "ofx-jsonrpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
+
+[lints]
+workspace = true

@@ -811,6 +811,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-jsonrpc"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "ofx-markdown"
 version = "0.1.0"
 dependencies = [

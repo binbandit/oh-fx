@@ -24,6 +24,7 @@ ofx-contract = { path = "crates/ofx-contract" }
 ofx-exec = { path = "crates/ofx-exec" }
 ofx-gateway = { path = "crates/ofx-gateway" }
 ofx-http = { path = "crates/ofx-http" }
+ofx-jsonrpc = { path = "crates/ofx-jsonrpc" }
 ofx-markdown = { path = "crates/ofx-markdown" }
 ofx-permissions = { path = "crates/ofx-permissions" }
 ofx-session = { path = "crates/ofx-session" }
