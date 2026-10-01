@@ -1,6 +1,7 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::ids::ToolCallId;
+use crate::permission_gate::PathAccess;
 use crate::stream_provider::BoxFuture;
 use crate::types::ToolResultStatus;
 
@@ -80,13 +81,19 @@ impl ToolOutput {
 pub struct ToolContext {
     pub call_id: ToolCallId,
     pub cancellation: CancellationToken,
+    pub path_access: PathAccess,
 }
 
 impl ToolContext {
-    pub fn new(call_id: ToolCallId, cancellation: CancellationToken) -> Self {
+    pub fn new(
+        call_id: ToolCallId,
+        cancellation: CancellationToken,
+        path_access: PathAccess,
+    ) -> Self {
         Self {
             call_id,
             cancellation,
+            path_access,
         }
     }
 }

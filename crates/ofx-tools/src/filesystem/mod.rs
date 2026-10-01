@@ -45,18 +45,30 @@ fn tool_spec(name: &str, description: &str, input_schema: &str) -> ToolSpec {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use ofx_contract::{CallDescription, Tool, ToolCallId, ToolContext, ToolOutput};
+    use ofx_contract::{CallDescription, PathAccess, Tool, ToolCallId, ToolContext, ToolOutput};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
 
     pub(crate) fn run_tool(tool: &dyn Tool, arguments: &str) -> (CallDescription, ToolOutput) {
+        run_tool_with(tool, arguments, PathAccess::WorkspaceOnly)
+    }
+
+    pub(crate) fn run_tool_with(
+        tool: &dyn Tool,
+        arguments: &str,
+        path_access: PathAccess,
+    ) -> (CallDescription, ToolOutput) {
         let prepared = tool.prepare(arguments).unwrap();
         let description = prepared.describe();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let context = ToolContext::new(ToolCallId::new("call-1"), CancellationToken::new());
+        let context = ToolContext::new(
+            ToolCallId::new("call-1"),
+            CancellationToken::new(),
+            path_access,
+        );
         let output = runtime.block_on(prepared.execute(context));
         (description, output)
     }

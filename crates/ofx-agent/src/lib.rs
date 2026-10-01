@@ -4,4 +4,6 @@ mod orchestrator;
 mod tool_result_limits;
 
 pub use assistant_stream::{normalize_assistant_text_for_display, text_for_completed_presentation};
-pub use orchestrator::{Agent, AgentConfig, EventSink, RuntimeContext, TurnFailure, TurnReport};
+pub use orchestrator::{
+    Agent, AgentConfig, BlockedCall, EventSink, RuntimeContext, TurnFailure, TurnReport,
+};

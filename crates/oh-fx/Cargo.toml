@@ -14,6 +14,7 @@ ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-gateway.workspace = true
 ofx-http.workspace = true
+ofx-permissions.workspace = true
 ofx-text.workspace = true
 ofx-tools.workspace = true
 ofx-upgrade.workspace = true

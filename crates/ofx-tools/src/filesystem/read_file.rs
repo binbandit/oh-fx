@@ -6,14 +6,14 @@ use std::sync::Arc;
 
 use memchr::{memchr, memchr_iter};
 use ofx_contract::{
-    CallDescription, CallPresentation, Concurrency, ExecutionFailure, PreparedCall, Tool,
-    ToolActivity, ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action,
+    CallDescription, CallPresentation, Concurrency, ExecutionFailure, PathAccess, PreparedCall,
+    Tool, ToolActivity, ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action,
     tool_execution_failure_json,
 };
 use ofx_text::{is_model_safe_text, sanitize_model_text_owned};
 use ofx_workspace::{
-    PATH_ENTRY_WHITESPACE, RegularFileError, open_regular_file, resolve_workspace_or_external_path,
-    workspace_relative_path,
+    PATH_ENTRY_WHITESPACE, PathError, RegularFileError, open_regular_file, path_inside,
+    resolve_workspace_or_external_path, workspace_relative_path,
 };
 
 use super::{DEFAULT_MAX_READ_FILE_LINES, FilesystemContext, read_only_effect, tool_spec};
@@ -67,10 +67,13 @@ impl Tool for ReadFile {
             concurrency: Concurrency::Parallel,
         };
         let context = Arc::clone(&self.context);
-        Ok(BlockingCall::boxed(description, move || match decoded {
-            Ok(arguments) => arguments.run(&context),
-            Err(failure) => failure,
-        }))
+        Ok(BlockingCall::boxed(
+            description,
+            move |path_access| match decoded {
+                Ok(arguments) => arguments.run(&context, path_access),
+                Err(failure) => failure,
+            },
+        ))
     }
 }
 
@@ -106,26 +109,41 @@ impl ReadFileArgs {
         })
     }
 
-    fn run(&self, context: &FilesystemContext) -> ToolOutput {
+    fn run(&self, context: &FilesystemContext, path_access: PathAccess) -> ToolOutput {
         if let Err(failure) =
             admit_existing_path(TOOL_NAME, &context.workspace_root, &self.requested_path)
         {
             return failure;
         }
-        match self.read(context) {
+        match self.read(context, path_access) {
             Ok(text) => ToolOutput::success(text),
             Err(failure) => failure,
         }
     }
 
-    fn read(&self, context: &FilesystemContext) -> Result<String, ToolOutput> {
-        let target = self.resolve(context)?;
+    fn read(
+        &self,
+        context: &FilesystemContext,
+        path_access: PathAccess,
+    ) -> Result<String, ToolOutput> {
+        let target = self.resolve(context, path_access)?;
         self.read_target(context, &target)
     }
 
-    fn resolve(&self, context: &FilesystemContext) -> Result<PathBuf, ToolOutput> {
-        resolve_workspace_or_external_path(&context.workspace_root, &self.path)
-            .map_err(|error| read_file_failure(RegularFileError::Path(error), &self.path))
+    fn resolve(
+        &self,
+        context: &FilesystemContext,
+        path_access: PathAccess,
+    ) -> Result<PathBuf, ToolOutput> {
+        let failure = |error| read_file_failure(RegularFileError::Path(error), &self.path);
+        let target = resolve_workspace_or_external_path(&context.workspace_root, &self.path)
+            .map_err(failure)?;
+        if path_access == PathAccess::WorkspaceOnly
+            && !path_inside(&context.workspace_root, &target)
+        {
+            return Err(failure(PathError::PathOutsideWorkspace));
+        }
+        Ok(target)
     }
 
     fn read_target(
@@ -386,11 +404,10 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     use ofx_contract::{ToolEffect, ToolResultStatus};
-    use ofx_workspace::PathError;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::filesystem::tests::run_tool;
+    use crate::filesystem::tests::{run_tool, run_tool_with};
 
     struct Workspace {
         _temp: TempDir,
@@ -425,7 +442,7 @@ mod tests {
     }
 
     fn read(context: &FilesystemContext, args_json: &str) -> Result<String, ToolOutput> {
-        ReadFileArgs::decode(args_json)?.read(context)
+        ReadFileArgs::decode(args_json)?.read(context, PathAccess::WorkspaceOrExternal)
     }
 
     fn text(context: &FilesystemContext, args_json: &str) -> String {
@@ -568,6 +585,45 @@ mod tests {
     }
 
     #[test]
+    fn read_file_keeps_workspace_only_calls_inside_the_workspace() {
+        let workspace = Workspace::new();
+        let inside = workspace.write("workspace/dir/notes.txt", "inside\n");
+        let secret = workspace.write("outside/notes.txt", "outside secret\n");
+        let tool = ReadFile::with_context(FilesystemContext::new(workspace.root.join("workspace")));
+        let held = |path: &Path| {
+            format!(
+                "{{\"error\":{{\"type\":\"tool_execution_failed\",\"tool_name\":\"read_file\",\"message\":\"read_file failed\",\"details\":{{\"field\":\"path\",\"path\":\"{}\",\"error\":\"PathOutsideWorkspace\"}},\"suggestion\":\"Run glob_files to discover matching paths, or check the path relative to the workspace.\"}}}}",
+                path.display()
+            )
+        };
+
+        let (_, external) = run_tool_with(&tool, &path_args(&secret), PathAccess::WorkspaceOnly);
+        assert_eq!(external, ToolOutput::failure(held(&secret)));
+        let (_, approved) =
+            run_tool_with(&tool, &path_args(&secret), PathAccess::WorkspaceOrExternal);
+        assert_eq!(
+            approved,
+            ToolOutput::success(format!(
+                "<path>{}</path>\n<content>\n1\toutside secret\n</content>",
+                secret.display()
+            ))
+        );
+
+        fs::rename(
+            workspace.root.join("workspace/dir"),
+            workspace.root.join("workspace/moved"),
+        )
+        .unwrap();
+        symlink(
+            workspace.root.join("outside"),
+            workspace.root.join("workspace/dir"),
+        )
+        .unwrap();
+        let (_, swapped) = run_tool_with(&tool, &path_args(&inside), PathAccess::WorkspaceOnly);
+        assert_eq!(swapped, ToolOutput::failure(held(&inside)));
+    }
+
+    #[test]
     fn read_file_access_denial_returns_structured_recovery() {
         let failure = read_file_failure(
             RegularFileError::Path(PathError::AccessDenied),
@@ -616,7 +672,9 @@ mod tests {
         let context = workspace.context();
         let arguments = ReadFileArgs::decode(r#"{"path":"dir/notes.txt"}"#).unwrap();
 
-        let target = arguments.resolve(&context).unwrap();
+        let target = arguments
+            .resolve(&context, PathAccess::WorkspaceOnly)
+            .unwrap();
         fs::rename(workspace.root.join("dir"), workspace.root.join("moved")).unwrap();
         symlink(&outside.root, workspace.root.join("dir")).unwrap();
         let failure = arguments.read_target(&context, &target).unwrap_err();

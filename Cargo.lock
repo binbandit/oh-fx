@@ -723,6 +723,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-permissions"
+version = "0.1.0"
+dependencies = [
+ "ofx-contract",
+ "ofx-workspace",
+ "tempfile",
+]
+
+[[package]]
 name = "ofx-session"
 version = "0.1.0"
 
@@ -791,6 +800,7 @@ dependencies = [
  "ofx-contract",
  "ofx-gateway",
  "ofx-http",
+ "ofx-permissions",
  "ofx-testkit",
  "ofx-text",
  "ofx-tools",

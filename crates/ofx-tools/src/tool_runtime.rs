@@ -1,8 +1,8 @@
 use std::panic;
 
-use ofx_contract::{BoxFuture, CallDescription, PreparedCall, ToolContext, ToolOutput};
+use ofx_contract::{BoxFuture, CallDescription, PathAccess, PreparedCall, ToolContext, ToolOutput};
 
-type Run = Box<dyn FnOnce() -> ToolOutput + Send>;
+type Run = Box<dyn FnOnce(PathAccess) -> ToolOutput + Send>;
 
 pub(crate) struct BlockingCall {
     description: CallDescription,
@@ -12,7 +12,7 @@ pub(crate) struct BlockingCall {
 impl BlockingCall {
     pub(crate) fn boxed(
         description: CallDescription,
-        run: impl FnOnce() -> ToolOutput + Send + 'static,
+        run: impl FnOnce(PathAccess) -> ToolOutput + Send + 'static,
     ) -> Box<dyn PreparedCall> {
         Box::new(Self {
             description,
@@ -26,9 +26,10 @@ impl PreparedCall for BlockingCall {
         self.description.clone()
     }
 
-    fn execute(self: Box<Self>, _context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+    fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+        let path_access = context.path_access;
         Box::pin(async move {
-            match tokio::task::spawn_blocking(self.run).await {
+            match tokio::task::spawn_blocking(move || (self.run)(path_access)).await {
                 Ok(output) => output,
                 Err(error) => panic::resume_unwind(error.into_panic()),
             }

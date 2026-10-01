@@ -1,4 +1,5 @@
 mod ids;
+mod permission_gate;
 mod stream_provider;
 mod tool_args;
 mod tool_dispatch;
@@ -8,6 +9,7 @@ mod types;
 mod ui;
 
 pub use ids::{ToolCallId, TurnId};
+pub use permission_gate::{Admission, PathAccess, PermissionGate};
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
     StreamEvent, StreamSink,

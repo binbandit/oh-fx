@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, ExecutionFailure,
+    Admission, BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, ExecutionFailure,
     FinishReason, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
-    PreparedCall, ProviderError, ProviderErrorKind, RouteRecoveryKind, RouteRecoveryStatus,
-    StreamEvent, Tool, ToolCall, ToolChoice, ToolContext, ToolOutput, ToolResultStatus, ToolSpec,
-    TurnId, TurnOutcome, UiEvent, Usage, tool_execution_failure_json,
+    PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, RouteRecoveryKind,
+    RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext, ToolEffect,
+    ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
+    tool_execution_failure_json,
 };
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -41,10 +42,17 @@ pub struct AgentConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedCall {
+    pub tool_name: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnFailure {
     Provider(ProviderError),
     StepLimitReached,
     InvalidCompletion,
+    PermissionRequired(BlockedCall),
 }
 
 impl TurnFailure {
@@ -53,6 +61,7 @@ impl TurnFailure {
             Self::Provider(error) => &error.code,
             Self::StepLimitReached => "StepLimitReached",
             Self::InvalidCompletion => "ModelError",
+            Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
         }
     }
 }
@@ -104,6 +113,7 @@ pub struct Agent {
     tools: Vec<Arc<dyn Tool>>,
     tool_specs: Vec<ToolSpec>,
     context: Arc<dyn RuntimeContext>,
+    permissions: Arc<dyn PermissionGate>,
     config: AgentConfig,
     history: Vec<ChatMessage>,
     turns: u64,
@@ -114,6 +124,7 @@ impl Agent {
         provider: Arc<dyn ModelProvider>,
         tools: Vec<Arc<dyn Tool>>,
         context: Arc<dyn RuntimeContext>,
+        permissions: Arc<dyn PermissionGate>,
         config: AgentConfig,
     ) -> Self {
         let tool_specs = tools.iter().map(|tool| tool.spec().clone()).collect();
@@ -122,6 +133,7 @@ impl Agent {
             tools,
             tool_specs,
             context,
+            permissions,
             config,
             history: Vec::new(),
             turns: 0,
@@ -348,7 +360,8 @@ impl Agent {
                 group.push((&calls[next], prepared));
                 next += 1;
             }
-            for (call, output) in run_group(turn.id, group, events, cancel).await {
+            let settled = run_group(turn.id, group, &*self.permissions, events, cancel).await;
+            for (call, output) in settled.outcomes {
                 let Some(output) = output else {
                     continue;
                 };
@@ -362,6 +375,9 @@ impl Agent {
                     content,
                     status,
                 });
+            }
+            if let Some(blocked) = settled.blocked {
+                return Err(Stop::failed(TurnFailure::PermissionRequired(blocked)));
             }
         }
         if cancel.is_cancelled() {
@@ -507,13 +523,32 @@ enum Dispatched {
     Running(JoinHandle<ToolOutput>),
 }
 
+struct SettledGroup<'c> {
+    outcomes: Vec<(&'c ToolCall, Option<ToolOutput>)>,
+    blocked: Option<BlockedCall>,
+}
+
+fn admit(
+    permissions: &dyn PermissionGate,
+    call: &ToolCall,
+    description: &CallDescription,
+) -> Admission {
+    if description.effect == ToolEffect::None {
+        Admission::Allowed(PathAccess::WorkspaceOnly)
+    } else {
+        permissions.admit(call)
+    }
+}
+
 async fn run_group<'c>(
     turn_id: TurnId,
     group: Vec<(&'c ToolCall, Prepared)>,
+    permissions: &dyn PermissionGate,
     events: EventSink<'_>,
     cancel: &CancellationToken,
-) -> Vec<(&'c ToolCall, Option<ToolOutput>)> {
+) -> SettledGroup<'c> {
     let mut dispatched = Vec::with_capacity(group.len());
+    let mut blocked = None;
     for (call, prepared) in group {
         if cancel.is_cancelled() {
             break;
@@ -528,13 +563,23 @@ async fn run_group<'c>(
                 dispatched.push((call, Dispatched::Rejected(output)));
             }
             Prepared::Ready(prepared, description) => {
+                let admission = admit(permissions, call, &description);
+                if admission == Admission::ApprovalRequired {
+                    blocked = Some(BlockedCall {
+                        tool_name: call.name.clone(),
+                        title: description.title.clone(),
+                    });
+                }
                 events(UiEvent::ToolStarted {
                     turn_id,
                     call_id: call.id.clone(),
                     tool_name: call.name.clone(),
                     description,
                 });
-                let context = ToolContext::new(call.id.clone(), cancel.child_token());
+                let Admission::Allowed(path_access) = admission else {
+                    break;
+                };
+                let context = ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
                 let task = tokio::spawn(prepared.execute(context));
                 dispatched.push((call, Dispatched::Running(task)));
             }
@@ -560,7 +605,7 @@ async fn run_group<'c>(
         };
         outcomes.push((call, output));
     }
-    outcomes
+    SettledGroup { outcomes, blocked }
 }
 
 async fn settle(

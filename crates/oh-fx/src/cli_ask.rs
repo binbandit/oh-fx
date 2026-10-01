@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use ofx_agent::{
-    Agent, AgentConfig, TurnFailure, TurnReport, normalize_assistant_text_for_display,
+    Agent, AgentConfig, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
     text_for_completed_presentation,
 };
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -19,6 +19,7 @@ use ofx_contract::{
     ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
+use ofx_permissions::PermissionPolicy;
 use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
 use serde::{Serialize, Serializer};
@@ -33,6 +34,11 @@ const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
+const PERMISSION_REQUIRED_HEADLINE: &str =
+    "permission required for tool execution in noninteractive mode";
+const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_unavailable";
+const ASK_MODE_APPROVAL_HINT: &str = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
+const AUTO_MODE_APPROVAL_HINT: &str = "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule";
 
 struct Failure {
     code: String,
@@ -179,11 +185,11 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
 async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
     let cancel = CancellationToken::new();
     let received_signal = watch_signals(cancel.clone());
-    let (mut agent, model) = match prepare_agent(args) {
+    let (mut agent, model, permission_mode) = match prepare_agent(args) {
         Ok(prepared) => prepared,
         Err(failure) => return failure.report(args.output.json),
     };
-    let mut presenter = Presenter::new(args.output);
+    let mut presenter = Presenter::new(args.output, permission_mode);
     let report = agent
         .run_turn(
             prompt,
@@ -204,7 +210,7 @@ async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
     }
 }
 
-fn prepare_agent(args: &AskArgs) -> Result<(Agent, String), Failure> {
+fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Failure> {
     let workspace_root = workspace_root()?;
     let settings = match ProfilePaths::from_environment() {
         Some(paths) => Settings::load(&paths, &workspace_root)
@@ -253,9 +259,16 @@ fn prepare_agent(args: &AskArgs) -> Result<(Agent, String), Failure> {
         model: model.clone(),
     };
     let tools = tool_set::ask_tools(&workspace_root);
+    let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
-    let agent = Agent::new(Arc::new(provider), tools, Arc::new(context), config);
-    Ok((agent, model))
+    let agent = Agent::new(
+        Arc::new(provider),
+        tools,
+        Arc::new(context),
+        Arc::new(permissions),
+        config,
+    );
+    Ok((agent, model, permission_mode))
 }
 
 fn workspace_root() -> Result<PathBuf, Failure> {
@@ -455,6 +468,7 @@ enum OutputMode {
 
 struct Presenter {
     mode: OutputMode,
+    permission_mode: PermissionMode,
     output: String,
     has_output: bool,
     boundary_pending: bool,
@@ -472,7 +486,7 @@ struct FailureSummary {
 }
 
 impl Presenter {
-    fn new(output: AskOutput) -> Self {
+    fn new(output: AskOutput, permission_mode: PermissionMode) -> Self {
         let mode = if output.json {
             OutputMode::Json
         } else if output.quiet {
@@ -484,6 +498,7 @@ impl Presenter {
         };
         Self {
             mode,
+            permission_mode,
             output: String::new(),
             has_output: false,
             boundary_pending: false,
@@ -553,14 +568,27 @@ impl Presenter {
     }
 
     fn progress_line(&self, title: &str) -> String {
+        format!("{}\n", self.display_title(title))
+    }
+
+    fn display_title(&self, title: &str) -> String {
         if self.mode == OutputMode::Terminal {
-            format!(
-                "{}\n",
-                encode_terminal_safe(title.as_bytes(), usize::MAX).text
-            )
+            encode_terminal_safe(title.as_bytes(), usize::MAX).text
         } else {
-            format!("{title}\n")
+            title.to_owned()
         }
+    }
+
+    fn blocked_action_guidance(&self, title: &str) -> String {
+        let hint = if self.permission_mode == PermissionMode::Auto {
+            AUTO_MODE_APPROVAL_HINT
+        } else {
+            ASK_MODE_APPROVAL_HINT
+        };
+        format!(
+            "oh-fx ask: {PERMISSION_REQUIRED_HEADLINE}\noh-fx ask: blocked action: {}\noh-fx ask: reason={PERMISSION_PROMPT_UNAVAILABLE}\noh-fx ask: {hint}\n",
+            self.display_title(title)
+        )
     }
 
     fn take_settling_progress(&mut self, call_id: &ToolCallId) -> Option<String> {
@@ -621,7 +649,9 @@ impl Presenter {
             TurnFailure::Provider(error) => {
                 self.describe_error(&error.code, error.detail.as_deref())
             }
-            TurnFailure::InvalidCompletion => self.describe_error(failure.code(), None),
+            TurnFailure::InvalidCompletion | TurnFailure::PermissionRequired(_) => {
+                self.describe_error(failure.code(), None)
+            }
             TurnFailure::StepLimitReached => Ok(FailureSummary {
                 error: None,
                 auth_failure: false,
@@ -671,6 +701,11 @@ impl Presenter {
     }
 
     fn finish(mut self, report: &TurnReport, model: &str) -> ExitCode {
+        if let (None, Some(failure @ TurnFailure::PermissionRequired(blocked))) =
+            (self.write_error, &report.failure)
+        {
+            return self.finish_blocked(failure.code(), blocked, report.usage);
+        }
         let summary = match (self.write_error, &report.failure) {
             (Some(code), _) => FailureSummary {
                 error: Some(code.to_owned()),
@@ -721,6 +756,26 @@ impl Presenter {
                 http_status: 401,
             }),
             recovery: self.recovery.as_ref().map(RecoveryRecord::new),
+        })
+    }
+
+    fn finish_blocked(mut self, code: &str, blocked: &BlockedCall, usage: Usage) -> ExitCode {
+        let error = match write_stderr(&self.blocked_action_guidance(&blocked.title)) {
+            Ok(()) => code,
+            Err(error) => write_error_name(&error),
+        };
+        self.tool_calls.push(ToolRecord::new(
+            blocked.tool_name.clone(),
+            ToolResultStatus::Failure,
+        ));
+        if self.mode != OutputMode::Json {
+            return ExitCode::FAILURE;
+        }
+        print_result(&RunResult {
+            output: &self.output,
+            tool_calls: &self.tool_calls,
+            usage: usage_record(usage),
+            ..RunResult::error(error)
         })
     }
 }
@@ -789,10 +844,13 @@ mod tests {
     }
 
     fn json_presenter() -> Presenter {
-        Presenter::new(AskOutput {
-            json: true,
-            ..AskOutput::default()
-        })
+        Presenter::new(
+            AskOutput {
+                json: true,
+                ..AskOutput::default()
+            },
+            PermissionMode::Auto,
+        )
     }
 
     #[test]
@@ -812,6 +870,22 @@ mod tests {
         assert_eq!(
             presenter.progress_line("Reading notes.txt"),
             "Reading notes.txt\n"
+        );
+    }
+
+    #[test]
+    fn blocked_actions_print_upstream_guidance_for_the_permission_mode() {
+        let mut presenter = json_presenter();
+        presenter.permission_mode = PermissionMode::Ask;
+        assert_eq!(
+            presenter.blocked_action_guidance("Reading /etc/hosts"),
+            "oh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Reading /etc/hosts\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+        );
+        presenter.permission_mode = PermissionMode::Auto;
+        presenter.mode = OutputMode::Terminal;
+        assert_eq!(
+            presenter.blocked_action_guidance("Reading /tmp/\x1b[2Jx"),
+            "oh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Reading /tmp/\\x1b[2Jx\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule\n"
         );
     }
 

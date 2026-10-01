@@ -1073,3 +1073,221 @@ fn ask_prints_read_file_progress_and_the_final_answer_in_raw_mode() {
     assert_eq!(stdout(&quiet), "");
     assert_eq!(stderr(&quiet), "Reading notes.txt\n");
 }
+
+fn settings_in_mode(base_url: &str, mode: &str) -> Value {
+    let mut settings = portkey_settings(base_url);
+    settings["permission_mode"] = json!(mode);
+    settings["yolo_acknowledged"] = json!(true);
+    settings
+}
+
+struct OutsideFile {
+    _directory: tempfile::TempDir,
+    path: String,
+}
+
+impl OutsideFile {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().expect("create a directory outside the workspace");
+        let path = directory.path().join("secret.txt");
+        fs::write(&path, "outside secret\n").expect("write the outside file");
+        Self {
+            path: canonical(&path),
+            _directory: directory,
+        }
+    }
+
+    fn read_call(&self) -> String {
+        json!({ "path": self.path }).to_string()
+    }
+}
+
+fn blocked_read_stderr(path: &str, hint: &str) -> String {
+    format!(
+        "Reading {path}\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Reading {path}\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: {hint}\n"
+    )
+}
+
+fn never_sees_the_secret(server: &FakeServer) {
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|request| !request.body_text().contains("outside secret"))
+    );
+}
+
+#[test]
+fn ask_mode_fails_the_run_instead_of_reading_an_external_path() {
+    let outside = OutsideFile::new();
+    let read = chat_tool_call_events("call_1", "read_file", &outside.read_call());
+    let server = FakeServer::start([
+        Reply::sse(&read),
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+    let hint = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
+
+    let raw = home.ask(&["ask", "read it"], &[("PORTKEY_API_KEY", PORTKEY_KEY)]);
+    assert_eq!(raw.status.code(), Some(1));
+    assert_eq!(stdout(&raw), "");
+    assert_eq!(stderr(&raw), blocked_read_stderr(&outside.path, hint));
+
+    let json = home.ask(
+        &["ask", "--json", "read it"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert_eq!(json.status.code(), Some(1));
+    assert_eq!(stderr(&json), blocked_read_stderr(&outside.path, hint));
+    assert_eq!(
+        stdout(&json),
+        "{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":\"\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[{\"name\":\"read_file\",\"status\":\"error\"}],\"usage\":{\"input_tokens\":12,\"output_tokens\":3},\"error\":\"NonInteractivePermissionRequired\"}\n"
+    );
+    assert_eq!(server.requests().len(), 2);
+    never_sees_the_secret(&server);
+}
+
+#[test]
+fn auto_mode_runs_earlier_calls_then_fails_the_run_on_an_external_read() {
+    let outside = OutsideFile::new();
+    let server = FakeServer::start([
+        Reply::sse(&parallel_tool_call_events(&[
+            ("call_1", "read_file", r#"{"path":"notes.txt"}"#),
+            ("call_2", "read_file", &outside.read_call()),
+            ("call_3", "read_file", r#"{"path":"notes.txt"}"#),
+        ])),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
+    fs::write(home.workspace.join("notes.txt"), "alpha\n").unwrap();
+
+    let output = home.ask(
+        &["ask", "--json", "read them"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "Reading notes.txt\n{}",
+            blocked_read_stderr(
+                &outside.path,
+                "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule"
+            )
+        )
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "NonInteractivePermissionRequired");
+    assert_eq!(result["exit_code"], 1);
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "read_file", "status": "success"},
+            {"name": "read_file", "status": "error"},
+        ])
+    );
+    assert_eq!(server.requests().len(), 1);
+    never_sees_the_secret(&server);
+}
+
+#[test]
+fn full_access_reads_an_external_path() {
+    let outside = OutsideFile::new();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            &outside.read_call(),
+        )),
+        Reply::sse(&chat_text_events(&["It is a secret."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "yolo"));
+
+    let output = home.ask(&["ask", "read it"], &[("PORTKEY_API_KEY", PORTKEY_KEY)]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "It is a secret.");
+    assert_eq!(stderr(&output), format!("Reading {}\n", outside.path));
+    assert_eq!(
+        tool_messages(&server.requests()[1]),
+        [json!({
+            "role": "tool",
+            "content": format!("<path>{}</path>\n<content>\n1\toutside secret\n</content>", outside.path),
+            "tool_call_id": "call_1",
+        })]
+    );
+}
+
+#[test]
+fn ask_mode_reads_workspace_files_without_approval() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"notes.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["It says alpha."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+    fs::write(home.workspace.join("notes.txt"), "alpha\n").unwrap();
+
+    let output = home.ask(
+        &["ask", "--json", "read notes.txt"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "Reading notes.txt\n");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["final_output"], "It says alpha.");
+    assert_eq!(
+        result["tool_calls"],
+        json!([{"name": "read_file", "status": "success"}])
+    );
+    assert_eq!(
+        tool_messages(&server.requests()[1]),
+        [json!({
+            "role": "tool",
+            "content": "<path>notes.txt</path>\n<content>\n1\talpha\n</content>",
+            "tool_call_id": "call_1",
+        })]
+    );
+}
+
+#[test]
+fn permission_flags_decide_whether_an_external_read_needs_approval() {
+    let outside = OutsideFile::new();
+    let read = chat_tool_call_events("call_1", "read_file", &outside.read_call());
+    let server = FakeServer::start([
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["It is a secret."])),
+        Reply::sse(&read),
+        Reply::sse(&read),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+
+    let full_access = home.ask(&["ask", "--full-access", "read it"], &KEY);
+    assert!(full_access.status.success(), "{}", stderr(&full_access));
+    assert_eq!(stdout(&full_access), "It is a secret.");
+
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "yolo"));
+    let auto = home.ask(&["ask", "--auto", "read it"], &KEY);
+    assert_eq!(auto.status.code(), Some(1));
+    assert_eq!(
+        stderr(&auto),
+        blocked_read_stderr(
+            &outside.path,
+            "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule"
+        )
+    );
+
+    let quiet = home.ask(&["ask", "--auto", "--quiet", "read it"], &KEY);
+    assert_eq!(quiet.status.code(), Some(1));
+    assert_eq!(stdout(&quiet), "");
+    assert_eq!(stderr(&quiet), stderr(&auto));
+    assert_eq!(server.requests().len(), 4);
+    assert!(
+        server.requests()[2..]
+            .iter()
+            .all(|request| !request.body_text().contains("outside secret"))
+    );
+}
