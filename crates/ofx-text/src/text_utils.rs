@@ -153,7 +153,24 @@ fn terminal_safe_token(raw: &[u8], index: usize) -> (usize, SafeToken<'_>) {
 fn is_non_printing_codepoint(codepoint: u32) -> bool {
     matches!(
         codepoint,
-        0x80..=0x9f | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x206f | 0xfeff
+        0x80..=0x9f
+            | 0xad
+            | 0x34f
+            | 0x61c
+            | 0x115f..=0x1160
+            | 0x17b4..=0x17b5
+            | 0x180b..=0x180f
+            | 0x200b..=0x200f
+            | 0x2028..=0x202e
+            | 0x2060..=0x206f
+            | 0x3164
+            | 0xfe00..=0xfe0d
+            | 0xfeff
+            | 0xffa0
+            | 0xfff0..=0xfffb
+            | 0x1bca0..=0x1bca3
+            | 0x1d173..=0x1d17a
+            | 0xe0000..=0xe0fff
     )
 }
 
@@ -545,11 +562,11 @@ fn is_quote(byte: u8) -> bool {
 }
 
 fn json_web_token(text: &[u8], start: usize) -> Option<SecretSpan> {
-    if (start > 0 && is_token_char(text[start - 1])) || !text[start..].starts_with(b"eyJ") {
+    if start > 0 && is_token_char(text[start - 1]) {
         return None;
     }
     let header_end = start + run_length(&text[start..], is_base64url_char);
-    if text.get(header_end) != Some(&b'.') {
+    if text.get(header_end) != Some(&b'.') || !opens_json_object(&text[start..header_end]) {
         return None;
     }
     let payload_end = header_end + 1 + run_length(&text[header_end + 1..], is_base64url_char);
@@ -558,6 +575,38 @@ fn json_web_token(text: &[u8], start: usize) -> Option<SecretSpan> {
     }
     let end = payload_end + 1 + run_length(&text[payload_end + 1..], is_base64url_char);
     SecretSpan::new(start, end)
+}
+
+fn opens_json_object(base64url: &[u8]) -> bool {
+    let mut significant =
+        base64url_decoded(base64url).filter(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r'));
+    significant.next() == Some(b'{') && significant.next() == Some(b'"')
+}
+
+fn base64url_decoded(base64url: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    let mut buffer = 0_u16;
+    let mut buffered_bits = 0_u32;
+    base64url.iter().filter_map(move |&character| {
+        buffer = (buffer << 6) | u16::from(base64url_value(character));
+        buffered_bits += 6;
+        if buffered_bits < 8 {
+            return None;
+        }
+        buffered_bits -= 8;
+        let byte = buffer >> buffered_bits;
+        buffer &= (1 << buffered_bits) - 1;
+        u8::try_from(byte).ok()
+    })
+}
+
+fn base64url_value(character: u8) -> u8 {
+    match character {
+        b'A'..=b'Z' => character - b'A',
+        b'a'..=b'z' => character - b'a' + 26,
+        b'0'..=b'9' => character - b'0' + 52,
+        b'-' => 62,
+        _ => 63,
+    }
 }
 
 fn secret_assignment_value_span(
@@ -942,6 +991,41 @@ mod tests {
     }
 
     #[test]
+    fn encode_terminal_safe_escapes_invisible_and_bidi_formatting_code_points() {
+        for (raw, expected) in [
+            ("x\u{061c}abc", "x\\u{061c}abc"),
+            ("soft\u{00ad}hyphen", "soft\\u{00ad}hyphen"),
+            ("a\u{2066}b\u{2069}c", "a\\u{2066}b\\u{2069}c"),
+            ("\u{202e}txt.exe", "\\u{202e}txt.exe"),
+            ("joined\u{034f}", "joined\\u{034f}"),
+            ("\u{3164}\u{ffa0}\u{115f}", "\\u{3164}\\u{ffa0}\\u{115f}"),
+            ("\u{180e}\u{fff9}", "\\u{180e}\\u{fff9}"),
+            ("\u{fe00}", "\\u{fe00}"),
+            ("hi\u{e0041}\u{e007f}", "hi\\u{e0041}\\u{e007f}"),
+            ("\u{1d173}\u{1bca0}", "\\u{1d173}\\u{1bca0}"),
+        ] {
+            assert_eq!(
+                encode_terminal_safe(raw.as_bytes(), 128).text,
+                expected,
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_terminal_safe_keeps_emoji_presentation_and_ordinary_letters() {
+        for text in [
+            "\u{2764}\u{fe0f}",
+            "\u{263a}\u{fe0e}",
+            "café",
+            "日本語",
+            "مرحبا",
+        ] {
+            assert_eq!(encode_terminal_safe(text.as_bytes(), 128).text, text);
+        }
+    }
+
+    #[test]
     fn encode_terminal_safe_reserves_a_marker_when_source_encoding_is_truncated() {
         let encoded = encode_terminal_safe(b"abcdef", 5);
         assert_eq!(encoded.text, "ab...");
@@ -1157,6 +1241,18 @@ mod tests {
                 "unsigned eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0.",
                 "unsigned [redacted]",
             ),
+            (
+                "spaced IHsiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+                "spaced [redacted]",
+            ),
+            (
+                "pretty CnsKICAiYWxnIjogIkhTMjU2Igp9.eyJzdWIiOiIxIn0.c2ln end",
+                "pretty [redacted] end",
+            ),
+            (
+                "reordered eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln",
+                "reordered [redacted]",
+            ),
         ]);
     }
 
@@ -1174,6 +1270,8 @@ mod tests {
             "docker login --password-stdin < token.txt",
             "ssh://git@github.com/org/repo",
             "eyJustAWord and eyJ.only",
+            "e0.tar.gz and ex.y.z and IHs.a.b",
+            "release v1.2.3 and archive.tar.gz",
             "printf output > ask-turn-default-auto.txt",
         ] {
             assert_eq!(mask_secrets(text), text);
@@ -1281,6 +1379,8 @@ mod tests {
             "-H 'x-api-key: $X' ",
             "@",
             "'token:",
+            "ICAg",
+            "IHsi.",
         ] {
             let text = unit.repeat(10_000);
             let _ = mask_secrets(&text);
