@@ -65,10 +65,10 @@ pub(crate) fn render(
                 format_value(metric.unit(), *value),
                 evaluate(budgets, metric, base_value, *value, trailer),
             ),
-            Some(Err(error)) => ("unavailable".to_owned(), Verdict::Fail(error.clone())),
+            Some(Err(error)) => ("unavailable".to_owned(), missing(budgets, metric, error)),
             None => (
                 "unavailable".to_owned(),
-                Verdict::Fail("not measured".to_owned()),
+                missing(budgets, metric, "not measured"),
             ),
         };
         let change = match (base_value, head_value) {
@@ -97,6 +97,20 @@ pub(crate) fn render(
     }
     text.push_str(&reasons(budgets));
     text
+}
+
+fn missing(budgets: &Budgets, metric: Metric, reason: &str) -> Verdict {
+    let can_fail = metric.step() != Step::Untracked
+        || budgets.ceiling_for(metric).is_some()
+        || budgets
+            .limits
+            .get(&metric)
+            .is_some_and(|limit| limit.severity == Severity::Fail);
+    if can_fail {
+        Verdict::Fail(reason.to_owned())
+    } else {
+        Verdict::Warn(reason.to_owned())
+    }
 }
 
 fn evaluate(
@@ -449,6 +463,9 @@ mod tests {
         assert!(text.contains("| Stripped binary |  | 4,174,736 B |  | ≤ 13,315,096 B (upstream 34f1ed1); growth < 65,536 B and < 2% | warn: no base to compare |"));
         assert!(text.contains(
             "| unavailable |  | ≤ 1,500,000; growth < 5% | **would fail**: valgrind is missing |"
+        ));
+        assert!(text.contains(
+            "| Own peak RSS, `ask \"hi\"` |  | unavailable |  | ≤ 4,096 KiB (warn) | warn: not measured |"
         ));
         assert!(text.contains("- **`ask_instructions`:** upstream runs more"));
     }

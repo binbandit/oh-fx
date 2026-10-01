@@ -14,6 +14,7 @@ base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 flate2 = "1.1.10"
 getrandom = "0.4.3"
 memchr = "2.8.3"
+nix = { version = "0.31.3", default-features = false, features = ["ptrace"] }
 ofx-agent = { path = "crates/ofx-agent" }
 ofx-auth = { path = "crates/ofx-auth" }
 ofx-cli = { path = "crates/ofx-cli" }

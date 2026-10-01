@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::io::ErrorKind;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,14 +9,15 @@ use ofx_testkit::{FakeServer, Reply};
 
 use crate::build::{ARCHIVE_FILES, BINARY};
 use crate::metric::{Metric, Readings};
+use crate::peak;
 use crate::repository;
 use crate::scenario::{
     ASK_PROMPT, Profile, STREAM_LONG, STREAM_SHORT, TOOL_PROMPT, ask_replies, stream_replies,
     tool_replies,
 };
 
-const RUN_TIMEOUT: Duration = Duration::from_mins(5);
-const POLL: Duration = Duration::from_millis(1);
+pub(crate) const RUN_TIMEOUT: Duration = Duration::from_mins(5);
+pub(crate) const POLL: Duration = Duration::from_millis(1);
 const STREAM_RUNS: usize = 3;
 const RSS_RUNS: usize = 3;
 const CA_STORE_PREFIXES: [&str; 7] = [
@@ -31,7 +32,12 @@ const CA_STORE_PREFIXES: [&str; 7] = [
 
 struct Finished {
     stderr: String,
-    peak_rss_kib: u64,
+}
+
+pub(crate) struct Spawned {
+    pub(crate) child: Child,
+    pub(crate) program: String,
+    pub(crate) stderr_path: PathBuf,
 }
 
 pub(crate) fn measure(release: &Path) -> Readings {
@@ -235,31 +241,23 @@ fn peak_rss(
 ) -> Result<u64, String> {
     let mut peak = 0;
     for _ in 0..RSS_RUNS {
-        let finished = served(profile, replies(), || {
+        let run_peak = served(profile, replies(), || {
             let mut command = profile.command(binary);
             command.args(args);
-            run(profile, command)
+            peak::exit_peak_rss_kib(profile.path(), command)
         })?;
-        peak = peak.max(finished.peak_rss_kib);
+        peak = peak.max(run_peak);
     }
-    if peak == 0 {
-        Err("exited before its memory could be sampled".to_owned())
-    } else {
-        Ok(peak)
-    }
+    Ok(peak)
 }
 
-fn run(profile: &Profile, mut command: Command) -> Result<Finished, String> {
-    let stdout = output_file(&profile.path().join("stdout.log"))?;
-    let stderr_path = profile.path().join("stderr.log");
-    let stderr = output_file(&stderr_path)?;
-    command.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
-    let program = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("run {program}: {error}"))?;
+fn run(profile: &Profile, command: Command) -> Result<Finished, String> {
+    let Spawned {
+        mut child,
+        program,
+        stderr_path,
+    } = spawn_logged(profile.path(), command)?;
     let deadline = Instant::now() + RUN_TIMEOUT;
-    let mut peak_rss_kib = 0;
     let status = loop {
         if let Some(status) = child
             .try_wait()
@@ -267,7 +265,6 @@ fn run(profile: &Profile, mut command: Command) -> Result<Finished, String> {
         {
             break status;
         }
-        peak_rss_kib = peak_rss_kib.max(own_peak_rss_kib(child.id()).unwrap_or(0));
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
@@ -275,30 +272,38 @@ fn run(profile: &Profile, mut command: Command) -> Result<Finished, String> {
         }
         thread::sleep(POLL);
     };
-    let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
     if status.success() {
         Ok(Finished {
-            stderr,
-            peak_rss_kib,
+            stderr: fs::read_to_string(&stderr_path).unwrap_or_default(),
         })
     } else {
-        Err(format!(
-            "{program} exited with {status}: {}",
-            last_line(&stderr)
-        ))
+        Err(exit_failure(&program, &status.to_string(), &stderr_path))
     }
+}
+
+pub(crate) fn spawn_logged(dir: &Path, mut command: Command) -> Result<Spawned, String> {
+    let stdout = output_file(&dir.join("stdout.log"))?;
+    let stderr_path = dir.join("stderr.log");
+    let stderr = output_file(&stderr_path)?;
+    command.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
+    let program = command.get_program().to_string_lossy().into_owned();
+    let child = command
+        .spawn()
+        .map_err(|error| format!("run {program}: {error}"))?;
+    Ok(Spawned {
+        child,
+        program,
+        stderr_path,
+    })
+}
+
+pub(crate) fn exit_failure(program: &str, how: &str, stderr_path: &Path) -> String {
+    let stderr = fs::read_to_string(stderr_path).unwrap_or_default();
+    format!("{program} exited with {how}: {}", last_line(&stderr))
 }
 
 fn output_file(path: &Path) -> Result<File, String> {
     File::create(path).map_err(|error| format!("create {}: {error}", path.display()))
-}
-
-fn own_peak_rss_kib(pid: u32) -> Option<u64> {
-    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmHWM:"))
-        .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
 }
 
 fn last_line(text: &str) -> &str {

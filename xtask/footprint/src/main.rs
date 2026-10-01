@@ -2,6 +2,7 @@ mod budgets;
 mod build;
 mod measure;
 mod metric;
+mod peak;
 mod report;
 mod repository;
 mod scenario;
