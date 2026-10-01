@@ -1,0 +1,32 @@
+merge_queue:
+  mode: serial
+  max_parallel_checks: 2
+
+queue_rules:
+  - name: main
+    queue_conditions:
+      - base = main
+      - -draft
+      # Review the source PR once, including PRs authored by Pullfrog itself.
+      - check-success = @pullfrog/pullfrog
+      - check-success = @pullfrog/pullfrog-approval
+    merge_conditions:
+      # Temporary integration PRs rerun CI without another Pullfrog review.
+      - check-success = @github-actions/Repository checks
+    merge_method: squash
+    update_method: rebase
+    batch_size: 1
+    max_checks_retries: 2
+
+merge_protections_settings:
+  post_comment: false
+  auto_merge_conditions:
+    - base = main
+    - -draft
+
+merge_protections:
+  - name: Resolve requested changes
+    if:
+      - base = main
+    success_conditions:
+      - "#changes-requested-reviews-by = 0"
