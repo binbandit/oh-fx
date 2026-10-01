@@ -10,9 +10,8 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::ExitStatusExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::process::Child;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{PoisonError, RwLock};
 
 #[cfg(target_os = "linux")]
 use rustix::fs::{Mode, OFlags};
@@ -30,19 +29,29 @@ use ofx_cli::{HelpStyle, TopLevelKind, render_command_help, render_top_level_hel
 const SIGPIPE: i32 = 13;
 const SIGKILL: i32 = 9;
 
+static FORKS: RwLock<()> = RwLock::new(());
+
+fn spawn(command: &mut Command) -> Child {
+    let _forking = FORKS.read().unwrap_or_else(PoisonError::into_inner);
+    command.spawn().expect("run oh-fx")
+}
+
 fn run<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)], stdout: Stdio) -> Output {
     let home = tempfile::tempdir().expect("create a temporary home");
-    Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args(args)
-        .current_dir(home.path())
-        .env_clear()
-        .env("HOME", home.path())
-        .env("OH_FX_AUTO_UPGRADE", "0")
-        .envs(environment.iter().copied())
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .output()
-        .expect("run oh-fx")
+    spawn(
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(args)
+            .current_dir(home.path())
+            .env_clear()
+            .env("HOME", home.path())
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .envs(environment.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .expect("wait for oh-fx")
 }
 
 fn oh_fx<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)]) -> Output {
@@ -56,8 +65,12 @@ fn into_full_device(args: &[&str]) -> Output {
 }
 
 fn into_closed_pipe(args: &[&str]) -> Output {
-    let (reader, writer) = io::pipe().expect("create a pipe");
-    drop(reader);
+    let writer = {
+        let _no_forks = FORKS.write().unwrap_or_else(PoisonError::into_inner);
+        let (reader, writer) = io::pipe().expect("create a pipe");
+        drop(reader);
+        writer
+    };
     run(args, &[], Stdio::from(writer))
 }
 
@@ -414,18 +427,18 @@ fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
 
 #[cfg(target_os = "linux")]
 fn spawn_into(home: &Path, args: &[&str], environment: &[(&str, &str)], stdout: OwnedFd) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args(args)
-        .current_dir(home)
-        .env_clear()
-        .env("HOME", home)
-        .env("OH_FX_AUTO_UPGRADE", "0")
-        .envs(environment.iter().copied())
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("run oh-fx")
+    spawn(
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(args)
+            .current_dir(home)
+            .env_clear()
+            .env("HOME", home)
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .envs(environment.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(Stdio::null()),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -522,21 +535,21 @@ fn top_level_help_on_a_terminal_follows_its_width_and_color_settings() {
 }
 
 fn run_released_session(script: &str) -> Output {
-    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args([
-            "__oh_fx_foreground_session__",
-            "none",
-            "/bin/sh",
-            "-c",
-            script,
-        ])
-        .env_clear()
-        .env("PATH", env::var_os("PATH").unwrap_or_default())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start the supervisor");
+    let mut supervisor = spawn(
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args([
+                "__oh_fx_foreground_session__",
+                "none",
+                "/bin/sh",
+                "-c",
+                script,
+            ])
+            .env_clear()
+            .env("PATH", env::var_os("PATH").unwrap_or_default())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     let mut input = supervisor.stdin.take().expect("supervisor input");
     let mut release = vec![b'a'; 32];
     release.push(0x06);
@@ -579,18 +592,22 @@ fn the_hidden_session_supervisor_kills_leftover_jobs_when_the_command_exits() {
 
 #[test]
 fn the_hidden_session_supervisor_runs_nothing_without_a_release() {
-    let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args([
-            "__oh_fx_foreground_session__",
-            "none",
-            "/bin/sh",
-            "-c",
-            "printf ran",
-        ])
-        .env_clear()
-        .stdin(Stdio::null())
-        .output()
-        .expect("run the supervisor");
+    let output = spawn(
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args([
+                "__oh_fx_foreground_session__",
+                "none",
+                "/bin/sh",
+                "-c",
+                "printf ran",
+            ])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .expect("run the supervisor");
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stdout(&output), "");
     assert_eq!(output.stderr, b"\x1e");
