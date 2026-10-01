@@ -47,6 +47,7 @@ This points git at `.githooks/`: `pre-commit` runs `cargo xtask style`, `commit-
 - `cargo xtask lint`: `style` plus clippy with warnings denied.
 - `cargo xtask test`: the workspace tests.
 - `cargo xtask ci`: `lint` and `test`. CI runs the same commands, plus `cargo machete` for unused dependencies.
+- `cargo xtask footprint`: runs the `xtask-footprint` package, which builds the musl release at `HEAD` and at its merge base with `origin/main`, then reports binary size, startup instructions, CA store and git use, and peak memory against `budgets.toml`. It needs `musl-gcc`, `valgrind`, and `strace`. The `Footprint` CI job runs it for every pull request and push to `main` and only reports for now. Every budget carries a `reason`, and a pull request that grows past the steps in `[pull_request]` says why in a `Footprint-Budget:` line of its description.
 
 ## Code rules
 

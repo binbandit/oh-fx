@@ -8,7 +8,7 @@ mod workspace_files;
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask <style | lint | test | ci | attribution <file> | commit-msg <file> | subjects <file> | title <file> | hooks>";
+const USAGE: &str = "usage: cargo xtask <style | lint | test | ci | attribution <file> | commit-msg <file> | subjects <file> | title <file> | hooks | footprint [--base <commit>] [--summary <file>] [--pr-body <file>]>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -23,6 +23,7 @@ fn main() -> ExitCode {
         ["subjects", path] => conventional::check_subjects_file(Path::new(path)),
         ["title", path] => conventional::check_title_file(Path::new(path)),
         ["hooks"] => pipeline::install_hooks(),
+        ["footprint", options @ ..] => pipeline::footprint(options),
         _ => Err(USAGE.to_owned()),
     };
     match outcome {
