@@ -45,6 +45,7 @@ tar = "0.4.46"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["rt"] }
+tokio-rustls = { version = "0.26.6", default-features = false }
 tokio-util = "0.7.19"
 unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.13.3"

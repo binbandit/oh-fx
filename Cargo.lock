@@ -730,10 +730,13 @@ dependencies = [
 name = "ofx-http"
 version = "0.1.0"
 dependencies = [
+ "ofx-testkit",
  "reqwest",
+ "rustix",
  "rustls",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -762,8 +765,10 @@ version = "0.1.0"
 name = "ofx-testkit"
 version = "0.1.0"
 dependencies = [
+ "rustls",
  "serde_json",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

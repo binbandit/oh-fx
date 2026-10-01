@@ -424,6 +424,102 @@ fn sign_in_redirects_are_not_followed_and_explain_the_base_url() {
     assert!(identity_provider.requests().is_empty());
 }
 
+#[cfg(target_os = "linux")]
+fn tls_settings(base_url: &str, ca_file: Option<&Path>) -> Value {
+    let mut settings = portkey_settings(base_url);
+    if let Some(path) = ca_file {
+        settings["providers"]["portkey"]["tls"] = json!({"ca_file": path});
+    }
+    settings
+}
+
+#[cfg(target_os = "linux")]
+fn write_pem(home: &Home, name: &str, pem: &str) -> PathBuf {
+    let path = home.root.join(name);
+    fs::write(&path, pem).expect("write a PEM file");
+    path
+}
+
+#[test]
+fn plain_http_requests_never_read_the_tls_roots() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Hello."]))]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let missing = home.root.join("missing.pem");
+    let missing = missing.to_str().unwrap();
+    let output = home.ask(
+        &["ask", "hi"],
+        &[
+            KEY[0],
+            ("SSL_CERT_FILE", missing),
+            ("SSL_CERT_DIR", missing),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Hello.");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn https_requests_trust_ssl_cert_file_and_offer_only_http_1_1() {
+    let server = FakeServer::start_tls([Reply::sse(&chat_text_events(&["Secure."]))]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let roots = write_pem(&home, "roots.pem", ofx_testkit::TEST_CA_PEM);
+    let output = home.ask(
+        &["ask", "hi"],
+        &[KEY[0], ("SSL_CERT_FILE", roots.to_str().unwrap())],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Secure.");
+    assert_eq!(server.offered_protocols(), [vec!["http/1.1".to_owned()]]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn tls_ca_file_roots_are_merged_with_the_system_roots() {
+    for (system, ca_file) in [
+        (ofx_testkit::OTHER_CA_PEM, ofx_testkit::TEST_CA_PEM),
+        (ofx_testkit::TEST_CA_PEM, ofx_testkit::OTHER_CA_PEM),
+    ] {
+        let server = FakeServer::start_tls([Reply::sse(&chat_text_events(&["Merged."]))]);
+        let home = Home::with_settings(&json!({}));
+        let ca_file = write_pem(&home, "ca-file.pem", ca_file);
+        let system = write_pem(&home, "system.pem", system);
+        fs::write(
+            home.root.join("config/oh-fx/settings.json"),
+            tls_settings(&server.base_url(), Some(&ca_file)).to_string(),
+        )
+        .unwrap();
+        let output = home.ask(
+            &["ask", "hi"],
+            &[KEY[0], ("SSL_CERT_FILE", system.to_str().unwrap())],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(stdout(&output), "Merged.");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unreadable_tls_roots_fail_once_with_a_named_error() {
+    let server = FakeServer::start_tls([Reply::sse(&chat_text_events(&["Unreachable."]))]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let missing = home.root.join("missing.pem");
+    let output = home.ask(
+        &["ask", "hi"],
+        &[KEY[0], ("SSL_CERT_FILE", missing.to_str().unwrap())],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "oh-fx: CertificateBundleLoadFailure\noh-fx ask: no CA certificates found at {}\n",
+            missing.display()
+        )
+    );
+    assert_eq!(server.offered_protocols().len(), 1);
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn config_diagnostics_print_only_for_usable_profiles_in_every_mode() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["ok"]))]);
