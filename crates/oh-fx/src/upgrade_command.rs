@@ -52,8 +52,12 @@ async fn upgrade(
     options: UpgradeOptions,
     lock: &UpgradeLock,
 ) -> Result<UpgradeOutcome, UpgradeError> {
-    let user_agent = format!("oh-fx/{}", ofx_upgrade::VERSION);
-    let client = ofx_http::build_client(&user_agent).map_err(|_| UpgradeError::FetchFailed)?;
+    let client = ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
+        user_agent: format!("oh-fx/{}", ofx_upgrade::VERSION),
+        follow_redirects: true,
+        ..ofx_http::ConnectionOptions::default()
+    })
+    .map_err(|_| UpgradeError::FetchFailed)?;
     let mut progress = ProgressLine::new(!options.json && !options.background);
     let outcome = ofx_upgrade::upgrade(&client, lock, |update| progress.show(update)).await;
     progress.clear();
