@@ -6,10 +6,19 @@ use std::path::{Path, PathBuf};
 
 use crate::path_error::PathError;
 
+mod file_identity;
+mod file_mutation_target;
+
+pub use file_identity::{
+    FileIdentity, FileKind, descriptor_identity, entry_identity, open_child_directory,
+    open_directory,
+};
+pub use file_mutation_target::{FileMutationTarget, TargetMode, resolve_file_mutation_target};
+
 #[cfg(target_os = "macos")]
-pub(crate) const MAX_PATH_BYTES: usize = 1024;
+pub const MAX_PATH_BYTES: usize = 1024;
 #[cfg(not(target_os = "macos"))]
-pub(crate) const MAX_PATH_BYTES: usize = 4096;
+pub const MAX_PATH_BYTES: usize = 4096;
 
 pub const PATH_ENTRY_WHITESPACE: &[char] = &[' ', '\t', '\r', '\n'];
 const SEPARATOR: u8 = b'/';

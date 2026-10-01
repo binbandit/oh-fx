@@ -1,6 +1,7 @@
 mod glob_files;
 mod grep_files;
 mod read_file;
+mod write_file;
 
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use serde_json::Value;
 pub use glob_files::GlobFiles;
 pub use grep_files::GrepFiles;
 pub use read_file::ReadFile;
+pub use write_file::WriteFile;
 
 const DEFAULT_MAX_LIST_ENTRIES: usize = 100;
 const DEFAULT_MAX_READ_FILE_LINES: usize = 400;
