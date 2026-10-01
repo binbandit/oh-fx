@@ -27,7 +27,7 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
             oauth
                 .run_login(&mut io::stdout(), open_browser, &CancellationToken::new())
                 .await?;
-            Ok(prepare_chatgpt_credential(&oauth).await)
+            Ok(prepare_chatgpt_credential(&oauth, &CancellationToken::new()).await)
         })
     });
     let failure = match signed_in {

@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::path::PathBuf;
+use std::pin::pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -35,6 +36,7 @@ const CALLBACK_HOST: &str = "127.0.0.1";
 const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 const CALLBACK_PREFIX: &str = "/auth/callback?";
 const MILLISECONDS_PER_SECOND: i64 = 1000;
+const REFRESH_CANCEL_GRACE: Duration = Duration::from_secs(2);
 const TERMINAL_REFRESH_CODES: [&str; 4] = [
     "\"refresh_token_expired\"",
     "\"refresh_token_reused\"",
@@ -247,15 +249,21 @@ impl ChatGptOAuth {
     pub(crate) async fn load_access(
         &self,
         mode: RefreshMode,
+        cancel: &CancellationToken,
     ) -> Result<Option<ChatGptAccess>, ChatGptError> {
-        let Some(mutation) = self.store.begin_existing_mutation().await? else {
+        let begun = tokio::select! {
+            biased;
+            begun = self.store.begin_existing_mutation() => begun,
+            () = cancel.cancelled() => Err(ChatGptError::Cancelled),
+        };
+        let Some(mutation) = begun? else {
             return Ok(None);
         };
         let Some(mut session) = mutation.load()? else {
             return Ok(None);
         };
         if mode == RefreshMode::Force || session.expired(now_ms()) {
-            session = self.refresh_session(&mutation, &session).await?;
+            session = self.refresh_session(&mutation, &session, cancel).await?;
         }
         Ok(Some(take_access(session)))
     }
@@ -331,6 +339,7 @@ impl ChatGptOAuth {
         &self,
         mutation: &Mutation,
         session: &Session,
+        cancel: &CancellationToken,
     ) -> Result<Session, ChatGptError> {
         mutation.require_writable()?;
         let payload = Zeroizing::new(format!(
@@ -338,7 +347,7 @@ impl ChatGptOAuth {
             Value::String(CLIENT_ID.to_owned()),
             *Zeroizing::new(Value::String(session.refresh_token.expose().to_owned()).to_string()),
         ));
-        let token = match self.request_refresh_token(&payload).await {
+        let token = match self.request_refresh_token(&payload, cancel).await {
             Ok(token) => token,
             Err(
                 ChatGptError::CredentialRefreshRejected | ChatGptError::InvalidChatGptOAuthResponse,
@@ -369,11 +378,23 @@ impl ChatGptOAuth {
     async fn request_refresh_token(
         &self,
         payload: &str,
+        cancel: &CancellationToken,
     ) -> Result<RefreshTokenResponse, ChatGptError> {
-        let response = self
-            .transport
-            .execute(Method::PostJson, &self.endpoints.token_url, payload)
-            .await?;
+        if cancel.is_cancelled() {
+            return Err(ChatGptError::Cancelled);
+        }
+        let mut exchange = pin!(self.transport.execute(
+            Method::PostJson,
+            &self.endpoints.token_url,
+            payload
+        ));
+        let response = tokio::select! {
+            biased;
+            response = &mut exchange => response?,
+            () = cancel.cancelled() => tokio::time::timeout(REFRESH_CANCEL_GRACE, exchange)
+                .await
+                .map_err(|_| ChatGptError::Cancelled)??,
+        };
         if !response.accepted {
             return Err(if chatgpt_refresh_requires_sign_in(&response.body) {
                 ChatGptError::CredentialRefreshRejected

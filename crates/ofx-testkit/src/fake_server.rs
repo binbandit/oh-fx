@@ -3,6 +3,7 @@ use std::fmt::Write;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,6 +23,7 @@ pub enum Reply {
         headers: Vec<(String, String)>,
         body: String,
         hold_open: bool,
+        delay: Duration,
     },
     CutOff {
         status: u16,
@@ -60,6 +62,7 @@ impl Reply {
             headers: owned_headers(headers),
             body: body.into(),
             hold_open: false,
+            delay: Duration::ZERO,
         }
     }
 
@@ -73,6 +76,17 @@ impl Reply {
             headers: owned_headers(headers),
             body: body.into(),
             hold_open: true,
+            delay: Duration::ZERO,
+        }
+    }
+
+    pub fn delayed_status(status: u16, body: impl Into<String>, delay: Duration) -> Self {
+        Self::Status {
+            status,
+            headers: Vec::new(),
+            body: body.into(),
+            hold_open: false,
+            delay,
         }
     }
 
@@ -228,7 +242,11 @@ async fn handle(
             headers,
             body,
             hold_open,
+            delay,
         } => {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             let mut head = format!("HTTP/1.1 {status} Scripted\r\nConnection: close\r\n");
             if !hold_open {
                 let _ = write!(head, "Content-Length: {}\r\n", body.len());
@@ -347,6 +365,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpStream as StdTcpStream;
+    use std::time::Instant;
 
     use super::*;
 
@@ -393,6 +412,17 @@ mod tests {
         assert!(limited.contains("Content-Type: application/json"));
         let missing = exchange(&server, "GET / HTTP/1.1\r\n\r\n");
         assert!(missing.starts_with("HTTP/1.1 500"));
+    }
+
+    #[test]
+    fn delays_scripted_statuses() {
+        let delay = Duration::from_millis(100);
+        let server = FakeServer::start([Reply::delayed_status(200, "{}", delay)]);
+        let started = Instant::now();
+        let response = exchange(&server, "GET / HTTP/1.1\r\n\r\n");
+        assert!(started.elapsed() >= delay);
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.ends_with("{}"));
     }
 
     #[test]

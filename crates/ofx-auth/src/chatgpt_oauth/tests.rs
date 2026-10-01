@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ofx_testkit::{FakeServer, Reply};
 
 use super::*;
@@ -43,6 +45,35 @@ fn stored_session(access_token: &str, expires_at_ms: i64) -> Session {
     }
 }
 
+async fn expired_login(oauth: &ChatGptOAuth) {
+    oauth
+        .store
+        .save_new_session(&stored_session(&account_token("acct_test"), 1))
+        .await
+        .unwrap();
+}
+
+async fn saved_refresh_token(oauth: &ChatGptOAuth) -> String {
+    saved_session(oauth)
+        .await
+        .unwrap()
+        .refresh_token
+        .expose()
+        .to_owned()
+}
+
+async fn requested(server: &FakeServer) -> Instant {
+    let started = Instant::now();
+    while server.requests().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the refresh never reached the token endpoint"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    Instant::now()
+}
+
 #[test]
 fn chatgpt_account_id_is_extracted_from_the_namespaced_jwt_claim() {
     let token =
@@ -73,6 +104,7 @@ async fn codex_refresh_uses_json_and_accepts_omitted_token_rotation_and_lifetime
     let response = oauth
         .request_refresh_token(
             r#"{"client_id":"client","grant_type":"refresh_token","refresh_token":"refresh"}"#,
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -202,7 +234,7 @@ async fn refresh_replaces_an_expired_session_and_persists_the_rotation() {
         .await
         .unwrap();
     let access = oauth
-        .load_access(RefreshMode::IfNeeded)
+        .load_access(RefreshMode::IfNeeded, &CancellationToken::new())
         .await
         .unwrap()
         .unwrap();
@@ -230,7 +262,7 @@ async fn unexpired_sessions_are_returned_without_a_refresh() {
         .await
         .unwrap();
     let access = oauth
-        .load_access(RefreshMode::IfNeeded)
+        .load_access(RefreshMode::IfNeeded, &CancellationToken::new())
         .await
         .unwrap()
         .unwrap();
@@ -252,7 +284,10 @@ async fn terminal_refresh_rejections_retire_the_session() {
         .await
         .unwrap();
     assert_eq!(
-        oauth.load_access(RefreshMode::IfNeeded).await.unwrap_err(),
+        oauth
+            .load_access(RefreshMode::IfNeeded, &CancellationToken::new())
+            .await
+            .unwrap_err(),
         ChatGptError::CredentialRefreshRejected
     );
     assert!(saved_session(&oauth).await.is_none());
@@ -269,7 +304,10 @@ async fn transient_refresh_failures_keep_the_session() {
         .await
         .unwrap();
     assert_eq!(
-        oauth.load_access(RefreshMode::Force).await.unwrap_err(),
+        oauth
+            .load_access(RefreshMode::Force, &CancellationToken::new())
+            .await
+            .unwrap_err(),
         ChatGptError::ChatGptOAuthRequestFailed
     );
     assert!(saved_session(&oauth).await.is_some());
@@ -290,10 +328,103 @@ async fn refreshed_tokens_for_another_account_retire_the_session() {
         .await
         .unwrap();
     assert_eq!(
-        oauth.load_access(RefreshMode::Force).await.unwrap_err(),
+        oauth
+            .load_access(RefreshMode::Force, &CancellationToken::new())
+            .await
+            .unwrap_err(),
         ChatGptError::ChatGptAccountChanged
     );
     assert!(saved_session(&oauth).await.is_none());
+}
+
+#[tokio::test]
+async fn a_cancelled_load_never_starts_a_refresh() {
+    let server = FakeServer::start([]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("oh-fx"));
+    expired_login(&oauth).await;
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert_eq!(
+        oauth
+            .load_access(RefreshMode::IfNeeded, &cancel)
+            .await
+            .unwrap_err(),
+        ChatGptError::Cancelled
+    );
+    assert!(server.requests().is_empty());
+    assert_eq!(saved_refresh_token(&oauth).await, "refresh-original");
+}
+
+#[tokio::test]
+async fn a_cancelled_load_stops_waiting_for_a_held_lock() {
+    let server = FakeServer::start([]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("oh-fx"));
+    expired_login(&oauth).await;
+    let held = oauth
+        .store
+        .begin_existing_mutation()
+        .await
+        .unwrap()
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let interrupt = async {
+        tokio::task::yield_now().await;
+        cancel.cancel();
+    };
+    let (loaded, ()) = tokio::join!(oauth.load_access(RefreshMode::IfNeeded, &cancel), interrupt);
+    assert_eq!(loaded.unwrap_err(), ChatGptError::Cancelled);
+    drop(held);
+    assert!(server.requests().is_empty());
+    assert_eq!(saved_refresh_token(&oauth).await, "refresh-original");
+}
+
+#[tokio::test]
+async fn a_cancelled_refresh_stops_waiting_for_a_stalled_token_endpoint() {
+    let server = FakeServer::start([Reply::held_status_with_headers(200, &[], "")]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("oh-fx"));
+    expired_login(&oauth).await;
+    let cancel = CancellationToken::new();
+    let interrupt = async {
+        let cancelled = requested(&server).await;
+        cancel.cancel();
+        cancelled
+    };
+    let (loaded, cancelled) =
+        tokio::join!(oauth.load_access(RefreshMode::IfNeeded, &cancel), interrupt);
+    assert_eq!(loaded.unwrap_err(), ChatGptError::Cancelled);
+    let waited = cancelled.elapsed();
+    assert!(waited >= REFRESH_CANCEL_GRACE, "{waited:?}");
+    assert!(waited < Duration::from_secs(10), "{waited:?}");
+    assert_eq!(saved_refresh_token(&oauth).await, "refresh-original");
+}
+
+#[tokio::test]
+async fn a_refresh_answered_within_the_cancel_grace_is_saved() {
+    let fresh = account_token("acct_test");
+    let server = FakeServer::start([Reply::delayed_status(
+        200,
+        serde_json::json!({"access_token": fresh, "refresh_token": "refresh-rotated", "expires_in": 3600}).to_string(),
+        REFRESH_CANCEL_GRACE / 2,
+    )]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("oh-fx"));
+    expired_login(&oauth).await;
+    let cancel = CancellationToken::new();
+    let interrupt = async {
+        requested(&server).await;
+        cancel.cancel();
+    };
+    let load = async {
+        let loaded = oauth.load_access(RefreshMode::IfNeeded, &cancel).await;
+        (loaded, cancel.is_cancelled())
+    };
+    let ((loaded, cancelled_when_loaded), ()) = tokio::join!(load, interrupt);
+    assert!(cancelled_when_loaded, "the reply arrived before the cancel");
+    assert_eq!(loaded.unwrap().unwrap().access_token(), fresh);
+    assert_eq!(saved_refresh_token(&oauth).await, "refresh-rotated");
 }
 
 #[test]

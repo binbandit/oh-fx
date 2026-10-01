@@ -8,6 +8,7 @@ use ofx_auth::{
 use ofx_contract::BoxFuture;
 use ofx_gateway::{CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh};
 use ofx_http::ClientError;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SubscriptionEndpoints {
@@ -50,6 +51,7 @@ pub(crate) async fn codex_provider(
     data_directory: Option<PathBuf>,
     user_agent: &str,
     endpoints: SubscriptionEndpoints,
+    cancel: &CancellationToken,
 ) -> Result<CodexProvider, CodexUnavailable> {
     let data_directory = data_directory.ok_or(CodexUnavailable::Preparation(
         PreparationError::CredentialStorageUnavailable,
@@ -57,7 +59,7 @@ pub(crate) async fn codex_provider(
     let oauth = ChatGptOAuth::new(data_directory, user_agent, endpoints.chatgpt).map_err(|_| {
         CodexUnavailable::Preparation(PreparationError::CredentialTemporarilyUnavailable)
     })?;
-    let access = prepare_chatgpt_credential(&oauth)
+    let access = prepare_chatgpt_credential(&oauth, cancel)
         .await
         .map_err(CodexUnavailable::Preparation)?
         .ok_or(CodexUnavailable::MissingLogin)?;

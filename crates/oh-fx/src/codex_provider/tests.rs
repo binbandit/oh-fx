@@ -86,7 +86,13 @@ impl Fixture {
                 responses: format!("{}/backend-api/codex/responses", codex.base_url()),
             },
         };
-        codex_provider(Some(self.data.clone()), "oh-fx/test", endpoints).await
+        codex_provider(
+            Some(self.data.clone()),
+            "oh-fx/test",
+            endpoints,
+            &CancellationToken::new(),
+        )
+        .await
     }
 
     fn canonical_workspace(&self) -> PathBuf {
@@ -444,7 +450,13 @@ async fn missing_expired_and_unsafe_logins_never_build_a_provider() {
     ));
 
     assert!(matches!(
-        codex_provider(None, "oh-fx/test", SubscriptionEndpoints::default()).await,
+        codex_provider(
+            None,
+            "oh-fx/test",
+            SubscriptionEndpoints::default(),
+            &CancellationToken::new()
+        )
+        .await,
         Err(CodexUnavailable::Preparation(
             PreparationError::CredentialStorageUnavailable
         ))
