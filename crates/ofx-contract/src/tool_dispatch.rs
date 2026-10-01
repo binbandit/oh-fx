@@ -58,6 +58,7 @@ pub struct CallDescription {
 pub struct ToolOutput {
     pub status: ToolResultStatus,
     pub content: String,
+    pub command_result: Option<String>,
 }
 
 impl ToolOutput {
@@ -65,6 +66,7 @@ impl ToolOutput {
         Self {
             status: ToolResultStatus::Success,
             content: content.into(),
+            command_result: None,
         }
     }
 
@@ -72,7 +74,14 @@ impl ToolOutput {
         Self {
             status: ToolResultStatus::Failure,
             content: content.into(),
+            command_result: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_command_result(mut self, command_result: Option<String>) -> Self {
+        self.command_result = command_result;
+        self
     }
 }
 

@@ -357,3 +357,64 @@ fn runtime_failures_name_the_error() {
         r#"{"error":{"tool":"shell","code":"ExecutionNotFound","retryable":false}}"#
     );
 }
+
+#[test]
+fn finished_snapshots_report_upstream_command_results_byte_for_byte() {
+    let built = Snapshot {
+        command: "printf 'built\\n'; exit 3".to_owned(),
+        cwd: "/work/space".into(),
+        duration_ms: Some(12),
+        stdout_bytes: 6,
+        ..snapshot(completed(3), b"built\n")
+    };
+    assert_eq!(
+        command_result(&built).as_deref(),
+        Some(
+            r#"{"kind":"command","command":"printf 'built\\n'; exit 3","cwd":"/work/space","exit_code":3,"signal":null,"timed_out":false,"duration_ms":12,"stdout_bytes":6,"stderr_bytes":0,"truncated":false,"output_file":null,"stdout_file":null,"stderr_file":null}"#
+        )
+    );
+    let timed_out = Snapshot {
+        command: "sleep 60".to_owned(),
+        output_truncated: true,
+        stdout_bytes: 0,
+        error_name: Some("TimeoutExpired"),
+        ..snapshot(SnapshotState::Stopped(None), b"")
+    };
+    assert_eq!(
+        command_result(&timed_out).as_deref(),
+        Some(
+            r#"{"kind":"command","command":"sleep 60","cwd":"/tmp","exit_code":null,"signal":null,"timed_out":true,"duration_ms":null,"stdout_bytes":0,"stderr_bytes":0,"truncated":true,"output_file":null,"stdout_file":null,"stderr_file":null}"#
+        )
+    );
+    let lost = Snapshot {
+        command: "x\u{1b}\"y".to_owned(),
+        cwd: "/tmp/é".into(),
+        output_incomplete: true,
+        stdout_bytes: 70_000,
+        stderr_bytes: 3,
+        ..snapshot(SnapshotState::Lost, b"")
+    };
+    assert_eq!(
+        command_result(&lost).as_deref(),
+        Some(
+            r#"{"kind":"command","command":"x\u001b\"y","cwd":"/tmp/é","exit_code":null,"signal":null,"timed_out":false,"termination_indeterminate":true,"output_incomplete":true,"duration_ms":null,"stdout_bytes":70000,"stderr_bytes":3,"truncated":false,"output_file":null,"stdout_file":null,"stderr_file":null}"#
+        )
+    );
+    let killed = Snapshot {
+        command: "kill -9 $$".to_owned(),
+        cwd: "/".into(),
+        duration_ms: Some(0),
+        stdout_bytes: 0,
+        ..snapshot(SnapshotState::Stopped(Some(CommandStatus::Signal(9))), b"")
+    };
+    assert_eq!(
+        command_result(&killed).as_deref(),
+        Some(
+            r#"{"kind":"command","command":"kill -9 $$","cwd":"/","exit_code":null,"signal":9,"timed_out":false,"duration_ms":0,"stdout_bytes":0,"stderr_bytes":0,"truncated":false,"output_file":null,"stdout_file":null,"stderr_file":null}"#
+        )
+    );
+    assert_eq!(
+        command_result(&snapshot(SnapshotState::Running, b"partial")),
+        None
+    );
+}

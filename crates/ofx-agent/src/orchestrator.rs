@@ -51,6 +51,7 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockedCall {
     pub tool_name: String,
+    pub arguments: String,
     pub title: String,
 }
 
@@ -710,6 +711,7 @@ async fn run_group<'c>(
                 if admission == Admission::ApprovalRequired {
                     blocked = Some(BlockedCall {
                         tool_name: call.name.clone(),
+                        arguments: call.arguments.clone(),
                         title: description.title.clone(),
                     });
                 }
@@ -746,30 +748,32 @@ async fn run_group<'c>(
         let output = match dispatched {
             Dispatched::Rejected(output) => Some(output),
             Dispatched::Held(output) => {
-                events(UiEvent::ToolFinished {
-                    turn_id,
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    status: output.status,
-                });
+                events(tool_finished(turn_id, call, Some(&output)));
                 Some(output)
             }
             Dispatched::Running(mut task) => {
                 let output = settle(call, &mut task, cancel, &mut grace_deadline).await;
-                events(UiEvent::ToolFinished {
-                    turn_id,
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    status: output
-                        .as_ref()
-                        .map_or(ToolResultStatus::Failure, |output| output.status),
-                });
+                events(tool_finished(turn_id, call, output.as_ref()));
                 output
             }
         };
         outcomes.push((call, output));
     }
     SettledGroup { outcomes, blocked }
+}
+
+fn tool_finished(turn_id: TurnId, call: &ToolCall, output: Option<&ToolOutput>) -> UiEvent {
+    UiEvent::ToolFinished {
+        turn_id,
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        status: output.map_or(ToolResultStatus::Failure, |output| output.status),
+        content: output
+            .map(|output| output.content.clone())
+            .unwrap_or_default(),
+        command_result: output.and_then(|output| output.command_result.clone()),
+    }
 }
 
 async fn settle(

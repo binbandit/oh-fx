@@ -30,6 +30,7 @@ use ofx_session::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
 use serde::{Serialize, Serializer};
+use serde_json::Value;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
@@ -37,6 +38,7 @@ use tokio_util::sync::CancellationToken;
 use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
 use crate::command_echo::CommandEcho;
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
+use crate::shell_call_record::{CallError, ShellFailure, failed_call, rejected_call};
 use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
@@ -575,6 +577,12 @@ fn print_result(result: &RunResult<'_>) -> ExitCode {
 struct ToolRecord {
     name: String,
     status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<CallError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command_result: Option<Value>,
 }
 
 impl ToolRecord {
@@ -585,6 +593,41 @@ impl ToolRecord {
                 ToolResultStatus::Success => "success",
                 ToolResultStatus::Failure => "error",
             },
+            action: None,
+            error: None,
+            command_result: None,
+        }
+    }
+
+    fn finished(
+        name: String,
+        arguments: &str,
+        status: ToolResultStatus,
+        content: &str,
+        command_result: Option<&str>,
+    ) -> Self {
+        let failure = (status == ToolResultStatus::Failure)
+            .then(|| failed_call(&name, arguments, content, command_result))
+            .flatten();
+        Self {
+            command_result: command_result.and_then(|result| serde_json::from_str(result).ok()),
+            ..Self::new(name, status).with_failure(failure)
+        }
+    }
+
+    fn rejected(name: String, arguments: &str) -> Self {
+        let failure = rejected_call(&name, arguments);
+        Self::new(name, ToolResultStatus::Failure).with_failure(failure)
+    }
+
+    fn with_failure(self, failure: Option<ShellFailure>) -> Self {
+        match failure {
+            Some(failure) => Self {
+                action: failure.action,
+                error: Some(failure.error),
+                ..self
+            },
+            None => self,
         }
     }
 }
@@ -803,10 +846,19 @@ impl Presenter {
             UiEvent::ToolFinished {
                 call_id,
                 tool_name,
+                arguments,
                 status,
+                content,
+                command_result,
                 ..
             } => {
-                self.tool_calls.push(ToolRecord::new(tool_name, status));
+                self.tool_calls.push(ToolRecord::finished(
+                    tool_name,
+                    &arguments,
+                    status,
+                    &content,
+                    command_result.as_deref(),
+                ));
                 match self.take_settling_progress(&call_id) {
                     Some(line) => self.write_status(StatusBlock::Progress, &line),
                     None => Ok(()),
@@ -1098,9 +1150,9 @@ impl Presenter {
             Ok(()) => code,
             Err(error) => write_error_name(&error),
         };
-        self.tool_calls.push(ToolRecord::new(
+        self.tool_calls.push(ToolRecord::rejected(
             blocked.tool_name.clone(),
-            ToolResultStatus::Failure,
+            &blocked.arguments,
         ));
         if self.mode != OutputMode::Json {
             return ExitCode::FAILURE;
@@ -1627,7 +1679,10 @@ mod tests {
             turn_id: TurnId::new(1),
             call_id: ToolCallId::new(call_id),
             tool_name: "read_file".to_owned(),
+            arguments: "{}".to_owned(),
             status: ToolResultStatus::Success,
+            content: String::new(),
+            command_result: None,
         }
     }
 
