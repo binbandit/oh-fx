@@ -11,8 +11,9 @@ use ofx_contract::{
     ToolSpec, Usage,
 };
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
+use crate::borrowed_json::{self, Json, Object};
 pub(crate) use crate::secret_mask::mask_configured_secrets;
 use crate::tool_call_ids::{Projection, ProjectionError};
 
@@ -702,17 +703,15 @@ impl Reducer {
             return Ok(Deltas::default());
         }
         check_json_depth(data)?;
-        let Value::Object(mut root) =
-            parse_strict_json(data).map_err(|_| ProtocolError::InvalidChunk)?
-        else {
+        let Some(Json::Object(root)) = borrowed_json::parse(data) else {
             return Err(ProtocolError::InvalidChunk);
         };
         if let Some(error) = non_null(&root, "error") {
-            self.failure_detail = Some(error.to_string());
+            self.failure_detail = Some(borrowed_json::compact(error));
             return Err(ProtocolError::ProviderError);
         }
-        if root.get("object").and_then(Value::as_str) == Some("error") {
-            self.failure_detail = Some(Value::Object(root).to_string());
+        if root.get("object").and_then(Json::as_str) == Some("error") {
+            self.failure_detail = Some(borrowed_json::compact(&root));
             return Err(ProtocolError::ProviderError);
         }
         accept_identity(
@@ -725,73 +724,67 @@ impl Reducer {
             non_null(&root, "model"),
             MAX_MODEL_BYTES,
         )?;
-        let Some(Value::Array(mut choices)) = root.remove("choices") else {
+        let Some(choices) = root.get("choices").and_then(Json::as_array) else {
             return Err(ProtocolError::InvalidChunk);
         };
         if choices.len() > 1 {
             return Err(ProtocolError::InvalidChunk);
         }
-        let Some(choice) = choices.pop() else {
+        let Some(choice) = choices.first() else {
             if let Some(usage) = non_null(&root, "usage") {
                 self.accept_usage(usage, self.phase == Phase::Finished)?;
             }
             return Ok(Deltas::default());
         };
-        let Value::Object(choice) = choice else {
-            return Err(ProtocolError::InvalidChunk);
-        };
-        self.accept_choice(&root, choice)
+        self.accept_choice(&root, object(choice)?)
     }
 
-    fn accept_choice(
-        &mut self,
-        root: &Map<String, Value>,
-        mut choice: Map<String, Value>,
-    ) -> ProtocolResult<Deltas> {
+    fn accept_choice(&mut self, root: &Object<'_>, choice: &Object<'_>) -> ProtocolResult<Deltas> {
         if index_value(choice.get("index").ok_or(ProtocolError::InvalidChunk)?)? != 0 {
             return Err(ProtocolError::InvalidChunk);
         }
-        let mut delta = match choice.remove("delta") {
-            None | Some(Value::Null) => Map::new(),
-            Some(Value::Object(delta)) => delta,
+        let no_delta = Object::default();
+        let delta = match choice.get("delta") {
+            None | Some(Json::Null) => &no_delta,
+            Some(Json::Object(delta)) => delta,
             Some(_) => return Err(ProtocolError::InvalidChunk),
         };
         if self.phase == Phase::Finished {
-            self.accept_repeated_finish(root, &choice, &delta)?;
+            self.accept_repeated_finish(root, choice, delta)?;
             return Ok(Deltas::default());
         }
-        if let Some(role) = non_null(&delta, "role")
+        if let Some(role) = non_null(delta, "role")
             && string(role)? != "assistant"
         {
             return Err(ProtocolError::InvalidChunk);
         }
         if ["function_call", "audio"]
             .iter()
-            .any(|key| non_null(&delta, key).is_some())
+            .any(|key| non_null(delta, key).is_some())
         {
             return Err(ProtocolError::InvalidChunk);
         }
-        let reasoning = self.accept_reasoning(&mut delta)?;
-        let content = match delta.remove("content") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(text)) => {
+        let reasoning = self.accept_reasoning(delta)?;
+        let content = match delta.get("content") {
+            None | Some(Json::Null) => None,
+            Some(Json::String(text)) => {
                 append_bounded(
                     &mut self.content,
-                    &text,
+                    text,
                     self.limits.content_bytes,
                     ProtocolError::ContentTooLarge,
                 )?;
-                (!text.is_empty()).then_some(text)
+                (!text.is_empty()).then(|| text.clone().into_owned())
             }
             Some(_) => return Err(ProtocolError::InvalidChunk),
         };
-        if let Some(value) = non_null(&delta, "refusal") {
+        if let Some(value) = non_null(delta, "refusal") {
             self.refusal_seen = self.refusal_seen || !string(value)?.is_empty();
         }
-        if let Some(value) = non_null(&delta, "tool_calls") {
+        if let Some(value) = non_null(delta, "tool_calls") {
             self.accept_tools(value)?;
         }
-        let finish = non_null(&choice, "finish_reason");
+        let finish = non_null(choice, "finish_reason");
         if let Some(usage) = non_null(root, "usage") {
             self.accept_usage(usage, finish.is_some())?;
         }
@@ -805,9 +798,9 @@ impl Reducer {
 
     fn accept_repeated_finish(
         &mut self,
-        root: &Map<String, Value>,
-        choice: &Map<String, Value>,
-        delta: &Map<String, Value>,
+        root: &Object<'_>,
+        choice: &Object<'_>,
+        delta: &Object<'_>,
     ) -> ProtocolResult<()> {
         let inconsistent = ProtocolError::InconsistentFinishReason;
         let reason = non_null(choice, "finish_reason").ok_or(inconsistent)?;
@@ -815,8 +808,8 @@ impl Reducer {
         if Some(string(reason)?) != expected {
             return Err(inconsistent);
         }
-        for (key, value) in delta {
-            let allowed = match key.as_str() {
+        for (key, value) in delta.iter() {
+            let allowed = match key {
                 "role" => value.as_str() == Some("assistant"),
                 "content" => value.is_null() || value.as_str() == Some(""),
                 _ => false,
@@ -831,15 +824,15 @@ impl Reducer {
         }
     }
 
-    fn accept_reasoning(&mut self, fields: &mut Map<String, Value>) -> ProtocolResult<Vec<String>> {
+    fn accept_reasoning(&mut self, fields: &Object<'_>) -> ProtocolResult<Vec<String>> {
         let mut deltas = Vec::new();
         for key in REASONING_FIELDS {
-            match fields.remove(key) {
-                None | Some(Value::Null) => {}
-                Some(Value::String(text)) => {
-                    self.count_reasoning(encoded_json_string_len(&text))?;
+            match fields.get(key) {
+                None | Some(Json::Null) => {}
+                Some(Json::String(text)) => {
+                    self.count_reasoning(encoded_json_string_len(text))?;
                     if !text.is_empty() {
-                        deltas.push(text);
+                        deltas.push(text.clone().into_owned());
                     }
                 }
                 Some(_) => return Err(ProtocolError::InvalidChunk),
@@ -850,7 +843,7 @@ impl Reducer {
         {
             let items = details.as_array().ok_or(ProtocolError::InvalidChunk)?;
             for item in items {
-                if !item.is_object() {
+                if item.as_object().is_none() {
                     return Err(ProtocolError::InvalidChunk);
                 }
                 self.count_reasoning(encoded_json_len(item) + 1)?;
@@ -868,7 +861,7 @@ impl Reducer {
         Ok(())
     }
 
-    fn accept_tools(&mut self, value: &Value) -> ProtocolResult<()> {
+    fn accept_tools(&mut self, value: &Json<'_>) -> ProtocolResult<()> {
         let items = value.as_array().ok_or(ProtocolError::InvalidChunk)?;
         if items.len() > self.limits.tool_calls {
             return Err(ProtocolError::TooManyTools);
@@ -917,7 +910,7 @@ impl Reducer {
         Ok(())
     }
 
-    fn implied_index(&self, delta: &Map<String, Value>) -> ProtocolResult<usize> {
+    fn implied_index(&self, delta: &Object<'_>) -> ProtocolResult<usize> {
         let id = non_null(delta, "id")
             .map(string)
             .transpose()?
@@ -932,11 +925,7 @@ impl Reducer {
             .unwrap_or(self.tools.len()))
     }
 
-    fn accept_function(
-        &mut self,
-        index: usize,
-        function: &Map<String, Value>,
-    ) -> ProtocolResult<()> {
+    fn accept_function(&mut self, index: usize, function: &Object<'_>) -> ProtocolResult<()> {
         let tool = &mut self.tools[index];
         if let Some(name) = non_null(function, "name") {
             let fragment = string(name)?;
@@ -973,7 +962,7 @@ impl Reducer {
         Ok(())
     }
 
-    fn accept_usage(&mut self, value: &Value, is_final: bool) -> ProtocolResult<()> {
+    fn accept_usage(&mut self, value: &Json<'_>, is_final: bool) -> ProtocolResult<()> {
         let fields = object(value)?;
         let incoming = UsageCounters {
             input: token_count(fields, "prompt_tokens")?,
@@ -1094,7 +1083,7 @@ fn encoded_json_string_len(text: &str) -> usize {
         .sum::<usize>()
 }
 
-fn encoded_json_len(value: &Value) -> usize {
+fn encoded_json_len(value: &Json<'_>) -> usize {
     struct Counter(usize);
     impl io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -1113,7 +1102,7 @@ fn encoded_json_len(value: &Value) -> usize {
 
 fn accept_identity(
     destination: &mut Option<String>,
-    value: Option<&Value>,
+    value: Option<&Json<'_>>,
     max_bytes: usize,
 ) -> ProtocolResult<()> {
     let Some(value) = value else {
@@ -1136,26 +1125,26 @@ fn accept_identity(
     }
 }
 
-fn object(value: &Value) -> ProtocolResult<&Map<String, Value>> {
+fn object<'a, 'b>(value: &'a Json<'b>) -> ProtocolResult<&'a Object<'b>> {
     value.as_object().ok_or(ProtocolError::InvalidChunk)
 }
 
-fn string(value: &Value) -> ProtocolResult<&str> {
+fn string<'a>(value: &'a Json<'_>) -> ProtocolResult<&'a str> {
     value.as_str().ok_or(ProtocolError::InvalidChunk)
 }
 
-fn non_null<'a>(fields: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+fn non_null<'a, 'b>(fields: &'a Object<'b>, key: &str) -> Option<&'a Json<'b>> {
     fields.get(key).filter(|value| !value.is_null())
 }
 
-fn index_value(value: &Value) -> ProtocolResult<usize> {
+fn index_value(value: &Json<'_>) -> ProtocolResult<usize> {
     value
         .as_i64()
         .and_then(|number| usize::try_from(number).ok())
         .ok_or(ProtocolError::InvalidChunk)
 }
 
-fn token_count(fields: &Map<String, Value>, key: &str) -> ProtocolResult<Option<u64>> {
+fn token_count(fields: &Object<'_>, key: &str) -> ProtocolResult<Option<u64>> {
     non_null(fields, key)
         .map(|value| {
             value
