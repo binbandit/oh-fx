@@ -5,4 +5,4 @@ mod tool_admission;
 mod tool_args;
 mod tool_runtime;
 
-pub use filesystem::{GlobFiles, GrepFiles, ReadFile, WriteFile};
+pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};

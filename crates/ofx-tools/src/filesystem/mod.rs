@@ -1,3 +1,4 @@
+mod edit_file;
 mod glob_files;
 mod grep_files;
 mod read_file;
@@ -10,6 +11,7 @@ use ofx_contract::{ToolEffect, ToolOutput, ToolSpec};
 use ofx_workspace::{CandidateStats, DEFAULT_CANDIDATE_CAP, IGNORED_DIRECTORY_NAMES};
 use serde_json::Value;
 
+pub use edit_file::EditFile;
 pub use glob_files::GlobFiles;
 pub use grep_files::GrepFiles;
 pub use read_file::ReadFile;

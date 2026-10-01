@@ -6,6 +6,7 @@ use ofx_contract::{
     CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess, ToolCallId,
     ToolContext, ToolEffect, ToolResultStatus,
 };
+use ofx_workspace::MAX_PATH_BYTES;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -98,7 +99,10 @@ fn invalid_arguments_fail_without_touching_the_filesystem() {
             r#"{"path":"/tmp/x","content":1}"#.to_owned(),
             "write_file field \"content\" must be a string",
         ),
-        (arguments(&long_path, "x"), PATH_LIMIT_FAILURE),
+        (
+            arguments(&long_path, "x"),
+            "file mutation preparation failed: path exceeds the preparation limit",
+        ),
         (
             arguments("big.txt", &long_content),
             "write_file failed: content exceeds the 4 MiB preparation limit",
