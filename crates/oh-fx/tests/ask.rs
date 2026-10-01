@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 const PORTKEY_KEY: &str = "pk-test-0123456789";
 const UPSTREAM_READ_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"read_file","description":"Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}}}"#;
-const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>\n";
+const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>\n";
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
 const UPSTREAM_GLOB_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"glob_files","description":"Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match, such as src/**/*.zig or *.md."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"mode":{"type":"string","enum":["matches","count"],"description":"Use matches to return sample paths, or count to return an exact matching path count without listing entries."}},"required":["pattern"]}}}"#;
 const UPSTREAM_GREP_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"grep_files","description":"Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported; avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Literal plain-text pattern to search for."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"include":{"type":"string","description":"Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts."},"case_insensitive":{"type":"boolean","description":"Search case-insensitively when true."},"mode":{"type":"string","enum":["matches","files_with_matches","count"],"description":"Use matches for line matches, files_with_matches for unique matching paths, or count for exact matching-line and matching-file counts."},"head_limit":{"type":"integer","description":"Optional positive maximum results to return for matches or files_with_matches. Defaults to the normal output cap."},"offset":{"type":"integer","description":"Optional zero-based result offset for matches or files_with_matches pagination. Defaults to 0."},"context_lines":{"type":"integer","description":"Optional non-negative number of lines before and after each emitted match in matches mode. Bounded by the tool."}},"required":["pattern"]}}}"#;
@@ -738,6 +738,12 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
             "ask --continue-recovery",
         ),
         (&["--add-dir", "/tmp", "ask", "--fast", "hi"], "--add-dir"),
+        (&["ask", "--sessions-v2", "hi"], "ask --sessions-v2"),
+        (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
+        (
+            &["--sessions-v2", "ask", "--sessions-v2", "hi"],
+            "--sessions-v2",
+        ),
     ] {
         let output = home.ask(args, &KEY);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -755,6 +761,88 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
     assert_eq!(result["error"], "NotAvailableYet");
     assert_eq!(result["exit_code"], 1);
     assert!(server.requests().is_empty());
+}
+
+#[test]
+fn the_sessions_v2_variable_selects_the_store_that_ask_cannot_use_yet() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["off"])),
+        Reply::sse(&chat_text_events(&["yes"])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    for value in ["1", "true", "TRUE"] {
+        let output = home.ask(&["ask", "hi"], &[KEY[0], ("OH_FX_SESSIONS_V2", value)]);
+        assert_eq!(output.status.code(), Some(1), "{value:?}");
+        assert_eq!(stdout(&output), "", "{value:?}");
+        assert_eq!(
+            stderr(&output),
+            "oh-fx: OH_FX_SESSIONS_V2 is not available yet\n",
+            "{value:?}"
+        );
+    }
+    let output = home.ask(
+        &["ask", "--json", "hi"],
+        &[KEY[0], ("OH_FX_SESSIONS_V2", "1")],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "NotAvailableYet");
+    assert!(server.requests().is_empty());
+    for (value, reply) in [("0", "off"), ("yes", "yes")] {
+        let output = home.ask(&["ask", "hi"], &[KEY[0], ("OH_FX_SESSIONS_V2", value)]);
+        assert!(output.status.success(), "{value:?}: {}", stderr(&output));
+        assert_eq!(stdout(&output), reply, "{value:?}");
+    }
+}
+
+#[test]
+fn the_sessions_v2_flag_works_before_and_after_ask_and_no_save_writes_nothing() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["FLAG_BEFORE"])),
+        Reply::sse(&chat_text_events(&["FLAG_AFTER"])),
+        Reply::sse(&chat_text_events(&["NOT_SAVED"])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    for (args, environment, reply) in [
+        (
+            &[
+                "--sessions-v2",
+                "ask",
+                "--json",
+                "--auto",
+                "--no-save",
+                "Flag before ask.",
+            ][..],
+            &[KEY[0]][..],
+            "FLAG_BEFORE",
+        ),
+        (
+            &[
+                "ask",
+                "--json",
+                "--auto",
+                "--sessions-v2",
+                "--no-save",
+                "Flag after ask.",
+            ],
+            &[KEY[0]],
+            "FLAG_AFTER",
+        ),
+        (
+            &["ask", "--json", "--auto", "--no-save", "Not saved."],
+            &[KEY[0], ("OH_FX_SESSIONS_V2", "1")],
+            "NOT_SAVED",
+        ),
+    ] {
+        let output = home.ask(args, environment);
+        assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+        assert_eq!(stderr(&output), "", "{args:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["final_output"], reply, "{args:?}");
+        assert_eq!(result["session_id"], "", "{args:?}");
+    }
+    assert_eq!(server.requests().len(), 3);
+    assert!(!home.root.join("data").exists());
 }
 
 #[test]

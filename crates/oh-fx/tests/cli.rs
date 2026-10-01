@@ -304,6 +304,28 @@ fn launch_modifiers_before_help_select_the_plain_layout() {
 }
 
 #[test]
+fn commands_that_keep_no_sessions_accept_and_ignore_sessions_v2() {
+    let output = oh_fx(&["--sessions-v2", "--version"], &[]);
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), format!("{}\n", ofx_upgrade::VERSION));
+    let output = oh_fx(&["--sessions-v2", "help"], &[("COLUMNS", "60")]);
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        render_top_level_help(80, ofx_upgrade::VERSION, HelpStyle::Plain)
+    );
+    let output = oh_fx(&["--sessions-v2", "ask", "--help"], &[]);
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), render_command_help(TopLevelKind::Ask));
+    let output = oh_fx(&["--sessions-v2", "upgrade", "--channel", "dev"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "usage: oh-fx upgrade [--json]\n");
+    let output = oh_fx(&["--sessions-v2", "status"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "oh-fx: status is not available yet\n");
+}
+
+#[test]
 fn invalid_command_arguments_fail_before_the_availability_check() {
     let output = oh_fx(&["status", "--wat"], &[]);
     assert_eq!(output.status.code(), Some(1));
@@ -330,6 +352,7 @@ fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
             "--context-limit",
         ),
         (&["--add-dir", "/tmp", "ask", "hi"], "--add-dir"),
+        (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
     ] {
         let output = oh_fx(args, &[]);
         assert_eq!(output.status.code(), Some(1), "{args:?}");

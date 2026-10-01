@@ -44,7 +44,8 @@ pub struct AskPermissions {
 pub struct AskSession {
     pub resume_flag: Option<&'static str>,
     pub continue_recovery: bool,
-    no_save: bool,
+    pub no_save: bool,
+    pub sessions_v2: bool,
 }
 
 #[derive(Debug)]
@@ -321,6 +322,8 @@ impl AskParser {
             &mut args.output.quiet
         } else if stream.take_flag("--no-save") {
             &mut args.session.no_save
+        } else if stream.take_flag("--sessions-v2") {
+            &mut args.session.sessions_v2
         } else if stream.take_flag("--no-color") {
             &mut args.output.no_color
         } else {

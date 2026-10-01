@@ -54,6 +54,7 @@ Flags:
   --resume [last|<id>]    Resume the latest workspace session or an exact ID
   --resume-last           Resume the latest workspace session
   --resume-<id>           Resume a session by exact ID
+  --sessions-v2           Use the experimental v2 session store, also set by OH_FX_SESSIONS_V2=1
   -h, --help              Display this help and exit
   -v, --version           Print the oh-fx version and exit
 

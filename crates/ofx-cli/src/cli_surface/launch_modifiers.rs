@@ -10,6 +10,7 @@ pub struct LaunchModifiers {
     context_limits: bool,
     workspace: WorkspaceModifiers,
     model_overrides: bool,
+    sessions_v2: bool,
 }
 
 #[derive(Debug, Default)]
@@ -25,6 +26,10 @@ impl LaunchModifiers {
 
     pub fn adds_directories(&self) -> bool {
         self.workspace.additional_directories
+    }
+
+    pub fn selects_sessions_v2(&self) -> bool {
+        self.sessions_v2
     }
 
     pub(crate) fn has_workspace_modifiers(&self) -> bool {
@@ -82,7 +87,9 @@ impl LaunchModifiers {
         model_overrides: &mut ModelOverrides,
     ) -> Result<bool, GlobalLaunchError> {
         let joined = ValueForm::SeparateOrJoined;
-        if let Some(value) = args.take_option("context-limit", joined) {
+        if args.take_flag("--sessions-v2") {
+            self.sessions_v2 = true;
+        } else if let Some(value) = args.take_option("context-limit", joined) {
             let value =
                 value.map_err(|MissingValue| GlobalLaunchError::MissingContextLimitValue)?;
             validate_context_limit_override(value.as_bytes())?;
@@ -316,6 +323,36 @@ mod tests {
             error(&["--context-limit=wat=1"]),
             "invalid global launch option: UnknownContextLimit"
         );
+    }
+
+    #[test]
+    fn sessions_v2_is_a_repeatable_launch_modifier_outside_the_workspace_and_model_groups() {
+        let (modifiers, remaining) = parse(&[
+            "--sessions-v2",
+            "--add-dir",
+            "/tmp",
+            "--sessions-v2",
+            "ask",
+            "hi",
+        ])
+        .unwrap();
+        assert!(modifiers.selects_sessions_v2());
+        assert!(modifiers.adds_directories());
+        assert!(!modifiers.has_model_overrides());
+        assert_eq!(remaining, vec![OsString::from("ask"), OsString::from("hi")]);
+
+        let (only, _) = parse(&["--sessions-v2"]).unwrap();
+        assert!(only.selects_sessions_v2());
+        assert!(!only.has_workspace_modifiers());
+        assert!(!only.has_model_overrides());
+
+        let (after, remaining) = parse(&["ask", "--sessions-v2"]).unwrap();
+        assert!(!after.selects_sessions_v2());
+        assert_eq!(remaining.len(), 2);
+
+        let (joined, remaining) = parse(&["--sessions-v2=1", "ask"]).unwrap();
+        assert!(!joined.selects_sessions_v2());
+        assert_eq!(remaining[0], "--sessions-v2=1");
     }
 
     #[test]
