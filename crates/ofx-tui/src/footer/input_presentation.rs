@@ -12,7 +12,7 @@ const ESC_INTERRUPT_FALLBACK: &str = "esc esc to interrupt";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposerView {
     pub(crate) rows: Vec<Row>,
-    pub(crate) cursor: (usize, usize),
+    pub(crate) cursor: Option<(usize, usize)>,
 }
 
 pub(crate) fn input_row_limit(content_bottom: usize) -> usize {
@@ -100,7 +100,7 @@ pub(crate) fn composer_view(
     let cursor_col = usize::from(terminal_column(summary.cursor, cols)).saturating_sub(1);
     ComposerView {
         rows,
-        cursor: (cursor_row, cursor_col),
+        cursor: Some((cursor_row, cursor_col)),
     }
 }
 
@@ -177,7 +177,7 @@ mod tests {
     fn composer_rows_use_a_rail_on_every_visual_row() {
         let view = composer_view(&composer(""), 40, 5, &theme());
         assert_eq!(texts(&view), ["┃ "]);
-        assert_eq!(view.cursor, (0, 2));
+        assert_eq!(view.cursor, Some((0, 2)));
         let view = composer_view(
             &composer("line one\nline two is quite a bit longer than the width"),
             40,
@@ -192,7 +192,7 @@ mod tests {
                 "┃ the width"
             ]
         );
-        assert_eq!(view.cursor, (2, 11));
+        assert_eq!(view.cursor, Some((2, 11)));
         assert_eq!(view.rows[0].segments()[0].paint, Paint::fg(255));
     }
 
@@ -200,7 +200,7 @@ mod tests {
     fn composer_rows_follow_the_cursor_and_mark_clipped_rows() {
         let view = composer_view(&composer("a\nb\nc\nd"), 40, 2, &theme());
         assert_eq!(texts(&view), ["┃↑c", "┃ d"]);
-        assert_eq!(view.cursor, (1, 3));
+        assert_eq!(view.cursor, Some((1, 3)));
         assert_eq!(input_row_limit(26), 14);
         assert_eq!(input_row_limit(4), 1);
     }
