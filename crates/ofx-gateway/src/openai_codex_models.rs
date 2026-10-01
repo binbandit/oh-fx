@@ -1,0 +1,243 @@
+use std::fmt;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use ofx_config::parse_strict_json;
+use ofx_contract::{CODEX_ORIGINATOR, is_valid_reasoning_effort};
+use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
+use reqwest::StatusCode;
+use reqwest::header::ACCEPT;
+use serde_json::{Map, Value};
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
+
+use crate::client::{BoundedFailure, bounded_get};
+use crate::model_catalog::{CatalogFailure, failure_for_http_status};
+use crate::provider_versions::{Version, VersionError, VersionLookup};
+
+const MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
+const CLIENT_VERSION_URL: &str = "https://registry.npmjs.org/@openai/codex/latest";
+const MAX_CATALOG_MODELS: usize = 128;
+const MAX_MODEL_ID_BYTES: usize = 1024;
+const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+const MAX_REASONING_EFFORTS: usize = 16;
+const MAX_LISTED_VALUES: usize = 32;
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexModelsEndpoints {
+    pub models: String,
+    pub client_version: String,
+}
+
+impl Default for CodexModelsEndpoints {
+    fn default() -> Self {
+        Self {
+            models: MODELS_URL.to_owned(),
+            client_version: CLIENT_VERSION_URL.to_owned(),
+        }
+    }
+}
+
+pub struct CatalogCredential {
+    token: Zeroizing<String>,
+    account_id: String,
+}
+
+impl CatalogCredential {
+    pub fn new(token: String, account_id: String) -> Self {
+        Self {
+            token: Zeroizing::new(token),
+            account_id,
+        }
+    }
+}
+
+impl fmt::Debug for CatalogCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CatalogCredential")
+            .field("token", &"<redacted>")
+            .field("account_id", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct CodexModelCatalog {
+    client: reqwest::Client,
+    endpoints: CodexModelsEndpoints,
+    cache_directory: Option<PathBuf>,
+}
+
+impl CodexModelCatalog {
+    pub fn new(
+        user_agent: &str,
+        endpoints: CodexModelsEndpoints,
+        cache_directory: Option<PathBuf>,
+    ) -> Result<Self, ClientError> {
+        let client = build_connection_client(&ConnectionOptions {
+            user_agent: user_agent.to_owned(),
+            follow_redirects: false,
+            ..ConnectionOptions::default()
+        })?;
+        Ok(Self {
+            client,
+            endpoints,
+            cache_directory,
+        })
+    }
+
+    pub async fn fetch(
+        &self,
+        credential: Option<&CatalogCredential>,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<String>, CatalogFailure> {
+        let deadline = Instant::now() + FETCH_TIMEOUT;
+        let version = match credential {
+            Some(_) => Some(self.client_version(cancel, deadline).await?),
+            None => None,
+        };
+        let mut request = self
+            .client
+            .get(models_url(&self.endpoints.models, version.as_ref()))
+            .header("originator", CODEX_ORIGINATOR)
+            .header(ACCEPT, "application/json");
+        if let Some(credential) = credential {
+            request = request
+                .bearer_auth(credential.token.as_str())
+                .header("chatgpt-account-id", credential.account_id.as_str());
+        }
+        match bounded_get(request, MAX_CATALOG_BYTES, deadline, cancel).await {
+            Ok((StatusCode::OK, body)) => {
+                parse_catalog(&body).ok_or(CatalogFailure::MalformedResponse)
+            }
+            Ok((status, _)) => Err(failure_for_http_status(status.as_u16())),
+            Err(BoundedFailure::Cancelled) => Err(CatalogFailure::Cancellation),
+            Err(BoundedFailure::Failed) => Err(CatalogFailure::Transport),
+        }
+    }
+
+    async fn client_version(
+        &self,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Version, CatalogFailure> {
+        let lookup = VersionLookup {
+            client: &self.client,
+            url: &self.endpoints.client_version,
+            cache_directory: self.cache_directory.as_deref(),
+        };
+        lookup
+            .resolve(cancel, deadline)
+            .await
+            .map_err(|error| match error {
+                VersionError::Cancelled => CatalogFailure::Cancellation,
+                VersionError::Unavailable => CatalogFailure::Transport,
+            })
+    }
+}
+
+fn models_url(base: &str, version: Option<&Version>) -> String {
+    let Some(version) = version else {
+        return base.to_owned();
+    };
+    let separator = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{separator}client_version={}", version.as_str())
+}
+
+fn parse_catalog(body: &[u8]) -> Option<Vec<String>> {
+    let Value::Object(root) = parse_strict_json(body).ok()? else {
+        return None;
+    };
+    let Value::Array(models) = root.get("models")? else {
+        return None;
+    };
+    if models.len() > MAX_CATALOG_MODELS {
+        return None;
+    }
+    let mut ids = Vec::new();
+    for model in models {
+        let Value::Object(model) = model else {
+            return None;
+        };
+        if listed(model)? {
+            ids.push(listed_model_id(model)?);
+        }
+    }
+    Some(ids)
+}
+
+fn listed(model: &Map<String, Value>) -> Option<bool> {
+    let visibility = required_string(model, "visibility")?;
+    let supported = model.get("supported_in_api")?.as_bool()?;
+    Some(supported && visibility == "list")
+}
+
+fn listed_model_id(model: &Map<String, Value>) -> Option<String> {
+    let slug = required_string(model, "slug")?;
+    let valid = valid_model_id(slug)
+        && valid_reasoning_levels(model)
+        && valid_context_window(model)
+        && valid_string_list(model, "input_modalities", "image")
+        && valid_string_list(model, "additional_speed_tiers", "fast");
+    valid.then(|| slug.to_owned())
+}
+
+fn required_string<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    object.get(key)?.as_str().filter(|value| !value.is_empty())
+}
+
+fn valid_model_id(id: &str) -> bool {
+    (1..=MAX_MODEL_ID_BYTES).contains(&id.len())
+        && id.bytes().all(|byte| byte > 0x20 && byte != 0x7f)
+}
+
+fn valid_reasoning_levels(model: &Map<String, Value>) -> bool {
+    let Some(levels) = model.get("supported_reasoning_levels") else {
+        return true;
+    };
+    let Value::Array(levels) = levels else {
+        return false;
+    };
+    levels.len() <= MAX_REASONING_EFFORTS
+        && levels.iter().all(|level| {
+            level
+                .as_object()
+                .and_then(|level| required_string(level, "effort"))
+                .is_some_and(is_valid_reasoning_effort)
+        })
+}
+
+fn valid_context_window(model: &Map<String, Value>) -> bool {
+    match model.get("context_window") {
+        None | Some(Value::Null) => true,
+        Some(window) => window
+            .as_u64()
+            .is_some_and(|window| u32::try_from(window).is_ok()),
+    }
+}
+
+fn valid_string_list(model: &Map<String, Value>, key: &str, checked_until: &str) -> bool {
+    let Some(values) = model.get(key) else {
+        return true;
+    };
+    let Value::Array(values) = values else {
+        return false;
+    };
+    if values.len() > MAX_LISTED_VALUES {
+        return false;
+    }
+    for value in values {
+        match value.as_str() {
+            None => return false,
+            Some(value) if value == checked_until => return true,
+            Some(_) => {}
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests;

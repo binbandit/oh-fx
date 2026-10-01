@@ -1,0 +1,39 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogFailure {
+    Authentication,
+    RateLimited,
+    GatewayUnavailable,
+    Cancellation,
+    Transport,
+    MalformedResponse,
+    HttpStatus,
+}
+
+pub(crate) fn failure_for_http_status(status: u16) -> CatalogFailure {
+    match status {
+        401 | 403 => CatalogFailure::Authentication,
+        429 => CatalogFailure::RateLimited,
+        500..=599 => CatalogFailure::GatewayUnavailable,
+        _ => CatalogFailure::HttpStatus,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_http_failures_follow_the_upstream_categories() {
+        for (status, expected) in [
+            (401, CatalogFailure::Authentication),
+            (403, CatalogFailure::Authentication),
+            (429, CatalogFailure::RateLimited),
+            (500, CatalogFailure::GatewayUnavailable),
+            (501, CatalogFailure::GatewayUnavailable),
+            (400, CatalogFailure::HttpStatus),
+            (302, CatalogFailure::HttpStatus),
+        ] {
+            assert_eq!(failure_for_http_status(status), expected, "{status}");
+        }
+    }
+}
