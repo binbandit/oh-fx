@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -15,6 +16,8 @@ const PORTKEY_KEY: &str = "pk-test-0123456789";
 const UPSTREAM_READ_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"read_file","description":"Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}}}"#;
 const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>\n";
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
+const UPSTREAM_GLOB_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"glob_files","description":"Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match, such as src/**/*.zig or *.md."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"mode":{"type":"string","enum":["matches","count"],"description":"Use matches to return sample paths, or count to return an exact matching path count without listing entries."}},"required":["pattern"]}}}"#;
+const UPSTREAM_GREP_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"grep_files","description":"Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported; avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Literal plain-text pattern to search for."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"include":{"type":"string","description":"Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts."},"case_insensitive":{"type":"boolean","description":"Search case-insensitively when true."},"mode":{"type":"string","enum":["matches","files_with_matches","count"],"description":"Use matches for line matches, files_with_matches for unique matching paths, or count for exact matching-line and matching-file counts."},"head_limit":{"type":"integer","description":"Optional positive maximum results to return for matches or files_with_matches. Defaults to the normal output cap."},"offset":{"type":"integer","description":"Optional zero-based result offset for matches or files_with_matches pagination. Defaults to 0."},"context_lines":{"type":"integer","description":"Optional non-negative number of lines before and after each emitted match in matches mode. Bounded by the tool."}},"required":["pattern"]}}}"#;
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -925,7 +928,7 @@ fn ask_runs_read_file_and_sends_its_result_to_the_model() {
         assert!(
             request
                 .body_text()
-                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL}]")),
+                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL},{UPSTREAM_GLOB_FILES_TOOL},{UPSTREAM_GREP_FILES_TOOL}]")),
             "{}",
             request.body_text()
         );
@@ -1290,4 +1293,218 @@ fn permission_flags_decide_whether_an_external_read_needs_approval() {
             .iter()
             .all(|request| !request.body_text().contains("outside secret"))
     );
+}
+
+#[test]
+fn ask_runs_glob_files_and_grep_files_and_sends_their_results_to_the_model() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "glob_files",
+            r#"{"pattern":"**/*.rs"}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "grep_files",
+            r#"{"pattern":"needle","context_lines":1}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_3",
+            "grep_files",
+            r#"{"pattern":"needle","path":"nope"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Found one needle."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::create_dir_all(home.workspace.join("src/nested")).unwrap();
+    fs::write(
+        home.workspace.join("src/lib.rs"),
+        "fn a() {}\nlet needle = 1;\nfn b() {}\n",
+    )
+    .unwrap();
+    fs::write(home.workspace.join("src/nested/mod.rs"), "pub fn c() {}\n").unwrap();
+    fs::write(home.workspace.join("notes.md"), "no match here\n").unwrap();
+    let output = home.ask(
+        &["ask", "--json", "where is the needle?"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Matching **/*.rs\nSearching needle\nSearching needle\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["final_output"], "Found one needle.");
+    assert_eq!(result["steps"], 3);
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "glob_files", "status": "success"},
+            {"name": "grep_files", "status": "success"},
+            {"name": "grep_files", "status": "error"},
+        ])
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        tool_messages(&requests[3]),
+        [
+            json!({
+                "role": "tool",
+                "content": "[glob] 2 matches for **/*.rs\n - src/lib.rs\n - src/nested/mod.rs\n",
+                "tool_call_id": "call_1",
+            }),
+            json!({
+                "role": "tool",
+                "content": "[grep] 1 matches for needle\n   src/lib.rs:1- fn a() {}\n - src/lib.rs:2: let needle = 1;\n   src/lib.rs:3- fn b() {}\n",
+                "tool_call_id": "call_2",
+            }),
+            json!({
+                "role": "tool",
+                "content": "Path not found: nope",
+                "tool_call_id": "call_3",
+            }),
+        ]
+    );
+}
+
+#[test]
+fn file_searches_ignore_hostile_git_config() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "grep_files",
+            r#"{"pattern":"needle"}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "grep_files",
+            r#"{"pattern":"needle","path":"sub","mode":"count"}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_3",
+            "glob_files",
+            r#"{"pattern":"**/*.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Found it."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::create_dir_all(home.workspace.join("sub")).unwrap();
+    fs::write(home.workspace.join("sub/a.txt"), "alpha\nneedle tracked\n").unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&home.workspace)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &home.root)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if !git(&["init", "--quiet"]) || !git(&["add", "sub/a.txt"]) {
+        return;
+    }
+    let marker = home.root.join("hostile-ran");
+    let script = home.root.join("hostile.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\necho \"$0 $*\" >> '{}'\ncat\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let global = home.root.join("hostile.gitconfig");
+    fs::write(
+        &global,
+        format!(
+            "[core]\n\tfsmonitor = {}\n\tquotePath = true\n[color]\n\tgrep = always\n\tui = always\n[grep]\n\tcolumn = true\n\tfullName = true\n\tlineNumber = true\n\tpatternType = perl\n\textendedRegexp = true\n\tfallbackToNoIndex = true\n",
+            script.display()
+        ),
+    )
+    .unwrap();
+
+    let global = global.to_str().unwrap();
+    let output = home.ask(
+        &["ask", "--json", "where is the needle?"],
+        &[
+            ("PORTKEY_API_KEY", PORTKEY_KEY),
+            ("PATH", "/usr/bin:/bin"),
+            ("GIT_CONFIG_GLOBAL", global),
+        ],
+    );
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        !marker.exists(),
+        "{}",
+        fs::read_to_string(&marker).unwrap_or_default()
+    );
+    assert_eq!(
+        tool_messages(&server.requests()[3]),
+        [
+            json!({
+                "role": "tool",
+                "content": "[grep] 1 matches for needle\n - sub/a.txt:2: needle tracked\n",
+                "tool_call_id": "call_1",
+            }),
+            json!({
+                "role": "tool",
+                "content": "[grep] count 1 matching lines in 1 files for needle\n",
+                "tool_call_id": "call_2",
+            }),
+            json!({
+                "role": "tool",
+                "content": "[glob] 1 matches for **/*.txt\n - sub/a.txt\n",
+                "tool_call_id": "call_3",
+            }),
+        ]
+    );
+}
+
+#[test]
+fn ask_mode_fails_the_run_instead_of_searching_an_external_directory() {
+    let outside = OutsideFile::new();
+    let directory = canonical(Path::new(&outside.path).parent().unwrap());
+    let searches = [
+        (
+            "glob_files",
+            json!({"pattern": "*.txt", "path": directory}),
+            "Matching *.txt",
+        ),
+        (
+            "grep_files",
+            json!({"pattern": "outside", "path": directory}),
+            "Searching outside",
+        ),
+    ];
+    for (name, arguments, label) in searches {
+        let server = FakeServer::start([
+            Reply::sse(&chat_tool_call_events(
+                "call_1",
+                name,
+                &arguments.to_string(),
+            )),
+            Reply::sse(&chat_text_events(&["never"])),
+        ]);
+        let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+
+        let output = home.ask(
+            &["ask", "--json", "search it"],
+            &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+        );
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert_eq!(
+            stderr(&output),
+            format!(
+                "{label}\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: {label}\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+            )
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["error"], "NonInteractivePermissionRequired");
+        assert_eq!(
+            result["tool_calls"],
+            json!([{"name": name, "status": "error"}])
+        );
+        assert_eq!(server.requests().len(), 1);
+        never_sees_the_secret(&server);
+    }
 }

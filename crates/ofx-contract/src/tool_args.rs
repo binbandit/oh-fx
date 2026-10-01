@@ -33,6 +33,13 @@ impl ToolArgs {
         }
     }
 
+    pub fn optional_bool(&self, key: &str) -> Option<bool> {
+        match self.get(key)? {
+            ToolArgValue::Bool(enabled) => Some(*enabled),
+            _ => None,
+        }
+    }
+
     pub fn optional_int(&self, key: &str) -> Option<i64> {
         match self.get(key)? {
             ToolArgValue::Integer(value) => Some(*value),
@@ -338,6 +345,10 @@ mod tests {
         assert_eq!(args.optional_string("missing"), None);
         assert_eq!(args.optional_string("enabled"), None);
 
+        assert_eq!(args.optional_bool("enabled"), Some(true));
+        assert_eq!(args.optional_bool("missing"), None);
+        assert_eq!(args.optional_bool("name"), None);
+
         assert_eq!(args.optional_int("count"), Some(3));
         assert_eq!(args.optional_int("missing"), None);
         assert_eq!(args.optional_int("other"), None);
@@ -436,7 +447,7 @@ mod tests {
         );
         assert_eq!(args.get("nested"), Some(&ToolArgValue::Other));
         assert_eq!(args.get("list"), Some(&ToolArgValue::Other));
-        assert_eq!(args.get("flag"), Some(&ToolArgValue::Bool(false)));
+        assert_eq!(args.optional_bool("flag"), Some(false));
         assert_eq!(args.get("none"), Some(&ToolArgValue::Other));
         assert_eq!(args.get("x"), None);
     }
