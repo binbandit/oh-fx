@@ -23,7 +23,7 @@ pub use tool_dispatch::{
     CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity, ToolContext,
     ToolEffect, ToolOutput, ToolSpec,
 };
-pub use tool_presentation::format_plain_action;
+pub use tool_presentation::{format_plain_action, format_unknown_action};
 pub use tool_result_errors::{
     ExecutionFailure, filesystem_access_denied_json, format_tool_execution_error_json,
     review_unavailable_json, tool_execution_failure_json,
@@ -34,4 +34,4 @@ pub use types::{
     RouteRecoveryKind, RouteRecoveryStatus, ToolCall, ToolChoice, ToolResultStatus, Usage,
     is_valid_reasoning_effort, valid_credential_account_id,
 };
-pub use ui::{TurnOutcome, UiEvent};
+pub use ui::{ToolRejection, TurnOutcome, UiEvent};
