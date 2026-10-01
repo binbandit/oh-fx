@@ -315,6 +315,10 @@ fn single_request_wrappers_unwrap_and_everything_else_stays_as_sent() {
         unwrap_request(r#"{"request":{"action":"run","command":"ls"}}"#),
         r#"{"action":"run","command":"ls"}"#
     );
+    assert_eq!(
+        unwrap_request(r#"{ "request" : { "command" : "ls", "timeout_ms" : 5E3 } }"#),
+        r#"{"command":"ls","timeout_ms":5000}"#
+    );
     for arguments in [
         r#"{"request":{"action":"run"},"extra":1}"#,
         r#"{"request":"{}"}"#,
@@ -324,5 +328,93 @@ fn single_request_wrappers_unwrap_and_everything_else_stays_as_sent() {
         "{",
     ] {
         assert_eq!(unwrap_request(arguments), arguments);
+    }
+}
+
+#[test]
+fn shell_request_projection_wraps_eligible_flat_objects_without_changing_source_messages() {
+    for (input, expected) in [
+        ("{}", r#"{"request":{}}"#),
+        (r#"{"action":null}"#, r#"{"request":{"action":null}}"#),
+        (r#"{"action":7}"#, r#"{"request":{"action":7}}"#),
+        (
+            r#"{"action":"unknown"}"#,
+            r#"{"request":{"action":"unknown"}}"#,
+        ),
+        (r#"{"action":"list"}"#, r#"{"request":{"action":"list"}}"#),
+        (
+            r#"{"action":"write","session_id":"terminal-a","lease":"use","write":{"kind":"keys","keys":["enter"]}}"#,
+            r#"{"request":{"action":"write","session_id":"terminal-a","lease":"use","write":{"kind":"keys","keys":["enter"]}}}"#,
+        ),
+        (r#"{"request":null}"#, r#"{"request":{"request":null}}"#),
+        (
+            r#"{"request":{"action":"list"},"sibling":true}"#,
+            r#"{"request":{"request":{"action":"list"},"sibling":true}}"#,
+        ),
+        (
+            r#"{"request":{"action":"list"}}"#,
+            r#"{"request":{"action":"list"}}"#,
+        ),
+        ("[]", "[]"),
+        ("{", "{"),
+    ] {
+        assert_eq!(history_arguments(input), expected, "{input}");
+        assert_eq!(history_arguments(expected), expected, "{expected}");
+    }
+}
+
+#[test]
+fn history_arguments_reencode_shell_requests_as_upstream_replays_them() {
+    for (input, expected) in [
+        (
+            r#"{ "request" : { "command" : "true",  "action": "run" } }"#,
+            r#"{"request":{"command":"true","action":"run"}}"#,
+        ),
+        (
+            r#"{"action":"run","command":"true"}"#,
+            r#"{"request":{"action":"run","command":"true"}}"#,
+        ),
+        (
+            r#"{"request":"{\"action\":\"run\"}"}"#,
+            r#"{"request":{"request":"{\"action\":\"run\"}"}}"#,
+        ),
+        (
+            r#"{"request":{"request":{"action":"run","command":"true"}}}"#,
+            r#"{"request":{"action":"run","command":"true"}}"#,
+        ),
+        (
+            r#"{"yield_time_ms":1.50e3,"timeout_ms":123456789012345678901234567890}"#,
+            r#"{"request":{"yield_time_ms":1500,"timeout_ms":123456789012345678901234567890}}"#,
+        ),
+        (
+            r#"{"request":{"timeout_ms":5E3,"yield_time_ms":-0,"wait":10000000000000000000}}"#,
+            r#"{"request":{"timeout_ms":5000,"yield_time_ms":-0,"wait":10000000000000000000}}"#,
+        ),
+        (
+            r#"{"values":[1,2.25,1e-7,1e21,1e400,-1e-400,0.10]}"#,
+            r#"{"request":{"values":[1,2.25,0.0000001,1000000000000000000000,1e400,-0,0.1]}}"#,
+        ),
+        (
+            r#"{"command":"printf \u00e9\u0001\/\u2028\u007f\ud83d\ude00 \"q\" \\ \t\b\f\r\n\u001F"}"#,
+            "{\"request\":{\"command\":\"printf \u{e9}\\u0001/\u{2028}\u{7f}\u{1f600} \\\"q\\\" \\\\ \\t\\b\\f\\r\\n\\u001f\"}}",
+        ),
+        (
+            r#"{"\u0061":true,"b\"":false}"#,
+            r#"{"request":{"a":true,"b\"":false}}"#,
+        ),
+    ] {
+        assert_eq!(history_arguments(input), expected, "{input}");
+    }
+    for unchanged in [
+        r#"{"action":"run","command":"a","command":"b"}"#,
+        r#"{"request":{"a":1,"\u0061":2}}"#,
+        r#"{"command":"\ud800"}"#,
+        r#"{"command":"\udc00"}"#,
+        "{\"command\":\"tab\tinside\"}",
+        r#"{"a":01}"#,
+        r#"{"a":1} x"#,
+        "",
+    ] {
+        assert_eq!(history_arguments(unchanged), unchanged, "{unchanged:?}");
     }
 }
