@@ -27,6 +27,7 @@ ofx-markdown = { path = "crates/ofx-markdown" }
 ofx-permissions = { path = "crates/ofx-permissions" }
 ofx-session = { path = "crates/ofx-session" }
 ofx-shell = { path = "crates/ofx-shell" }
+ofx-skills = { path = "crates/ofx-skills" }
 ofx-testkit = { path = "crates/ofx-testkit" }
 ofx-text = { path = "crates/ofx-text" }
 ofx-tools = { path = "crates/ofx-tools" }
