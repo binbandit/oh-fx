@@ -9,7 +9,10 @@ mod theme_protocol;
 
 use thiserror::Error;
 
-pub(crate) use shell_runtime::Terminal;
+pub(crate) use app_lifecycle::{ExitCleanup, StartupViewport};
+#[cfg(test)]
+pub(crate) use shell_runtime::test_pty;
+pub(crate) use shell_runtime::{ColorSupport, HistoryReset, Terminal};
 pub(crate) use theme_monitor::{FeedResult as ThemeMonitorFeed, Monitor as ThemeMonitor};
 pub(crate) use theme_monitor::{ThemeQuery, ThemeUpdate};
 
