@@ -1,3 +1,18 @@
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+pub fn lowercase_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .flat_map(|byte| {
+            [
+                HEX_DIGITS[usize::from(byte >> 4)],
+                HEX_DIGITS[usize::from(byte & 0x0f)],
+            ]
+        })
+        .map(char::from)
+        .collect()
+}
+
 pub fn parse_unsigned<T: TryFrom<u64>>(text: &str) -> Option<T> {
     if text.is_empty() || text.starts_with('_') || text.ends_with('_') {
         return None;
@@ -15,6 +30,12 @@ pub fn parse_unsigned<T: TryFrom<u64>>(text: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowercase_hex_writes_two_digits_per_byte() {
+        assert_eq!(lowercase_hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+        assert_eq!(lowercase_hex(&[]), "");
+    }
 
     #[test]
     fn parse_unsigned_accepts_digit_separators_but_no_sign() {

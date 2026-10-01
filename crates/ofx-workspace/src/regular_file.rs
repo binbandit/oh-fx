@@ -1,5 +1,7 @@
+use std::ffi::OsStr;
 use std::fs::{File, Metadata};
 use std::io;
+use std::os::fd::AsFd;
 use std::path::Path;
 
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
@@ -36,7 +38,15 @@ impl From<io::Error> for RegularFileError {
 }
 
 pub fn open_regular_file(path: &Path) -> Result<(File, Metadata), RegularFileError> {
-    verified(no_symlinks::open(path)?)
+    let (directory, name) = no_symlinks::open_parent(path)?;
+    open_regular_file_at(directory, name)
+}
+
+pub fn open_regular_file_at(
+    directory: impl AsFd,
+    name: &OsStr,
+) -> Result<(File, Metadata), RegularFileError> {
+    verified(no_symlinks::open_regular_entry(directory, name)?)
 }
 
 fn verified(file: File) -> Result<(File, Metadata), RegularFileError> {
@@ -59,20 +69,22 @@ fn open_failure(errno: Errno) -> RegularFileError {
 mod no_symlinks {
     use std::ffi::OsStr;
     use std::fs::File;
-    use std::os::fd::OwnedFd;
+    use std::os::fd::{AsFd, OwnedFd};
     use std::path::{Component, Path};
 
     use rustix::fs::{AtFlags, FileType, Mode, openat, statat};
 
     use super::{DIRECTORY_FLAGS, OPEN_FLAGS, PathError, RegularFileError, open_failure};
 
-    pub(super) fn open(path: &Path) -> Result<File, RegularFileError> {
-        let (directory, name) = open_parent(path)?;
+    pub(super) fn open_regular_entry(
+        directory: impl AsFd,
+        name: &OsStr,
+    ) -> Result<File, RegularFileError> {
         let entry = statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(open_failure)?;
         if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile {
             return Err(RegularFileError::NotRegularFile);
         }
-        open_entry(&directory, name)
+        open_entry(directory, name)
     }
 
     pub(super) fn open_parent(path: &Path) -> Result<(OwnedFd, &OsStr), RegularFileError> {
@@ -96,7 +108,7 @@ mod no_symlinks {
         Ok((directory, name))
     }
 
-    pub(super) fn open_entry(directory: &OwnedFd, name: &OsStr) -> Result<File, RegularFileError> {
+    pub(super) fn open_entry(directory: impl AsFd, name: &OsStr) -> Result<File, RegularFileError> {
         let file = openat(directory, name, OPEN_FLAGS, Mode::empty()).map_err(open_failure)?;
         Ok(File::from(file))
     }

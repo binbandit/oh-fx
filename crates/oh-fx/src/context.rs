@@ -8,6 +8,12 @@ use ofx_agent::RuntimeContext;
 use ofx_contract::{BoxFuture, PermissionMode};
 use ofx_text::write_scalar;
 
+mod project_instructions;
+
+pub(crate) use project_instructions::{
+    InstructionLimits, ProfileLocation, ProjectContext, gather_project_context,
+};
+
 pub(crate) const GATEWAY_SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
 const GIT_READ_BUDGET: Duration = Duration::from_millis(50);
