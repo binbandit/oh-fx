@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Resolve version
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          filter: tree:0
+          persist-credentials: false
+      - id: version
+        run: |
+          base="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          echo "version=${base}-dev.$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            native: true
+          - platform: linux-aarch64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            native: true
+          - platform: macos-aarch64
+            target: aarch64-apple-darwin
+            runner: macos-latest
+            native: true
+          - platform: macos-x86_64
+            target: x86_64-apple-darwin
+            runner: macos-latest
+            native: false
+    env:
+      OH_FX_RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      ARCHIVE: oh-fx-${{ matrix.platform }}.tar.gz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --package oh-fx --target ${{ matrix.target }}
+      - name: Smoke test
+        if: matrix.native
+        run: |
+          test "$(target/${{ matrix.target }}/release/oh-fx --version)" = "$OH_FX_RELEASE_VERSION"
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/oh-fx LICENSE NOTICE dist/
+          tar -czf "$ARCHIVE" -C dist oh-fx LICENSE NOTICE
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        run: |
+          printf 'v%s' "$VERSION" > dist/latest.txt
+          current="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          newest="$(printf '%s\n%s\n' "$current" "v$VERSION" | sort -V | tail -n 1)"
+          latest=false
+          if [ "$newest" = "v$VERSION" ]; then
+            latest=true
+          fi
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$HEAD_SHA" \
+            --title "oh-fx $VERSION" \
+            --generate-notes \
+            --latest="$latest"

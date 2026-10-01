@@ -1,0 +1,5 @@
+oh-fx is a Rust port of fx (https://github.com/vercel-labs/fx).
+
+fx is Copyright 2025 Vercel, Inc. and is licensed under the Apache License,
+Version 2.0. oh-fx reimplements fx in Rust and changes its configuration
+paths, release channel, and provider connections; see docs/architecture.md.
