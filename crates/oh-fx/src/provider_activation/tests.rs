@@ -105,6 +105,12 @@ pub(crate) fn catalog(slugs: &[&str]) -> Reply {
     Reply::status(200, json!({ "models": models }).to_string())
 }
 
+async fn activate(profile: &Profile) -> Result<(), ActivationFailure> {
+    activate_codex(profile, Caller::Login, false)
+        .await
+        .map(drop)
+}
+
 fn failure(text: &str) -> Result<(), ActivationFailure> {
     Err(ActivationFailure::Detail(text.to_owned()))
 }
@@ -119,7 +125,7 @@ async fn activation_saves_codex_with_the_first_catalog_model() {
         catalog(&["gpt-6.1-sol", "gpt-5.6-terra", "gpt-5.6-luna"]),
     ]);
     assert_eq!(
-        activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+        activate(&fixture.profile(&auth, &catalog_server)).await,
         Ok(())
     );
     assert_eq!(
@@ -169,7 +175,7 @@ async fn a_saved_model_stays_selected_while_the_catalog_lists_it() {
             catalog(&["gpt-6.1-sol", "gpt-5.6-terra", "gpt-5.6-luna"]),
         ]);
         assert_eq!(
-            activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+            activate(&fixture.profile(&auth, &catalog_server)).await,
             Ok(())
         );
         assert_eq!(fixture.settings().as_deref(), Some(expected));
@@ -202,7 +208,7 @@ async fn catalog_failures_name_their_category_and_save_nothing() {
         let auth = FakeServer::start([]);
         let catalog_server = FakeServer::start(replies);
         assert_eq!(
-            activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+            activate(&fixture.profile(&auth, &catalog_server)).await,
             failure(expected)
         );
         assert_eq!(fixture.settings().as_deref(), Some("{\"theme\":\"dark\"}"));
@@ -215,12 +221,12 @@ async fn missing_or_unsafe_logins_stop_before_the_catalog() {
     let catalog_server = FakeServer::start([]);
     let fixture = Fixture::new();
     assert_eq!(
-        activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+        activate(&fixture.profile(&auth, &catalog_server)).await,
         failure("Codex credential is unavailable")
     );
     fixture.write_session(FAR_FUTURE_MS, 0o644);
     assert_eq!(
-        activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+        activate(&fixture.profile(&auth, &catalog_server)).await,
         failure(
             "Codex subscription: Saved credential storage is unavailable. Check the saved credential, then retry."
         )
@@ -240,7 +246,7 @@ async fn an_expiring_login_is_refreshed_before_the_catalog_request() {
     )]);
     let catalog_server = FakeServer::start([release(), catalog(&["gpt-6.1-sol"])]);
     assert_eq!(
-        activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+        activate(&fixture.profile(&auth, &catalog_server)).await,
         Ok(())
     );
     assert_eq!(auth.requests().len(), 1);
@@ -256,7 +262,7 @@ async fn unusable_settings_stop_before_the_login_is_read() {
         fixture.signed_in();
         fixture.write_settings(settings);
         assert_eq!(
-            activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+            activate(&fixture.profile(&auth, &catalog_server)).await,
             failure("could not load settings")
         );
         assert_eq!(fixture.settings().as_deref(), Some(settings));
@@ -265,18 +271,12 @@ async fn unusable_settings_stop_before_the_login_is_read() {
     fixture.signed_in();
     let mut profile = fixture.profile(&auth, &catalog_server);
     profile.lookup = |name| (name == "OH_FX_PROVIDER").then(|| "not a provider".to_owned());
-    assert_eq!(
-        activate_codex(&profile).await,
-        failure("could not load settings")
-    );
+    assert_eq!(activate(&profile).await, failure("could not load settings"));
     profile.paths = None;
-    assert_eq!(
-        activate_codex(&profile).await,
-        failure("could not load settings")
-    );
+    assert_eq!(activate(&profile).await, failure("could not load settings"));
     profile.workspace = Err(io::Error::from(io::ErrorKind::NotFound));
     assert_eq!(
-        activate_codex(&profile).await,
+        activate(&profile).await,
         Err(ActivationFailure::Fatal("WorkspaceUnavailable"))
     );
     assert!(catalog_server.requests().is_empty());
@@ -294,7 +294,7 @@ async fn an_unwritable_selection_fails_after_the_catalog() {
     let auth = FakeServer::start([]);
     let catalog_server = FakeServer::start([release(), catalog(&["gpt-6.1-sol"])]);
     assert_eq!(
-        activate_codex(&fixture.profile(&auth, &catalog_server)).await,
+        activate(&fixture.profile(&auth, &catalog_server)).await,
         failure("failed to save provider selection")
     );
     assert_eq!(fs::read_to_string(outside).unwrap(), "{}");

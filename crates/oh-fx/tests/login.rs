@@ -187,3 +187,25 @@ fn codex_models_need_a_selected_model_and_a_login() {
         "{\"kind\":\"models\",\"error\":\"could not list models: AuthenticationRejected\",\"code\":\"AuthenticationRejected\"}\n"
     );
 }
+
+#[test]
+fn only_codex_can_be_selected_with_the_provider_command() {
+    let home = Home::new();
+    for name in ["gateway", "grok", "portkey"] {
+        let output = home.run(&["provider", name]);
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert_eq!(stdout(&output), "", "{name}");
+        assert_eq!(
+            stderr(&output),
+            "oh-fx: provider is not available yet\n",
+            "{name}"
+        );
+    }
+    let settings = home.root.join("config/oh-fx");
+    fs::create_dir_all(&settings).expect("create the config directory");
+    fs::write(settings.join("settings.json"), "{\"provider\":").expect("write settings");
+    let output = home.run(&["provider", "codex"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "oh-fx provider: could not load settings\n");
+}

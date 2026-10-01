@@ -8,9 +8,8 @@ use ofx_auth::{
     parse_auth_mode,
 };
 use ofx_config::ProviderId;
-use tokio_util::sync::CancellationToken;
 
-use crate::provider_activation::{ActivationFailure, Profile, activate_codex};
+use crate::provider_activation::{ActivationFailure, Caller, Profile, activate_codex, sign_in};
 
 const NO_OPEN_BROWSER_VARIABLE: &str = "OH_FX_NO_OPEN_BROWSER";
 const LOGOUT_FAILURE: &str = "oh-fx logout: failed to durably remove saved Codex login\n";
@@ -23,12 +22,11 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
     if provider != Some(&ProviderId::Codex) {
         return unavailable("login");
     }
-    let open_browser = env::var_os(NO_OPEN_BROWSER_VARIABLE).is_none();
     let profile = Profile::from_environment();
     let signed_in = runtime()
         .map_err(|error| ActivationFailure::Detail(login_failure_detail(error)))
         .and_then(|runtime| {
-            runtime.block_on(login_codex(&profile, &mut io::stdout(), open_browser))
+            runtime.block_on(login_codex(&profile, &mut io::stdout(), open_browser()))
         });
     match signed_in {
         Ok(()) => print("Signed in with Codex.\n"),
@@ -44,14 +42,10 @@ pub(crate) async fn login_codex(
     output: &mut (dyn Write + Send),
     open_browser: bool,
 ) -> Result<(), ActivationFailure> {
-    let oauth = profile
-        .chatgpt_oauth()
-        .map_err(|error| ActivationFailure::Detail(login_failure_detail(error)))?;
-    oauth
-        .run_login(output, open_browser, &CancellationToken::new())
+    sign_in(profile, output, open_browser).await?;
+    activate_codex(profile, Caller::Login, false)
         .await
-        .map_err(|error| ActivationFailure::Detail(login_failure_detail(error)))?;
-    activate_codex(profile).await
+        .map(drop)
 }
 
 pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {
@@ -76,6 +70,10 @@ pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {
     }
 }
 
+pub(crate) fn open_browser() -> bool {
+    env::var_os(NO_OPEN_BROWSER_VARIABLE).is_none()
+}
+
 pub(crate) fn host_managed() -> bool {
     let mode = env::var_os(crate::AUTH_MODE_VARIABLE);
     parse_auth_mode(mode.as_deref().map(OsStrExt::as_bytes)) == Some(AuthMode::HostManaged)
@@ -93,7 +91,7 @@ fn print(text: &str) -> ExitCode {
     }
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, ChatGptError> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, ChatGptError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -101,4 +99,4 @@ fn runtime() -> Result<tokio::runtime::Runtime, ChatGptError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

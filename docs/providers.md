@@ -266,6 +266,8 @@ Or choose them for one run:
 OH_FX_PROVIDER=codex oh-fx ask --model gpt-6.1-sol "Summarize this repository"
 ```
 
+`oh-fx provider codex` selects ChatGPT again after you have used another provider. It keeps the saved Codex model while the model list offers it and otherwise picks the list's first model, signs in first when no login is saved, and prints `Provider set to Codex.`, or `Codex is already selected.` when Codex, a Codex model, and a login are already in place. It reports failures as `oh-fx login codex` does, with `oh-fx provider:` in front. Selecting the gateway, Grok, or a custom connection with `oh-fx provider` is not available yet.
+
 Model ids are the slugs from the Codex model list that ChatGPT offers your plan, such as `gpt-6.1-sol`, and are sent as written. The list changes as OpenAI adds and retires models, and a slug it no longer offers fails with HTTP 400. The model is chosen from, highest first:
 
 1. `oh-fx ask --model <id>`

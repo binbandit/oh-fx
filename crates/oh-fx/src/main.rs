@@ -6,6 +6,7 @@ mod help;
 mod login_command;
 mod models_command;
 mod provider_activation;
+mod provider_command;
 mod tool_set;
 mod upgrade_command;
 
@@ -84,6 +85,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Login(provider) => login_command::login(provider.as_ref()),
             Command::Logout(provider) => login_command::logout(provider.as_ref()),
             Command::Models(format) => models_command::run(format),
+            Command::Provider(target) => provider_command::run(target),
             other => unavailable_command(&other),
         },
     }
