@@ -127,7 +127,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 
 ## Parity tracking
 
-[Upstream parity](upstream-parity.md) records the upstream commit oh-fx is synced to, where each upstream pull request since the previous sync point lands in oh-fx, and how to run the next parity pass. `parity/` will map every upstream source file to its Rust module, with the statuses that page defines. CI will fail when an upstream file has no entry. Goldens dumped from upstream (tool schemas, help text, prompts) will be compared byte for byte.
+[Upstream parity](upstream-parity.md) records the upstream commit oh-fx is synced to, where each upstream pull request since the previous sync point lands in oh-fx, and how to run the next parity pass. `parity/` will separately map every upstream source file to its Rust module, with a per-file status of `todo`, `partial`, `ported`, or `not-applicable`. CI will fail when an upstream file has no entry. Goldens dumped from upstream (tool schemas, help text, prompts) will be compared byte for byte.
 
 ## Delivery order
 
