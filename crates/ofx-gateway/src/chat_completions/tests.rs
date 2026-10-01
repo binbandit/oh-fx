@@ -659,9 +659,9 @@ async fn cancellation_interrupts_an_open_stream() {
 
 #[tokio::test]
 async fn transport_failures_are_classified_for_recovery() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
+    let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+    reserved.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let address = reserved.local_addr().unwrap();
     let provider = portkey_at(&format!("http://{address}/v1"));
     let (outcome, _) = stream_text(&provider, &test_request()).await;
     let error = outcome.unwrap_err();
