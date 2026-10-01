@@ -34,26 +34,20 @@ fn format_http_diagnostic(
         return format!("HTTP {status}");
     }
     let parsed: Option<Value> = serde_json::from_str(detail).ok();
-    let error = parsed
+    let Some(failure) = parsed
         .as_ref()
         .and_then(Value::as_object)
-        .and_then(|root| root.get("error"))
-        .and_then(Value::as_object);
-    let Some(error) = error else {
+        .and_then(failure_fields)
+    else {
         let line = format!("HTTP {status}: {}", mask_secrets(detail));
         return encode_terminal_safe(line.as_bytes(), max_bytes).text;
     };
-    let param = error.get("param").and_then(Value::as_object);
-    let code = string_field(error, "code")
-        .or_else(|| string_field(error, "type"))
-        .or_else(|| param.and_then(|param| string_field(param, "name")));
-    let message = string_field(error, "message")
-        .or_else(|| param.and_then(|param| string_field(param, "message")));
-    let provider = string_field(error, "provider")
-        .or_else(|| message.and_then(provider_from_message))
+    let provider = failure
+        .provider
+        .or_else(|| failure.message.and_then(provider_from_message))
         .map(mask_secrets);
-    let code = code.map(mask_secrets);
-    let message = message.map(mask_secrets);
+    let code = failure.code.map(mask_secrets);
+    let message = failure.message.map(mask_secrets);
     let mut line = String::new();
     if let Some(title) = title {
         let _ = write!(line, "{title} · ");
@@ -75,6 +69,34 @@ fn format_http_diagnostic(
         (None, None) => {}
     }
     encode_terminal_safe(line.as_bytes(), max_bytes).text
+}
+
+struct FailureFields<'a> {
+    code: Option<&'a str>,
+    message: Option<&'a str>,
+    provider: Option<&'a str>,
+}
+
+fn failure_fields(root: &Map<String, Value>) -> Option<FailureFields<'_>> {
+    if let Some(error) = root.get("error").and_then(Value::as_object) {
+        let param = error.get("param").and_then(Value::as_object);
+        return Some(FailureFields {
+            code: string_field(error, "code")
+                .or_else(|| string_field(error, "type"))
+                .or_else(|| param.and_then(|param| string_field(param, "name"))),
+            message: string_field(error, "message")
+                .or_else(|| param.and_then(|param| string_field(param, "message"))),
+            provider: string_field(error, "provider"),
+        });
+    }
+    let message = ["message", "detail"]
+        .into_iter()
+        .find_map(|key| string_field(root, key).filter(|text| !text.trim().is_empty()))?;
+    Some(FailureFields {
+        code: None,
+        message: Some(message),
+        provider: None,
+    })
 }
 
 fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -142,6 +164,51 @@ mod tests {
         let long = format_http_error_message(500, &"x".repeat(5000));
         assert_eq!(long.len(), MAX_PUBLISHED_ERROR_BYTES);
         assert!(long.ends_with("..."));
+    }
+
+    #[test]
+    fn top_level_detail_and_message_bodies_render_like_error_objects() {
+        assert_eq!(
+            format_http_error_message(
+                400,
+                r#"{"detail":"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."}"#
+            ),
+            "API request failed · HTTP 400 · The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."
+        );
+        assert_eq!(
+            format_http_error_message(403, r#"{"message":"Forbidden"}"#),
+            "API access denied · HTTP 403 · Forbidden"
+        );
+        assert_eq!(
+            format_http_error_message(400, r#"{"message":"used","detail":"ignored"}"#),
+            "API request failed · HTTP 400 · used"
+        );
+        assert_eq!(
+            format_http_recovery_diagnostic(
+                503,
+                r#"{"detail":"Service temporarily unavailable. Providers considered: wafer"}"#
+            ),
+            "HTTP 503 · Provider: wafer · Service temporarily unavailable. Providers considered: wafer"
+        );
+        let masked = format_http_error_message(
+            401,
+            r#"{"detail":"Bad key sk-proj-abcdefghijklmnopqrstuvwxyz0123 \u001b[31m"}"#,
+        );
+        assert_eq!(
+            masked,
+            "API access denied · HTTP 401 · Bad key [redacted] \\x1b[31m"
+        );
+        for raw in [
+            r#"{"detail":[{"loc":["body","model"],"msg":"field required"}]}"#,
+            r#"{"detail":"  "}"#,
+            r#"{"error":"Unauthorized"}"#,
+            r#"["detail"]"#,
+        ] {
+            assert_eq!(
+                format_http_error_message(422, raw),
+                format!("HTTP 422: {raw}")
+            );
+        }
     }
 
     #[test]
