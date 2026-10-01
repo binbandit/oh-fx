@@ -1,12 +1,12 @@
 # Custom provider connections
 
-oh-fx talks to any OpenAI-compatible Chat Completions endpoint through a *custom connection*: a self-hosted gateway such as Portkey or LiteLLM, a local server such as Ollama or llama.cpp, or a hosted router such as OpenRouter. Connections live in your profile settings, never in a project's `.oh-fx.json`.
+oh-fx talks to any OpenAI-compatible Chat Completions endpoint through a *custom connection*: a self-hosted gateway such as Portkey or LiteLLM, a local server such as Ollama or llama.cpp, or a hosted router such as OpenRouter. Connections live in your profile settings, never in a project's `.oh-fx.json`. To use a ChatGPT Plus or Pro subscription instead, see [ChatGPT subscription](#chatgpt-subscription).
 
 ## Where settings live
 
 | File | Purpose |
 | --- | --- |
-| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps` |
+| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps` |
 | `<workspace>/.oh-fx.json` | Project settings. Only project-safe keys such as `max_agent_steps` apply; `provider`, `model`, `providers` and other profile keys are ignored with a `config project: ignored_project_user_only_setting` notice |
 
 Settings files are JSON objects of at most 64 KiB. A leading UTF-8 byte order mark is ignored. Duplicate keys are rejected anywhere in the document.
@@ -119,6 +119,8 @@ Model, highest first:
 
 Without any of these, `oh-fx ask` stops with `no model is selected for this connection; save one under "models" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL`.
 
+A `provider` of `codex` selects a ChatGPT subscription instead of a connection; see [ChatGPT subscription](#chatgpt-subscription).
+
 ## TLS and corporate certificate authorities
 
 oh-fx verifies servers with the operating system's trust store through rustls-platform-verifier.
@@ -190,3 +192,110 @@ An HTTP error from the gateway is reported differently. It prints one `oh-fx ask
 | `oh-fx: ConnectionFailed` | DNS, connection, proxy, or TLS failure; the next line says which. |
 | `oh-fx: UnexpectedContentType` | The gateway answered with something other than an event stream, often an HTML page from a proxy. |
 | `oh-fx: InvalidProfileConfiguration` | `settings.json` is malformed or larger than 64 KiB, has duplicate keys, or holds a setting with the wrong type or value. As upstream, the message does not say which. |
+
+## ChatGPT subscription
+
+oh-fx can send requests through a ChatGPT Plus or Pro subscription, using the same Codex sign-in and Responses endpoint as upstream fx. Requests count against the subscription's Codex usage limits.
+
+### Sign in
+
+```sh
+oh-fx login codex
+```
+
+oh-fx prints the sign-in URL, opens it in your browser (`open` on macOS, `xdg-open` elsewhere), and waits up to five minutes:
+
+```
+Open this URL to sign in with Codex:
+https://auth.openai.com/oauth/authorize?response_type=code&client_id=...
+
+Waiting for browser authorization...
+```
+
+After you approve, the browser returns to `http://127.0.0.1:1455/auth/callback` (or port 1457 when 1455 is busy), shows "Authorization complete", and the terminal prints `Signed in with Codex.` The callback listener binds `127.0.0.1` only, accepts exactly one authorization code, rejects any callback whose `state` does not match, and answers every other path with 404.
+
+Set `OH_FX_NO_OPEN_BROWSER=1` to print the URL without opening a browser.
+
+When `OH_FX_AUTH_MODE` is `host-managed`, `oh-fx login` and `oh-fx logout` change nothing and print `Authentication is managed by the host.`
+
+### Signing in on a remote machine
+
+The browser must reach the callback port on the machine where oh-fx runs. Over SSH, forward the port and open the printed URL in your local browser:
+
+```sh
+ssh -L 1455:127.0.0.1:1455 you@remote-host
+OH_FX_NO_OPEN_BROWSER=1 oh-fx login codex
+```
+
+The `redirect_uri` in the printed URL names the port oh-fx is listening on; forward `1457` instead when it says so.
+
+Without port forwarding, approve the sign-in in your local browser and let its redirect fail. Copy the full `http://127.0.0.1:1455/auth/callback?code=...&state=...` address from the address bar, and within the five minutes run this in a second shell on the remote machine:
+
+```sh
+curl 'http://127.0.0.1:1455/auth/callback?code=...&state=...'
+```
+
+### Select ChatGPT and a model
+
+Save the provider and a Codex model in `~/.config/oh-fx/settings.json`:
+
+```json
+{
+  "provider": "codex",
+  "models": {"codex": "gpt-6.1-sol"}
+}
+```
+
+```sh
+oh-fx ask "Summarize this repository"
+```
+
+Or choose them for one run:
+
+```sh
+OH_FX_PROVIDER=codex oh-fx ask --model gpt-6.1-sol "Summarize this repository"
+```
+
+Model ids are the slugs from the Codex model list that ChatGPT offers your plan, such as `gpt-6.1-sol`, and are sent as written. The list changes as OpenAI adds and retires models, and a slug it no longer offers fails with HTTP 400. The model is chosen from, highest first:
+
+1. `oh-fx ask --model <id>`
+2. `OH_FX_MODEL`
+3. `models.codex`, then the legacy `codex_model`, from the workspace entry
+4. `models.codex`, then `codex_model`, from the top level
+
+The `model` key belongs to the gateway and is never used for Codex. Without a Codex model, `oh-fx ask` stops with `no Codex model is selected; save one as "codex" under "models" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL`.
+
+### What is sent where
+
+- Requests go to `https://chatgpt.com/backend-api/codex/responses` with the access token, the ChatGPT account id, `originator: oh-fx`, and `OpenAI-Beta: responses=experimental`. The body uses `store: false` and asks for encrypted reasoning, which oh-fx replays on the next step of the same run.
+- The sign-in code and refresh token go only to `https://auth.openai.com/oauth/token`.
+- Redirects are never followed, and tokens are masked in every error and never printed.
+- oh-fx refreshes the access token a minute before it expires and saves the new tokens before the request. When ChatGPT answers 401, oh-fx refreshes once and resends the request.
+- Ctrl-C or SIGTERM during a refresh starts no new one. oh-fx waits up to 2 seconds for a refresh already sent, so the new tokens are saved, then exits. If `auth.openai.com` has not answered by then, the next run may ask you to sign in again.
+
+### Sign out
+
+```sh
+oh-fx logout codex
+```
+
+This prints `Signed out of Codex.`, or `No Codex login session found.` when there was nothing to remove.
+
+### Where the login is stored
+
+The login lives in `$XDG_DATA_HOME/oh-fx/chatgpt-auth.json` (default `~/.local/share/oh-fx/chatgpt-auth.json`), next to a `chatgpt-auth.lock` file that keeps concurrent oh-fx processes from refreshing at the same time. The directory is created with mode `0700` and the file with mode `0600`, and every update is written to a temporary file, synced, and renamed into place. oh-fx refuses a credential file that is a symbolic link, has more than one hard link, or is readable or writable by group or others.
+
+### Errors
+
+| Message | Cause |
+| --- | --- |
+| `oh-fx needs a Codex subscription login for this model. Run oh-fx login codex.` | No login is saved, or the refresh token expired or was revoked, in which case oh-fx removes the saved login. With `--json`, `error` is `MissingCredentials`. |
+| `Codex subscription authentication failed · HTTP 401`, then `Run oh-fx login codex to sign in again.` | ChatGPT rejected the token even after a refresh. With `--json`, `auth_failure.source` is `Codex subscription`. |
+| `[notice] ⚠ Rate limited · HTTP 429 · usage_limit_reached: ...` | The subscription's usage limit was reached. oh-fx waits for `Retry-After`, up to 30 seconds, and retries as described in [Retries](#retries). |
+| `Saved credential storage is unavailable. Check the saved credential, then retry.` | The credential file or its directory is unsafe or unreadable. Run `chmod 600` on the file, or sign out and sign in again. |
+| `Credential refresh is temporarily unavailable. Retry shortly.` | The token refresh could not reach `auth.openai.com` or failed temporarily. |
+| `Credential could not be saved. Check authentication storage before signing in again.` | The refreshed tokens could not be saved durably. |
+| `The credential account or team changed. Review authentication before retrying.` | A refresh returned a token for a different ChatGPT account. |
+| `oh-fx login: authorization denied` | The sign-in was denied in the browser. |
+| `oh-fx login: failed to sign in` | The authorization code could not be exchanged for tokens, or `auth.openai.com` could not be reached. |
+| `oh-fx login: authorization expired; run oh-fx login again` | Nothing came back to the callback within five minutes. |
