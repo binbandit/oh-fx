@@ -9,7 +9,7 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    pub(crate) fn parse(text: &str) -> Option<Self> {
+    pub fn parse(text: &str) -> Option<Self> {
         for (label, provider) in [
             ("gateway", Self::Gateway),
             ("codex", Self::Codex),

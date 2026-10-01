@@ -62,7 +62,7 @@ pub enum Command {
     Permissions(OutputFormat),
     Mcp,
     Models(OutputFormat),
-    Provider,
+    Provider(ProviderId),
     Doctor(OutputFormat),
     Teams,
     Session(OutputFormat),
@@ -88,7 +88,7 @@ impl Command {
             Self::Permissions(_) => TopLevelKind::Permissions,
             Self::Mcp => TopLevelKind::Mcp,
             Self::Models(_) => TopLevelKind::Models,
-            Self::Provider => TopLevelKind::Provider,
+            Self::Provider(_) => TopLevelKind::Provider,
             Self::Doctor(_) => TopLevelKind::Doctor,
             Self::Teams => TopLevelKind::Teams,
             Self::Session(_) => TopLevelKind::Session,
@@ -123,7 +123,7 @@ impl Command {
             | Self::Logout(_)
             | Self::Setup
             | Self::Mcp
-            | Self::Provider
+            | Self::Provider(_)
             | Self::Teams => OutputFormat::Text,
         }
     }
@@ -260,9 +260,7 @@ fn parse_command(
         TopLevelKind::Doctor => Command::Doctor(command_args::parse_output_format(kind, &rest)?),
         TopLevelKind::Credits => Command::Credits(command_args::parse_output_format(kind, &rest)?),
         TopLevelKind::Mcp => command_args::validate_mcp(&rest).map(|()| Command::Mcp)?,
-        TopLevelKind::Provider => {
-            command_args::validate_provider(&rest).map(|()| Command::Provider)?
-        }
+        TopLevelKind::Provider => Command::Provider(command_args::parse_provider(&rest)?),
         TopLevelKind::Session => Command::Session(command_args::parse_session(rest)?),
         TopLevelKind::Sessions => Command::Sessions(command_args::parse_session_list(rest)?),
         TopLevelKind::Usage => Command::Usage(command_args::parse_usage(rest)?),

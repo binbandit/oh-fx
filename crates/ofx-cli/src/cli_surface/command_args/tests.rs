@@ -303,16 +303,22 @@ fn login_providers_accept_one_known_slug() {
 
 #[test]
 fn provider_command_requires_exactly_one_valid_name() {
-    assert!(validate_provider(&os(&["codex"])).is_ok());
-    assert!(validate_provider(&os(&["vercel"])).is_ok());
-    fails(validate_provider(&os(&["9"])), |error| {
+    assert_eq!(
+        parse_provider(&os(&["CODEX"])).ok(),
+        Some(ProviderId::Codex)
+    );
+    assert_eq!(
+        parse_provider(&os(&["vercel"])).ok(),
+        Some(ProviderId::Configured("vercel".to_owned()))
+    );
+    fails(parse_provider(&os(&["9"])), |error| {
         matches!(error, CliError::UnknownProvider)
     });
     fails(
-        validate_provider(&[OsString::from_vec(b"a\xff".to_vec())]),
+        parse_provider(&[OsString::from_vec(b"a\xff".to_vec())]),
         |error| matches!(error, CliError::UnknownProvider),
     );
-    fails(validate_provider(&os(&[])), usage(TopLevelKind::Provider));
+    fails(parse_provider(&os(&[])), usage(TopLevelKind::Provider));
 }
 
 #[test]

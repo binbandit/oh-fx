@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ofx_auth::{
     CHATGPT_SOURCE_LABEL, ChatGptAccess, ChatGptError, ChatGptOAuth, PreparationError,
-    prepare_chatgpt_credential,
+    login_failure_detail, prepare_chatgpt_credential,
 };
 use ofx_config::{ProfilePaths, Settings, save_codex_model};
 use ofx_gateway::{CatalogCredential, CodexModelCatalog};
@@ -65,7 +65,38 @@ fn detail(text: impl Into<String>) -> ActivationFailure {
     ActivationFailure::Detail(text.into())
 }
 
-pub(crate) async fn activate_codex(profile: &Profile) -> Result<(), ActivationFailure> {
+pub(crate) enum Caller<'a> {
+    Login,
+    ProviderCommand {
+        output: &'a mut (dyn Write + Send),
+        open_browser: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Activation {
+    AlreadySelected,
+    Selected { signed_in: bool },
+}
+
+pub(crate) async fn sign_in(
+    profile: &Profile,
+    output: &mut (dyn Write + Send),
+    open_browser: bool,
+) -> Result<(), ActivationFailure> {
+    let failed = |error| ActivationFailure::Detail(login_failure_detail(error));
+    let oauth = profile.chatgpt_oauth().map_err(failed)?;
+    oauth
+        .run_login(output, open_browser, &CancellationToken::new())
+        .await
+        .map_err(failed)
+}
+
+pub(crate) async fn activate_codex(
+    profile: &Profile,
+    caller: Caller<'_>,
+    host_managed: bool,
+) -> Result<Activation, ActivationFailure> {
     let workspace = profile
         .workspace
         .as_ref()
@@ -75,13 +106,40 @@ pub(crate) async fn activate_codex(profile: &Profile) -> Result<(), ActivationFa
         .as_ref()
         .ok_or_else(|| detail(SETTINGS_UNAVAILABLE))?;
     let settings = load_settings(paths, workspace, &profile.lookup)?;
-    let access = prepared_credential(profile)
-        .await?
-        .ok_or_else(|| detail("Codex credential is unavailable"))?;
-    let models = fetch_catalog(profile, paths, access).await?;
+    let mut access = if host_managed {
+        None
+    } else {
+        prepared_credential(profile).await?
+    };
+    let selected = settings.codex_selected(&profile.lookup) == Ok(true);
+    let has_model = settings.saved_codex_model().is_some();
+    let mut signed_in = false;
+    if let Caller::ProviderCommand {
+        output,
+        open_browser,
+    } = caller
+    {
+        if selected && has_model && (host_managed || access.is_some()) {
+            return Ok(Activation::AlreadySelected);
+        }
+        if !host_managed && access.is_none() {
+            sign_in(profile, output, open_browser).await?;
+            signed_in = true;
+            access = prepared_credential(profile).await?;
+        }
+    }
+    let credential = if host_managed {
+        None
+    } else {
+        let access = access.ok_or_else(|| detail("Codex credential is unavailable"))?;
+        let account_id = access.account_id().to_owned();
+        Some(CatalogCredential::new(access.into_token(), account_id))
+    };
+    let models = fetch_catalog(profile, paths, credential.as_ref()).await?;
     let model = select_catalog_model(&models, settings.saved_codex_model())
         .ok_or_else(|| detail("target model catalog is empty"))?;
-    save_selection(paths, model).await
+    save_selection(paths, model).await?;
+    Ok(Activation::Selected { signed_in })
 }
 
 fn load_settings(
@@ -115,7 +173,7 @@ async fn prepared_credential(
 async fn fetch_catalog(
     profile: &Profile,
     paths: &ProfilePaths,
-    access: ChatGptAccess,
+    credential: Option<&CatalogCredential>,
 ) -> Result<Vec<String>, ActivationFailure> {
     let catalog = CodexModelCatalog::new(
         &crate::user_agent(),
@@ -123,10 +181,8 @@ async fn fetch_catalog(
         Some(paths.cache.clone()),
     )
     .map_err(|_| detail("Codex model catalog is unavailable"))?;
-    let account_id = access.account_id().to_owned();
-    let credential = CatalogCredential::new(access.into_token(), account_id);
     catalog
-        .fetch(Some(&credential), &CancellationToken::new())
+        .fetch(credential, &CancellationToken::new())
         .await
         .map_err(|failure| {
             detail(format!(
