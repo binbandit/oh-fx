@@ -369,7 +369,7 @@ fn echo_tool_with(cleaned_up: Arc<AtomicBool>) -> Arc<dyn Tool> {
         spec: ToolSpec {
             name: "echo".to_owned(),
             description: "Echo the arguments.".to_owned(),
-            input_schema: serde_json::json!({"type": "object"}),
+            input_schema: r#"{"type":"object"}"#,
         },
         cleaned_up,
         meeting: Arc::new(tokio::sync::Barrier::new(2)),

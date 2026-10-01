@@ -9,7 +9,7 @@ use crate::types::ToolResultStatus;
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
-    pub input_schema: serde_json::Value,
+    pub input_schema: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

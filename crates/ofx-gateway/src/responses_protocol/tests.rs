@@ -1421,17 +1421,17 @@ fn responses_tools_serialize_typed_static_and_dynamic_functions_once() {
         ToolSpec {
             name: "read_file".to_owned(),
             description: "Read a file.".to_owned(),
-            input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+            input_schema: r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
         },
         ToolSpec {
             name: "mcp_search".to_owned(),
             description: "Search.".to_owned(),
-            input_schema: json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+            input_schema: r#"{"type":"object","properties":{"query":{"type":"string"}}}"#,
         },
         ToolSpec {
             name: "read_file".to_owned(),
             description: String::new(),
-            input_schema: json!({"type": "object"}),
+            input_schema: r#"{"type":"object"}"#,
         },
     ];
     let mut out = String::new();
@@ -1444,9 +1444,9 @@ fn responses_tools_serialize_typed_static_and_dynamic_functions_once() {
     assert_eq!(write_tools(&mut empty, &[]), Ok(0));
     assert_eq!(empty, "");
     let invalid = ToolSpec {
-        name: "bad".to_owned(),
+        name: String::new(),
         description: String::new(),
-        input_schema: json!([]),
+        input_schema: r#"{"type":"object"}"#,
     };
     assert_eq!(
         write_tools(&mut String::new(), &[invalid]),
