@@ -1,5 +1,8 @@
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::io;
+#[cfg(target_os = "linux")]
+use std::io::Read;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
@@ -11,9 +14,15 @@ use std::process::Child;
 use std::process::{Command, Output, Stdio};
 
 #[cfg(target_os = "linux")]
+use rustix::fs::{Mode, OFlags};
+#[cfg(target_os = "linux")]
 use rustix::io::Errno;
 #[cfg(target_os = "linux")]
 use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
+#[cfg(target_os = "linux")]
+use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+#[cfg(target_os = "linux")]
+use rustix::termios::{OptionalActions, OutputModes, Winsize, tcgetattr, tcsetattr, tcsetwinsize};
 
 use ofx_cli::{HelpStyle, TopLevelKind, render_command_help, render_top_level_help};
 
@@ -40,7 +49,7 @@ fn oh_fx<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)]) -> Output {
 
 #[cfg(target_os = "linux")]
 fn into_full_device(args: &[&str]) -> Output {
-    let full = std::fs::File::create("/dev/full").expect("open /dev/full");
+    let full = File::create("/dev/full").expect("open /dev/full");
     run(args, &[], Stdio::from(full))
 }
 
@@ -264,7 +273,7 @@ fn full_disk_writes_follow_each_upstream_path() {
 #[test]
 fn read_only_stdout_is_treated_like_a_closed_one() {
     for args in [&["--help"][..], &["--version"], &["status", "--help"]] {
-        let read_only = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let read_only = File::open("/dev/null").expect("open /dev/null");
         let output = run(args, &[], Stdio::from(read_only));
         assert_eq!(output.status.code(), Some(0), "{args:?}");
         assert_eq!(stderr(&output), "", "{args:?}");
@@ -418,6 +427,43 @@ fn spawn_into(home: &Path, args: &[&str], environment: &[(&str, &str)], stdout: 
 }
 
 #[cfg(target_os = "linux")]
+fn on_terminal(args: &[&str], environment: &[(&str, &str)], columns: u16) -> Vec<u8> {
+    let controller = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)
+        .expect("open a pseudoterminal");
+    grantpt(&controller).expect("grant the pseudoterminal");
+    unlockpt(&controller).expect("unlock the pseudoterminal");
+    let name = ptsname(&controller, Vec::new()).expect("name the pseudoterminal");
+    let terminal = rustix::fs::open(
+        name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .expect("open the terminal side");
+    let mut modes = tcgetattr(&terminal).expect("read the terminal modes");
+    modes.output_modes.remove(OutputModes::OPOST);
+    tcsetattr(&terminal, OptionalActions::Now, &modes).expect("keep newlines raw");
+    let size = Winsize {
+        ws_row: 24,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    tcsetwinsize(&terminal, size).expect("size the terminal");
+    let home = tempfile::tempdir().expect("create a temporary home");
+    let mut child = spawn_into(home.path(), args, environment, terminal);
+    let mut output = Vec::new();
+    if let Err(error) = File::from(controller).read_to_end(&mut output) {
+        assert_eq!(
+            error.raw_os_error(),
+            Some(Errno::IO.raw_os_error()),
+            "{error}"
+        );
+    }
+    assert!(child.wait().expect("wait for oh-fx").success());
+    output
+}
+
+#[cfg(target_os = "linux")]
 fn stdout_records(args: &[&str]) -> Vec<Vec<u8>> {
     let (reader, writer) = socketpair(
         AddressFamily::UNIX,
@@ -453,4 +499,22 @@ fn help_and_version_reach_stdout_in_one_write() {
         stdout_records(&["--version"]),
         [format!("{}\n", ofx_upgrade::VERSION).into_bytes()]
     );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn top_level_help_on_a_terminal_follows_its_width_and_color_settings() {
+    for (environment, columns, width, style) in [
+        (&[][..], 60, 60, HelpStyle::Ansi),
+        (&[("NO_COLOR", "")], 60, 60, HelpStyle::Plain),
+        (&[("TERM", "dumb")], 60, 60, HelpStyle::Plain),
+        (&[("COLUMNS", "120")], 60, 60, HelpStyle::Ansi),
+        (&[("COLUMNS", "120")], 0, 120, HelpStyle::Ansi),
+    ] {
+        assert_eq!(
+            on_terminal(&["--help"], environment, columns),
+            render_top_level_help(width, ofx_upgrade::VERSION, style).into_bytes(),
+            "{environment:?} {columns}"
+        );
+    }
 }

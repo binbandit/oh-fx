@@ -32,7 +32,7 @@ tokio = { workspace = true, features = ["macros"] }
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-rustix = { workspace = true, features = ["net"] }
+rustix = { workspace = true, features = ["fs", "net", "pty"] }
 
 [lints]
 workspace = true
