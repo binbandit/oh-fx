@@ -1,4 +1,5 @@
 mod display_width;
+mod fmt;
 mod model_context_encoding;
 mod text_utils;
 mod unicode_display_data;
@@ -8,6 +9,7 @@ pub use display_width::{
     status_prefix_end, suffix_by_width, trim_break_whitespace, visible_width,
     wrap_cut_ignoring_ansi,
 };
+pub use fmt::parse_unsigned;
 pub use model_context_encoding::write_scalar;
 pub use text_utils::{
     EncodedText, contains_ignore_case, encode_terminal_safe, escape_terminal_controls,

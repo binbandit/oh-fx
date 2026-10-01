@@ -1,0 +1,115 @@
+oh-fx v9.8.7
+Fast, native coding agent for the terminal.
+
+oh-fx starts an interactive session by default. Use `oh-fx
+ask` to run one noninteractive request.
+
+Usage:
+  oh-fx [flags]
+  oh-fx <command> [...flags] [...args]
+
+Commands:
+  ask <prompt>                    Run one noninteractive
+                                  request
+
+  pr [context]                    Draft or publish a pull
+                                  request
+  issue [context]                 Draft or publish a GitHub
+                                  issue
+
+  sessions                        List saved sessions for
+                                  the current workspace
+  session <last|id>               Inspect, resume, migrate,
+                                  or recover saved sessions
+  session resume [last|id]        Resume the latest
+                                  workspace session or a
+                                  session by id
+  session migrate <id>            Migrate a saved session to
+                                  the current format
+  session recover <id>            Copy a recoverable corrupt
+                                  session
+
+  login [vercel|codex|grok]       Sign in to a model
+                                  provider
+  logout [vercel|codex|grok]      Sign out of a model
+                                  provider
+  provider <name>                 Choose the active model
+                                  provider
+  models                          List available models
+
+  setup                           Configure a Vercel AI
+                                  Gateway API key
+  teams                           Choose a Vercel AI Gateway
+                                  team
+  credits|balance                 Show Vercel AI Gateway
+                                  credits
+
+  usage [--period <24h|7d|30d>]   Show locally recorded
+                                  token usage and spend
+
+  status                          Show configuration and
+                                  runtime information
+  doctor                          Run local health and
+                                  preflight checks
+  mcp <command> ...               Manage MCP servers without
+                                  opening the interactive
+                                  shell
+  slack <install|status|refresh>  Install and manage the
+                                  workspace Slack bot
+                                  locally
+  permissions                     Show the permission mode
+                                  and rules
+  workspace                       Manage additional
+                                  workspace directories
+  upgrade                         Upgrade oh-fx to the
+                                  latest release
+  acp                             Start an ACP server over
+                                  stdio
+  help                            Show this help
+
+Flags:
+  --context-limit <spec>  Set name=bytes|off; repeatable
+  --add-dir <path>        Add a workspace directory;
+                          repeatable
+  --no-additional-dirs    Ignore saved additional
+                          directories
+  --provider <name>       Override the model provider for an
+                          interactive session (gateway,
+                          codex, grok, or a configured name)
+  --model <id>            Override the model for an
+                          interactive session
+  --effort <level>        Override the reasoning effort for
+                          an interactive session
+  --fast, --no-fast       Turn Fast mode on or off for an
+                          interactive session
+  -c, --continue          Resume the remembered workspace
+                          session
+  -r                      Open the saved-session picker
+  --resume [last|<id>]    Resume the latest workspace
+                          session or an exact ID
+  --resume-last           Resume the latest workspace
+                          session
+  --resume-<id>           Resume a session by exact ID
+  -h, --help              Display this help and exit
+  -v, --version           Print the oh-fx version and exit
+
+Examples:
+  oh-fx
+      Start a fresh interactive session
+
+  oh-fx ask "Explain the changes in this repository"
+      Run one request and exit
+
+  oh-fx session resume last
+      Continue the latest session for this workspace
+
+  oh-fx status --json
+      Inspect the current configuration as JSON
+
+Run `oh-fx <command> --help` for command-specific usage and
+options.
+Run `/help` inside an interactive session for slash
+commands.
+
+Learn more about oh-fx:  https://github.com/binbandit/oh-fx
+Report a problem:        run `/feedback` inside oh-fx

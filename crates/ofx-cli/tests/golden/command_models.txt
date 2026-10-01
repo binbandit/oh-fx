@@ -1,0 +1,9 @@
+oh-fx models
+
+List available models
+
+Usage:
+  oh-fx models [--json]
+
+Options:
+  --json  Emit machine-readable JSON instead of text

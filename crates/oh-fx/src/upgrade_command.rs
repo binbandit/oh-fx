@@ -1,28 +1,26 @@
 use std::env;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ofx_config::ProfilePaths;
 use ofx_upgrade::{UpgradeError, UpgradeLock, UpgradeOutcome, UpgradeProgress};
 use serde_json::json;
 
-use crate::cli::UpgradeOptions;
-
 const CLEAR_LINE: &str = "\r\x1b[K";
 
-pub(crate) fn run(options: UpgradeOptions) -> ExitCode {
-    let state_directory =
-        ProfilePaths::from_environment().map_or_else(env::temp_dir, |paths| paths.state);
-    if options.background {
-        if let Some(lock) = UpgradeLock::try_acquire(&state_directory) {
-            let _ = block_on_upgrade(options, &lock);
-        }
-        return ExitCode::SUCCESS;
+pub(crate) fn run_in_background() -> ExitCode {
+    if let Some(lock) = UpgradeLock::try_acquire(&state_directory()) {
+        let _ = block_on_upgrade(false, &lock);
     }
-    let outcome = UpgradeLock::acquire(&state_directory)
+    ExitCode::SUCCESS
+}
+
+pub(crate) fn run(json: bool) -> ExitCode {
+    let outcome = UpgradeLock::acquire(&state_directory())
         .map_err(|_| UpgradeError::ReplaceFailed)
-        .and_then(|lock| block_on_upgrade(options, &lock));
-    let report = if options.json {
+        .and_then(|lock| block_on_upgrade(!json, &lock));
+    let report = if json {
         json_report(&outcome)
     } else {
         text_report(&outcome)
@@ -37,28 +35,29 @@ pub(crate) fn run(options: UpgradeOptions) -> ExitCode {
     }
 }
 
+fn state_directory() -> PathBuf {
+    ProfilePaths::from_environment().map_or_else(env::temp_dir, |paths| paths.state)
+}
+
 fn block_on_upgrade(
-    options: UpgradeOptions,
+    show_progress: bool,
     lock: &UpgradeLock,
 ) -> Result<UpgradeOutcome, UpgradeError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| UpgradeError::FetchFailed)?;
-    runtime.block_on(upgrade(options, lock))
+    runtime.block_on(upgrade(show_progress, lock))
 }
 
-async fn upgrade(
-    options: UpgradeOptions,
-    lock: &UpgradeLock,
-) -> Result<UpgradeOutcome, UpgradeError> {
+async fn upgrade(show_progress: bool, lock: &UpgradeLock) -> Result<UpgradeOutcome, UpgradeError> {
     let client = ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
         user_agent: crate::user_agent(),
         follow_redirects: true,
         ..ofx_http::ConnectionOptions::default()
     })
     .map_err(|_| UpgradeError::FetchFailed)?;
-    let mut progress = ProgressLine::new(!options.json && !options.background);
+    let mut progress = ProgressLine::new(show_progress);
     let outcome = ofx_upgrade::upgrade(&client, lock, |update| progress.show(update)).await;
     progress.clear();
     outcome

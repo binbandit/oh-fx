@@ -584,12 +584,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lexopt"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "803ec87c9cfb29b9d2633f20cba1f488db3fd53f2158b1024cbefb47ba05d413"
-
-[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -652,10 +646,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-auth"
+version = "0.1.0"
+
+[[package]]
+name = "ofx-cli"
+version = "0.1.0"
+dependencies = [
+ "ofx-auth",
+ "ofx-config",
+ "ofx-contract",
+ "ofx-session",
+ "ofx-text",
+ "ofx-upgrade",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ofx-config"
 version = "0.1.0"
 dependencies = [
  "ofx-contract",
+ "ofx-text",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -709,6 +722,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-session"
+version = "0.1.0"
+
+[[package]]
 name = "ofx-testkit"
 version = "0.1.0"
 dependencies = [
@@ -751,8 +768,9 @@ dependencies = [
 name = "oh-fx"
 version = "0.1.0"
 dependencies = [
- "lexopt",
  "ofx-agent",
+ "ofx-auth",
+ "ofx-cli",
  "ofx-config",
  "ofx-contract",
  "ofx-gateway",

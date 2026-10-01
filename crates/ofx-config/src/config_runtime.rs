@@ -11,6 +11,7 @@ use crate::configured_provider::{
 };
 use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
+use crate::settings_store::{MAX_PROVIDER_ORDER_ENTRIES, validate_provider_slug};
 use crate::strict_json;
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -21,6 +22,7 @@ const PROVIDER_VARIABLE: &str = "OH_FX_PROVIDER";
 const MODEL_VARIABLE: &str = "OH_FX_MODEL";
 const MAX_AGENT_STEPS_VARIABLE: &str = "OH_FX_MAX_AGENT_STEPS";
 const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
+const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const PROFILE_ONLY_KEYS: [&str; 29] = [
     "model",
     "models",
@@ -386,6 +388,23 @@ impl Settings {
         self.diagnostics
             .push(ConfigDiagnostic { layer, cause, key });
     }
+}
+
+pub fn is_valid_provider_order_list(raw: &str) -> bool {
+    let mut slugs: Vec<&str> = Vec::new();
+    for slug in raw.split(',').map(|token| token.trim_matches(TRIMMED)) {
+        if slug.is_empty() {
+            continue;
+        }
+        if !validate_provider_slug(slug)
+            || slugs.len() >= MAX_PROVIDER_ORDER_ENTRIES
+            || slugs.contains(&slug)
+        {
+            return false;
+        }
+        slugs.push(slug);
+    }
+    !slugs.is_empty()
 }
 
 fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, DiagnosticCause> {
@@ -798,6 +817,27 @@ mod tests {
             settings.selected_connection(&no_environment).unwrap().id,
             "portkey"
         );
+    }
+
+    #[test]
+    fn provider_order_lists_trim_entries_and_reject_invalid_duplicate_or_empty_lists() {
+        for valid in [
+            " azure, anthropic ,bedrock",
+            "vertexAnthropic,,claudeaws",
+            "a,b,c,d,e,f,g,h",
+        ] {
+            assert!(is_valid_provider_order_list(valid), "{valid:?}");
+        }
+        for invalid in [
+            "azure,Bad Slug",
+            "azure,azure",
+            "-azure",
+            "a,b,c,d,e,f,g,h,i",
+            " , ,",
+            "",
+        ] {
+            assert!(!is_valid_provider_order_list(invalid), "{invalid:?}");
+        }
     }
 
     #[test]

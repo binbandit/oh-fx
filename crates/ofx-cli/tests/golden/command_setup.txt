@@ -1,0 +1,6 @@
+oh-fx setup
+
+Configure an AI Gateway API key
+
+Usage:
+  oh-fx setup

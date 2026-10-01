@@ -1,0 +1,20 @@
+oh-fx mcp
+
+Manage MCP servers without opening the interactive shell
+
+Usage:
+  oh-fx mcp <command> ...
+
+Commands:
+  oh-fx mcp add NAME COMMAND [ARGS...]
+  oh-fx mcp add --transport http NAME URL
+  oh-fx mcp auth NAME
+  oh-fx mcp list [--connect]
+  oh-fx mcp logout NAME
+  oh-fx mcp path
+  oh-fx mcp remove NAME
+  oh-fx mcp trust approve|reject NAME
+  oh-fx mcp trust approve-all|reset
+
+By default, list reads configuration without opening MCP transports.
+Use --connect to connect and discover servers before rendering health.

@@ -1,0 +1,9 @@
+oh-fx credits
+
+Show the AI Gateway credit balance
+
+Usage:
+  oh-fx credits [--json]
+
+Options:
+  --json  Emit machine-readable JSON instead of text

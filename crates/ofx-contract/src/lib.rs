@@ -16,6 +16,6 @@ pub use tool_dispatch::{
 pub use types::{
     ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause,
     PermissionMode, RouteRecoveryKind, RouteRecoveryStatus, ToolCall, ToolChoice, ToolResultStatus,
-    Usage,
+    Usage, is_valid_reasoning_effort,
 };
 pub use ui::{TurnOutcome, UiEvent};

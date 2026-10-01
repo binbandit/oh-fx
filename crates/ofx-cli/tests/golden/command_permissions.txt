@@ -1,0 +1,17 @@
+oh-fx permissions
+
+Show the permission mode and rules
+
+Usage:
+  oh-fx permissions [--json]
+
+Options:
+  --json  Emit machine-readable JSON instead of text
+
+Modes:
+  ask          Prompt before sensitive tool calls
+  auto         Apply rules, then review unresolved sensitive tool calls (default)
+  full-access  Disable oh-fx permission checks
+
+Change the mode from the interactive shell with `/permissions [ask|auto|full-access|reset]`,
+and manage persistent allow rules with `/allowlist`.

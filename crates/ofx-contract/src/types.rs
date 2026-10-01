@@ -1,5 +1,7 @@
 use crate::ids::ToolCallId;
 
+const MAX_REASONING_EFFORT_NAME_BYTES: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
     pub id: ToolCallId,
@@ -105,6 +107,13 @@ impl PermissionMode {
             .any(|spelling| raw.eq_ignore_ascii_case(spelling))
             .then_some(Self::Yolo)
     }
+}
+
+pub fn is_valid_reasoning_effort(raw: &str) -> bool {
+    (1..=MAX_REASONING_EFFORT_NAME_BYTES).contains(&raw.len())
+        && raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -335,6 +344,28 @@ mod tests {
             assert_eq!(PermissionMode::parse(spelling), Some(PermissionMode::Yolo));
         }
         assert_eq!(PermissionMode::parse("full_access"), None);
+    }
+
+    #[test]
+    fn reasoning_effort_keeps_default_aliases_and_opaque_names() {
+        for raw in [
+            "auto",
+            "AUTO",
+            "adaptive",
+            "Default",
+            "none",
+            "low",
+            "xhigh",
+            "future-tier",
+            "v1.2_b",
+        ] {
+            assert!(is_valid_reasoning_effort(raw), "{raw:?}");
+        }
+        let longest = "e".repeat(MAX_REASONING_EFFORT_NAME_BYTES);
+        assert!(is_valid_reasoning_effort(&longest));
+        for invalid in ["", "contains space", "a/b", &format!("{longest}e")] {
+            assert!(!is_valid_reasoning_effort(invalid), "{invalid:?}");
+        }
     }
 
     #[test]

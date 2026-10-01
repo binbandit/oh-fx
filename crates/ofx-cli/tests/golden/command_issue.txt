@@ -1,0 +1,10 @@
+oh-fx issue
+
+Draft or publish a GitHub issue
+
+Usage:
+  oh-fx issue [--auto] [--create] [context]
+
+Options:
+  --auto    Automatically review unresolved permission requests
+  --create  Publish the drafted issue via the GitHub CLI

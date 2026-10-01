@@ -1,0 +1,6 @@
+oh-fx logout
+
+Sign out of Vercel or a selected provider session
+
+Usage:
+  oh-fx logout [vercel|codex|grok]

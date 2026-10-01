@@ -1,0 +1,6 @@
+oh-fx provider
+
+Choose the model provider used by oh-fx
+
+Usage:
+  oh-fx provider <name>
