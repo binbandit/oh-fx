@@ -24,6 +24,8 @@ pub enum PathError {
     InvalidPath,
     #[error("WorkspaceUnavailable")]
     WorkspaceUnavailable,
+    #[error("TooManyPathComponents")]
+    TooManyPathComponents,
     #[error("AccessDenied")]
     AccessDenied,
     #[error("PermissionDenied")]

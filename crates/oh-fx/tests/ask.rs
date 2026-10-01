@@ -18,6 +18,7 @@ const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] 
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
 const UPSTREAM_GLOB_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"glob_files","description":"Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match, such as src/**/*.zig or *.md."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"mode":{"type":"string","enum":["matches","count"],"description":"Use matches to return sample paths, or count to return an exact matching path count without listing entries."}},"required":["pattern"]}}}"#;
 const UPSTREAM_GREP_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"grep_files","description":"Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported; avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Literal plain-text pattern to search for."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"include":{"type":"string","description":"Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts."},"case_insensitive":{"type":"boolean","description":"Search case-insensitively when true."},"mode":{"type":"string","enum":["matches","files_with_matches","count"],"description":"Use matches for line matches, files_with_matches for unique matching paths, or count for exact matching-line and matching-file counts."},"head_limit":{"type":"integer","description":"Optional positive maximum results to return for matches or files_with_matches. Defaults to the normal output cap."},"offset":{"type":"integer","description":"Optional zero-based result offset for matches or files_with_matches pagination. Defaults to 0."},"context_lines":{"type":"integer","description":"Optional non-negative number of lines before and after each emitted match in matches mode. Bounded by the tool."}},"required":["pattern"]}}}"#;
+const UPSTREAM_WRITE_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"write_file","description":"Create or overwrite a file using complete contents. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: add a new file or intentionally replace an entire generated/small file. When NOT to use: targeted edits to existing files, partial replacements, deleting files, or unapproved external paths.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"content":{"type":"string","description":"Complete file contents to write."}},"required":["path","content"]}}}"#;
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -1112,7 +1113,7 @@ fn ask_runs_read_file_and_sends_its_result_to_the_model() {
         assert!(
             request
                 .body_text()
-                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL},{UPSTREAM_GLOB_FILES_TOOL},{UPSTREAM_GREP_FILES_TOOL}]")),
+                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL},{UPSTREAM_GLOB_FILES_TOOL},{UPSTREAM_GREP_FILES_TOOL},{UPSTREAM_WRITE_FILE_TOOL}]")),
             "{}",
             request.body_text()
         );
@@ -1733,4 +1734,135 @@ fn ask_mode_fails_the_run_instead_of_searching_an_external_directory() {
         assert_eq!(server.requests().len(), 1);
         never_sees_the_secret(&server);
     }
+}
+
+fn write_call(path: &str, content: &str) -> String {
+    json!({ "path": path, "content": content }).to_string()
+}
+
+#[test]
+fn ask_mode_fails_the_run_before_writing_a_file() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "write_file",
+            &write_call("notes.txt", "new\n"),
+        )),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+    fs::write(home.workspace.join("notes.txt"), "old\n").unwrap();
+
+    let output = home.ask(
+        &["ask", "--json", "rewrite notes.txt"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "Writing notes.txt\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Writing notes.txt\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "NonInteractivePermissionRequired");
+    assert_eq!(
+        result["tool_calls"],
+        json!([{"name": "write_file", "status": "error"}])
+    );
+    assert_eq!(
+        fs::read_to_string(home.workspace.join("notes.txt")).unwrap(),
+        "old\n"
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn auto_mode_writes_workspace_files_and_holds_existing_external_files() {
+    let outside = OutsideFile::new();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "write_file",
+            &write_call("src/notes.txt", "alpha\n"),
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "write_file",
+            &write_call(&outside.path, "replaced\n"),
+        )),
+        Reply::sse(&chat_text_events(&["Wrote one file."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
+
+    let output = home.ask(
+        &["ask", "--json", "write the files"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        format!("Writing src/notes.txt\nWriting {}\n", outside.path)
+    );
+    assert_eq!(
+        fs::read_to_string(home.workspace.join("src/notes.txt")).unwrap(),
+        "alpha\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&outside.path).unwrap(),
+        "outside secret\n"
+    );
+    let requests = server.requests();
+    assert_eq!(
+        tool_messages(&requests[1]),
+        [json!({
+            "role": "tool",
+            "content": "wrote src/notes.txt (6 bytes)",
+            "tool_call_id": "call_1",
+        })]
+    );
+    assert_eq!(
+        tool_messages(&requests[2])[1],
+        json!({
+            "role": "tool",
+            "content": "{\"error\":{\"type\":\"tool_review_held\",\"tool_name\":\"write_file\",\"message\":\"Safety reviewer unavailable; action held\",\"reason\":\"review_unavailable\",\"review_cause\":\"reviewer_unconfigured\",\"held\":true,\"suggestion\":\"The action did not run because safety review was unavailable. Continue with a different safe action or retry later.\"}}",
+            "tool_call_id": "call_2",
+        })
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "write_file", "status": "success"},
+            {"name": "write_file", "status": "error"},
+        ])
+    );
+    never_sees_the_secret(&server);
+}
+
+#[test]
+fn full_access_writes_an_external_file() {
+    let outside = OutsideFile::new();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "write_file",
+            &write_call(&outside.path, "replaced\n"),
+        )),
+        Reply::sse(&chat_text_events(&["Done writing."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "yolo"));
+
+    let output = home.ask(&["ask", "write it"], &[("PORTKEY_API_KEY", PORTKEY_KEY)]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(&outside.path).unwrap(), "replaced\n");
+    assert_eq!(
+        tool_messages(&server.requests()[1]),
+        [json!({
+            "role": "tool",
+            "content": format!("wrote {} (9 bytes)", outside.path),
+            "tool_call_id": "call_1",
+        })]
+    );
 }

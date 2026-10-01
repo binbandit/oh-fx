@@ -1,11 +1,14 @@
 use std::panic;
 
-use ofx_contract::{BoxFuture, CallDescription, PathAccess, PreparedCall, ToolContext, ToolOutput};
+use ofx_contract::{
+    BoxFuture, CallDescription, FileMutation, PathAccess, PreparedCall, ToolContext, ToolOutput,
+};
 
-type Run = Box<dyn FnOnce(PathAccess) -> ToolOutput + Send>;
+type Run = Box<dyn FnOnce(ToolContext) -> ToolOutput + Send>;
 
 pub(crate) struct BlockingCall {
     description: CallDescription,
+    mutation: Option<FileMutation>,
     run: Run,
 }
 
@@ -16,6 +19,19 @@ impl BlockingCall {
     ) -> Box<dyn PreparedCall> {
         Box::new(Self {
             description,
+            mutation: None,
+            run: Box::new(move |context: ToolContext| run(context.path_access)),
+        })
+    }
+
+    pub(crate) fn mutation(
+        description: CallDescription,
+        mutation: FileMutation,
+        run: impl FnOnce(ToolContext) -> ToolOutput + Send + 'static,
+    ) -> Box<dyn PreparedCall> {
+        Box::new(Self {
+            description,
+            mutation: Some(mutation),
             run: Box::new(run),
         })
     }
@@ -26,10 +42,13 @@ impl PreparedCall for BlockingCall {
         self.description.clone()
     }
 
+    fn file_mutation(&self) -> Option<&FileMutation> {
+        self.mutation.as_ref()
+    }
+
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
-        let path_access = context.path_access;
         Box::pin(async move {
-            match tokio::task::spawn_blocking(move || (self.run)(path_access)).await {
+            match tokio::task::spawn_blocking(move || (self.run)(context)).await {
                 Ok(output) => output,
                 Err(error) => panic::resume_unwind(error.into_panic()),
             }

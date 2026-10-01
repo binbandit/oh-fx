@@ -18,7 +18,9 @@ pub use grep_search::{
 pub use ignored_dirs::IGNORED_DIRECTORY_NAMES;
 pub use path_error::PathError;
 pub use pathing::{
-    PATH_ENTRY_WHITESPACE, path_inside, resolve_workspace_or_external_path, resolve_workspace_path,
+    FileIdentity, FileKind, FileMutationTarget, MAX_PATH_BYTES, PATH_ENTRY_WHITESPACE, TargetMode,
+    descriptor_identity, entry_identity, open_child_directory, open_directory, path_inside,
+    resolve_file_mutation_target, resolve_workspace_or_external_path, resolve_workspace_path,
     workspace_relative_path,
 };
 pub use regular_file::{RegularFileError, open_regular_file};
