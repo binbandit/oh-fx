@@ -1622,6 +1622,20 @@ fn long_lines_of_unmatched_or_unbalanced_delimiters_render_in_linear_time() {
 }
 
 #[test]
+fn unmatched_backtick_runs_of_every_length_render_in_linear_time() {
+    let mut processor = plain_processor();
+    let line: String = (1..=1_400)
+        .map(|run| format!("{}x", "`".repeat(run)))
+        .chain(["\n".to_owned()])
+        .collect();
+    let out = assert_renders_in_linear_time(&mut processor, &line);
+    assert_eq!(plain_text(&out), line);
+
+    let out = push(&mut processor, "``a`b`` ` c ` ```d``e```\n");
+    assert_eq!(plain_text(&out), "a`b c d``e\n");
+}
+
+#[test]
 fn header_with_inline_markdown() {
     assert_ansi(
         &render("## Using `fx` in CI\n"),

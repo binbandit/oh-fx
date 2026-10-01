@@ -5,8 +5,9 @@ use crate::presentation::text_util::{
     is_ascii_whitespace, is_ascii_word_byte, is_trailing_url_punctuation,
 };
 use crate::presentation::unicode_classes::{is_punctuation_or_symbol, is_whitespace};
-use memchr::memchr2;
+use memchr::{memchr, memchr2};
 use ofx_text::is_terminal_safe_char;
+use std::collections::HashMap;
 
 use crate::styled::{Attr, Slot, SpanWriter};
 
@@ -134,6 +135,7 @@ fn tokenize<'a>(text: &'a str, footnotes: Option<&mut FootnoteSink>) -> Vec<Toke
         label_end: ForwardSearch::new(|bytes| memchr2(b']', b'\n', bytes)),
         destination_end: ForwardSearch::new(|bytes| memchr2(b')', b'\n', bytes)),
         angle_end: ForwardSearch::new(|bytes| memchr2(b'>', b'\n', bytes)),
+        backtick_runs: None,
         footnotes,
     };
     tokenizer.run();
@@ -179,6 +181,7 @@ struct Tokenizer<'a, 'f> {
     label_end: ForwardSearch,
     destination_end: ForwardSearch,
     angle_end: ForwardSearch,
+    backtick_runs: Option<BacktickRuns>,
     footnotes: Option<&'f mut FootnoteSink>,
 }
 
@@ -253,7 +256,13 @@ impl<'a> Tokenizer<'a, '_> {
 
     fn code_span(&mut self) {
         let bytes = self.text.as_bytes();
-        if let Some(span) = code_span_at(bytes, self.index) {
+        let run = backtick_run_length(bytes, self.index);
+        let closer = self
+            .backtick_runs
+            .get_or_insert_with(|| BacktickRuns::new(bytes))
+            .closer(self.index + run, run);
+        if let Some(closer) = closer {
+            let span = code_span(bytes, self.index, run, closer);
             let text = self.text;
             self.push_token(
                 Token::Code(&text[span.content_start..span.content_end]),
@@ -261,7 +270,7 @@ impl<'a> Tokenizer<'a, '_> {
             );
             return;
         }
-        self.index += backtick_run_length(bytes, self.index);
+        self.index += run;
     }
 
     fn entity(&mut self) -> bool {
@@ -919,39 +928,48 @@ fn backtick_run_length(bytes: &[u8], start: usize) -> usize {
         .count()
 }
 
-fn code_span_at(bytes: &[u8], start: usize) -> Option<CodeSpan> {
-    let run = backtick_run_length(bytes, start);
-    if run == 0 {
-        return None;
-    }
-    let mut cursor = start + run;
-    while cursor < bytes.len() {
-        if bytes[cursor] != b'`' {
-            cursor += 1;
-            continue;
+struct BacktickRuns {
+    starts_by_length: HashMap<usize, Vec<usize>>,
+}
+
+impl BacktickRuns {
+    fn new(bytes: &[u8]) -> Self {
+        let mut starts_by_length: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut cursor = 0;
+        while let Some(offset) = memchr(b'`', &bytes[cursor..]) {
+            let start = cursor + offset;
+            let length = backtick_run_length(bytes, start);
+            starts_by_length.entry(length).or_default().push(start);
+            cursor = start + length;
         }
-        let candidate = backtick_run_length(bytes, cursor);
-        if candidate == run {
-            let mut content_start = start + run;
-            let mut content_end = cursor;
-            let content = &bytes[content_start..content_end];
-            if content.len() >= 2
-                && content[0] == b' '
-                && content[content.len() - 1] == b' '
-                && content.iter().any(|&byte| byte != b' ')
-            {
-                content_start += 1;
-                content_end -= 1;
-            }
-            return Some(CodeSpan {
-                content_start,
-                content_end,
-                end: cursor + run,
-            });
-        }
-        cursor += candidate;
+        Self { starts_by_length }
     }
-    None
+
+    fn closer(&self, from: usize, length: usize) -> Option<usize> {
+        let starts = self.starts_by_length.get(&length)?;
+        starts
+            .get(starts.partition_point(|&start| start < from))
+            .copied()
+    }
+}
+
+fn code_span(bytes: &[u8], start: usize, run: usize, closer: usize) -> CodeSpan {
+    let mut content_start = start + run;
+    let mut content_end = closer;
+    let content = &bytes[content_start..content_end];
+    if content.len() >= 2
+        && content[0] == b' '
+        && content[content.len() - 1] == b' '
+        && content.iter().any(|&byte| byte != b' ')
+    {
+        content_start += 1;
+        content_end -= 1;
+    }
+    CodeSpan {
+        content_start,
+        content_end,
+        end: closer + run,
+    }
 }
 
 struct DecodedEntity {
