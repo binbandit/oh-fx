@@ -3,4 +3,4 @@ mod tool_admission;
 mod tool_args;
 mod tool_runtime;
 
-pub use filesystem::ReadFile;
+pub use filesystem::{GlobFiles, GrepFiles, ReadFile};

@@ -103,6 +103,48 @@ mod tests {
     }
 
     #[test]
+    fn searches_outside_the_workspace_need_approval_unless_full_access_is_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        let search = |name: &str, path: Option<&str>| ToolCall {
+            id: ToolCallId::new("call-1"),
+            name: name.to_owned(),
+            arguments: match path {
+                Some(path) => format!(r#"{{"pattern":"x","path":"{path}"}}"#),
+                None => r#"{"pattern":"x"}"#.to_owned(),
+            },
+        };
+        let outside = root.to_str().unwrap();
+
+        for name in ["glob_files", "grep_files"] {
+            for mode in [PermissionMode::Ask, PermissionMode::Auto] {
+                let policy = PermissionPolicy::new(mode, &workspace);
+                for path in [None, Some("."), Some("src")] {
+                    assert_eq!(
+                        policy.admit(&search(name, path)),
+                        Admission::Allowed(PathAccess::WorkspaceOnly),
+                        "{name} {mode:?} {path:?}"
+                    );
+                }
+                for path in ["..", outside] {
+                    assert_eq!(
+                        policy.admit(&search(name, Some(path))),
+                        Admission::ApprovalRequired,
+                        "{name} {mode:?} {path}"
+                    );
+                }
+            }
+            assert_eq!(
+                PermissionPolicy::new(PermissionMode::Yolo, &workspace)
+                    .admit(&search(name, Some(outside))),
+                Admission::Allowed(PathAccess::WorkspaceOrExternal)
+            );
+        }
+    }
+
+    #[test]
     fn calls_without_an_external_path_target_stay_inside_the_workspace() {
         let policy = PermissionPolicy::new(PermissionMode::Ask, "/");
         let call = ToolCall {

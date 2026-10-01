@@ -24,6 +24,6 @@ pub use pathing::{
 pub use regular_file::{RegularFileError, open_regular_file};
 pub use workspace_files::{
     CandidatePaths, CandidateStats, DEFAULT_CANDIDATE_CAP, Discovery, DiscoveryOptions,
-    MAX_RELATIVE_PATH_BYTES, Source, UntrackedFiles, discover,
+    GIT_REPOSITORY_VARIABLES, MAX_RELATIVE_PATH_BYTES, Source, UntrackedFiles, discover,
     path_contains_hidden_directory_component,
 };

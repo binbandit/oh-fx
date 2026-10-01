@@ -36,7 +36,7 @@ const GIT_PRELUDE: &[&str] = &[
 ];
 const GIT_TRANSPORT_LOCKDOWN: &[(&str, &str)] =
     &[("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "")];
-pub(crate) const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
+pub const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
