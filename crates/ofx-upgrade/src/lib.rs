@@ -7,7 +7,9 @@ mod release_source;
 mod update_target;
 mod upgrade;
 
-pub use auto::{claim_auto_upgrade_check, version_change_since_last_run};
+pub use auto::{
+    BACKGROUND_UPGRADE_ARGS, schedule_background_upgrade, version_change_since_last_run,
+};
 pub use build_identity::VERSION;
 pub use error::UpgradeError;
 pub use lock::UpgradeLock;
