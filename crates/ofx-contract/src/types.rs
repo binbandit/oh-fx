@@ -1,3 +1,5 @@
+use ofx_text::mask_secrets;
+
 use crate::ids::ToolCallId;
 
 const MAX_REASONING_EFFORT_NAME_BYTES: usize = 64;
@@ -202,8 +204,9 @@ impl ModelFailureDiagnostic {
     const MARKER: &'static str = "...";
 
     pub fn new(text: &str) -> Self {
+        let text = mask_secrets(text);
         if text.len() <= Self::MAX_BYTES {
-            return Self(text.to_owned());
+            return Self(text.into_owned());
         }
         let prefix = text.floor_char_boundary(Self::MAX_BYTES - Self::MARKER.len());
         Self(format!("{}{}", &text[..prefix], Self::MARKER))
@@ -489,5 +492,15 @@ mod tests {
             "timed out"
         );
         assert_eq!(ModelFailureDiagnostic::new("Timeout").as_str(), "Timeout");
+    }
+
+    #[test]
+    fn failure_diagnostics_mask_a_credential_before_cutting_it() {
+        let lead = "x".repeat(240);
+        let text = format!("{lead} sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 tail");
+        assert_eq!(
+            ModelFailureDiagnostic::new(&text).as_str(),
+            format!("{lead} [redacted] tail")
+        );
     }
 }
