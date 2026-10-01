@@ -111,6 +111,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - A level-six heading whose whole text is `• `, `☐ ` or `[1] ` has no hanging indent. Upstream's wrap parser reads its dim text as a list, task or footnote marker; the line is too short to wrap either way.
 - `flush` never changes events an earlier `push` returned, and the footnote separator counts blank lines already emitted, as upstream's assistant stream does. Upstream's processor trims trailing blank lines from a buffer it shares with earlier pushes.
 - The syntax highlighter never splits a multi-byte character. Upstream can cut one after a backslash inside a string, which shows replacement characters.
+- The ChatGPT sign-in redirects the browser to `http://127.0.0.1:<port>/auth/callback`, the address its callback listener binds and the one OpenAI's Codex CLI uses, where upstream uses `localhost`, which some browsers resolve to `::1` first. The code exchange sends the same redirect URI. A token response without `expires_in` takes the session's expiry from the access token's `exp` claim, as refreshes already do, where upstream fails the sign-in; an `expires_in` that is present but not a positive integer still fails it.
 
 ## Parity tracking
 

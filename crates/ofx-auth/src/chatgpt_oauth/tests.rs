@@ -89,16 +89,43 @@ async fn codex_refresh_uses_json_and_accepts_omitted_token_rotation_and_lifetime
 }
 
 #[test]
+fn chatgpt_callbacks_redirect_to_the_loopback_address_the_listener_binds() {
+    assert_eq!(
+        callback_redirect_uri(1455),
+        "http://127.0.0.1:1455/auth/callback"
+    );
+    assert_eq!(
+        callback_redirect_uri(1457),
+        "http://127.0.0.1:1457/auth/callback"
+    );
+}
+
+#[test]
+fn sign_in_expiry_comes_from_expires_in_or_the_access_token_exp_claim() {
+    let token = account_token("acct_test");
+    assert_eq!(session_expiry_ms(Some(60), &token, 1_000), Ok(61_000));
+    assert_eq!(
+        session_expiry_ms(None, &token, 1_000),
+        Ok(4_102_444_800_000)
+    );
+    assert_eq!(
+        session_expiry_ms(None, "not-a-jwt", 1_000),
+        Err(ChatGptError::InvalidChatGptAccessToken)
+    );
+    assert!(session_expiry_ms(Some(0), &token, 1_000).is_err());
+}
+
+#[test]
 fn chatgpt_browser_authorization_url_uses_pkce_without_device_authentication() {
     let url = build_browser_authorization_url(
         "https://auth.openai.com",
-        "http://localhost:1455/auth/callback",
+        &callback_redirect_uri(1455),
         "challenge-value",
         "state-value",
     );
     assert_eq!(
         url,
-        "https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke&code_challenge=challenge-value&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=state-value&originator=fx"
+        "https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke&code_challenge=challenge-value&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=state-value&originator=fx"
     );
     assert!(!url.contains("device"));
     assert!(

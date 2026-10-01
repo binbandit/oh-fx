@@ -33,7 +33,7 @@ pub(crate) enum QueryError {
 pub(crate) struct BrowserTokenSet {
     pub(crate) access_token: Secret,
     pub(crate) refresh_token: Secret,
-    pub(crate) expires_in: i64,
+    pub(crate) expires_in: Option<i64>,
 }
 
 pub(crate) fn expiry_timestamp_ms(now_ms: i64, expires_in_seconds: i64) -> Result<i64, OAuthError> {
@@ -149,7 +149,7 @@ pub(crate) fn parse_browser_token_set(bytes: &[u8]) -> Result<BrowserTokenSet, O
     let object = parse_object(bytes)?;
     let access_token = required_string(&object, "access_token")?;
     let refresh_token = required_string(&object, "refresh_token")?;
-    let expires_in = required_positive_integer(&object, "expires_in")?;
+    let expires_in = optional_positive_integer(&object, "expires_in")?;
     Ok(BrowserTokenSet {
         access_token,
         refresh_token,
@@ -174,12 +174,19 @@ pub(crate) fn required_string(
     }
 }
 
-fn required_positive_integer(object: &Map<String, Value>, key: &str) -> Result<i64, OAuthError> {
+pub(crate) fn optional_positive_integer(
+    object: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<i64>, OAuthError> {
     object
         .get(key)
-        .and_then(Value::as_i64)
-        .filter(|value| *value > 0)
-        .ok_or(OAuthError::InvalidOAuthResponse)
+        .map(|value| {
+            value
+                .as_i64()
+                .filter(|integer| *integer > 0)
+                .ok_or(OAuthError::InvalidOAuthResponse)
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -224,16 +231,41 @@ mod tests {
         .unwrap();
         assert_eq!(token.access_token.expose(), "access");
         assert_eq!(token.refresh_token.expose(), "refresh");
-        assert_eq!(token.expires_in, 3600);
+        assert_eq!(token.expires_in, Some(3600));
         for invalid in [
             &br#"{"access_token":"access","refresh_token":"","expires_in":3600}"#[..],
             br#"{"access_token":"access","expires_in":3600}"#,
-            br#"{"access_token":"access","refresh_token":"refresh","expires_in":0}"#,
-            br#"{"access_token":"access","refresh_token":"refresh","expires_in":36.5}"#,
             br#"{"access_token":"a","access_token":"b","refresh_token":"r","expires_in":1}"#,
             b"[]",
         ] {
             assert!(parse_browser_token_set(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn browser_tokens_may_omit_expires_in_but_never_send_a_malformed_one() {
+        let token =
+            parse_browser_token_set(br#"{"access_token":"access","refresh_token":"refresh"}"#)
+                .unwrap();
+        assert_eq!(token.expires_in, None);
+        for expires_in in [
+            "0",
+            "-60",
+            "36.5",
+            "3600.0",
+            "\"3600\"",
+            "null",
+            "true",
+            "18446744073709551615",
+        ] {
+            let body = format!(
+                r#"{{"access_token":"access","refresh_token":"refresh","expires_in":{expires_in}}}"#
+            );
+            assert_eq!(
+                parse_browser_token_set(body.as_bytes()).err(),
+                Some(OAuthError::InvalidOAuthResponse),
+                "{expires_in}"
+            );
         }
     }
 

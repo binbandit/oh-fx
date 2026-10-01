@@ -142,7 +142,7 @@ fn read_until_waiting(receiver: &Receiver<Vec<u8>>) -> String {
 fn get(port: u16, target: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("test fixture step succeeds");
     stream
-        .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n").as_bytes())
+        .write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
         .expect("test fixture step succeeds");
     let mut response = String::new();
     stream
@@ -217,8 +217,10 @@ async fn login_via_the_browser_callback_stores_a_private_session() {
             .printed
             .starts_with("Open this URL to sign in with Codex:\n")
     );
-    assert!(authorization.redirect_uri.starts_with("http://localhost:"));
-    assert!(authorization.redirect_uri.ends_with("/auth/callback"));
+    assert_eq!(
+        authorization.redirect_uri,
+        format!("http://127.0.0.1:{}/auth/callback", authorization.port)
+    );
 
     let forged = browser(
         authorization.port,
@@ -287,6 +289,53 @@ async fn login_via_the_browser_callback_stores_a_private_session() {
     assert!(!authorization.printed.contains(&access));
     assert!(!authorization.printed.contains(REFRESH_TOKEN));
     assert!(!page.contains(&access));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_code_exchange_without_expires_in_takes_the_expiry_from_the_access_token() {
+    let access = access_token("acct_test", "no-expires-in");
+    let server = FakeServer::start([Reply::status(
+        200,
+        json!({"access_token": access, "refresh_token": REFRESH_TOKEN}).to_string(),
+    )]);
+    let fixture = Fixture::new();
+    let (authorization, login) = begin_login(fixture.oauth(&server)).await;
+    let page = browser(
+        authorization.port,
+        format!(
+            "/auth/callback?code=auth-code&state={}",
+            authorization.state
+        ),
+    )
+    .await;
+    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+    login.await.unwrap().unwrap();
+    let saved = fixture.saved();
+    assert_eq!(saved["access_token"], access);
+    assert_eq!(saved["expires_at_ms"], 4_102_444_800_000_i64);
+    assert_eq!(mode(&fixture.credential_file()), 0o600);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_expires_in_fails_the_sign_in_without_storing_anything() {
+    let server = FakeServer::start([Reply::status(
+        200,
+        json!({"access_token": access_token("acct_test", "bad"), "refresh_token": REFRESH_TOKEN, "expires_in": "3600"})
+            .to_string(),
+    )]);
+    let fixture = Fixture::new();
+    let (authorization, login) = begin_login(fixture.oauth(&server)).await;
+    let page = browser(
+        authorization.port,
+        format!(
+            "/auth/callback?code=auth-code&state={}",
+            authorization.state
+        ),
+    )
+    .await;
+    assert!(page.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{page}");
+    assert!(login.await.unwrap().is_err());
+    assert!(!fixture.credential_file().exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

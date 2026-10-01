@@ -30,6 +30,7 @@ const JWT_AUTH_CLAIM: &str = "https://api.openai.com/auth";
 const BROWSER_SCOPE: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const BROWSER_CALLBACK_PORTS: [u16; 2] = [1455, 1457];
+const CALLBACK_HOST: &str = "127.0.0.1";
 const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 const ORIGINATOR: &str = "fx";
 const CALLBACK_PREFIX: &str = "/auth/callback?";
@@ -200,7 +201,7 @@ impl ChatGptOAuth {
                 BindError::PortUnavailable => ChatGptError::ChatGptOAuthCallbackPortUnavailable,
                 BindError::Failed => ChatGptError::ChatGptOAuthCallbackListenerFailed,
             })?;
-        let redirect_uri = format!("http://localhost:{}/auth/callback", listener.port());
+        let redirect_uri = callback_redirect_uri(listener.port());
         let code_verifier = random_url_safe_secret()?;
         let state = random_url_safe_secret()?;
         let authorization_url = build_browser_authorization_url(
@@ -407,15 +408,8 @@ fn parse_refresh_token_response(bytes: &[u8]) -> Result<RefreshTokenResponse, Ch
         Some(Value::String(token)) if !token.is_empty() => Some(Secret::new(token.clone())),
         Some(_) => return Err(invalid),
     };
-    let expires_in = match object.get("expires_in") {
-        None => None,
-        Some(value) => Some(
-            value
-                .as_i64()
-                .filter(|seconds| value.is_i64() && *seconds > 0)
-                .ok_or(invalid)?,
-        ),
-    };
+    let expires_in =
+        oauth::optional_positive_integer(&object, "expires_in").map_err(|_| invalid)?;
     Ok(RefreshTokenResponse {
         access_token,
         refresh_token,
@@ -448,10 +442,7 @@ fn refresh_replacement(
     if account_id != current.account_id {
         return Err(ChatGptError::ChatGptAccountChanged);
     }
-    let expires_at_ms = match token.expires_in {
-        Some(expires_in) => oauth::expiry_timestamp_ms(now_ms, expires_in)?,
-        None => access_token_expires_at_ms(token.access_token.expose())?,
-    };
+    let expires_at_ms = session_expiry_ms(token.expires_in, token.access_token.expose(), now_ms)?;
     Ok(Session {
         access_token: token.access_token,
         refresh_token: token
@@ -464,7 +455,7 @@ fn refresh_replacement(
 
 fn complete_sign_in(token: BrowserTokenSet, now_ms: i64) -> Result<Session, ChatGptError> {
     let account_id = extract_account_id(token.access_token.expose())?;
-    let expires_at_ms = oauth::expiry_timestamp_ms(now_ms, token.expires_in)?;
+    let expires_at_ms = session_expiry_ms(token.expires_in, token.access_token.expose(), now_ms)?;
     Ok(Session {
         access_token: token.access_token,
         refresh_token: token.refresh_token,
@@ -505,6 +496,17 @@ pub(crate) fn extract_account_id(token: &str) -> Result<String, ChatGptError> {
     }
 }
 
+fn session_expiry_ms(
+    expires_in: Option<i64>,
+    access_token: &str,
+    now_ms: i64,
+) -> Result<i64, ChatGptError> {
+    match expires_in {
+        Some(expires_in) => Ok(oauth::expiry_timestamp_ms(now_ms, expires_in)?),
+        None => access_token_expires_at_ms(access_token),
+    }
+}
+
 fn access_token_expires_at_ms(token: &str) -> Result<i64, ChatGptError> {
     let invalid = ChatGptError::InvalidChatGptOAuthResponse;
     let payload = jwt_payload(token)?;
@@ -515,6 +517,10 @@ fn access_token_expires_at_ms(token: &str) -> Result<i64, ChatGptError> {
         .filter(|exp| *exp > 0)
         .ok_or(invalid)?;
     exp.checked_mul(MILLISECONDS_PER_SECOND).ok_or(invalid)
+}
+
+fn callback_redirect_uri(port: u16) -> String {
+    format!("http://{CALLBACK_HOST}:{port}/auth/callback")
 }
 
 fn build_browser_authorization_url(
