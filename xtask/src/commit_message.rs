@@ -7,7 +7,7 @@ const GIT_SCISSORS_LINE: &str = "# ------------------------ >8 -----------------
 pub(crate) fn check(path: &Path) -> Result<(), String> {
     let message = workspace_files::read(path)?;
     let message = above_scissors(&message);
-    conventional::check_subject(subject(message))?;
+    conventional::check_commit_subject(subject(message))?;
     let author = workspace_files::git(&["var", "GIT_AUTHOR_IDENT"])?;
     let committer = workspace_files::git(&["var", "GIT_COMMITTER_IDENT"])?;
     attribution::check_text(&format!(

@@ -61,10 +61,9 @@ jobs:
             git log --format='Author: %an <%ae>%nCommitter: %cn <%ce>%n%B' -n "$PR_COMMITS" "$HEAD_SHA"
           } > "$RUNNER_TEMP/attribution.txt"
           cargo xtask attribution "$RUNNER_TEMP/attribution.txt"
-          {
-            printf '%s\n' "$PR_TITLE"
-            git log --format=%s -n "$PR_COMMITS" "$HEAD_SHA"
-          } > "$RUNNER_TEMP/subjects.txt"
+          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/title.txt"
+          cargo xtask title "$RUNNER_TEMP/title.txt"
+          git log --format=%s -n "$PR_COMMITS" "$HEAD_SHA" > "$RUNNER_TEMP/subjects.txt"
           cargo xtask subjects "$RUNNER_TEMP/subjects.txt"
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:

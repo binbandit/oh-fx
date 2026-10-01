@@ -12,27 +12,41 @@ pub(crate) fn check_subjects_file(path: &Path) -> Result<(), String> {
     let subjects = workspace_files::read(path)?;
     let findings: Vec<String> = subjects
         .lines()
-        .filter(|subject| !subject.trim().is_empty() && !is_conventional(subject))
+        .filter(|subject| !subject.trim().is_empty() && !is_acceptable_commit_subject(subject))
         .map(str::to_owned)
         .collect();
     report(&findings)
 }
 
-pub(crate) fn check_subject(subject: &str) -> Result<(), String> {
-    if is_conventional(subject) {
+pub(crate) fn check_title_file(path: &Path) -> Result<(), String> {
+    let title = workspace_files::read(path)?;
+    let title = title.trim();
+    if is_conventional(title) {
+        Ok(())
+    } else {
+        report(&[title.to_owned()])
+    }
+}
+
+pub(crate) fn check_commit_subject(subject: &str) -> Result<(), String> {
+    if is_acceptable_commit_subject(subject) {
         Ok(())
     } else {
         report(&[subject.to_owned()])
     }
 }
 
-fn is_conventional(subject: &str) -> bool {
+fn is_acceptable_commit_subject(subject: &str) -> bool {
     GIT_GENERATED_PREFIXES
         .iter()
         .any(|prefix| subject.starts_with(prefix))
-        || Regex::new(SUBJECT_PATTERN)
-            .expect("subject pattern is valid")
-            .is_match(subject)
+        || is_conventional(subject)
+}
+
+fn is_conventional(subject: &str) -> bool {
+    Regex::new(SUBJECT_PATTERN)
+        .expect("subject pattern is valid")
+        .is_match(subject)
 }
 
 fn report(findings: &[String]) -> Result<(), String> {
@@ -59,9 +73,17 @@ mod tests {
     }
 
     #[test]
-    fn accepts_subjects_git_generates() {
-        assert!(is_conventional("Merge branch 'main' into feature"));
-        assert!(is_conventional("fixup! feat: add ask"));
+    fn accepts_commit_subjects_git_generates() {
+        assert!(is_acceptable_commit_subject(
+            "Merge branch 'main' into feature"
+        ));
+        assert!(is_acceptable_commit_subject("fixup! feat: add ask"));
+    }
+
+    #[test]
+    fn requires_pull_request_titles_to_be_conventional() {
+        assert!(!is_conventional("Merge arbitrary title"));
+        assert!(!is_conventional("fixup! feat: add ask"));
     }
 
     #[test]
@@ -73,7 +95,7 @@ mod tests {
             "feat(Scope): add ask",
             "FEAT: add ask",
         ] {
-            assert!(!is_conventional(subject), "{subject}");
+            assert!(!is_acceptable_commit_subject(subject), "{subject}");
         }
     }
 }
