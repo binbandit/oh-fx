@@ -11,7 +11,7 @@ pub(crate) enum LexError {
 pub(crate) struct ArgvToken<'a> {
     pub(crate) raw: &'a str,
     pub(crate) value: String,
-    pub(crate) quoted: bool,
+    pub(crate) operator: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +30,6 @@ pub(crate) fn tokenize_argv(command: &str) -> Result<Vec<ArgvToken<'_>>, LexErro
     let mut tokens = Vec::new();
     let mut value = Vec::new();
     let mut token_start = None;
-    let mut token_quoted = false;
     let mut in_single = false;
     let mut in_double = false;
     let mut index = 0;
@@ -45,15 +44,14 @@ pub(crate) fn tokenize_argv(command: &str) -> Result<Vec<ArgvToken<'_>>, LexErro
             };
             if let Some(operator_len) = operator_len {
                 if let Some(start) = token_start.take() {
-                    tokens.push(word(command, start, index, &mut value, token_quoted));
+                    tokens.push(word(command, start, index, &mut value));
                 }
-                token_quoted = false;
                 if operator_len > 0 {
                     let operator = &command[index..index + operator_len];
                     tokens.push(ArgvToken {
                         raw: operator,
                         value: operator.to_owned(),
-                        quoted: false,
+                        operator: true,
                     });
                 }
                 index += operator_len.max(1);
@@ -64,12 +62,10 @@ pub(crate) fn tokenize_argv(command: &str) -> Result<Vec<ArgvToken<'_>>, LexErro
         match byte {
             b'\'' if !in_double => {
                 in_single = !in_single;
-                token_quoted = true;
                 index += 1;
             }
             b'"' if !in_single => {
                 in_double = !in_double;
-                token_quoted = true;
                 index += 1;
             }
             b'\\' if !in_single => {
@@ -87,24 +83,18 @@ pub(crate) fn tokenize_argv(command: &str) -> Result<Vec<ArgvToken<'_>>, LexErro
         return Err(LexError::UnbalancedQuote);
     }
     if let Some(start) = token_start {
-        tokens.push(word(command, start, bytes.len(), &mut value, token_quoted));
+        tokens.push(word(command, start, bytes.len(), &mut value));
     }
     Ok(tokens)
 }
 
-fn word<'a>(
-    command: &'a str,
-    start: usize,
-    end: usize,
-    value: &mut Vec<u8>,
-    quoted: bool,
-) -> ArgvToken<'a> {
+fn word<'a>(command: &'a str, start: usize, end: usize, value: &mut Vec<u8>) -> ArgvToken<'a> {
     let decoded = String::from_utf8_lossy(value).into_owned();
     value.clear();
     ArgvToken {
         raw: &command[start..end],
         value: decoded,
-        quoted,
+        operator: false,
     }
 }
 
@@ -162,8 +152,7 @@ mod tests {
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[1].value, "hello world");
         assert_eq!(tokens[2].value, "file name.txt");
-        assert!(tokens[1].quoted);
-        assert!(!tokens[0].quoted);
+        assert!(tokens.iter().all(|token| !token.operator));
     }
 
     #[test]
@@ -208,9 +197,13 @@ mod tests {
         );
         assert_eq!(values("2>&1"), ["2", ">&", "1"]);
         assert_eq!(values("'a;b' \"c|d\""), ["a;b", "c|d"]);
-        let quoted = tokenize_argv("'&&'").unwrap();
-        assert_eq!(quoted[0].value, "&&");
-        assert!(quoted[0].quoted);
+        let operators = tokenize_argv("a && b").unwrap();
+        assert!(operators[1].operator);
+        for literal in ["'&&'", "\"&&\"", "\\&\\&", "'>'", "\\|"] {
+            let tokens = tokenize_argv(literal).unwrap();
+            assert_eq!(tokens.len(), 1, "{literal}");
+            assert!(!tokens[0].operator, "{literal}");
+        }
     }
 
     #[test]

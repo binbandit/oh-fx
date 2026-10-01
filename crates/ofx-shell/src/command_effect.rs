@@ -81,20 +81,18 @@ pub fn known_reversible_auto_command(command: &str) -> bool {
     let Ok(tokens) = tokenize_argv(trimmed) else {
         return false;
     };
-    if tokens.is_empty()
-        || tokens
-            .iter()
-            .any(|token| token.value != "&&" && is_unsupported_auto_control_operator(token))
-    {
+    if tokens.is_empty() || tokens.iter().any(is_unsupported_auto_control_operator) {
         return false;
     }
-    tokens
-        .split(|token| token.value == "&&")
-        .all(reversible_auto_stage)
+    tokens.split(is_and_operator).all(reversible_auto_stage)
+}
+
+fn is_and_operator(token: &ArgvToken<'_>) -> bool {
+    token.operator && token.value == "&&"
 }
 
 fn is_unsupported_auto_control_operator(token: &ArgvToken<'_>) -> bool {
-    !token.quoted
+    token.operator
         && matches!(
             token.value.as_str(),
             "|" | "||" | "&" | ";" | "(" | ")" | "{" | "}"
@@ -103,7 +101,7 @@ fn is_unsupported_auto_control_operator(token: &ArgvToken<'_>) -> bool {
 
 fn is_unsupported_auto_operator(token: &ArgvToken<'_>) -> bool {
     is_unsupported_auto_control_operator(token)
-        || (!token.quoted && redirection_kind(&token.value).is_some())
+        || (token.operator && redirection_kind(&token.value).is_some())
 }
 
 fn reversible_auto_stage(raw_tokens: &[ArgvToken<'_>]) -> bool {
@@ -138,12 +136,12 @@ fn has_dynamic_shell_syntax(token: &ArgvToken<'_>) -> bool {
 fn strip_stderr_merge<'a, 'b>(tokens: &'a [ArgvToken<'b>]) -> &'a [ArgvToken<'b>] {
     match tokens {
         [rest @ .., two, merge, one]
-            if !two.quoted
-                && !merge.quoted
-                && !one.quoted
-                && two.value == "2"
+            if !two.operator
+                && merge.operator
+                && !one.operator
+                && two.raw == "2"
                 && merge.value == ">&"
-                && one.value == "1" =>
+                && one.raw == "1" =>
         {
             rest
         }
@@ -323,6 +321,26 @@ mod tests {
             "git status {}",
             "a".repeat(MAX_COMMAND_BYTES)
         )));
+    }
+
+    #[test]
+    fn quoted_and_escaped_operators_stay_arguments_of_their_command() {
+        for command in [
+            "npm run review '&&' git status --script-shell=/not/a/shell",
+            "npm run review \"&&\" git status --script-shell=/not/a/shell",
+            "npm run review \\&\\& git status --script-shell=/not/a/shell",
+            "npm install '&&' git status --prefix=/tmp/outside",
+            "git fetch origin '&&' git fetch --upload-pack=evil origin",
+        ] {
+            assert!(!known_reversible_auto_command(command), "{command:?}");
+        }
+        for command in [
+            "git status '&&' git",
+            "git status \\&\\& git",
+            "git status && git remote -v",
+        ] {
+            assert!(known_reversible_auto_command(command), "{command:?}");
+        }
     }
 
     #[test]

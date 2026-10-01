@@ -119,6 +119,16 @@ mod tests {
             run("git status", WORKSPACE, true),
             run("npm install", "/elsewhere/project", false),
             run("git status", "/workspace-other", false),
+            run(
+                "npm run review '&&' git status --script-shell=/not/a/shell",
+                WORKSPACE,
+                false,
+            ),
+            run(
+                "npm install \\&\\& git status --prefix=/tmp/outside",
+                WORKSPACE,
+                false,
+            ),
             CommandRequest::SendInput,
             CommandRequest::Stop,
         ] {
