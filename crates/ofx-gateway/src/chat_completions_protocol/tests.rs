@@ -1710,5 +1710,7 @@ fn reasoning_byte_accounting_matches_serialized_json_lengths() {
         );
     }
     let item = json!({"type":"reasoning.text","text":"line\n\"quoted\"","signature":null});
-    assert_eq!(encoded_json_len(&item), item.to_string().len());
+    let text = item.to_string();
+    let parsed = borrowed_json::parse(text.as_bytes()).unwrap();
+    assert_eq!(encoded_json_len(&parsed), text.len());
 }

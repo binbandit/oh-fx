@@ -1,6 +1,7 @@
 use std::fmt;
 
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_json::map::Entry;
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,10 +81,12 @@ impl<'de> Visitor<'de> for UniqueKeysVisitor {
         let mut map = Map::new();
         while let Some(key) = entries.next_key::<String>()? {
             let UniqueKeys(value) = entries.next_value()?;
-            if map.contains_key(&key) {
-                return Err(de::Error::custom("duplicate field"));
+            match map.entry(key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(value);
+                }
+                Entry::Occupied(_) => return Err(de::Error::custom("duplicate field")),
             }
-            map.insert(key, value);
         }
         Ok(Value::Object(map))
     }
