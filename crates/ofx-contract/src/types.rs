@@ -81,6 +81,7 @@ fn add_known(total: Option<u64>, step: Option<u64>) -> Option<u64> {
     }
 }
 
+pub const CODEX_ORIGINATOR: &str = "oh-fx";
 const MAX_CREDENTIAL_ACCOUNT_ID_BYTES: usize = 1024;
 
 pub fn valid_credential_account_id(account_id: &str) -> bool {

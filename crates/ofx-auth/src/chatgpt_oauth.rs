@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ofx_contract::CODEX_ORIGINATOR;
 use serde_json::Value;
 use subtle::ConstantTimeEq;
 use tokio_util::sync::CancellationToken;
@@ -32,7 +33,6 @@ const BROWSER_SCOPE: &str =
 const BROWSER_CALLBACK_PORTS: [u16; 2] = [1455, 1457];
 const CALLBACK_HOST: &str = "127.0.0.1";
 const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
-const ORIGINATOR: &str = "fx";
 const CALLBACK_PREFIX: &str = "/auth/callback?";
 const MILLISECONDS_PER_SECOND: i64 = 1000;
 const TERMINAL_REFRESH_CODES: [&str; 4] = [
@@ -539,7 +539,7 @@ fn build_browser_authorization_url(
     form.append("id_token_add_organizations", "true");
     form.append("codex_cli_simplified_flow", "true");
     form.append("state", state);
-    form.append("originator", ORIGINATOR);
+    form.append("originator", CODEX_ORIGINATOR);
     format!(
         "{}/oauth/authorize?{}",
         issuer.trim_end_matches('/'),

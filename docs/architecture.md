@@ -122,6 +122,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - `flush` never changes events an earlier `push` returned, and the footnote separator counts blank lines already emitted, as upstream's assistant stream does. Upstream's processor trims trailing blank lines from a buffer it shares with earlier pushes.
 - The syntax highlighter never splits a multi-byte character. Upstream can cut one after a backslash inside a string, which shows replacement characters.
 - The ChatGPT sign-in redirects the browser to `http://127.0.0.1:<port>/auth/callback`, the address its callback listener binds and the one OpenAI's Codex CLI uses, where upstream uses `localhost`, which some browsers resolve to `::1` first. The code exchange sends the same redirect URI. A token response without `expires_in` takes the session's expiry from the access token's `exp` claim, as refreshes already do, where upstream fails the sign-in; an `expires_in` that is present but not a positive integer still fails it.
+- oh-fx names itself to OpenAI's sign-in with `originator=oh-fx`, matching its `oh-fx/<version>` user agent, where upstream sends `fx`.
 
 ## Parity tracking
 
