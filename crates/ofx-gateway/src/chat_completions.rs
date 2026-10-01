@@ -184,7 +184,11 @@ pub(crate) async fn http_failure(
         None => match read_body(&mut response, cancel).await {
             Ok(Some(body)) => redact_error_detail(&body, secrets),
             Ok(None) => ERROR_BODY_LIMIT_NOTICE.to_owned(),
-            Err(failure) => return failure,
+            Err(failure) if failure.kind == ProviderErrorKind::Cancelled => return failure,
+            Err(mut failure) => {
+                failure.retry_after = retry_after;
+                return failure;
+            }
         },
     };
     let kind = failure_kind(status);

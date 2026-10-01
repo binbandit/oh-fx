@@ -25,6 +25,7 @@ pub enum Reply {
     },
     CutOff {
         status: u16,
+        headers: Vec<(String, String)>,
         body: String,
     },
     Disconnect,
@@ -75,9 +76,10 @@ impl Reply {
         }
     }
 
-    pub fn cut_off(status: u16, body: impl Into<String>) -> Self {
+    pub fn cut_off(status: u16, headers: &[(&str, &str)], body: impl Into<String>) -> Self {
         Self::CutOff {
             status,
+            headers: owned_headers(headers),
             body: body.into(),
         }
     }
@@ -248,11 +250,19 @@ async fn handle(
                 hold(&mut stream, &mut signal).await;
             }
         }
-        Reply::CutOff { status, body } => {
-            let head = format!(
-                "HTTP/1.1 {status} Scripted\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+        Reply::CutOff {
+            status,
+            headers,
+            body,
+        } => {
+            let mut head = format!(
+                "HTTP/1.1 {status} Scripted\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n",
                 body.len() + 1
             );
+            for (name, value) in headers {
+                let _ = write!(head, "{name}: {value}\r\n");
+            }
+            head.push_str("\r\n");
             let _ = stream.write_all(head.as_bytes()).await;
             let _ = stream.write_all(body.as_bytes()).await;
         }

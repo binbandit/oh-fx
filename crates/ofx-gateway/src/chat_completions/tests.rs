@@ -623,7 +623,7 @@ async fn error_bodies_mask_encoded_echoes_of_the_key() {
 #[tokio::test]
 async fn an_error_body_cut_off_mid_secret_fails_as_read_failed_without_its_bytes() {
     let body = format!("upstream rejected {}", &PORTKEY_KEY[..10]);
-    let server = FakeServer::start([Reply::cut_off(500, body.as_str())]);
+    let server = FakeServer::start([Reply::cut_off(500, &[], body.as_str())]);
     let (outcome, _) = stream_text(&portkey(&server), &test_request()).await;
     let error = outcome.unwrap_err();
     assert_eq!(
@@ -637,6 +637,28 @@ async fn an_error_body_cut_off_mid_secret_fails_as_read_failed_without_its_bytes
     assert_eq!(error.kind, ProviderErrorKind::TransportInterrupted);
     assert_eq!(error.code, "ReadFailed");
     assert_eq!(error.status, None);
+}
+
+#[tokio::test]
+async fn a_cut_off_429_keeps_its_retry_after_and_shows_no_body_bytes() {
+    let body = format!("slow down, {}", &PORTKEY_KEY[..10]);
+    let server = FakeServer::start([Reply::cut_off(
+        429,
+        &[("Retry-After", " 7 ")],
+        body.as_str(),
+    )]);
+    let (outcome, _) = stream_text(&portkey(&server), &test_request()).await;
+    let error = outcome.unwrap_err();
+    assert_eq!(error.retry_after, Some(Duration::from_secs(7)));
+    assert_eq!(
+        error.detail,
+        Some(format!(
+            "the HTTP 429 response body failed with UnexpectedEof after {} bytes",
+            body.len()
+        ))
+    );
+    assert_eq!(error.kind, ProviderErrorKind::TransportInterrupted);
+    assert_eq!(error.code, "ReadFailed");
 }
 
 #[tokio::test]
