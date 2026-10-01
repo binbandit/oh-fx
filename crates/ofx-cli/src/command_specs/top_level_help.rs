@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::iter;
 
 use ofx_text::parse_unsigned;
 
@@ -9,7 +10,9 @@ use super::{
 use crate::commands::TOP_LEVEL_HELP;
 
 pub const TOP_LEVEL_HELP_DEFAULT_WIDTH: usize = 80;
+const TOP_LEVEL_HELP_BUFFER_BYTES: usize = 32 * 1024;
 const MIN_SUMMARY_COLUMNS: usize = 20;
+const USAGE_LINES: [&str; 2] = ["[flags]", "<command> [...flags] [...args]"];
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
@@ -70,7 +73,7 @@ pub fn parse_column_count(value: &str) -> Option<usize> {
 pub fn render_top_level_help(columns: usize, version: &str, style: HelpStyle) -> String {
     let page = &TOP_LEVEL_HELP;
     let mut help = HelpWriter {
-        out: String::new(),
+        out: String::with_capacity(TOP_LEVEL_HELP_BUFFER_BYTES),
         columns: if columns == 0 {
             TOP_LEVEL_HELP_DEFAULT_WIDTH
         } else {
@@ -83,7 +86,7 @@ pub fn render_top_level_help(columns: usize, version: &str, style: HelpStyle) ->
     help.write_flags(page.flags);
     help.write_examples(page.examples);
     for note in page.notes {
-        help.styled_line("", "", note, HelpRole::Muted);
+        help.styled_line(0, note, HelpRole::Muted);
     }
     help.out.push('\n');
     help.write_resources(page.resources);
@@ -148,16 +151,14 @@ impl HelpWriter {
         self.out.push_str(version);
         self.out.push_str(self.style.end());
         self.out.push('\n');
-        self.styled_line("", "", page.description, HelpRole::Muted);
+        self.styled_line(0, page.description, HelpRole::Muted);
         self.out.push('\n');
-        self.styled_line("", "", page.interactive_hint, HelpRole::Muted);
+        self.styled_line(0, page.interactive_hint, HelpRole::Muted);
         self.section_heading("Usage:");
-        let usages = [
-            format!("{PRODUCT_NAME} [flags]"),
-            format!("{PRODUCT_NAME} <command> [...flags] [...args]"),
-        ];
-        for usage in usages {
-            self.styled_line("  ", "  ", &usage, HelpRole::Syntax);
+        for usage in USAGE_LINES {
+            self.indent(2);
+            let words = iter::once(PRODUCT_NAME).chain(usage.split(' '));
+            self.line(2, 2, words, self.decoration(HelpRole::Syntax));
         }
     }
 
@@ -188,21 +189,25 @@ impl HelpWriter {
 
     fn entry(&mut self, usage: &str, usage_width: usize, summary: &str) {
         if usage_width + 4 + MIN_SUMMARY_COLUMNS > self.columns {
-            self.styled_line("  ", "  ", usage, HelpRole::Syntax);
-            self.line("      ", "      ", summary, Decoration::NONE);
+            self.styled_line(2, usage, HelpRole::Syntax);
+            self.indent(6);
+            self.line(6, 6, summary.split(' '), Decoration::NONE);
             return;
         }
-        let prefix = self.padded_syntax(usage, usage_width);
-        let continuation = " ".repeat(usage_width + 4);
-        self.line(&prefix, &continuation, summary, Decoration::NONE);
+        let padding = usage_width - usage.len() + 2;
+        self.indent(2);
+        self.styled(HelpRole::Syntax, usage);
+        self.indent(padding);
+        let lead = 2 + visible_width(usage) + padding;
+        self.line(lead, usage_width + 4, summary.split(' '), Decoration::NONE);
     }
 
     fn write_examples(&mut self, examples: &[TopLevelExample]) {
         self.styled(HelpRole::Heading, "Examples:");
         self.out.push('\n');
         for example in examples {
-            self.styled_line("  ", "  ", example.command, HelpRole::Syntax);
-            self.styled_line("      ", "      ", example.description, HelpRole::Muted);
+            self.styled_line(2, example.command, HelpRole::Syntax);
+            self.styled_line(6, example.description, HelpRole::Muted);
             self.out.push('\n');
         }
     }
@@ -227,29 +232,16 @@ impl HelpWriter {
                 HelpRole::Syntax
             };
             if stacked {
-                self.styled_line("", "", resource.label, HelpRole::Label);
-                self.styled_line("  ", "  ", resource.value, role);
+                self.styled_line(0, resource.label, HelpRole::Label);
+                self.styled_line(2, resource.value, role);
                 continue;
             }
             let padding = label_width - visible_width(resource.label) + 2;
-            let prefix = format!(
-                "{}{}{}{}",
-                self.style.start(HelpRole::Label),
-                resource.label,
-                self.style.end(),
-                " ".repeat(padding)
-            );
-            self.styled_line(&prefix, "  ", resource.value, role);
+            self.styled(HelpRole::Label, resource.label);
+            self.indent(padding);
+            let lead = visible_width(resource.label) + padding;
+            self.line(lead, 2, resource.value.split(' '), self.decoration(role));
         }
-    }
-
-    fn padded_syntax(&self, usage: &str, width: usize) -> String {
-        format!(
-            "  {}{usage}{}{}",
-            self.style.start(HelpRole::Syntax),
-            self.style.end(),
-            " ".repeat(width - usage.len() + 2)
-        )
     }
 
     fn section_heading(&mut self, heading: &str) {
@@ -264,24 +256,34 @@ impl HelpWriter {
         self.out.push_str(self.style.end());
     }
 
-    fn styled_line(&mut self, prefix: &str, continuation: &str, text: &str, role: HelpRole) {
-        let decoration = Decoration {
-            start: self.style.start(role),
-            end: self.style.end(),
-        };
-        self.line(prefix, continuation, text, decoration);
+    fn indent(&mut self, columns: usize) {
+        self.out.extend(iter::repeat_n(' ', columns));
     }
 
-    fn line(&mut self, prefix: &str, continuation: &str, text: &str, decoration: Decoration) {
-        let mut budget = self.columns.saturating_sub(visible_width(prefix)).max(1);
-        let continuation_budget = self
-            .columns
-            .saturating_sub(visible_width(continuation))
-            .max(1);
+    fn decoration(&self, role: HelpRole) -> Decoration {
+        Decoration {
+            start: self.style.start(role),
+            end: self.style.end(),
+        }
+    }
+
+    fn styled_line(&mut self, indent: usize, text: &str, role: HelpRole) {
+        self.indent(indent);
+        self.line(indent, indent, text.split(' '), self.decoration(role));
+    }
+
+    fn line<'a>(
+        &mut self,
+        lead: usize,
+        continuation: usize,
+        words: impl Iterator<Item = &'a str>,
+        decoration: Decoration,
+    ) {
+        let mut budget = self.columns.saturating_sub(lead).max(1);
+        let continuation_budget = self.columns.saturating_sub(continuation).max(1);
         let mut line_width = 0;
-        self.out.push_str(prefix);
         self.out.push_str(decoration.start);
-        for word in text.split(' ').filter(|word| !word.is_empty()) {
+        for word in words.filter(|word| !word.is_empty()) {
             let word_width = visible_width(word);
             if line_width == 0 {
                 line_width = word_width;
@@ -291,7 +293,7 @@ impl HelpWriter {
             } else {
                 self.out.push_str(decoration.end);
                 self.out.push('\n');
-                self.out.push_str(continuation);
+                self.indent(continuation);
                 self.out.push_str(decoration.start);
                 budget = continuation_budget;
                 line_width = word_width;
@@ -330,8 +332,6 @@ fn visible_width(text: &str) -> usize {
 mod tests {
     use super::*;
     use crate::commands::{TOP_LEVEL_HELP, TOP_LEVEL_SPECS};
-
-    const TOP_LEVEL_HELP_FAST_BUFFER_BYTES: usize = 32 * 1024;
 
     fn help_text(columns: usize) -> String {
         render_top_level_help(columns, "9.8.7", HelpStyle::Plain)
@@ -511,10 +511,12 @@ mod tests {
     }
 
     #[test]
-    fn default_top_level_help_styles_fit_the_startup_buffer() {
+    fn top_level_help_fits_the_startup_buffer_at_every_width() {
         for style in [HelpStyle::Plain, HelpStyle::Ansi] {
-            let text = render_top_level_help(TOP_LEVEL_HELP_DEFAULT_WIDTH, "9.8.7", style);
-            assert!(text.len() <= TOP_LEVEL_HELP_FAST_BUFFER_BYTES);
+            for columns in 0..=240 {
+                let text = render_top_level_help(columns, "9.8.7", style);
+                assert!(text.len() <= TOP_LEVEL_HELP_BUFFER_BYTES, "{columns}");
+            }
         }
     }
 
