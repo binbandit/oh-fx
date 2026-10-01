@@ -128,6 +128,62 @@ fn identical_content_is_a_no_op_named_by_the_requested_path() {
 }
 
 #[test]
+fn a_no_op_is_confirmed_against_the_current_file_without_needing_write_access() {
+    let fixture = Fixture::new();
+    let path = fixture.write("workspace/src/same.txt", "same\n");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    let prepared = fixture.prepared("src/same.txt", "same\n");
+
+    assert!(prepared.is_noop());
+    prepared.confirm_noop().unwrap();
+}
+
+#[test]
+fn a_no_op_whose_file_changed_after_preparation_is_stale() {
+    let stale = "file mutation rejected because the file changed after preview; make a new tool call for a fresh preview";
+    let changes: [fn(&Path); 4] = [
+        |path| fs::write(path, "SAME\n").unwrap(),
+        |path| fs::write(path, "different\n").unwrap(),
+        |path| fs::remove_file(path).unwrap(),
+        |path| {
+            fs::rename(path, path.with_extension("moved")).unwrap();
+            fs::write(path, "same\n").unwrap();
+        },
+    ];
+    for change in changes {
+        let fixture = Fixture::new();
+        let path = fixture.write("workspace/same.txt", "same\n");
+        let prepared = fixture.prepared("same.txt", "same\n");
+        assert!(prepared.is_noop());
+
+        change(&path);
+
+        let rejection = prepared.confirm_noop().unwrap_err();
+        assert_eq!(rejection.message(), stale);
+    }
+}
+
+#[test]
+fn a_no_op_whose_parent_was_swapped_after_preparation_fails_the_traversal() {
+    let fixture = Fixture::new();
+    fixture.write("workspace/src/same.txt", "same\n");
+    fixture.write("outside/same.txt", "same\n");
+    let prepared = fixture.prepared("src/same.txt", "same\n");
+
+    fs::rename(
+        fixture.workspace.join("src"),
+        fixture.workspace.join("src.moved"),
+    )
+    .unwrap();
+    symlink(fixture.root.join("outside"), fixture.workspace.join("src")).unwrap();
+
+    assert_eq!(
+        prepared.confirm_noop().unwrap_err().message(),
+        "file mutation rejected because the approved path traversal changed"
+    );
+}
+
+#[test]
 fn external_targets_display_the_canonical_path_behind_a_symlink() {
     let fixture = Fixture::new();
     fs::create_dir(fixture.root.join("outside")).unwrap();

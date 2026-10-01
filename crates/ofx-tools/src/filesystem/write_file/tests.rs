@@ -214,6 +214,51 @@ fn existing_and_unchanged_workspace_files_are_described_by_their_effect() {
     );
 }
 
+fn execute_after(tool: &WriteFile, arguments: &str, change: impl FnOnce()) -> Run {
+    let prepared = tool.prepare(arguments).unwrap();
+    let description = prepared.describe();
+    let mutation = prepared.file_mutation().cloned();
+    change();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let output = runtime.block_on(prepared.execute(ToolContext::new(
+        ToolCallId::new("call-1"),
+        CancellationToken::new(),
+        PathAccess::WorkspaceOnly,
+    )));
+    Run {
+        description,
+        mutation,
+        output,
+    }
+}
+
+#[test]
+fn an_unchanged_file_that_changes_before_execution_is_reported_stale_and_left_alone() {
+    let stale = "file mutation rejected because the file changed after preview; make a new tool call for a fresh preview";
+    let workspace = Fixture::new();
+    let path = workspace.workspace.join("note.txt");
+    fs::write(&path, "same\n").unwrap();
+
+    let changed = execute_after(&workspace.tool(), &arguments("note.txt", "same\n"), || {
+        fs::write(&path, "edited elsewhere\n").unwrap();
+    });
+    assert_eq!(
+        changed.mutation.map(|mutation| mutation.state),
+        Some(FileMutationState::Unchanged)
+    );
+    assert_eq!(changed.output, ToolOutput::failure(stale));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited elsewhere\n");
+
+    fs::write(&path, "same\n").unwrap();
+    let deleted = execute_after(&workspace.tool(), &arguments("note.txt", "same\n"), || {
+        fs::remove_file(&path).unwrap();
+    });
+    assert_eq!(deleted.output, ToolOutput::failure(stale));
+    assert!(!path.exists());
+}
+
 #[test]
 fn external_files_are_not_read_until_the_write_is_admitted() {
     let workspace = Fixture::new();

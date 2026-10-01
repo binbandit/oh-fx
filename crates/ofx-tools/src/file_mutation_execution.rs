@@ -139,7 +139,10 @@ impl Plan {
             }
         };
         if prepared.is_noop() {
-            return ToolOutput::success(prepared.noop_message());
+            return match prepared.confirm_noop() {
+                Ok(()) => ToolOutput::success(prepared.noop_message()),
+                Err(rejection) => ToolOutput::failure(rejection.message()),
+            };
         }
         match prepared.apply(&context.cancellation) {
             Ok(()) => ToolOutput::success(prepared.success_message()),

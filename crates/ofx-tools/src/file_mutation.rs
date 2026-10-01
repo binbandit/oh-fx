@@ -152,6 +152,27 @@ impl PreparedMutation {
         matches!(&self.preimage, Preimage::Present { content, .. } if *content == self.after)
     }
 
+    pub(crate) fn confirm_noop(&self) -> Result<(), Rejection> {
+        self.confirm_unchanged()
+            .map_err(|reason| Rejection::new(reason, Vec::new()))
+    }
+
+    fn confirm_unchanged(&self) -> Result<(), RejectReason> {
+        let expected = self
+            .targets
+            .traversal
+            .iter()
+            .map(|entry| match entry {
+                TraversalDirectory::Existing(identity) => Some(*identity),
+                TraversalDirectory::Create => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(RejectReason::TraversalChanged)?;
+        let parent = reopen_parent(self, &expected)?;
+        check_preimage(&parent, self.target_name(), self, |_| Ok(()))?;
+        Ok(())
+    }
+
     pub(crate) fn noop_message(&self) -> String {
         format!(
             "No changes to {}; it already contains the requested content",
@@ -547,17 +568,7 @@ impl<'a> Transaction<'a> {
     }
 
     fn revalidate_traversal(&self) -> Result<OwnedFd, RejectReason> {
-        let changed = |check: Check| check.reason(RejectReason::TraversalChanged);
-        let mut current = open_anchor(self.mutation).map_err(changed)?;
-        for (component, expected) in self.mutation.parent_components().iter().zip(&self.realized) {
-            let next = open_child_directory(&current, component)
-                .map_err(|error| changed(Check::of(error)))?;
-            if descriptor_identity(&next).map_err(|_| RejectReason::IoFailure)? != *expected {
-                return Err(RejectReason::TraversalChanged);
-            }
-            current = next;
-        }
-        Ok(current)
+        reopen_parent(self.mutation, &self.realized)
     }
 
     fn remove_stage(&mut self, parent: &OwnedFd) {
@@ -621,6 +632,23 @@ impl<'a> Transaction<'a> {
     }
 }
 
+fn reopen_parent(
+    mutation: &PreparedMutation,
+    expected: &[FileIdentity],
+) -> Result<OwnedFd, RejectReason> {
+    let changed = |check: Check| check.reason(RejectReason::TraversalChanged);
+    let mut current = open_anchor(mutation).map_err(changed)?;
+    for (component, expected) in mutation.parent_components().iter().zip(expected) {
+        let next =
+            open_child_directory(&current, component).map_err(|error| changed(Check::of(error)))?;
+        if descriptor_identity(&next).map_err(|_| RejectReason::IoFailure)? != *expected {
+            return Err(RejectReason::TraversalChanged);
+        }
+        current = next;
+    }
+    Ok(current)
+}
+
 fn open_anchor(mutation: &PreparedMutation) -> Result<OwnedFd, Check> {
     let anchor = open_directory(&mutation.targets.target.anchor).map_err(Check::of)?;
     match descriptor_identity(&anchor) {
@@ -675,6 +703,23 @@ fn validate_preimage(
     mutation: &PreparedMutation,
     expected_permissions: Option<Mode>,
 ) -> Result<Option<Mode>, RejectReason> {
+    check_preimage(parent, name, mutation, |permissions| {
+        if !permissions.intersects(WRITE_BITS) {
+            return Err(RejectReason::IoFailure);
+        }
+        if expected_permissions.is_some_and(|expected| expected != permissions) {
+            return Err(RejectReason::StalePreimage);
+        }
+        Ok(())
+    })
+}
+
+fn check_preimage(
+    parent: &OwnedFd,
+    name: &OsStr,
+    mutation: &PreparedMutation,
+    permitted: impl FnOnce(Mode) -> Result<(), RejectReason>,
+) -> Result<Option<Mode>, RejectReason> {
     let stale = RejectReason::StalePreimage;
     let Preimage::Present { content, hash } = &mutation.preimage else {
         return match entry_identity(parent, name) {
@@ -694,12 +739,7 @@ fn validate_preimage(
         return Err(stale);
     }
     let permissions = Mode::from_raw_mode(stat.st_mode);
-    if !permissions.intersects(WRITE_BITS) {
-        return Err(RejectReason::IoFailure);
-    }
-    if expected_permissions.is_some_and(|expected| expected != permissions) {
-        return Err(stale);
-    }
+    permitted(permissions)?;
     let mut file = File::from(descriptor);
     if file_hash(&mut file).map_err(|_| RejectReason::IoFailure)? != *hash {
         return Err(stale);
