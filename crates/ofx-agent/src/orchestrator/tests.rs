@@ -5,8 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use ofx_contract::{
-    CallDescription, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
-    PreparedCall, ProviderReplay, ReplaySource, StreamSink, ToolActivity, ToolCallId, ToolEffect,
+    CallDescription, CommandRequest, Concurrency, FileMutation, FileMutationState,
+    ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource, StreamSink, ToolActivity,
+    ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -153,6 +154,16 @@ impl PermissionGate for ArgumentGate {
             }
         }
     }
+
+    fn admit_command(&self, request: &CommandRequest) -> Admission {
+        match request {
+            CommandRequest::Run { command, .. } if command == "git status" => {
+                Admission::Allowed(PathAccess::WorkspaceOrExternal)
+            }
+            CommandRequest::Stop => Admission::ApprovalRequired,
+            _ => Admission::ReviewUnavailable,
+        }
+    }
 }
 
 struct ReadOnlyGate;
@@ -172,6 +183,7 @@ struct EchoTool {
 struct EchoCall {
     arguments: String,
     mutation: Option<FileMutation>,
+    command: Option<CommandRequest>,
     cleaned_up: Arc<AtomicBool>,
     meeting: Arc<tokio::sync::Barrier>,
 }
@@ -197,9 +209,19 @@ impl Tool for EchoTool {
             target: PathBuf::from("/workspace/note.txt"),
             state,
         });
+        let command = [("run_git", "git status"), ("run_rm", "rm -rf .")]
+            .into_iter()
+            .find(|(word, _)| arguments.contains(word))
+            .map(|(_, command)| CommandRequest::Run {
+                command: command.to_owned(),
+                cwd: PathBuf::from("/workspace"),
+                terminal: false,
+            })
+            .or_else(|| arguments.contains("stop").then_some(CommandRequest::Stop));
         Ok(Box::new(EchoCall {
             arguments: arguments.to_owned(),
             mutation,
+            command,
             cleaned_up: Arc::clone(&self.cleaned_up),
             meeting: Arc::clone(&self.meeting),
         }))
@@ -213,6 +235,14 @@ impl PreparedCall for EchoCall {
             "file mutation panicked"
         );
         self.mutation.as_ref()
+    }
+
+    fn command_request(&self) -> Option<&CommandRequest> {
+        assert!(
+            !self.arguments.contains("command_panic"),
+            "command request panicked"
+        );
+        self.command.as_ref()
     }
 
     fn describe(&self) -> CallDescription {
@@ -1071,6 +1101,79 @@ async fn file_mutations_are_admitted_by_their_prepared_target_instead_of_their_a
             ),
         ]
     );
+}
+
+#[tokio::test]
+async fn commands_are_admitted_by_their_prepared_request_instead_of_their_arguments() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            (
+                "call-1",
+                r#"{"run_git":"outside","access":1,"serial":true}"#,
+            ),
+            ("call-2", r#"{"run_rm":1,"inert":true,"serial":true}"#),
+            ("call-3", r#"{"command_panic":1,"serial":true}"#),
+            ("call-4", r#"{"text":"after","serial":true}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let messages = &provider.requests()[1].messages[2..];
+    assert_eq!(
+        messages[..2],
+        [
+            tool_message("call-1", "WorkspaceOrExternal", ToolResultStatus::Success),
+            tool_message(
+                "call-2",
+                &review_unavailable_json("echo"),
+                ToolResultStatus::Failure
+            ),
+        ]
+    );
+    assert!(
+        matches!(
+            &messages[2],
+            ChatMessage::Tool {
+                status: ToolResultStatus::Failure,
+                ..
+            }
+        ),
+        "{:?}",
+        messages[2]
+    );
+    assert_eq!(
+        messages[3],
+        tool_message(
+            "call-4",
+            r#"echo {"text":"after","serial":true}"#,
+            ToolResultStatus::Success
+        )
+    );
+}
+
+#[tokio::test]
+async fn commands_that_need_approval_fail_the_turn_and_gates_without_a_policy_require_it() {
+    for gate in [
+        Arc::new(ArgumentGate) as Arc<dyn PermissionGate>,
+        Arc::new(ReadOnlyGate),
+    ] {
+        let provider = FakeProvider::new(vec![tool_reply(&[("call-1", r#"{"stop":1}"#)])]);
+        let mut agent = Agent::new(
+            provider,
+            vec![echo_tool()],
+            Arc::new(FixedContext),
+            gate,
+            config(),
+        );
+        let (report, events) = run(&mut agent, "go").await;
+        assert_eq!(
+            report.failure.map(|failure| failure.code().to_owned()),
+            Some("NonInteractivePermissionRequired".to_owned())
+        );
+        assert_eq!(dispatch_order(&events), ["start call-1"]);
+    }
 }
 
 #[tokio::test]
