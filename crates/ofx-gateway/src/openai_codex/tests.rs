@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use ofx_contract::{ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
 use ofx_testkit::{FakeServer, Reply};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -271,6 +271,62 @@ async fn openai_codex_sse_maps_text_reasoning_tools_and_usage() {
             .is_some_and(|state| state.contains(r#""encrypted_content":"opaque""#))
     );
     assert_eq!(completion.finish, ResponsesFinish::ToolCalls);
+}
+
+#[tokio::test]
+async fn a_live_stream_that_reencrypts_reasoning_replays_the_streamed_copy() {
+    let live = include_str!("../responses_protocol/live_reencrypted_reasoning.sse");
+    let events: Vec<&str> = live
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .collect();
+    let streamed = events
+        .iter()
+        .map(|event| serde_json::from_str::<Value>(event).unwrap())
+        .find(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "reasoning"
+        })
+        .map(|event| event["item"].clone())
+        .unwrap();
+    let server = FakeServer::start([Reply::sse(&events), Reply::sse(&events)]);
+    let codex = CodexProvider::new(
+        CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let cancel = CancellationToken::new();
+    let mut sink = |_: StreamEvent| {};
+    let question = [ChatMessage::user("What does select_replay_parts return?")];
+    let completion = codex
+        .stream(&request(&question, &[], &[]), &mut sink, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(completion.finish_reason, FinishReason::Stop);
+    let history = [
+        question[0].clone(),
+        ChatMessage::Assistant {
+            content: completion.content,
+            tool_calls: Vec::new(),
+            provider_replay: completion.provider_replay,
+        },
+        ChatMessage::user("Thanks."),
+    ];
+    codex
+        .stream(&request(&history, &[], &[]), &mut sink, &cancel)
+        .await
+        .unwrap();
+    let replayed: Vec<Value> = server.requests()[1].json()["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "reasoning")
+        .cloned()
+        .collect();
+    assert_eq!(replayed, [streamed]);
 }
 
 #[tokio::test]
