@@ -48,6 +48,8 @@ pub(crate) enum PasteOwner {
     AuthCode,
 }
 
+pub(crate) const COMPOSER_INPUT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PasteOutcome {
     Text {

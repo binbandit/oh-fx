@@ -1,12 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        unused_imports,
-        reason = "the inline shell that drives these modules lands later in this stack"
-    )
-)]
-
 mod assistant;
 mod composer;
 mod footer;
@@ -15,8 +6,12 @@ mod output;
 mod render;
 mod render_engine;
 mod row_text;
+mod shell;
 mod terminal;
 mod theme;
 mod transcript;
 
+pub use shell::{
+    ShellOptions, SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell, ui_channel,
+};
 pub use terminal::TerminalError;
