@@ -20,6 +20,6 @@ pub use configured_provider::{
 pub use connection::{ConnectionError, ResolvedConnection};
 pub use context_limits::{ContextLimitError, validate_context_limit_override};
 pub use model_capabilities::{Capabilities, request_output_tokens};
-pub use model_provider::is_valid_provider_id;
+pub use model_provider::{ProviderId, is_valid_provider_id};
 pub use paths::ProfilePaths;
 pub use strict_json::{StrictJsonError, parse as parse_strict_json};

@@ -81,6 +81,14 @@ fn add_known(total: Option<u64>, step: Option<u64>) -> Option<u64> {
     }
 }
 
+const MAX_CREDENTIAL_ACCOUNT_ID_BYTES: usize = 1024;
+
+pub fn valid_credential_account_id(account_id: &str) -> bool {
+    !account_id.is_empty()
+        && account_id.len() <= MAX_CREDENTIAL_ACCOUNT_ID_BYTES
+        && account_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FinishReason {
     Stop,
@@ -334,6 +342,16 @@ mod tests {
         }
         assert_eq!(usage.input_tokens, Some(15));
         assert_eq!(usage.output_tokens, None);
+    }
+
+    #[test]
+    fn credential_account_ids_are_visible_ascii_header_values() {
+        assert!(valid_credential_account_id("acct_123"));
+        assert!(valid_credential_account_id(&"a".repeat(1024)));
+        for invalid in ["", "acct 1", "acct\r\ninjected", "acct\u{7f}", "konto-é"] {
+            assert!(!valid_credential_account_id(invalid), "{invalid:?}");
+        }
+        assert!(!valid_credential_account_id(&"a".repeat(1025)));
     }
 
     #[test]

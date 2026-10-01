@@ -8,6 +8,8 @@ mod resume;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
+use ofx_config::ProviderId;
+
 use crate::cli_ask::{AskArgs, parse_ask};
 use crate::cli_replay::parse_replay;
 use crate::command_specs::TopLevelKind;
@@ -53,8 +55,8 @@ pub enum Command {
     Acp,
     Pr,
     Issue,
-    Login,
-    Logout,
+    Login(Option<ProviderId>),
+    Logout(Option<ProviderId>),
     Setup,
     Status(OutputFormat),
     Permissions(OutputFormat),
@@ -80,8 +82,8 @@ impl Command {
             Self::Acp => TopLevelKind::Acp,
             Self::Pr => TopLevelKind::Pr,
             Self::Issue => TopLevelKind::Issue,
-            Self::Login => TopLevelKind::Login,
-            Self::Logout => TopLevelKind::Logout,
+            Self::Login(_) => TopLevelKind::Login,
+            Self::Logout(_) => TopLevelKind::Logout,
             Self::Setup => TopLevelKind::Setup,
             Self::Status(_) => TopLevelKind::Status,
             Self::Permissions(_) => TopLevelKind::Permissions,
@@ -120,8 +122,8 @@ impl Command {
             | Self::Acp
             | Self::Pr
             | Self::Issue
-            | Self::Login
-            | Self::Logout
+            | Self::Login(_)
+            | Self::Logout(_)
             | Self::Setup
             | Self::Mcp
             | Self::Provider
@@ -245,12 +247,8 @@ fn parse_command(
         TopLevelKind::Acp => command_args::validate_acp(rest).map(|()| Command::Acp)?,
         TopLevelKind::Pr => Command::Pr,
         TopLevelKind::Issue => Command::Issue,
-        TopLevelKind::Login => {
-            command_args::validate_login(kind, &rest).map(|()| Command::Login)?
-        }
-        TopLevelKind::Logout => {
-            command_args::validate_login(kind, &rest).map(|()| Command::Logout)?
-        }
+        TopLevelKind::Login => Command::Login(command_args::parse_login(kind, &rest)?),
+        TopLevelKind::Logout => Command::Logout(command_args::parse_login(kind, &rest)?),
         TopLevelKind::Setup => {
             command_args::require_no_args(kind, &rest).map(|()| Command::Setup)?
         }

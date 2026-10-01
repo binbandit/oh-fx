@@ -6,5 +6,26 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+ofx-config.workspace = true
+ofx-contract.workspace = true
+ofx-http.workspace = true
+reqwest.workspace = true
+rustix = { workspace = true, features = ["fs"] }
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "time"] }
+tokio-util.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+ofx-testkit.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "test-util", "time"] }
+
 [lints]
 workspace = true

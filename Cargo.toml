@@ -10,7 +10,9 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 flate2 = "1.1.10"
+getrandom = "0.4.3"
 memchr = "2.8.3"
 ofx-agent = { path = "crates/ofx-agent" }
 ofx-auth = { path = "crates/ofx-auth" }
@@ -38,6 +40,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
 signal-hook = "0.4.4"
+subtle = "2.6.1"
 tar = "0.4.46"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
@@ -46,6 +49,7 @@ tokio-util = "0.7.19"
 unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
+zeroize = "1.9.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
