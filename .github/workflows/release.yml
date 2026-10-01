@@ -24,21 +24,33 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.changes.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
-          filter: tree:0
+          filter: blob:none
           persist-credentials: false
       - id: version
         run: |
           base="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
           echo "version=${base}-dev.$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Skip documentation-only changes
+        id: changes
+        run: |
+          previous="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
+          if [ -z "$previous" ] || git diff --name-only "$previous" HEAD | grep -qvE '^docs/|\.md$'; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Only documentation changed since $previous; skipping the release."
+          fi
 
   build:
     name: Build ${{ matrix.platform }}
     needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
