@@ -621,6 +621,25 @@ async fn error_bodies_mask_encoded_echoes_of_the_key() {
 }
 
 #[tokio::test]
+async fn an_error_body_cut_off_mid_secret_fails_as_read_failed_without_its_bytes() {
+    let body = format!("upstream rejected {}", &PORTKEY_KEY[..10]);
+    let server = FakeServer::start([Reply::cut_off(500, body.as_str())]);
+    let (outcome, _) = stream_text(&portkey(&server), &test_request()).await;
+    let error = outcome.unwrap_err();
+    assert_eq!(
+        error.detail,
+        Some(format!(
+            "the HTTP 500 response body failed with UnexpectedEof after {} bytes",
+            body.len()
+        ))
+    );
+    assert_eq!(error.diagnostic, None);
+    assert_eq!(error.kind, ProviderErrorKind::TransportInterrupted);
+    assert_eq!(error.code, "ReadFailed");
+    assert_eq!(error.status, None);
+}
+
+#[tokio::test]
 async fn redirects_are_reported_and_never_followed_with_secret_headers() {
     for status in [301, 302, 307, 308] {
         let elsewhere = FakeServer::start([Reply::sse(&chat_text_events(&["owned"]))]);

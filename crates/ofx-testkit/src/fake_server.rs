@@ -23,6 +23,10 @@ pub enum Reply {
         body: String,
         hold_open: bool,
     },
+    CutOff {
+        status: u16,
+        body: String,
+    },
     Disconnect,
 }
 
@@ -68,6 +72,13 @@ impl Reply {
             headers: owned_headers(headers),
             body: body.into(),
             hold_open: true,
+        }
+    }
+
+    pub fn cut_off(status: u16, body: impl Into<String>) -> Self {
+        Self::CutOff {
+            status,
+            body: body.into(),
         }
     }
 }
@@ -236,6 +247,14 @@ async fn handle(
                 let _ = stream.flush().await;
                 hold(&mut stream, &mut signal).await;
             }
+        }
+        Reply::CutOff { status, body } => {
+            let head = format!(
+                "HTTP/1.1 {status} Scripted\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+                body.len() + 1
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
         }
         Reply::Disconnect => {}
         Reply::Stream { chunks, hold_open } => {

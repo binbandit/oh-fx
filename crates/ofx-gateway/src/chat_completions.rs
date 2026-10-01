@@ -239,20 +239,39 @@ async fn read_body(
         biased;
         () = cancel.cancelled() => Err(ProviderError::cancelled()),
         body = tokio::time::timeout(ERROR_BODY_TIMEOUT, read_bounded_body(response)) => {
-            body.map_err(|_| ProviderError::new(ProviderErrorKind::Timeout, "Timeout"))
+            body.unwrap_or_else(|_| Err(ProviderError::new(ProviderErrorKind::Timeout, "Timeout")))
         }
     }
 }
 
-async fn read_bounded_body(response: &mut Response) -> Option<Vec<u8>> {
+async fn read_bounded_body(response: &mut Response) -> Result<Option<Vec<u8>>, ProviderError> {
     let mut body = Vec::new();
-    while let Ok(Some(chunk)) = response.chunk().await {
-        if body.len() + chunk.len() > MAX_ERROR_BODY_BYTES {
-            return None;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() > MAX_ERROR_BODY_BYTES => return Ok(None),
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            Ok(None) => return Ok(Some(body)),
+            Err(error) => {
+                let detail = format!(
+                    "the HTTP {} response body failed with {:?} after {} bytes",
+                    response.status().as_u16(),
+                    read_error_kind(&error),
+                    body.len()
+                );
+                return Err(ProviderError::new(
+                    ProviderErrorKind::TransportInterrupted,
+                    "ReadFailed",
+                )
+                .with_detail(detail));
+            }
         }
-        body.extend_from_slice(&chunk);
     }
-    Some(body)
+}
+
+fn read_error_kind(error: &reqwest::Error) -> io::ErrorKind {
+    std::iter::successors(error.source(), |&cause| cause.source())
+        .find_map(|cause| cause.downcast_ref::<io::Error>().map(io::Error::kind))
+        .unwrap_or(io::ErrorKind::Other)
 }
 
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
