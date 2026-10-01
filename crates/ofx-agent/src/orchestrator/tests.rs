@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use std::path::PathBuf;
 
@@ -13,6 +13,7 @@ use super::*;
 
 const SYSTEM_PROMPT: &str = "# Identity and context";
 const TURN_CONTEXT: &str = "<fx-turn-context>\n</fx-turn-context>";
+const PANICKED: &str = r#"{"error":{"type":"tool_execution_failed","tool_name":"echo","message":"Tool execution panicked"}}"#;
 
 enum Script {
     Reply(Vec<StreamEvent>, Completion),
@@ -215,6 +216,9 @@ impl PreparedCall for EchoCall {
             !self.arguments.contains("describe_panic"),
             "describe panicked"
         );
+        if self.arguments.contains("describe_bomb") {
+            panic::panic_any(Bomb);
+        }
         CallDescription {
             title: format!("Echoing {}", self.arguments),
             activity: ToolActivity::Read,
@@ -232,8 +236,15 @@ impl PreparedCall for EchoCall {
     }
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+        assert!(
+            !self.arguments.contains("execute_panic"),
+            "execute panicked"
+        );
         Box::pin(async move {
-            assert!(!self.arguments.contains("panic"), "echo panicked");
+            assert!(!self.arguments.contains(r#""panic""#), "echo panicked");
+            if self.arguments.contains("execute_bomb") {
+                panic::panic_any(Bomb);
+            }
             if self.arguments.contains("meet") {
                 self.meeting.wait().await;
             }
@@ -255,6 +266,43 @@ impl PreparedCall for EchoCall {
                 ToolOutput::success(format!("echo {}", self.arguments))
             }
         })
+    }
+}
+
+impl Drop for EchoCall {
+    fn drop(&mut self) {
+        if self.arguments.contains("drop_panic") {
+            self.cleaned_up.store(true, Ordering::SeqCst);
+            panic!("drop panicked");
+        }
+    }
+}
+
+struct Bomb;
+
+impl Drop for Bomb {
+    fn drop(&mut self) {
+        panic!("panic payload panicked while dropped");
+    }
+}
+
+struct SpecReadOnce {
+    inner: Arc<dyn Tool>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl Tool for SpecReadOnce {
+    fn spec(&self) -> &ToolSpec {
+        assert_eq!(
+            self.reads.fetch_add(1, Ordering::SeqCst),
+            0,
+            "spec panicked"
+        );
+        self.inner.spec()
+    }
+
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        self.inner.prepare(arguments)
     }
 }
 
@@ -1111,13 +1159,12 @@ async fn panics_while_preparing_describing_or_inspecting_a_call_become_rejected_
         })
         .collect();
     assert_eq!(rejected, ["call-1", "call-2", "call-3"]);
-    let panicked = r#"{"error":{"type":"tool_execution_failed","tool_name":"echo","message":"Tool execution panicked"}}"#;
     assert_eq!(
         provider.requests()[1].messages[2..],
         [
-            tool_message("call-1", panicked, ToolResultStatus::Failure),
-            tool_message("call-2", panicked, ToolResultStatus::Failure),
-            tool_message("call-3", panicked, ToolResultStatus::Failure),
+            tool_message("call-1", PANICKED, ToolResultStatus::Failure),
+            tool_message("call-2", PANICKED, ToolResultStatus::Failure),
+            tool_message("call-3", PANICKED, ToolResultStatus::Failure),
             tool_message(
                 "call-4",
                 r#"echo {"text":"after"}"#,
@@ -1125,6 +1172,286 @@ async fn panics_while_preparing_describing_or_inspecting_a_call_become_rejected_
             ),
         ]
     );
+}
+
+#[tokio::test]
+async fn calls_whose_drop_panics_after_their_inspection_panicked_are_rejected() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"describe_panic":true,"drop_panic":true}"#),
+            (
+                "call-2",
+                r#"{"creates":1,"mutation_panic":true,"drop_panic":true}"#,
+            ),
+            ("call-3", r#"{"text":"after"}"#),
+        ]),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let rejected: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolRejected { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rejected, ["call-1", "call-2"]);
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message("call-1", PANICKED, ToolResultStatus::Failure),
+            tool_message("call-2", PANICKED, ToolResultStatus::Failure),
+            tool_message(
+                "call-3",
+                r#"echo {"text":"after"}"#,
+                ToolResultStatus::Success
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn held_calls_are_dropped_without_letting_a_panic_escape() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"unread":1,"drop_panic":true}"#),
+            ("call-2", r#"{"text":"after"}"#),
+        ]),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message(
+                "call-1",
+                &review_unavailable_json("echo"),
+                ToolResultStatus::Failure
+            ),
+            tool_message(
+                "call-2",
+                r#"echo {"text":"after"}"#,
+                ToolResultStatus::Success
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_panic_before_execute_returns_its_future_fails_only_that_call() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"text":"before"}"#),
+            ("call-2", r#"{"execute_panic":true}"#),
+            ("call-3", r#"{"text":"after"}"#),
+        ]),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        finished(&events),
+        [
+            ("call-1", ToolResultStatus::Success),
+            ("call-2", ToolResultStatus::Failure),
+            ("call-3", ToolResultStatus::Success),
+        ]
+    );
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message(
+                "call-1",
+                r#"echo {"text":"before"}"#,
+                ToolResultStatus::Success
+            ),
+            tool_message("call-2", PANICKED, ToolResultStatus::Failure),
+            tool_message(
+                "call-3",
+                r#"echo {"text":"after"}"#,
+                ToolResultStatus::Success
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn panic_payloads_that_panic_when_dropped_stay_contained() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"describe_bomb":true}"#),
+            ("call-2", r#"{"execute_bomb":true}"#),
+            ("call-3", r#"{"text":"after"}"#),
+        ]),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        finished(&events),
+        [
+            ("call-2", ToolResultStatus::Failure),
+            ("call-3", ToolResultStatus::Success),
+        ]
+    );
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message("call-1", PANICKED, ToolResultStatus::Failure),
+            tool_message("call-2", PANICKED, ToolResultStatus::Failure),
+            tool_message(
+                "call-3",
+                r#"echo {"text":"after"}"#,
+                ToolResultStatus::Success
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn calls_are_found_by_the_spec_read_when_the_agent_was_built() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let tool: Arc<dyn Tool> = Arc::new(SpecReadOnce {
+        inner: echo_tool(),
+        reads: Arc::clone(&reads),
+    });
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"text":"found"}"#)]),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![tool]);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [tool_message(
+            "call-1",
+            r#"echo {"text":"found"}"#,
+            ToolResultStatus::Success
+        )]
+    );
+}
+
+#[tokio::test]
+async fn calls_blocked_by_approval_are_dropped_without_letting_a_panic_escape() {
+    let cases = [
+        [
+            r#"{"path":"outside","drop_panic":true}"#,
+            r#"{"text":"later"}"#,
+            r#"{"serial":true}"#,
+        ],
+        [
+            r#"{"path":"outside"}"#,
+            r#"{"drop_panic":true}"#,
+            r#"{"serial":true}"#,
+        ],
+        [
+            r#"{"path":"outside"}"#,
+            r#"{"text":"later"}"#,
+            r#"{"serial":true,"drop_panic":true}"#,
+        ],
+    ];
+    for [blocked, later, carried] in cases {
+        let provider = FakeProvider::new(vec![tool_reply(&[
+            ("call-1", r#"{"text":"before"}"#),
+            ("call-2", blocked),
+            ("call-3", later),
+            ("call-4", carried),
+        ])]);
+        let mut agent = new_agent(provider, vec![echo_tool()]);
+        let (report, events) = run(&mut agent, "go").await;
+        assert_eq!(
+            report.failure,
+            Some(TurnFailure::PermissionRequired(BlockedCall {
+                tool_name: "echo".to_owned(),
+                title: format!("Echoing {blocked}"),
+            })),
+            "{later} {carried}"
+        );
+        assert_eq!(
+            dispatch_order(&events),
+            ["start call-1", "start call-2", "finish call-1"]
+        );
+        assert_eq!(
+            agent.history.last(),
+            Some(&tool_message(
+                "call-1",
+                r#"echo {"text":"before"}"#,
+                ToolResultStatus::Success
+            ))
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_a_running_turn_drops_its_deferred_call_without_letting_a_panic_escape() {
+    let provider = FakeProvider::new(vec![tool_reply(&[
+        ("call-1", r#"{"hang":true}"#),
+        ("call-2", r#"{"serial":true,"drop_panic":true}"#),
+    ])]);
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut agent = new_agent(provider, vec![echo_tool_with(Arc::clone(&dropped))]);
+    let cancel = CancellationToken::new();
+    let mut ignore = |_| {};
+    let turn = agent.run_turn("go", &mut ignore, &cancel);
+    assert!(
+        tokio::time::timeout(Duration::from_mins(1), turn)
+            .await
+            .is_err()
+    );
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn calls_skipped_by_cancellation_are_dropped_without_letting_a_panic_escape() {
+    let cases = [
+        [
+            r#"{"drop_panic":true}"#,
+            r#"{"text":"later"}"#,
+            r#"{"serial":true}"#,
+        ],
+        [
+            r#"{"text":"next"}"#,
+            r#"{"drop_panic":true}"#,
+            r#"{"serial":true}"#,
+        ],
+        [
+            r#"{"text":"next"}"#,
+            r#"{"text":"later"}"#,
+            r#"{"serial":true,"drop_panic":true}"#,
+        ],
+    ];
+    for [next, later, carried] in cases {
+        let provider = FakeProvider::new(vec![tool_reply(&[
+            ("call-1", r#"{"wait":true}"#),
+            ("call-2", next),
+            ("call-3", later),
+            ("call-4", carried),
+        ])]);
+        let mut agent = new_agent(provider, vec![echo_tool()]);
+        let (report, events) = run_cancelled_at(&mut agent, "call-1").await;
+        assert_eq!(
+            report.outcome,
+            TurnOutcome::Interrupted,
+            "{next} {later} {carried}"
+        );
+        assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
+        assert_eq!(
+            agent.history.last(),
+            Some(&tool_message(
+                "call-1",
+                "stopped after cleanup",
+                ToolResultStatus::Failure
+            ))
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]
