@@ -57,6 +57,14 @@ pub fn build_connection_client(
 }
 
 #[cfg(target_os = "linux")]
+pub fn warm_tls_roots() {
+    crate::ca_bundle::warm();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn warm_tls_roots() {}
+
+#[cfg(target_os = "linux")]
 pub fn certificate_bundle_load_failure(error: &reqwest::Error) -> Option<String> {
     crate::ca_bundle::load_failure(error)
 }
