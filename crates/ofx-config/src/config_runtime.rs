@@ -182,6 +182,16 @@ struct Layer {
     max_agent_steps: Option<u64>,
 }
 
+impl Layer {
+    fn codex_model(&self) -> Option<&str> {
+        self.models
+            .iter()
+            .find(|(id, _)| *id == ProviderId::Codex)
+            .map(|(_, model)| model.as_str())
+            .or(self.codex_model.as_deref())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     providers: ProviderRegistry,
@@ -272,20 +282,17 @@ impl Settings {
         run_model: Option<&str>,
         lookup: EnvironmentLookup<'_>,
     ) -> Result<String, SelectionError> {
-        let saved = |layer: &Layer| {
-            layer
-                .models
-                .iter()
-                .find(|(id, _)| *id == ProviderId::Codex)
-                .map(|(_, model)| model.clone())
-                .or_else(|| layer.codex_model.clone())
-        };
         run_model
             .map(str::to_owned)
             .or_else(|| environment_model(lookup))
-            .or_else(|| saved(&self.workspace))
-            .or_else(|| saved(&self.global))
+            .or_else(|| self.saved_codex_model().map(str::to_owned))
             .ok_or(SelectionError::CodexModelNotSelected)
+    }
+
+    pub fn saved_codex_model(&self) -> Option<&str> {
+        self.workspace
+            .codex_model()
+            .or_else(|| self.global.codex_model())
     }
 
     pub fn selected_connection(
