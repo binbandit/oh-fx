@@ -17,6 +17,7 @@ queue_rules:
     update_method: rebase
     batch_size: 1
     max_checks_retries: 2
+    checks_timeout: 45 min
 
 merge_protections_settings:
   post_comment: false
