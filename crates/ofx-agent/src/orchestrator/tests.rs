@@ -2,9 +2,11 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use std::path::PathBuf;
+
 use ofx_contract::{
-    CallDescription, Concurrency, ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource,
-    StreamSink, ToolActivity, ToolCallId, ToolEffect,
+    CallDescription, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
+    PreparedCall, ProviderReplay, ReplaySource, StreamSink, ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -136,6 +138,24 @@ impl PermissionGate for ArgumentGate {
             Admission::Allowed(PathAccess::WorkspaceOnly)
         }
     }
+
+    fn admit_file_mutation(&self, mutation: &FileMutation) -> Admission {
+        match mutation.state {
+            FileMutationState::Unread => Admission::ReviewUnavailable,
+            FileMutationState::Changes => Admission::ApprovalRequired,
+            FileMutationState::Creates | FileMutationState::Unchanged => {
+                Admission::Allowed(PathAccess::WorkspaceOrExternal)
+            }
+        }
+    }
+}
+
+struct ReadOnlyGate;
+
+impl PermissionGate for ReadOnlyGate {
+    fn admit(&self, _call: &ToolCall) -> Admission {
+        Admission::Allowed(PathAccess::WorkspaceOrExternal)
+    }
 }
 
 struct EchoTool {
@@ -146,6 +166,7 @@ struct EchoTool {
 
 struct EchoCall {
     arguments: String,
+    mutation: Option<FileMutation>,
     cleaned_up: Arc<AtomicBool>,
     meeting: Arc<tokio::sync::Barrier>,
 }
@@ -160,8 +181,20 @@ impl Tool for EchoTool {
             return Err(ToolOutput::failure("invalid arguments"));
         }
         assert!(!arguments.contains("prepare_panic"), "prepare panicked");
+        let mutation = [
+            ("creates", FileMutationState::Creates),
+            ("changes", FileMutationState::Changes),
+            ("unread", FileMutationState::Unread),
+        ]
+        .into_iter()
+        .find(|(word, _)| arguments.contains(word))
+        .map(|(_, state)| FileMutation {
+            target: PathBuf::from("/workspace/note.txt"),
+            state,
+        });
         Ok(Box::new(EchoCall {
             arguments: arguments.to_owned(),
+            mutation,
             cleaned_up: Arc::clone(&self.cleaned_up),
             meeting: Arc::clone(&self.meeting),
         }))
@@ -169,6 +202,14 @@ impl Tool for EchoTool {
 }
 
 impl PreparedCall for EchoCall {
+    fn file_mutation(&self) -> Option<&FileMutation> {
+        assert!(
+            !self.arguments.contains("mutation_panic"),
+            "file mutation panicked"
+        );
+        self.mutation.as_ref()
+    }
+
     fn describe(&self) -> CallDescription {
         assert!(
             !self.arguments.contains("describe_panic"),
@@ -935,6 +976,91 @@ async fn a_lone_call_that_needs_approval_leaves_no_history() {
 }
 
 #[tokio::test]
+async fn file_mutations_are_admitted_by_their_prepared_target_instead_of_their_arguments() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            (
+                "call-1",
+                r#"{"creates":"outside","access":1,"serial":true}"#,
+            ),
+            ("call-2", r#"{"unread":1,"serial":true}"#),
+            ("call-3", r#"{"text":"after","serial":true}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        finished(&events),
+        [
+            ("call-1", ToolResultStatus::Success),
+            ("call-2", ToolResultStatus::Failure),
+            ("call-3", ToolResultStatus::Success),
+        ]
+    );
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message("call-1", "WorkspaceOrExternal", ToolResultStatus::Success),
+            tool_message(
+                "call-2",
+                &review_unavailable_json("echo"),
+                ToolResultStatus::Failure
+            ),
+            tool_message(
+                "call-3",
+                r#"echo {"text":"after","serial":true}"#,
+                ToolResultStatus::Success
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn file_mutations_that_need_approval_fail_the_turn_even_when_described_as_inert() {
+    let provider = FakeProvider::new(vec![tool_reply(&[(
+        "call-1",
+        r#"{"changes":1,"inert":true}"#,
+    )])]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(
+        report.failure,
+        Some(TurnFailure::PermissionRequired(BlockedCall {
+            tool_name: "echo".to_owned(),
+            title: r#"Echoing {"changes":1,"inert":true}"#.to_owned(),
+        }))
+    );
+    assert_eq!(dispatch_order(&events), ["start call-1"]);
+}
+
+#[tokio::test]
+async fn gates_without_a_file_mutation_policy_require_approval_for_mutations() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"text":"read"}"#)]),
+        tool_reply(&[("call-2", r#"{"creates":1}"#)]),
+    ]);
+    let mut agent = Agent::new(
+        provider,
+        vec![echo_tool()],
+        Arc::new(FixedContext),
+        Arc::new(ReadOnlyGate),
+        config(),
+    );
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(
+        report.failure.map(|failure| failure.code().to_owned()),
+        Some("NonInteractivePermissionRequired".to_owned())
+    );
+    assert_eq!(
+        dispatch_order(&events),
+        ["start call-1", "finish call-1", "start call-2"]
+    );
+}
+
+#[tokio::test]
 async fn serial_calls_never_overlap_their_neighbours() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[
@@ -964,12 +1090,13 @@ async fn serial_calls_never_overlap_their_neighbours() {
 }
 
 #[tokio::test]
-async fn panics_while_preparing_or_describing_a_call_become_rejected_failures() {
+async fn panics_while_preparing_describing_or_inspecting_a_call_become_rejected_failures() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[
             ("call-1", r#"{"prepare_panic":true}"#),
             ("call-2", r#"{"describe_panic":true}"#),
-            ("call-3", r#"{"text":"after"}"#),
+            ("call-3", r#"{"mutation_panic":true}"#),
+            ("call-4", r#"{"text":"after"}"#),
         ]),
         text_reply("ok"),
     ]);
@@ -983,15 +1110,16 @@ async fn panics_while_preparing_or_describing_a_call_become_rejected_failures() 
             _ => None,
         })
         .collect();
-    assert_eq!(rejected, ["call-1", "call-2"]);
+    assert_eq!(rejected, ["call-1", "call-2", "call-3"]);
     let panicked = r#"{"error":{"type":"tool_execution_failed","tool_name":"echo","message":"Tool execution panicked"}}"#;
     assert_eq!(
         provider.requests()[1].messages[2..],
         [
             tool_message("call-1", panicked, ToolResultStatus::Failure),
             tool_message("call-2", panicked, ToolResultStatus::Failure),
+            tool_message("call-3", panicked, ToolResultStatus::Failure),
             tool_message(
-                "call-3",
+                "call-4",
                 r#"echo {"text":"after"}"#,
                 ToolResultStatus::Success
             ),
