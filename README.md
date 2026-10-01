@@ -19,10 +19,17 @@ unresolved feedback stays visible.
 
 ## Checks
 
-`Repository checks` validates GitHub Actions workflows and runs the review
-cleanup regression tests on every PR, including Mergify's integration PRs.
-There is no application code or application test suite yet. Add build and
-test coverage to CI when introducing the application.
+`Repository checks` is the required check on every PR, including Mergify's
+integration PRs. It passes only when these jobs pass:
+
+- `Automation checks`: validates GitHub Actions workflows and runs the review
+  cleanup regression tests.
+- `Rust lint`: formatting, the comment ban, clippy, the attribution check, and
+  unused dependencies.
+- `Rust tests`: the workspace tests on Linux and macOS.
+
+Run the Rust checks locally with `cargo xtask ci`. Run `cargo xtask hooks` once
+to enable the git hooks described in [AGENTS.md](AGENTS.md).
 
 For local automation checks, use Node.js 24 and actionlint 1.7.12:
 
