@@ -1,14 +1,17 @@
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     CallDescription, CallPresentation, Concurrency, FileMutation, FileMutationState, PathAccess,
-    PreparedCall, ToolContext, ToolEffect, ToolOutput, format_plain_action,
-    format_tool_execution_error_json,
+    PreparedCall, ToolContext, ToolEffect, ToolOutput, format_tool_execution_error_json,
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
+use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
 use ofx_workspace::{TargetMode, resolve_file_mutation_target};
 
-use crate::file_mutation::{MutationInput, PrepareFailure, PreparedMutation};
+use crate::file_mutation::{
+    MAX_ENCODED_PATH_BYTES, MutationInput, PrepareFailure, PreparedMutation,
+};
 use crate::tool_admission::file_target_failure;
 use crate::tool_runtime::BlockingCall;
 
@@ -19,30 +22,38 @@ pub(crate) struct MutationRequest {
     pub(crate) tool_name: &'static str,
     pub(crate) presentation: CallPresentation,
     pub(crate) workspace_root: PathBuf,
+    pub(crate) full_access: bool,
 }
 
 impl MutationRequest {
     pub(crate) fn prepare(
         &self,
-        arguments: &str,
         decoded: Result<(String, MutationInput), ToolOutput>,
     ) -> Box<dyn PreparedCall> {
-        let description = |effect| CallDescription {
-            title: format_plain_action(self.tool_name, &self.presentation, arguments),
-            activity: self.presentation.activity,
-            effect,
-            concurrency: Concurrency::Serial,
-        };
         match decoded.and_then(|(path, input)| self.plan(path, input)) {
             Ok(plan) => {
                 let mutation = plan.file_mutation();
+                let title = plan.title(&self.presentation);
                 BlockingCall::mutation(
-                    description(ToolEffect::Irreversible),
+                    self.description(title, ToolEffect::Irreversible),
+                    self.presentation,
                     mutation,
                     move |context| plan.execute(&context),
                 )
             }
-            Err(failure) => BlockingCall::boxed(description(ToolEffect::None), move |_| failure),
+            Err(failure) => BlockingCall::boxed(
+                self.description(self.presentation.untargeted_title(), ToolEffect::None),
+                move |_| failure,
+            ),
+        }
+    }
+
+    fn description(&self, title: String, effect: ToolEffect) -> CallDescription {
+        CallDescription {
+            title,
+            activity: self.presentation.activity,
+            effect,
+            concurrency: Concurrency::Serial,
         }
     }
 
@@ -52,7 +63,7 @@ impl MutationRequest {
                 .map_err(|failure| {
                     ToolOutput::failure(file_target_failure(self.tool_name, failure))
                 })?;
-        let stage = if targets.target.anchor_is_external {
+        let stage = if targets.target.anchor_is_external || self.full_access {
             Stage::Deferred(targets)
         } else {
             Stage::Prepared(
@@ -64,6 +75,7 @@ impl MutationRequest {
             tool_name: self.tool_name,
             workspace_root: self.workspace_root.clone(),
             requested_path,
+            full_access: self.full_access,
             input,
             stage,
         })
@@ -79,11 +91,30 @@ struct Plan {
     tool_name: &'static str,
     workspace_root: PathBuf,
     requested_path: String,
+    full_access: bool,
     input: MutationInput,
     stage: Stage,
 }
 
 impl Plan {
+    fn title(&self, presentation: &CallPresentation) -> String {
+        let label = if self.full_access {
+            Some(encode_terminal_safe(self.requested_path.as_bytes(), MAX_ENCODED_PATH_BYTES).text)
+        } else {
+            match &self.stage {
+                Stage::Prepared(prepared) => Some(prepared.display_path().to_owned()),
+                Stage::Deferred(targets) => encode_terminal_safe_path_tail(
+                    targets.target.path().as_os_str().as_bytes(),
+                    MAX_ENCODED_PATH_BYTES,
+                ),
+            }
+        };
+        label.map_or_else(
+            || presentation.untargeted_title(),
+            |label| format!("{} {label}", presentation.action_label),
+        )
+    }
+
     fn file_mutation(&self) -> FileMutation {
         let (target, state) = match &self.stage {
             Stage::Prepared(prepared) => {

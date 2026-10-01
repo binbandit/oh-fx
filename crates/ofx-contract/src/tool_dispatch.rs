@@ -46,6 +46,12 @@ pub struct CallPresentation {
     pub label_default: &'static str,
 }
 
+impl CallPresentation {
+    pub fn untargeted_title(&self) -> String {
+        format!("{} {}", self.action_label, self.label_default)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallDescription {
     pub title: String,
@@ -115,6 +121,10 @@ pub trait Tool: Send + Sync {
 
 pub trait PreparedCall: Send {
     fn describe(&self) -> CallDescription;
+
+    fn untargeted_title(&self) -> String {
+        self.describe().title
+    }
 
     fn file_mutation(&self) -> Option<&FileMutation> {
         None

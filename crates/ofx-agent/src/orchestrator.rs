@@ -700,7 +700,7 @@ async fn run_group<'c>(
                 });
                 dispatched.push((call, Dispatched::Rejected(output)));
             }
-            Prepared::Ready(prepared, description, mutation, command) => {
+            Prepared::Ready(prepared, mut description, mutation, command) => {
                 let admission = admit(
                     permissions,
                     call,
@@ -708,6 +708,13 @@ async fn run_group<'c>(
                     command.as_ref(),
                     &description,
                 );
+                let allowed = matches!(admission, Admission::Allowed(_));
+                if mutation.is_some()
+                    && !allowed
+                    && let Some(title) = contained(|| prepared.untargeted_title())
+                {
+                    description.title = title;
+                }
                 if admission == Admission::ApprovalRequired {
                     blocked = Some(BlockedCall {
                         tool_name: call.name.clone(),
@@ -715,12 +722,14 @@ async fn run_group<'c>(
                         title: description.title.clone(),
                     });
                 }
-                events(UiEvent::ToolStarted {
-                    turn_id,
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    description,
-                });
+                if mutation.is_none() || admission != Admission::ApprovalRequired {
+                    events(UiEvent::ToolStarted {
+                        turn_id,
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        description,
+                    });
+                }
                 match admission {
                     Admission::Allowed(path_access) => {
                         let context =
