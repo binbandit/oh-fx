@@ -645,6 +645,7 @@ name = "ofx-config"
 version = "0.1.0"
 dependencies = [
  "ofx-contract",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tempfile",

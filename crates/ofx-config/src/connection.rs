@@ -1,6 +1,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use percent_encoding::percent_decode_str;
+
 use crate::configured_provider::{
     MaxTokensParameter, ProviderAuth, ProviderDefinition, ToolChoiceMode,
 };
@@ -162,32 +164,15 @@ fn proxy_credentials(proxy: &str) -> Vec<String> {
     }
     let decoded: Vec<String> = credentials
         .iter()
-        .filter_map(|credential| percent_decode(credential))
+        .map(|credential| {
+            percent_decode_str(credential)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
         .filter(|credential| !credentials.contains(credential))
         .collect();
     credentials.extend(decoded);
     credentials
-}
-
-fn percent_decode(text: &str) -> Option<String> {
-    let mut decoded = Vec::with_capacity(text.len());
-    let mut bytes = text.bytes();
-    while let Some(byte) = bytes.next() {
-        if byte == b'%' {
-            let high = bytes.next().and_then(hex_value)?;
-            let low = bytes.next().and_then(hex_value)?;
-            decoded.push((high << 4) | low);
-        } else {
-            decoded.push(byte);
-        }
-    }
-    String::from_utf8(decoded).ok()
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    char::from(byte)
-        .to_digit(16)
-        .and_then(|digit| u8::try_from(digit).ok())
 }
 
 fn expand_home(path: &str, home: Option<&Path>) -> Result<PathBuf, ConnectionError> {
@@ -342,6 +327,10 @@ mod tests {
         assert_eq!(
             proxy_credentials("http://user:bad%zzpass@proxy.corp:3128"),
             ["user:bad%zzpass", "bad%zzpass"]
+        );
+        assert_eq!(
+            proxy_credentials("http://user:bad%41%zz@proxy.corp:3128"),
+            ["user:bad%41%zz", "bad%41%zz", "user:badA%zz", "badA%zz"]
         );
     }
 }
