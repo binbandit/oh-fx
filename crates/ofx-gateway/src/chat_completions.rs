@@ -153,17 +153,14 @@ impl ChatCompletionsProvider {
     ) -> ProviderError {
         let status = response.status();
         let retry_after = retry_after(response.headers());
-        let redirect = status
-            .is_redirection()
-            .then(|| redirect_notice(response.headers(), &self.chat_url));
-        let body = match read_body(&mut response, cancel).await {
-            Ok(body) => body,
-            Err(failure) => return failure,
-        };
-        let detail = match (redirect, body) {
-            (Some(notice), _) => notice,
-            (None, Some(body)) => redact_error_detail(&body, &self.secrets),
-            (None, None) => ERROR_BODY_LIMIT_NOTICE.to_owned(),
+        let detail = if status.is_redirection() {
+            redirect_notice(response.headers(), &self.chat_url)
+        } else {
+            match read_body(&mut response, cancel).await {
+                Ok(Some(body)) => redact_error_detail(&body, &self.secrets),
+                Ok(None) => ERROR_BODY_LIMIT_NOTICE.to_owned(),
+                Err(failure) => return failure,
+            }
         };
         let kind = failure_kind(status);
         let displayed = detail.trim_matches([' ', '\t', '\r', '\n']);
@@ -380,10 +377,10 @@ const fn failure_code(kind: ProviderErrorKind) -> &'static str {
 }
 
 fn protocol_failure(error: ProtocolError) -> ProviderError {
-    let kind = if error == ProtocolError::Cancelled {
-        ProviderErrorKind::Cancelled
-    } else {
-        ProviderErrorKind::Protocol
+    let kind = match error {
+        ProtocolError::Cancelled => ProviderErrorKind::Cancelled,
+        ProtocolError::ProviderError => ProviderErrorKind::ProviderError,
+        _ => ProviderErrorKind::Protocol,
     };
     ProviderError::new(kind, error.to_string())
 }

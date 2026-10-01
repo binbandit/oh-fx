@@ -511,14 +511,37 @@ pub(crate) fn redact_error_detail(raw: &[u8], secrets: &[String]) -> String {
 
 pub(crate) fn mask_configured_secrets(mut text: String, secrets: &[String]) -> String {
     for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
-        let encoded = Value::String(secret.clone()).to_string();
-        for form in [&encoded[1..encoded.len() - 1], secret.as_str()] {
-            if text.contains(form) {
-                text = text.replace(form, &"*".repeat(form.len()));
+        let json_escaped = Value::String(secret.clone()).to_string();
+        let forms = [
+            json_escaped[1..json_escaped.len() - 1].to_owned(),
+            secret.clone(),
+            percent_encoded(secret, UPPER_HEX),
+            percent_encoded(secret, LOWER_HEX),
+        ];
+        for form in &forms {
+            if text.contains(form.as_str()) {
+                text = text.replace(form.as_str(), &"*".repeat(form.len()));
             }
         }
     }
     text
+}
+
+const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
+const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
+fn percent_encoded(text: &str, digits: &[u8; 16]) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(digits[usize::from(byte >> 4)]));
+            encoded.push(char::from(digits[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -947,10 +970,12 @@ impl Reducer {
         let tool = &mut self.tools[index];
         if let Some(name) = non_null(function, "name") {
             let fragment = string(name)?;
-            let repeated = !fragment.is_empty()
-                && fragment == tool.name
-                && !extends_known_name(&self.names, &tool.name, fragment);
-            if !repeated {
+            let echoed = !fragment.is_empty() && fragment == tool.name;
+            let extends = extends_known_name(&self.names, &tool.name, fragment);
+            if echoed && extends && self.names.contains(&tool.name) {
+                return Err(ProtocolError::InvalidToolName);
+            }
+            if !echoed || extends {
                 let limit = MAX_NAME_BYTES.min(self.limits.identity_bytes);
                 append_bounded(
                     &mut tool.name,

@@ -382,6 +382,7 @@ async fn in_stream_provider_errors_are_masked_and_terminal_safe() {
     ] {
         let wire = sse(&[TEST_TEXT, event]);
         let error = consume_simple(&wire, Limits::default()).await.unwrap_err();
+        assert_eq!(error.kind, ProviderErrorKind::ProviderError);
         assert_eq!(error.code, "ProviderError");
         let detail = error.detail.unwrap();
         assert!(detail.starts_with("provider error: {"), "{detail}");
@@ -391,6 +392,17 @@ async fn in_stream_provider_errors_are_masked_and_terminal_safe() {
             "{detail}"
         );
     }
+}
+
+#[tokio::test]
+async fn an_error_finish_reason_is_classified_as_a_provider_error() {
+    let wire = sse(&[
+        TEST_TEXT,
+        r#"{"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}"#,
+    ]);
+    let error = consume_simple(&wire, Limits::default()).await.unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::ProviderError);
+    assert_eq!(error.code, "ProviderError");
 }
 
 fn connection(
@@ -565,6 +577,30 @@ async fn redirects_are_reported_and_never_followed_with_secret_headers() {
         );
         assert!(!detail.contains("s3cret"));
     }
+}
+
+#[tokio::test]
+async fn redirects_are_reported_without_waiting_for_their_body() {
+    let gateway = FakeServer::start([Reply::held_status_with_headers(
+        302,
+        &[("Location", "https://sso.example.com/login?state=s3cret")],
+        "<html>Redirecting",
+    )]);
+    let provider = portkey(&gateway);
+    let (outcome, _) = tokio::time::timeout(
+        Duration::from_secs(5),
+        stream_text(&provider, &test_request()),
+    )
+    .await
+    .expect("the redirect is reported before its body ends");
+    let error = outcome.unwrap_err();
+    assert_eq!(error.status, Some(302));
+    assert_eq!(
+        error.detail.as_deref(),
+        Some(
+            "HTTP 302: redirect to https://sso.example.com was not followed; base_url must point at the gateway API itself, not at a sign-in page or a proxy that redirects"
+        )
+    );
 }
 
 #[tokio::test]

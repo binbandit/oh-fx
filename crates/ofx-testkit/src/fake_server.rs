@@ -21,6 +21,7 @@ pub enum Reply {
         status: u16,
         headers: Vec<(String, String)>,
         body: String,
+        hold_open: bool,
     },
     Disconnect,
 }
@@ -51,13 +52,31 @@ impl Reply {
     ) -> Self {
         Self::Status {
             status,
-            headers: headers
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect(),
+            headers: owned_headers(headers),
             body: body.into(),
+            hold_open: false,
         }
     }
+
+    pub fn held_status_with_headers(
+        status: u16,
+        headers: &[(&str, &str)],
+        body: impl Into<String>,
+    ) -> Self {
+        Self::Status {
+            status,
+            headers: owned_headers(headers),
+            body: body.into(),
+            hold_open: true,
+        }
+    }
+}
+
+fn owned_headers(headers: &[(&str, &str)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect()
 }
 
 fn sse_chunks<S: AsRef<str>>(events: &[S]) -> Vec<Vec<u8>> {
@@ -195,11 +214,12 @@ async fn handle(
             status,
             headers,
             body,
+            hold_open,
         } => {
-            let mut head = format!(
-                "HTTP/1.1 {status} Scripted\r\nContent-Length: {}\r\nConnection: close\r\n",
-                body.len()
-            );
+            let mut head = format!("HTTP/1.1 {status} Scripted\r\nConnection: close\r\n");
+            if !hold_open {
+                let _ = write!(head, "Content-Length: {}\r\n", body.len());
+            }
             if !headers
                 .iter()
                 .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
@@ -212,6 +232,10 @@ async fn handle(
             head.push_str("\r\n");
             let _ = stream.write_all(head.as_bytes()).await;
             let _ = stream.write_all(body.as_bytes()).await;
+            if hold_open {
+                let _ = stream.flush().await;
+                hold(&mut stream, &mut signal).await;
+            }
         }
         Reply::Disconnect => {}
         Reply::Stream { chunks, hold_open } => {
@@ -225,15 +249,19 @@ async fn handle(
                 }
             }
             if hold_open {
-                let mut sink = [0_u8; 64];
-                tokio::select! {
-                    _ = signal.changed() => {}
-                    _ = stream.read(&mut sink) => {}
-                }
+                hold(&mut stream, &mut signal).await;
             }
         }
     }
     let _ = stream.shutdown().await;
+}
+
+async fn hold(stream: &mut TcpStream, signal: &mut watch::Receiver<bool>) {
+    let mut sink = [0_u8; 64];
+    tokio::select! {
+        _ = signal.changed() => {}
+        _ = stream.read(&mut sink) => {}
+    }
 }
 
 async fn read_request(stream: &mut TcpStream) -> Option<RecordedRequest> {

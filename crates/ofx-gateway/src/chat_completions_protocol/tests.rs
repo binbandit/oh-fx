@@ -1642,19 +1642,52 @@ fn chat_completions_deliberately_tolerates_common_gateway_dialects() {
 }
 
 #[test]
-fn chat_completions_repeated_names_still_extend_when_the_longer_name_is_advertised() {
+fn chat_completions_rejects_an_echoed_name_that_could_also_extend_to_another_tool() {
     let mut request = test_request();
     request.tools = vec![tool("a", "A.", json!({})), tool("aa", "AA.", json!({}))];
-    let completion = outcome(
+    let outcome = outcome(
         &request,
         &[
             r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"one","function":{"name":"a","arguments":"{}"}}]}}]}"#,
             r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"a"}}]}}]}"#,
             TEST_TOOLS_FINISH,
         ],
+    );
+    assert_eq!(outcome.unwrap_err(), ProtocolError::InvalidToolName);
+}
+
+#[test]
+fn chat_completions_extends_an_echoed_fragment_that_is_not_an_advertised_name() {
+    let mut request = test_request();
+    request.tools = vec![tool("abab", "ABAB.", json!({}))];
+    let completion = outcome(
+        &request,
+        &[
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"one","function":{"name":"ab","arguments":"{}"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"ab"}}]}}]}"#,
+            TEST_TOOLS_FINISH,
+        ],
     )
     .unwrap();
-    assert_eq!(completion.tool_calls[0].name, "aa");
+    assert_eq!(completion.tool_calls[0].name, "abab");
+}
+
+#[test]
+fn configured_secrets_are_masked_in_literal_json_and_percent_encoded_forms() {
+    let secrets = ["sk-a+b/c=\\d\"e".to_owned()];
+    for form in [
+        "sk-a+b/c=\\d\"e",
+        "sk-a+b/c=\\\\d\\\"e",
+        "sk-a%2Bb%2Fc%3D%5Cd%22e",
+        "sk-a%2bb%2fc%3d%5cd%22e",
+    ] {
+        let masked = mask_configured_secrets(format!("rejected key {form} here"), &secrets);
+        assert_eq!(
+            masked,
+            format!("rejected key {} here", "*".repeat(form.len())),
+            "{form}"
+        );
+    }
 }
 
 #[test]
