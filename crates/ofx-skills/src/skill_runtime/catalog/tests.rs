@@ -4,7 +4,7 @@ use std::os::unix::ffi::OsStrExt;
 use ofx_config::ContextLimitValue;
 
 use super::*;
-use crate::skill_contract::{LocationError, SkillSource};
+use crate::skill_contract::{LocationError, SkillDiagnosticCause, SkillSource};
 
 fn skill(name: &str, description: &str, path: &str) -> Skill {
     Skill {
@@ -17,7 +17,7 @@ fn skill(name: &str, description: &str, path: &str) -> Skill {
 }
 
 fn catalog(skills: &[Skill], context_window: Option<u32>) -> SkillCatalog {
-    build_skill_prompt(skills, &ContextLimits::default(), context_window)
+    build_skill_prompt(skills, &[], &ContextLimits::default(), context_window)
 }
 
 fn compiled_default(bytes: usize) -> ContextLimit {
@@ -39,7 +39,7 @@ fn catalog_with(skills: &[Skill], catalog: ContextLimit) -> SkillCatalog {
         description: compiled_default(1024),
         catalog,
     };
-    render_catalog(skills, limits, None)
+    render_catalog(skills, &[], limits, None)
 }
 
 #[test]
@@ -81,6 +81,7 @@ fn skill_catalog_renders_roots_and_hashed_locations_verbatim() {
     );
     assert_eq!(result.locations.skills, skills);
     assert_eq!(result.notice, None);
+    assert_eq!(result.diagnostic_notice, None);
 }
 
 #[test]
@@ -101,8 +102,8 @@ fn skill_catalog_uses_model_capacity_and_preserves_explicit_byte_overrides() {
         description: compiled_default(1024),
         catalog: configured(1600, ContextLimitSource::GlobalSettings),
     };
-    let small = render_catalog(&skills, limits, Some(200_000));
-    let same = render_catalog(&skills, limits, Some(1_000_000));
+    let small = render_catalog(&skills, &[], limits, Some(200_000));
+    let same = render_catalog(&skills, &[], limits, Some(1_000_000));
     assert_eq!(small.text, same.text);
     assert!(small.text.len() <= 1600);
 }
@@ -238,7 +239,7 @@ fn bounded_skill_descriptions_measure_encoded_bytes_without_cutting_an_entity() 
         description: configured(5, ContextLimitSource::CommandLine),
         catalog: compiled_default(16 * 1024),
     };
-    let result = render_catalog(&skills, limits, None);
+    let result = render_catalog(&skills, &[], limits, None);
     assert!(result.text.contains(": &lt; (location:"));
     assert!(!result.text.contains("&lt;&"));
     let notice = result.notice.unwrap();
@@ -308,4 +309,57 @@ fn skill_catalog_withholds_identities_that_cannot_be_represented_to_the_model() 
     );
     assert_eq!(result.locations.skills, skills);
     assert_eq!(result.locations.roots, [PathBuf::from("/tmp")]);
+}
+
+#[test]
+fn skill_catalog_withholds_unrepresentable_identities_and_marks_discovery_warnings() {
+    let mut hostile = skill("binary", "", "/tmp/binary");
+    hostile.path = PathBuf::from(OsStr::from_bytes(b"/tmp/bad\xff"));
+    let skills = [skill("review", "help", "/tmp/review"), hostile];
+    let diagnostics = [SkillDiagnostic {
+        path: PathBuf::from("/tmp/root"),
+        source: SkillSource::GlobalOhFx,
+        scope: SkillDiagnosticScope::Root,
+        cause: SkillDiagnosticCause::Unreadable,
+    }];
+    let result = build_skill_prompt(&skills, &diagnostics, &ContextLimits::default(), None);
+    assert!(result.text.starts_with(
+        "<skill_discovery_warning skipped_candidate_count=\"0\" incomplete_root_count=\"1\" missing_from_incomplete_roots=\"unknown\" />\nSkills provide task instructions."
+    ));
+    assert!(!result.text.contains("binary"));
+    assert_eq!(
+        result.notice.as_deref(),
+        Some(
+            "[context] 1 skill identities withheld because they cannot be safely represented to the model.\n"
+        )
+    );
+    assert!(
+        result
+            .diagnostic_notice
+            .unwrap()
+            .starts_with("skill discovery warning: inventory incomplete")
+    );
+    assert_eq!(result.locations.skills, skills);
+    assert_eq!(result.locations.diagnostics, diagnostics);
+}
+
+#[test]
+fn skill_catalog_marks_discovery_warnings_even_without_visible_skills() {
+    let diagnostics = [SkillDiagnostic {
+        path: PathBuf::from("/tmp/candidate"),
+        source: SkillSource::GlobalOhFx,
+        scope: SkillDiagnosticScope::Candidate,
+        cause: SkillDiagnosticCause::Oversized,
+    }];
+    let result = build_skill_prompt(&[], &diagnostics, &ContextLimits::default(), None);
+    assert_eq!(
+        result.text,
+        "<skill_discovery_warning skipped_candidate_count=\"1\" incomplete_root_count=\"0\" missing_from_incomplete_roots=\"0\" />\n"
+    );
+    assert!(
+        result
+            .diagnostic_notice
+            .unwrap()
+            .contains("its frontmatter exceeds the supported 65536-byte metadata header")
+    );
 }

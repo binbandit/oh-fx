@@ -10,8 +10,11 @@ use ofx_workspace::{basename, dirname};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use sha2::{Digest, Sha256};
 
+use super::diagnostics::diagnostic_summary;
 use crate::encoded_scalar::{encoded_scalar, write_bounded_encoded_scalar};
-use crate::skill_contract::{Locations, MAX_NAME_BYTES, Skill};
+use crate::skill_contract::{
+    Locations, MAX_NAME_BYTES, Skill, SkillDiagnostic, SkillDiagnosticScope,
+};
 
 const HEADER: &str = "Skills provide task instructions. Use named skills and clearly matching skills before substantive work.\nRead selected skills completely, including required references. Descriptions may be shortened; metadata is not loaded instructions.\n<available_skills>\n";
 const FOOTER: &str = "</available_skills>\n";
@@ -29,6 +32,7 @@ const LOCATION_LEAF: &AsciiSet = &NON_ALPHANUMERIC
 pub struct SkillCatalog {
     pub text: String,
     pub notice: Option<String>,
+    pub diagnostic_notice: Option<String>,
     pub locations: Locations,
 }
 
@@ -40,6 +44,7 @@ struct CatalogLimits {
 
 pub fn build_skill_prompt(
     skills: &[Skill],
+    diagnostics: &[SkillDiagnostic],
     limits: &ContextLimits,
     context_window: Option<u32>,
 ) -> SkillCatalog {
@@ -47,7 +52,7 @@ pub fn build_skill_prompt(
         description: limits.get(ContextLimitName::SkillDescriptionBytes),
         catalog: limits.get(ContextLimitName::SkillCatalogBytes),
     };
-    render_catalog(skills, limits, context_window)
+    render_catalog(skills, diagnostics, limits, context_window)
 }
 
 struct VisibleSkill<'a> {
@@ -58,6 +63,7 @@ struct VisibleSkill<'a> {
 
 fn render_catalog(
     skills: &[Skill],
+    diagnostics: &[SkillDiagnostic],
     limits: CatalogLimits,
     context_window: Option<u32>,
 ) -> SkillCatalog {
@@ -81,6 +87,7 @@ fn render_catalog(
         catalog_namespace(&visible),
     );
     catalog.locations.skills = skills.to_vec();
+    catalog.locations.diagnostics = diagnostics.to_vec();
     let withheld = skills.len() - visible.len();
     if withheld > 0 {
         let mut notice = catalog.notice.take().unwrap_or_default();
@@ -90,7 +97,25 @@ fn render_catalog(
         );
         catalog.notice = Some(notice);
     }
+    attach_catalog_diagnostics(&mut catalog, diagnostics);
     catalog
+}
+
+fn attach_catalog_diagnostics(catalog: &mut SkillCatalog, diagnostics: &[SkillDiagnostic]) {
+    let Some(summary) = diagnostic_summary(diagnostics) else {
+        return;
+    };
+    let root_count = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.scope == SkillDiagnosticScope::Root)
+        .count();
+    let candidate_count = diagnostics.len() - root_count;
+    let missing = if root_count > 0 { "unknown" } else { "0" };
+    catalog.text = format!(
+        "<skill_discovery_warning skipped_candidate_count=\"{candidate_count}\" incomplete_root_count=\"{root_count}\" missing_from_incomplete_roots=\"{missing}\" />\n{}",
+        catalog.text
+    );
+    catalog.diagnostic_notice = Some(summary);
 }
 
 fn catalog_namespace(visible: &[VisibleSkill<'_>]) -> u64 {
@@ -215,6 +240,7 @@ fn render_visible_skills(
     SkillCatalog {
         text,
         notice: (!notice.is_empty()).then_some(notice),
+        diagnostic_notice: None,
         locations: Locations {
             namespace,
             roots: layout.roots[..retention.roots]
@@ -351,7 +377,8 @@ fn catalog_description(description: &str, limit: ContextLimit) -> (String, bool)
         return (encoded_scalar(&safe[..end]), end < safe.len());
     }
     let mut bounded = String::new();
-    let observed = write_bounded_encoded_scalar(&mut bounded, &safe, limit.effective_bytes());
+    let observed =
+        write_bounded_encoded_scalar(&mut bounded, safe.as_bytes(), limit.effective_bytes());
     let limited = observed > bounded.len();
     (bounded, limited)
 }
@@ -398,7 +425,7 @@ fn catalog_notices(
             if index > 0 {
                 notices.push_str(", ");
             }
-            if write_bounded_encoded_scalar(&mut notices, skill.name, MAX_NAME_BYTES)
+            if write_bounded_encoded_scalar(&mut notices, skill.name.as_bytes(), MAX_NAME_BYTES)
                 > MAX_NAME_BYTES
             {
                 notices.push_str("...");
