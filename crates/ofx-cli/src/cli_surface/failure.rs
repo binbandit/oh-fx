@@ -4,6 +4,7 @@ use std::os::unix::ffi::OsStrExt;
 use ofx_text::encode_terminal_safe;
 
 use super::launch_modifiers::GlobalLaunchError;
+use crate::cli_ask::AskError;
 use crate::cli_replay::ReplayError;
 use crate::command_specs::{
     HelpStyle, PRODUCT_NAME, TOP_LEVEL_HELP_DEFAULT_WIDTH, TopLevelKind, render_top_level_help,
@@ -78,6 +79,8 @@ pub enum CliError {
     #[error("usage: oh-fx mcp auth NAME")]
     McpAuthUsage,
     #[error(transparent)]
+    Ask(#[from] AskError),
+    #[error(transparent)]
     Replay(#[from] ReplayError),
 }
 
@@ -120,6 +123,7 @@ impl CliError {
             Self::VersionUsage | Self::Usage(_) | Self::McpAddUsage | Self::McpAuthUsage => {
                 Report::stderr(format!("{self}\n"))
             }
+            Self::Ask(error) => error.report(),
             Self::Replay(error) => error.report(),
             Self::InvalidArguments { command, code } => Report::stdout(command_failure_json(
                 *command,

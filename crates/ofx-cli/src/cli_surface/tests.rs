@@ -176,10 +176,14 @@ fn command_shape(args: &[&str]) -> (TopLevelKind, OutputFormat) {
 fn parse_recognizes_every_top_level_command_and_preserves_unknown_commands() {
     assert!(is_interactive(&[]));
     assert_eq!(top_level_help(&["help"]), Some(HelpLayout::Terminal));
-    assert!(matches!(
-        command(&["ask", "hello"]),
-        Command::Ask(args) if args == [OsString::from("hello")]
-    ));
+    let Command::Ask(ask) = command(&["ask", "hello"]) else {
+        panic!("expected ask");
+    };
+    assert_eq!(
+        ask.resolve_prompt(|| unreachable!("stdin must stay unread"))
+            .unwrap(),
+        "hello"
+    );
     for (args, kind, format) in COMMAND_SHAPES {
         assert_eq!(command_shape(args), (*kind, *format), "{args:?}");
     }
@@ -589,7 +593,18 @@ fn command_usage_errors_use_the_spec_usage() {
 }
 
 #[test]
-fn replay_parse_errors_keep_their_own_reports() {
+fn ask_and_replay_parse_errors_keep_their_own_reports() {
+    assert_eq!(
+        stderr(&["ask", "--bogus"]),
+        format!("usage: oh-fx {}\n", TopLevelKind::Ask.spec().usage)
+    );
+    match parse(&["ask", "--bogus", "--json"]) {
+        Err(CliError::Ask(error)) => {
+            assert_eq!(error.kind, crate::cli_ask::AskErrorKind::InvalidAskArgs);
+            assert!(error.json);
+        }
+        other => panic!("expected an ask error, got {other:?}"),
+    }
     assert_eq!(
         stderr(&["replay", "a", "b"]),
         "oh-fx replay: too many positional arguments\n"

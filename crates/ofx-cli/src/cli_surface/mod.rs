@@ -8,15 +8,17 @@ mod resume;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
+use crate::cli_ask::{AskArgs, parse_ask};
 use crate::cli_replay::parse_replay;
 use crate::command_specs::TopLevelKind;
 
-use arg_stream::ArgStream;
-pub(crate) use arg_stream::requests_json;
+pub(crate) use arg_stream::{ArgStream, ValueForm, non_blank, requests_json};
 pub use command_args::OutputFormat;
 pub(crate) use failure::Report;
 pub use failure::{CliError, command_failure_json};
 pub use launch_modifiers::LaunchModifiers;
+pub(crate) use model_overrides::{ModelOverride, ModelOverrides};
+
 use launch_modifiers::parse_launch_modifiers;
 use resume::{
     InvalidResumeArgs, RESUME_ID_ALIAS_PREFIX, validate_resume_alias, validate_resume_subcommand,
@@ -47,7 +49,7 @@ pub struct CommandLaunch {
 
 #[derive(Debug)]
 pub enum Command {
-    Ask(Vec<OsString>),
+    Ask(AskArgs),
     Acp,
     Pr,
     Issue,
@@ -113,14 +115,7 @@ impl Command {
             | Self::Upgrade(format)
             | Self::Replay(format)
             | Self::Workspace(format) => *format,
-            Self::Ask(args)
-                if args
-                    .split(|arg| arg == "--")
-                    .next()
-                    .is_some_and(requests_json) =>
-            {
-                OutputFormat::Json
-            }
+            Self::Ask(args) if args.output.json => OutputFormat::Json,
             Self::Ask(_)
             | Self::Acp
             | Self::Pr
@@ -246,7 +241,7 @@ fn parse_command(
         TopLevelKind::Mcp | TopLevelKind::Slack if rest.is_empty() => {
             return Ok(Invocation::CommandHelp(kind));
         }
-        TopLevelKind::Ask => Command::Ask(rest),
+        TopLevelKind::Ask => Command::Ask(parse_ask(rest)?),
         TopLevelKind::Acp => command_args::validate_acp(rest).map(|()| Command::Acp)?,
         TopLevelKind::Pr => Command::Pr,
         TopLevelKind::Issue => Command::Issue,

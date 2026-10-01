@@ -1,10 +1,15 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 
 use ofx_config::is_valid_provider_order_list;
 use ofx_contract::is_valid_reasoning_effort;
 
 use super::arg_stream::{ArgStream, MissingValue, ValueForm, merge_toggle, non_blank};
 use super::launch_modifiers::GlobalLaunchError;
+
+pub(crate) enum ModelOverride {
+    Model(OsString),
+    Setting,
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct ModelOverrides {
@@ -17,11 +22,13 @@ impl ModelOverrides {
         &mut self,
         args: &mut ArgStream,
         form: ValueForm,
-    ) -> Result<bool, GlobalLaunchError> {
+    ) -> Result<Option<ModelOverride>, GlobalLaunchError> {
         if let Some(value) = args.take_option("model", form) {
             let value = value.map_err(|MissingValue| GlobalLaunchError::MissingModelValue)?;
-            non_blank(&value).ok_or(GlobalLaunchError::MissingModelValue)?;
-        } else if let Some(value) = args.take_option("effort", form) {
+            let model = non_blank(&value).ok_or(GlobalLaunchError::MissingModelValue)?;
+            return Ok(Some(ModelOverride::Model(model.to_os_string())));
+        }
+        if let Some(value) = args.take_option("effort", form) {
             let value = value.map_err(|MissingValue| GlobalLaunchError::MissingEffortValue)?;
             if !is_text(&value, is_valid_reasoning_effort) {
                 return Err(GlobalLaunchError::InvalidEffortValue);
@@ -44,9 +51,9 @@ impl ModelOverrides {
             )?;
             self.provider_strict = Some(strict);
         } else {
-            return Ok(false);
+            return Ok(None);
         }
-        Ok(true)
+        Ok(Some(ModelOverride::Setting))
     }
 }
 

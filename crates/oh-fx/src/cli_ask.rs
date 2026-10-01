@@ -1,6 +1,8 @@
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -10,32 +12,31 @@ use ofx_agent::{
     Agent, AgentConfig, TurnFailure, TurnReport, normalize_assistant_text_for_display,
     text_for_completed_presentation,
 };
-use ofx_cli::LaunchModifiers;
+use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
     ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError, RouteRecoveryStatus,
     ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
-use serde::Serialize;
+use rustix::io::Errno;
+use serde::{Serialize, Serializer};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::{ASK_USAGE, AskArgsError, AskArguments, AskOptions};
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
 
-const STDIN_PROMPT_LIMIT: u64 = 8 * 1024 * 1024;
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
-const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
+const INVALID_MODEL_CODE: &str = "InvalidModel";
 
 struct Failure {
     code: String,
     notice: Option<String>,
     notice_in_json: bool,
-    usage: bool,
+    model: Vec<u8>,
 }
 
 impl Failure {
@@ -44,7 +45,14 @@ impl Failure {
             code: code.into(),
             notice: None,
             notice_in_json: false,
-            usage: false,
+            model: Vec::new(),
+        }
+    }
+
+    fn invalid_model(model: Vec<u8>) -> Self {
+        Self {
+            model,
+            ..Self::code(INVALID_MODEL_CODE)
         }
     }
 
@@ -53,11 +61,6 @@ impl Failure {
             notice: Some(notice.into()),
             ..Self::code(code)
         }
-    }
-
-    fn with_usage(mut self) -> Self {
-        self.usage = true;
-        self
     }
 
     fn written(error: &io::Error) -> Self {
@@ -72,15 +75,15 @@ impl Failure {
             .filter(|_| !json || self.notice_in_json)
         {
             let _ = writeln!(stderr, "oh-fx ask: {notice}");
-        } else if !json && !self.usage {
+        } else if !json {
             let _ = writeln!(stderr, "oh-fx: {}", self.code);
-        }
-        if self.usage && !json {
-            let _ = writeln!(stderr, "{ASK_USAGE}");
         }
         drop(stderr);
         if json {
-            return print_result(&RunResult::error(&self.code));
+            return print_result(&RunResult {
+                model: JsonText(&self.model),
+                ..RunResult::error(&self.code)
+            });
         }
         ExitCode::FAILURE
     }
@@ -109,45 +112,58 @@ impl From<ConnectionError> for Failure {
     }
 }
 
-pub(crate) fn run(arguments: &AskArguments, modifiers: &LaunchModifiers) -> ExitCode {
-    let options_json = arguments.requests_json();
-    let options = match arguments.options() {
-        Ok(options) => options,
-        Err(AskArgsError::InvalidAskArgs) => {
-            return Failure::code("InvalidAskArgs")
-                .with_usage()
-                .report(options_json);
-        }
-        Err(AskArgsError::InvalidPromptText) => return invalid_prompt_text().report(options_json),
-    };
-    let prompt = match read_prompt(options.prompt.as_deref()) {
+pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
+    let prompt = match args.resolve_prompt(read_stdin_prompt) {
         Ok(prompt) => prompt,
-        Err(failure) => return failure.report(options_json),
+        Err(error) => return report_argument_error(error),
     };
-    if let Some(feature) = unavailable_modifier(modifiers) {
-        return unavailable(feature, options.json);
+    if let Some(feature) = unavailable_feature(args, modifiers) {
+        return unavailable(&feature, args.output.json);
     }
     if prompt.is_empty() {
-        return Failure::code("InvalidConversationEvent").report(options.json);
+        return Failure::code("InvalidConversationEvent").report(args.output.json);
     }
     crate::auto_upgrade::announce_and_schedule();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build();
     match runtime {
-        Ok(runtime) => runtime.block_on(ask(&options, &prompt)),
-        Err(_) => Failure::code("RuntimeUnavailable").report(options.json),
+        Ok(runtime) => runtime.block_on(ask(args, &prompt)),
+        Err(_) => Failure::code("RuntimeUnavailable").report(args.output.json),
     }
 }
 
-fn unavailable_modifier(modifiers: &LaunchModifiers) -> Option<&'static str> {
-    if modifiers.sets_context_limits() {
-        Some("--context-limit")
-    } else if modifiers.adds_directories() {
-        Some("--add-dir")
-    } else {
-        None
+pub(crate) fn report_argument_error(error: AskError) -> ExitCode {
+    if error.json {
+        return print_result(&RunResult::error(error.kind.name()));
     }
+    let _ = io::stderr().write_all(error.report().stderr.as_bytes());
+    ExitCode::FAILURE
+}
+
+fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
+    let launch = [
+        (modifiers.sets_context_limits(), "--context-limit"),
+        (modifiers.adds_directories(), "--add-dir"),
+    ];
+    let ask = [
+        (args.images, "--image"),
+        (args.permissions.prompt, "--prompt-permissions"),
+        (args.timeout, "--timeout"),
+        (args.session.continue_recovery, "--continue-recovery"),
+    ];
+    if let Some(flag) = first_requested(launch) {
+        return Some(flag.to_owned());
+    }
+    first_requested(ask)
+        .or(args.session.resume_flag)
+        .map(|flag| format!("ask {flag}"))
+}
+
+fn first_requested<const N: usize>(flags: [(bool, &'static str); N]) -> Option<&'static str> {
+    flags
+        .into_iter()
+        .find_map(|(requested, flag)| requested.then_some(flag))
 }
 
 fn unavailable(feature: &str, json: bool) -> ExitCode {
@@ -158,60 +174,14 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn invalid_prompt_text() -> Failure {
-    Failure::notice(
-        "InvalidPromptText",
-        "prompt must be valid UTF-8 and contain no NUL bytes",
-    )
-}
-
-fn read_prompt(words: Option<&str>) -> Result<String, Failure> {
-    let prompt = match words {
-        Some(prompt) => prompt.to_owned(),
-        None => read_stdin_prompt()?,
-    };
-    if prompt.contains('\0') {
-        return Err(invalid_prompt_text());
-    }
-    Ok(prompt)
-}
-
-fn read_stdin_prompt() -> Result<String, Failure> {
-    let missing = || Failure::notice("MissingPrompt", "missing prompt").with_usage();
-    let stdin = io::stdin();
-    if stdin.is_terminal() {
-        return Err(missing());
-    }
-    let mut bytes = Vec::new();
-    stdin
-        .lock()
-        .take(STDIN_PROMPT_LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| {
-            Failure::notice("PromptInputReadFailed", "failed to read prompt from stdin")
-        })?;
-    if bytes.len() as u64 > STDIN_PROMPT_LIMIT {
-        return Err(Failure::notice(
-            "PromptResourceLimitExceeded",
-            "prompt exceeds the local input safety limit",
-        ));
-    }
-    let text = String::from_utf8(bytes).map_err(|_| invalid_prompt_text())?;
-    let trimmed = text.trim_matches(TRIMMED);
-    if trimmed.is_empty() {
-        return Err(missing());
-    }
-    Ok(trimmed.to_owned())
-}
-
-async fn ask(options: &AskOptions, prompt: &str) -> ExitCode {
+async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
     let cancel = CancellationToken::new();
     let received_signal = watch_signals(cancel.clone());
-    let (mut agent, model) = match prepare_agent(options) {
+    let (mut agent, model) = match prepare_agent(args) {
         Ok(prepared) => prepared,
-        Err(failure) => return failure.report(options.json),
+        Err(failure) => return failure.report(args.output.json),
     };
-    let mut presenter = Presenter::new(options.json);
+    let mut presenter = Presenter::new(args.output);
     let report = agent
         .run_turn(
             prompt,
@@ -232,7 +202,7 @@ async fn ask(options: &AskOptions, prompt: &str) -> ExitCode {
     }
 }
 
-fn prepare_agent(options: &AskOptions) -> Result<(Agent, String), Failure> {
+fn prepare_agent(args: &AskArgs) -> Result<(Agent, String), Failure> {
     let workspace_root = workspace_root()?;
     let settings = match ProfilePaths::from_environment() {
         Some(paths) => Settings::load(&paths, &workspace_root)
@@ -242,10 +212,13 @@ fn prepare_agent(options: &AskOptions) -> Result<(Agent, String), Failure> {
     if settings.profile_is_unusable() {
         return Err(Failure::code("InvalidProfileConfiguration"));
     }
-    let permission_mode = settings.permission_mode();
+    let permission_mode = args
+        .permissions
+        .mode
+        .unwrap_or_else(|| settings.permission_mode());
     let mut stderr = io::stderr().lock();
     if permission_mode == PermissionMode::Yolo && !settings.yolo_acknowledged() {
-        let warning = if stderr.is_terminal() {
+        let warning = if !args.output.no_color && stderr.is_terminal() {
             format!("\x1b[38;5;252m{YOLO_WARNING}\x1b[0m")
         } else {
             YOLO_WARNING.to_owned()
@@ -258,12 +231,21 @@ fn prepare_agent(options: &AskOptions) -> Result<(Agent, String), Failure> {
     drop(stderr);
     let lookup = |name: &str| env::var(name).ok();
     let connection = settings.selected_connection(&lookup)?;
-    let model = settings.selected_model(connection, options.model.as_deref(), &lookup)?;
+    let model = match args.model.as_deref() {
+        Some(requested) if requested.to_str().is_none() => Err(requested.as_bytes().to_vec()),
+        requested => {
+            Ok(settings.selected_model(connection, requested.and_then(OsStr::to_str), &lookup)?)
+        }
+    };
     let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
     let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
         .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
+    let model = model.map_err(Failure::invalid_model)?;
     let config = AgentConfig {
-        system_prompt: GATEWAY_SYSTEM_PROMPT.to_owned(),
+        system_prompt: args
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
         max_output_tokens: request_output_tokens(connection.capabilities(&model)),
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
@@ -300,10 +282,17 @@ fn watch_signals(cancel: CancellationToken) -> Arc<AtomicI32> {
 }
 
 fn write_error_name(error: &io::Error) -> &'static str {
-    if error.kind() == io::ErrorKind::BrokenPipe {
-        "BrokenPipe"
-    } else {
-        "WriteFailed"
+    match Errno::from_io_error(error) {
+        Some(Errno::PIPE) => "BrokenPipe",
+        Some(Errno::NOSPC) => "NoSpaceLeft",
+        Some(Errno::BADF) => "NotOpenForWriting",
+        Some(Errno::DQUOT) => "DiskQuota",
+        Some(Errno::FBIG) => "FileTooBig",
+        Some(Errno::IO) => "InputOutput",
+        Some(Errno::PERM) => "PermissionDenied",
+        Some(Errno::AGAIN) => "WouldBlock",
+        Some(Errno::BUSY) => "DeviceBusy",
+        _ => "Unexpected",
     }
 }
 
@@ -418,12 +407,23 @@ impl RecoveryRecord {
     }
 }
 
+struct JsonText<'a>(&'a [u8]);
+
+impl Serialize for JsonText<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match std::str::from_utf8(self.0) {
+            Ok(text) => serializer.serialize_str(text),
+            Err(_) => serializer.serialize_bytes(self.0),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct RunResult<'a> {
     output: &'a str,
     final_output: &'a str,
     exit_code: u8,
-    model: &'a str,
+    model: JsonText<'a>,
     resolved_provider: Option<&'a str>,
     session_id: &'a str,
     steps: u64,
@@ -443,7 +443,7 @@ impl<'a> RunResult<'a> {
             output: "",
             final_output: "",
             exit_code: 1,
-            model: "",
+            model: JsonText(b""),
             resolved_provider: None,
             session_id: "",
             steps: 0,
@@ -466,6 +466,7 @@ fn usage_record(usage: Usage) -> UsageRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputMode {
     Json,
+    Quiet,
     Raw,
     Terminal,
 }
@@ -488,9 +489,11 @@ struct FailureSummary {
 }
 
 impl Presenter {
-    fn new(json: bool) -> Self {
-        let mode = if json {
+    fn new(output: AskOutput) -> Self {
+        let mode = if output.json {
             OutputMode::Json
+        } else if output.quiet {
+            OutputMode::Quiet
         } else if io::stdout().is_terminal() {
             OutputMode::Terminal
         } else {
@@ -514,9 +517,10 @@ impl Presenter {
             UiEvent::AssistantText { text, .. } => self.push_assistant(&text),
             UiEvent::Operational { text, .. } => write_stderr(&text),
             UiEvent::Recovery { status, .. } => {
-                let line = format!("[notice] {}\n", status.label());
+                let notice = (self.mode != OutputMode::Quiet)
+                    .then(|| format!("[notice] {}\n", status.label()));
                 self.recovery = Some(status);
-                write_stderr(&line)
+                notice.map_or(Ok(()), |line| write_stderr(&line))
             }
             UiEvent::ToolStarted { .. } => {
                 self.start_step();
@@ -555,7 +559,7 @@ impl Presenter {
     }
 
     fn push_assistant(&mut self, text: &str) -> io::Result<()> {
-        if text.is_empty() {
+        if text.is_empty() || self.mode == OutputMode::Quiet {
             return Ok(());
         }
         if self.boundary_pending && self.has_output {
@@ -684,7 +688,7 @@ impl Presenter {
             output: &self.output,
             final_output,
             exit_code: u8::from(!completed),
-            model,
+            model: JsonText(model.as_bytes()),
             resolved_provider: None,
             session_id: "",
             steps: self.steps,
@@ -767,7 +771,10 @@ mod tests {
 
     #[test]
     fn raw_output_separates_text_around_tool_steps_and_counts_rejections() {
-        let mut presenter = Presenter::new(true);
+        let mut presenter = Presenter::new(AskOutput {
+            json: true,
+            ..AskOutput::default()
+        });
         presenter.push_assistant("Looking.").unwrap();
         assert!(presenter.handle(UiEvent::ToolStarted {
             turn_id: TurnId::new(1),

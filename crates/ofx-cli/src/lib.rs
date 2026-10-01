@@ -1,8 +1,10 @@
+mod cli_ask;
 mod cli_replay;
 mod cli_surface;
 mod command_specs;
 mod commands;
 
+pub use cli_ask::{AskArgs, AskError, AskOutput, read_stdin_prompt};
 pub use cli_surface::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,
     command_failure_json, parse_args,

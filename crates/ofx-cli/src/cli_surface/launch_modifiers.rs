@@ -105,7 +105,7 @@ impl LaunchModifiers {
                 return Err(GlobalLaunchError::InvalidProviderValue);
             }
             self.model_overrides = true;
-        } else if model_overrides.take(args, joined)? {
+        } else if model_overrides.take(args, joined)?.is_some() {
             self.model_overrides = true;
         } else {
             return Ok(false);

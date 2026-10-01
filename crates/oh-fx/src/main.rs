@@ -1,5 +1,4 @@
 mod auto_upgrade;
-mod cli;
 mod cli_ask;
 mod context;
 mod help;
@@ -42,6 +41,7 @@ fn main() -> ExitCode {
     }
     match parsed {
         Ok(invocation) => run(invocation),
+        Err(CliError::Ask(error)) => cli_ask::report_argument_error(error),
         Err(error) => report_error(&error),
     }
 }
@@ -75,7 +75,7 @@ fn run(invocation: Invocation) -> ExitCode {
         Invocation::Resume => unavailable("resume"),
         Invocation::Interactive => unavailable("interactive mode"),
         Invocation::Command(CommandLaunch { modifiers, command }) => match command {
-            Command::Ask(args) => cli_ask::run(&cli::AskArguments::new(args), &modifiers),
+            Command::Ask(args) => cli_ask::run(&args, &modifiers),
             Command::Upgrade(format) => upgrade_command::run(matches!(format, OutputFormat::Json)),
             other => unavailable_command(&other),
         },
