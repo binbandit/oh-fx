@@ -40,7 +40,10 @@ pub enum UiEvent {
         turn_id: TurnId,
         call_id: ToolCallId,
         tool_name: String,
+        arguments: String,
         status: ToolResultStatus,
+        content: String,
+        command_result: Option<String>,
     },
     ToolRejected {
         turn_id: TurnId,
