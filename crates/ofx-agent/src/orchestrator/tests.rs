@@ -242,6 +242,16 @@ impl Tool for EchoTool {
             meeting: Arc::clone(&self.meeting),
         }))
     }
+
+    fn history_arguments(&self, arguments: &str) -> Option<String> {
+        assert!(
+            !arguments.contains("history_panic"),
+            "history arguments panicked"
+        );
+        arguments
+            .contains("in_history")
+            .then(|| format!("history {arguments}"))
+    }
 }
 
 impl PreparedCall for EchoCall {
@@ -780,6 +790,57 @@ async fn modern_mixed_batch_materializes_unsupported_terminal_before_admission()
                 status: ToolResultStatus::Failure,
             },
         ]
+    );
+}
+
+#[tokio::test]
+async fn calls_enter_the_history_in_their_tools_history_form_and_run_as_sent() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"in_history":true}"#),
+            ("call-2", r#"{"in_history":true,"history_panic":true}"#),
+            ("call-3", r#"{"text":"plain"}"#),
+        ]),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let finished: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolFinished { arguments, .. } => Some(arguments.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        finished,
+        [
+            r#"{"in_history":true}"#,
+            r#"{"in_history":true,"history_panic":true}"#,
+            r#"{"text":"plain"}"#
+        ]
+    );
+    let messages = &provider.requests()[1].messages;
+    assert_eq!(
+        messages[1],
+        ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![
+                echo_call("call-1", r#"history {"in_history":true}"#),
+                echo_call("call-2", r#"{"in_history":true,"history_panic":true}"#),
+                echo_call("call-3", r#"{"text":"plain"}"#),
+            ],
+            provider_replay: None,
+        }
+    );
+    assert_eq!(
+        messages[2],
+        tool_message(
+            "call-1",
+            r#"echo {"in_history":true}"#,
+            ToolResultStatus::Success
+        )
     );
 }
 
