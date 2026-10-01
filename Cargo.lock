@@ -829,6 +829,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-mcp"
+version = "0.1.0"
+dependencies = [
+ "ofx-config",
+ "rustix",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "ofx-permissions"
 version = "0.1.0"
 dependencies = [
