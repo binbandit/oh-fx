@@ -12,11 +12,11 @@ mod types;
 mod ui;
 
 pub use applicable_target::{ApplicableTarget, TargetKind};
-pub use ids::{ToolCallId, TurnId};
+pub use ids::{RequestId, ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use permission_gate::{
-    Admission, CommandRequest, FileMutation, FileMutationState, GatedAction, PathAccess,
-    PermissionGate,
+    Admission, ApprovalDecision, CommandRequest, FileMutation, FileMutationState, GatedAction,
+    PathAccess, PermissionGate,
 };
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
@@ -31,7 +31,7 @@ pub use tool_presentation::{format_plain_action, format_unknown_action};
 pub use tool_result_errors::{
     ExecutionFailure, filesystem_access_denied_json, format_tool_execution_error_json,
     malformed_tool_arguments_json, non_object_tool_arguments_json, review_unavailable_json,
-    tool_execution_failure_json,
+    tool_execution_failure_json, tool_permission_denied_json,
 };
 pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 pub use types::{
@@ -41,4 +41,6 @@ pub use types::{
     ToolCall, ToolChoice, ToolResultStatus, Usage, is_valid_reasoning_effort,
     valid_credential_account_id,
 };
-pub use ui::{Notice, NoticeLink, NoticeTone, ToolRejection, TurnOutcome, UiCommand, UiEvent};
+pub use ui::{
+    ApprovalRequest, Notice, NoticeLink, NoticeTone, ToolRejection, TurnOutcome, UiCommand, UiEvent,
+};

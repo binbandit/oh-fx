@@ -92,16 +92,19 @@ fn path_grants(workspace_root: &Path, permission: &str, target: &Path) -> Vec<Gr
             })
             .collect();
     }
-    let root = if target.is_dir() {
-        target
+    external_grant_root(target)
+        .map(|root| Grant {
+            permission: permission.to_owned(),
+            scope: Scope::Tree(root.to_path_buf()),
+        })
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn external_grant_root(target: &Path) -> Option<&Path> {
+    if target.is_dir() {
+        Some(target)
     } else {
-        match target.parent() {
-            Some(parent) => parent,
-            None => return Vec::new(),
-        }
-    };
-    vec![Grant {
-        permission: permission.to_owned(),
-        scope: Scope::Tree(root.to_path_buf()),
-    }]
+        target.parent()
+    }
 }

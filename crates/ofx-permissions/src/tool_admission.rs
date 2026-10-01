@@ -9,7 +9,9 @@ use ofx_workspace::path_inside;
 
 use crate::command_admission::{command_admission, undescribed_shell_call_admission};
 use crate::permissions::{applicable_target, external_path_target};
-use crate::session_permission_state::{EDIT_PERMISSION, SessionGrants, permission_name};
+use crate::session_permission_state::{
+    EDIT_PERMISSION, SessionGrants, external_grant_root, permission_name,
+};
 
 const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
     &[".git"],
@@ -88,6 +90,20 @@ impl PermissionGate for PermissionPolicy {
 
     fn remember_approval(&self, action: GatedAction<'_>) {
         self.session_grants.remember(&self.workspace_root, action);
+    }
+
+    fn approved_access(&self, action: GatedAction<'_>) -> PathAccess {
+        let GatedAction::Call(call) = action else {
+            return PathAccess::WorkspaceOrExternal;
+        };
+        match external_path_target(&self.workspace_root, call) {
+            Some(target) if !path_inside(&self.workspace_root, &target) => {
+                external_grant_root(&target).map_or(PathAccess::WorkspaceOnly, |root| {
+                    PathAccess::Within(root.to_path_buf())
+                })
+            }
+            _ => PathAccess::WorkspaceOrExternal,
+        }
     }
 
     fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget> {
@@ -475,6 +491,36 @@ mod tests {
         assert_eq!(
             policy.admit_command(&CommandRequest::Stop),
             Admission::ApprovalRequired
+        );
+    }
+
+    #[test]
+    fn approved_calls_run_confined_to_the_tree_their_approval_covers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(root.join("notes/deep")).unwrap();
+        fs::write(root.join("notes/a.txt"), "text\n").unwrap();
+        let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        let approved = |path: &str| policy.approved_access(GatedAction::Call(&read(path)));
+        let within = |tree: &str| PathAccess::Within(root.join(tree));
+        assert_eq!(approved("../notes/a.txt"), within("notes"));
+        assert_eq!(approved("../notes/deep"), within("notes/deep"));
+        assert_eq!(
+            policy.approved_access(GatedAction::FileMutation(&mutation(
+                "/elsewhere/notes/a.txt",
+                FileMutationState::Changes
+            ))),
+            PathAccess::WorkspaceOrExternal
+        );
+        assert_eq!(
+            policy.approved_access(GatedAction::Command(&CommandRequest::Run {
+                command: "cargo test".to_owned(),
+                cwd: workspace.clone(),
+                terminal: false,
+            })),
+            PathAccess::WorkspaceOrExternal
         );
     }
 

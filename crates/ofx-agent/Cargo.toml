@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 ofx-contract.workspace = true
 ofx-text.workspace = true
-tokio = { workspace = true, features = ["macros", "time"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

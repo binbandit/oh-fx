@@ -60,6 +60,13 @@ pub enum GatedAction<'a> {
     Command(&'a CommandRequest),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ApprovalDecision {
+    Once,
+    Always,
+    Deny,
+}
+
 pub trait PermissionGate: Send + Sync {
     fn admit(&self, call: &ToolCall) -> Admission;
 
@@ -74,4 +81,8 @@ pub trait PermissionGate: Send + Sync {
     }
 
     fn remember_approval(&self, _action: GatedAction<'_>) {}
+
+    fn approved_access(&self, _action: GatedAction<'_>) -> PathAccess {
+        PathAccess::WorkspaceOrExternal
+    }
 }
