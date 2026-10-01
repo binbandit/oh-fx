@@ -9,41 +9,39 @@
   [39moh-fx <command> [...flags] [...args][0m
 
 [1mCommands:[0m
-  [39mask <prompt>[0m                    Run one noninteractive request
+  [39mask <prompt>[0m                   Run one noninteractive request
 
-  [39mpr [context][0m                    Draft or publish a pull request
-  [39missue [context][0m                 Draft or publish a GitHub issue
+  [39mpr [context][0m                   Draft or publish a pull request
+  [39missue [context][0m                Draft or publish a GitHub issue
 
-  [39msessions[0m                        List saved sessions for the current workspace
-  [39msession <last|id>[0m               Inspect, resume, migrate, or recover saved
-                                  sessions
-  [39msession resume [last|id][0m        Resume the latest workspace session or a
-                                  session by id
-  [39msession migrate <id>[0m            Migrate a saved session to the current format
-  [39msession recover <id>[0m            Copy a recoverable corrupt session
+  [39msessions[0m                       List saved sessions for the current workspace
+  [39msession <last|id>[0m              Inspect, resume, migrate, or recover saved
+                                 sessions
+  [39msession resume [last|id][0m       Resume the latest workspace session or a
+                                 session by id
+  [39msession migrate <id>[0m           Migrate a saved session to the current format
+  [39msession recover <id>[0m           Copy a recoverable corrupt session
 
-  [39mlogin [vercel|codex|grok][0m       Sign in to a model provider
-  [39mlogout [vercel|codex|grok][0m      Sign out of a model provider
-  [39mprovider <name>[0m                 Choose the active model provider
-  [39mmodels[0m                          List available models
+  [39mlogin [vercel|codex|grok][0m      Sign in to a model provider
+  [39mlogout [vercel|codex|grok][0m     Sign out of a model provider
+  [39mprovider <name>[0m                Choose the active model provider
+  [39mmodels[0m                         List available models
 
-  [39msetup[0m                           Configure a Vercel AI Gateway API key
-  [39mteams[0m                           Choose a Vercel AI Gateway team
-  [39mcredits|balance[0m                 Show Vercel AI Gateway credits
+  [39msetup[0m                          Configure a Vercel AI Gateway API key
+  [39mteams[0m                          Choose a Vercel AI Gateway team
+  [39mcredits|balance[0m                Show Vercel AI Gateway credits
 
-  [39musage [--period <24h|7d|30d>][0m   Show locally recorded token usage and spend
+  [39musage [--period <24h|7d|30d>][0m  Show locally recorded token usage and spend
 
-  [39mstatus[0m                          Show configuration and runtime information
-  [39mdoctor[0m                          Run local health and preflight checks
-  [39mmcp <command> ...[0m               Manage MCP servers without opening the
-                                  interactive shell
-  [39mslack <install|status|refresh>[0m  Install and manage the workspace Slack bot
-                                  locally
-  [39mpermissions[0m                     Show the permission mode and rules
-  [39mworkspace[0m                       Manage additional workspace directories
-  [39mupgrade[0m                         Upgrade oh-fx to the latest release
-  [39macp[0m                             Start an ACP server over stdio
-  [39mhelp[0m                            Show this help
+  [39mstatus[0m                         Show configuration and runtime information
+  [39mdoctor[0m                         Run local health and preflight checks
+  [39mmcp <command> ...[0m              Manage MCP servers without opening the
+                                 interactive shell
+  [39mpermissions[0m                    Show the permission mode and rules
+  [39mworkspace[0m                      Manage additional workspace directories
+  [39mupgrade[0m                        Upgrade oh-fx to the latest release
+  [39macp[0m                            Start an ACP server over stdio
+  [39mhelp[0m                           Show this help
 
 [1mFlags:[0m
   [39m--context-limit <spec>[0m  Set name=bytes|off; repeatable

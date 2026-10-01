@@ -152,7 +152,6 @@ fn ignores_sigpipe(kind: TopLevelKind) -> bool {
             | TopLevelKind::Teams
             | TopLevelKind::Credits
             | TopLevelKind::Upgrade
-            | TopLevelKind::Slack
     )
 }
 
