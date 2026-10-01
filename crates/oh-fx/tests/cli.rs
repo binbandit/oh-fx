@@ -150,11 +150,14 @@ fn unknown_commands_print_the_plain_help_on_stderr() {
 #[test]
 fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
     for (args, feature) in [
-        (&[][..], "interactive mode"),
-        (&["--model", "x", "--fast"], "interactive mode"),
-        (&["-c"], "resume"),
-        (&["--resume-abc"], "resume"),
-        (&["session", "resume", "last"], "resume"),
+        (
+            &["--context-limit", "skill_chunk_bytes=1"][..],
+            "--context-limit",
+        ),
+        (&["--add-dir", "/tmp/shared", "-c"], "--add-dir"),
+        (&["--provider", "local"], "--provider"),
+        (&["--sessions-v2"], "--sessions-v2"),
+        (&["--sessions-v2", "resume", "last"], "--sessions-v2"),
         (&["login", "vercel"], "login"),
         (&["replay", "tape"], "replay"),
         (&["status"], "status"),
@@ -168,6 +171,45 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
         assert_eq!(
             stderr(&output),
             format!("oh-fx: {feature} is not available yet\n"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn interactive_launches_that_select_v2_sessions_are_not_available_yet() {
+    for value in ["1", "TRUE"] {
+        let output = oh_fx(&["-c"], &[("OH_FX_SESSIONS_V2", value)]);
+        assert_eq!(output.status.code(), Some(1), "{value}");
+        assert_eq!(
+            stderr(&output),
+            "oh-fx: OH_FX_SESSIONS_V2 is not available yet\n",
+            "{value}"
+        );
+    }
+    let output = oh_fx(&[] as &[&str], &[("OH_FX_SESSIONS_V2", "0")]);
+    assert_eq!(
+        stderr(&output),
+        "oh-fx requires an interactive terminal (TTY).\n"
+    );
+}
+
+#[test]
+fn interactive_and_resume_launches_need_a_terminal() {
+    for args in [
+        &[][..],
+        &["--model", "x", "--fast"],
+        &["-c"],
+        &["-r"],
+        &["--resume-abc"],
+        &["session", "resume", "last"],
+    ] {
+        let output = oh_fx(args, &[]);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            "oh-fx requires an interactive terminal (TTY).\n",
             "{args:?}"
         );
     }

@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, IsTerminal};
 use std::panic::{self, PanicHookInfo};
@@ -9,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use ofx_config::ContextLimitOverride;
+use ofx_cli::LaunchModifiers;
 use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_tui::{ShellOptions, TerminalError, UiEventSender, run_shell, ui_channel};
@@ -34,7 +33,7 @@ struct Session {
     permission_mode: PermissionMode,
 }
 
-pub fn run_interactive(model: Option<&OsStr>, context_limits: &[ContextLimitOverride]) -> ExitCode {
+pub fn run_interactive(modifiers: &LaunchModifiers) -> ExitCode {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         eprintln!("{}", TerminalError::NotATerminal);
         return ExitCode::FAILURE;
@@ -49,7 +48,7 @@ pub fn run_interactive(model: Option<&OsStr>, context_limits: &[ContextLimitOver
             return ExitCode::FAILURE;
         }
     };
-    let session = match runtime.block_on(bootstrap(model, context_limits)) {
+    let session = match runtime.block_on(bootstrap(modifiers)) {
         Ok(session) => session,
         Err(lines) => {
             for line in lines {
@@ -68,10 +67,7 @@ pub fn run_interactive(model: Option<&OsStr>, context_limits: &[ContextLimitOver
     }
 }
 
-async fn bootstrap(
-    model: Option<&OsStr>,
-    context_limits: &[ContextLimitOverride],
-) -> Result<Session, Vec<String>> {
+async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> {
     let profile = Profile::load().map_err(|error| profile_failure_lines(&error))?;
     let supervisor = SessionSupervisor::current_executable()
         .map_err(|_| vec![failure_line(&SELF_EXE_NOT_FOUND)])?;
@@ -81,12 +77,18 @@ async fn bootstrap(
     let setup = profile
         .connect_interactive(
             Launch {
-                model,
+                model: modifiers.model(),
                 permission_mode,
                 system_prompt: None,
-                reasoning_effort: settings.reasoning_effort().into_named(),
-                fast_mode: settings.fast_mode(),
-                context_limits,
+                reasoning_effort: modifiers
+                    .reasoning_effort()
+                    .cloned()
+                    .unwrap_or_else(|| settings.reasoning_effort())
+                    .into_named(),
+                fast_mode: modifiers
+                    .fast_mode()
+                    .unwrap_or_else(|| settings.fast_mode()),
+                context_limits: modifiers.context_limit_overrides(),
                 command_timeout: None,
                 executions: &executions,
                 endpoints: SubscriptionEndpoints::default(),
