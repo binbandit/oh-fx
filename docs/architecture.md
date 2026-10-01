@@ -2,6 +2,11 @@
 
 oh-fx is a behavior-faithful Rust port of [vercel-labs/fx](https://github.com/vercel-labs/fx). Upstream behavior is the specification: tool schemas, prompts, help text, and terminal output match upstream unless this document records a deliberate difference.
 
+## Goals
+
+- **A complete port.** Every upstream feature is ported. A feature is left out only for a concrete reason recorded under deliberate differences, such as the Slack app, which depends on credentials that belong to Vercel. Being hard to port is not a reason.
+- **Upstream's footprint.** oh-fx is as fast, as small, and as frugal as upstream. Its release builds are held to upstream's on binary size, startup time, time to first request, memory use, and rendering cost, and a change that regresses any of them needs a stated reason.
+
 ## Principles
 
 - **Port leaf behavior, not upstream coupling.** Escape parsing, markdown, syntax highlighting, glob matching, git-backed file listing, the frame renderer, and MCP transports are ported from upstream, and their upstream tests become ours. Upstream's large shared structs (`DispatchContext`, `AgentRuntimeDeps`) are replaced by narrow traits and constructor injection.
