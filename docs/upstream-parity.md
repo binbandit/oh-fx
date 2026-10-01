@@ -44,7 +44,7 @@ Port each area from the latest upstream. These notes list what changed in the ra
 
 ### Steering
 
-Upstream lets a prompt typed while a turn runs steer that turn. oh-fx has no interactive shell on `main` yet: `oh-fx` with no arguments still fails as not available. The shell being ported will queue such a prompt and send it as the next turn. Steering, and with it #1092, is ported as its own change, including:
+Upstream lets a prompt typed while a turn runs steer that turn. oh-fx's interactive shell queues such a prompt and sends it as the next turn instead. Steering, and with it #1092, is ported as its own change, including:
 
 - `src/core/agent/runtime/execution_memory.zig` `buildInterruptedExecutionMemory` with `isSteering`;
 - the test "interrupted execution memory keeps steering typed right after a tool result";

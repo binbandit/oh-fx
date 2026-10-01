@@ -240,21 +240,24 @@ pub(crate) fn report_argument_error(error: AskError) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
+pub(crate) fn unsupported_launch_modifier(modifiers: &LaunchModifiers) -> Option<&'static str> {
     let unsupported_limit = modifiers
         .context_limit_overrides()
         .iter()
         .any(|limit| !PROJECT_INSTRUCTION_LIMITS.contains(&limit.name));
-    let launch = [
+    first_requested([
         (unsupported_limit, "--context-limit"),
         (modifiers.adds_directories(), "--add-dir"),
-    ];
+    ])
+}
+
+fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
     let ask = [
         (args.images, "--image"),
         (args.permissions.prompt, "--prompt-permissions"),
         (args.session.continue_recovery, "--continue-recovery"),
     ];
-    if let Some(flag) = first_requested(launch) {
+    if let Some(flag) = unsupported_launch_modifier(modifiers) {
         return Some(flag.to_owned());
     }
     first_requested(ask)
@@ -271,13 +274,17 @@ fn sessions_v2_source(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<&'s
         (modifiers.selects_sessions_v2(), "--sessions-v2"),
         (args.session.sessions_v2, "ask --sessions-v2"),
     ])
-    .or_else(|| {
-        let variable = env::var(SESSIONS_V2_VARIABLE).ok();
-        sessions_v2_variable_is_on(variable.as_deref()).then_some(SESSIONS_V2_VARIABLE)
-    })
+    .or_else(sessions_v2_variable)
 }
 
-fn first_requested<const N: usize>(flags: [(bool, &'static str); N]) -> Option<&'static str> {
+pub(crate) fn sessions_v2_variable() -> Option<&'static str> {
+    let variable = env::var(SESSIONS_V2_VARIABLE).ok();
+    sessions_v2_variable_is_on(variable.as_deref()).then_some(SESSIONS_V2_VARIABLE)
+}
+
+pub(crate) fn first_requested<const N: usize>(
+    flags: [(bool, &'static str); N],
+) -> Option<&'static str> {
     flags
         .into_iter()
         .find_map(|(requested, flag)| requested.then_some(flag))

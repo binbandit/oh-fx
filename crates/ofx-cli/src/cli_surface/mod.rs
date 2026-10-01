@@ -28,8 +28,8 @@ use resume::{
 
 #[derive(Debug)]
 pub enum Invocation {
-    Interactive,
-    Resume,
+    Interactive(LaunchModifiers),
+    Resume(LaunchModifiers),
     TopLevelHelp(HelpLayout),
     CommandHelp(TopLevelKind),
     Version,
@@ -145,7 +145,7 @@ where
     let mut stream = ArgStream::new(args);
     let modifiers = parse_launch_modifiers(&mut stream)?;
     let Some(first) = stream.next() else {
-        return Ok(Invocation::Interactive);
+        return Ok(Invocation::Interactive(modifiers));
     };
     let rest: Vec<OsString> = stream.collect();
     match first.to_str().and_then(TopLevelKind::from_token) {
@@ -155,7 +155,7 @@ where
             Ok(Invocation::CommandHelp(kind))
         }
         Some(kind) => parse_command(kind, &first, rest, modifiers),
-        None => parse_unclassified(first, &rest, &modifiers),
+        None => parse_unclassified(first, &rest, modifiers),
     }
 }
 
@@ -191,23 +191,26 @@ fn launches_session(kind: TopLevelKind, rest: &[OsString]) -> bool {
     }
 }
 
-fn launch_session(request: Result<(), InvalidResumeArgs>) -> Result<Invocation, CliError> {
+fn launch_session(
+    request: Result<(), InvalidResumeArgs>,
+    modifiers: LaunchModifiers,
+) -> Result<Invocation, CliError> {
     request.map_err(|InvalidResumeArgs| CliError::Usage(TopLevelKind::Resume))?;
-    Ok(Invocation::Resume)
+    Ok(Invocation::Resume(modifiers))
 }
 
 fn parse_unclassified(
     first: OsString,
     rest: &[OsString],
-    modifiers: &LaunchModifiers,
+    modifiers: LaunchModifiers,
 ) -> Result<Invocation, CliError> {
     if first
         .as_bytes()
         .starts_with(RESUME_ID_ALIAS_PREFIX.as_bytes())
     {
-        return launch_session(validate_resume_alias(&first, rest));
+        return launch_session(validate_resume_alias(&first, rest), modifiers);
     }
-    check_noninteractive(modifiers, false)?;
+    check_noninteractive(&modifiers, false)?;
     if first != "--version" && first != "-v" {
         return Err(CliError::UnknownSubcommand(first));
     }
@@ -231,11 +234,13 @@ fn parse_command(
     let command = match kind {
         TopLevelKind::Help => return Ok(Invocation::TopLevelHelp(HelpLayout::Plain)),
         TopLevelKind::Resume if first.as_bytes().starts_with(b"-") => {
-            return launch_session(validate_resume_alias(first, &rest));
+            return launch_session(validate_resume_alias(first, &rest), modifiers);
         }
-        TopLevelKind::Resume => return launch_session(validate_resume_subcommand(&rest)),
+        TopLevelKind::Resume => {
+            return launch_session(validate_resume_subcommand(&rest), modifiers);
+        }
         TopLevelKind::Session if session => {
-            return launch_session(validate_resume_subcommand(&rest[1..]));
+            return launch_session(validate_resume_subcommand(&rest[1..]), modifiers);
         }
         TopLevelKind::Mcp if rest.is_empty() => {
             return Ok(Invocation::CommandHelp(kind));
