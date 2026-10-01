@@ -16,6 +16,7 @@ pub struct Skill {
     pub description: String,
     pub path: PathBuf,
     pub source: SkillSource,
+    pub read_authority: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,6 +58,14 @@ pub struct SkillDiagnostic {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootSpec {
+    pub source: SkillSource,
+    pub path: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootPolicy {
+    pub workspace_roots: &'static [RootSpec],
     pub managed_root_source: Option<SkillSource>,
+    pub global_roots: &'static [RootSpec],
 }

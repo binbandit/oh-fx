@@ -1,9 +1,11 @@
 use std::ffi::OsStr;
-use std::fs::File;
+use std::fs::{self, File};
 use std::os::fd::OwnedFd;
+use std::path::Path;
 
 use ofx_workspace::{
-    FileIdentity, FileKind, PathError, RegularFileError, entry_identity, open_regular_file_at,
+    FileIdentity, FileKind, PathError, RegularFileError, entry_identity, open_directory,
+    open_regular_file_at, path_inside,
 };
 
 use crate::skill_contract::{
@@ -12,6 +14,33 @@ use crate::skill_contract::{
 };
 
 pub(crate) const SKILL_FILE_NAME: &str = "SKILL.md";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectoryOpenError {
+    Path(PathError),
+    OutsideReadAuthority,
+}
+
+impl DirectoryOpenError {
+    pub(crate) fn is_missing(self) -> bool {
+        matches!(
+            self,
+            Self::Path(PathError::FileNotFound | PathError::NotDir)
+        )
+    }
+}
+
+pub(crate) fn open_contained_directory(
+    logical_path: &Path,
+    read_authority: &Path,
+) -> Result<OwnedFd, DirectoryOpenError> {
+    let canonical = fs::canonicalize(logical_path)
+        .map_err(|error| DirectoryOpenError::Path(PathError::from(error)))?;
+    if !path_inside(read_authority, &canonical) {
+        return Err(DirectoryOpenError::OutsideReadAuthority);
+    }
+    open_directory(&canonical).map_err(DirectoryOpenError::Path)
+}
 
 pub(crate) enum PrimarySkillFile {
     Opened(File),

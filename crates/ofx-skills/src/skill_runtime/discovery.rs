@@ -7,15 +7,18 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use ofx_workspace::{
-    FileIdentity, FileKind, PathError, entry_identity, open_child_directory, open_directory,
+    FileIdentity, FileKind, PathError, dirname, entry_identity, open_child_directory,
+    open_directory,
 };
 use rustix::fs::{CWD, Dir, FileType, Mode, OFlags, openat};
 
 use super::skill_file::{
-    Inspection, PrimarySkillFile, inspect_skill_file, open_primary_skill_file,
+    DirectoryOpenError, Inspection, PrimarySkillFile, inspect_skill_file, open_contained_directory,
+    open_primary_skill_file,
 };
 use crate::skill_contract::{
-    RootPolicy, Skill, SkillDiagnostic, SkillDiagnosticCause, SkillDiagnosticScope, SkillSource,
+    RootPolicy, RootSpec, Skill, SkillDiagnostic, SkillDiagnosticCause, SkillDiagnosticScope,
+    SkillSource,
 };
 
 const LISTING_FLAGS: OFlags = OFlags::RDONLY
@@ -24,6 +27,8 @@ const LISTING_FLAGS: OFlags = OFlags::RDONLY
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDiscoveryContext {
+    pub workspace_root: Option<PathBuf>,
+    pub home: Option<PathBuf>,
     pub managed_root: PathBuf,
 }
 
@@ -36,19 +41,78 @@ pub struct SkillDiscovery {
 struct SkillRoot {
     path: PathBuf,
     source: SkillSource,
+    read_authority: Option<PathBuf>,
 }
 
 impl SkillDiscoveryContext {
     pub fn load_visible_skills(&self, policy: &RootPolicy) -> SkillDiscovery {
         let mut scan = DiscoveryScan::default();
-        if let Some(source) = policy.managed_root_source {
-            scan.append_root(&SkillRoot {
-                path: self.managed_root.clone(),
-                source,
-            });
+        for root in self.roots(policy) {
+            scan.append_root(&root);
         }
         scan.discovery
     }
+
+    fn roots(&self, policy: &RootPolicy) -> Vec<SkillRoot> {
+        let mut roots = Vec::new();
+        if let Some(workspace_root) = &self.workspace_root {
+            self.append_workspace_roots(&mut roots, workspace_root, policy.workspace_roots);
+        }
+        if let Some(source) = policy.managed_root_source {
+            push_root(&mut roots, self.managed_root.clone(), source, None);
+        }
+        if let Some(home) = &self.home {
+            for spec in policy.global_roots {
+                push_spec_root(&mut roots, home, spec);
+            }
+        }
+        roots
+    }
+
+    fn append_workspace_roots(
+        &self,
+        roots: &mut Vec<SkillRoot>,
+        workspace_root: &Path,
+        specs: &[RootSpec],
+    ) {
+        let home = self.home.as_deref().map(Path::as_os_str);
+        let mut current = Some(workspace_root.as_os_str().as_bytes());
+        while let Some(directory) = current {
+            let directory = OsStr::from_bytes(directory);
+            if home == Some(directory) {
+                break;
+            }
+            for spec in specs {
+                push_spec_root(roots, Path::new(directory), spec);
+            }
+            current = dirname(directory.as_bytes());
+        }
+    }
+}
+
+fn push_spec_root(roots: &mut Vec<SkillRoot>, base: &Path, spec: &RootSpec) {
+    push_root(
+        roots,
+        base.join(spec.path),
+        spec.source,
+        Some(base.to_path_buf()),
+    );
+}
+
+fn push_root(
+    roots: &mut Vec<SkillRoot>,
+    path: PathBuf,
+    source: SkillSource,
+    read_authority: Option<PathBuf>,
+) {
+    if roots.iter().any(|root| root.path == path) {
+        return;
+    }
+    roots.push(SkillRoot {
+        path,
+        source,
+        read_authority,
+    });
 }
 
 #[derive(Default)]
@@ -83,10 +147,14 @@ impl DiscoveryScan {
     }
 
     fn append_root(&mut self, root: &SkillRoot) {
-        let directory = match open_directory(&root.path) {
+        let opened = match &root.read_authority {
+            Some(authority) => open_contained_directory(&root.path, authority),
+            None => open_directory(&root.path).map_err(DirectoryOpenError::Path),
+        };
+        let directory = match opened {
             Ok(directory) => directory,
             Err(error) => {
-                if !(is_missing(error) && root_path_is_missing(&root.path)) {
+                if !(error.is_missing() && root_path_is_missing(&root.path)) {
                     self.diagnose_unreadable_root(root);
                 }
                 return;
@@ -129,6 +197,7 @@ impl DiscoveryScan {
                     description: metadata.description,
                     path,
                     source: root.source,
+                    read_authority: root.read_authority.clone(),
                 });
                 return;
             }
@@ -149,10 +218,6 @@ impl DiscoveryScan {
             Err(_) => true,
         }
     }
-}
-
-fn is_missing(error: PathError) -> bool {
-    matches!(error, PathError::FileNotFound | PathError::NotDir)
 }
 
 fn candidate_names(directory: &OwnedFd) -> io::Result<Vec<Vec<u8>>> {
