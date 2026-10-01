@@ -96,10 +96,13 @@ pub(crate) async fn list_models(
                 &failure_message(failure),
                 failure.error_name(),
             );
-            let _ = stdout
+            return match stdout
                 .write_all(line.as_bytes())
-                .and_then(|()| stdout.flush());
-            return Listing::Failed;
+                .and_then(|()| stdout.flush())
+            {
+                Ok(()) => Listing::Failed,
+                Err(_) => fatal(stderr, "WriteFailed"),
+            };
         }
     };
     match written.and_then(|()| stdout.flush()) {

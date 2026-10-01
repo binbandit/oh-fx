@@ -22,6 +22,18 @@ async fn list(profile: &Profile, format: OutputFormat, host_managed: bool) -> Li
     }
 }
 
+struct Unwritable;
+
+impl Write for Unwritable {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::Error::from(io::ErrorKind::StorageFull))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 fn signed_in_with_codex() -> Fixture {
     let fixture = Fixture::new();
     fixture.signed_in();
@@ -135,6 +147,26 @@ async fn without_a_codex_login_the_catalog_is_rejected_without_a_request() {
         text.stderr,
         "oh-fx models: could not list models: AuthenticationRejected\n"
     );
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_json_failure_that_cannot_be_written_is_reported_on_stderr() {
+    let fixture = Fixture::new();
+    fixture.write_settings(CODEX_SETTINGS);
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([]);
+    let mut stderr = Vec::new();
+    let listing = list_models(
+        &fixture.profile(&auth, &server),
+        OutputFormat::Json,
+        false,
+        &mut Unwritable,
+        &mut stderr,
+    )
+    .await;
+    assert_eq!(listing, Listing::Failed);
+    assert_eq!(String::from_utf8(stderr).unwrap(), "oh-fx: WriteFailed\n");
     assert!(server.requests().is_empty());
 }
 
