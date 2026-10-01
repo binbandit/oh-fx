@@ -272,21 +272,24 @@ fn ansi_sequence_end(text: &str, index: usize) -> usize {
             .iter()
             .position(|byte| (b'@'..=b'~').contains(byte))
             .map_or(bytes.len(), |offset| index + 2 + offset + 1),
-        b']' => {
-            let mut cursor = index + 2;
-            while cursor < bytes.len() {
-                if bytes[cursor] == 0x07 {
-                    return cursor + 1;
-                }
-                if bytes[cursor] == 0x1b && bytes.get(cursor + 1) == Some(&b'\\') {
-                    return cursor + 2;
-                }
-                cursor += 1;
-            }
-            bytes.len()
-        }
+        b']' => control_string_end(bytes, index + 2, true),
+        b'P' | b'X' | b'^' | b'_' => control_string_end(bytes, index + 2, false),
         _ => text.ceil_char_boundary(index + 2),
     }
+}
+
+fn control_string_end(bytes: &[u8], start: usize, bell_terminates: bool) -> usize {
+    let mut cursor = start;
+    while cursor < bytes.len() {
+        if bell_terminates && bytes[cursor] == 0x07 {
+            return cursor + 1;
+        }
+        if bytes[cursor] == 0x1b && bytes.get(cursor + 1) == Some(&b'\\') {
+            return cursor + 2;
+        }
+        cursor += 1;
+    }
+    bytes.len()
 }
 
 pub fn status_prefix_end(label: &str) -> usize {
@@ -536,6 +539,29 @@ mod tests {
         assert_eq!(ansi_sequence_end("\x1b]8;;url", 0), 8);
         assert_eq!(ansi_sequence_end("\x1bA", 0), 2);
         assert_eq!(ansi_sequence_end("\x1b", 0), 1);
+    }
+
+    #[test]
+    fn ansi_sequence_end_consumes_device_and_application_strings_through_their_terminator() {
+        assert_eq!(ansi_sequence_end("\x1bPq#0\x1b\\x", 0), 7);
+        assert_eq!(ansi_sequence_end("\x1bXsos\x1b\\x", 0), 7);
+        assert_eq!(ansi_sequence_end("\x1b^pm\x1b\\x", 0), 6);
+        assert_eq!(ansi_sequence_end("\x1b_Ga=T\x1b\\x", 0), 8);
+        assert_eq!(ansi_sequence_end("\x1b_Ga\x07=T\x1b\\x", 0), 9);
+        assert_eq!(ansi_sequence_end("\x1b_Gpayload", 0), 10);
+    }
+
+    #[test]
+    fn width_cuts_keep_application_strings_whole() {
+        let text = "\x1b_Gpayload\x1b\\text";
+        assert_eq!(
+            prefix_by_width_ignoring_ansi(text, 2),
+            "\x1b_Gpayload\x1b\\te"
+        );
+        assert_eq!(visible_width_ignoring_ansi(text), 4);
+        assert_eq!(wrap_cut_ignoring_ansi(text, 2), "\x1b_Gpayload\x1b\\te");
+        let text = "\x1bPq#0;2;0;0;0\x1b\\ab cd";
+        assert_eq!(wrap_cut_ignoring_ansi(text, 4), "\x1bPq#0;2;0;0;0\x1b\\ab");
     }
 
     #[test]
