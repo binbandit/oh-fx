@@ -1,0 +1,9 @@
+oh-fx status
+
+Show configuration and runtime information
+
+Usage:
+  oh-fx status [--json]
+
+Options:
+  --json  Emit machine-readable JSON instead of text

@@ -1,0 +1,12 @@
+oh-fx resume
+
+Continue a saved interactive session
+
+Usage:
+  oh-fx session resume [last|<id>] | session resume --id <id> | --resume [last|<id>] | resume [last|<id>] | resume --id <id> | --resume-last | --continue | -c | -r | --resume-<id>
+
+Options:
+  -r         Choose the session to resume from a picker
+  last       Resume the most recent session
+  <id>       Resume a session by id
+  --id <id>  Resume a session by exact id

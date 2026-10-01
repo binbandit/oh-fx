@@ -1,0 +1,12 @@
+oh-fx replay
+
+Replay a recorded terminal session
+
+Usage:
+  oh-fx replay <tape> [--frames] [--json] [--golden <path>] [--frames-dir <path>]
+
+Options:
+  --frames             Render each captured frame
+  --golden <path>      Write the final rendered grid to a file
+  --frames-dir <path>  Write rendered frames to a directory
+  --json               Emit machine-readable JSON instead of text

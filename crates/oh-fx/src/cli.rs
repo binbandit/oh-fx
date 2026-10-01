@@ -1,57 +1,8 @@
 use std::ffi::OsString;
 
-use lexopt::Arg::{Long, Short, Value};
-
-pub(crate) const HELP: &str = "oh-fx
-
-Usage:
-  oh-fx ask [--model <id>] [--json] <prompt>  Run one noninteractive request
-  oh-fx upgrade [--json]                      Upgrade oh-fx to the latest release
-  oh-fx --version                             Print the version
-  oh-fx help                                  Show this help
-";
-
 pub(crate) const ASK_USAGE: &str = "usage: oh-fx ask [--model <id>] [--json] [--] <prompt>";
 
-pub(crate) const ASK_HELP: &str = "oh-fx ask
-
-Run one noninteractive request
-
-Usage:
-  oh-fx ask [--model <id>] [--json] [--] <prompt>
-
-Options:
-  --model <id>  Override the model for this request
-  --json        Emit machine-readable JSON instead of text
-  --            Treat every following argument as prompt text
-
-The prompt may be passed as arguments or piped on stdin when no prompt args are given.
-Operational progress and diagnostics are written to stderr. JSON `output` keeps accumulated assistant Markdown; `final_output` contains only the completed final response, or an empty string when absent.
-JSON usage sums reported main-agent input_tokens and output_tokens; unreported counts are null.
-";
-
-pub(crate) const UPGRADE_HELP: &str = "oh-fx upgrade
-
-Upgrade oh-fx to the latest release
-
-Usage:
-  oh-fx upgrade [--json]
-
-Options:
-  --json  Emit machine-readable JSON instead of text
-";
-
 const UPGRADE_USAGE: &str = "usage: oh-fx upgrade [--json]";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Command {
-    Help,
-    Version,
-    Upgrade(UpgradeOptions),
-    UpgradeHelp,
-    Ask(AskArguments),
-    AskHelp,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AskArguments(Vec<OsString>);
@@ -69,55 +20,19 @@ pub(crate) enum AskArgsError {
     InvalidPromptText,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UpgradeOptions {
-    pub(crate) json: bool,
-    pub(crate) background: bool,
-}
-
-pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
-    let args: Vec<OsString> = args.into_iter().collect();
-    if let Some((first, rest)) = args.split_first()
-        && first == "ask"
-    {
-        return Ok(parse_ask(rest));
+pub(crate) fn upgrade_json(args: &[OsString]) -> Result<bool, &'static str> {
+    match args {
+        [] => Ok(false),
+        [flag] if flag == "--json" => Ok(true),
+        _ => Err(UPGRADE_USAGE),
     }
-    let mut parser = lexopt::Parser::from_args(args);
-    let first = parser.next().map_err(|error| format!("oh-fx: {error}"))?;
-    let command = match first {
-        None | Some(Long("help") | Short('h')) => Command::Help,
-        Some(Long("version") | Short('v')) => Command::Version,
-        Some(Value(command)) if command == "help" => Command::Help,
-        Some(Value(command)) if command == "upgrade" => return parse_upgrade(&mut parser),
-        Some(other) => return Err(format!("oh-fx: {}", other.unexpected())),
-    };
-    match parser.next().map_err(|error| format!("oh-fx: {error}"))? {
-        None => Ok(command),
-        Some(extra) => Err(format!("oh-fx: {}", extra.unexpected())),
-    }
-}
-
-fn parse_upgrade(parser: &mut lexopt::Parser) -> Result<Command, String> {
-    let mut options = UpgradeOptions::default();
-    while let Some(arg) = parser.next().map_err(|_| UPGRADE_USAGE.to_owned())? {
-        match arg {
-            Long("help") | Short('h') => return Ok(Command::UpgradeHelp),
-            Long("json") if !options.json => options.json = true,
-            Long("background") if !options.background => options.background = true,
-            _ => return Err(UPGRADE_USAGE.to_owned()),
-        }
-    }
-    Ok(Command::Upgrade(options))
-}
-
-fn parse_ask(args: &[OsString]) -> Command {
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        return Command::AskHelp;
-    }
-    Command::Ask(AskArguments(args.to_vec()))
 }
 
 impl AskArguments {
+    pub(crate) fn new(args: Vec<OsString>) -> Self {
+        Self(args)
+    }
+
     pub(crate) fn requests_json(&self) -> bool {
         self.0
             .iter()
@@ -169,58 +84,25 @@ fn parse_ask_options(args: &[OsString]) -> Result<AskOptions, AskArgsError> {
 mod tests {
     use super::*;
 
-    fn parse_words(words: &[&str]) -> Result<Command, String> {
-        parse(words.iter().map(OsString::from))
+    fn words(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    fn ask_arguments(words_after_ask: &[&str]) -> AskArguments {
+        AskArguments::new(words(words_after_ask))
     }
 
     #[test]
-    fn defaults_to_help() {
-        assert_eq!(parse_words(&[]), Ok(Command::Help));
-        assert_eq!(parse_words(&["help"]), Ok(Command::Help));
-        assert_eq!(parse_words(&["--help"]), Ok(Command::Help));
-    }
-
-    #[test]
-    fn parses_version_flags() {
-        assert_eq!(parse_words(&["--version"]), Ok(Command::Version));
-        assert_eq!(parse_words(&["-v"]), Ok(Command::Version));
-    }
-
-    #[test]
-    fn rejects_trailing_arguments() {
-        assert!(parse_words(&["--version", "junk"]).is_err());
-        assert!(parse_words(&["--version=junk"]).is_err());
-        assert!(parse_words(&["help", "--bogus"]).is_err());
-    }
-
-    #[test]
-    fn parses_upgrade_options_once_each() {
-        assert_eq!(
-            parse_words(&["upgrade", "--json"]),
-            Ok(Command::Upgrade(UpgradeOptions {
-                json: true,
-                background: false
-            }))
-        );
-        assert_eq!(
-            parse_words(&["upgrade", "--json", "--json"]),
-            Err(UPGRADE_USAGE.to_owned())
-        );
-        assert_eq!(
-            parse_words(&["upgrade", "--channel", "dev"]),
-            Err(UPGRADE_USAGE.to_owned())
-        );
-    }
-
-    fn ask_words(words: &[&str]) -> Command {
-        parse_words(&[&["ask"], words].concat()).unwrap()
-    }
-
-    fn ask_arguments(words: &[&str]) -> AskArguments {
-        let Command::Ask(arguments) = ask_words(words) else {
-            panic!("expected an ask command");
-        };
-        arguments
+    fn upgrade_accepts_one_json_flag() {
+        assert_eq!(upgrade_json(&[]), Ok(false));
+        assert_eq!(upgrade_json(&words(&["--json"])), Ok(true));
+        for rejected in [
+            &["--json", "--json"][..],
+            &["--channel", "dev"],
+            &["--background"],
+        ] {
+            assert_eq!(upgrade_json(&words(rejected)), Err(UPGRADE_USAGE));
+        }
     }
 
     #[test]
@@ -272,24 +154,5 @@ mod tests {
         let arguments = ask_arguments(&["--json", "--bogus"]);
         assert!(arguments.requests_json());
         assert_eq!(arguments.options(), Err(AskArgsError::InvalidAskArgs));
-    }
-
-    #[test]
-    fn ask_help_wins_anywhere_after_the_command() {
-        assert_eq!(ask_words(&["hello", "--help"]), Command::AskHelp);
-        assert_eq!(ask_words(&["--", "-h"]), Command::AskHelp);
-    }
-
-    #[test]
-    fn shows_upgrade_help() {
-        assert_eq!(
-            parse_words(&["upgrade", "--help"]),
-            Ok(Command::UpgradeHelp)
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_commands() {
-        assert!(parse_words(&["frobnicate"]).is_err());
     }
 }

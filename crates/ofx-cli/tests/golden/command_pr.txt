@@ -1,0 +1,12 @@
+oh-fx pr
+
+Draft or publish a pull request
+
+Usage:
+  oh-fx pr [--auto] [--create] [context]
+
+Options:
+  --auto    Automatically review unresolved permission requests
+  --create  Publish the drafted pull request via the GitHub CLI
+
+Must run inside a git repository. Without --create, the drafted PR is printed only.
