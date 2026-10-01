@@ -12,7 +12,7 @@ use reqwest::{Certificate, Proxy};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CERTIFICATE_FILE_VARIABLE: &str = "SSL_CERT_FILE";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Default)]
 pub struct ConnectionOptions {
     pub user_agent: String,
     pub default_headers: Vec<(String, String)>,
