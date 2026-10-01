@@ -4,6 +4,7 @@ mod model_context_encoding;
 mod text_utils;
 mod token_estimate;
 mod unicode_display_data;
+mod utf8_validator;
 
 pub use display_width::{
     DisplayUnit, display_unit_at, next_tab_stop_column, prefix_by_width, should_wrap_at,
@@ -19,3 +20,4 @@ pub use text_utils::{
     write_head_tail_bounded,
 };
 pub use token_estimate::StreamingEstimator;
+pub use utf8_validator::{InvalidUtf8, Utf8Validator};
