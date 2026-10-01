@@ -45,7 +45,7 @@ impl Stream {
                 self.emitted.push_str(&text);
             }
         }
-        result.map(|_| ())
+        result.map(|_| ()).map_err(|rejection| rejection.error)
     }
 
     fn delta(&mut self, item: i64, part: i64, text: &str) -> Result<()> {
@@ -853,6 +853,68 @@ fn responses_terminal_failures_retain_provider_diagnostics_as_outcomes() {
 }
 
 #[test]
+fn responses_error_events_read_a_nested_error_object_only_when_the_top_level_is_empty() {
+    for (event, code, message, cause) in [
+        (
+            r#"{"type":"error","error":{"type":"server_error","code":null,"message":"The server had an error while processing your request.","param":null},"sequence_number":4}"#,
+            "server_error",
+            "The server had an error while processing your request.",
+            FailureCause::Retryable,
+        ),
+        (
+            r#"{"type":"error","error":{"type":"tokens","code":"rate_limit_exceeded","message":"Rate limit reached."}}"#,
+            "rate_limit_exceeded",
+            "Rate limit reached.",
+            FailureCause::RateLimited,
+        ),
+        (
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Bad input."}}"#,
+            "invalid_request_error",
+            "Bad input.",
+            FailureCause::NonRetryable,
+        ),
+        (
+            r#"{"type":"error","code":"server_error","message":"flat","error":{"code":"rate_limit_exceeded","message":"nested"}}"#,
+            "server_error",
+            "flat",
+            FailureCause::Retryable,
+        ),
+        (
+            r#"{"type":"error","message":"flat","error":{"code":"rate_limit_exceeded","message":"nested"}}"#,
+            "provider_error",
+            "flat",
+            FailureCause::NonRetryable,
+        ),
+        (
+            r#"{"type":"error","error":"server_error"}"#,
+            "provider_error",
+            "Provider response failed",
+            FailureCause::NonRetryable,
+        ),
+        (
+            r#"{"type":"error"}"#,
+            "provider_error",
+            "Provider response failed",
+            FailureCause::NonRetryable,
+        ),
+    ] {
+        let mut stream = Stream::new();
+        stream.apply(event).unwrap();
+        let completion = stream.finish().unwrap();
+        assert_eq!(completion.finish, ResponsesFinish::ProviderError, "{event}");
+        assert_eq!(
+            completion.failure,
+            Some(ProviderFailure {
+                code: code.to_owned(),
+                message: message.to_owned(),
+                cause,
+            }),
+            "{event}"
+        );
+    }
+}
+
+#[test]
 fn responses_terminal_incomplete_event_does_not_require_nested_status() {
     let mut stream = Stream::new();
     stream
@@ -1264,12 +1326,46 @@ fn responses_finalization_checks_correlation_types_and_rejects_unmatched_final_c
 }
 
 #[test]
+fn responses_rejections_carry_the_type_only_of_an_event_that_was_parsed() {
+    let mut reducer = Reducer::new(StreamLimits {
+        events: 2,
+        ..LIMITS
+    });
+    let (semantic, _) = reducer.apply(br#"{"type":"response.output_text.delta","delta":5}"#, false);
+    assert_eq!(
+        semantic,
+        Err(Rejection {
+            error: ResponsesError::InvalidEvent,
+            event_type: Some("response.output_text.delta".to_owned()),
+        })
+    );
+    let (malformed, _) = reducer.apply(br#"{"type":"response.completed""#, false);
+    assert_eq!(malformed, Err(ResponsesError::InvalidEvent.into()));
+    let (over_count, _) = reducer.apply(br#"{"type":"response.completed"}"#, false);
+    assert_eq!(
+        over_count,
+        Err(ResponsesError::ResourceLimitExceeded.into())
+    );
+
+    let event = br#"{"type":"response.completed"}"#;
+    let mut reducer = Reducer::new(StreamLimits {
+        aggregate_bytes: event.len() - 1,
+        ..LIMITS
+    });
+    let (over_bytes, _) = reducer.apply(event, false);
+    assert_eq!(
+        over_bytes,
+        Err(ResponsesError::ResourceLimitExceeded.into())
+    );
+}
+
+#[test]
 fn responses_finalization_retains_cancellation_and_terminal_requirements() {
     let mut stream = Stream::new();
     stream.apply(START).unwrap();
     stream.apply(FINALIZED).unwrap();
     let (cancelled, _) = stream.reducer.apply(TERMINAL.as_bytes(), true);
-    assert_eq!(cancelled, Err(ResponsesError::Cancelled));
+    assert_eq!(cancelled, Err(ResponsesError::Cancelled.into()));
     assert_eq!(
         Stream::new().finish().unwrap_err(),
         ResponsesError::StreamIncomplete
