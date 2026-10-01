@@ -996,7 +996,7 @@ impl Presenter {
                 self.start_step();
                 match reason {
                     ToolRejection::Unsupported => {}
-                    ToolRejection::Invalid => {
+                    ToolRejection::MalformedArguments | ToolRejection::Invalid => {
                         self.tool_calls
                             .push(ToolRecord::rejected(tool_name, &arguments));
                     }
@@ -1193,10 +1193,12 @@ impl Presenter {
             TurnFailure::InvalidCompletion
             | TurnFailure::PermissionRequired(_)
             | TurnFailure::ProjectContext => self.describe_error(failure.code(), None),
-            TurnFailure::StepLimitReached => Ok(FailureSummary {
-                error: None,
-                auth_failure: false,
-            }),
+            TurnFailure::StepLimitReached | TurnFailure::RepeatedMalformedArguments => {
+                Ok(FailureSummary {
+                    error: None,
+                    auth_failure: false,
+                })
+            }
         };
         summary.unwrap_or_else(|error| FailureSummary {
             error: Some(write_error_name(&error).to_owned()),
@@ -1982,6 +1984,41 @@ mod tests {
     }
 
     #[test]
+    fn calls_with_malformed_arguments_are_recorded_as_upstream_records_them() {
+        let mut presenter = json_presenter();
+        present(
+            &mut presenter,
+            [
+                rejected(
+                    "call-1",
+                    "shell",
+                    "{}",
+                    ToolRejection::MalformedArguments,
+                    None,
+                ),
+                rejected(
+                    "call-2",
+                    "write_file",
+                    "{}",
+                    ToolRejection::MalformedArguments,
+                    None,
+                ),
+            ],
+        );
+        assert_eq!(presenter.steps, 2);
+        assert_eq!(
+            serde_json::to_string(&presenter.tool_calls).unwrap(),
+            concat!(
+                r#"[{"name":"shell","status":"error","error":{"category":"rejected","code":"rejected"}},"#,
+                r#"{"name":"write_file","status":"error"}]"#,
+            )
+        );
+        let summary = presenter.describe_failure(&TurnFailure::RepeatedMalformedArguments);
+        assert_eq!(summary.error, None);
+        assert!(!summary.auth_failure);
+    }
+
+    #[test]
     fn terminal_output_shows_rejected_calls_with_titles_as_safe_progress_lines() {
         let (mut presenter, screen) = terminal_presenter();
         present(
@@ -2390,5 +2427,12 @@ mod tests {
         let failure = Some(TurnFailure::StepLimitReached);
         assert_eq!(presenter.finish(&report(failure), "m"), ExitCode::FAILURE);
         assert_eq!(screen.text(), "Partial answer\n");
+
+        let notice = "Repeated malformed tool arguments stopped the agent loop. The invalid calls were not executed. Continue with a follow-up prompt if needed.";
+        let (mut presenter, screen) = terminal_presenter();
+        present(&mut presenter, [operational(&format!("{notice}\n"))]);
+        let failure = Some(TurnFailure::RepeatedMalformedArguments);
+        assert_eq!(presenter.finish(&report(failure), "m"), ExitCode::FAILURE);
+        assert_eq!(screen.text(), format!("{notice}\n"));
     }
 }

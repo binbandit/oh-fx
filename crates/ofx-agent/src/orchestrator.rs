@@ -10,9 +10,11 @@ use ofx_contract::{
     CommandRequest, Completion, Concurrency, ExecutionFailure, FileMutation, FinishReason,
     ModelCapabilities, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
     PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
-    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext,
-    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
-    UiEvent, Usage, format_unknown_action, review_unavailable_json, tool_execution_failure_json,
+    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolContext, ToolEffect, ToolOutput,
+    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
+    format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
+    review_unavailable_json, tool_execution_failure_json,
 };
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -30,6 +32,9 @@ use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
 
 const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
+const REPEATED_MALFORMED_ARGUMENTS_NOTICE: &str = "Repeated malformed tool arguments stopped the agent loop. The invalid calls were not executed. Continue with a follow-up prompt if needed.";
+const MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES: u32 = 3;
+const REPLAYED_MALFORMED_ARGUMENTS: &str = "{}";
 const FAST_UNAVAILABLE_NOTICE: &str =
     "Fast mode is unavailable for this model right now; continuing at standard speed.";
 const SUMMARIZE_PROMPT: &str = "Summarize what you just did.";
@@ -66,6 +71,7 @@ pub struct BlockedCall {
 pub enum TurnFailure {
     Provider(ProviderError),
     StepLimitReached,
+    RepeatedMalformedArguments,
     InvalidCompletion,
     PermissionRequired(BlockedCall),
     ProjectContext,
@@ -76,6 +82,7 @@ impl TurnFailure {
         match self {
             Self::Provider(error) => &error.code,
             Self::StepLimitReached => "StepLimitReached",
+            Self::RepeatedMalformedArguments => "RepeatedMalformedToolArguments",
             Self::InvalidCompletion => "ModelError",
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
             Self::ProjectContext => "ProjectContextFailed",
@@ -123,6 +130,7 @@ struct Turn {
     silent_tool_steps: u32,
     summary_requested: bool,
     failures: HashMap<(String, String), u32>,
+    malformed_batches: u32,
     fast_mode: bool,
     fast_notice_shown: bool,
 }
@@ -214,6 +222,7 @@ impl Agent {
             silent_tool_steps: 0,
             summary_requested: false,
             failures: HashMap::new(),
+            malformed_batches: 0,
             fast_mode: self.config.fast_mode,
             fast_notice_shown: false,
         };
@@ -259,16 +268,12 @@ impl Agent {
         let mut step = 0;
         loop {
             if self.config.step_limit != 0 && step >= self.config.step_limit {
-                events(UiEvent::Operational {
-                    turn_id: turn.id,
-                    text: format!("{STEP_LIMIT_NOTICE}\n"),
-                });
-                self.history.push(ChatMessage::Assistant {
-                    content: Some(STEP_LIMIT_NOTICE.to_owned()),
-                    tool_calls: Vec::new(),
-                    provider_replay: None,
-                });
-                return Err(Stop::failed(TurnFailure::StepLimitReached));
+                return Err(self.stop_with_notice(
+                    turn.id,
+                    events,
+                    STEP_LIMIT_NOTICE,
+                    TurnFailure::StepLimitReached,
+                ));
             }
             if cancel.is_cancelled() {
                 return Err(Stop::interrupted());
@@ -453,19 +458,10 @@ impl Agent {
         } else {
             turn.silent_tool_steps + 1
         };
-        let calls = completion.tool_calls.clone();
-        let history_calls = completion
-            .tool_calls
-            .into_iter()
-            .map(|call| self.history_call(call))
-            .collect();
-        self.history.push(ChatMessage::Assistant {
-            content: completion.content,
-            tool_calls: history_calls,
-            provider_replay: completion.provider_replay,
-        });
+        let (calls, mut malformed) = self.record_tool_step(completion);
+        let all_malformed = !malformed.is_empty() && malformed.iter().all(Option::is_some);
         let mut gate = match self.project {
-            Some(_) => Some(self.open_gate(turn.id, &calls, events, cancel)?),
+            Some(_) => Some(self.open_gate(turn.id, &calls, &mut malformed, events, cancel)?),
             None => None,
         };
         let mut next = 0;
@@ -483,18 +479,27 @@ impl Agent {
                         continue;
                     }
                 },
-                None => self.lazy_group(&calls, next, &mut carried),
+                None => self.lazy_group(&calls, next, &mut malformed, &mut carried),
             };
             next += group.len();
             let settled = run_group(turn.id, group, &*self.permissions, events, cancel).await;
-            for (call, output) in settled.outcomes {
+            for Settled {
+                call,
+                output,
+                escalates,
+            } in settled.outcomes
+            {
                 let Some(output) = output else {
                     continue;
                 };
                 let status = output.status;
                 let model_output =
                     prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
-                let content = escalate_repeated_failure(turn, call, status, model_output);
+                let content = if escalates {
+                    escalate_repeated_failure(turn, call, status, model_output)
+                } else {
+                    model_output
+                };
                 self.history.push(ChatMessage::Tool {
                     call_id: call.id.clone(),
                     tool_name: call.name.clone(),
@@ -509,7 +514,76 @@ impl Agent {
         if cancel.is_cancelled() {
             return Err(Stop::interrupted());
         }
+        turn.malformed_batches = if all_malformed {
+            turn.malformed_batches + 1
+        } else {
+            0
+        };
+        if turn.malformed_batches == MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES {
+            return Err(self.stop_with_notice(
+                turn.id,
+                events,
+                REPEATED_MALFORMED_ARGUMENTS_NOTICE,
+                TurnFailure::RepeatedMalformedArguments,
+            ));
+        }
         Ok(())
+    }
+
+    fn record_tool_step(
+        &mut self,
+        completion: Completion,
+    ) -> (Vec<ToolCall>, Vec<Option<ToolOutput>>) {
+        let malformed: Vec<Option<ToolOutput>> = completion
+            .tool_calls
+            .iter()
+            .map(argument_rejection)
+            .collect();
+        let calls: Vec<ToolCall> = completion
+            .tool_calls
+            .into_iter()
+            .zip(&malformed)
+            .map(|(call, rejection)| match rejection {
+                Some(_) => ToolCall {
+                    arguments: REPLAYED_MALFORMED_ARGUMENTS.to_owned(),
+                    ..call
+                },
+                None => call,
+            })
+            .collect();
+        let history_calls = calls
+            .iter()
+            .zip(&malformed)
+            .map(|(call, rejection)| match rejection {
+                Some(_) => call.clone(),
+                None => self.history_call(call.clone()),
+            })
+            .collect();
+        self.history.push(ChatMessage::Assistant {
+            content: completion.content,
+            tool_calls: history_calls,
+            provider_replay: completion.provider_replay,
+        });
+        (calls, malformed)
+    }
+
+    fn stop_with_notice(
+        &mut self,
+        turn_id: TurnId,
+        events: EventSink<'_>,
+        notice: &str,
+        failure: TurnFailure,
+    ) -> Stop {
+        events(UiEvent::Operational {
+            turn_id,
+            text: format!("{notice}\n"),
+        });
+        self.history.push(ChatMessage::Assistant {
+            content: Some(notice.to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        });
+        Stop::failed(failure)
     }
 
     fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
@@ -533,19 +607,20 @@ impl Agent {
         &self,
         calls: &'c [ToolCall],
         start: usize,
+        malformed: &mut [Option<ToolOutput>],
         carried: &mut Deferred,
     ) -> Vec<(&'c ToolCall, Prepared)> {
         let head = carried
             .0
             .take()
-            .unwrap_or_else(|| self.prepare(&calls[start]));
+            .unwrap_or_else(|| self.prepare(&calls[start], malformed[start].take()));
         let parallel = head.is_parallel();
         let mut group = vec![(&calls[start], head)];
-        for call in &calls[start + 1..] {
+        for (call, malformed) in calls[start + 1..].iter().zip(&mut malformed[start + 1..]) {
             if !parallel {
                 break;
             }
-            let prepared = self.prepare(call);
+            let prepared = self.prepare(call, malformed.take());
             if !prepared.is_parallel() {
                 carried.0 = Some(prepared);
                 break;
@@ -555,21 +630,32 @@ impl Agent {
         group
     }
 
-    fn prepare(&self, call: &ToolCall) -> Prepared {
-        match self.prepared_call(call) {
+    fn prepare(&self, call: &ToolCall, malformed: Option<ToolOutput>) -> Prepared {
+        match self.prepared_call(call, malformed) {
             Ok(prepared) => completed(prepared, &call.name),
             Err(rejection) => Prepared::Rejected(rejection),
         }
     }
 
-    fn prepare_uncompleted(&self, call: &ToolCall) -> Prepared {
-        match self.prepared_call(call) {
+    fn prepare_uncompleted(&self, call: &ToolCall, malformed: Option<ToolOutput>) -> Prepared {
+        match self.prepared_call(call, malformed) {
             Ok(prepared) => inspected(prepared, &call.name),
             Err(rejection) => Prepared::Rejected(rejection),
         }
     }
 
-    fn prepared_call(&self, call: &ToolCall) -> Result<Box<dyn PreparedCall>, Rejection> {
+    fn prepared_call(
+        &self,
+        call: &ToolCall,
+        malformed: Option<ToolOutput>,
+    ) -> Result<Box<dyn PreparedCall>, Rejection> {
+        if let Some(output) = malformed {
+            return Err(Rejection {
+                reason: ToolRejection::MalformedArguments,
+                title: None,
+                output,
+            });
+        }
         let Some(tool) = self.tool(&call.name) else {
             return Err(Rejection {
                 reason: ToolRejection::Unsupported,
@@ -690,6 +776,18 @@ impl Agent {
     }
 }
 
+fn argument_rejection(call: &ToolCall) -> Option<ToolOutput> {
+    let content = match ToolArgumentIntegrity::classify_function_input(&call.arguments) {
+        ToolArgumentIntegrity::Valid => return None,
+        ToolArgumentIntegrity::NonObjectJson => non_object_tool_arguments_json(&call.name),
+        ToolArgumentIntegrity::MalformedJson => malformed_tool_arguments_json(
+            &call.name,
+            &ToolArgumentDiagnostic::diagnose(&call.arguments),
+        ),
+    };
+    Some(ToolOutput::failure(content))
+}
+
 fn recovery_cause(kind: ProviderErrorKind) -> Option<ModelRecoveryCause> {
     match kind {
         ProviderErrorKind::RateLimited => Some(ModelRecoveryCause::RateLimited),
@@ -787,13 +885,19 @@ impl Prepared {
 }
 
 enum Dispatched {
-    Rejected(ToolOutput),
+    Rejected(ToolOutput, ToolRejection),
     Held(ToolOutput),
     Running(JoinHandle<ToolOutput>),
 }
 
+struct Settled<'c> {
+    call: &'c ToolCall,
+    output: Option<ToolOutput>,
+    escalates: bool,
+}
+
 struct SettledGroup<'c> {
-    outcomes: Vec<(&'c ToolCall, Option<ToolOutput>)>,
+    outcomes: Vec<Settled<'c>>,
     blocked: Option<BlockedCall>,
 }
 
@@ -845,7 +949,7 @@ async fn run_group<'c>(
                     reason,
                     title,
                 });
-                dispatched.push((call, Dispatched::Rejected(output)));
+                dispatched.push((call, Dispatched::Rejected(output, reason)));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let admission = admit(
@@ -898,24 +1002,42 @@ async fn run_group<'c>(
         }
     }
     group.for_each(discard);
+    SettledGroup {
+        outcomes: settle_group(turn_id, dispatched, events, cancel).await,
+        blocked,
+    }
+}
+
+async fn settle_group<'c>(
+    turn_id: TurnId,
+    dispatched: Vec<(&'c ToolCall, Dispatched)>,
+    events: EventSink<'_>,
+    cancel: &CancellationToken,
+) -> Vec<Settled<'c>> {
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched) in dispatched {
-        let output = match dispatched {
-            Dispatched::Rejected(output) => Some(output),
+        let (output, escalates) = match dispatched {
+            Dispatched::Rejected(output, reason) => {
+                (Some(output), reason != ToolRejection::MalformedArguments)
+            }
             Dispatched::Held(output) => {
                 events(tool_finished(turn_id, call, Some(&output)));
-                Some(output)
+                (Some(output), true)
             }
             Dispatched::Running(mut task) => {
                 let output = settle(call, &mut task, cancel, &mut grace_deadline).await;
                 events(tool_finished(turn_id, call, output.as_ref()));
-                output
+                (output, true)
             }
         };
-        outcomes.push((call, output));
+        outcomes.push(Settled {
+            call,
+            output,
+            escalates,
+        });
     }
-    SettledGroup { outcomes, blocked }
+    outcomes
 }
 
 fn tool_finished(turn_id: TurnId, call: &ToolCall, output: Option<&ToolOutput>) -> UiEvent {
