@@ -1047,6 +1047,10 @@ fn ask_runs_read_file_and_sends_its_result_to_the_model() {
 }
 
 fn parallel_tool_call_events(calls: &[(&str, &str, &str)]) -> Vec<String> {
+    text_then_tool_call_events("", calls)
+}
+
+fn text_then_tool_call_events(text: &str, calls: &[(&str, &str, &str)]) -> Vec<String> {
     let chunk = |delta: Value, finish_reason: Value| {
         json!({
             "id": "chatcmpl-parallel",
@@ -1068,14 +1072,17 @@ fn parallel_tool_call_events(calls: &[(&str, &str, &str)]) -> Vec<String> {
             })
         })
         .collect();
-    vec![
-        chunk(
-            json!({"role": "assistant", "tool_calls": tool_calls}),
-            Value::Null,
-        ),
-        chunk(json!({}), json!("tool_calls")),
-        "[DONE]".to_owned(),
-    ]
+    let text = (!text.is_empty()).then(|| chunk(json!({"content": text}), Value::Null));
+    text.into_iter()
+        .chain([
+            chunk(
+                json!({"role": "assistant", "tool_calls": tool_calls}),
+                Value::Null,
+            ),
+            chunk(json!({}), json!("tool_calls")),
+            "[DONE]".to_owned(),
+        ])
+        .collect()
 }
 
 #[test]
@@ -1163,6 +1170,41 @@ fn ask_prints_read_file_progress_and_the_final_answer_in_raw_mode() {
     assert!(quiet.status.success(), "{}", stderr(&quiet));
     assert_eq!(stdout(&quiet), "");
     assert_eq!(stderr(&quiet), "Reading notes.txt\n");
+}
+
+#[test]
+fn raw_mode_keeps_progress_on_stderr_and_separates_text_steps_on_stdout() {
+    let server = FakeServer::start([
+        Reply::sse(&text_then_tool_call_events(
+            "Looking.",
+            &[
+                ("call_1", "read_file", r#"{"path":"a.txt","start_line":0}"#),
+                ("call_2", "read_file", r#"{"path":"b.txt"}"#),
+            ],
+        )),
+        Reply::sse(&text_then_tool_call_events(
+            "Found b.\n",
+            &[("call_3", "read_file", r#"{"path":"c.txt"}"#)],
+        )),
+        Reply::sse(&parallel_tool_call_events(&[(
+            "call_4",
+            "read_file",
+            r#"{"path":"d.txt"}"#,
+        )])),
+        Reply::sse(&chat_text_events(&["All read."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        fs::write(home.workspace.join(name), "text\n").unwrap();
+    }
+    let output = home.ask(&["ask", "read the files"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Looking.\n\nFound b.\n\nAll read.");
+    assert_eq!(
+        stderr(&output),
+        "Reading b.txt\nReading a.txt\nReading c.txt\nReading d.txt\n"
+    );
+    assert_eq!(server.requests().len(), 4);
 }
 
 fn settings_in_mode(base_url: &str, mode: &str) -> Value {

@@ -154,7 +154,7 @@ A `finish_reason` of `length` or `content_filter`, tool calls for tools that wer
 
 ## Retries
 
-Like upstream, oh-fx retries a request that fails before any text arrives when the gateway answers 429, 500, 502, 503, or 504, the connection drops, the request times out, or the host cannot be reached. It honors `Retry-After` up to 30 seconds, otherwise backs off from 250 ms to 30 seconds, and gives up after 10 attempts. Each retry prints a notice on stderr, and `ask --json` reports the last one under `recovery`:
+Like upstream, oh-fx retries a request that fails before any text arrives when the gateway answers 429, 500, 502, 503, or 504, the connection drops, the request times out, or the host cannot be reached. It honors `Retry-After` up to 30 seconds, otherwise backs off from 250 ms to 30 seconds, and gives up after 10 attempts. Each retry prints a notice, and `ask --json` reports the last one under `recovery`. The notice goes to stderr, or to stdout with the answer when stdout is a terminal and neither `--json` nor `--quiet` is given:
 
 ```
 [notice] ⚠ Rate limited · HTTP 429 · slow down · retrying request in 2s
