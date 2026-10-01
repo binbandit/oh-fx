@@ -14,14 +14,14 @@ use crate::paths::ProfilePaths;
 use crate::settings_store::{MAX_PROVIDER_ORDER_ENTRIES, validate_provider_slug};
 use crate::strict_json;
 
-const SETTINGS_FILE: &str = "settings.json";
+pub(crate) const SETTINGS_FILE: &str = "settings.json";
 const PROJECT_FILE: &str = ".oh-fx.json";
-const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_SETTINGS_BYTES: usize = 64 * 1024;
 const MAX_MODEL_PREFERENCES: usize = 35;
 const PROVIDER_VARIABLE: &str = "OH_FX_PROVIDER";
 const MODEL_VARIABLE: &str = "OH_FX_MODEL";
 const MAX_AGENT_STEPS_VARIABLE: &str = "OH_FX_MAX_AGENT_STEPS";
-const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
+pub(crate) const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const PROFILE_ONLY_KEYS: [&str; 29] = [
     "model",
@@ -456,13 +456,17 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, DiagnosticCause> {
         return Err(DiagnosticCause::DurablePathUnsafe);
     }
     let mut bytes = Vec::new();
-    file.take(MAX_SETTINGS_BYTES + 1)
+    file.take(MAX_SETTINGS_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| DiagnosticCause::DurablePathUnsafe)?;
-    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+    if bytes.len() > MAX_SETTINGS_BYTES {
         return Err(DiagnosticCause::SettingsTooLarge);
     }
     Ok(Some(bytes))
+}
+
+pub(crate) fn is_valid_profile_layer(object: &Map<String, Value>) -> bool {
+    parse_layer(object).is_ok()
 }
 
 fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
@@ -709,7 +713,7 @@ mod tests {
         );
         let duplicate = load(&fixture(Some(r#"{"provider":"a","provider":"b"}"#), None)).unwrap();
         assert!(duplicate.profile_is_unusable());
-        let large = "x".repeat(usize::try_from(MAX_SETTINGS_BYTES).unwrap() + 1);
+        let large = "x".repeat(MAX_SETTINGS_BYTES + 1);
         let too_large = load(&fixture(Some(&large), None)).unwrap();
         assert_eq!(
             too_large.diagnostics()[0].cause,
