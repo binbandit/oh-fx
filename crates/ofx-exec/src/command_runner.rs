@@ -1,6 +1,9 @@
 mod foreground_session;
 mod launch_probe;
+mod natural_drain;
 mod status_probe;
+#[cfg(test)]
+mod tests;
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -14,7 +17,7 @@ use std::time::Duration;
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStderr};
+use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::{oneshot, watch};
 use tokio::time::{Instant, sleep_until};
 
@@ -26,14 +29,13 @@ use foreground_session::{
     RELEASE_BYTE, STATUS_PREFIX, TOKEN,
 };
 use launch_probe::LaunchProbe;
+use natural_drain::NaturalDrain;
 use status_probe::StatusProbe;
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINATION_GRACE: Duration = Duration::from_millis(700);
 pub(crate) const TERMINATION_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPERVISOR_HANDOFF: Duration = Duration::from_millis(200);
-const NATURAL_COMPLETION_WAIT: Duration = Duration::from_secs(1);
-const NATURAL_COMPLETION_DRAIN_MAX_BYTES: usize = 2 * 1024 * 1024;
 const READ_CHUNK_BYTES: usize = 4096;
 const NONCE_BYTES: usize = NONCE_HEX_BYTES / 2;
 
@@ -151,26 +153,27 @@ pub(crate) async fn run_captured(
     if let Err(error) = input.write_all(&control).await {
         return Err(abandon(&mut child, RunError::Failed(error_name(&error))).await);
     }
-    let mut collection = Collection {
-        exited,
-        child: &mut child,
+    let mut collection = Collection::new(
+        &mut child,
         group,
-        stdout: Some(stdout),
-        stderr: Some(stderr),
-        launch: LaunchProbe::new(&nonce),
-        status: StatusProbe::new(&nonce),
-        deadline: command.deadline,
-        termination: None,
-        exit: None,
-        drain_until: None,
-        drained_bytes: 0,
-        settled: false,
-        output_incomplete: false,
-        indeterminate: false,
-    };
+        (stdout, stderr),
+        &nonce,
+        command.deadline,
+        exited,
+    );
     let exit = collection.collect(stop, sink).await;
     drop(input);
-    collection.finish(exit, started)
+    let outcome = collection.finish(exit, started);
+    if exit.is_none() {
+        reap_in_background(child);
+    }
+    outcome
+}
+
+fn reap_in_background(mut child: Child) {
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
 }
 
 fn spawn_supervisor(command: &CapturedCommand<'_>) -> Result<Child, RunError> {
@@ -269,85 +272,151 @@ struct Collection<'a> {
     exited: oneshot::Receiver<()>,
     child: &'a mut Child,
     group: Pid,
-    stdout: Option<tokio::process::ChildStdout>,
+    stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
     launch: LaunchProbe,
     status: StatusProbe,
     deadline: Option<Instant>,
     termination: Option<Termination>,
     exit: Option<(ExitStatus, Instant)>,
-    drain_until: Option<Instant>,
-    drained_bytes: usize,
+    drain: Option<NaturalDrain>,
     settled: bool,
     output_incomplete: bool,
     indeterminate: bool,
 }
 
-impl Collection<'_> {
+enum Event {
+    Read(OutputStream, io::Result<usize>),
+    Exited,
+    StopRequested(Option<StopIntent>),
+    StopClosed,
+    Timer,
+}
+
+impl<'a> Collection<'a> {
+    fn new(
+        child: &'a mut Child,
+        group: Pid,
+        (stdout, stderr): (ChildStdout, ChildStderr),
+        nonce: &str,
+        deadline: Option<Instant>,
+        exited: oneshot::Receiver<()>,
+    ) -> Self {
+        Self {
+            exited,
+            child,
+            group,
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            launch: LaunchProbe::new(nonce),
+            status: StatusProbe::new(nonce),
+            deadline,
+            termination: None,
+            exit: None,
+            drain: None,
+            settled: false,
+            output_incomplete: false,
+            indeterminate: false,
+        }
+    }
+
     async fn collect(
         &mut self,
         stop: &mut watch::Receiver<Option<StopIntent>>,
         sink: &mut (dyn FnMut(OutputStream, &[u8]) + Send),
-    ) -> ExitStatus {
+    ) -> Option<ExitStatus> {
         let mut stdout_buffer = vec![0; READ_CHUNK_BYTES];
         let mut stderr_buffer = vec![0; READ_CHUNK_BYTES];
         let mut stop_open = true;
         loop {
-            if let Some((exit, _)) = self.exit
-                && self.stdout.is_none()
-                && self.stderr.is_none()
-            {
-                return exit;
+            if self.stdout.is_none() && self.stderr.is_none() {
+                if let Some((exit, _)) = self.exit {
+                    return Some(exit);
+                }
+                if self.settled {
+                    return None;
+                }
             }
-            let timer = self.next_timer();
+            let waiting_since = Instant::now();
+            if self
+                .drain
+                .is_some_and(|drain| drain.remaining_wait().is_none())
+            {
+                self.close_streams(sink);
+                continue;
+            }
+            let timer = self.next_timer(waiting_since);
             let running = self.exit.is_none();
-            tokio::select! {
+            let event = tokio::select! {
                 read = read_chunk(&mut self.stdout, &mut stdout_buffer), if self.stdout.is_some() => {
-                    if let Some(length) = self.accept_read(&read, OutputStream::Stdout) {
-                        sink(OutputStream::Stdout, &stdout_buffer[..length]);
-                    }
+                    Event::Read(OutputStream::Stdout, read)
                 }
                 read = read_chunk(&mut self.stderr, &mut stderr_buffer), if self.stderr.is_some() => {
-                    let emitted = match self.accept_read(&read, OutputStream::Stderr) {
-                        Some(length) => self.filter_stderr(&stderr_buffer[..length]),
-                        None => self.flush_stderr(),
-                    };
-                    if !emitted.is_empty() {
-                        sink(OutputStream::Stderr, &emitted);
-                    }
+                    Event::Read(OutputStream::Stderr, read)
                 }
-                _ = &mut self.exited, if running => {
-                    let _ = kill_process_group(self.group, Signal::KILL);
-                    let now = Instant::now();
-                    let exit = self.child.wait().await.unwrap_or_else(|_| {
-                        self.indeterminate = true;
-                        ExitStatus::from_raw(0)
-                    });
-                    self.exit = Some((exit, now));
-                    if self.drain_until.is_none() {
-                        self.drain_until = Some(now + NATURAL_COMPLETION_WAIT);
+                _ = &mut self.exited, if running => Event::Exited,
+                changed = stop.changed(), if running && stop_open => match changed {
+                    Ok(()) => Event::StopRequested(*stop.borrow_and_update()),
+                    Err(_) => Event::StopClosed,
+                },
+                () = sleep_until(timer.unwrap_or(waiting_since)), if timer.is_some() => Event::Timer,
+            };
+            let waited = waiting_since.elapsed();
+            match event {
+                Event::Read(stream, read) => {
+                    let length = self.accept_read(&read, stream);
+                    if let Some(drain) = &mut self.drain {
+                        drain.record(length.unwrap_or(0), waited);
                     }
-                }
-                changed = stop.changed(), if running && stop_open => {
-                    let requested = *stop.borrow_and_update();
-                    match (changed, requested) {
-                        (Err(_), _) => stop_open = false,
-                        (Ok(()), Some(intent)) => self.request(Source::Cancelled, intent),
-                        (Ok(()), None) => {}
-                    }
-                }
-                () = sleep_until(timer.unwrap_or_else(Instant::now)), if timer.is_some() => {
-                    if self.on_timer() {
-                        let held = self.flush_stderr();
-                        if !held.is_empty() {
-                            sink(OutputStream::Stderr, &held);
+                    match (stream, length) {
+                        (OutputStream::Stdout, Some(length)) => {
+                            sink(stream, &stdout_buffer[..length]);
                         }
-                        self.stdout = None;
-                        self.stderr = None;
+                        (OutputStream::Stdout, None) => {}
+                        (OutputStream::Stderr, length) => {
+                            let emitted = match length {
+                                Some(length) => self.filter_stderr(&stderr_buffer[..length]),
+                                None => self.flush_stderr(),
+                            };
+                            if !emitted.is_empty() {
+                                sink(stream, &emitted);
+                            }
+                        }
+                    }
+                }
+                Event::Exited => self.observe_exit().await,
+                Event::StopClosed => stop_open = false,
+                Event::StopRequested(Some(intent)) => self.request(Source::Cancelled, intent),
+                Event::StopRequested(None) => {}
+                Event::Timer => {
+                    if let Some(drain) = &mut self.drain {
+                        drain.record(0, waited);
+                    } else if self.on_timer() {
+                        self.close_streams(sink);
                     }
                 }
             }
         }
+    }
+
+    async fn observe_exit(&mut self) {
+        let _ = kill_process_group(self.group, Signal::KILL);
+        let now = Instant::now();
+        let exit = self.child.wait().await.unwrap_or_else(|_| {
+            self.indeterminate = true;
+            ExitStatus::from_raw(0)
+        });
+        self.exit = Some((exit, now));
+        self.drain = Some(NaturalDrain::default());
+    }
+
+    fn close_streams(&mut self, sink: &mut (dyn FnMut(OutputStream, &[u8]) + Send)) {
+        let held = self.flush_stderr();
+        if !held.is_empty() {
+            sink(OutputStream::Stderr, &held);
+        }
+        self.stdout = None;
+        self.stderr = None;
     }
 
     fn filter_stderr(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -365,15 +434,7 @@ impl Collection<'_> {
     fn accept_read(&mut self, read: &io::Result<usize>, stream: OutputStream) -> Option<usize> {
         match *read {
             Ok(0) => {}
-            Ok(length) => {
-                if self.exit.is_some() {
-                    self.drained_bytes += length;
-                    if self.drained_bytes >= NATURAL_COMPLETION_DRAIN_MAX_BYTES {
-                        self.drain_until = Some(Instant::now());
-                    }
-                }
-                return Some(length);
-            }
+            Ok(length) => return Some(length),
             Err(_) => self.output_incomplete = true,
         }
         match stream {
@@ -383,9 +444,9 @@ impl Collection<'_> {
         None
     }
 
-    fn next_timer(&self) -> Option<Instant> {
-        if self.exit.is_some() {
-            return self.drain_until;
+    fn next_timer(&self, now: Instant) -> Option<Instant> {
+        if let Some(drain) = self.drain {
+            return drain.remaining_wait().map(|remaining| now + remaining);
         }
         if self.settled {
             return None;
@@ -406,9 +467,6 @@ impl Collection<'_> {
     }
 
     fn on_timer(&mut self) -> bool {
-        if self.exit.is_some() {
-            return true;
-        }
         match &self.termination {
             None => {
                 self.request(Source::TimedOut, StopIntent::Force);
@@ -467,8 +525,12 @@ impl Collection<'_> {
         }
     }
 
-    fn finish(self, exit: ExitStatus, started: Instant) -> Result<CapturedOutcome, RunError> {
-        if exit.code() == Some(LAUNCH_FAILURE_EXIT_CODE)
+    fn finish(
+        self,
+        exit: Option<ExitStatus>,
+        started: Instant,
+    ) -> Result<CapturedOutcome, RunError> {
+        if exit.and_then(|exit| exit.code()) == Some(LAUNCH_FAILURE_EXIT_CODE)
             && let Some(name) = self.launch.launch_failure()
         {
             return Err(RunError::Failed(name));
@@ -482,10 +544,10 @@ impl Collection<'_> {
         if source == Source::TimedOut {
             return Err(RunError::TimeoutExpired);
         }
-        let status = match (self.indeterminate, self.status.reported()) {
-            (true, _) => CommandStatus::Indeterminate,
-            (false, Some(reported)) => reported,
-            (false, None) => supervisor_status(exit),
+        let status = match (self.indeterminate, self.status.reported(), exit) {
+            (false, Some(reported), _) => reported,
+            (false, None, Some(exit)) => supervisor_status(exit),
+            _ => CommandStatus::Indeterminate,
         };
         Ok(CapturedOutcome {
             status,

@@ -20,6 +20,73 @@ const LONG: Duration = Duration::from_secs(20);
 
 type Test = fn();
 
+const TESTS: [(&str, Test); 16] = [
+    (
+        "a_fast_command_completes_inside_its_yield_window",
+        a_fast_command_completes_inside_its_yield_window,
+    ),
+    (
+        "a_slow_command_yields_a_retained_session_that_stop_ends",
+        a_slow_command_yields_a_retained_session_that_stop_ends,
+    ),
+    (
+        "observing_returns_only_output_produced_since_the_last_delivery",
+        observing_returns_only_output_produced_since_the_last_delivery,
+    ),
+    (
+        "a_deadline_stops_the_command_with_timeout_expired",
+        a_deadline_stops_the_command_with_timeout_expired,
+    ),
+    (
+        "retained_output_is_capped_while_byte_counts_stay_exact",
+        retained_output_is_capped_while_byte_counts_stay_exact,
+    ),
+    (
+        "natural_completion_kills_background_jobs_left_in_the_command_group",
+        natural_completion_kills_background_jobs_left_in_the_command_group,
+    ),
+    (
+        "cancelling_the_yield_window_stops_the_unpublished_command",
+        cancelling_the_yield_window_stops_the_unpublished_command,
+    ),
+    (
+        "a_graceful_stop_escalates_when_the_command_ignores_sigterm",
+        a_graceful_stop_escalates_when_the_command_ignores_sigterm,
+    ),
+    (
+        "launch_failures_keep_upstream_error_names",
+        launch_failures_keep_upstream_error_names,
+    ),
+    (
+        "commands_have_no_controlling_terminal",
+        commands_have_no_controlling_terminal,
+    ),
+    (
+        "shutdown_stops_every_live_command_and_refuses_new_ones",
+        shutdown_stops_every_live_command_and_refuses_new_ones,
+    ),
+    (
+        "unknown_sessions_are_not_found",
+        unknown_sessions_are_not_found,
+    ),
+    (
+        "losing_the_supervisor_kills_the_command_group",
+        losing_the_supervisor_kills_the_command_group,
+    ),
+    (
+        "losing_the_owner_kills_the_command_group",
+        losing_the_owner_kills_the_command_group,
+    ),
+    (
+        "abandoned_starts_release_their_slot_once_they_settle",
+        abandoned_starts_release_their_slot_once_they_settle,
+    ),
+    (
+        "a_detached_daemon_holding_the_output_ends_the_drain_with_complete_output",
+        a_detached_daemon_holding_the_output_ends_the_drain_with_complete_output,
+    ),
+];
+
 fn main() -> ExitCode {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
     if is_foreground_session_invocation(&args) {
@@ -34,66 +101,8 @@ fn main() -> ExitCode {
         .filter(|argument| !argument.starts_with('-'))
         .map(str::to_owned)
         .collect();
-    let tests: [(&str, Test); 14] = [
-        (
-            "a_fast_command_completes_inside_its_yield_window",
-            a_fast_command_completes_inside_its_yield_window,
-        ),
-        (
-            "a_slow_command_yields_a_retained_session_that_stop_ends",
-            a_slow_command_yields_a_retained_session_that_stop_ends,
-        ),
-        (
-            "observing_returns_only_output_produced_since_the_last_delivery",
-            observing_returns_only_output_produced_since_the_last_delivery,
-        ),
-        (
-            "a_deadline_stops_the_command_with_timeout_expired",
-            a_deadline_stops_the_command_with_timeout_expired,
-        ),
-        (
-            "retained_output_is_capped_while_byte_counts_stay_exact",
-            retained_output_is_capped_while_byte_counts_stay_exact,
-        ),
-        (
-            "natural_completion_kills_background_jobs_left_in_the_command_group",
-            natural_completion_kills_background_jobs_left_in_the_command_group,
-        ),
-        (
-            "cancelling_the_yield_window_stops_the_unpublished_command",
-            cancelling_the_yield_window_stops_the_unpublished_command,
-        ),
-        (
-            "a_graceful_stop_escalates_when_the_command_ignores_sigterm",
-            a_graceful_stop_escalates_when_the_command_ignores_sigterm,
-        ),
-        (
-            "launch_failures_keep_upstream_error_names",
-            launch_failures_keep_upstream_error_names,
-        ),
-        (
-            "commands_have_no_controlling_terminal",
-            commands_have_no_controlling_terminal,
-        ),
-        (
-            "shutdown_stops_every_live_command_and_refuses_new_ones",
-            shutdown_stops_every_live_command_and_refuses_new_ones,
-        ),
-        (
-            "unknown_sessions_are_not_found",
-            unknown_sessions_are_not_found,
-        ),
-        (
-            "losing_the_supervisor_kills_the_command_group",
-            losing_the_supervisor_kills_the_command_group,
-        ),
-        (
-            "losing_the_owner_kills_the_command_group",
-            losing_the_owner_kills_the_command_group,
-        ),
-    ];
     let mut failed = Vec::new();
-    for (name, test) in tests {
+    for (name, test) in TESTS {
         if !filters.is_empty() && !filters.iter().any(|filter| name.contains(filter.as_str())) {
             continue;
         }
@@ -161,6 +170,14 @@ fn read_fifo_in_background(path: PathBuf) -> std::sync::mpsc::Receiver<String> {
         let _ = sender.send(text);
     });
     receiver
+}
+
+async fn poll_once<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
+    tokio::select! {
+        biased;
+        output = future => Some(output),
+        () = std::future::ready(()) => None,
+    }
 }
 
 async fn observe_until(
@@ -580,6 +597,84 @@ fn losing_the_owner_kills_the_command_group() {
         Some(""),
         "the command group outlived its owner"
     );
+}
+
+fn abandoned_starts_release_their_slot_once_they_settle() {
+    let directory = tempfile::tempdir().expect("the test step succeeds");
+    let ready = fifo(directory.path(), "ready");
+    let started = read_fifo_in_background(ready.clone());
+    let command = format!("printf up > {}; exec sleep 60", ready.display());
+    block_on(async {
+        let executions = executions();
+        let cancel = CancellationToken::new();
+        let mut running = Box::pin(executions.start_captured(run(&command, LONG), &cancel));
+        assert!(poll_once(&mut running).await.is_none());
+        let text = tokio::task::spawn_blocking(move || started.recv_timeout(LONG))
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(text.as_deref(), Ok("up"));
+        drop(running);
+        let mut settled = Box::pin(executions.start_captured(run("true", LONG), &cancel));
+        assert!(poll_once(&mut settled).await.is_none());
+        executions.shutdown().await;
+        assert_eq!(
+            executions.command("shell-1"),
+            None,
+            "a start dropped while its command ran kept its slot"
+        );
+        assert_eq!(executions.command("shell-2").as_deref(), Some("true"));
+        drop(settled);
+        assert_eq!(
+            executions.command("shell-2"),
+            None,
+            "a start dropped after its command settled kept its slot"
+        );
+    });
+}
+
+fn a_detached_daemon_holding_the_output_ends_the_drain_with_complete_output() {
+    let directory = tempfile::tempdir().expect("the test step succeeds");
+    let pid_path = directory.path().join("daemon.pid");
+    let script = directory.path().join("daemon.py");
+    fs::write(
+        &script,
+        format!(
+            "import os, time\n\
+             ready_r, ready_w = os.pipe()\n\
+             if os.fork() == 0:\n\
+             \x20   os.close(ready_r)\n\
+             \x20   os.setsid()\n\
+             \x20   with open({pid:?}, 'w') as f: f.write(str(os.getpid()))\n\
+             \x20   os.write(ready_w, b'R'); os.close(ready_w)\n\
+             \x20   time.sleep(30)\n\
+             \x20   os._exit(0)\n\
+             os.close(ready_w)\n\
+             if os.read(ready_r, 1) != b'R': raise SystemExit(1)\n\
+             print('BEFORE-EXIT', flush=True)\n",
+            pid = pid_path.display().to_string(),
+        ),
+    )
+    .expect("the test step succeeds");
+    let begun = Instant::now();
+    let snapshot = block_on(async {
+        executions()
+            .start_captured(
+                run(&format!("python3 {}", script.display()), LONG),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("the test step succeeds")
+    });
+    let elapsed = begun.elapsed();
+    let daemon = fs::read_to_string(&pid_path).expect("the test step succeeds");
+    let _ = process::Command::new("kill").arg(daemon.trim()).status();
+    assert_eq!(
+        snapshot.state,
+        SnapshotState::Completed(CommandStatus::ExitCode(0))
+    );
+    assert_eq!(text(&snapshot), "BEFORE-EXIT\n");
+    assert!(!snapshot.output_incomplete);
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
 }
 
 fn owner_child(directory: &Path) -> ! {

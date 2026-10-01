@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -102,6 +102,13 @@ impl Phase {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Claim {
+    Starting,
+    Published,
+    Abandoned,
+}
+
 struct EntryState {
     phase: Phase,
     output: Vec<u8>,
@@ -112,7 +119,7 @@ struct EntryState {
     stdout_bytes: usize,
     stderr_bytes: usize,
     error_name: Option<&'static str>,
-    published: bool,
+    claim: Claim,
     tombstone: Option<u64>,
 }
 
@@ -164,7 +171,7 @@ impl Entry {
         });
     }
 
-    fn finish(&self, result: Result<CapturedOutcome, RunError>) {
+    fn record(&self, result: Result<CapturedOutcome, RunError>) -> bool {
         let mut state = self.state();
         match result {
             Ok(outcome) => {
@@ -185,8 +192,7 @@ impl Entry {
                 state.error_name = Some(error.name());
             }
         }
-        drop(state);
-        self.finished.send_replace(true);
+        state.claim == Claim::Abandoned
     }
 
     fn is_terminal(&self) -> bool {
@@ -215,6 +221,15 @@ struct Shared {
 impl Shared {
     fn registry(&self) -> MutexGuard<'_, Registry> {
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn settle(&self, entry: &Arc<Entry>, result: Result<CapturedOutcome, RunError>) {
+        let mut registry = self.registry();
+        if entry.record(result) {
+            forget(&mut registry, entry);
+        }
+        drop(registry);
+        entry.finished.send_replace(true);
     }
 }
 
@@ -257,7 +272,11 @@ impl ManagedExecutions {
             return Ok(snapshot);
         }
         self.spawn_driver(&entry, invocation, input.timeout);
-        let unpublished = UnpublishedRun(Arc::clone(&entry));
+        let unpublished = UnpublishedRun {
+            shared: Arc::clone(&self.shared),
+            entry: Arc::clone(&entry),
+            armed: true,
+        };
         tokio::select! {
             biased;
             () = cancel.cancelled() => {
@@ -267,7 +286,7 @@ impl ManagedExecutions {
             _ = timeout(input.yield_time, entry.finished()) => {}
         }
         let snapshot = self.deliver(&entry, true);
-        drop(unpublished);
+        unpublished.disarm();
         Ok(snapshot)
     }
 
@@ -367,7 +386,7 @@ impl ManagedExecutions {
                 stdout_bytes: 0,
                 stderr_bytes: 0,
                 error_name: None,
-                published: false,
+                claim: Claim::Starting,
                 tombstone: None,
             }),
             stop: watch::Sender::new(None),
@@ -379,6 +398,7 @@ impl ManagedExecutions {
 
     fn spawn_driver(&self, entry: &Arc<Entry>, invocation: Vec<OsString>, limit: Option<Duration>) {
         let entry = Arc::clone(entry);
+        let shared = Arc::downgrade(&self.shared);
         let supervisor = self.shared.supervisor.clone();
         tokio::spawn(async move {
             let deadline = limit.and_then(|limit| Instant::now().checked_add(limit));
@@ -391,7 +411,7 @@ impl ManagedExecutions {
                 supervisor: &supervisor,
             };
             let result = run_captured(command, &mut stop, &mut sink).await;
-            entry.finish(result);
+            settle(&shared, &entry, result);
         });
     }
 
@@ -413,7 +433,7 @@ impl ManagedExecutions {
             execution_id: entry.id.clone(),
             command: entry.command.clone(),
             cwd: entry.cwd.clone(),
-            retained: state.published || !terminal,
+            retained: state.claim == Claim::Published || !terminal,
             state: state.phase.snapshot_state(),
             output_delta: std::mem::take(&mut state.output),
             output_truncated: std::mem::replace(&mut state.output_truncated, false),
@@ -424,12 +444,12 @@ impl ManagedExecutions {
             error_name: state.error_name,
         };
         if !terminal {
-            state.published |= publish;
-        } else if !state.published {
+            if publish {
+                state.claim = Claim::Published;
+            }
+        } else if state.claim != Claim::Published {
             drop(state);
-            registry
-                .entries
-                .retain(|candidate| !Arc::ptr_eq(candidate, entry));
+            forget(&mut registry, entry);
         } else if state.tombstone.is_none() {
             state.tombstone = Some(registry.next_tombstone);
             registry.next_tombstone += 1;
@@ -438,13 +458,52 @@ impl ManagedExecutions {
     }
 }
 
-struct UnpublishedRun(Arc<Entry>);
+fn settle(shared: &Weak<Shared>, entry: &Arc<Entry>, result: Result<CapturedOutcome, RunError>) {
+    if let Some(shared) = shared.upgrade() {
+        shared.settle(entry, result);
+    } else {
+        entry.record(result);
+        entry.finished.send_replace(true);
+    }
+}
+
+fn forget(registry: &mut Registry, entry: &Arc<Entry>) {
+    registry
+        .entries
+        .retain(|candidate| !Arc::ptr_eq(candidate, entry));
+}
+
+struct UnpublishedRun {
+    shared: Arc<Shared>,
+    entry: Arc<Entry>,
+    armed: bool,
+}
+
+impl UnpublishedRun {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
 
 impl Drop for UnpublishedRun {
     fn drop(&mut self) {
-        if !self.0.state().published {
-            self.0.request_stop(StopIntent::Graceful);
+        if !self.armed {
+            return;
         }
+        let mut registry = self.shared.registry();
+        let mut state = self.entry.state();
+        if state.claim == Claim::Published {
+            return;
+        }
+        state.claim = Claim::Abandoned;
+        let settled = state.phase.is_terminal();
+        drop(state);
+        if settled {
+            forget(&mut registry, &self.entry);
+            return;
+        }
+        drop(registry);
+        self.entry.request_stop(StopIntent::Graceful);
     }
 }
 
