@@ -11,6 +11,8 @@ oh-fx talks to any OpenAI-compatible Chat Completions endpoint through a *custom
 
 Settings files are JSON objects of at most 64 KiB. A leading UTF-8 byte order mark is ignored. Duplicate keys are rejected anywhere in the document.
 
+When oh-fx saves a setting, such as the provider and model that `oh-fx login codex` selects, it rewrites `settings.json` compactly, keeps unknown keys in their order, makes the folder `0700` and the file `0600`, and keeps the previous file in `backups/` next to it (the last five). It does not rewrite a file that is not valid JSON, is a symbolic link, or has a second hard link, a file holding a number it would write back with a different value, or a file whose backup it cannot write. Workspace entries keep their own `provider` and `models`, which still win in their workspace; only retired keys and fast-mode bindings are removed from them, and an entry left empty by that is dropped.
+
 ## A Portkey connection
 
 ```json
@@ -189,7 +191,7 @@ An HTTP error from the gateway is reported differently. It prints one `oh-fx ask
 
 | Message | Cause |
 | --- | --- |
-| `the gateway provider is not available in oh-fx yet; ...` | No `provider` is selected. Add a connection and select it. |
+| `the gateway provider is not available in oh-fx yet; ...` | No `provider` is selected. Run `oh-fx login codex`, or add a connection and select it. |
 | `oh-fx: UnknownConfiguredProvider` | `provider` or `OH_FX_PROVIDER` names a connection that is not under `providers`. |
 | `The configured provider credential is unavailable. ...` | `auth.type` is `bearer` and its environment variable is unset or blank. |
 | `the configured provider credential is not a valid bearer token; ...` | The bearer token is longer than 16 KiB or contains spaces, control characters, or non-ASCII characters. With `--json`, `error` is `InvalidConfiguredProviderCredential`. |
@@ -220,7 +222,7 @@ https://auth.openai.com/oauth/authorize?response_type=code&client_id=...
 Waiting for browser authorization...
 ```
 
-After you approve, the browser returns to `http://127.0.0.1:1455/auth/callback` (or port 1457 when 1455 is busy), shows "Authorization complete", and the terminal prints `Signed in with Codex.` The callback listener binds `127.0.0.1` only, accepts exactly one authorization code, rejects any callback whose `state` does not match, and answers every other path with 404.
+After you approve, the browser returns to `http://127.0.0.1:1455/auth/callback` (or port 1457 when 1455 is busy) and shows "Authorization complete". oh-fx then loads the Codex model list your account offers, keeps your saved Codex model if the list still offers it and otherwise takes the list's first model, saves `"provider": "codex"` and that model in `settings.json`, and prints `Signed in with Codex.` If the list cannot be loaded or the settings cannot be saved, the sign-in is kept but nothing is selected, and `oh-fx login codex` exits with status 1; run it again to retry. The callback listener binds `127.0.0.1` only, accepts exactly one authorization code, rejects any callback whose `state` does not match, and answers every other path with 404.
 
 Set `OH_FX_NO_OPEN_BROWSER=1` to print the URL without opening a browser.
 
@@ -245,7 +247,7 @@ curl 'http://127.0.0.1:1455/auth/callback?code=...&state=...'
 
 ### Select ChatGPT and a model
 
-Save the provider and a Codex model in `~/.config/oh-fx/settings.json`:
+`oh-fx login codex` selects ChatGPT and a model, so `oh-fx ask` works right after signing in. To use another model, save it in `~/.config/oh-fx/settings.json`:
 
 ```json
 {
@@ -276,6 +278,7 @@ The `model` key belongs to the gateway and is never used for Codex. Without a Co
 ### What is sent where
 
 - Requests go to `https://chatgpt.com/backend-api/codex/responses` with the access token, the ChatGPT account id, `originator: oh-fx`, and `OpenAI-Beta: responses=experimental`. The body uses `store: false` and asks for encrypted reasoning, which oh-fx replays on the next step of the same run.
+- Signing in loads the model list from `https://chatgpt.com/backend-api/codex/models` with the same token, account id, and `originator`, and a `client_version` query naming the current Codex CLI release. oh-fx looks that release up at `https://registry.npmjs.org/@openai/codex/latest` and caches it for a minute in `$XDG_CACHE_HOME/oh-fx/provider-versions/codex.json`; when the lookup fails it uses the last cached release, and without one the model list fails as `transport`.
 - The sign-in code and refresh token go only to `https://auth.openai.com/oauth/token`.
 - Redirects are never followed, and tokens are masked in every error and never printed.
 - oh-fx refreshes the access token a minute before it expires and saves the new tokens before the request. When ChatGPT answers 401, oh-fx refreshes once and resends the request.
@@ -305,5 +308,9 @@ The login lives in `$XDG_DATA_HOME/oh-fx/chatgpt-auth.json` (default `~/.local/s
 | `Credential could not be saved. Check authentication storage before signing in again.` | The refreshed tokens could not be saved durably. |
 | `The credential account or team changed. Review authentication before retrying.` | A refresh returned a token for a different ChatGPT account. |
 | `oh-fx login: authorization denied` | The sign-in was denied in the browser. |
+| `oh-fx login: could not load the target model catalog (<category>)` | The sign-in worked, but the model list could not be loaded: `authentication` (ChatGPT rejected the token), `rate_limited`, `gateway_unavailable` (HTTP 5xx), `http_status` (another HTTP status), `malformed_response`, or `transport` (network failure, timeout, or no Codex CLI release could be looked up). Nothing is selected. |
+| `oh-fx login: target model catalog is empty` | Your plan offers no Codex models. |
+| `oh-fx login: failed to save provider selection` | `settings.json` could not be rewritten; see [Where settings live](#where-settings-live). |
+| `oh-fx login: could not load settings` | `settings.json` is malformed, or `OH_FX_PROVIDER` names no valid provider. |
 | `oh-fx login: failed to sign in` | The authorization code could not be exchanged for tokens, or `auth.openai.com` could not be reached. |
 | `oh-fx login: authorization expired; run oh-fx login again` | Nothing came back to the callback within five minutes. |

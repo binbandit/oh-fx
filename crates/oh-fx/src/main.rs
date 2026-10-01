@@ -4,6 +4,7 @@ mod codex_provider;
 mod context;
 mod help;
 mod login_command;
+mod provider_activation;
 mod tool_set;
 mod upgrade_command;
 
