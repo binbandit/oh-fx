@@ -517,6 +517,22 @@ impl ToolAccumulator {
     }
 }
 
+fn string_member<'a>(fields: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    fields.get(key).and_then(Value::as_str)
+}
+
+fn error_event_failure(event: &Map<String, Value>) -> (Option<&str>, Option<&str>) {
+    let code = string_member(event, "code");
+    let message = string_member(event, "message");
+    match event.get("error") {
+        Some(Value::Object(error)) if code.is_none() && message.is_none() => (
+            string_member(error, "code").or_else(|| string_member(error, "type")),
+            string_member(error, "message"),
+        ),
+        _ => (code, message),
+    }
+}
+
 fn check_optional_identity(fields: &Map<String, Value>, key: &str, expected: &str) -> Result<()> {
     match fields.get(key) {
         None => Ok(()),
@@ -835,7 +851,8 @@ impl Reducer {
                 return Ok(true);
             }
             "error" => {
-                self.accept_failure(&event);
+                let (code, message) = error_event_failure(&event);
+                self.accept_failure(code, message);
                 self.terminal_seen = true;
                 self.finish = Some(ResponsesFinish::ProviderError);
                 return Ok(true);
@@ -963,12 +980,14 @@ impl Reducer {
         let status = terminal_status(event_type, response)?;
         let output = response.get("output").unwrap_or(&Value::Null);
         if status == TerminalStatus::Failed {
-            let empty = Map::new();
-            let failure = match response.get("error") {
-                Some(Value::Object(failure)) => failure,
-                _ => &empty,
+            let (code, message) = match response.get("error") {
+                Some(Value::Object(failure)) => (
+                    string_member(failure, "code"),
+                    string_member(failure, "message"),
+                ),
+                _ => (None, None),
             };
-            self.accept_failure(failure);
+            self.accept_failure(code, message);
         } else if !output.is_null() {
             let Value::Array(items) = output else {
                 return Err(ResponsesError::InvalidEvent);
@@ -1142,15 +1161,9 @@ impl Reducer {
         Ok(position)
     }
 
-    fn accept_failure(&mut self, fields: &Map<String, Value>) {
-        let code = fields
-            .get("code")
-            .and_then(Value::as_str)
-            .unwrap_or("provider_error");
-        let message = fields
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("Provider response failed");
+    fn accept_failure(&mut self, code: Option<&str>, message: Option<&str>) {
+        let code = code.unwrap_or("provider_error");
+        let message = message.unwrap_or("Provider response failed");
         let cause = match code {
             "server_error" => FailureCause::Retryable,
             "rate_limit_exceeded" => FailureCause::RateLimited,

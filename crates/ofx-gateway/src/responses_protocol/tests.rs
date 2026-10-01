@@ -853,6 +853,68 @@ fn responses_terminal_failures_retain_provider_diagnostics_as_outcomes() {
 }
 
 #[test]
+fn responses_error_events_read_a_nested_error_object_only_when_the_top_level_is_empty() {
+    for (event, code, message, cause) in [
+        (
+            r#"{"type":"error","error":{"type":"server_error","code":null,"message":"The server had an error while processing your request.","param":null},"sequence_number":4}"#,
+            "server_error",
+            "The server had an error while processing your request.",
+            FailureCause::Retryable,
+        ),
+        (
+            r#"{"type":"error","error":{"type":"tokens","code":"rate_limit_exceeded","message":"Rate limit reached."}}"#,
+            "rate_limit_exceeded",
+            "Rate limit reached.",
+            FailureCause::RateLimited,
+        ),
+        (
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Bad input."}}"#,
+            "invalid_request_error",
+            "Bad input.",
+            FailureCause::NonRetryable,
+        ),
+        (
+            r#"{"type":"error","code":"server_error","message":"flat","error":{"code":"rate_limit_exceeded","message":"nested"}}"#,
+            "server_error",
+            "flat",
+            FailureCause::Retryable,
+        ),
+        (
+            r#"{"type":"error","message":"flat","error":{"code":"rate_limit_exceeded","message":"nested"}}"#,
+            "provider_error",
+            "flat",
+            FailureCause::NonRetryable,
+        ),
+        (
+            r#"{"type":"error","error":"server_error"}"#,
+            "provider_error",
+            "Provider response failed",
+            FailureCause::NonRetryable,
+        ),
+        (
+            r#"{"type":"error"}"#,
+            "provider_error",
+            "Provider response failed",
+            FailureCause::NonRetryable,
+        ),
+    ] {
+        let mut stream = Stream::new();
+        stream.apply(event).unwrap();
+        let completion = stream.finish().unwrap();
+        assert_eq!(completion.finish, ResponsesFinish::ProviderError, "{event}");
+        assert_eq!(
+            completion.failure,
+            Some(ProviderFailure {
+                code: code.to_owned(),
+                message: message.to_owned(),
+                cause,
+            }),
+            "{event}"
+        );
+    }
+}
+
+#[test]
 fn responses_terminal_incomplete_event_does_not_require_nested_status() {
     let mut stream = Stream::new();
     stream
