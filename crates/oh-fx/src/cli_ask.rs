@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -17,7 +17,10 @@ use ofx_agent::{
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, MISSING_CHATGPT_CREDENTIAL_MESSAGE};
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
-use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
+use ofx_config::{
+    ConnectionError, ContextLimitName, ContextLimitOverride, ProfilePaths, SelectionError,
+    Settings, request_output_tokens,
+};
 use ofx_contract::{
     CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
     ProviderError, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection,
@@ -37,7 +40,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
 use crate::command_echo::CommandEcho;
-use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
+use crate::context::{
+    GATEWAY_SYSTEM_PROMPT, HostRuntimeContext, InstructionLimits, ProfileLocation, ProjectContext,
+    gather_project_context,
+};
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
 };
@@ -53,6 +59,10 @@ const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_un
 const ASK_MODE_APPROVAL_HINT: &str = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
 const AUTO_MODE_APPROVAL_HINT: &str = "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule";
 const BLANK_TEXT: [char; 4] = [' ', '\t', '\r', '\n'];
+const PROJECT_INSTRUCTION_LIMITS: [ContextLimitName; 2] = [
+    ContextLimitName::ProjectInstructionFileBytes,
+    ContextLimitName::ProjectInstructionsTotalBytes,
+];
 
 struct Failure {
     code: String,
@@ -200,6 +210,21 @@ impl ReceivedSignals {
 
 struct Signalled(i32);
 
+struct AskRequest<'a> {
+    args: &'a AskArgs,
+    prompt: &'a str,
+    context_limits: &'a [ContextLimitOverride],
+    executions: &'a ManagedExecutions,
+}
+
+struct PreparedAsk {
+    agent: Agent,
+    model: String,
+    permission_mode: PermissionMode,
+    source: CredentialSource,
+    context_notices: Vec<String>,
+}
+
 struct Route {
     provider: Arc<dyn ModelProvider>,
     capabilities: Option<Arc<dyn CapabilityResolver>>,
@@ -225,7 +250,12 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
         .enable_all()
         .build();
     match runtime {
-        Ok(runtime) => runtime.block_on(ask(args, &prompt, SubscriptionEndpoints::default())),
+        Ok(runtime) => runtime.block_on(ask(
+            args,
+            &prompt,
+            modifiers.context_limit_overrides(),
+            SubscriptionEndpoints::default(),
+        )),
         Err(_) => Failure::code("RuntimeUnavailable").report(args.output.json),
     }
 }
@@ -239,11 +269,12 @@ pub(crate) fn report_argument_error(error: AskError) -> ExitCode {
 }
 
 fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
+    let unsupported_limit = modifiers
+        .context_limit_overrides()
+        .iter()
+        .any(|limit| !PROJECT_INSTRUCTION_LIMITS.contains(&limit.name));
     let launch = [
-        (
-            !modifiers.context_limit_overrides().is_empty(),
-            "--context-limit",
-        ),
+        (unsupported_limit, "--context-limit"),
         (modifiers.adds_directories(), "--add-dir"),
     ];
     let ask = [
@@ -288,7 +319,12 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
     ExitCode::FAILURE
 }
 
-async fn ask(args: &AskArgs, prompt: &str, endpoints: SubscriptionEndpoints) -> ExitCode {
+async fn ask(
+    args: &AskArgs,
+    prompt: &str,
+    context_limits: &[ContextLimitOverride],
+    endpoints: SubscriptionEndpoints,
+) -> ExitCode {
     let Ok(supervisor) = SessionSupervisor::current_executable() else {
         return Failure::code("SelfExeNotFound").report(args.output.json);
     };
@@ -299,16 +335,13 @@ async fn ask(args: &AskArgs, prompt: &str, endpoints: SubscriptionEndpoints) -> 
     }
     let cancel = CancellationToken::new();
     let received = watch_signals(cancel.clone());
-    let answered = answer(
+    let request = AskRequest {
         args,
         prompt,
-        endpoints,
-        &executions,
-        echo,
-        &cancel,
-        &received,
-    )
-    .await;
+        context_limits,
+        executions: &executions,
+    };
+    let answered = answer(&request, endpoints, echo, &cancel, &received).await;
     executions.shutdown().await;
     settle(answered, &received)
 }
@@ -324,24 +357,33 @@ fn settle(answered: Result<ExitCode, Signalled>, received: &ReceivedSignals) -> 
 }
 
 async fn answer(
-    args: &AskArgs,
-    prompt: &str,
+    request: &AskRequest<'_>,
     endpoints: SubscriptionEndpoints,
-    executions: &ManagedExecutions,
     echo: Option<Arc<CommandEcho>>,
     cancel: &CancellationToken,
     received: &ReceivedSignals,
 ) -> Result<ExitCode, Signalled> {
-    let prepared =
-        received.unless_signalled(prepare_agent(args, endpoints, executions, cancel).await)?;
-    let (mut agent, model, permission_mode, source) = match prepared {
+    let args = request.args;
+    let prepared = received.unless_signalled(prepare_agent(request, endpoints, cancel).await)?;
+    let PreparedAsk {
+        mut agent,
+        model,
+        permission_mode,
+        source,
+        context_notices,
+    } = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
     };
     let mut presenter = Presenter::new(args.output, permission_mode, source).echoing(echo);
+    for notice in &context_notices {
+        if !presenter.context_notice(notice) {
+            cancel.cancel();
+        }
+    }
     let report = agent
         .run_turn(
-            prompt,
+            request.prompt,
             &mut |event| {
                 if !presenter.handle(event) {
                     cancel.cancel();
@@ -355,11 +397,11 @@ async fn answer(
 }
 
 async fn prepare_agent(
-    args: &AskArgs,
+    request: &AskRequest<'_>,
     endpoints: SubscriptionEndpoints,
-    executions: &ManagedExecutions,
     cancel: &CancellationToken,
-) -> Result<(Agent, String, PermissionMode, CredentialSource), Failure> {
+) -> Result<PreparedAsk, Failure> {
+    let args = request.args;
     let workspace_root = workspace_root()?;
     let paths = ProfilePaths::from_environment();
     let settings = match &paths {
@@ -374,19 +416,7 @@ async fn prepare_agent(
         .permissions
         .mode
         .unwrap_or_else(|| settings.permission_mode());
-    let mut stderr = io::stderr().lock();
-    if permission_mode == PermissionMode::Yolo && !settings.yolo_acknowledged() {
-        let warning = if !args.output.no_color && stderr.is_terminal() {
-            format!("\x1b[38;5;252m{YOLO_WARNING}\x1b[0m")
-        } else {
-            YOLO_WARNING.to_owned()
-        };
-        writeln!(stderr, "{warning}").map_err(|error| Failure::written(&error))?;
-    }
-    for diagnostic in settings.diagnostics() {
-        writeln!(stderr, "oh-fx ask: {diagnostic}").map_err(|error| Failure::written(&error))?;
-    }
-    drop(stderr);
+    announce_settings(args, &settings, permission_mode)?;
     let lookup = |name: &str| env::var(name).ok();
     let requested = args.model.as_deref();
     let route = if settings.codex_selected(&lookup)? {
@@ -421,6 +451,12 @@ async fn prepare_agent(
     if route.uses_tls {
         ofx_http::warm_tls_roots();
     }
+    let project_context = ask_project_context(
+        &settings,
+        request.context_limits,
+        paths.as_ref(),
+        &workspace_root,
+    );
     let model = route.model;
     let (reasoning_effort, fast_mode) = requested_reasoning(args, &settings);
     let config = AgentConfig {
@@ -437,7 +473,7 @@ async fn prepare_agent(
     let command_timeout = args.timeout_ms.map(Duration::from_millis);
     let tools = tool_set::ask_tools(
         &workspace_root,
-        executions,
+        request.executions,
         command_timeout,
         permission_mode,
     );
@@ -453,7 +489,58 @@ async fn prepare_agent(
     if let Some(capabilities) = route.capabilities {
         agent = agent.with_capability_resolver(capabilities);
     }
-    Ok((agent, model, permission_mode, route.source))
+    if let Some(content) = project_context.content {
+        agent = agent.with_project_context(content);
+    }
+    Ok(PreparedAsk {
+        agent,
+        model,
+        permission_mode,
+        source: route.source,
+        context_notices: project_context.notices,
+    })
+}
+
+fn announce_settings(
+    args: &AskArgs,
+    settings: &Settings,
+    permission_mode: PermissionMode,
+) -> Result<(), Failure> {
+    let mut stderr = io::stderr().lock();
+    if permission_mode == PermissionMode::Yolo && !settings.yolo_acknowledged() {
+        let warning = if !args.output.no_color && stderr.is_terminal() {
+            format!("\x1b[38;5;252m{YOLO_WARNING}\x1b[0m")
+        } else {
+            YOLO_WARNING.to_owned()
+        };
+        writeln!(stderr, "{warning}").map_err(|error| Failure::written(&error))?;
+    }
+    for diagnostic in settings.diagnostics() {
+        writeln!(stderr, "oh-fx ask: {diagnostic}").map_err(|error| Failure::written(&error))?;
+    }
+    Ok(())
+}
+
+fn ask_project_context(
+    settings: &Settings,
+    command_line: &[ContextLimitOverride],
+    paths: Option<&ProfilePaths>,
+    workspace_root: &Path,
+) -> ProjectContext {
+    if !settings.context_enabled() {
+        return ProjectContext::default();
+    }
+    let mut limits = settings.context_limits();
+    limits.apply_command_line(command_line);
+    let home = env::var_os("HOME");
+    gather_project_context(
+        workspace_root,
+        ProfileLocation {
+            home: home.as_deref(),
+            config_directory: paths.map(|paths| paths.config.as_path()),
+        },
+        InstructionLimits::from_limits(&limits),
+    )
 }
 
 fn requested_reasoning(args: &AskArgs, settings: &Settings) -> (Option<String>, bool) {
@@ -780,6 +867,7 @@ enum StatusBlock {
 
 struct Presenter {
     mode: OutputMode,
+    claimed_notices: Vec<String>,
     permission_mode: PermissionMode,
     source: CredentialSource,
     stdout: Box<dyn Write + Send>,
@@ -807,6 +895,7 @@ impl Presenter {
     fn new(output: AskOutput, permission_mode: PermissionMode, source: CredentialSource) -> Self {
         Self {
             mode: output_mode(output),
+            claimed_notices: Vec::new(),
             permission_mode,
             source,
             stdout: Box::new(io::stdout()),
@@ -910,6 +999,22 @@ impl Presenter {
             | UiEvent::TurnFinished { .. } => Ok(()),
         };
         match written {
+            Ok(()) => true,
+            Err(error) => {
+                self.write_error.get_or_insert(write_error_name(&error));
+                false
+            }
+        }
+    }
+
+    fn context_notice(&mut self, notice: &str) -> bool {
+        if self.mode == OutputMode::Terminal
+            || self.claimed_notices.iter().any(|seen| seen == notice)
+        {
+            return true;
+        }
+        self.claimed_notices.push(notice.to_owned());
+        match write_stderr(&format!("[notice] {notice}\n")) {
             Ok(()) => true,
             Err(error) => {
                 self.write_error.get_or_insert(write_error_name(&error));
@@ -1425,15 +1530,14 @@ mod tests {
             }
         });
         let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
-        let answered = runtime.block_on(answer(
-            &args,
-            "Hello",
-            endpoints(&auth),
-            &executions,
-            None,
-            &cancel,
-            &received,
-        ));
+        let request = AskRequest {
+            args: &args,
+            prompt: "Hello",
+            context_limits: &[],
+            executions: &executions,
+        };
+        let answered =
+            runtime.block_on(answer(&request, endpoints(&auth), None, &cancel, &received));
         let _ = settle(answered, &received);
     }
 
@@ -1620,6 +1724,15 @@ mod tests {
             presenter.progress_line("Reading notes.txt"),
             "Reading notes.txt\n"
         );
+    }
+
+    #[test]
+    fn terminal_runs_keep_context_notices_out_of_the_transcript() {
+        let mut presenter = json_presenter();
+        presenter.mode = OutputMode::Terminal;
+        assert!(presenter.context_notice("[context] hidden"));
+        assert!(presenter.claimed_notices.is_empty());
+        assert!(!presenter.has_output);
     }
 
     #[test]

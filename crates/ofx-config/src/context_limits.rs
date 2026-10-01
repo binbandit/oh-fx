@@ -1,7 +1,7 @@
 use ofx_text::parse_unsigned;
 use serde_json::Value;
 
-pub(crate) const EMERGENCY_CEILING_BYTES: usize = 64 * 1024 * 1024;
+pub const EMERGENCY_CEILING_BYTES: usize = 64 * 1024 * 1024;
 
 const TRIMMED: &[u8] = b" \t\r\n";
 const NAME_COUNT: usize = 11;
@@ -178,6 +178,15 @@ impl ContextLimits {
         self.values[name.index()]
     }
 
+    pub fn apply_command_line(&mut self, overrides: &[ContextLimitOverride]) {
+        for limit in overrides {
+            self.values[limit.name.index()] = ContextLimit {
+                value: limit.value,
+                source: ContextLimitSource::CommandLine,
+            };
+        }
+    }
+
     pub(crate) fn apply(&mut self, overrides: &ContextLimitOverrides, source: ContextLimitSource) {
         for (slot, value) in self.values.iter_mut().zip(overrides.values) {
             if let Some(value) = value {
@@ -238,6 +247,22 @@ pub fn parse_context_limit_override(raw: &[u8]) -> Result<ContextLimitOverride, 
         name: ContextLimitName::parse(name).ok_or(ContextLimitError::UnknownContextLimit)?,
         value: ContextLimitValue::parse_text(value)?,
     })
+}
+
+pub fn line_safe_prefix_length(bytes: &[u8], max_bytes: usize) -> usize {
+    let end = utf8_prefix_length(bytes, max_bytes);
+    if end == bytes.len() {
+        return end;
+    }
+    bytes[..end]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(end, |newline| newline + 1)
+}
+
+pub fn utf8_prefix_length(bytes: &[u8], max_bytes: usize) -> usize {
+    let candidate = &bytes[..max_bytes.min(bytes.len())];
+    std::str::from_utf8(candidate).map_or_else(|error| error.valid_up_to(), str::len)
 }
 
 fn trim(raw: &[u8]) -> &[u8] {
@@ -423,5 +448,47 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    #[test]
+    fn command_line_overrides_win_in_order_over_settings() {
+        let mut limits = ContextLimits::default();
+        limits.apply(
+            &ContextLimitOverrides::parse_json(&serde_json::json!({"skill_chunk_bytes": 111}))
+                .unwrap(),
+            ContextLimitSource::GlobalSettings,
+        );
+        let overrides = [
+            parse_context_limit_override(b"skill_chunk_bytes=333").unwrap(),
+            parse_context_limit_override(b"project_instruction_file_bytes=off").unwrap(),
+            parse_context_limit_override(b"project_instruction_file_bytes=12").unwrap(),
+        ];
+        limits.apply_command_line(&overrides);
+        assert_eq!(
+            limits.get(ContextLimitName::SkillChunkBytes),
+            ContextLimit {
+                value: ContextLimitValue::Bytes(333),
+                source: ContextLimitSource::CommandLine,
+            }
+        );
+        assert_eq!(
+            limits
+                .get(ContextLimitName::ProjectInstructionFileBytes)
+                .effective_bytes(),
+            12
+        );
+        assert_eq!(
+            limits.get(ContextLimitName::McpDescriptionBytes).source,
+            ContextLimitSource::CompiledDefault
+        );
+    }
+
+    #[test]
+    fn line_safe_prefix_preserves_utf8_and_complete_lines_when_possible() {
+        assert_eq!(line_safe_prefix_length(b"one\ntwo\n", 7), 4);
+        assert_eq!(line_safe_prefix_length("éclair".as_bytes(), 1), 0);
+        assert_eq!(line_safe_prefix_length("éclair".as_bytes(), 2), 2);
+        assert_eq!(line_safe_prefix_length(b"abc\xe4", 4), 3);
+        assert_eq!(line_safe_prefix_length(b"short", 64), 5);
     }
 }

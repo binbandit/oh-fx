@@ -132,6 +132,7 @@ pub struct Agent {
     config: AgentConfig,
     capability_resolver: Option<Arc<dyn CapabilityResolver>>,
     capabilities: Option<KnownCapabilities>,
+    project_context: Option<String>,
     history: Vec<ChatMessage>,
     turns: u64,
 }
@@ -154,6 +155,7 @@ impl Agent {
             config,
             capability_resolver: None,
             capabilities: None,
+            project_context: None,
             history: Vec::new(),
             turns: 0,
         }
@@ -162,6 +164,12 @@ impl Agent {
     #[must_use]
     pub fn with_capability_resolver(mut self, resolver: Arc<dyn CapabilityResolver>) -> Self {
         self.capability_resolver = Some(resolver);
+        self
+    }
+
+    #[must_use]
+    pub fn with_project_context(mut self, content: String) -> Self {
+        self.project_context = Some(content);
         self
     }
 
@@ -241,11 +249,13 @@ impl Agent {
                 return Err(Stop::interrupted());
             }
             let context = self.context.runtime_context().await;
-            let instructions: Vec<&str> = std::iter::once(self.config.system_prompt.as_str())
-                .filter(|system_prompt| !system_prompt.is_empty())
-                .chain(context.iter().map(String::as_str))
-                .chain(std::iter::once(RESPONSE_LANGUAGE_CONTROL))
-                .collect();
+            let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + 3);
+            if !self.config.system_prompt.is_empty() {
+                instructions.push(&self.config.system_prompt);
+            }
+            instructions.extend(self.project_context.as_deref());
+            instructions.extend(context.iter().map(String::as_str));
+            instructions.push(RESPONSE_LANGUAGE_CONTROL);
             let request = ModelRequest {
                 model: &self.config.model,
                 instructions: &instructions,

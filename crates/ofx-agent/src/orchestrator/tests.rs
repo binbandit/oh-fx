@@ -592,6 +592,44 @@ async fn an_empty_system_prompt_is_left_out_of_the_instructions() {
 }
 
 #[tokio::test]
+async fn project_context_follows_the_system_prompt_before_runtime_context() {
+    let provider = FakeProvider::new(vec![text_reply("ok"), text_reply("again")]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new())
+        .with_project_context("<project-rules>\nrule\n</project-rules>".to_owned());
+    run(&mut agent, "hi").await;
+    run(&mut agent, "more").await;
+    for request in provider.requests() {
+        assert_eq!(
+            request.instructions,
+            [
+                SYSTEM_PROMPT,
+                "<project-rules>\nrule\n</project-rules>",
+                TURN_CONTEXT,
+                RESPONSE_LANGUAGE_CONTROL
+            ]
+        );
+    }
+    let without_system_prompt = AgentConfig {
+        system_prompt: String::new(),
+        ..config()
+    };
+    let shared: Arc<FakeProvider> = FakeProvider::new(vec![text_reply("ok")]);
+    let mut agent = Agent::new(
+        Arc::clone(&shared) as Arc<dyn ModelProvider>,
+        Vec::new(),
+        Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
+        without_system_prompt,
+    )
+    .with_project_context("rules".to_owned());
+    run(&mut agent, "hi").await;
+    assert_eq!(
+        shared.requests()[0].instructions,
+        ["rules", TURN_CONTEXT, RESPONSE_LANGUAGE_CONTROL]
+    );
+}
+
+#[tokio::test]
 async fn tool_calls_run_and_feed_results_back() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[("call-1", r#"{"text":"a"}"#)]),

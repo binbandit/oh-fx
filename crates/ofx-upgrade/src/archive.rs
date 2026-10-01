@@ -7,13 +7,13 @@ use std::thread;
 use std::time::Duration;
 
 use flate2::read::GzDecoder;
+use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
 use crate::error::UpgradeError;
 
 const BINARY_NAME: &str = "oh-fx";
 const EXECUTABLE_MODE: u32 = 0o755;
-const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 const BUSY_RETRY_LIMIT: u32 = 50;
 const BUSY_RETRY_DELAY: Duration = Duration::from_millis(20);
 
@@ -118,19 +118,6 @@ fn is_root_binary_entry(path: &Path) -> bool {
         .filter(|component| *component != Component::CurDir);
     components.next() == Some(Component::Normal(BINARY_NAME.as_ref()))
         && components.next().is_none()
-}
-
-fn lowercase_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .flat_map(|byte| {
-            [
-                HEX_DIGITS[usize::from(byte >> 4)],
-                HEX_DIGITS[usize::from(byte & 0x0f)],
-            ]
-        })
-        .map(char::from)
-        .collect()
 }
 
 #[cfg(test)]

@@ -21,7 +21,8 @@ pub use configured_provider::{
 pub use connection::{ConnectionError, ResolvedConnection};
 pub use context_limits::{
     ContextLimit, ContextLimitError, ContextLimitName, ContextLimitOverride, ContextLimitSource,
-    ContextLimitValue, ContextLimits, parse_context_limit_override,
+    ContextLimitValue, ContextLimits, EMERGENCY_CEILING_BYTES, line_safe_prefix_length,
+    parse_context_limit_override, utf8_prefix_length,
 };
 pub use io::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 pub use model_capabilities::{Capabilities, request_output_tokens};
