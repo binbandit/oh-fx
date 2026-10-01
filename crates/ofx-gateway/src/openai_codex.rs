@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 use crate::chat_completions::{
     ChunkSource, SendFailure, excerpt, http_failure, sanitized, send, transport_failure,
 };
+use crate::chat_completions_protocol::mask_configured_secrets;
 use crate::responses_protocol::{
     Delta, FailureCause, Reducer, ReplayLimits, ResponsesCompletion, ResponsesError,
     ResponsesFinish, StreamLimits, push_json_string, select_replay_parts, write_input, write_tools,
@@ -148,21 +149,43 @@ impl CodexProvider {
         }
         let body = build_request(request, &replay_parts(request)).map_err(codex_failure)?;
         self.refresh_if_due().await;
-        let mut response = self.post(&body, cancel).await?;
+        let mut sent = Vec::new();
+        let mut response = self.post(&body, &mut sent, cancel).await?;
         if response.status() == StatusCode::UNAUTHORIZED
             && self.replace_access(CodexRefresh::Force).await
         {
-            response = self.post(&body, cancel).await?;
+            response = self.post(&body, &mut sent, cancel).await?;
         }
-        if response.status() != StatusCode::OK {
-            return Err(http_failure(response, cancel, &self.secrets(), None).await);
-        }
-        let completion = self.consume(&mut response, sink, cancel).await?;
-        into_completion(completion, &self.secrets(), request.model)
+        self.receive(response, &sent, sink, cancel, request.model)
+            .await
     }
 
-    fn secrets(&self) -> Vec<String> {
-        vec![lock(&self.access).token.to_string()]
+    async fn receive(
+        &self,
+        mut response: Response,
+        sent: &[Zeroizing<String>],
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+        model: &str,
+    ) -> Result<Completion, ProviderError> {
+        let secrets = self.secrets(sent);
+        if response.status() != StatusCode::OK {
+            return Err(http_failure(response, cancel, &secrets, None).await);
+        }
+        let completion =
+            consume_stream(&mut response, sink, cancel, STREAM_LIMITS, &secrets).await?;
+        into_completion(completion, &secrets, model)
+    }
+
+    fn secrets(&self, sent: &[Zeroizing<String>]) -> Zeroizing<Vec<String>> {
+        let current = Zeroizing::new(lock(&self.access).token.to_string());
+        let mut secrets = Zeroizing::new(Vec::with_capacity(sent.len() + 1));
+        for token in sent.iter().chain([&current]) {
+            if !secrets.contains(&**token) {
+                secrets.push(token.to_string());
+            }
+        }
+        secrets
     }
 
     async fn refresh_if_due(&self) {
@@ -187,6 +210,7 @@ impl CodexProvider {
     async fn post(
         &self,
         body: &str,
+        sent: &mut Vec<Zeroizing<String>>,
         cancel: &CancellationToken,
     ) -> Result<Response, ProviderError> {
         let (token, account_id) = {
@@ -212,6 +236,7 @@ impl CodexProvider {
             .header("OpenAI-Beta", "responses=experimental")
             .header(ACCEPT, EVENT_STREAM)
             .body(body.to_owned());
+        sent.push(token);
         match send(builder, cancel).await {
             Ok(response) => Ok(response),
             Err(SendFailure::Cancelled) => Err(ProviderError::cancelled()),
@@ -219,18 +244,9 @@ impl CodexProvider {
                 Err(ProviderError::new(ProviderErrorKind::Timeout, "Timeout"))
             }
             Err(SendFailure::Transport(error)) => {
-                Err(transport_failure(&error, std::slice::from_ref(&*token)))
+                Err(transport_failure(&error, &self.secrets(sent)))
             }
         }
-    }
-
-    async fn consume<S: ChunkSource + Send>(
-        &self,
-        source: &mut S,
-        sink: &mut dyn StreamSink,
-        cancel: &CancellationToken,
-    ) -> Result<ResponsesCompletion, ProviderError> {
-        consume_stream(source, sink, cancel, STREAM_LIMITS, &self.secrets()).await
     }
 }
 
@@ -383,7 +399,9 @@ async fn consume_stream<S: ChunkSource + Send>(
                     if failure.kind == ProviderErrorKind::Cancelled {
                         return Err(failure);
                     }
-                    let detail = format!("stream event: {}", excerpt(data));
+                    let event = String::from_utf8_lossy(data).into_owned();
+                    let masked = mask_configured_secrets(event, secrets);
+                    let detail = format!("stream event: {}", excerpt(masked.as_bytes()));
                     return Err(failure.with_detail(sanitized(detail, secrets)));
                 }
             }

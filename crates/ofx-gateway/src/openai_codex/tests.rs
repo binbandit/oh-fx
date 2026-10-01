@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fmt::Write;
 
 use ofx_contract::{ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
+use ofx_testkit::{FakeServer, Reply};
 use serde_json::json;
 
 use super::*;
@@ -470,6 +471,134 @@ fn codex_replay_projection_keeps_the_source_and_selects_parts() {
             .code,
         "InvalidProviderState"
     );
+}
+
+#[tokio::test]
+async fn errors_mask_the_token_their_request_sent_after_another_request_rotates_it() {
+    const SENT: &str = "codex-sent-credential-0123456789";
+    const ROTATED: &str = "codex-rotated-credential-9876543210";
+    let echoed = format!("failed for {SENT}");
+    let replies = [
+        Reply::status(
+            500,
+            json!({"error": {"code": "server_error", "message": echoed}}).to_string(),
+        ),
+        Reply::sse(&[json!({"type": "response.failed", "response": {"error": {"code": "server_error", "message": echoed}}}).to_string()]),
+    ];
+    for reply in replies {
+        let server = FakeServer::start([reply]);
+        let codex = CodexProvider::new(
+            CodexAccess::new(SENT.to_owned(), "acct".to_owned(), i64::MAX),
+            Arc::new(Rotating(ROTATED)),
+            "oh-fx/test",
+            CodexEndpoints {
+                responses: format!("{}/backend-api/codex/responses", server.base_url()),
+            },
+        )
+        .unwrap();
+        let cancel = CancellationToken::new();
+        let mut sent = Vec::new();
+        let response = codex.post("{}", &mut sent, &cancel).await.unwrap();
+        assert!(codex.replace_access(CodexRefresh::Force).await);
+        assert_eq!(*codex.secrets(&sent), [SENT, ROTATED]);
+        let mut sink = |_: StreamEvent| {};
+        let error = codex
+            .receive(response, &sent, &mut sink, &cancel, "gpt-5.6-sol")
+            .await
+            .unwrap_err();
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("failed for"), "{rendered}");
+        assert!(!rendered.contains(SENT), "{rendered}");
+        assert!(!rendered.contains(ROTATED), "{rendered}");
+    }
+}
+
+#[tokio::test]
+async fn a_retried_request_masks_every_token_it_sent() {
+    const SENT: &str = "codex-sent-credential-0123456789";
+    const ROTATED: &str = "codex-rotated-credential-9876543210";
+    let server = FakeServer::start([
+        Reply::status(
+            401,
+            json!({"error": {"code": "token_expired", "message": format!("expired {SENT}")}})
+                .to_string(),
+        ),
+        Reply::status(
+            500,
+            json!({"error": {"code": "server_error", "message": format!("failed for {SENT} and {ROTATED}")}})
+                .to_string(),
+        ),
+    ]);
+    let codex = CodexProvider::new(
+        CodexAccess::new(SENT.to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(Rotating(ROTATED)),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let messages = [ChatMessage::user("Hello.")];
+    let request = request(&messages, &[], &[]);
+    let mut sink = |_: StreamEvent| {};
+    let error = codex
+        .stream(&request, &mut sink, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, Some(500));
+    let rendered = format!("{error:?}");
+    assert!(rendered.contains("failed for"), "{rendered}");
+    assert!(!rendered.contains(SENT), "{rendered}");
+    assert!(!rendered.contains(ROTATED), "{rendered}");
+}
+
+#[tokio::test]
+async fn rejected_stream_events_mask_a_token_before_cutting_the_excerpt() {
+    const TOKEN: &str = "codex-stream-credential-0123456789abcdef";
+    let event = json!({
+        "type": "response.output_text.delta",
+        "delta": 5,
+        "padding": "p".repeat(72),
+        "echo": TOKEN,
+    })
+    .to_string();
+    assert!(
+        event
+            .find(TOKEN)
+            .is_some_and(|start| start < 160 && start + TOKEN.len() > 160)
+    );
+    let mut chunks = Chunks(VecDeque::from([format!("data: {event}\n\n").into_bytes()]));
+    let mut sink = |_: StreamEvent| {};
+    let error = consume_stream(
+        &mut chunks,
+        &mut sink,
+        &CancellationToken::new(),
+        STREAM_LIMITS,
+        &[TOKEN.to_owned()],
+    )
+    .await
+    .unwrap_err();
+    let detail = error.detail.expect("an excerpt");
+    assert!(detail.starts_with("stream event: "), "{detail}");
+    assert!(!detail.contains(&TOKEN[..12]), "{detail}");
+}
+
+struct Rotating(&'static str);
+
+impl CodexCredentials for Rotating {
+    fn refresh<'a>(
+        &'a self,
+        _mode: CodexRefresh,
+        account_id: &'a str,
+    ) -> BoxFuture<'a, Option<CodexAccess>> {
+        Box::pin(async move {
+            Some(CodexAccess::new(
+                self.0.to_owned(),
+                account_id.to_owned(),
+                i64::MAX,
+            ))
+        })
+    }
 }
 
 struct NoRefresh;
