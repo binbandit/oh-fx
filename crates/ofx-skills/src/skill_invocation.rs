@@ -1,9 +1,11 @@
+mod explicit_section;
 mod failures;
 mod resource;
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+pub use explicit_section::{ExplicitBinding, ExplicitPromptSection, LoadNotice, NoticeTone};
 use failures::{
     attach_discovery_notice, bounded_skill_error, execute_primary_budget, format_ambiguous_skill,
     format_exact_skill_not_found, format_missing_skill, format_skill_location_mismatch,
@@ -61,6 +63,8 @@ pub enum SkillError {
     SkillFileLimitExceeded,
     #[error("UnexpectedEndOfFile")]
     UnexpectedEndOfFile,
+    #[error("SkillContextTooLarge")]
+    SkillContextTooLarge,
     #[error(transparent)]
     Path(#[from] PathError),
 }
@@ -149,6 +153,8 @@ pub struct SkillLoader<'a> {
     max_tool_result_bytes: Option<usize>,
     cancellation: Option<&'a CancellationToken>,
     ceiling: usize,
+    #[cfg(test)]
+    after_selection: Option<&'a dyn Fn()>,
 }
 
 struct Selection<'s> {
@@ -178,6 +184,8 @@ impl<'a> SkillLoader<'a> {
             max_tool_result_bytes: None,
             cancellation: None,
             ceiling: EMERGENCY_CEILING_BYTES,
+            #[cfg(test)]
+            after_selection: None,
         }
     }
 
@@ -296,6 +304,10 @@ impl<'a> SkillLoader<'a> {
         selection: &Selection<'_>,
         resource: &str,
     ) -> Result<SkillResourceRead, SkillError> {
+        #[cfg(test)]
+        if let Some(after_selection) = self.after_selection {
+            after_selection();
+        }
         let candidate = &selection.candidate;
         let read = read_skill_resource(
             candidate,
