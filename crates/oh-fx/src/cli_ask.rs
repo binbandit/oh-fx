@@ -164,7 +164,7 @@ impl CredentialSource {
 
 struct Route {
     provider: Arc<dyn ModelProvider>,
-    model: Result<String, Vec<u8>>,
+    model: String,
     max_output_tokens: Option<u32>,
     source: CredentialSource,
 }
@@ -307,21 +307,14 @@ async fn prepare_agent(
     let lookup = |name: &str| env::var(name).ok();
     let requested = args.model.as_deref();
     let route = if settings.codex_selected(&lookup)? {
-        let model = select_model(requested, |model| {
-            settings.selected_codex_model(model, &lookup)
-        })?;
-        let provider = codex_provider(
+        codex_route(
+            &settings,
+            requested,
             paths.map(|paths| paths.data),
-            &crate::user_agent(),
             SubscriptionEndpoints::default(),
+            &lookup,
         )
-        .await?;
-        Route {
-            provider: Arc::new(provider),
-            model,
-            max_output_tokens: None,
-            source: CredentialSource::Codex,
-        }
+        .await?
     } else {
         let connection = settings.selected_connection(&lookup)?;
         let model = select_model(requested, |model| {
@@ -330,17 +323,15 @@ async fn prepare_agent(
         let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
         let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
             .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
+        let model = model.map_err(Failure::invalid_model)?;
         Route {
             provider: Arc::new(provider),
-            max_output_tokens: model
-                .as_ref()
-                .ok()
-                .and_then(|model| request_output_tokens(connection.capabilities(model))),
+            max_output_tokens: request_output_tokens(connection.capabilities(&model)),
             model,
             source: CredentialSource::Configured,
         }
     };
-    let model = route.model.map_err(Failure::invalid_model)?;
+    let model = route.model;
     let config = AgentConfig {
         system_prompt: args
             .system_prompt
@@ -361,6 +352,26 @@ async fn prepare_agent(
         config,
     );
     Ok((agent, model, permission_mode, route.source))
+}
+
+async fn codex_route(
+    settings: &Settings,
+    requested: Option<&OsStr>,
+    data_directory: Option<PathBuf>,
+    endpoints: SubscriptionEndpoints,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<Route, Failure> {
+    let model = select_model(requested, |model| {
+        settings.selected_codex_model(model, lookup)
+    })?
+    .map_err(Failure::invalid_model)?;
+    let provider = codex_provider(data_directory, &crate::user_agent(), endpoints).await?;
+    Ok(Route {
+        provider: Arc::new(provider),
+        model,
+        max_output_tokens: None,
+        source: CredentialSource::Codex,
+    })
 }
 
 fn select_model(
@@ -889,13 +900,103 @@ impl Presenter {
 
 #[cfg(test)]
 mod tests {
-    use ofx_auth::PreparationError;
+    use std::os::unix::fs::PermissionsExt;
+
+    use ofx_auth::{ChatGptEndpoints, PreparationError};
     use ofx_contract::{
         CallDescription, Concurrency, ModelFailureDiagnostic, ProviderErrorKind, RouteRecoveryKind,
         ToolActivity, TurnId,
     };
+    use ofx_gateway::CodexEndpoints;
+    use ofx_testkit::{FakeServer, Reply};
 
     use super::*;
+
+    const EXPIRED_SESSION: &str = r#"{"version":1,"access_token":"saved-access-token","refresh_token":"rt-refresh-secret-0123456789","expires_at_ms":1,"account_id":"acct_test"}
+"#;
+
+    struct ExpiredLogin {
+        _directory: tempfile::TempDir,
+        paths: ProfilePaths,
+        workspace: PathBuf,
+    }
+
+    impl ExpiredLogin {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let paths = ProfilePaths {
+                config: root.join("config/oh-fx"),
+                data: root.join("data/oh-fx"),
+                state: root.join("state/oh-fx"),
+                cache: root.join("cache/oh-fx"),
+            };
+            let workspace = root.join("workspace");
+            for directory in [&paths.config, &paths.data, &workspace] {
+                fs::create_dir_all(directory).unwrap();
+            }
+            fs::set_permissions(&paths.data, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(
+                paths.config.join("settings.json"),
+                r#"{"provider":"codex","models":{"codex":"gpt-5.4"}}"#,
+            )
+            .unwrap();
+            let session = paths.data.join("chatgpt-auth.json");
+            fs::write(&session, EXPIRED_SESSION).unwrap();
+            fs::set_permissions(&session, fs::Permissions::from_mode(0o600)).unwrap();
+            Self {
+                _directory: directory,
+                paths,
+                workspace,
+            }
+        }
+
+        fn session(&self) -> String {
+            fs::read_to_string(self.paths.data.join("chatgpt-auth.json")).unwrap()
+        }
+
+        fn settings(&self) -> Settings {
+            Settings::load(&self.paths, &self.workspace).unwrap()
+        }
+    }
+
+    fn endpoints(auth: &FakeServer) -> SubscriptionEndpoints {
+        SubscriptionEndpoints {
+            chatgpt: ChatGptEndpoints {
+                issuer: auth.base_url(),
+                token_url: format!("{}/oauth/token", auth.base_url()),
+                callback_ports: vec![0],
+            },
+            codex: CodexEndpoints {
+                responses: format!("{}/backend-api/codex/responses", auth.base_url()),
+            },
+        }
+    }
+
+    fn no_environment(_: &str) -> Option<String> {
+        None
+    }
+
+    #[tokio::test]
+    async fn non_utf8_codex_models_fail_before_the_login_is_refreshed() {
+        let login = ExpiredLogin::new();
+        let auth = FakeServer::start([Reply::status(500, "unexpected refresh")]);
+        let model = OsStr::from_bytes(b" m\xff ");
+        let failure = codex_route(
+            &login.settings(),
+            Some(model),
+            Some(login.paths.data.clone()),
+            endpoints(&auth),
+            &no_environment,
+        )
+        .await
+        .err()
+        .expect("an invalid model");
+        assert_eq!(failure.code, INVALID_MODEL_CODE);
+        assert_eq!(failure.model, b" m\xff ");
+        assert!(auth.requests().is_empty());
+        assert_eq!(login.session(), EXPIRED_SESSION);
+    }
 
     fn result_json(result: &RunResult<'_>) -> String {
         serde_json::to_string(result).unwrap()

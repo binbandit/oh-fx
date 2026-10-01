@@ -42,7 +42,7 @@ impl Home {
         self.data().join("chatgpt-auth.json")
     }
 
-    fn write_credentials(&self, mode: u32) -> String {
+    fn write_credentials(&self, mode: u32, expires_at_ms: i64) -> String {
         fs::create_dir_all(self.data()).expect("create the data directory");
         fs::set_permissions(self.data(), fs::Permissions::from_mode(0o700))
             .expect("make the data directory private");
@@ -52,7 +52,7 @@ impl Home {
                 "version": 1,
                 "access_token": ACCESS_TOKEN,
                 "refresh_token": REFRESH_TOKEN,
-                "expires_at_ms": 4_102_444_800_000_i64,
+                "expires_at_ms": expires_at_ms,
                 "account_id": "acct_test",
             })
         );
@@ -144,7 +144,7 @@ fn the_environment_selects_codex_and_a_run_model() {
 #[test]
 fn ask_refuses_a_codex_login_readable_by_others_without_showing_it() {
     let home = Home::with_settings(Some(&codex_settings()));
-    let session = home.write_credentials(0o644);
+    let session = home.write_credentials(0o644, 4_102_444_800_000);
     let output = home.ask(&["ask", "hello"], &[]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stdout(&output), "");
@@ -175,9 +175,9 @@ fn quiet_codex_runs_still_report_a_missing_login() {
 }
 
 #[test]
-fn non_utf8_codex_models_fail_as_invalid_models_before_any_request() {
+fn non_utf8_codex_models_fail_as_invalid_models_before_an_expired_login_is_refreshed() {
     let home = Home::with_settings(Some(&codex_settings()));
-    let session = home.write_credentials(0o600);
+    let session = home.write_credentials(0o600, 1);
     let model = OsString::from_vec(b" m\xff ".to_vec());
     for json in [false, true] {
         let mut args = vec![
