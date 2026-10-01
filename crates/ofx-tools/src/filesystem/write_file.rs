@@ -30,8 +30,15 @@ impl WriteFile {
                 tool_name: TOOL_NAME,
                 presentation: PRESENTATION,
                 workspace_root: workspace_root.into(),
+                full_access: false,
             },
         }
+    }
+
+    #[must_use]
+    pub fn with_full_access(mut self, full_access: bool) -> Self {
+        self.request.full_access = full_access;
+        self
     }
 }
 
@@ -41,7 +48,7 @@ impl Tool for WriteFile {
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
-        Ok(self.request.prepare(arguments, decode(arguments)))
+        Ok(self.request.prepare(decode(arguments)))
     }
 }
 

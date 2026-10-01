@@ -1764,7 +1764,7 @@ fn ask_mode_fails_the_run_before_writing_a_file() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "Writing notes.txt\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Writing notes.txt\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+        "oh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Writing file\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["error"], "NonInteractivePermissionRequired");
@@ -1803,10 +1803,7 @@ fn auto_mode_writes_workspace_files_and_holds_existing_external_files() {
     );
 
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(
-        stderr(&output),
-        format!("Writing src/notes.txt\nWriting {}\n", outside.path)
-    );
+    assert_eq!(stderr(&output), "Writing src/notes.txt\nWriting file\n");
     assert_eq!(
         fs::read_to_string(home.workspace.join("src/notes.txt")).unwrap(),
         "alpha\n"
@@ -1859,6 +1856,7 @@ fn full_access_writes_an_external_file() {
     let output = home.ask(&["ask", "write it"], &[("PORTKEY_API_KEY", PORTKEY_KEY)]);
 
     assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stderr(&output), format!("Writing {}\n", outside.path));
     assert_eq!(fs::read_to_string(&outside.path).unwrap(), "replaced\n");
     assert_eq!(
         tool_messages(&server.requests()[1]),
@@ -1896,7 +1894,7 @@ fn ask_mode_reports_a_failed_workspace_edit_to_the_model_before_any_approval() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "Editing notes.txt\nEditing notes.txt\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Editing notes.txt\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+        "Editing file\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Editing file\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
     );
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
@@ -1912,6 +1910,45 @@ fn ask_mode_reports_a_failed_workspace_edit_to_the_model_before_any_approval() {
         fs::read_to_string(home.workspace.join("notes.txt")).unwrap(),
         "alpha\nbeta\n"
     );
+}
+
+#[test]
+fn failed_file_changes_name_their_target_only_when_full_access_admits_them_first() {
+    let edit = |path: &str| {
+        json!({"path": path, "old_string": "missing", "new_string": "BETA"}).to_string()
+    };
+    let (gone, notes) = (edit("gone.txt"), edit("./notes.txt"));
+    for (mode, expected) in [
+        ("auto", "Editing file\nEditing file\n"),
+        ("yolo", "Editing file\nEditing ./notes.txt\n"),
+    ] {
+        let server = FakeServer::start([
+            Reply::sse(&parallel_tool_call_events(&[
+                ("call_1", "edit_file", &gone),
+                ("call_2", "edit_file", &notes),
+            ])),
+            Reply::sse(&chat_text_events(&["done"])),
+        ]);
+        let home = Home::with_settings(&settings_in_mode(&server.base_url(), mode));
+        fs::write(home.workspace.join("notes.txt"), "alpha\n").unwrap();
+
+        let output = home.ask(&["ask", "edit"], &[("PORTKEY_API_KEY", PORTKEY_KEY)]);
+
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(stderr(&output), expected, "{mode}");
+        let contents: Vec<Value> = tool_messages(&server.requests()[1])
+            .into_iter()
+            .map(|message| message["content"].clone())
+            .collect();
+        assert_eq!(
+            contents,
+            [
+                "file mutation target resolution failed: file_not_found",
+                "edit_file failed: old_string not found in file. Re-read the file to see its current contents; if the change is already applied, do not retry this edit.",
+            ],
+            "{mode}"
+        );
+    }
 }
 
 #[test]

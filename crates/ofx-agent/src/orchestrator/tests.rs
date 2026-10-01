@@ -229,6 +229,14 @@ impl Tool for EchoTool {
 }
 
 impl PreparedCall for EchoCall {
+    fn untargeted_title(&self) -> String {
+        assert!(
+            !self.arguments.contains("untargeted_panic"),
+            "untargeted title panicked"
+        );
+        "Echoing file".to_owned()
+    }
+
     fn file_mutation(&self) -> Option<&FileMutation> {
         assert!(
             !self.arguments.contains("mutation_panic"),
@@ -1190,10 +1198,60 @@ async fn file_mutations_that_need_approval_fail_the_turn_even_when_described_as_
         Some(TurnFailure::PermissionRequired(BlockedCall {
             tool_name: "echo".to_owned(),
             arguments: r#"{"changes":1,"inert":true}"#.to_owned(),
-            title: r#"Echoing {"changes":1,"inert":true}"#.to_owned(),
+            title: "Echoing file".to_owned(),
         }))
     );
-    assert_eq!(dispatch_order(&events), ["start call-1"]);
+    assert!(dispatch_order(&events).is_empty());
+}
+
+#[tokio::test]
+async fn file_mutations_name_their_target_only_once_admitted() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"creates":1,"serial":true}"#),
+            ("call-2", r#"{"unread":1,"serial":true}"#),
+            (
+                "call-3",
+                r#"{"unread":1,"untargeted_panic":true,"serial":true}"#,
+            ),
+            ("call-4", r#"{"inert":true,"serial":true}"#),
+            ("call-5", r#"{"changes":1,"untargeted_panic":true}"#),
+        ]),
+        text_reply("never"),
+    ]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    let started: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolStarted {
+                call_id,
+                description,
+                ..
+            } => Some((call_id.as_str(), description.title.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        started,
+        [
+            ("call-1", r#"Echoing {"creates":1,"serial":true}"#),
+            ("call-2", "Echoing file"),
+            (
+                "call-3",
+                r#"Echoing {"unread":1,"untargeted_panic":true,"serial":true}"#
+            ),
+            ("call-4", r#"Echoing {"inert":true,"serial":true}"#),
+        ]
+    );
+    assert_eq!(
+        report.failure,
+        Some(TurnFailure::PermissionRequired(BlockedCall {
+            tool_name: "echo".to_owned(),
+            arguments: r#"{"changes":1,"untargeted_panic":true}"#.to_owned(),
+            title: r#"Echoing {"changes":1,"untargeted_panic":true}"#.to_owned(),
+        }))
+    );
 }
 
 #[tokio::test]
@@ -1215,10 +1273,7 @@ async fn gates_without_a_file_mutation_policy_require_approval_for_mutations() {
         report.failure.map(|failure| failure.code().to_owned()),
         Some("NonInteractivePermissionRequired".to_owned())
     );
-    assert_eq!(
-        dispatch_order(&events),
-        ["start call-1", "finish call-1", "start call-2"]
-    );
+    assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
 }
 
 #[tokio::test]

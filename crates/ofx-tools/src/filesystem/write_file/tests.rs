@@ -111,6 +111,7 @@ fn invalid_arguments_fail_without_touching_the_filesystem() {
     for (arguments, expected) in cases {
         let run = run(&workspace.tool(), &arguments, PathAccess::WorkspaceOnly);
         assert_eq!(run.output, ToolOutput::failure(expected), "{expected}");
+        assert_eq!(run.description.title, "Writing file", "{expected}");
         assert_eq!(run.description.effect, ToolEffect::None);
         assert_eq!(run.mutation, None);
     }
@@ -144,6 +145,7 @@ fn target_and_preparation_failures_are_reported_before_approval() {
             PathAccess::WorkspaceOrExternal,
         );
         assert_eq!(run.output, ToolOutput::failure(expected), "{path}");
+        assert_eq!(run.description.title, "Writing file", "{path}");
         assert_eq!(run.description.effect, ToolEffect::None, "{path}");
         assert_eq!(run.mutation, None, "{path}");
     }
@@ -321,6 +323,63 @@ fn external_files_are_not_read_until_the_write_is_admitted() {
         ToolOutput::success(format!("wrote {} (6 bytes)", created.display()))
     );
     assert_eq!(fs::read_to_string(created).unwrap(), "fresh\n");
+}
+
+#[test]
+fn progress_titles_name_the_prepared_target() {
+    let workspace = Fixture::new();
+    fs::create_dir_all(workspace.root.join("outside")).unwrap();
+    let tool = workspace.tool();
+    let cases = [
+        ("a\tb.txt".to_owned(), "Writing a\\x09b.txt".to_owned()),
+        (
+            "../outside/new.txt".to_owned(),
+            format!(
+                "Writing {}",
+                workspace.root.join("outside/new.txt").display()
+            ),
+        ),
+    ];
+    for (path, expected) in cases {
+        let prepared = tool.prepare(&arguments(&path, "x")).unwrap();
+        assert_eq!(prepared.describe().title, expected, "{path}");
+        assert_eq!(prepared.untargeted_title(), "Writing file", "{path}");
+    }
+}
+
+#[test]
+fn full_access_writes_name_the_requested_path_and_read_the_target_when_they_run() {
+    let workspace = Fixture::new();
+    let tool = workspace.tool().with_full_access(true);
+    fs::write(workspace.workspace.join("note.txt"), "old\n").unwrap();
+    let prepared = tool.prepare(&arguments("./note.txt", "new\n")).unwrap();
+    assert_eq!(prepared.describe().title, "Writing ./note.txt");
+    assert_eq!(
+        prepared.file_mutation().cloned(),
+        Some(FileMutation {
+            target: workspace.workspace.join("note.txt"),
+            state: FileMutationState::Unread,
+        })
+    );
+    fs::write(workspace.workspace.join("note.txt"), "new\n").unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let output = runtime.block_on(prepared.execute(ToolContext::new(
+        ToolCallId::new("call-1"),
+        CancellationToken::new(),
+        PathAccess::WorkspaceOrExternal,
+    )));
+    assert_eq!(
+        output,
+        ToolOutput::success("No changes to ./note.txt; it already contains the requested content")
+    );
+    let failed = run(
+        &tool,
+        &arguments("note.txt/x.txt", "x"),
+        PathAccess::WorkspaceOrExternal,
+    );
+    assert_eq!(failed.description.title, "Writing file");
 }
 
 #[test]
