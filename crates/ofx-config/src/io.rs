@@ -84,24 +84,11 @@ impl PrivateDir {
         let (parent_path, leaf) = split(path)?;
         std::fs::create_dir_all(parent_path).map_err(|_| DurableError::Failed)?;
         let parent = open_directory(parent_path).map_err(|_| DurableError::Failed)?;
-        let mut created = false;
-        let fd = match fs::openat(&parent, leaf, directory_flags(), Mode::empty()) {
-            Ok(fd) => fd,
-            Err(Errno::NOENT) => {
-                match fs::mkdirat(&parent, leaf, Mode::RWXU) {
-                    Ok(()) | Err(Errno::EXIST) => {}
-                    Err(_) => return Err(DurableError::Failed),
-                }
-                created = true;
-                fs::openat(&parent, leaf, directory_flags(), Mode::empty()).map_err(leaf_error)?
-            }
-            Err(error) => return Err(leaf_error(error)),
-        };
-        make_private_directory(&fd)?;
-        if created {
-            fs::fsync(&parent).map_err(|_| DurableError::Failed)?;
-        }
-        Ok(Self { fd })
+        open_or_create_in(&parent, leaf)
+    }
+
+    pub(crate) fn open_or_create_child(&self, name: &str) -> Result<Self, DurableError> {
+        open_or_create_in(&self.fd, name)
     }
 
     pub fn owner_writable(&self) -> bool {
@@ -206,6 +193,64 @@ impl PrivateDir {
         })
     }
 
+    pub(crate) fn read_owned(
+        &self,
+        name: &str,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, DurableError> {
+        let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NOCTTY;
+        let fd = match fs::openat(&self.fd, name, flags | OFlags::NONBLOCK, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => return Ok(None),
+            Err(Errno::LOOP | Errno::ISDIR | Errno::NOTDIR | Errno::NXIO) => {
+                return Err(DurableError::PathUnsafe);
+            }
+            Err(Errno::ACCESS | Errno::PERM | Errno::ROFS) => {
+                return Err(DurableError::AccessDenied);
+            }
+            Err(_) => return Err(DurableError::Failed),
+        };
+        let stat = fs::fstat(&fd).map_err(|_| DurableError::Failed)?;
+        if file_type(&stat) != FileType::RegularFile || stat.st_nlink != 1 {
+            return Err(DurableError::PathUnsafe);
+        }
+        fs::fchmod(&fd, private_file_mode()).map_err(|_| DurableError::PermissionsUnsupported)?;
+        let stat = fs::fstat(&fd).map_err(|_| DurableError::Failed)?;
+        if permissions(&stat) != private_file_mode() {
+            return Err(DurableError::PermissionsUnsupported);
+        }
+        read_limited(fd, &stat, max_bytes).map(Some)
+    }
+
+    pub(crate) fn names(&self) -> Result<Vec<String>, DurableError> {
+        let directory = fs::Dir::read_from(&self.fd).map_err(|_| DurableError::Failed)?;
+        let mut names = Vec::new();
+        for entry in directory {
+            let entry = entry.map_err(|_| DurableError::Failed)?;
+            if let Ok(name) = entry.file_name().to_str()
+                && name != "."
+                && name != ".."
+            {
+                names.push(name.to_owned());
+            }
+        }
+        Ok(names)
+    }
+
+    pub(crate) fn is_single_link_file(&self, name: &str) -> bool {
+        fs::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW)
+            .is_ok_and(|stat| file_type(&stat) == FileType::RegularFile && stat.st_nlink == 1)
+    }
+
+    pub(crate) fn read_single_link_file(&self, name: &str, max_bytes: usize) -> Option<Vec<u8>> {
+        let fd = fs::openat(&self.fd, name, read_flags(), Mode::empty()).ok()?;
+        let stat = fs::fstat(&fd).ok()?;
+        if file_type(&stat) != FileType::RegularFile || stat.st_nlink != 1 {
+            return None;
+        }
+        read_limited(fd, &stat, max_bytes).ok()
+    }
+
     pub fn try_lock(&self, name: &str) -> Result<Option<AdvisoryLock>, DurableError> {
         let file = self.open_lock_file(name)?;
         match fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
@@ -308,6 +353,30 @@ fn split(path: &Path) -> Result<(&Path, &std::ffi::OsStr), DurableError> {
     }
 }
 
+fn open_or_create_in<P: rustix::path::Arg + Copy>(
+    parent: &OwnedFd,
+    leaf: P,
+) -> Result<PrivateDir, DurableError> {
+    let mut created = false;
+    let fd = match fs::openat(parent, leaf, directory_flags(), Mode::empty()) {
+        Ok(fd) => fd,
+        Err(Errno::NOENT) => {
+            match fs::mkdirat(parent, leaf, Mode::RWXU) {
+                Ok(()) | Err(Errno::EXIST) => {}
+                Err(_) => return Err(DurableError::Failed),
+            }
+            created = true;
+            fs::openat(parent, leaf, directory_flags(), Mode::empty()).map_err(leaf_error)?
+        }
+        Err(error) => return Err(leaf_error(error)),
+    };
+    make_private_directory(&fd)?;
+    if created {
+        fs::fsync(parent).map_err(|_| DurableError::Failed)?;
+    }
+    Ok(PrivateDir { fd })
+}
+
 fn open_directory(path: &Path) -> Result<OwnedFd, Errno> {
     fs::open(
         path,
@@ -318,6 +387,22 @@ fn open_directory(path: &Path) -> Result<OwnedFd, Errno> {
 
 fn directory_flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+}
+
+fn read_limited(fd: OwnedFd, stat: &Stat, max_bytes: usize) -> Result<Vec<u8>, DurableError> {
+    if usize::try_from(stat.st_size).map_or(true, |size| size > max_bytes) {
+        return Err(DurableError::TooLarge);
+    }
+    let limit = u64::try_from(max_bytes + 1).map_err(|_| DurableError::TooLarge)?;
+    let mut bytes = Vec::new();
+    File::from(fd)
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|_| DurableError::Failed)?;
+    if bytes.len() > max_bytes {
+        return Err(DurableError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 fn read_flags() -> OFlags {
