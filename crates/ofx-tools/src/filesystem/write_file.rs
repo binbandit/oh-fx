@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
 use ofx_contract::{CallPresentation, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec};
-use ofx_workspace::MAX_PATH_BYTES;
 
 use super::tool_spec;
-use crate::file_mutation::{MAX_CONTENT_BYTES, MutationInput};
+use crate::file_mutation::{MAX_CONTENT_BYTES, MutationInput, path_limit_failure};
 use crate::file_mutation_execution::MutationRequest;
 use crate::tool_args::{parse_arguments, required_string};
 
@@ -17,8 +16,6 @@ const PRESENTATION: CallPresentation = CallPresentation {
     label_argument: "path",
     label_default: "file",
 };
-const PATH_LIMIT_FAILURE: &str =
-    "file mutation preparation failed: path exceeds the preparation limit";
 
 pub struct WriteFile {
     spec: ToolSpec,
@@ -52,8 +49,8 @@ fn decode(arguments: &str) -> Result<(String, MutationInput), ToolOutput> {
     let arguments = parse_arguments(TOOL_NAME, arguments)?;
     let path = required_string(TOOL_NAME, &arguments, "path")?;
     let content = required_string(TOOL_NAME, &arguments, "content")?;
-    if path.len() > MAX_PATH_BYTES {
-        return Err(ToolOutput::failure(PATH_LIMIT_FAILURE));
+    if let Some(failure) = path_limit_failure(&path) {
+        return Err(failure);
     }
     if content.len() > MAX_CONTENT_BYTES {
         return Err(ToolOutput::failure(

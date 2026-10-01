@@ -6,11 +6,13 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use memchr::memmem;
+use ofx_contract::ToolOutput;
 use ofx_permissions::{FileMutationKind, FileMutationTargets, TraversalDirectory};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
 use ofx_workspace::{
-    FileIdentity, PathError, descriptor_identity, entry_identity, open_child_directory,
-    open_directory,
+    FileIdentity, MAX_PATH_BYTES, PathError, descriptor_identity, entry_identity,
+    open_child_directory, open_directory,
 };
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, RenameFlags, Stat, fchmod, fstat, linkat, mkdirat, openat,
@@ -63,20 +65,67 @@ const PREIMAGE_UNREADABLE: &str =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MutationInput {
     Write(String),
+    Edit {
+        old_string: String,
+        new_string: String,
+    },
 }
 
 impl MutationInput {
     pub(crate) fn kind(&self) -> FileMutationKind {
         match self {
             Self::Write(_) => FileMutationKind::Write,
+            Self::Edit { .. } => FileMutationKind::Edit,
         }
     }
 
-    fn postimage(&self) -> Vec<u8> {
-        match self {
-            Self::Write(content) => content.as_bytes().to_vec(),
+    fn postimage(&self, preimage: &Preimage) -> Result<Vec<u8>, String> {
+        let (old_string, new_string) = match self {
+            Self::Write(content) => return Ok(content.as_bytes().to_vec()),
+            Self::Edit {
+                old_string,
+                new_string,
+            } => (old_string.as_bytes(), new_string.as_bytes()),
+        };
+        if old_string == new_string {
+            return Err("edit_file failed: old_string and new_string are identical".to_owned());
         }
+        let Preimage::Present { content, .. } = preimage else {
+            return Err(IDENTITY_CHANGED.to_owned());
+        };
+        let not_found = || {
+            "edit_file failed: old_string not found in file. Re-read the file to see its current contents; if the change is already applied, do not retry this edit.".to_owned()
+        };
+        if old_string.is_empty() {
+            return Err(not_found());
+        }
+        let mut matches = memmem::find_iter(content, old_string);
+        let start = matches.next().ok_or_else(not_found)?;
+        let others = matches.count();
+        if others > 0 {
+            return Err(format!(
+                "edit_file failed: old_string is not unique (found {} occurrences), provide more context",
+                others + 1
+            ));
+        }
+        let after_len = content.len() - old_string.len() + new_string.len();
+        if after_len > MAX_CONTENT_BYTES {
+            return Err(
+                "edit_file failed: postimage exceeds the 4 MiB preparation limit".to_owned(),
+            );
+        }
+        let mut after = Vec::with_capacity(after_len);
+        after.extend_from_slice(&content[..start]);
+        after.extend_from_slice(new_string);
+        after.extend_from_slice(&content[start + old_string.len()..]);
+        Ok(after)
     }
+}
+
+pub(crate) fn path_limit_failure(path: &str) -> Option<ToolOutput> {
+    (path.len() > MAX_PATH_BYTES).then(|| {
+        ToolOutput::failure("file mutation preparation failed: path exceeds the preparation limit")
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +178,9 @@ impl PreparedMutation {
     ) -> Result<Self, PrepareFailure> {
         let kind = input.kind();
         let preimage = read_preimage(&targets, kind)?;
-        let after = input.postimage();
+        let after = input
+            .postimage(&preimage)
+            .map_err(PrepareFailure::Semantic)?;
         let approval_path = if targets.target.anchor_is_external {
             targets.target.path().into_os_string()
         } else {
