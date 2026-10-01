@@ -1,0 +1,109 @@
+use tokio_util::sync::CancellationToken;
+
+use crate::ids::ToolCallId;
+use crate::stream_provider::BoxFuture;
+use crate::types::ToolResultStatus;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolActivity {
+    Read,
+    List,
+    Write,
+    Edit,
+    Open,
+    Command,
+    Subagent,
+    Ask,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolEffect {
+    ReadOnly,
+    Mutating,
+    Irreversible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Concurrency {
+    Parallel,
+    Serial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallDescription {
+    pub title: String,
+    pub activity: ToolActivity,
+    pub effect: ToolEffect,
+    pub concurrency: Concurrency,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutput {
+    pub status: ToolResultStatus,
+    pub content: String,
+}
+
+impl ToolOutput {
+    pub fn success(content: impl Into<String>) -> Self {
+        Self {
+            status: ToolResultStatus::Success,
+            content: content.into(),
+        }
+    }
+
+    pub fn failure(content: impl Into<String>) -> Self {
+        Self {
+            status: ToolResultStatus::Failure,
+            content: content.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ToolContext {
+    pub call_id: ToolCallId,
+    pub cancellation: CancellationToken,
+}
+
+impl ToolContext {
+    pub fn new(call_id: ToolCallId, cancellation: CancellationToken) -> Self {
+        Self {
+            call_id,
+            cancellation,
+        }
+    }
+}
+
+pub trait Tool: Send + Sync {
+    fn spec(&self) -> &ToolSpec;
+
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput>;
+}
+
+pub trait PreparedCall: Send {
+    fn describe(&self) -> CallDescription;
+
+    fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outputs_carry_their_status() {
+        assert_eq!(ToolOutput::success("ok").status, ToolResultStatus::Success);
+        assert_eq!(
+            ToolOutput::failure("Not executed").status,
+            ToolResultStatus::Failure
+        );
+    }
+}
