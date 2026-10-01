@@ -85,6 +85,7 @@ impl Fixture {
             codex: CodexEndpoints {
                 responses: format!("{}/backend-api/codex/responses", codex.base_url()),
             },
+            ..SubscriptionEndpoints::default()
         };
         codex_provider(
             Some(self.data.clone()),

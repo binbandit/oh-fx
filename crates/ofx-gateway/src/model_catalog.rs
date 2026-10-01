@@ -9,6 +9,20 @@ pub enum CatalogFailure {
     HttpStatus,
 }
 
+impl CatalogFailure {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::RateLimited => "rate_limited",
+            Self::GatewayUnavailable => "gateway_unavailable",
+            Self::Cancellation => "cancellation",
+            Self::Transport => "transport",
+            Self::MalformedResponse => "malformed_response",
+            Self::HttpStatus => "http_status",
+        }
+    }
+}
+
 pub(crate) fn failure_for_http_status(status: u16) -> CatalogFailure {
     match status {
         401 | 403 => CatalogFailure::Authentication,

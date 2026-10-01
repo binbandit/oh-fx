@@ -1112,6 +1112,7 @@ mod tests {
             codex: CodexEndpoints {
                 responses: format!("{base_url}/backend-api/codex/responses"),
             },
+            ..SubscriptionEndpoints::default()
         }
     }
 

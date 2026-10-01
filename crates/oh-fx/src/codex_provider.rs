@@ -6,7 +6,10 @@ use ofx_auth::{
     prepare_chatgpt_credential, refresh_chatgpt_credential,
 };
 use ofx_contract::BoxFuture;
-use ofx_gateway::{CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh};
+use ofx_gateway::{
+    CodexAccess, CodexCredentials, CodexEndpoints, CodexModelsEndpoints, CodexProvider,
+    CodexRefresh,
+};
 use ofx_http::ClientError;
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct SubscriptionEndpoints {
     pub(crate) chatgpt: ChatGptEndpoints,
     pub(crate) codex: CodexEndpoints,
+    pub(crate) models: CodexModelsEndpoints,
 }
 
 #[derive(Debug)]
