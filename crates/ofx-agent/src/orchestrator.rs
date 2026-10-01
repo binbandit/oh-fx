@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use ofx_contract::{
     Admission, BoxFuture, CallDescription, ChatMessage, Completion, Concurrency, ExecutionFailure,
-    FinishReason, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
-    PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, RouteRecoveryKind,
-    RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext, ToolEffect,
-    ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
-    tool_execution_failure_json,
+    FileMutation, FinishReason, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause,
+    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
+    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext,
+    ToolEffect, ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
+    review_unavailable_json, tool_execution_failure_json,
 };
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -398,11 +398,14 @@ impl Agent {
         let prepared = panic::catch_unwind(AssertUnwindSafe(|| {
             tool.prepare(&call.arguments).map(|prepared| {
                 let description = prepared.describe();
-                (prepared, description)
+                let mutation = prepared.file_mutation().cloned();
+                (prepared, description, mutation)
             })
         }));
         match prepared {
-            Ok(Ok((prepared, description))) => Prepared::Ready(prepared, description),
+            Ok(Ok((prepared, description, mutation))) => {
+                Prepared::Ready(prepared, description, mutation)
+            }
             Ok(Err(output)) => Prepared::Rejected(output),
             Err(_) => Prepared::Rejected(panicked(&call.name)),
         }
@@ -540,17 +543,18 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
 
 enum Prepared {
     Rejected(ToolOutput),
-    Ready(Box<dyn PreparedCall>, CallDescription),
+    Ready(Box<dyn PreparedCall>, CallDescription, Option<FileMutation>),
 }
 
 impl Prepared {
     fn is_parallel(&self) -> bool {
-        matches!(self, Self::Ready(_, description) if description.concurrency == Concurrency::Parallel)
+        matches!(self, Self::Ready(_, description, _) if description.concurrency == Concurrency::Parallel)
     }
 }
 
 enum Dispatched {
     Rejected(ToolOutput),
+    Held(ToolOutput),
     Running(JoinHandle<ToolOutput>),
 }
 
@@ -562,13 +566,16 @@ struct SettledGroup<'c> {
 fn admit(
     permissions: &dyn PermissionGate,
     call: &ToolCall,
+    mutation: Option<&FileMutation>,
     description: &CallDescription,
 ) -> Admission {
-    if description.effect == ToolEffect::None {
-        Admission::Allowed(PathAccess::WorkspaceOnly)
-    } else {
-        permissions.admit(call)
+    if let Some(mutation) = mutation {
+        return permissions.admit_file_mutation(mutation);
     }
+    if description.effect == ToolEffect::None {
+        return Admission::Allowed(PathAccess::WorkspaceOnly);
+    }
+    permissions.admit(call)
 }
 
 async fn run_group<'c>(
@@ -593,8 +600,8 @@ async fn run_group<'c>(
                 });
                 dispatched.push((call, Dispatched::Rejected(output)));
             }
-            Prepared::Ready(prepared, description) => {
-                let admission = admit(permissions, call, &description);
+            Prepared::Ready(prepared, description, mutation) => {
+                let admission = admit(permissions, call, mutation.as_ref(), &description);
                 if admission == Admission::ApprovalRequired {
                     blocked = Some(BlockedCall {
                         tool_name: call.name.clone(),
@@ -607,12 +614,19 @@ async fn run_group<'c>(
                     tool_name: call.name.clone(),
                     description,
                 });
-                let Admission::Allowed(path_access) = admission else {
-                    break;
-                };
-                let context = ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
-                let task = tokio::spawn(prepared.execute(context));
-                dispatched.push((call, Dispatched::Running(task)));
+                match admission {
+                    Admission::Allowed(path_access) => {
+                        let context =
+                            ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
+                        let task = tokio::spawn(prepared.execute(context));
+                        dispatched.push((call, Dispatched::Running(task)));
+                    }
+                    Admission::ReviewUnavailable => {
+                        let held = ToolOutput::failure(review_unavailable_json(&call.name));
+                        dispatched.push((call, Dispatched::Held(held)));
+                    }
+                    Admission::ApprovalRequired => break,
+                }
             }
         }
     }
@@ -621,6 +635,15 @@ async fn run_group<'c>(
     for (call, dispatched) in dispatched {
         let output = match dispatched {
             Dispatched::Rejected(output) => Some(output),
+            Dispatched::Held(output) => {
+                events(UiEvent::ToolFinished {
+                    turn_id,
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    status: output.status,
+                });
+                Some(output)
+            }
             Dispatched::Running(mut task) => {
                 let output = settle(call, &mut task, cancel, &mut grace_deadline).await;
                 events(UiEvent::ToolFinished {
