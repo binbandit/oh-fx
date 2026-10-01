@@ -728,6 +728,7 @@ name = "ofx-exec"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "nix",
  "rustix",
  "signal-hook",
  "tempfile",
@@ -822,6 +823,7 @@ dependencies = [
  "getrandom 0.4.3",
  "memchr",
  "ofx-contract",
+ "ofx-exec",
  "ofx-permissions",
  "ofx-text",
  "ofx-workspace",

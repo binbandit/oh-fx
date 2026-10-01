@@ -73,7 +73,7 @@ fn read_only_effect<T>(decoded: &Result<T, ToolOutput>) -> ToolEffect {
     }
 }
 
-fn tool_spec(name: &str, description: &str, input_schema: &str) -> ToolSpec {
+pub(crate) fn tool_spec(name: &str, description: &str, input_schema: &str) -> ToolSpec {
     ToolSpec {
         name: name.to_owned(),
         description: description.to_owned(),

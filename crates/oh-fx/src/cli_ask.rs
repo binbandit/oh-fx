@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use ofx_agent::{
     Agent, AgentConfig, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
@@ -22,6 +23,7 @@ use ofx_contract::{
     ProviderError, RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome,
     UiEvent, Usage,
 };
+use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::ChatCompletionsProvider;
 use ofx_permissions::PermissionPolicy;
 use ofx_session::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
@@ -239,7 +241,6 @@ fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<St
     let ask = [
         (args.images, "--image"),
         (args.permissions.prompt, "--prompt-permissions"),
-        (args.timeout, "--timeout"),
         (args.session.continue_recovery, "--continue-recovery"),
     ];
     if let Some(flag) = first_requested(launch) {
@@ -280,9 +281,14 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
 }
 
 async fn ask(args: &AskArgs, prompt: &str, endpoints: SubscriptionEndpoints) -> ExitCode {
+    let Ok(supervisor) = SessionSupervisor::current_executable() else {
+        return Failure::code("SelfExeNotFound").report(args.output.json);
+    };
+    let executions = ManagedExecutions::new(supervisor);
     let cancel = CancellationToken::new();
     let received = watch_signals(cancel.clone());
-    let answered = answer(args, prompt, endpoints, &cancel, &received).await;
+    let answered = answer(args, prompt, endpoints, &executions, &cancel, &received).await;
+    executions.shutdown().await;
     settle(answered, &received)
 }
 
@@ -300,10 +306,12 @@ async fn answer(
     args: &AskArgs,
     prompt: &str,
     endpoints: SubscriptionEndpoints,
+    executions: &ManagedExecutions,
     cancel: &CancellationToken,
     received: &ReceivedSignals,
 ) -> Result<ExitCode, Signalled> {
-    let prepared = received.unless_signalled(prepare_agent(args, endpoints, cancel).await)?;
+    let prepared =
+        received.unless_signalled(prepare_agent(args, endpoints, executions, cancel).await)?;
     let (mut agent, model, permission_mode, source) = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
@@ -327,6 +335,7 @@ async fn answer(
 async fn prepare_agent(
     args: &AskArgs,
     endpoints: SubscriptionEndpoints,
+    executions: &ManagedExecutions,
     cancel: &CancellationToken,
 ) -> Result<(Agent, String, PermissionMode, CredentialSource), Failure> {
     let workspace_root = workspace_root()?;
@@ -403,7 +412,8 @@ async fn prepare_agent(
         reasoning_effort,
         fast_mode,
     };
-    let tools = tool_set::ask_tools(&workspace_root);
+    let command_timeout = args.timeout_ms.map(Duration::from_millis);
+    let tools = tool_set::ask_tools(&workspace_root, executions, command_timeout);
     let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
     let mut agent = Agent::new(
@@ -1284,8 +1294,15 @@ mod tests {
                 }
             }
         });
-        let answered =
-            runtime.block_on(answer(&args, "Hello", endpoints(&auth), &cancel, &received));
+        let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+        let answered = runtime.block_on(answer(
+            &args,
+            "Hello",
+            endpoints(&auth),
+            &executions,
+            &cancel,
+            &received,
+        ));
         let _ = settle(answered, &received);
     }
 
