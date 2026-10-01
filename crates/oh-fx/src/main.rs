@@ -15,7 +15,6 @@ use ofx_cli::{
 };
 use signal_hook::consts::SIGPIPE;
 
-const BACKGROUND_UPGRADE_ARGS: [&str; 2] = ["upgrade", "--background"];
 const AUTH_MODE_VARIABLE: &str = "OH_FX_AUTH_MODE";
 const NOT_AVAILABLE_CODE: &str = "NotAvailableYet";
 
@@ -28,7 +27,7 @@ enum WriteFailure {
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
-    if args == BACKGROUND_UPGRADE_ARGS {
+    if args == ofx_upgrade::BACKGROUND_UPGRADE_ARGS {
         return upgrade_command::run_in_background();
     }
     let parsed = ofx_cli::parse_args(args);

@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use crate::build_identity;
@@ -11,7 +13,29 @@ const CHECK_MARKER: &str = "upgrade-check";
 const LAST_VERSION_FILE: &str = "last-version";
 const DISABLE_VARIABLE: &str = "OH_FX_AUTO_UPGRADE";
 
-pub fn claim_auto_upgrade_check(state_directory: &Path) -> bool {
+pub const BACKGROUND_UPGRADE_ARGS: [&str; 2] = ["upgrade", "--background"];
+
+pub fn schedule_background_upgrade(state_directory: &Path) {
+    if claim_auto_upgrade_check(state_directory) {
+        spawn_background_upgrade();
+    }
+}
+
+fn spawn_background_upgrade() {
+    let Ok(executable) = env::current_exe() else {
+        return;
+    };
+    let _ = Command::new(executable)
+        .args(BACKGROUND_UPGRADE_ARGS)
+        .current_dir("/")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn();
+}
+
+fn claim_auto_upgrade_check(state_directory: &Path) -> bool {
     if !auto_upgrade_enabled(env::var(DISABLE_VARIABLE).ok().as_deref())
         || build_identity::release_version().is_none()
     {
