@@ -14,5 +14,5 @@ pub use build_identity::VERSION;
 pub use error::UpgradeError;
 pub use lock::UpgradeLock;
 pub use release_source::release_notes_url;
-pub use update_target::is_valid_revision;
+pub use update_target::{is_valid_revision, is_valid_version, normalize_version};
 pub use upgrade::{UpgradeOutcome, UpgradeProgress, upgrade};
