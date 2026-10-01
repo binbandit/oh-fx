@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,8 @@ const UPSTREAM_GLOB_FILES_TOOL: &str = r#"{"type":"function","function":{"name":
 const UPSTREAM_GREP_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"grep_files","description":"Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported; avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Literal plain-text pattern to search for."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"include":{"type":"string","description":"Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts."},"case_insensitive":{"type":"boolean","description":"Search case-insensitively when true."},"mode":{"type":"string","enum":["matches","files_with_matches","count"],"description":"Use matches for line matches, files_with_matches for unique matching paths, or count for exact matching-line and matching-file counts."},"head_limit":{"type":"integer","description":"Optional positive maximum results to return for matches or files_with_matches. Defaults to the normal output cap."},"offset":{"type":"integer","description":"Optional zero-based result offset for matches or files_with_matches pagination. Defaults to 0."},"context_lines":{"type":"integer","description":"Optional non-negative number of lines before and after each emitted match in matches mode. Bounded by the tool."}},"required":["pattern"]}}}"#;
 const UPSTREAM_EDIT_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"edit_file","description":"Edit an existing file by replacing one exact old_string occurrence with new_string. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: make a focused patch after reading the file. When NOT to use: broad rewrites, ambiguous repeated text, generated formatting, missing files, or cross-file refactors.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"old_string":{"type":"string","description":"Exact text to find in the file. Must match exactly once."},"new_string":{"type":"string","description":"Text to replace old_string with."}},"required":["path","old_string","new_string"]}}}"#;
 const UPSTREAM_WRITE_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"write_file","description":"Create or overwrite a file using complete contents. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: add a new file or intentionally replace an entire generated/small file. When NOT to use: targeted edits to existing files, partial replacements, deleting files, or unapproved external paths.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"content":{"type":"string","description":"Complete file contents to write."}},"required":["path","content"]}}}"#;
+const UPSTREAM_SHELL_TOOL: &str = r#"{"type":"function","function":{"name":"shell","description":"Run every command with shell.run. Fast commands complete in one call; commands still running after yield_time_ms return one owned session_id and remain available across turns. Use shell.interact with that exact session_id: omit chars to observe, or provide chars to send exact input and then observe. Use shell.stop only when termination is requested. output_delta is always terminal-safe; unsafe bytes are escaped while full_output_handle retains exact output, so do not run a separate command merely to test output safety or shell usability. Never detach with &, nohup, setsid, or double-forking.","parameters":{"type":"object","properties":{"request":{"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"command":{"type":"string","maxLength":65536,"description":"Shell command to execute exactly once."},"cwd":{"type":"string","description":"Working directory; defaults to the workspace."},"profile":{"type":"string","enum":["clean","user"],"description":"Defaults to user; clean skips user startup files. Mutually exclusive with shell."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"Initial observation window. Defaults to 30000; use 0 to return the owned running handle immediately."},"timeout_ms":{"type":"integer","minimum":1,"description":"Set only when the user explicitly requests a finite deadline. Omit for commands intended to remain running, receive input, continue across turns, or be stopped later."}},"additionalProperties":false,"required":["action","command"]},{"type":"object","properties":{"action":{"type":"string","enum":["interact"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":300000,"description":"Wait before yielding output. Empty observations wait 5000-300000 ms; shorter values are raised to 5000. Non-empty input is capped at 30000 ms and keeps shorter requested waits. Defaults to 5000. If the process remains running, interact with the same session_id again; never rerun it."}},"additionalProperties":false,"required":["action","session_id"]},{"type":"object","properties":{"action":{"type":"string","enum":["stop"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"force":{"type":"boolean","description":"Use immediate force termination when true. Defaults to false."}},"additionalProperties":false,"required":["action","session_id"]}]}},"additionalProperties":false,"required":["request"]}}}"#;
+const ASK_MODE_HINT: &str = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -825,7 +828,6 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
             &["ask", "--prompt-permissions", "hi"],
             "ask --prompt-permissions",
         ),
-        (&["ask", "--timeout", "5", "hi"], "ask --timeout"),
         (&["ask", "--resume", "last", "hi"], "ask --resume"),
         (
             &["ask", "--resume-id", "session.v3", "hi"],
@@ -1114,7 +1116,7 @@ fn ask_runs_read_file_and_sends_its_result_to_the_model() {
         assert!(
             request
                 .body_text()
-                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL},{UPSTREAM_GLOB_FILES_TOOL},{UPSTREAM_GREP_FILES_TOOL},{UPSTREAM_EDIT_FILE_TOOL},{UPSTREAM_WRITE_FILE_TOOL}]")),
+                .contains(&format!(",\"tools\":[{UPSTREAM_READ_FILE_TOOL},{UPSTREAM_GLOB_FILES_TOOL},{UPSTREAM_GREP_FILES_TOOL},{UPSTREAM_EDIT_FILE_TOOL},{UPSTREAM_WRITE_FILE_TOOL},{UPSTREAM_SHELL_TOOL}]")),
             "{}",
             request.body_text()
         );
@@ -1944,4 +1946,299 @@ fn auto_mode_edits_workspace_files() {
             "tool_call_id": "call_1",
         })]
     );
+}
+
+fn shell_call(request: &Value) -> String {
+    json!({ "request": request }).to_string()
+}
+
+fn shell_reply(call_id: &str, request: &Value) -> Reply {
+    Reply::sse(&chat_tool_call_events(
+        call_id,
+        "shell",
+        &shell_call(request),
+    ))
+}
+
+fn shell_results(request: &RecordedRequest) -> Vec<String> {
+    tool_messages(request)
+        .iter()
+        .map(|message| {
+            let mut result: Value = serde_json::from_str(
+                message["content"]
+                    .as_str()
+                    .expect("the shell result is text"),
+            )
+            .expect("the shell result is JSON");
+            if let Some(duration) = result.get_mut("duration_ms")
+                && duration.is_u64()
+            {
+                *duration = json!(0);
+            }
+            result.to_string()
+        })
+        .collect()
+}
+
+fn command_result(state: &str, exit_code: &str, signal: &str, error: &str, output: &str) -> String {
+    format!(
+        r#"{{"session_id":null,"state":"{state}","backend":"captured","persistence":"process","output_truncated":false,"output_incomplete":false,"output_terminal_safe":true,"full_output_handle":null,"exit_code":{exit_code},"signal":{signal},"termination_indeterminate":false,"duration_ms":{duration},"accepted_bytes":null,"error":{error},"retry_guidance":null,"output_delta":{output}}}"#,
+        duration = if state == "completed" { "0" } else { "null" },
+        output = json!(output),
+    )
+}
+
+fn blocked_shell_stderr(command: &str, hint: &str) -> String {
+    format!(
+        "Running {command}\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Running {command}\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: {hint}\n"
+    )
+}
+
+#[test]
+fn full_access_runs_shell_commands_and_sends_their_results_to_the_model() {
+    let server = FakeServer::start([
+        shell_reply(
+            "call_1",
+            &json!({"action": "run", "command": "printf 'built\\n'; exit 3", "profile": "clean"}),
+        ),
+        shell_reply(
+            "call_2",
+            &json!({"action": "run", "command": "pwd", "profile": "clean"}),
+        ),
+        Reply::sse(&chat_text_events(&["Done."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "yolo"));
+
+    let output = home.ask(&["ask", "--json", "build it"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Running printf 'built\\n'; exit 3\nRunning pwd\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["output"], "Done.");
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "shell", "status": "error"},
+            {"name": "shell", "status": "success"},
+        ])
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert!(
+            request
+                .body_text()
+                .contains(&format!(",{UPSTREAM_SHELL_TOOL}]")),
+            "{}",
+            request.body_text()
+        );
+    }
+    assert_eq!(
+        shell_results(&requests[1]),
+        [command_result("completed", "3", "null", "null", "built\n")]
+    );
+    assert_eq!(
+        shell_results(&requests[2])[1],
+        command_result(
+            "completed",
+            "0",
+            "null",
+            "null",
+            &format!("{}\n", canonical(&home.workspace))
+        )
+    );
+}
+
+#[test]
+fn ask_mode_blocks_every_shell_command_before_it_runs() {
+    let server = FakeServer::start([
+        shell_reply("call_1", &json!({"action": "run", "command": "which sh"})),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+
+    let output = home.ask(&["ask", "--json", "run it"], &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        blocked_shell_stderr("which sh", ASK_MODE_HINT)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "NonInteractivePermissionRequired");
+    assert_eq!(
+        result["tool_calls"],
+        json!([{"name": "shell", "status": "error"}])
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands() {
+    let server = FakeServer::start([
+        shell_reply(
+            "call_1",
+            &json!({"action": "run", "command": "which sh", "profile": "clean"}),
+        ),
+        shell_reply(
+            "call_2",
+            &json!({"action": "interact", "session_id": "shell-9"}),
+        ),
+        shell_reply(
+            "call_3",
+            &json!({"action": "run", "command": "touch marker"}),
+        ),
+        Reply::sse(&chat_text_events(&["Held."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
+
+    let output = home.ask(
+        &["ask", "--json", "run them"],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY), ("PATH", "/usr/bin:/bin")],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Running which sh\nWaiting for session shell-9\nRunning touch marker\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["output"], "Held.");
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "shell", "status": "success"},
+            {"name": "shell", "status": "error"},
+            {"name": "shell", "status": "error"},
+        ])
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let which: Value = serde_json::from_str(&shell_results(&requests[1])[0]).unwrap();
+    assert_eq!(which["exit_code"], 0);
+    assert!(which["output_delta"].as_str().unwrap().ends_with("/sh\n"));
+    let messages = tool_messages(&requests[3]);
+    assert_eq!(
+        messages[1]["content"],
+        r#"{"error":{"tool":"shell","code":"ExecutionNotFound","retryable":false}}"#
+    );
+    assert_eq!(
+        messages[2]["content"],
+        r#"{"error":{"type":"tool_review_held","tool_name":"shell","message":"Safety reviewer unavailable; action held","reason":"review_unavailable","review_cause":"reviewer_unconfigured","held":true,"suggestion":"The action did not run because safety review was unavailable. Continue with a different safe action or retry later."}}"#
+    );
+    assert!(!home.workspace.join("marker").exists());
+}
+
+#[test]
+fn auto_mode_holds_reversible_commands_that_run_outside_the_workspace() {
+    let outside = tempfile::tempdir().unwrap();
+    let cwd = canonical(outside.path());
+    let server = FakeServer::start([
+        shell_reply(
+            "call_1",
+            &json!({"action": "run", "command": "git status", "cwd": cwd, "profile": "clean"}),
+        ),
+        Reply::sse(&chat_text_events(&["Held."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
+
+    let output = home.ask(&["ask", "run it"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "Running git status\n");
+    assert_eq!(stdout(&output), "Held.");
+    assert_eq!(
+        tool_messages(&server.requests()[1])[0]["content"],
+        r#"{"error":{"type":"tool_review_held","tool_name":"shell","message":"Safety reviewer unavailable; action held","reason":"review_unavailable","review_cause":"reviewer_unconfigured","held":true,"suggestion":"The action did not run because safety review was unavailable. Continue with a different safe action or retry later."}}"#
+    );
+}
+
+#[test]
+fn the_timeout_flag_sets_the_default_deadline_for_shell_commands() {
+    let server = FakeServer::start([
+        shell_reply(
+            "call_1",
+            &json!({"action": "run", "command": "printf never", "profile": "clean"}),
+        ),
+        shell_reply(
+            "call_2",
+            &json!({"action": "run", "command": "printf kept", "profile": "clean", "timeout_ms": 60_000}),
+        ),
+        Reply::sse(&chat_text_events(&["Done."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "yolo"));
+
+    let output = home.ask(&["ask", "--json", "--timeout", "0", "run it"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(
+        shell_results(&requests[1]),
+        [command_result(
+            "stopped",
+            "null",
+            "null",
+            r#""TimeoutExpired""#,
+            ""
+        )]
+    );
+    assert_eq!(
+        shell_results(&requests[2])[1],
+        command_result("completed", "0", "null", "null", "kept")
+    );
+}
+
+fn read_fifo_in_background(path: &Path) -> mpsc::Receiver<io::Result<String>> {
+    let (sender, receiver) = mpsc::channel();
+    let path = path.to_owned();
+    thread::spawn(move || {
+        let _ = sender.send(fs::read_to_string(path));
+    });
+    receiver
+}
+
+fn make_fifo(path: &Path) {
+    let made = Command::new("mkfifo").arg(path).status();
+    assert!(made.expect("run mkfifo").success());
+}
+
+#[test]
+fn interrupting_ask_stops_the_running_shell_command() {
+    let server = FakeServer::start([
+        shell_reply(
+            "call_1",
+            &json!({"action": "run", "command": "exec 3> held.fifo; printf up > ready.fifo; exec sleep 600", "profile": "clean"}),
+        ),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "yolo"));
+    let ready = home.workspace.join("ready.fifo");
+    let held = home.workspace.join("held.fifo");
+    make_fifo(&ready);
+    make_fifo(&held);
+    let closed = read_fifo_in_background(&held);
+    let started = read_fifo_in_background(&ready);
+    let mut child = home
+        .command(&["ask", "run it"])
+        .env("PORTKEY_API_KEY", PORTKEY_KEY)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let Ok(Ok(text)) = started.recv_timeout(Duration::from_mins(1)) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the shell command never started");
+    };
+    assert_eq!(text, "up");
+    let signalled = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(signalled.success());
+    assert_eq!(child.wait().unwrap().signal(), Some(2));
+    let remaining = closed
+        .recv_timeout(Duration::from_mins(1))
+        .ok()
+        .and_then(Result::ok);
+    assert_eq!(remaining.as_deref(), Some(""), "the command outlived oh-fx");
+    assert_eq!(server.requests().len(), 1);
 }

@@ -10,6 +10,7 @@ publish.workspace = true
 getrandom.workspace = true
 memchr.workspace = true
 ofx-contract.workspace = true
+ofx-exec.workspace = true
 ofx-permissions.workspace = true
 ofx-text.workspace = true
 ofx-workspace.workspace = true

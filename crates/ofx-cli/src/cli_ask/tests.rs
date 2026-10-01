@@ -57,7 +57,7 @@ fn parse_options_preserves_active_ask_flags_and_operands() {
     assert!(options.output.no_color);
     assert!(options.permissions.prompt);
     assert!(options.session.no_save);
-    assert!(options.timeout);
+    assert_eq!(options.timeout_ms, Some(123_000));
     assert_eq!(options.system_prompt.as_deref(), Some("second"));
     assert!(options.images);
     assert_eq!(prompt(&options), "hello world");
@@ -222,7 +222,7 @@ fn parse_options_rejects_unknown_flags_and_accepts_dash_prompts_after_sentinel()
         AskErrorKind::InvalidAskArgs
     );
     let options = parsed(&["--timeout", "nope", "--", "--not-a-flag", "prompt"]);
-    assert!(!options.timeout);
+    assert_eq!(options.timeout_ms, None);
     assert_eq!(prompt(&options), "--not-a-flag prompt");
     assert_eq!(prompt(&parsed(&["-", "x"])), "- x");
 }
@@ -390,20 +390,37 @@ fn parse_options_rejects_repeated_resume_targets_and_no_save_resume() {
 
 #[test]
 fn timeouts_follow_integer_parsing_and_ignore_malformed_values() {
-    for valid in ["+2", "-0", "1_0", "0", "18446744073709551"] {
-        assert!(parsed(&["--timeout", valid, "x"]).timeout, "{valid}");
+    for (valid, milliseconds) in [
+        ("+2", 2_000),
+        ("-0", 0),
+        ("1_0", 10_000),
+        ("0", 0),
+        ("18446744073709551", 18_446_744_073_709_551_000),
+    ] {
+        assert_eq!(
+            parsed(&["--timeout", valid, "x"]).timeout_ms,
+            Some(milliseconds),
+            "{valid}"
+        );
     }
     for invalid in ["-1", "18446744073709552", "18446744073709551615", "", " 1"] {
-        assert!(!parsed(&["--timeout", invalid, "x"]).timeout, "{invalid}");
+        assert_eq!(
+            parsed(&["--timeout", invalid, "x"]).timeout_ms,
+            None,
+            "{invalid}"
+        );
     }
-    assert!(!parsed(&["--timeout", "5", "--timeout", "never", "x"]).timeout);
+    assert_eq!(
+        parsed(&["--timeout", "5", "--timeout", "never", "x"]).timeout_ms,
+        None
+    );
     let non_utf8 = parse_ask(vec![
         OsString::from("--timeout"),
         raw(b"5\xff"),
         OsString::from("x"),
     ])
     .unwrap();
-    assert!(!non_utf8.timeout);
+    assert_eq!(non_utf8.timeout_ms, None);
 }
 
 #[test]

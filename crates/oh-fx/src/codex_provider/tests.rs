@@ -6,8 +6,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ofx_agent::{Agent, AgentConfig, TurnFailure, TurnReport};
 use ofx_contract::{
-    ModelRecoveryCause, PermissionMode, ProviderErrorKind, ToolResultStatus, TurnOutcome, UiEvent,
+    ModelRecoveryCause, PermissionMode, ProviderErrorKind, Tool, ToolResultStatus, TurnOutcome,
+    UiEvent,
 };
+use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
 use ofx_testkit::{FakeServer, RecordedRequest, Reply};
 use serde_json::{Value, json};
@@ -110,7 +112,7 @@ impl Fixture {
 
     fn agent_with(&self, provider: CodexProvider, config: AgentConfig) -> Agent {
         let workspace = self.canonical_workspace();
-        let tools = tool_set::ask_tools(&workspace);
+        let tools = ask_tools(&workspace);
         let permissions = PermissionPolicy::new(PermissionMode::Auto, workspace.clone());
         let context = HostRuntimeContext::new(workspace, PermissionMode::Auto);
         Agent::new(
@@ -146,6 +148,11 @@ fn agent_config(model: &str, effort: Option<&str>, fast_mode: bool) -> AgentConf
         reasoning_effort: effort.map(str::to_owned),
         fast_mode,
     }
+}
+
+fn ask_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
+    let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+    tool_set::ask_tools(workspace, &executions, None)
 }
 
 fn now_ms() -> i64 {
@@ -235,7 +242,7 @@ fn assert_offers_the_ask_tools(body: &Value, workspace: &Path) {
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect();
-    let ask_tools: Vec<String> = tool_set::ask_tools(workspace)
+    let ask_tools: Vec<String> = ask_tools(workspace)
         .iter()
         .map(|tool| tool.spec().name.clone())
         .collect();

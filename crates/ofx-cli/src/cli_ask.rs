@@ -59,7 +59,7 @@ pub struct AskArgs {
     pub output: AskOutput,
     pub session: AskSession,
     pub images: bool,
-    pub timeout: bool,
+    pub timeout_ms: Option<u64>,
     json_errors: bool,
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn parse_ask(args: Vec<OsString>) -> Result<AskArgs, AskError> {
             output: AskOutput::default(),
             session: AskSession::default(),
             images: false,
-            timeout: false,
+            timeout_ms: None,
             json_errors,
         },
         model_overrides: ModelOverrides::default(),
@@ -286,7 +286,7 @@ impl AskParser {
             let value = value.map_err(|_| missing)?;
             self.args.system_prompt = Some(value.into_string().map_err(|_| invalid)?);
         } else if let Some(value) = self.stream.take_option("timeout", ValueForm::Separate) {
-            self.args.timeout = is_valid_timeout(&value.map_err(|_| missing)?);
+            self.args.timeout_ms = timeout_ms(&value.map_err(|_| missing)?);
         } else if self.stream.take_flag("--continue-recovery") {
             if self.args.session.continue_recovery {
                 return Err(invalid);
@@ -371,15 +371,13 @@ fn join_prompt(parts: &[OsString]) -> Option<String> {
     (!text.contains('\0')).then_some(text)
 }
 
-fn is_valid_timeout(raw: &OsStr) -> bool {
-    let Some(raw) = raw.to_str() else {
-        return false;
-    };
+fn timeout_ms(raw: &OsStr) -> Option<u64> {
+    let raw = raw.to_str()?;
     let seconds: Option<u64> = match raw.strip_prefix('-') {
         Some(digits) => parse_unsigned(digits).filter(|value| *value == 0),
         None => parse_unsigned(raw.strip_prefix('+').unwrap_or(raw)),
     };
-    seconds.is_some_and(|seconds| seconds.checked_mul(MILLISECONDS_PER_SECOND).is_some())
+    seconds?.checked_mul(MILLISECONDS_PER_SECOND)
 }
 
 #[cfg(test)]
