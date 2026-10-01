@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
-    BoxFuture, ChatMessage, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, ProviderReplay, ReplaySource, StreamEvent, StreamSink,
-    valid_credential_account_id,
+    BoxFuture, CODEX_ORIGINATOR, ChatMessage, Completion, FinishReason, ModelProvider,
+    ModelRequest, ProviderError, ProviderErrorKind, ProviderReplay, ReplaySource, StreamEvent,
+    StreamSink, valid_credential_account_id,
 };
 use ofx_http::{ClientError, ConnectionOptions, SseDecoder, build_connection_client};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
@@ -24,7 +24,6 @@ use crate::responses_protocol::{
 
 const RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const REPLAY_PROVIDER: &str = "codex";
-const ORIGINATOR: &str = "fx";
 const EVENT_STREAM: &str = "text/event-stream";
 const DEFAULT_INSTRUCTIONS: &str = "You are a helpful assistant.";
 const MAX_MODEL_BYTES: usize = 1024;
@@ -232,7 +231,7 @@ impl CodexProvider {
             .header(CONTENT_TYPE, "application/json")
             .bearer_auth(token.as_str())
             .header("chatgpt-account-id", account_id)
-            .header("originator", ORIGINATOR)
+            .header("originator", CODEX_ORIGINATOR)
             .header("OpenAI-Beta", "responses=experimental")
             .header(ACCEPT, EVENT_STREAM)
             .body(body.to_owned());

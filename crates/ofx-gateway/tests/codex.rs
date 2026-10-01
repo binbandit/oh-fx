@@ -186,7 +186,7 @@ fn assert_codex_headers(request: &RecordedRequest, token: &str) {
         Some(format!("Bearer {token}").as_str())
     );
     assert_eq!(request.header("chatgpt-account-id"), Some(ACCOUNT));
-    assert_eq!(request.header("originator"), Some("fx"));
+    assert_eq!(request.header("originator"), Some("oh-fx"));
     assert_eq!(
         request.header("openai-beta"),
         Some("responses=experimental")
