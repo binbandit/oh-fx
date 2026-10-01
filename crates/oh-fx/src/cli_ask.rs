@@ -6,17 +6,19 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::thread;
 
 use ofx_agent::{
     Agent, AgentConfig, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
     text_for_completed_presentation,
 };
+use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, MISSING_CHATGPT_CREDENTIAL_MESSAGE};
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
-    ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError, RouteRecoveryStatus,
-    ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError,
+    RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
 use ofx_permissions::PermissionPolicy;
@@ -25,9 +27,10 @@ use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
 use serde::{Serialize, Serializer};
 use signal_hook::consts::{SIGINT, SIGTERM};
-use tokio::signal::unix::{SignalKind, signal};
+use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
+use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_provider};
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
 use crate::tool_set;
 
@@ -101,7 +104,9 @@ impl Failure {
 impl From<SelectionError> for Failure {
     fn from(error: SelectionError) -> Self {
         match error {
-            SelectionError::ModelNotSelected | SelectionError::ProviderUnavailable(_) => {
+            SelectionError::ModelNotSelected
+            | SelectionError::CodexModelNotSelected
+            | SelectionError::ProviderUnavailable(_) => {
                 Self::notice(error.code(), error.to_string())
             }
             SelectionError::InvalidProviderValue | SelectionError::UnknownConfiguredProvider => {
@@ -121,6 +126,77 @@ impl From<ConnectionError> for Failure {
     }
 }
 
+impl From<CodexUnavailable> for Failure {
+    fn from(error: CodexUnavailable) -> Self {
+        match error {
+            CodexUnavailable::MissingLogin => Self {
+                notice_in_json: true,
+                ..Self::notice("MissingCredentials", MISSING_CHATGPT_CREDENTIAL_MESSAGE)
+            },
+            CodexUnavailable::Preparation(error) => Self::notice(error.to_string(), error.notice()),
+            CodexUnavailable::Client(error) => {
+                Self::notice("TransportUnavailable", error.to_string())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialSource {
+    Configured,
+    Codex,
+}
+
+impl CredentialSource {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Configured => CONFIGURED_SOURCE_LABEL,
+            Self::Codex => CHATGPT_SOURCE_LABEL,
+        }
+    }
+
+    const fn relogin(self) -> Option<&'static str> {
+        match self {
+            Self::Configured => None,
+            Self::Codex => Some(CHATGPT_RELOGIN_MESSAGE),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ReceivedSignals {
+    first: Arc<AtomicI32>,
+    interrupt: Arc<AtomicBool>,
+    terminate: Arc<AtomicBool>,
+}
+
+impl ReceivedSignals {
+    fn received(&self) -> Option<i32> {
+        match self.first.load(Ordering::SeqCst) {
+            0 => [(SIGINT, &self.interrupt), (SIGTERM, &self.terminate)]
+                .into_iter()
+                .find_map(|(signal, flag)| flag.load(Ordering::SeqCst).then_some(signal)),
+            signal => Some(signal),
+        }
+    }
+
+    fn unless_signalled<T>(&self, value: T) -> Result<T, Signalled> {
+        match self.received() {
+            Some(signal) => Err(Signalled(signal)),
+            None => Ok(value),
+        }
+    }
+}
+
+struct Signalled(i32);
+
+struct Route {
+    provider: Arc<dyn ModelProvider>,
+    model: String,
+    max_output_tokens: Option<u32>,
+    source: CredentialSource,
+}
+
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
     let prompt = match args.resolve_prompt(read_stdin_prompt) {
         Ok(prompt) => prompt,
@@ -137,7 +213,7 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
         .enable_all()
         .build();
     match runtime {
-        Ok(runtime) => runtime.block_on(ask(args, &prompt)),
+        Ok(runtime) => runtime.block_on(ask(args, &prompt, SubscriptionEndpoints::default())),
         Err(_) => Failure::code("RuntimeUnavailable").report(args.output.json),
     }
 }
@@ -198,14 +274,36 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
     ExitCode::FAILURE
 }
 
-async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
+async fn ask(args: &AskArgs, prompt: &str, endpoints: SubscriptionEndpoints) -> ExitCode {
     let cancel = CancellationToken::new();
-    let received_signal = watch_signals(cancel.clone());
-    let (mut agent, model, permission_mode) = match prepare_agent(args) {
+    let received = watch_signals(cancel.clone());
+    let answered = answer(args, prompt, endpoints, &cancel, &received).await;
+    settle(answered, &received)
+}
+
+fn settle(answered: Result<ExitCode, Signalled>, received: &ReceivedSignals) -> ExitCode {
+    match answered.and_then(|exit| received.unless_signalled(exit)) {
+        Ok(exit) => exit,
+        Err(Signalled(signal)) => {
+            let _ = io::stdout().flush();
+            crate::die_by_signal(signal)
+        }
+    }
+}
+
+async fn answer(
+    args: &AskArgs,
+    prompt: &str,
+    endpoints: SubscriptionEndpoints,
+    cancel: &CancellationToken,
+    received: &ReceivedSignals,
+) -> Result<ExitCode, Signalled> {
+    let prepared = received.unless_signalled(prepare_agent(args, endpoints, cancel).await)?;
+    let (mut agent, model, permission_mode, source) = match prepared {
         Ok(prepared) => prepared,
-        Err(failure) => return failure.report(args.output.json),
+        Err(failure) => return Ok(failure.report(args.output.json)),
     };
-    let mut presenter = Presenter::new(args.output, permission_mode);
+    let mut presenter = Presenter::new(args.output, permission_mode, source);
     let report = agent
         .run_turn(
             prompt,
@@ -214,22 +312,22 @@ async fn ask(args: &AskArgs, prompt: &str) -> ExitCode {
                     cancel.cancel();
                 }
             },
-            &cancel,
+            cancel,
         )
         .await;
-    match received_signal.load(Ordering::SeqCst) {
-        0 => presenter.finish(&report, &model),
-        signal => {
-            let _ = io::stdout().flush();
-            crate::die_by_signal(signal)
-        }
-    }
+    let report = received.unless_signalled(report)?;
+    Ok(presenter.finish(&report, &model))
 }
 
-fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Failure> {
+async fn prepare_agent(
+    args: &AskArgs,
+    endpoints: SubscriptionEndpoints,
+    cancel: &CancellationToken,
+) -> Result<(Agent, String, PermissionMode, CredentialSource), Failure> {
     let workspace_root = workspace_root()?;
-    let settings = match ProfilePaths::from_environment() {
-        Some(paths) => Settings::load(&paths, &workspace_root)
+    let paths = ProfilePaths::from_environment();
+    let settings = match &paths {
+        Some(paths) => Settings::load(paths, &workspace_root)
             .map_err(|error| Failure::code(error.to_string()))?,
         None => Settings::default(),
     };
@@ -254,23 +352,40 @@ fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Fail
     }
     drop(stderr);
     let lookup = |name: &str| env::var(name).ok();
-    let connection = settings.selected_connection(&lookup)?;
-    let model = match args.model.as_deref() {
-        Some(requested) if requested.to_str().is_none() => Err(requested.as_bytes().to_vec()),
-        requested => {
-            Ok(settings.selected_model(connection, requested.and_then(OsStr::to_str), &lookup)?)
+    let requested = args.model.as_deref();
+    let route = if settings.codex_selected(&lookup)? {
+        codex_route(
+            &settings,
+            requested,
+            paths.map(|paths| paths.data),
+            endpoints,
+            &lookup,
+            cancel,
+        )
+        .await?
+    } else {
+        let connection = settings.selected_connection(&lookup)?;
+        let model = select_model(requested, |model| {
+            settings.selected_model(connection, model, &lookup)
+        })?;
+        let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
+        let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
+            .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
+        let model = model.map_err(Failure::invalid_model)?;
+        Route {
+            provider: Arc::new(provider),
+            max_output_tokens: request_output_tokens(connection.capabilities(&model)),
+            model,
+            source: CredentialSource::Configured,
         }
     };
-    let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
-    let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
-        .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
-    let model = model.map_err(Failure::invalid_model)?;
+    let model = route.model;
     let config = AgentConfig {
         system_prompt: args
             .system_prompt
             .clone()
             .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
-        max_output_tokens: request_output_tokens(connection.capabilities(&model)),
+        max_output_tokens: route.max_output_tokens,
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
     };
@@ -278,13 +393,44 @@ fn prepare_agent(args: &AskArgs) -> Result<(Agent, String, PermissionMode), Fail
     let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
     let agent = Agent::new(
-        Arc::new(provider),
+        route.provider,
         tools,
         Arc::new(context),
         Arc::new(permissions),
         config,
     );
-    Ok((agent, model, permission_mode))
+    Ok((agent, model, permission_mode, route.source))
+}
+
+async fn codex_route(
+    settings: &Settings,
+    requested: Option<&OsStr>,
+    data_directory: Option<PathBuf>,
+    endpoints: SubscriptionEndpoints,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    cancel: &CancellationToken,
+) -> Result<Route, Failure> {
+    let model = select_model(requested, |model| {
+        settings.selected_codex_model(model, lookup)
+    })?
+    .map_err(Failure::invalid_model)?;
+    let provider = codex_provider(data_directory, &crate::user_agent(), endpoints, cancel).await?;
+    Ok(Route {
+        provider: Arc::new(provider),
+        model,
+        max_output_tokens: None,
+        source: CredentialSource::Codex,
+    })
+}
+
+fn select_model(
+    requested: Option<&OsStr>,
+    select: impl FnOnce(Option<&str>) -> Result<String, SelectionError>,
+) -> Result<Result<String, Vec<u8>>, SelectionError> {
+    match requested {
+        Some(requested) if requested.to_str().is_none() => Ok(Err(requested.as_bytes().to_vec())),
+        requested => select(requested.and_then(OsStr::to_str)).map(Ok),
+    }
 }
 
 fn workspace_root() -> Result<PathBuf, Failure> {
@@ -293,24 +439,31 @@ fn workspace_root() -> Result<PathBuf, Failure> {
         .map_err(|_| Failure::code("WorkspaceUnavailable"))
 }
 
-fn watch_signals(cancel: CancellationToken) -> Arc<AtomicI32> {
-    let received = Arc::new(AtomicI32::new(0));
-    let flag = Arc::clone(&received);
-    tokio::spawn(async move {
-        let (Ok(mut interrupt), Ok(mut terminate)) = (
-            signal(SignalKind::interrupt()),
-            signal(SignalKind::terminate()),
-        ) else {
-            return;
-        };
-        let received_signal = tokio::select! {
-            _ = interrupt.recv() => SIGINT,
-            _ = terminate.recv() => SIGTERM,
-        };
-        flag.store(received_signal, Ordering::SeqCst);
+fn watch_signals(cancel: CancellationToken) -> ReceivedSignals {
+    let received = ReceivedSignals::default();
+    let _ = signal_hook::flag::register(SIGINT, Arc::clone(&received.interrupt));
+    let _ = signal_hook::flag::register(SIGTERM, Arc::clone(&received.terminate));
+    let Ok(mut signals) = Signals::new([SIGINT, SIGTERM]) else {
+        return received;
+    };
+    if let Some(signal) = received.received() {
+        keep_first(&received.first, signal);
         cancel.cancel();
-    });
+    }
+    let first = Arc::clone(&received.first);
+    let _ = thread::Builder::new()
+        .name("oh-fx-signals".to_owned())
+        .spawn(move || {
+            for signal in signals.forever() {
+                keep_first(&first, signal);
+                cancel.cancel();
+            }
+        });
     received
+}
+
+fn keep_first(first: &AtomicI32, signal: i32) {
+    let _ = first.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
 }
 
 fn write_error_name(error: &io::Error) -> &'static str {
@@ -485,6 +638,7 @@ enum OutputMode {
 struct Presenter {
     mode: OutputMode,
     permission_mode: PermissionMode,
+    source: CredentialSource,
     output: String,
     has_output: bool,
     boundary_pending: bool,
@@ -502,7 +656,7 @@ struct FailureSummary {
 }
 
 impl Presenter {
-    fn new(output: AskOutput, permission_mode: PermissionMode) -> Self {
+    fn new(output: AskOutput, permission_mode: PermissionMode, source: CredentialSource) -> Self {
         let mode = if output.json {
             OutputMode::Json
         } else if output.quiet {
@@ -515,6 +669,7 @@ impl Presenter {
         Self {
             mode,
             permission_mode,
+            source,
             output: String::new(),
             has_output: false,
             boundary_pending: false,
@@ -698,13 +853,16 @@ impl Presenter {
         let detail = error.detail.as_deref().unwrap_or(&bare);
         let auth_failure = status == 401;
         let message = if auth_failure {
-            format!("{CONFIGURED_SOURCE_LABEL} authentication failed · HTTP 401")
+            format!("{} authentication failed · HTTP 401", self.source.label())
         } else {
             detail.to_owned()
         };
         write_stderr(&format!("oh-fx ask: {message}\n"))?;
         if auth_failure && detail != bare {
             write_stderr(&format!("oh-fx ask: {detail}\n"))?;
+        }
+        if let Some(guidance) = self.source.relogin().filter(|_| auth_failure) {
+            write_stderr(&format!("oh-fx ask: {guidance}\n"))?;
         }
         if self.mode == OutputMode::Json {
             self.output.push_str(&message);
@@ -767,7 +925,7 @@ impl Presenter {
             usage: usage_record(report.usage),
             error: summary.error.as_deref(),
             auth_failure: summary.auth_failure.then_some(AuthFailureRecord {
-                source: CONFIGURED_SOURCE_LABEL,
+                source: self.source.label(),
                 reason: "http_unauthorized",
                 http_status: 401,
             }),
@@ -798,12 +956,273 @@ impl Presenter {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Read};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::Path;
+    use std::process::{self, Child, Stdio};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use ofx_auth::{ChatGptEndpoints, PreparationError};
+    use ofx_cli::{CommandLaunch, Invocation};
     use ofx_contract::{
-        CallDescription, Concurrency, ModelFailureDiagnostic, RouteRecoveryKind, ToolActivity,
-        TurnId,
+        CallDescription, Concurrency, ModelFailureDiagnostic, ProviderErrorKind, RouteRecoveryKind,
+        ToolActivity, TurnId,
     };
+    use ofx_gateway::CodexEndpoints;
+    use ofx_testkit::{FakeServer, Reply};
 
     use super::*;
+
+    const SIGNAL_CHILD_VARIABLE: &str = "OH_FX_TEST_STALLED_REFRESH_AUTH_URL";
+    const SIGNAL_RECORDED: &str = "first signal recorded: ";
+    const EXPIRED_SESSION: &str = r#"{"version":1,"access_token":"saved-access-token","refresh_token":"rt-refresh-secret-0123456789","expires_at_ms":1,"account_id":"acct_test"}
+"#;
+
+    struct ExpiredLogin {
+        directory: tempfile::TempDir,
+        paths: ProfilePaths,
+        workspace: PathBuf,
+    }
+
+    impl ExpiredLogin {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let paths = ProfilePaths {
+                config: root.join("config/oh-fx"),
+                data: root.join("data/oh-fx"),
+                state: root.join("state/oh-fx"),
+                cache: root.join("cache/oh-fx"),
+            };
+            let workspace = root.join("workspace");
+            for directory in [&paths.config, &paths.data, &workspace] {
+                fs::create_dir_all(directory).unwrap();
+            }
+            fs::set_permissions(&paths.data, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(
+                paths.config.join("settings.json"),
+                r#"{"provider":"codex","models":{"codex":"gpt-5.4"}}"#,
+            )
+            .unwrap();
+            let session = paths.data.join("chatgpt-auth.json");
+            fs::write(&session, EXPIRED_SESSION).unwrap();
+            fs::set_permissions(&session, fs::Permissions::from_mode(0o600)).unwrap();
+            Self {
+                directory,
+                paths,
+                workspace,
+            }
+        }
+
+        fn root(&self) -> &Path {
+            self.directory.path()
+        }
+
+        fn session(&self) -> String {
+            fs::read_to_string(self.paths.data.join("chatgpt-auth.json")).unwrap()
+        }
+
+        fn settings(&self) -> Settings {
+            Settings::load(&self.paths, &self.workspace).unwrap()
+        }
+    }
+
+    fn endpoints(base_url: &str) -> SubscriptionEndpoints {
+        SubscriptionEndpoints {
+            chatgpt: ChatGptEndpoints {
+                issuer: base_url.to_owned(),
+                token_url: format!("{base_url}/oauth/token"),
+                callback_ports: vec![0],
+            },
+            codex: CodexEndpoints {
+                responses: format!("{base_url}/backend-api/codex/responses"),
+            },
+        }
+    }
+
+    struct Reaped(Child);
+
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn send(child: &Child, name: &str) {
+        let sent = process::Command::new("kill")
+            .args([format!("-{name}"), child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+    }
+
+    fn assert_a_stalled_login_refresh_exits_by_the_first(signals: &[(&str, i32)]) {
+        let login = ExpiredLogin::new();
+        let auth = FakeServer::start([Reply::held_status_with_headers(200, &[], "")]);
+        let root = login.root();
+        let mut child = Reaped(
+            process::Command::new(env::current_exe().unwrap())
+                .args([
+                    "cli_ask::tests::ask_child_with_a_stalled_login_refresh",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env_clear()
+                .env("HOME", root)
+                .env("XDG_CONFIG_HOME", root.join("config"))
+                .env("XDG_DATA_HOME", root.join("data"))
+                .env("XDG_STATE_HOME", root.join("state"))
+                .env("XDG_CACHE_HOME", root.join("cache"))
+                .env(SIGNAL_CHILD_VARIABLE, auth.base_url())
+                .current_dir(&login.workspace)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = child.0.stdout.take().unwrap();
+        let (line_sender, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line_sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let started = Instant::now();
+        while auth.requests().is_empty() {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                panic!("the child ended before refreshing the login: {status}");
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the child never asked to refresh the login"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let ((first_name, first), later) = signals.split_first().unwrap();
+        let signalled = Instant::now();
+        send(&child.0, first_name);
+        let recorded = format!("{SIGNAL_RECORDED}{first}");
+        loop {
+            let remaining = Duration::from_secs(10).saturating_sub(signalled.elapsed());
+            let line = lines
+                .recv_timeout(remaining)
+                .expect("the child records the first signal");
+            if line.ends_with(&recorded) {
+                break;
+            }
+        }
+        for (name, _) in later {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "the child ended before the later signal"
+            );
+            send(&child.0, name);
+        }
+        let status = loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                signalled.elapsed() < Duration::from_secs(10),
+                "the child kept waiting for the stalled refresh"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(status.signal(), Some(*first));
+        let mut stderr = String::new();
+        child
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert_eq!(stderr, "");
+        assert_eq!(auth.requests().len(), 1);
+        assert_eq!(login.session(), EXPIRED_SESSION);
+    }
+
+    #[test]
+    #[ignore = "run as a child process by the stalled login refresh signal tests"]
+    fn ask_child_with_a_stalled_login_refresh() {
+        let Ok(auth) = env::var(SIGNAL_CHILD_VARIABLE) else {
+            return;
+        };
+        let Ok(Invocation::Command(CommandLaunch {
+            command: ofx_cli::Command::Ask(args),
+            ..
+        })) = ofx_cli::parse_args(["ask", "Hello"])
+        else {
+            panic!("ask arguments");
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let received = watch_signals(cancel.clone());
+        let first = Arc::clone(&received.first);
+        thread::spawn(move || {
+            loop {
+                match first.load(Ordering::SeqCst) {
+                    0 => thread::sleep(Duration::from_millis(5)),
+                    signal => break println!("{SIGNAL_RECORDED}{signal}"),
+                }
+            }
+        });
+        let answered =
+            runtime.block_on(answer(&args, "Hello", endpoints(&auth), &cancel, &received));
+        let _ = settle(answered, &received);
+    }
+
+    #[test]
+    fn an_interrupt_during_a_stalled_login_refresh_exits_by_that_signal() {
+        assert_a_stalled_login_refresh_exits_by_the_first(&[("INT", SIGINT)]);
+    }
+
+    #[test]
+    fn a_termination_during_a_stalled_login_refresh_exits_by_that_signal() {
+        assert_a_stalled_login_refresh_exits_by_the_first(&[("TERM", SIGTERM)]);
+    }
+
+    #[test]
+    fn a_termination_followed_by_an_interrupt_exits_by_the_termination() {
+        assert_a_stalled_login_refresh_exits_by_the_first(&[("TERM", SIGTERM), ("INT", SIGINT)]);
+    }
+
+    fn no_environment(_: &str) -> Option<String> {
+        None
+    }
+
+    #[tokio::test]
+    async fn non_utf8_codex_models_fail_before_the_login_is_refreshed() {
+        let login = ExpiredLogin::new();
+        let auth = FakeServer::start([Reply::status(500, "unexpected refresh")]);
+        let model = OsStr::from_bytes(b" m\xff ");
+        let failure = codex_route(
+            &login.settings(),
+            Some(model),
+            Some(login.paths.data.clone()),
+            endpoints(&auth.base_url()),
+            &no_environment,
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("an invalid model");
+        assert_eq!(failure.code, INVALID_MODEL_CODE);
+        assert_eq!(failure.model, b" m\xff ");
+        assert!(auth.requests().is_empty());
+        assert_eq!(login.session(), EXPIRED_SESSION);
+    }
 
     fn result_json(result: &RunResult<'_>) -> String {
         serde_json::to_string(result).unwrap()
@@ -866,6 +1285,7 @@ mod tests {
                 ..AskOutput::default()
             },
             PermissionMode::Auto,
+            CredentialSource::Configured,
         )
     }
 
@@ -903,6 +1323,61 @@ mod tests {
             presenter.blocked_action_guidance("Reading /tmp/\x1b[2Jx"),
             "oh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: Reading /tmp/\\x1b[2Jx\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule\n"
         );
+    }
+
+    #[test]
+    fn codex_unauthorized_failures_name_the_subscription_source() {
+        let mut presenter = Presenter::new(
+            AskOutput {
+                json: true,
+                ..AskOutput::default()
+            },
+            PermissionMode::Auto,
+            CredentialSource::Codex,
+        );
+        let error = ProviderError {
+            status: Some(401),
+            ..ProviderError::new(ProviderErrorKind::Unauthorized, "HttpError")
+                .with_detail("API access denied · HTTP 401 · invalid_token")
+        };
+        let summary = presenter.describe_failure(&TurnFailure::Provider(error));
+        assert!(summary.auth_failure);
+        assert_eq!(summary.error, None);
+        assert_eq!(
+            presenter.output,
+            "Codex subscription authentication failed · HTTP 401\n"
+        );
+        assert_eq!(CredentialSource::Codex.label(), "Codex subscription");
+        assert_eq!(
+            CredentialSource::Codex.relogin(),
+            Some("Run oh-fx login codex to sign in again.")
+        );
+        assert_eq!(CredentialSource::Configured.relogin(), None);
+    }
+
+    #[test]
+    fn codex_preparation_failures_follow_the_upstream_codes_and_notices() {
+        let missing = Failure::from(CodexUnavailable::MissingLogin);
+        assert_eq!(missing.code, "MissingCredentials");
+        assert_eq!(
+            missing.notice.as_deref(),
+            Some("oh-fx needs a Codex subscription login for this model. Run oh-fx login codex.")
+        );
+        assert!(missing.notice_in_json);
+        let storage = Failure::from(CodexUnavailable::Preparation(
+            PreparationError::CredentialStorageUnavailable,
+        ));
+        assert_eq!(storage.code, "CredentialStorageUnavailable");
+        assert_eq!(
+            storage.notice.as_deref(),
+            Some(
+                "Saved credential storage is unavailable. Check the saved credential, then retry."
+            )
+        );
+        assert!(!storage.notice_in_json);
+        let unselected = Failure::from(SelectionError::CodexModelNotSelected);
+        assert_eq!(unselected.code, "CodexModelNotSelected");
+        assert!(unselected.notice.is_some());
     }
 
     #[test]

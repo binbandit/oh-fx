@@ -98,6 +98,7 @@ pub trait CodexCredentials: Send + Sync {
         &'a self,
         mode: CodexRefresh,
         account_id: &'a str,
+        cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<CodexAccess>>;
 }
 
@@ -147,11 +148,11 @@ impl CodexProvider {
             return Err(ProviderError::cancelled());
         }
         let body = build_request(request, &replay_parts(request)).map_err(codex_failure)?;
-        self.refresh_if_due().await;
+        self.refresh_if_due(cancel).await;
         let mut sent = Vec::new();
         let mut response = self.post(&body, &mut sent, cancel).await?;
         if response.status() == StatusCode::UNAUTHORIZED
-            && self.replace_access(CodexRefresh::Force).await
+            && self.replace_access(CodexRefresh::Force, cancel).await
         {
             response = self.post(&body, &mut sent, cancel).await?;
         }
@@ -187,16 +188,16 @@ impl CodexProvider {
         secrets
     }
 
-    async fn refresh_if_due(&self) {
+    async fn refresh_if_due(&self, cancel: &CancellationToken) {
         let due = lock(&self.access).refresh_after_ms <= now_ms();
         if due {
-            self.replace_access(CodexRefresh::IfNeeded).await;
+            self.replace_access(CodexRefresh::IfNeeded, cancel).await;
         }
     }
 
-    async fn replace_access(&self, mode: CodexRefresh) -> bool {
+    async fn replace_access(&self, mode: CodexRefresh, cancel: &CancellationToken) -> bool {
         let account_id = lock(&self.access).account_id.clone();
-        let Some(fresh) = self.credentials.refresh(mode, &account_id).await else {
+        let Some(fresh) = self.credentials.refresh(mode, &account_id, cancel).await else {
             return false;
         };
         if fresh.account_id != account_id {

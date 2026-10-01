@@ -1,5 +1,6 @@
 use ofx_config::ProviderId;
 use ofx_contract::valid_credential_account_id;
+use tokio_util::sync::CancellationToken;
 
 use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode, now_ms};
 use crate::provider_catalog;
@@ -113,8 +114,9 @@ pub fn login_failure_detail(error: ChatGptError) -> String {
 
 pub async fn prepare_chatgpt_credential(
     oauth: &ChatGptOAuth,
+    cancel: &CancellationToken,
 ) -> Result<Option<ChatGptAccess>, PreparationError> {
-    let access = match load_chatgpt_credential(oauth, RefreshMode::IfNeeded).await {
+    let access = match load_chatgpt_credential(oauth, RefreshMode::IfNeeded, cancel).await {
         Ok(Some(access)) => access,
         Ok(None) => return Ok(None),
         Err(error) => {
@@ -134,8 +136,9 @@ pub async fn refresh_chatgpt_credential(
     oauth: &ChatGptOAuth,
     mode: RefreshMode,
     expected_account_id: &str,
+    cancel: &CancellationToken,
 ) -> Result<Option<ChatGptAccess>, ChatGptError> {
-    let Some(access) = load_chatgpt_credential(oauth, mode).await? else {
+    let Some(access) = load_chatgpt_credential(oauth, mode, cancel).await? else {
         return Ok(None);
     };
     if access.account_id() != expected_account_id {
@@ -147,11 +150,12 @@ pub async fn refresh_chatgpt_credential(
 async fn load_chatgpt_credential(
     oauth: &ChatGptOAuth,
     mode: RefreshMode,
+    cancel: &CancellationToken,
 ) -> Result<Option<ChatGptAccess>, ChatGptError> {
     if oauth.storage_presence() == Presence::Unavailable {
         return Err(ChatGptError::CredentialStorageUnavailable);
     }
-    oauth.load_access(mode).await
+    oauth.load_access(mode, cancel).await
 }
 
 #[cfg(test)]

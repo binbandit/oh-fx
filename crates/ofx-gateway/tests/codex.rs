@@ -48,6 +48,7 @@ impl CodexCredentials for FakeCredentials {
         &'a self,
         mode: CodexRefresh,
         account_id: &'a str,
+        _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<CodexAccess>> {
         self.calls
             .lock()

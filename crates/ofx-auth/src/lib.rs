@@ -17,6 +17,7 @@ pub use auth_runtime::{
 pub use chatgpt_oauth::{ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth, RefreshMode};
 pub use chatgpt_session::DeleteOutcome;
 pub use credentials::{
-    AuthMode, CHATGPT_SOURCE_LABEL, HOST_MANAGED_AUTH_MESSAGE, is_valid_auth_mode, parse_auth_mode,
+    AuthMode, CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, HOST_MANAGED_AUTH_MESSAGE,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, is_valid_auth_mode, parse_auth_mode,
 };
 pub use provider_catalog::parse as parse_login_provider;
