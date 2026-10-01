@@ -76,7 +76,7 @@ pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {
     }
 }
 
-fn host_managed() -> bool {
+pub(crate) fn host_managed() -> bool {
     let mode = env::var_os(crate::AUTH_MODE_VARIABLE);
     parse_auth_mode(mode.as_deref().map(OsStrExt::as_bytes)) == Some(AuthMode::HostManaged)
 }

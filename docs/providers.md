@@ -275,10 +275,27 @@ Model ids are the slugs from the Codex model list that ChatGPT offers your plan,
 
 The `model` key belongs to the gateway and is never used for Codex. Without a Codex model, `oh-fx ask` stops with `no Codex model is selected; save one as "codex" under "models" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL`.
 
+### List the models
+
+```sh
+oh-fx models
+```
+
+With Codex selected, this loads the same model list that `oh-fx login codex` uses and prints it in the order ChatGPT sends it:
+
+```
+[models] 3 available
+ - gpt-6.1-sol · Codex subscription
+ - gpt-5.6-terra · Codex subscription
+ - gpt-5.6-luna · Codex subscription
+```
+
+`oh-fx models --json` prints one JSON line with `count`, `ids`, and a `models` array whose entries carry `id` and `source`. Like `ask`, it needs a Codex model from settings or `OH_FX_MODEL` first. Without a usable login it prints `oh-fx models: could not list models: AuthenticationRejected`; with `--json` that becomes `{"kind":"models","error":"could not list models: AuthenticationRejected","code":"AuthenticationRejected"}` on stdout. Other failures print `MalformedResponse`, `the request was cancelled`, or `Unavailable`, with the codes `MalformedResponse`, `Cancelled`, `RateLimited`, `GatewayUnavailable`, `TransportFailure`, or `Unavailable`. For the gateway and custom connections, `oh-fx models` is not available yet.
+
 ### What is sent where
 
 - Requests go to `https://chatgpt.com/backend-api/codex/responses` with the access token, the ChatGPT account id, `originator: oh-fx`, and `OpenAI-Beta: responses=experimental`. The body uses `store: false` and asks for encrypted reasoning, which oh-fx replays on the next step of the same run.
-- Signing in loads the model list from `https://chatgpt.com/backend-api/codex/models` with the same token, account id, and `originator`, and a `client_version` query naming the current Codex CLI release. oh-fx looks that release up at `https://registry.npmjs.org/@openai/codex/latest` and caches it for a minute in `$XDG_CACHE_HOME/oh-fx/provider-versions/codex.json`; when the lookup fails it uses the last cached release, and without one the model list fails as `transport`.
+- Signing in and `oh-fx models` load the model list from `https://chatgpt.com/backend-api/codex/models` with the same token, account id, and `originator`, and a `client_version` query naming the current Codex CLI release. oh-fx looks that release up at `https://registry.npmjs.org/@openai/codex/latest` and caches it for a minute in `$XDG_CACHE_HOME/oh-fx/provider-versions/codex.json`; when the lookup fails it uses the last cached release, and without one the model list fails as `transport`.
 - The sign-in code and refresh token go only to `https://auth.openai.com/oauth/token`.
 - Redirects are never followed, and tokens are masked in every error and never printed.
 - oh-fx refreshes the access token a minute before it expires and saves the new tokens before the request. When ChatGPT answers 401, oh-fx refreshes once and resends the request.

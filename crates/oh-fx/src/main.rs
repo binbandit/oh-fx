@@ -4,6 +4,7 @@ mod codex_provider;
 mod context;
 mod help;
 mod login_command;
+mod models_command;
 mod provider_activation;
 mod tool_set;
 mod upgrade_command;
@@ -82,6 +83,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Upgrade(format) => upgrade_command::run(matches!(format, OutputFormat::Json)),
             Command::Login(provider) => login_command::login(provider.as_ref()),
             Command::Logout(provider) => login_command::logout(provider.as_ref()),
+            Command::Models(format) => models_command::run(format),
             other => unavailable_command(&other),
         },
     }
@@ -99,10 +101,15 @@ fn report_error(error: &CliError) -> ExitCode {
 }
 
 fn unavailable_command(command: &Command) -> ExitCode {
+    auto_upgrade::announce_and_schedule();
+    not_available(command)
+}
+
+pub(crate) fn not_available(command: &Command) -> ExitCode {
     let kind = command.kind();
-    let exit = unavailable(kind.token());
+    write_unavailable(kind.token());
     if !matches!(command.output_format(), OutputFormat::Json) {
-        return exit;
+        return ExitCode::FAILURE;
     }
     let message = format!("{} is not available yet", kind.token());
     fail(

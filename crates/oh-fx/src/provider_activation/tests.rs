@@ -15,7 +15,7 @@ const FAR_FUTURE_MS: i64 = 4_102_444_800_000;
 pub(crate) struct Fixture {
     _directory: tempfile::TempDir,
     pub(crate) paths: ProfilePaths,
-    workspace: PathBuf,
+    pub(crate) workspace: PathBuf,
 }
 
 impl Fixture {
@@ -87,7 +87,7 @@ impl Fixture {
         fs::set_permissions(self.credential_file(), fs::Permissions::from_mode(mode)).unwrap();
     }
 
-    fn signed_in(&self) {
+    pub(crate) fn signed_in(&self) {
         self.write_session(FAR_FUTURE_MS, 0o600);
     }
 }
