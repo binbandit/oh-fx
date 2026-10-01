@@ -181,7 +181,7 @@ async fn fetch_catalog(
         Some(paths.cache.clone()),
     )
     .map_err(|_| detail("Codex model catalog is unavailable"))?;
-    catalog
+    let models = catalog
         .fetch(credential, &CancellationToken::new())
         .await
         .map_err(|failure| {
@@ -189,7 +189,8 @@ async fn fetch_catalog(
                 "could not load the target model catalog ({})",
                 failure.label()
             ))
-        })
+        })?;
+    Ok(models.into_iter().map(|model| model.id).collect())
 }
 
 async fn save_selection(paths: &ProfilePaths, model: &str) -> Result<(), ActivationFailure> {

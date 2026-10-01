@@ -29,6 +29,20 @@ fn without(mut model: Value, key: &str) -> Value {
     model
 }
 
+fn listed_ids(body: &[u8]) -> Option<Vec<String>> {
+    parse_catalog(body).map(|models| models.into_iter().map(|model| model.id).collect())
+}
+
+fn codex_model(id: &str, efforts: &[&str], fast: bool) -> CodexModel {
+    CodexModel {
+        id: id.to_owned(),
+        capabilities: ModelCapabilities {
+            reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
+            supports_fast_mode: fast,
+        },
+    }
+}
+
 #[test]
 fn codex_catalog_parser_keeps_visible_api_models_in_server_order() {
     let body = catalog(&[
@@ -54,17 +68,38 @@ fn codex_catalog_parser_keeps_visible_api_models_in_server_order() {
     assert_eq!(
         parse_catalog(&body),
         Some(vec![
-            "gpt-6.1-sol".to_owned(),
-            "gpt-5.6-luna".to_owned(),
-            "gpt-5.6-terra".to_owned(),
+            codex_model("gpt-6.1-sol", &["low", "high"], false),
+            codex_model("gpt-5.6-luna", &["low", "high"], true),
+            codex_model("gpt-5.6-terra", &[], false),
         ])
+    );
+}
+
+#[test]
+fn reasoning_levels_keep_their_server_names_and_order() {
+    let body = catalog(&[with(
+        model("gpt-6.1-sol"),
+        "supported_reasoning_levels",
+        json!([
+            {"effort": "xhigh", "description": "Deepest"},
+            {"effort": "Minimal"},
+            {"effort": "auto"},
+        ]),
+    )]);
+    assert_eq!(
+        parse_catalog(&body),
+        Some(vec![codex_model(
+            "gpt-6.1-sol",
+            &["xhigh", "Minimal", "auto"],
+            false
+        )])
     );
 }
 
 #[test]
 fn codex_catalog_without_the_reviewer_model_is_still_valid() {
     assert_eq!(
-        parse_catalog(&catalog(&[model("gpt-6.1-sol")])),
+        listed_ids(&catalog(&[model("gpt-6.1-sol")])),
         Some(vec!["gpt-6.1-sol".to_owned()])
     );
     assert_eq!(parse_catalog(&catalog(&[])), Some(Vec::new()));
@@ -153,7 +188,11 @@ fn listed_values_after_the_matching_capability_are_not_checked() {
     ]);
     assert_eq!(
         parse_catalog(&body),
-        Some(vec!["a".to_owned(), "b".to_owned(), "c".to_owned()])
+        Some(vec![
+            codex_model("a", &["low", "high"], false),
+            codex_model("b", &["low", "high"], true),
+            codex_model("c", &["low", "high"], false),
+        ])
     );
 }
 
@@ -163,7 +202,7 @@ fn catalog_shape_and_size_limits_are_enforced() {
         .map(|index| model(&format!("m{index}")))
         .collect();
     assert_eq!(
-        parse_catalog(&catalog(&full)).map(|ids| ids.len()),
+        listed_ids(&catalog(&full)).map(|ids| ids.len()),
         Some(MAX_CATALOG_MODELS)
     );
     let mut over = full;
