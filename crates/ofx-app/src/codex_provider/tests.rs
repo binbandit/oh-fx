@@ -114,7 +114,7 @@ impl Fixture {
         let workspace = self.canonical_workspace();
         let tools = ask_tools(&workspace);
         let permissions = PermissionPolicy::new(PermissionMode::Auto, workspace.clone());
-        let context = HostRuntimeContext::new(workspace, PermissionMode::Auto);
+        let context = HostRuntimeContext::new(workspace, PermissionMode::Auto, false);
         Agent::new(
             Arc::new(provider),
             tools,

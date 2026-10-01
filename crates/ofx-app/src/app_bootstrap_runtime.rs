@@ -3,15 +3,15 @@ use std::ffi::OsStr;
 use std::fs;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ofx_agent::{Agent, AgentConfig, ProjectContext, RuntimeContext};
+use ofx_agent::{Agent, AgentConfig, Approvals, ProjectContext, RuntimeContext};
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
-    ConnectionError, ContextLimitOverride, ProfilePaths, ProviderDefinition, SelectionError,
-    Settings, SettingsError, request_output_tokens,
+    ConfigDiagnostic, ConnectionError, ContextLimitOverride, ProfilePaths, ProviderDefinition,
+    SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, ModelCapabilities, ModelProvider,
@@ -31,6 +31,7 @@ use crate::context::{
 use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
+const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
 
 pub struct Profile {
     workspace_root: PathBuf,
@@ -45,7 +46,7 @@ pub enum ProfileError {
     #[error("{0}")]
     Settings(#[from] SettingsError),
     #[error("InvalidProfileConfiguration")]
-    Unusable,
+    Unusable(Vec<ConfigDiagnostic>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +83,13 @@ impl CredentialSource {
             Self::Codex => Some(CHATGPT_RELOGIN_MESSAGE),
         }
     }
+
+    pub(crate) const fn repair(self) -> &'static str {
+        match self {
+            Self::Configured => CONFIGURED_SOURCE_REPAIR,
+            Self::Codex => CHATGPT_RELOGIN_MESSAGE,
+        }
+    }
 }
 
 pub struct Launch<'a> {
@@ -99,10 +107,12 @@ pub struct Launch<'a> {
 pub struct AgentSetup {
     provider: Arc<dyn ModelProvider>,
     capabilities: Option<Arc<dyn CapabilityResolver>>,
+    connection: Option<ProviderDefinition>,
     source: CredentialSource,
     tools: Vec<Arc<dyn Tool>>,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<PermissionPolicy>,
+    approvals: Option<Approvals>,
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     context_notices: Vec<String>,
     config: AgentConfig,
@@ -127,8 +137,16 @@ impl Profile {
             Some(paths) => Settings::load(paths, &workspace_root)?,
             None => Settings::default(),
         };
+        Self::new(workspace_root, paths, settings)
+    }
+
+    pub(crate) fn new(
+        workspace_root: PathBuf,
+        paths: Option<ProfilePaths>,
+        settings: Settings,
+    ) -> Result<Self, ProfileError> {
         if settings.profile_is_unusable() {
-            return Err(ProfileError::Unusable);
+            return Err(ProfileError::Unusable(settings.diagnostics().to_vec()));
         }
         Ok(Self {
             workspace_root,
@@ -141,9 +159,30 @@ impl Profile {
         &self.settings
     }
 
+    pub(crate) fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     pub async fn connect(
         &self,
         launch: Launch<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<AgentSetup, ConnectError> {
+        self.prepare(launch, false, cancel).await
+    }
+
+    pub(crate) async fn connect_interactive(
+        &self,
+        launch: Launch<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<AgentSetup, ConnectError> {
+        self.prepare(launch, true, cancel).await
+    }
+
+    async fn prepare(
+        &self,
+        launch: Launch<'_>,
+        interactive: bool,
         cancel: &CancellationToken,
     ) -> Result<AgentSetup, ConnectError> {
         let route = self.route(launch.model, launch.endpoints, cancel).await?;
@@ -160,9 +199,7 @@ impl Profile {
             system_prompt: launch
                 .system_prompt
                 .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
-            max_output_tokens: route.connection.as_ref().and_then(|connection| {
-                request_output_tokens(connection.capabilities(&route.model))
-            }),
+            max_output_tokens: output_tokens(route.connection.as_ref(), &route.model),
             step_limit: self.settings.max_agent_steps(&lookup),
             model: route.model,
             reasoning_effort: launch.reasoning_effort,
@@ -173,6 +210,7 @@ impl Profile {
         Ok(AgentSetup {
             provider: route.provider,
             capabilities: route.capabilities,
+            connection: route.connection,
             source: route.source,
             tools: tool_set::ask_tools(
                 &self.workspace_root,
@@ -183,11 +221,13 @@ impl Profile {
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
                 permission_mode,
+                interactive,
             )),
             permissions: Arc::new(PermissionPolicy::new(
                 permission_mode,
                 self.workspace_root.clone(),
             )),
+            approvals: interactive.then(Approvals::default),
             project,
             context_notices,
             config,
@@ -302,6 +342,10 @@ fn select_model(
     }
 }
 
+fn output_tokens(connection: Option<&ProviderDefinition>, model: &str) -> Option<u32> {
+    connection.and_then(|connection| request_output_tokens(connection.capabilities(model)))
+}
+
 fn uses_tls(url: &str) -> bool {
     url.get(..8)
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
@@ -320,6 +364,24 @@ impl AgentSetup {
         &self.context_notices
     }
 
+    pub(crate) fn models(&self) -> &[String] {
+        self.connection
+            .as_ref()
+            .map_or(&[], |connection| connection.models())
+    }
+
+    pub(crate) fn approvals(&self) -> Option<&Approvals> {
+        self.approvals.as_ref()
+    }
+
+    pub(crate) fn config(&self, model: &str) -> AgentConfig {
+        AgentConfig {
+            model: model.to_owned(),
+            max_output_tokens: output_tokens(self.connection.as_ref(), model),
+            ..self.config.clone()
+        }
+    }
+
     pub fn agent(&self) -> Agent {
         let mut agent = Agent::new(
             Arc::clone(&self.provider),
@@ -330,6 +392,9 @@ impl AgentSetup {
         );
         if let Some(capabilities) = &self.capabilities {
             agent = agent.with_capability_resolver(Arc::clone(capabilities));
+        }
+        if let Some(approvals) = &self.approvals {
+            agent = agent.with_approvals(approvals.clone());
         }
         match &self.project {
             Some((provider, snapshot)) => {
@@ -346,8 +411,6 @@ pub fn user_agent() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use ofx_auth::ChatGptEndpoints;
     use ofx_exec::SessionSupervisor;
     use ofx_gateway::CodexEndpoints;
@@ -370,11 +433,7 @@ mod tests {
         }
         fs::write(paths.config.join("settings.json"), settings).unwrap();
         let settings = Settings::load(&paths, &workspace).unwrap();
-        Profile {
-            workspace_root: workspace,
-            paths: Some(paths),
-            settings,
-        }
+        Profile::new(workspace, Some(paths), settings).unwrap()
     }
 
     #[tokio::test]
