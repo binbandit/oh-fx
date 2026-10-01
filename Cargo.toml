@@ -12,6 +12,7 @@ publish = false
 [workspace.dependencies]
 flate2 = "1.1.10"
 lexopt = "0.3.2"
+ofx-agent = { path = "crates/ofx-agent" }
 ofx-config = { path = "crates/ofx-config" }
 ofx-contract = { path = "crates/ofx-contract" }
 ofx-gateway = { path = "crates/ofx-gateway" }
