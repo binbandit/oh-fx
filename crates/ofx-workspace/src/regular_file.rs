@@ -1,8 +1,8 @@
-use std::fs::{self, File, Metadata};
+use std::fs::{File, Metadata};
 use std::io;
 use std::path::Path;
 
-use rustix::fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl, open};
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::io::Errno;
 
 use crate::path_error::PathError;
@@ -26,14 +26,10 @@ impl From<io::Error> for RegularFileError {
 }
 
 pub fn open_regular_file(path: &Path) -> Result<(File, Metadata), RegularFileError> {
-    if !fs::symlink_metadata(path)?.is_file() {
-        return Err(RegularFileError::NotRegularFile);
-    }
-    open_without_following(path)
+    verified(no_symlinks::open(path)?)
 }
 
-fn open_without_following(path: &Path) -> Result<(File, Metadata), RegularFileError> {
-    let file = File::from(open(path, OPEN_FLAGS, Mode::empty()).map_err(open_failure)?);
+fn verified(file: File) -> Result<(File, Metadata), RegularFileError> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(RegularFileError::NotRegularFile);
@@ -50,8 +46,87 @@ fn open_failure(errno: Errno) -> RegularFileError {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+mod no_symlinks {
+    use std::ffi::OsStr;
+    use std::fs::File;
+    use std::os::fd::OwnedFd;
+    use std::path::{Component, Path};
+
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags, openat, statat};
+
+    use super::{OPEN_FLAGS, PathError, RegularFileError, open_failure};
+
+    const DIRECTORY_FLAGS: OFlags = OFlags::PATH
+        .union(OFlags::DIRECTORY)
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::CLOEXEC);
+
+    pub(super) fn open(path: &Path) -> Result<File, RegularFileError> {
+        let (directory, name) = open_parent(path)?;
+        let entry = statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(open_failure)?;
+        if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile {
+            return Err(RegularFileError::NotRegularFile);
+        }
+        open_entry(&directory, name)
+    }
+
+    pub(super) fn open_parent(path: &Path) -> Result<(OwnedFd, &OsStr), RegularFileError> {
+        let mut components = path.components();
+        if components.next() != Some(Component::RootDir) {
+            return Err(RegularFileError::Path(PathError::InvalidPath));
+        }
+        let mut names = components
+            .map(|component| match component {
+                Component::Normal(name) => Ok(name),
+                _ => Err(RegularFileError::Path(PathError::InvalidPath)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let name = names.pop().ok_or(RegularFileError::NotRegularFile)?;
+        let mut directory =
+            rustix::fs::open("/", DIRECTORY_FLAGS, Mode::empty()).map_err(open_failure)?;
+        for component in names {
+            directory = openat(&directory, component, DIRECTORY_FLAGS, Mode::empty())
+                .map_err(open_failure)?;
+        }
+        Ok((directory, name))
+    }
+
+    pub(super) fn open_entry(directory: &OwnedFd, name: &OsStr) -> Result<File, RegularFileError> {
+        let file = openat(directory, name, OPEN_FLAGS, Mode::empty()).map_err(open_failure)?;
+        Ok(File::from(file))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod no_symlinks {
+    use std::fs::{self, File};
+    use std::path::Path;
+
+    use rustix::fs::{Mode, OFlags};
+
+    use super::{OPEN_FLAGS, PathError, RegularFileError, open_failure};
+
+    pub(super) fn open(path: &Path) -> Result<File, RegularFileError> {
+        if !path.is_absolute() {
+            return Err(RegularFileError::Path(PathError::InvalidPath));
+        }
+        if !fs::symlink_metadata(path)?.is_file() {
+            return Err(RegularFileError::NotRegularFile);
+        }
+        open_path(path)
+    }
+
+    pub(super) fn open_path(path: &Path) -> Result<File, RegularFileError> {
+        let flags = OPEN_FLAGS.union(OFlags::NOFOLLOW_ANY);
+        let file = rustix::fs::open(path, flags, Mode::empty()).map_err(open_failure)?;
+        Ok(File::from(file))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::Read;
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
@@ -78,6 +153,7 @@ mod tests {
 
         fn file(&self, name: &str, content: &str) -> PathBuf {
             let path = self.root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, content).unwrap();
             path
         }
@@ -93,12 +169,35 @@ mod tests {
             );
             path
         }
+
+        fn swap_for_symlink(&self, name: &str, target: &Path) {
+            let path = self.root.join(name);
+            fs::rename(&path, self.root.join(format!("{name}.moved"))).unwrap();
+            symlink(target, path).unwrap();
+        }
+    }
+
+    fn content(mut file: File) -> String {
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        content
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn open_after_the_check(path: &Path) -> Result<(File, Metadata), RegularFileError> {
+        let (directory, name) = no_symlinks::open_parent(path)?;
+        verified(no_symlinks::open_entry(&directory, name)?)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_after_the_check(path: &Path) -> Result<(File, Metadata), RegularFileError> {
+        verified(no_symlinks::open_path(path)?)
     }
 
     fn open_within(path: PathBuf, seconds: u64) -> Option<RegularFileError> {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let _ = sender.send(open_without_following(&path).err());
+            let _ = sender.send(open_after_the_check(&path).err());
         });
         receiver
             .recv_timeout(Duration::from_secs(seconds))
@@ -108,15 +207,13 @@ mod tests {
     #[test]
     fn opens_regular_files_and_leaves_them_blocking() {
         let fixture = Fixture::new();
-        let path = fixture.file("a.txt", "inside\n");
+        let path = fixture.file("dir/a.txt", "inside\n");
 
-        let (mut file, metadata) = open_regular_file(&path).unwrap();
-        let mut content = String::new();
-        file.read_to_string(&mut content).unwrap();
+        let (file, metadata) = open_regular_file(&path).unwrap();
 
         assert!(metadata.is_file());
-        assert_eq!(content, "inside\n");
         assert!(!fcntl_getfl(&file).unwrap().contains(OFlags::NONBLOCK));
+        assert_eq!(content(file), "inside\n");
     }
 
     #[test]
@@ -130,6 +227,7 @@ mod tests {
         for path in [
             fixture.root.join("link.txt"),
             fixture.root.join("dir"),
+            PathBuf::from("/"),
             fifo,
         ] {
             assert_eq!(
@@ -139,9 +237,16 @@ mod tests {
                 path.display()
             );
         }
+        for missing in ["missing.txt", "missing/a.txt"] {
+            assert_eq!(
+                open_regular_file(&fixture.root.join(missing)).err(),
+                Some(RegularFileError::Path(PathError::FileNotFound)),
+                "{missing}"
+            );
+        }
         assert_eq!(
-            open_regular_file(&fixture.root.join("missing.txt")).err(),
-            Some(RegularFileError::Path(PathError::FileNotFound))
+            open_regular_file(Path::new("relative.txt")).err(),
+            Some(RegularFileError::Path(PathError::InvalidPath))
         );
     }
 
@@ -157,6 +262,40 @@ mod tests {
             open_within(swapped, 10),
             Some(RegularFileError::NotRegularFile)
         );
+    }
+
+    #[test]
+    fn the_open_never_follows_a_parent_directory_swapped_for_a_symlink() {
+        for (swapped, beneath) in [("dir", "file.txt"), ("top", "dir/file.txt")] {
+            let fixture = Fixture::new();
+            let outside = Fixture::new();
+            let resolved = fixture.file(&format!("{swapped}/{beneath}"), "inside\n");
+            outside.file(beneath, "outside secret\n");
+
+            fixture.swap_for_symlink(swapped, &outside.root);
+
+            assert_eq!(
+                open_regular_file(&resolved).err(),
+                Some(RegularFileError::NotRegularFile),
+                "{}",
+                resolved.display()
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn an_opened_parent_keeps_reading_the_checked_directory_after_a_swap() {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        outside.file("file.txt", "outside secret\n");
+        let resolved = fixture.file("dir/file.txt", "inside\n");
+
+        let (directory, name) = no_symlinks::open_parent(&resolved).unwrap();
+        fixture.swap_for_symlink("dir", &outside.root);
+        let file = no_symlinks::open_entry(&directory, name).unwrap();
+
+        assert_eq!(content(file), "inside\n");
     }
 
     #[test]

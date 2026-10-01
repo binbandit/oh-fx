@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use memchr::{memchr, memchr_iter};
@@ -119,10 +119,22 @@ impl ReadFileArgs {
     }
 
     fn read(&self, context: &FilesystemContext) -> Result<String, ToolOutput> {
-        let target = resolve_workspace_or_external_path(&context.workspace_root, &self.path)
-            .map_err(|error| read_file_failure(RegularFileError::Path(error), &self.path))?;
+        let target = self.resolve(context)?;
+        self.read_target(context, &target)
+    }
+
+    fn resolve(&self, context: &FilesystemContext) -> Result<PathBuf, ToolOutput> {
+        resolve_workspace_or_external_path(&context.workspace_root, &self.path)
+            .map_err(|error| read_file_failure(RegularFileError::Path(error), &self.path))
+    }
+
+    fn read_target(
+        &self,
+        context: &FilesystemContext,
+        target: &Path,
+    ) -> Result<String, ToolOutput> {
         let target_text = target.to_string_lossy();
-        let (file, metadata) = open_regular_file(&target)
+        let (file, metadata) = open_regular_file(target)
             .map_err(|failure| read_file_failure(failure, &target_text))?;
 
         let size = metadata.len();
@@ -133,7 +145,7 @@ impl ReadFileArgs {
             .map_err(|error| {
                 read_file_failure(RegularFileError::Path(error.into()), &target_text)
             })?;
-        let relative = workspace_relative_path(&context.workspace_root, &target);
+        let relative = workspace_relative_path(&context.workspace_root, target);
         let display_path = relative.as_os_str().as_bytes();
         let snapshot_covers_full_file = !truncated_by_size && snapshot.len() as u64 == size;
 
@@ -371,7 +383,7 @@ fn digit_count(value: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use std::fs::{self, File};
-    use std::path::Path;
+    use std::os::unix::fs::symlink;
 
     use ofx_contract::{ToolEffect, ToolResultStatus};
     use ofx_workspace::PathError;
@@ -591,6 +603,30 @@ mod tests {
             format!(
                 "{{\"error\":{{\"type\":\"tool_execution_failed\",\"tool_name\":\"read_file\",\"message\":\"read_file requires a regular file\",\"details\":{{\"field\":\"path\",\"path\":\"{}\",\"error\":\"NotRegularFile\"}},\"suggestion\":\"Use glob_files to inspect directory contents, then choose a regular file.\"}}}}",
                 workspace.root.join("dir").display()
+            )
+        );
+    }
+
+    #[test]
+    fn read_file_never_returns_outside_content_when_a_parent_is_swapped_after_resolution() {
+        let workspace = Workspace::new();
+        workspace.write("dir/notes.txt", "inside\n");
+        let outside = Workspace::new();
+        outside.write("notes.txt", "outside secret\n");
+        let context = workspace.context();
+        let arguments = ReadFileArgs::decode(r#"{"path":"dir/notes.txt"}"#).unwrap();
+
+        let target = arguments.resolve(&context).unwrap();
+        fs::rename(workspace.root.join("dir"), workspace.root.join("moved")).unwrap();
+        symlink(&outside.root, workspace.root.join("dir")).unwrap();
+        let failure = arguments.read_target(&context, &target).unwrap_err();
+
+        assert!(!failure.content.contains("outside secret"));
+        assert_eq!(
+            failure.content,
+            format!(
+                "{{\"error\":{{\"type\":\"tool_execution_failed\",\"tool_name\":\"read_file\",\"message\":\"read_file requires a regular file\",\"details\":{{\"field\":\"path\",\"path\":\"{}\",\"error\":\"NotRegularFile\"}},\"suggestion\":\"Use glob_files to inspect directory contents, then choose a regular file.\"}}}}",
+                target.display()
             )
         );
     }
