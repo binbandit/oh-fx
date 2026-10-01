@@ -1,0 +1,74 @@
+[pull_request]
+trailer = "Footprint-Budget"
+size_fail_bytes = 65536
+size_fail_percent = 2
+size_warn_bytes = 8192
+instructions_fail_percent = 5
+stream_instructions_fail_percent = 3
+reason = "A pull request that grows the stripped binary or the release archive by 64 KiB or 2%, adds 5% to the instructions of --version, --help, or ask, or adds 3% to the per-delta streaming cost says why in a Footprint-Budget: line of its description."
+
+[ceiling]
+upstream_commit = "34f1ed1"
+stripped_bytes = 13315096
+archive_bytes = 5835267
+reason = "Upstream fx at the recorded parity point, built ReleaseSafe for x86_64-linux and packaged as its release workflow does. oh-fx never ships a larger release than upstream, and this moves only with the parity point."
+
+[limits.stripped_bytes]
+max = 6291456
+severity = "warn"
+reason = "Interim ceiling while the port completes. Without reductions the binary is projected at 8 to 9.5 MB at full parity, so growth past 6 MiB is a prompt to land the planned reductions."
+
+[limits.version_instructions]
+max = 100000
+severity = "fail"
+reason = "Upstream fx runs 121,800 instructions for --version."
+
+[limits.help_instructions]
+max = 550000
+severity = "fail"
+reason = "Upstream fx runs 539,233 instructions for --help."
+
+[limits.ask_instructions]
+max = 1500000
+severity = "fail"
+reason = "Upstream fx runs 7.86 million instructions for a one-shot ask over http, and oh-fx runs about 1 million once it stops loading every CA root for an http provider."
+
+[limits.stream_delta_instructions]
+max = 42700
+severity = "fail"
+reason = "Upstream fx spends 42,700 instructions on each streamed delta."
+
+[limits.ca_store_syscalls]
+max = 0
+severity = "fail"
+reason = "An http provider never needs the CA store, and upstream reads none of it."
+
+[limits.tool_git_processes]
+max = 9
+severity = "fail"
+reason = "Upstream fx spawns 9 git processes for the same three greps."
+
+[limits.version_syscalls]
+max = 40
+severity = "warn"
+reason = "Upstream fx makes 8 syscalls for --version."
+
+[limits.help_syscalls]
+max = 40
+severity = "warn"
+reason = "Upstream fx makes 9 syscalls for --help."
+
+[limits.ask_peak_rss_kib]
+max = 4096
+severity = "warn"
+reason = "Upstream fx peaks at 8,576 KiB for a one-shot ask, so oh-fx stays under half of that."
+
+[limits.tool_peak_rss_kib]
+max = 5120
+severity = "warn"
+reason = "Upstream fx peaks at 11,004 KiB for a script of three reads and three greps, so oh-fx stays under half of that."
+
+[limits.stream_peak_rss_kib]
+max = 6144
+severity = "warn"
+reason = "Upstream fx peaks at 9,144 KiB while streaming 4,000 deltas, so oh-fx stays under two thirds of that."
