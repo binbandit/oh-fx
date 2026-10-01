@@ -10,6 +10,16 @@ pub enum Slot {
     InlineCode,
     Link,
     TaskCompleted,
+    Dim,
+    DiffAddedMarker,
+    DiffRemovedMarker,
+    SyntaxKeyword,
+    SyntaxString,
+    SyntaxNumber,
+    SyntaxComment,
+    SyntaxFunction,
+    SyntaxVariable,
+    SyntaxOperator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -190,6 +200,10 @@ impl SpanWriter {
 
     pub(crate) fn close_slot(&mut self) {
         self.style.slot = None;
+    }
+
+    pub(crate) fn set_slot(&mut self, slot: Option<Slot>) {
+        self.style.slot = slot;
     }
 
     pub(crate) fn open_link(&mut self, url: String) {

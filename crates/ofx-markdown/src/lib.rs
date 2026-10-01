@@ -9,5 +9,7 @@ pub use assistant_presentation::{
     render_table_payload,
 };
 pub use presentation::block_render::table_header_cell;
+pub use presentation::code_highlight::{DiffMarkers, highlight, highlight_diff};
+pub use presentation::code_highlight_languages::{Profile, infer, resolve};
 pub use presentation::payload::{CodeBlockPayload, TableColumnAlign, TablePayload, TableRow};
 pub use styled::{Attr, Hang, Hyperlink, Line, Slot, Span, Style};
