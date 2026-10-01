@@ -724,6 +724,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-exec"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "rustix",
+ "signal-hook",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "ofx-gateway"
 version = "0.1.0"
 dependencies = [
@@ -855,6 +868,7 @@ dependencies = [
  "ofx-cli",
  "ofx-config",
  "ofx-contract",
+ "ofx-exec",
  "ofx-gateway",
  "ofx-http",
  "ofx-permissions",
@@ -1438,6 +1452,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

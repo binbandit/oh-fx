@@ -1,3 +1,4 @@
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -27,6 +28,7 @@ use rustix::termios::{OptionalActions, OutputModes, Winsize, tcgetattr, tcsetatt
 use ofx_cli::{HelpStyle, TopLevelKind, render_command_help, render_top_level_help};
 
 const SIGPIPE: i32 = 13;
+const SIGKILL: i32 = 9;
 
 fn run<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)], stdout: Stdio) -> Output {
     let home = tempfile::tempdir().expect("create a temporary home");
@@ -517,4 +519,79 @@ fn top_level_help_on_a_terminal_follows_its_width_and_color_settings() {
             "{environment:?} {columns}"
         );
     }
+}
+
+fn run_released_session(script: &str) -> Output {
+    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        .args([
+            "__oh_fx_foreground_session__",
+            "none",
+            "/bin/sh",
+            "-c",
+            script,
+        ])
+        .env_clear()
+        .env("PATH", env::var_os("PATH").unwrap_or_default())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the supervisor");
+    let mut input = supervisor.stdin.take().expect("supervisor input");
+    let mut release = vec![b'a'; 32];
+    release.push(0x06);
+    io::Write::write_all(&mut input, &release).expect("release the command");
+    let output = supervisor
+        .wait_with_output()
+        .expect("wait for the supervisor");
+    drop(input);
+    output
+}
+
+fn status_frame(status: &str) -> Vec<u8> {
+    let mut frame = b"\0OH_FX_FOREGROUND_STATUS:".to_vec();
+    frame.extend_from_slice(&[b'a'; 32]);
+    frame.push(b':');
+    frame.extend_from_slice(status.as_bytes());
+    frame.push(b'\n');
+    frame
+}
+
+#[test]
+fn the_hidden_session_supervisor_runs_a_released_command_without_a_terminal() {
+    let output = run_released_session("printf out; printf err >&2; exit 3");
+    assert_eq!(output.status.signal(), Some(SIGKILL));
+    assert_eq!(stdout(&output), "out");
+    let mut expected = b"\x1eerr".to_vec();
+    expected.extend_from_slice(&status_frame("exit:3"));
+    assert_eq!(output.stderr, expected);
+}
+
+#[test]
+fn the_hidden_session_supervisor_kills_leftover_jobs_when_the_command_exits() {
+    let output = run_released_session("(sleep 5; printf survived) & exit 0");
+    assert_eq!(output.status.signal(), Some(SIGKILL));
+    assert_eq!(stdout(&output), "");
+    let mut expected = b"\x1e".to_vec();
+    expected.extend_from_slice(&status_frame("exit:0"));
+    assert_eq!(output.stderr, expected);
+}
+
+#[test]
+fn the_hidden_session_supervisor_runs_nothing_without_a_release() {
+    let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        .args([
+            "__oh_fx_foreground_session__",
+            "none",
+            "/bin/sh",
+            "-c",
+            "printf ran",
+        ])
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .expect("run the supervisor");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(output.stderr, b"\x1e");
 }

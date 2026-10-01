@@ -1,0 +1,25 @@
+[package]
+name = "ofx-exec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+rustix = { workspace = true, features = ["event", "process"] }
+signal-hook.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "process", "sync", "time"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[test]]
+name = "managed_execution"
+harness = false
+
+[lints]
+workspace = true

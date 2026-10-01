@@ -12,6 +12,7 @@ ofx-auth.workspace = true
 ofx-cli.workspace = true
 ofx-config.workspace = true
 ofx-contract.workspace = true
+ofx-exec.workspace = true
 ofx-gateway.workspace = true
 ofx-http.workspace = true
 ofx-permissions.workspace = true
