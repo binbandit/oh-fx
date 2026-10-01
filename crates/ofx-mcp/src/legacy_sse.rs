@@ -35,6 +35,10 @@ impl Parser {
         }
     }
 
+    pub(crate) fn set_max_event_bytes(&mut self, value: usize) {
+        self.max_event_bytes = value;
+    }
+
     pub(crate) fn feed(&mut self, chunk: &[u8], events: &mut Vec<Event>) -> Result<(), McpError> {
         self.total_bytes = self
             .total_bytes

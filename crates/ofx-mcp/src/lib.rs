@@ -3,6 +3,7 @@ mod docker_run;
 mod error;
 mod features;
 mod legacy_elicitation_runtime;
+mod legacy_http_sse;
 mod legacy_sse;
 mod legacy_streamable_http;
 mod mcp_contract;

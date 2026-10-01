@@ -9,6 +9,7 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::error::McpError;
 use crate::features::tools::{CatalogBuilder, Limits, ToolCatalog};
+use crate::legacy_http_sse::{LegacySseClient, SSE_PROTOCOL_VERSION, validate_initialize_response};
 use crate::legacy_streamable_http::{
     HTTP_INITIALIZED_NOTIFICATION, HttpEndpoint, HttpVersion, LegacyHttpClient,
 };
@@ -336,6 +337,10 @@ pub(crate) async fn connect_http(
     config: &McpServerConfig,
     options: &ConnectOptions,
 ) -> Result<Connected, StartupFailure> {
+    validate_startup_mode(
+        &config.env,
+        env::var(PROTOCOL_VERSION_ENVIRONMENT).ok().as_deref(),
+    )?;
     let deadline = startup_deadline(config);
     let (endpoint, notifications) = http_endpoint(config, options)?;
     let preferred = HttpVersion::PREFERRED;
@@ -375,10 +380,6 @@ fn http_endpoint(
     config: &McpServerConfig,
     options: &ConnectOptions,
 ) -> Result<(HttpEndpoint, mpsc::UnboundedReceiver<Value>), McpError> {
-    validate_startup_mode(
-        &config.env,
-        env::var(PROTOCOL_VERSION_ENVIRONMENT).ok().as_deref(),
-    )?;
     let url = config.remote_url()?;
     validate_endpoint(url)?;
     let headers = resolve_headers(config, &|name| env::var(name).ok())?;
@@ -402,6 +403,60 @@ async fn finish_http_startup(
     deadline: Instant,
 ) -> Result<(ServerInfo, ToolCatalog), McpError> {
     let info = server_info(response, client.version().as_str())?;
+    client
+        .notify(HTTP_INITIALIZED_NOTIFICATION.to_owned(), deadline)
+        .await?;
+    let catalog = discover_tools(client, deadline, |error| error).await?;
+    Ok((info, catalog))
+}
+
+pub(crate) async fn connect_sse(
+    config: &McpServerConfig,
+    options: &ConnectOptions,
+) -> Result<Connected, StartupFailure> {
+    let deadline = startup_deadline(config);
+    let (endpoint, notifications) = http_endpoint(config, options)?;
+    let client =
+        LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline).await?;
+    match finish_sse_startup(&client, options, deadline).await {
+        Ok((info, catalog)) => Ok(Connected {
+            transport: Box::new(client),
+            info,
+            wire: None,
+            catalog,
+            notifications,
+        }),
+        Err(error) => {
+            Box::new(client).shutdown(ShutdownMode::Graceful).await;
+            Err(error.into())
+        }
+    }
+}
+
+async fn finish_sse_startup(
+    client: &LegacySseClient,
+    options: &ConnectOptions,
+    deadline: Instant,
+) -> Result<(ServerInfo, ToolCatalog), McpError> {
+    let id = client.next_request_id()?;
+    let body = build_legacy_initialize_request(
+        id,
+        SSE_PROTOCOL_VERSION,
+        None,
+        ElicitationCapabilities::default(),
+        &options.client_version,
+    );
+    let response = client
+        .request(TransportRequest::new(
+            id,
+            body,
+            DISCOVERY_RESPONSE_FRAME_CAP_BYTES,
+            deadline,
+        ))
+        .await?;
+    let value: Value = serde_json::from_str(&response).map_err(|_| McpError::McpInvalidJson)?;
+    validate_initialize_response(&value)?;
+    let info = server_info(&value, SSE_PROTOCOL_VERSION)?;
     client
         .notify(HTTP_INITIALIZED_NOTIFICATION.to_owned(), deadline)
         .await?;

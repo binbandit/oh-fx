@@ -9,7 +9,7 @@ use crate::features::tools::ToolCatalog;
 use crate::mcp_contract::{McpServerConfig, TransportType};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
-    ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_stdio,
+    ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse, connect_stdio,
 };
 use crate::transport::{McpTransport, ShutdownMode};
 
@@ -46,11 +46,7 @@ impl McpClient {
         let connected = match config.transport {
             TransportType::Stdio => connect_stdio(config, options).await?,
             TransportType::Http => connect_http(config, options).await?,
-            TransportType::Sse => {
-                return Err(StartupFailure::from(
-                    crate::error::McpError::McpInvalidServerConfig,
-                ));
-            }
+            TransportType::Sse => connect_sse(config, options).await?,
         };
         Ok(Self::from_connected(config, connected))
     }

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
@@ -34,13 +35,14 @@ impl RecordedRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Reply {
     status: u16,
     headers: Vec<(String, String)>,
     parts: Vec<Vec<u8>>,
     streamed: bool,
     hold_open: bool,
+    live: Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl Reply {
@@ -51,6 +53,7 @@ impl Reply {
             parts: Vec::new(),
             streamed: false,
             hold_open: false,
+            live: None,
         }
     }
 
@@ -69,6 +72,15 @@ impl Reply {
                 .map(|event| event.as_bytes().to_vec())
                 .collect(),
             streamed: true,
+            ..Self::status(200)
+        }
+        .header("Content-Type", "text/event-stream")
+    }
+
+    pub(crate) fn live_events(events: mpsc::UnboundedReceiver<String>) -> Self {
+        Self {
+            streamed: true,
+            live: Some(events),
             ..Self::status(200)
         }
         .header("Content-Type", "text/event-stream")
@@ -146,7 +158,7 @@ async fn serve(
         return;
     };
     lock(&recorded).push(request.clone());
-    let reply = handler(&request);
+    let mut reply = handler(&request);
     let mut head = format!("HTTP/1.1 {} Fake\r\nConnection: close\r\n", reply.status);
     for (name, value) in &reply.headers {
         let _ = write!(head, "{name}: {value}\r\n");
@@ -166,6 +178,14 @@ async fn serve(
         let _ = stream.flush().await;
         if reply.streamed {
             sleep(Duration::from_millis(10)).await;
+        }
+    }
+    if let Some(live) = reply.live.as_mut() {
+        while let Some(event) = live.recv().await {
+            if stream.write_all(event.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = stream.flush().await;
         }
     }
     if reply.hold_open {
