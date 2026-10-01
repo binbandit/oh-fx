@@ -203,6 +203,19 @@ fn help_respects_sixty_columns() {
 }
 
 #[test]
+fn narrow_help_stacks_rows_so_only_unbreakable_words_overflow() {
+    for columns in 20..60 {
+        let text = top_level(columns, HelpStyle::Plain);
+        for line in text.lines().filter(|line| line.chars().count() > columns) {
+            assert!(!line.trim_start().contains(' '), "{columns}: {line:?}");
+        }
+    }
+    let text = top_level(40, HelpStyle::Plain);
+    assert!(text.contains("\n  ask <prompt>\n      Run one noninteractive request\n"));
+    assert!(text.contains("\nLearn more about oh-fx:\n  https://github.com/binbandit/oh-fx\n"));
+}
+
+#[test]
 fn help_hides_developer_recording_surfaces() {
     let text = top_level(TOP_LEVEL_HELP_DEFAULT_WIDTH, HelpStyle::Plain);
     assert!(!text.contains("--record"));

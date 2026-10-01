@@ -9,6 +9,7 @@ use super::{
 use crate::commands::TOP_LEVEL_HELP;
 
 pub const TOP_LEVEL_HELP_DEFAULT_WIDTH: usize = 80;
+const MIN_SUMMARY_COLUMNS: usize = 20;
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
@@ -171,9 +172,7 @@ impl HelpWriter {
                 self.out.push('\n');
             }
             for entry in group.iter().filter(|entry| !entry.is_hidden()) {
-                let prefix = self.padded_syntax(entry.usage(), usage_width);
-                let continuation = " ".repeat(usage_width + 4);
-                self.line(&prefix, &continuation, entry.summary(), Decoration::NONE);
+                self.entry(entry.usage(), usage_width, entry.summary());
             }
         }
     }
@@ -182,11 +181,20 @@ impl HelpWriter {
         self.section_heading("Flags:");
         let usage_width = flags.iter().map(|flag| flag.usage.len()).max().unwrap_or(0);
         for flag in flags {
-            let prefix = self.padded_syntax(flag.usage, usage_width);
-            let continuation = " ".repeat(usage_width + 4);
-            self.line(&prefix, &continuation, flag.description, Decoration::NONE);
+            self.entry(flag.usage, usage_width, flag.description);
         }
         self.out.push('\n');
+    }
+
+    fn entry(&mut self, usage: &str, usage_width: usize, summary: &str) {
+        if usage_width + 4 + MIN_SUMMARY_COLUMNS > self.columns {
+            self.styled_line("  ", "  ", usage, HelpRole::Syntax);
+            self.line("      ", "      ", summary, Decoration::NONE);
+            return;
+        }
+        let prefix = self.padded_syntax(usage, usage_width);
+        let continuation = " ".repeat(usage_width + 4);
+        self.line(&prefix, &continuation, summary, Decoration::NONE);
     }
 
     fn write_examples(&mut self, examples: &[TopLevelExample]) {
@@ -205,7 +213,24 @@ impl HelpWriter {
             .map(|resource| visible_width(resource.label))
             .max()
             .unwrap_or(0);
+        let longest_word = resources
+            .iter()
+            .flat_map(|resource| resource.value.split(' '))
+            .map(visible_width)
+            .max()
+            .unwrap_or(0);
+        let stacked = label_width + 2 + longest_word.max(MIN_SUMMARY_COLUMNS) > self.columns;
         for resource in resources {
+            let role = if resource.link {
+                HelpRole::Link
+            } else {
+                HelpRole::Syntax
+            };
+            if stacked {
+                self.styled_line("", "", resource.label, HelpRole::Label);
+                self.styled_line("  ", "  ", resource.value, role);
+                continue;
+            }
             let padding = label_width - visible_width(resource.label) + 2;
             let prefix = format!(
                 "{}{}{}{}",
@@ -214,11 +239,6 @@ impl HelpWriter {
                 self.style.end(),
                 " ".repeat(padding)
             );
-            let role = if resource.link {
-                HelpRole::Link
-            } else {
-                HelpRole::Syntax
-            };
             self.styled_line(&prefix, "  ", resource.value, role);
         }
     }

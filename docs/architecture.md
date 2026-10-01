@@ -90,6 +90,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - The assistant intro filter matches "oh-fx" instead of "fx".
 - There is one release stream, so `oh-fx upgrade` has no `--channel` option.
 - The top-level help links to the oh-fx repository instead of fx.sh/docs.
+- Top-level help narrower than its two-column layout needs (under 54 columns for commands and flags) puts each usage on its own line with the summary indented below, and stacks the resource links when their longest word does not fit beside the labels, so only unbreakable words overflow. Upstream keeps the two-column layout at every width.
 - An unknown command is echoed through terminal-safe encoding capped at 160 bytes, so escape sequences, other control characters, and invalid UTF-8 print as escapes such as `\x1b` and `\xff`. Upstream writes the raw bytes to the terminal.
 - A closed stdout cannot be detected: the Rust runtime reopens closed standard streams on `/dev/null` before `main` runs, so output is discarded where upstream reports `WriteFailed` or `NotOpenForWriting`. Full disks and closed pipes fail as upstream does.
 - Until their features land, commands that oh-fx parses but cannot run fail with `oh-fx: <command> is not available yet` and exit status 1, where upstream runs them: the interactive session (`oh-fx` with no arguments, `-c`, `-r`, `--resume`, and `resume`) and every command except `ask`, `upgrade`, `help`, and `--version`.
