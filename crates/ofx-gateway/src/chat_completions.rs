@@ -9,7 +9,10 @@ use ofx_contract::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
     StreamEvent, StreamSink,
 };
-use ofx_http::{ClientError, ConnectionOptions, SseDecoder, SseError, build_connection_client};
+use ofx_http::{
+    ClientError, ConnectionOptions, SseDecoder, SseError, build_connection_client,
+    certificate_bundle_load_failure,
+};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, LOCATION, RETRY_AFTER};
 use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use tokio_util::sync::CancellationToken;
@@ -159,6 +162,13 @@ pub(crate) fn sanitized(text: String, secrets: &[String]) -> String {
 }
 
 pub(crate) fn transport_failure(error: &reqwest::Error, secrets: &[String]) -> ProviderError {
+    if let Some(detail) = certificate_bundle_load_failure(error) {
+        return ProviderError::new(
+            ProviderErrorKind::ConnectionFailed,
+            "CertificateBundleLoadFailure",
+        )
+        .with_detail(sanitized(detail, secrets));
+    }
     let (kind, code) = if error.is_connect() && is_connectivity_loss(error) {
         (ProviderErrorKind::ConnectivityLost, "ConnectionFailed")
     } else if error.is_connect() {

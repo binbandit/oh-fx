@@ -123,11 +123,17 @@ A `provider` of `codex` selects a ChatGPT subscription instead of a connection; 
 
 ## TLS and corporate certificate authorities
 
-oh-fx verifies servers with the operating system's trust store through rustls-platform-verifier.
+On Linux, oh-fx trusts the roots in the system's CA bundle, as upstream fx does. It reads them only when a TLS handshake first needs them, so a plain `http://` connection never opens a certificate file.
 
-- `tls.ca_file` adds the certificates in a PEM file to that store for one connection. Use it for gateways behind an internal CA.
-- `SSL_CERT_FILE` is honored for every connection. On Linux the platform verifier reads it itself and then trusts only that bundle, as OpenSSL does. On macOS and Windows, where the native verifier ignores it, oh-fx adds its certificates as extra roots.
-- A certificate problem is reported as `oh-fx: ConnectionFailed` followed by the underlying cause, for example `oh-fx ask: error sending request for url (...): client error (Connect): invalid peer certificate: UnknownIssuer`.
+- With neither `SSL_CERT_FILE` nor `SSL_CERT_DIR` set, oh-fx reads the first bundle it finds among `/etc/ssl/certs/ca-certificates.crt` (Debian, Ubuntu, Gentoo), `/etc/pki/tls/certs/ca-bundle.crt` (Fedora, RHEL), `/etc/ssl/ca-bundle.pem` (openSUSE), `/etc/pki/tls/cacert.pem` (OpenELEC), `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` (CentOS, RHEL 7), `/etc/ssl/cert.pem` (Alpine), `/opt/etc/ssl/certs/ca-certificates.crt` (Entware), and `/etc/ssl/certs/cacert.pem` (OpenHarmony). Without any of them, it reads every certificate in `/etc/ssl/certs`, `/etc/pki/tls/certs`, and `/etc/security/certificates` instead.
+- When a server's certificate does not chain to a root in the bundle, oh-fx reads those certificate directories once and verifies the certificate again. A CA copied into `/etc/ssl/certs` without regenerating the bundle (with `update-ca-certificates` or `update-ca-trust`) is therefore still trusted, and only a failed verification pays for the scan.
+- `SSL_CERT_FILE` and `SSL_CERT_DIR` (a colon-separated list of directories) replace the system bundle, as they do for OpenSSL: when either is set, oh-fx trusts only the certificates they name, and the directory fallback does not apply.
+- `tls.ca_file` adds the certificates in a PEM file to those roots for one connection. Use it for gateways behind an internal CA. The file is read and checked when the connection is set up, so a missing or malformed file fails before any request.
+- The roots are read once per run. If they cannot be read or hold no usable certificate, and the connection's `tls.ca_file` does not vouch for the server, the request fails with `oh-fx: CertificateBundleLoadFailure` and a second line that names the file, for example `oh-fx ask: no CA certificates found at /etc/ssl/custom.pem`.
+
+On macOS and Windows, oh-fx verifies servers with the operating system's trust store through rustls-platform-verifier. `tls.ca_file` and `SSL_CERT_FILE` add their certificates to that store, since the native verifiers ignore `SSL_CERT_FILE`.
+
+Other certificate problems are reported as `oh-fx: ConnectionFailed` followed by the underlying cause, for example `oh-fx ask: error sending request for url (...): client error (Connect): invalid peer certificate: UnknownIssuer`.
 
 ## Proxies
 
@@ -190,6 +196,7 @@ An HTTP error from the gateway is reported differently. It prints one `oh-fx ask
 | `API request failed · HTTP 4xx/5xx · ...` | The gateway answered with an error; the message shows its code and text, with secrets masked. |
 | `HTTP 302: redirect to https://sso.example.com was not followed; ...` | `base_url` points at a sign-in page or a proxy that redirects. Use the gateway's API URL. |
 | `oh-fx: ConnectionFailed` | DNS, connection, proxy, or TLS failure; the next line says which. |
+| `oh-fx: CertificateBundleLoadFailure` | The trusted root certificates could not be read; the next line names the file. See [TLS and corporate certificate authorities](#tls-and-corporate-certificate-authorities). |
 | `oh-fx: UnexpectedContentType` | The gateway answered with something other than an event stream, often an HTML page from a proxy. |
 | `oh-fx: InvalidProfileConfiguration` | `settings.json` is malformed or larger than 64 KiB, has duplicate keys, or holds a setting with the wrong type or value. As upstream, the message does not say which. |
 

@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,10 +6,11 @@ use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::redirect::Policy;
-use reqwest::{Certificate, Proxy};
+use reqwest::{ClientBuilder, Proxy};
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const CERTIFICATE_FILE_VARIABLE: &str = "SSL_CERT_FILE";
 
 #[derive(Default)]
 pub struct ConnectionOptions {
@@ -31,6 +31,8 @@ pub enum ClientError {
     InvalidProxy,
     #[error("invalid value for header {name}")]
     InvalidHeader { name: String },
+    #[error("could not configure TLS: {0}")]
+    Tls(#[source] rustls::Error),
     #[error("could not build the HTTP client: {0}")]
     Build(#[source] reqwest::Error),
 }
@@ -46,21 +48,64 @@ pub fn build_connection_client(
     if !options.follow_redirects {
         builder = builder.redirect(Policy::none());
     }
-    let mut roots = Vec::new();
-    if let Some(path) = platform_ignored_certificate_file() {
-        roots.extend(read_certificates(&path).unwrap_or_default());
-    }
-    if let Some(path) = &options.ca_file {
-        roots.extend(read_certificates(path)?);
-    }
-    if !roots.is_empty() {
-        builder = builder.tls_certs_merge(roots);
-    }
+    builder = trusted_roots(builder, options.ca_file.as_deref())?;
     if let Some(proxy) = &options.proxy {
         let proxy = Proxy::all(proxy).map_err(|_| ClientError::InvalidProxy)?;
         builder = builder.proxy(proxy);
     }
     builder.build().map_err(ClientError::Build)
+}
+
+#[cfg(target_os = "linux")]
+pub fn certificate_bundle_load_failure(error: &reqwest::Error) -> Option<String> {
+    crate::ca_bundle::load_failure(error)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn certificate_bundle_load_failure(_: &reqwest::Error) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn trusted_roots(
+    builder: ClientBuilder,
+    ca_file: Option<&Path>,
+) -> Result<ClientBuilder, ClientError> {
+    let mut extra = rustls::RootCertStore::empty();
+    if let Some(path) = ca_file {
+        for certificate in read_certificates(path)? {
+            extra
+                .add(certificate)
+                .map_err(|_| ClientError::CaFileInvalid {
+                    path: path.to_owned(),
+                })?;
+        }
+    }
+    let config = crate::ca_bundle::client_config(extra).map_err(ClientError::Tls)?;
+    Ok(builder.tls_backend_preconfigured(config))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn trusted_roots(
+    builder: ClientBuilder,
+    ca_file: Option<&Path>,
+) -> Result<ClientBuilder, ClientError> {
+    let mut roots = Vec::new();
+    if let Some(path) = platform_ignored_certificate_file() {
+        roots.extend(read_certificates(&path).unwrap_or_default());
+    }
+    if let Some(path) = ca_file {
+        roots.extend(read_certificates(path)?);
+    }
+    if roots.is_empty() {
+        return Ok(builder);
+    }
+    let roots = roots
+        .iter()
+        .map(|der| reqwest::Certificate::from_der(der))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ClientError::Build)?;
+    Ok(builder.tls_certs_merge(roots))
 }
 
 fn header_map(headers: &[(String, String)]) -> Result<HeaderMap, ClientError> {
@@ -75,32 +120,34 @@ fn header_map(headers: &[(String, String)]) -> Result<HeaderMap, ClientError> {
     Ok(map)
 }
 
-fn read_certificates(path: &Path) -> Result<Vec<Certificate>, ClientError> {
+fn read_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, ClientError> {
     let pem = fs::read(path).map_err(|source| ClientError::CaFileUnreadable {
         path: path.to_owned(),
         source,
     })?;
-    let certificates =
-        Certificate::from_pem_bundle(&pem).map_err(|_| ClientError::CaFileInvalid {
-            path: path.to_owned(),
-        })?;
+    let invalid = || ClientError::CaFileInvalid {
+        path: path.to_owned(),
+    };
+    let certificates = CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid())?;
     if certificates.is_empty() {
-        return Err(ClientError::CaFileInvalid {
-            path: path.to_owned(),
-        });
+        return Err(invalid());
     }
     Ok(certificates)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn platform_ignored_certificate_file() -> Option<PathBuf> {
     if !platform_verifier_ignores_certificate_file() {
         return None;
     }
-    env::var_os(CERTIFICATE_FILE_VARIABLE)
+    std::env::var_os("SSL_CERT_FILE")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
+#[cfg(not(target_os = "linux"))]
 const fn platform_verifier_ignores_certificate_file() -> bool {
     cfg!(any(target_vendor = "apple", windows))
 }
@@ -114,20 +161,9 @@ fn install_crypto_provider() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use ofx_testkit::TEST_CA_PEM;
 
-    const TEST_CERTIFICATE: &str = "-----BEGIN CERTIFICATE-----
-MIIBhjCCAS2gAwIBAgIUd6LE8F704/6Dls/V4KmszcLpJTUwCgYIKoZIzj0EAwIw
-GDEWMBQGA1UEAwwNb2gtZnggdGVzdCBDQTAgFw0yNjEwMDEwMTM2MjlaGA8yMTI2
-MDkwNzAxMzYyOVowGDEWMBQGA1UEAwwNb2gtZnggdGVzdCBDQTBZMBMGByqGSM49
-AgEGCCqGSM49AwEHA0IABLsmF0hSYztpOb0c4nHIzJ44f3HXDxdN1oS596H10ZK5
-VVX3il6MdeGvoAQESSdyj74RbM8LBbnvcRLH1/BXXR+jUzBRMB0GA1UdDgQWBBTn
-sFJdBZIspogugFBs5l08jRVMUTAfBgNVHSMEGDAWgBTnsFJdBZIspogugFBs5l08
-jRVMUTAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIG3FUzkWvT65
-+lOtIHbTn1B9cEj7SE/STu5agJ/SM2I+AiAyr91F7s7uuHy5jPBBrsWIiOJB0Cbk
-ktS94Hd1UuEWlg==
------END CERTIFICATE-----
-";
+    use super::*;
 
     #[test]
     fn connection_clients_accept_headers_and_proxies() {
@@ -190,7 +226,35 @@ ktS94Hd1UuEWlg==
     fn pem_bundles_parse_into_certificates() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("ca.pem");
-        fs::write(&path, TEST_CERTIFICATE).unwrap();
+        fs::write(&path, TEST_CA_PEM).unwrap();
         assert_eq!(read_certificates(&path).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ca_files_with_a_malformed_certificate_fail_when_the_client_is_built() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ca.pem");
+        fs::write(
+            &path,
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let options = ConnectionOptions {
+            ca_file: Some(path),
+            ..ConnectionOptions::default()
+        };
+        assert!(build_connection_client(&options).is_err());
+    }
+
+    #[test]
+    fn ca_files_build_clients() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ca.pem");
+        fs::write(&path, TEST_CA_PEM).unwrap();
+        let options = ConnectionOptions {
+            ca_file: Some(path),
+            ..ConnectionOptions::default()
+        };
+        assert!(build_connection_client(&options).is_ok());
     }
 }
