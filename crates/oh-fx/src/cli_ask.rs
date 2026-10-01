@@ -18,8 +18,9 @@ use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, MISSING_CHATGPT_CR
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{ConnectionError, ProfilePaths, SelectionError, Settings, request_output_tokens};
 use ofx_contract::{
-    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode, ProviderError,
-    RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
+    ProviderError, ReasoningEffort, RouteRecoveryStatus, ToolCallId, ToolEffect, ToolResultStatus,
+    TurnOutcome, UiEvent, Usage,
 };
 use ofx_gateway::ChatCompletionsProvider;
 use ofx_permissions::PermissionPolicy;
@@ -31,7 +32,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
-use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_provider};
+use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
 use crate::tool_set;
 
@@ -194,6 +195,7 @@ struct Signalled(i32);
 
 struct Route {
     provider: Arc<dyn ModelProvider>,
+    capabilities: Option<Arc<dyn CapabilityResolver>>,
     model: String,
     max_output_tokens: Option<u32>,
     source: CredentialSource,
@@ -360,7 +362,7 @@ async fn prepare_agent(
         codex_route(
             &settings,
             requested,
-            paths.map(|paths| paths.data),
+            paths.as_ref(),
             endpoints,
             &lookup,
             cancel,
@@ -378,6 +380,7 @@ async fn prepare_agent(
         let model = model.map_err(Failure::invalid_model)?;
         Route {
             provider: Arc::new(provider),
+            capabilities: None,
             max_output_tokens: request_output_tokens(connection.capabilities(&model)),
             model,
             source: CredentialSource::Configured,
@@ -396,26 +399,29 @@ async fn prepare_agent(
         max_output_tokens: route.max_output_tokens,
         step_limit: settings.max_agent_steps(&lookup),
         model: model.clone(),
-        reasoning_effort: None,
-        fast_mode: false,
+        reasoning_effort: args.effort.clone().and_then(ReasoningEffort::into_named),
+        fast_mode: args.fast.unwrap_or(false),
     };
     let tools = tool_set::ask_tools(&workspace_root);
     let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
     let context = HostRuntimeContext::new(workspace_root, permission_mode);
-    let agent = Agent::new(
+    let mut agent = Agent::new(
         route.provider,
         tools,
         Arc::new(context),
         Arc::new(permissions),
         config,
     );
+    if let Some(capabilities) = route.capabilities {
+        agent = agent.with_capability_resolver(capabilities);
+    }
     Ok((agent, model, permission_mode, route.source))
 }
 
 async fn codex_route(
     settings: &Settings,
     requested: Option<&OsStr>,
-    data_directory: Option<PathBuf>,
+    paths: Option<&ProfilePaths>,
     endpoints: SubscriptionEndpoints,
     lookup: &dyn Fn(&str) -> Option<String>,
     cancel: &CancellationToken,
@@ -425,9 +431,10 @@ async fn codex_route(
     })?
     .map_err(Failure::invalid_model)?;
     let uses_tls = uses_tls(&endpoints.codex.responses);
-    let provider = codex_provider(data_directory, &crate::user_agent(), endpoints, cancel).await?;
+    let subscription = codex_subscription(paths, &crate::user_agent(), endpoints, cancel).await?;
     Ok(Route {
-        provider: Arc::new(provider),
+        provider: Arc::new(subscription.provider),
+        capabilities: Some(Arc::new(subscription.capabilities)),
         model,
         max_output_tokens: None,
         source: CredentialSource::Codex,
@@ -1299,7 +1306,7 @@ mod tests {
         let failure = codex_route(
             &login.settings(),
             Some(model),
-            Some(login.paths.data.clone()),
+            Some(&login.paths),
             endpoints(&auth.base_url()),
             &no_environment,
             &CancellationToken::new(),

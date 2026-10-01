@@ -28,8 +28,8 @@ pub use tool_result_errors::{
 };
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction,
-    ModelRecoveryCause, PermissionMode, ProviderReplay, ReplaySource, RouteRecoveryKind,
-    RouteRecoveryStatus, ToolCall, ToolChoice, ToolResultStatus, Usage, is_valid_reasoning_effort,
-    valid_credential_account_id,
+    ModelRecoveryCause, PermissionMode, ProviderReplay, ReasoningEffort, ReplaySource,
+    RouteRecoveryKind, RouteRecoveryStatus, ToolCall, ToolChoice, ToolResultStatus, Usage,
+    is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{TurnOutcome, UiEvent};

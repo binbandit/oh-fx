@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 
 use ofx_config::is_valid_provider_order_list;
-use ofx_contract::is_valid_reasoning_effort;
+use ofx_contract::ReasoningEffort;
 
 use super::arg_stream::{ArgStream, MissingValue, ValueForm, merge_toggle, non_blank};
 use super::launch_modifiers::GlobalLaunchError;
@@ -13,7 +13,8 @@ pub(crate) enum ModelOverride {
 
 #[derive(Debug, Default)]
 pub(crate) struct ModelOverrides {
-    fast: Option<bool>,
+    pub(crate) effort: Option<ReasoningEffort>,
+    pub(crate) fast: Option<bool>,
     provider_strict: Option<bool>,
 }
 
@@ -30,9 +31,8 @@ impl ModelOverrides {
         }
         if let Some(value) = args.take_option("effort", form) {
             let value = value.map_err(|MissingValue| GlobalLaunchError::MissingEffortValue)?;
-            if !is_text(&value, is_valid_reasoning_effort) {
-                return Err(GlobalLaunchError::InvalidEffortValue);
-            }
+            let effort = value.to_str().and_then(ReasoningEffort::parse);
+            self.effort = Some(effort.ok_or(GlobalLaunchError::InvalidEffortValue)?);
         } else if let Some(enabled) = args.take_toggle("--fast", "--no-fast") {
             let fast = merge_toggle(self.fast, enabled, GlobalLaunchError::ConflictingFastFlags)?;
             self.fast = Some(fast);
