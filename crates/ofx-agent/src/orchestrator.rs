@@ -412,9 +412,14 @@ impl Agent {
             turn.silent_tool_steps + 1
         };
         let calls = completion.tool_calls.clone();
+        let history_calls = completion
+            .tool_calls
+            .into_iter()
+            .map(|call| self.history_call(call))
+            .collect();
         self.history.push(ChatMessage::Assistant {
             content: completion.content,
-            tool_calls: completion.tool_calls,
+            tool_calls: history_calls,
             provider_replay: completion.provider_replay,
         });
         let mut next = 0;
@@ -465,13 +470,25 @@ impl Agent {
         Ok(())
     }
 
-    fn prepare(&self, call: &ToolCall) -> Prepared {
-        let Some((tool, _)) = self
-            .tools
+    fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        self.tools
             .iter()
             .zip(&self.tool_specs)
-            .find(|(_, spec)| spec.name == call.name)
-        else {
+            .find_map(|(tool, spec)| (spec.name == name).then_some(tool))
+    }
+
+    fn history_call(&self, call: ToolCall) -> ToolCall {
+        let rewritten = self
+            .tool(&call.name)
+            .and_then(|tool| contained(|| tool.history_arguments(&call.arguments)).flatten());
+        match rewritten {
+            Some(arguments) => ToolCall { arguments, ..call },
+            None => call,
+        }
+    }
+
+    fn prepare(&self, call: &ToolCall) -> Prepared {
+        let Some(tool) = self.tool(&call.name) else {
             return Prepared::Rejected(Rejection {
                 reason: ToolRejection::Unsupported,
                 title: Some(format_unknown_action(&call.name)),
