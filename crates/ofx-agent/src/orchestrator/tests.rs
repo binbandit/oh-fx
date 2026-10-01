@@ -3,8 +3,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ofx_contract::{
-    CallDescription, Concurrency, ModelRecoveryAction, PreparedCall, StreamSink, ToolActivity,
-    ToolCallId, ToolEffect,
+    CallDescription, Concurrency, ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource,
+    StreamSink, ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -30,6 +30,7 @@ struct SeenRequest {
 struct FakeProvider {
     scripts: Mutex<VecDeque<Script>>,
     requests: Mutex<Vec<SeenRequest>>,
+    projections: Mutex<Vec<(String, bool, bool)>>,
 }
 
 impl FakeProvider {
@@ -37,11 +38,16 @@ impl FakeProvider {
         Arc::new(Self {
             scripts: Mutex::new(scripts.into()),
             requests: Mutex::new(Vec::new()),
+            projections: Mutex::new(Vec::new()),
         })
     }
 
     fn requests(&self) -> Vec<SeenRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn projections(&self) -> Vec<(String, bool, bool)> {
+        self.projections.lock().unwrap().clone()
     }
 }
 
@@ -85,6 +91,28 @@ impl ModelProvider for FakeProvider {
                 None => Err(ProviderError::new(ProviderErrorKind::Protocol, "NoScript")),
             }
         })
+    }
+
+    fn project_replay(
+        &self,
+        replay: &ProviderReplay,
+        text: bool,
+        reasoning: bool,
+    ) -> Result<Option<ProviderReplay>, ProviderError> {
+        self.projections
+            .lock()
+            .unwrap()
+            .push((replay.parts_json.clone(), text, reasoning));
+        if replay.parts_json == "invalid" {
+            return Err(ProviderError::new(
+                ProviderErrorKind::Protocol,
+                "InvalidProviderState",
+            ));
+        }
+        Ok(Some(ProviderReplay {
+            parts_json: format!("reasoning of {}", replay.parts_json),
+            ..replay.clone()
+        }))
     }
 }
 
@@ -218,6 +246,7 @@ fn completion(
             input_tokens: Some(10),
             output_tokens: Some(2),
         },
+        provider_replay: None,
     }
 }
 
@@ -244,6 +273,42 @@ fn tool_reply(calls: &[(&str, &str)]) -> Script {
         .map(|(id, arguments)| echo_call(id, arguments))
         .collect();
     Script::Reply(Vec::new(), completion(None, calls, FinishReason::ToolCalls))
+}
+
+fn replay(parts: &str) -> ProviderReplay {
+    ProviderReplay {
+        source: ReplaySource {
+            provider: "fake".to_owned(),
+            model: "test-model".to_owned(),
+        },
+        parts_json: parts.to_owned(),
+    }
+}
+
+fn with_replay(script: Script, parts: &str) -> Script {
+    match script {
+        Script::Reply(stream, mut completion) => {
+            completion.provider_replay = Some(replay(parts));
+            Script::Reply(stream, completion)
+        }
+        other => other,
+    }
+}
+
+fn replays(messages: &[ChatMessage]) -> Vec<Option<&str>> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ChatMessage::Assistant {
+                provider_replay, ..
+            } => Some(
+                provider_replay
+                    .as_ref()
+                    .map(|replay| replay.parts_json.as_str()),
+            ),
+            _ => None,
+        })
+        .collect()
 }
 
 fn failure(kind: ProviderErrorKind, code: &str) -> ProviderError {
@@ -499,6 +564,7 @@ async fn step_limits_stop_the_loop_with_the_upstream_notice_and_keep_the_turn() 
         Some(&ChatMessage::Assistant {
             content: Some(STEP_LIMIT_NOTICE.to_owned()),
             tool_calls: Vec::new(),
+            provider_replay: None,
         })
     );
 }
@@ -587,6 +653,7 @@ async fn provider_failures_drop_an_empty_turn_but_keep_executed_tool_steps() {
         Some(&ChatMessage::Assistant {
             content: Some("Partial answer".to_owned()),
             tool_calls: Vec::new(),
+            provider_replay: None,
         })
     );
 }
@@ -684,6 +751,7 @@ async fn cancelled_tools_that_finish_within_the_grace_period_keep_their_results(
                     echo_call("call-1", r#"{"text":"before"}"#),
                     echo_call("call-2", r#"{"wait":true}"#),
                 ],
+                provider_replay: None,
             },
             tool_message(
                 "call-1",
@@ -718,6 +786,7 @@ async fn cancelled_tools_that_outlive_the_grace_period_are_aborted_and_dropped_f
             ChatMessage::Assistant {
                 content: None,
                 tool_calls: vec![echo_call("call-1", r#"{"text":"before"}"#)],
+                provider_replay: None,
             },
             tool_message(
                 "call-1",
@@ -751,6 +820,7 @@ async fn cancelling_while_a_parallel_group_starts_never_starts_the_rest() {
             ChatMessage::Assistant {
                 content: None,
                 tool_calls: vec![echo_call("call-1", r#"{"wait":true}"#)],
+                provider_replay: None,
             },
             tool_message("call-1", "stopped after cleanup", ToolResultStatus::Failure),
         ]
@@ -843,6 +913,7 @@ async fn a_call_that_needs_approval_fails_the_turn_after_earlier_calls_settle() 
             ChatMessage::Assistant {
                 content: None,
                 tool_calls: vec![echo_call("call-1", r#"{"text":"before"}"#)],
+                provider_replay: None,
             },
             tool_message(
                 "call-1",
@@ -1035,6 +1106,7 @@ async fn later_turns_replay_history() {
             ChatMessage::Assistant {
                 content: Some("first".to_owned()),
                 tool_calls: Vec::new(),
+                provider_replay: None,
             },
             ChatMessage::user("two"),
         ]
@@ -1051,4 +1123,183 @@ async fn invalid_completions_fail_the_turn() {
     let (report, _) = run(&mut agent, "go").await;
     assert_eq!(report.failure, Some(TurnFailure::InvalidCompletion));
     assert_eq!(report.failure.unwrap().code(), "ModelError");
+}
+
+#[tokio::test]
+async fn assistant_messages_carry_their_completion_replay_into_later_requests() {
+    let provider = FakeProvider::new(vec![
+        with_replay(tool_reply(&[("call-1", "{}")]), "tool step"),
+        with_replay(text_reply("Answer."), "answer"),
+        text_reply("Again."),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    assert_eq!(run(&mut agent, "go").await.0.final_text, "Answer.");
+    assert_eq!(run(&mut agent, "more").await.0.final_text, "Again.");
+    let requests = provider.requests();
+    assert_eq!(replays(&requests[1].messages), [Some("tool step")]);
+    assert_eq!(
+        replays(&requests[2].messages),
+        [Some("tool step"), Some("answer")]
+    );
+    assert!(provider.projections().is_empty());
+}
+
+#[tokio::test]
+async fn identical_answers_keep_their_own_replay() {
+    let provider = FakeProvider::new(vec![
+        with_replay(text_reply("OK"), "first reasoning"),
+        with_replay(text_reply("OK"), "second reasoning"),
+        text_reply("Done."),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    for prompt in ["one", "two", "three"] {
+        run(&mut agent, prompt).await;
+    }
+    assert_eq!(
+        replays(&provider.requests()[2].messages),
+        [Some("first reasoning"), Some("second reasoning")]
+    );
+}
+
+#[tokio::test]
+async fn empty_answers_keep_only_the_reasoning_part_of_their_replay() {
+    let provider = FakeProvider::new(vec![
+        with_replay(text_reply(" "), "parts"),
+        text_reply("Next."),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    assert_eq!(
+        run(&mut agent, "go").await.0.final_text,
+        EMPTY_RESPONSE_TEXT
+    );
+    run(&mut agent, "next").await;
+    assert_eq!(provider.projections(), [("parts".to_owned(), false, true)]);
+    assert_eq!(
+        provider.requests()[1].messages[1],
+        ChatMessage::Assistant {
+            content: Some(EMPTY_RESPONSE_TEXT.to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: Some(replay("reasoning of parts")),
+        }
+    );
+}
+
+#[tokio::test]
+async fn replay_projection_failures_fail_the_turn() {
+    let provider = FakeProvider::new(vec![with_replay(text_reply(""), "invalid")]);
+    let mut agent = new_agent(provider, Vec::new());
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(
+        report.failure,
+        Some(TurnFailure::Provider(failure(
+            ProviderErrorKind::Protocol,
+            "InvalidProviderState"
+        )))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::Operational { .. }))
+    );
+}
+
+#[tokio::test]
+async fn a_silent_answer_keeps_its_replay_ahead_of_the_summary_prompt() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", "{}")]),
+        tool_reply(&[("call-2", "{}")]),
+        with_replay(text_reply(""), "silent"),
+        text_reply("Summary."),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    assert_eq!(run(&mut agent, "go").await.0.final_text, "Summary.");
+    let messages = &provider.requests()[3].messages;
+    assert_eq!(
+        messages[messages.len() - 2..],
+        [
+            ChatMessage::Assistant {
+                content: Some(String::new()),
+                tool_calls: Vec::new(),
+                provider_replay: Some(replay("silent")),
+            },
+            ChatMessage::user(SUMMARIZE_PROMPT),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn interrupted_tool_steps_keep_their_replay_when_every_call_finished() {
+    let provider = FakeProvider::new(vec![with_replay(
+        tool_reply(&[
+            ("call-1", r#"{"text":"before"}"#),
+            ("call-2", r#"{"wait":true}"#),
+        ]),
+        "complete",
+    )]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, _) = run_cancelled_at(&mut agent, "call-2").await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert_eq!(replays(&agent.history), [Some("complete")]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn interrupted_tool_steps_drop_their_replay_when_a_call_is_dropped() {
+    let provider = FakeProvider::new(vec![with_replay(
+        tool_reply(&[
+            ("call-1", r#"{"text":"before"}"#),
+            ("call-2", r#"{"hang":true}"#),
+        ]),
+        "partial",
+    )]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let (report, _) = run_cancelled_at(&mut agent, "call-2").await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert_eq!(
+        agent.history[1],
+        ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![echo_call("call-1", r#"{"text":"before"}"#)],
+            provider_replay: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_interrupted_summary_keeps_the_replay_only_answer() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", "{}")]),
+        tool_reply(&[("call-2", "{}")]),
+        with_replay(text_reply(""), "silent"),
+    ]);
+    let mut agent = new_agent(provider, vec![echo_tool()]);
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    let mut usage_reports = 0;
+    let report = agent
+        .run_turn(
+            "go",
+            &mut |event| {
+                if matches!(event, UiEvent::UsageReported { .. }) {
+                    usage_reports += 1;
+                    if usage_reports == 3 {
+                        trigger.cancel();
+                    }
+                }
+            },
+            &cancel,
+        )
+        .await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert_eq!(
+        agent.history[agent.history.len() - 2..],
+        [
+            ChatMessage::Assistant {
+                content: Some(String::new()),
+                tool_calls: Vec::new(),
+                provider_replay: Some(replay("silent")),
+            },
+            ChatMessage::user(SUMMARIZE_PROMPT),
+        ]
+    );
 }

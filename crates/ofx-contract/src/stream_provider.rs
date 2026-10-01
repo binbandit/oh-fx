@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::tool_dispatch::ToolSpec;
-use crate::types::{ChatMessage, FinishReason, ToolCall, ToolChoice, Usage};
+use crate::types::{ChatMessage, FinishReason, ProviderReplay, ToolCall, ToolChoice, Usage};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -41,6 +41,7 @@ pub struct Completion {
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: FinishReason,
     pub usage: Usage,
+    pub provider_replay: Option<ProviderReplay>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,11 +104,55 @@ pub trait ModelProvider: Send + Sync {
         sink: &'a mut dyn StreamSink,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Completion, ProviderError>>;
+
+    fn project_replay(
+        &self,
+        _replay: &ProviderReplay,
+        _text: bool,
+        _reasoning: bool,
+    ) -> Result<Option<ProviderReplay>, ProviderError> {
+        Err(ProviderError::new(
+            ProviderErrorKind::Protocol,
+            "ProviderReplayProjectionUnavailable",
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ReplaySource;
+
+    struct Silent;
+
+    impl ModelProvider for Silent {
+        fn stream<'a>(
+            &'a self,
+            _request: &'a ModelRequest<'a>,
+            _sink: &'a mut dyn StreamSink,
+            _cancel: &'a CancellationToken,
+        ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+            Box::pin(async { Err(ProviderError::cancelled()) })
+        }
+    }
+
+    #[test]
+    fn providers_without_replay_projection_refuse_to_project() {
+        let replay = ProviderReplay {
+            source: ReplaySource {
+                provider: "codex".to_owned(),
+                model: "model".to_owned(),
+            },
+            parts_json: "[]".to_owned(),
+        };
+        assert_eq!(
+            Silent.project_replay(&replay, false, true),
+            Err(ProviderError::new(
+                ProviderErrorKind::Protocol,
+                "ProviderReplayProjectionUnavailable"
+            ))
+        );
+    }
 
     #[test]
     fn closures_are_stream_sinks() {
