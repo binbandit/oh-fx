@@ -11,8 +11,13 @@ reqwest.workspace = true
 rustls.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
+ofx-testkit.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 
 [lints]
 workspace = true

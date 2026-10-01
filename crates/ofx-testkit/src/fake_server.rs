@@ -5,12 +5,21 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rustls::ServerConfig;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::Acceptor;
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
+use tokio_rustls::LazyConfigAcceptor;
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const SERVER_KEY_PEM: &str = include_str!("tls/server.key");
+pub const TEST_CA_PEM: &str = include_str!("tls/ca.pem");
+pub const OTHER_CA_PEM: &str = include_str!("tls/other-ca.pem");
+pub const TEST_SERVER_CERTIFICATE_PEM: &str = include_str!("tls/server.pem");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
@@ -142,11 +151,13 @@ impl RecordedRequest {
 struct State {
     replies: VecDeque<Reply>,
     requests: Vec<RecordedRequest>,
+    offered_protocols: Vec<Vec<String>>,
 }
 
 #[derive(Debug)]
 pub struct FakeServer {
     address: SocketAddr,
+    scheme: &'static str,
     state: Arc<Mutex<State>>,
     shutdown: watch::Sender<bool>,
     thread: Option<JoinHandle<()>>,
@@ -154,6 +165,18 @@ pub struct FakeServer {
 
 impl FakeServer {
     pub fn start(replies: impl IntoIterator<Item = Reply>) -> Self {
+        Self::serve_on_loopback(replies, None)
+    }
+
+    pub fn start_tls(replies: impl IntoIterator<Item = Reply>) -> Self {
+        Self::serve_on_loopback(replies, Some(server_config()))
+    }
+
+    fn serve_on_loopback(
+        replies: impl IntoIterator<Item = Reply>,
+        tls: Option<Arc<ServerConfig>>,
+    ) -> Self {
+        let scheme = if tls.is_some() { "https" } else { "http" };
         let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
         listener
             .set_nonblocking(true)
@@ -161,7 +184,7 @@ impl FakeServer {
         let address = listener.local_addr().expect("read the bound address");
         let state = Arc::new(Mutex::new(State {
             replies: replies.into_iter().collect(),
-            requests: Vec::new(),
+            ..State::default()
         }));
         let (shutdown, signal) = watch::channel(false);
         let served_state = Arc::clone(&state);
@@ -170,10 +193,11 @@ impl FakeServer {
                 .enable_all()
                 .build()
                 .expect("build the fake server runtime");
-            runtime.block_on(serve(listener, served_state, signal));
+            runtime.block_on(serve(listener, tls, served_state, signal));
         });
         Self {
             address,
+            scheme,
             state,
             shutdown,
             thread: Some(thread),
@@ -181,12 +205,32 @@ impl FakeServer {
     }
 
     pub fn base_url(&self) -> String {
-        format!("http://{}/v1", self.address)
+        format!("{}://{}/v1", self.scheme, self.address)
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
         lock(&self.state).requests.clone()
     }
+
+    pub fn offered_protocols(&self) -> Vec<Vec<String>> {
+        lock(&self.state).offered_protocols.clone()
+    }
+}
+
+fn server_config() -> Arc<ServerConfig> {
+    let certificates = CertificateDer::pem_slice_iter(TEST_SERVER_CERTIFICATE_PEM.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse the test server certificate");
+    let key = PrivateKeyDer::from_pem_slice(SERVER_KEY_PEM.as_bytes())
+        .expect("parse the test server key");
+    let config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("choose TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(certificates, key)
+            .expect("configure the test server certificate");
+    Arc::new(config)
 }
 
 impl Drop for FakeServer {
@@ -204,6 +248,7 @@ fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
 
 async fn serve(
     listener: StdTcpListener,
+    tls: Option<Arc<ServerConfig>>,
     state: Arc<Mutex<State>>,
     mut signal: watch::Receiver<bool>,
 ) {
@@ -215,15 +260,47 @@ async fn serve(
             _ = signal.changed() => return,
             accepted = listener.accept() => {
                 if let Ok((stream, _)) = accepted {
-                    tokio::spawn(handle(stream, Arc::clone(&state), signal.clone()));
+                    let state = Arc::clone(&state);
+                    match &tls {
+                        Some(config) => {
+                            tokio::spawn(handle_tls(stream, Arc::clone(config), state, signal.clone()));
+                        }
+                        None => {
+                            tokio::spawn(handle(stream, state, signal.clone()));
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-async fn handle(
-    mut stream: TcpStream,
+async fn handle_tls(
+    stream: TcpStream,
+    config: Arc<ServerConfig>,
+    state: Arc<Mutex<State>>,
+    signal: watch::Receiver<bool>,
+) {
+    let Ok(start) = LazyConfigAcceptor::new(Acceptor::default(), stream).await else {
+        return;
+    };
+    let offered = start
+        .client_hello()
+        .alpn()
+        .map(|protocols| {
+            protocols
+                .map(|protocol| String::from_utf8_lossy(protocol).into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    lock(&state).offered_protocols.push(offered);
+    if let Ok(stream) = start.into_stream(config).await {
+        handle(stream, state, signal).await;
+    }
+}
+
+async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
     state: Arc<Mutex<State>>,
     mut signal: watch::Receiver<bool>,
 ) {
@@ -303,7 +380,7 @@ async fn handle(
     let _ = stream.shutdown().await;
 }
 
-async fn hold(stream: &mut TcpStream, signal: &mut watch::Receiver<bool>) {
+async fn hold<S: AsyncRead + Unpin>(stream: &mut S, signal: &mut watch::Receiver<bool>) {
     let mut sink = [0_u8; 64];
     tokio::select! {
         _ = signal.changed() => {}
@@ -311,7 +388,7 @@ async fn hold(stream: &mut TcpStream, signal: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn read_request(stream: &mut TcpStream) -> Option<RecordedRequest> {
+async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<RecordedRequest> {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 8192];
     let head_end = loop {
