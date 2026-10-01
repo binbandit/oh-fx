@@ -95,6 +95,10 @@ impl Tool for Shell {
             context: Arc::clone(&self.context),
         }))
     }
+
+    fn history_arguments(&self, arguments: &str) -> Option<String> {
+        Some(request::history_arguments(arguments)).filter(|history| history != arguments)
+    }
 }
 
 enum Validated {

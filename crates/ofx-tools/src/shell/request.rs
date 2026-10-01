@@ -7,6 +7,8 @@ use super::{
     DEFAULT_WAIT_CEILING_MS, DEFAULT_YIELD_TIME_MS, MAX_WAIT_CEILING_MS, MAX_YIELD_TIME_MS,
 };
 
+mod json_value;
+
 const MAX_COMMAND_BYTES: usize = 64 * 1024;
 const MAX_WRITE_BYTES: usize = 64 * 1024;
 const MAX_CORRECTION_SOURCE_BYTES: usize = 16 * 1024;
@@ -157,15 +159,18 @@ impl ShellRequest {
 }
 
 pub(super) fn unwrap_request(arguments: &str) -> String {
-    if parse_tool_args_object(arguments).is_err() {
-        return arguments.to_owned();
-    }
-    match serde_json::from_str::<Value>(arguments) {
-        Ok(Value::Object(fields)) if fields.len() == 1 => match fields.get("request") {
-            Some(request @ Value::Object(_)) => request.to_string(),
-            _ => arguments.to_owned(),
-        },
-        _ => arguments.to_owned(),
+    json_value::reencode(arguments)
+        .and_then(|encoded| encoded.sole_object_member("request").map(str::to_owned))
+        .unwrap_or_else(|| arguments.to_owned())
+}
+
+pub(super) fn history_arguments(arguments: &str) -> String {
+    let unwrapped = unwrap_request(arguments);
+    match json_value::reencode(&unwrapped) {
+        Some(encoded) if encoded.is_object() && encoded.sole_object_member("request").is_none() => {
+            format!(r#"{{"request":{}}}"#, encoded.text)
+        }
+        _ => unwrapped,
     }
 }
 
