@@ -125,7 +125,7 @@ fn chatgpt_browser_authorization_url_uses_pkce_without_device_authentication() {
     );
     assert_eq!(
         url,
-        "https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke&code_challenge=challenge-value&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=state-value&originator=fx"
+        "https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke&code_challenge=challenge-value&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=state-value&originator=oh-fx"
     );
     assert!(!url.contains("device"));
     assert!(
