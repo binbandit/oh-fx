@@ -42,7 +42,6 @@ const RETRYABLE_CONNECT_ERRORS: [io::ErrorKind; 9] = [
     io::ErrorKind::AddrNotAvailable,
 ];
 
-#[derive(Debug)]
 pub struct ChatCompletionsProvider {
     client: reqwest::Client,
     chat_url: String,
