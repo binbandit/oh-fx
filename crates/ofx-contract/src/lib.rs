@@ -1,3 +1,4 @@
+mod applicable_target;
 mod ids;
 mod model_capabilities;
 mod permission_gate;
@@ -9,6 +10,7 @@ mod tool_result_errors;
 mod types;
 mod ui;
 
+pub use applicable_target::{ApplicableTarget, TargetKind};
 pub use ids::{ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use permission_gate::{

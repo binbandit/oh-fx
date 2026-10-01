@@ -273,9 +273,11 @@ fn file_and_total_limit_markers_match_upstream_bytes() {
 
 #[test]
 fn project_instruction_limit_notices_encode_untrusted_source_paths() {
+    let prior = DeliveryState::default();
     let mut selection = Selection::new(
         Path::new("/work"),
         with_file_limit(4, ContextLimitSource::CommandLine),
+        &prior,
     );
     let mut out = String::new();
     selection.append_file_limit_marker(&mut out, Path::new("bad\"\x1b\nAGENTS.md"), 20);
@@ -614,7 +616,9 @@ fn home_availability_failures_and_non_ancestor_diagnostics_stay_explicit() {
     );
     assert!(non_ancestor.notices.is_empty());
     let equal = gather(Some(home.as_os_str()), &home);
-    assert_eq!(equal, ProjectContext::default());
+    assert_eq!(equal.content, None);
+    assert!(equal.notices.is_empty());
+    assert_eq!(equal.evaluated_endpoints, std::slice::from_ref(&home));
 }
 
 fn home_config(fixture: &Fixture) -> PathBuf {
@@ -763,4 +767,238 @@ fn omission_summary_digests_match_upstream_records() {
         notices.last().unwrap(),
         "[context] project instructions action=omitted summary: 1 additional records; reasons=\"selection cap:1\" records_sha256=a8e72103c49b1f8f5b84c415; repair=review the listed omission reasons"
     );
+}
+
+fn file(path: PathBuf) -> ApplicableTarget {
+    ApplicableTarget {
+        path,
+        kind: TargetKind::File,
+    }
+}
+
+fn directory(path: PathBuf) -> ApplicableTarget {
+    ApplicableTarget {
+        path,
+        kind: TargetKind::Directory,
+    }
+}
+
+fn select(
+    workspace: &Path,
+    targets: &[ApplicableTarget],
+    delivery: &DeliveryState,
+) -> ProjectContext {
+    select_applicable_project_context(workspace, targets, delivery, defaults())
+}
+
+#[test]
+fn initial_gather_and_later_targets_order_global_ancestors_workspace_and_hidden_and_build_scopes() {
+    let fixture = Fixture::new();
+    fixture.write("home/.config/oh-fx/AGENTS.md", b"RULE_GLOBAL");
+    fixture.write("home/projects/AGENTS.md", b"RULE_PARENT");
+    fixture.write("home/projects/work/AGENTS.md", b"RULE_WORKSPACE");
+    fixture.write("home/projects/work/.github/AGENTS.md", b"RULE_HIDDEN");
+    fixture.write("home/projects/work/build/AGENTS.md", b"RULE_BUILD");
+    fixture.write("home/projects/work/dist/AGENTS.md", b"RULE_UNRELATED");
+    let hidden = fixture.write("home/projects/work/.github/workflows/ci.yml", b"");
+    let build = fixture.write("home/projects/work/build/generated/out.zig", b"");
+    let workspace = fixture.path("home/projects/work");
+    let initial = fixture.gather("home/projects/work", defaults());
+    let delivery = delivered(&initial);
+    let later = select(&workspace, &[file(build), file(hidden)], &delivery);
+    let text = format!("{}\n{}", visible(&initial), visible(&later));
+    let order: Vec<usize> = [
+        "RULE_GLOBAL",
+        "RULE_PARENT",
+        "RULE_WORKSPACE",
+        "RULE_HIDDEN",
+        "RULE_BUILD",
+    ]
+    .iter()
+    .map(|needle| find(&text, needle))
+    .collect();
+    assert!(order.is_sorted(), "{text}");
+    assert!(!text.contains("RULE_UNRELATED"));
+    assert!(visible(&later).starts_with(&format!(
+        "<project-instructions-guidance>\n{GUIDANCE}\n</project-instructions-guidance>\n\n<scoped-rules"
+    )));
+    assert_eq!(
+        initial.delivered_sources.len() + later.delivered_sources.len(),
+        5
+    );
+    assert_eq!(
+        initial.evaluated_endpoints.len() + later.evaluated_endpoints.len(),
+        3
+    );
+    assert_eq!(initial.evaluated_endpoints, [workspace]);
+}
+
+#[test]
+fn initial_gather_records_a_contained_symlink_under_its_logical_source() {
+    let fixture = Fixture::new();
+    fixture.write("home/work/CLAUDE.md", b"LINKED_PROJECT_RULE");
+    fixture.link("CLAUDE.md", "home/work/AGENTS.md");
+    let context = fixture.gather("home/work", defaults());
+    assert_eq!(
+        context.delivered_sources,
+        [fixture.path("home/work/AGENTS.md")]
+    );
+}
+
+#[test]
+fn scoped_selection_keeps_the_nearest_readable_cap_and_reports_unusable_and_capped_sources() {
+    let fixture = Fixture::new();
+    let oversized = vec![b'x'; defaults().file.effective_bytes() + 1];
+    let mut relative = String::from("home/work");
+    for index in 0..36 {
+        let _ = write!(relative, "/level-{index:02}");
+        let path = format!("{relative}/AGENTS.md");
+        match index {
+            2 => fixture.write(&path, b" \n "),
+            3 => fixture.write(&path, &oversized),
+            _ => fixture.write(&path, format!("RULE_LEVEL_{index:02}").as_bytes()),
+        };
+    }
+    let target = fixture.write(&format!("{relative}/target.zig"), b"");
+    let workspace = fixture.path("home/work");
+    let context = select(&workspace, &[file(target)], &DeliveryState::default());
+    let text = visible(&context);
+    assert!(!text.contains("RULE_LEVEL_00"));
+    assert!(!text.contains("RULE_LEVEL_01"));
+    assert!(text.contains("RULE_LEVEL_04"));
+    assert!(text.contains("RULE_LEVEL_35"));
+    assert_eq!(text.matches("reason=\"selection cap\"").count(), 3);
+    assert_eq!(text.matches("reason=\"oversized rule file\"").count(), 0);
+    assert_eq!(context.delivered_sources.len(), 32);
+}
+
+#[test]
+fn project_instruction_file_cap_bounds_every_large_candidate() {
+    let fixture = Fixture::new();
+    let mut large = vec![b'x'; 128 * 1024];
+    large[..13].copy_from_slice(b"BOUNDED_RULE\n");
+    let mut relative = String::from("work");
+    for index in 0..8 {
+        let _ = write!(relative, "/level-{index}");
+        fixture.write(&format!("{relative}/AGENTS.md"), &large);
+    }
+    let target = fixture.write(&format!("{relative}/target.zig"), b"");
+    let limits = with_file_limit(64, ContextLimitSource::CommandLine);
+    let context = select_applicable_project_context(
+        &fixture.path("work"),
+        &[file(target)],
+        &DeliveryState::default(),
+        limits,
+    );
+    let text = visible(&context);
+    assert_eq!(context.delivered_sources.len(), 8);
+    assert_eq!(context.notices.len(), 8);
+    assert_eq!(text.matches("BOUNDED_RULE").count(), 8);
+    assert_eq!(
+        text.matches("<context_limit name=\"project_instruction_file_bytes\"")
+            .count(),
+        8
+    );
+    assert!(context.notices[0].contains("observed=131072 bytes"));
+}
+
+#[test]
+fn later_selection_adds_disjoint_scopes_once_and_does_not_repeat_their_common_ancestor() {
+    let fixture = Fixture::new();
+    fixture.write("home/work/src/AGENTS.md", b"RULE_COMMON");
+    fixture.write("home/work/src/a/AGENTS.md", b"RULE_A");
+    fixture.write("home/work/src/b/AGENTS.md", b"RULE_B");
+    let target_a = fixture.write("home/work/src/a/a.zig", b"");
+    let target_b = fixture.write("home/work/src/b/b.zig", b"");
+    let workspace = fixture.path("home/work");
+    let initial = fixture.gather("home/work", defaults());
+    let mut delivery = delivered(&initial);
+    let first = select(&workspace, &[file(target_a)], &delivery);
+    assert!(visible(&first).contains("RULE_COMMON"));
+    assert!(visible(&first).contains("RULE_A"));
+    commit(&mut delivery, &first);
+    let second = select(&workspace, &[file(target_b.clone())], &delivery);
+    assert!(!visible(&second).contains("RULE_COMMON"));
+    assert!(visible(&second).contains("RULE_B"));
+    commit(&mut delivery, &second);
+    let repeated = select(&workspace, &[file(target_b)], &delivery);
+    assert_eq!(repeated, ProjectContext::default());
+}
+
+#[test]
+fn later_selection_includes_the_target_directory_scope_only_for_directory_targets() {
+    let fixture = Fixture::new();
+    fixture.write("work/nested/AGENTS.md", b"RULE_NESTED_DIRECTORY");
+    let workspace = fixture.path("work");
+    let nested = fixture.path("work/nested");
+    let delivery = DeliveryState::default();
+    let as_directory = select(&workspace, &[directory(nested.clone())], &delivery);
+    assert!(visible(&as_directory).contains("RULE_NESTED_DIRECTORY"));
+    let as_file = select(&workspace, &[file(nested)], &delivery);
+    assert!(!visible(&as_file).contains("RULE_NESTED_DIRECTORY"));
+}
+
+#[test]
+fn equal_depth_disjoint_target_scopes_render_by_canonical_source_path() {
+    let fixture = Fixture::new();
+    fixture.write("work/a/AGENTS.md", b"RULE_A");
+    fixture.write("work/z/AGENTS.md", b"RULE_Z");
+    let target_a = fixture.write("work/a/a.zig", b"");
+    let target_z = fixture.write("work/z/z.zig", b"");
+    let context = select(
+        &fixture.path("work"),
+        &[file(target_z), file(target_a)],
+        &DeliveryState::default(),
+    );
+    assert!(find(visible(&context), "RULE_A") < find(visible(&context), "RULE_Z"));
+}
+
+#[test]
+fn later_external_targets_are_evaluated_without_context_or_non_workspace_rules() {
+    let fixture = Fixture::new();
+    fixture.write("work/AGENTS.md", b"RULE_WORKSPACE");
+    fixture.write("external/AGENTS.md", b"RULE_MUST_NOT_ATTACH");
+    let target = fixture.write("external/file.txt", b"external");
+    let context = select(
+        &fixture.path("work"),
+        &[file(target)],
+        &DeliveryState::default(),
+    );
+    assert_eq!(context.content, None);
+    assert!(context.delivered_sources.is_empty());
+    assert_eq!(context.evaluated_endpoints, [fixture.path("external")]);
+    assert!(context.notices.is_empty());
+}
+
+#[test]
+fn relative_and_empty_targets_are_reported_as_unsafe() {
+    let fixture = Fixture::new();
+    let context = select(
+        &fixture.path("work"),
+        &[
+            file(PathBuf::from("relative.txt")),
+            directory(PathBuf::new()),
+        ],
+        &DeliveryState::default(),
+    );
+    assert_eq!(
+        visible(&context),
+        "<project-rules-omitted from=\"(empty target)\" reason=\"unsafe target\" />\n\n<project-rules-omitted from=\"relative.txt\" reason=\"unsafe target\" />"
+    );
+    assert_eq!(context.notices.len(), 2);
+}
+
+fn delivered(context: &ProjectContext) -> DeliveryState {
+    let mut state = DeliveryState::default();
+    commit(&mut state, context);
+    state
+}
+
+fn commit(state: &mut DeliveryState, context: &ProjectContext) {
+    state
+        .delivered_sources
+        .extend(context.delivered_sources.iter().cloned());
+    state
+        .evaluated_endpoints
+        .extend(context.evaluated_endpoints.iter().cloned());
 }

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::applicable_target::ApplicableTarget;
 use crate::types::ToolCall;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,6 +44,8 @@ pub enum CommandRequest {
 
 pub trait PermissionGate: Send + Sync {
     fn admit(&self, call: &ToolCall) -> Admission;
+
+    fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget>;
 
     fn admit_file_mutation(&self, _mutation: &FileMutation) -> Admission {
         Admission::ApprovalRequired

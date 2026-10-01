@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use ofx_contract::{
-    CallDescription, CommandRequest, Concurrency, FileMutation, FileMutationState,
-    ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource, StreamSink, ToolActivity,
-    ToolCallId, ToolEffect,
+    ApplicableTarget, CallDescription, CommandRequest, Concurrency, FileMutation,
+    FileMutationState, ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource, StreamSink,
+    ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -164,6 +164,10 @@ impl PermissionGate for ArgumentGate {
             _ => Admission::ReviewUnavailable,
         }
     }
+
+    fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
+        None
+    }
 }
 
 struct ReadOnlyGate;
@@ -171,6 +175,10 @@ struct ReadOnlyGate;
 impl PermissionGate for ReadOnlyGate {
     fn admit(&self, _call: &ToolCall) -> Admission {
         Admission::Allowed(PathAccess::WorkspaceOrExternal)
+    }
+
+    fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
+        None
     }
 }
 
@@ -183,6 +191,10 @@ impl PermissionGate for RecordingGate {
     fn admit(&self, call: &ToolCall) -> Admission {
         self.admitted.lock().unwrap().push(call.name.clone());
         Admission::Allowed(PathAccess::WorkspaceOnly)
+    }
+
+    fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
+        None
     }
 }
 
@@ -588,44 +600,6 @@ async fn an_empty_system_prompt_is_left_out_of_the_instructions() {
     assert_eq!(
         provider.requests()[0].instructions,
         [TURN_CONTEXT, RESPONSE_LANGUAGE_CONTROL]
-    );
-}
-
-#[tokio::test]
-async fn project_context_follows_the_system_prompt_before_runtime_context() {
-    let provider = FakeProvider::new(vec![text_reply("ok"), text_reply("again")]);
-    let mut agent = new_agent(Arc::clone(&provider), Vec::new())
-        .with_project_context("<project-rules>\nrule\n</project-rules>".to_owned());
-    run(&mut agent, "hi").await;
-    run(&mut agent, "more").await;
-    for request in provider.requests() {
-        assert_eq!(
-            request.instructions,
-            [
-                SYSTEM_PROMPT,
-                "<project-rules>\nrule\n</project-rules>",
-                TURN_CONTEXT,
-                RESPONSE_LANGUAGE_CONTROL
-            ]
-        );
-    }
-    let without_system_prompt = AgentConfig {
-        system_prompt: String::new(),
-        ..config()
-    };
-    let shared: Arc<FakeProvider> = FakeProvider::new(vec![text_reply("ok")]);
-    let mut agent = Agent::new(
-        Arc::clone(&shared) as Arc<dyn ModelProvider>,
-        Vec::new(),
-        Arc::new(FixedContext),
-        Arc::new(ArgumentGate),
-        without_system_prompt,
-    )
-    .with_project_context("rules".to_owned());
-    run(&mut agent, "hi").await;
-    assert_eq!(
-        shared.requests()[0].instructions,
-        ["rules", TURN_CONTEXT, RESPONSE_LANGUAGE_CONTROL]
     );
 }
 
@@ -2211,3 +2185,4 @@ async fn an_interrupted_summary_keeps_the_replay_only_answer() {
 }
 
 mod capabilities;
+mod project_context;

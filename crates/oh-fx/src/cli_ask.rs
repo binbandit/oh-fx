@@ -12,8 +12,8 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
-    text_for_completed_presentation,
+    Agent, AgentConfig, BlockedCall, ProjectContext, TurnFailure, TurnReport,
+    normalize_assistant_text_for_display, text_for_completed_presentation,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, MISSING_CHATGPT_CREDENTIAL_MESSAGE};
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -41,8 +41,8 @@ use tokio_util::sync::CancellationToken;
 use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
 use crate::command_echo::CommandEcho;
 use crate::context::{
-    GATEWAY_SYSTEM_PROMPT, HostRuntimeContext, InstructionLimits, ProfileLocation, ProjectContext,
-    gather_project_context,
+    GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
+    ProfileLocation, gather_project_context,
 };
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
@@ -451,7 +451,7 @@ async fn prepare_agent(
     if route.uses_tls {
         ofx_http::warm_tls_roots();
     }
-    let project_context = ask_project_context(
+    let project = ask_project_context(
         &settings,
         request.context_limits,
         paths.as_ref(),
@@ -489,15 +489,13 @@ async fn prepare_agent(
     if let Some(capabilities) = route.capabilities {
         agent = agent.with_capability_resolver(capabilities);
     }
-    if let Some(content) = project_context.content {
-        agent = agent.with_project_context(content);
-    }
+    let (agent, context_notices) = attach_project_context(agent, project);
     Ok(PreparedAsk {
         agent,
         model,
         permission_mode,
         source: route.source,
-        context_notices: project_context.notices,
+        context_notices,
     })
 }
 
@@ -526,20 +524,39 @@ fn ask_project_context(
     command_line: &[ContextLimitOverride],
     paths: Option<&ProfilePaths>,
     workspace_root: &Path,
-) -> ProjectContext {
+) -> Option<(HostProjectContext, ProjectContext)> {
     if !settings.context_enabled() {
-        return ProjectContext::default();
+        return None;
     }
     let mut limits = settings.context_limits();
     limits.apply_command_line(command_line);
+    let limits = InstructionLimits::from_limits(&limits);
     let home = env::var_os("HOME");
-    gather_project_context(
+    let snapshot = gather_project_context(
         workspace_root,
         ProfileLocation {
             home: home.as_deref(),
             config_directory: paths.map(|paths| paths.config.as_path()),
         },
-        InstructionLimits::from_limits(&limits),
+        limits,
+    );
+    Some((
+        HostProjectContext::new(workspace_root.to_path_buf(), limits),
+        snapshot,
+    ))
+}
+
+fn attach_project_context(
+    agent: Agent,
+    project: Option<(HostProjectContext, ProjectContext)>,
+) -> (Agent, Vec<String>) {
+    let Some((provider, mut snapshot)) = project else {
+        return (agent, Vec::new());
+    };
+    let notices = mem::take(&mut snapshot.notices);
+    (
+        agent.with_project_context(Arc::new(provider), snapshot),
+        notices,
     )
 }
 
@@ -993,6 +1010,9 @@ impl Presenter {
                     self.write_status(StatusBlock::Progress, &line)
                 })
             }
+            UiEvent::ContextNotice { text, .. } => {
+                return self.context_notice(&text);
+            }
             UiEvent::TurnStarted { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
@@ -1170,9 +1190,9 @@ impl Presenter {
             TurnFailure::Provider(error) => {
                 self.describe_error(&error.code, error.detail.as_deref())
             }
-            TurnFailure::InvalidCompletion | TurnFailure::PermissionRequired(_) => {
-                self.describe_error(failure.code(), None)
-            }
+            TurnFailure::InvalidCompletion
+            | TurnFailure::PermissionRequired(_)
+            | TurnFailure::ProjectContext => self.describe_error(failure.code(), None),
             TurnFailure::StepLimitReached => Ok(FailureSummary {
                 error: None,
                 auth_failure: false,
