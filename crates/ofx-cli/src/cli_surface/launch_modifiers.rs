@@ -1,13 +1,15 @@
 use std::os::unix::ffi::OsStrExt;
 
-use ofx_config::{ContextLimitError, is_valid_provider_id, validate_context_limit_override};
+use ofx_config::{
+    ContextLimitError, ContextLimitOverride, is_valid_provider_id, parse_context_limit_override,
+};
 
 use super::arg_stream::{ArgStream, MissingValue, ValueForm};
 use super::model_overrides::ModelOverrides;
 
 #[derive(Debug, Default)]
 pub struct LaunchModifiers {
-    context_limits: bool,
+    context_limits: Vec<ContextLimitOverride>,
     workspace: WorkspaceModifiers,
     model_overrides: bool,
     sessions_v2: bool,
@@ -20,8 +22,8 @@ struct WorkspaceModifiers {
 }
 
 impl LaunchModifiers {
-    pub fn sets_context_limits(&self) -> bool {
-        self.context_limits
+    pub fn context_limit_overrides(&self) -> &[ContextLimitOverride] {
+        &self.context_limits
     }
 
     pub fn adds_directories(&self) -> bool {
@@ -92,8 +94,8 @@ impl LaunchModifiers {
         } else if let Some(value) = args.take_option("context-limit", joined) {
             let value =
                 value.map_err(|MissingValue| GlobalLaunchError::MissingContextLimitValue)?;
-            validate_context_limit_override(value.as_bytes())?;
-            self.context_limits = true;
+            self.context_limits
+                .push(parse_context_limit_override(value.as_bytes())?);
         } else if let Some(value) = args.take_option("add-dir", joined) {
             let value =
                 value.map_err(|MissingValue| GlobalLaunchError::MissingAddDirectoryValue)?;
@@ -126,6 +128,8 @@ mod tests {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
 
+    use ofx_config::ContextLimitName;
+
     use super::*;
 
     fn parse_raw(
@@ -154,7 +158,17 @@ mod tests {
             "hello",
         ])
         .unwrap();
-        assert!(modifiers.sets_context_limits());
+        assert_eq!(
+            modifiers
+                .context_limit_overrides()
+                .iter()
+                .map(|limit| limit.name)
+                .collect::<Vec<_>>(),
+            [
+                ContextLimitName::SkillChunkBytes,
+                ContextLimitName::McpDescriptionBytes
+            ]
+        );
         assert!(!modifiers.has_workspace_modifiers());
         assert_eq!(
             remaining,
@@ -170,7 +184,7 @@ mod tests {
         );
         let (modifiers, remaining) =
             parse(&["ask", "--context-limit", "skill_chunk_bytes=1"]).unwrap();
-        assert!(!modifiers.sets_context_limits());
+        assert!(modifiers.context_limit_overrides().is_empty());
         assert_eq!(remaining.len(), 3);
     }
 

@@ -9,6 +9,9 @@ use serde_json::{Map, Value};
 use crate::configured_provider::{
     ConfiguredProviderError, ProviderDefinition, ProviderRegistry, validate_model_id,
 };
+use crate::context_limits::{
+    ContextLimitError, ContextLimitOverrides, ContextLimitSource, ContextLimits,
+};
 use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
 use crate::settings_store::{MAX_PROVIDER_ORDER_ENTRIES, validate_provider_slug};
@@ -55,6 +58,7 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
     "skill_symlink_authorities",
 ];
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
+const CONTEXT_LIMITS_REPAIR: &str = "; context_limits keys must be documented limit names with a non-negative integer or \"off\" value";
 const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL";
 
 type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -72,6 +76,7 @@ enum DiagnosticCause {
     DurablePathUnsafe,
     InvalidModelId,
     IgnoredProjectUserOnlySetting,
+    InvalidContextLimits,
 }
 
 impl DiagnosticCause {
@@ -82,6 +87,7 @@ impl DiagnosticCause {
             Self::DurablePathUnsafe => "durable_path_unsafe",
             Self::InvalidModelId => "invalid_model_id",
             Self::IgnoredProjectUserOnlySetting => "ignored_project_user_only_setting",
+            Self::InvalidContextLimits => "invalid_context_limits",
         }
     }
 }
@@ -102,6 +108,9 @@ impl fmt::Display for ConfigDiagnostic {
         write!(formatter, "config {layer}: {}", self.cause.label())?;
         if let Some(key) = &self.key {
             write!(formatter, "; key={key}")?;
+        }
+        if self.cause == DiagnosticCause::InvalidContextLimits {
+            formatter.write_str(CONTEXT_LIMITS_REPAIR)?;
         }
         Ok(())
     }
@@ -149,6 +158,10 @@ pub enum LayerError {
     InvalidFastModeType,
     #[error("InvalidFastModeBindingType")]
     InvalidFastModeBindingType,
+    #[error("{0}")]
+    ContextLimits(ContextLimitError),
+    #[error("InvalidContextType")]
+    InvalidContextType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -190,6 +203,8 @@ struct Layer {
     max_agent_steps: Option<u64>,
     effort: Option<ReasoningEffort>,
     fast_mode: Option<bool>,
+    context_limits: ContextLimitOverrides,
+    context: Option<bool>,
 }
 
 impl Layer {
@@ -208,6 +223,7 @@ pub struct Settings {
     global: Layer,
     workspace: Layer,
     project_max_agent_steps: Option<u64>,
+    project_context: Option<bool>,
     diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -215,6 +231,7 @@ impl From<LayerError> for DiagnosticCause {
     fn from(error: LayerError) -> Self {
         match error {
             LayerError::InvalidModelValue => Self::InvalidModelId,
+            LayerError::ContextLimits(_) => Self::InvalidContextLimits,
             _ => Self::MalformedSettings,
         }
     }
@@ -277,6 +294,27 @@ impl Settings {
             .fast_mode
             .or(self.global.fast_mode)
             .unwrap_or(false)
+    }
+
+    pub fn context_enabled(&self) -> bool {
+        self.workspace
+            .context
+            .or(self.global.context)
+            .or(self.project_context)
+            .unwrap_or(true)
+    }
+
+    pub fn context_limits(&self) -> ContextLimits {
+        let mut limits = ContextLimits::default();
+        limits.apply(
+            &self.global.context_limits,
+            ContextLimitSource::GlobalSettings,
+        );
+        limits.apply(
+            &self.workspace.context_limits,
+            ContextLimitSource::WorkspaceSettings,
+        );
+        limits
     }
 
     pub(crate) fn selected_provider(
@@ -382,8 +420,15 @@ impl Settings {
                 );
             }
         }
-        match parse_steps(&project) {
-            Ok(steps) => self.project_max_agent_steps = steps,
+        let parsed = parse_steps(&project).and_then(|steps| {
+            parse_switch(&project, "context", LayerError::InvalidContextType)
+                .map(|context| (steps, context))
+        });
+        match parsed {
+            Ok((steps, context)) => {
+                self.project_max_agent_steps = steps;
+                self.project_context = context;
+            }
             Err(failure) => self.diagnose(ConfigLayer::Project, failure.into(), None),
         }
     }
@@ -520,6 +565,12 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         "yolo_acknowledged",
         LayerError::InvalidYoloAcknowledgedType,
     )?;
+    layer.context_limits = object
+        .get("context_limits")
+        .map(ContextLimitOverrides::parse_json)
+        .transpose()
+        .map_err(LayerError::ContextLimits)?
+        .unwrap_or_default();
     layer.max_agent_steps = parse_steps(object)?;
     layer.effort = object.get("effort").map(parse_effort).transpose()?;
     layer.fast_mode = parse_switch(object, "fast_mode", LayerError::InvalidFastModeType)?;
@@ -528,6 +579,7 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         "fast_mode_model_bound",
         LayerError::InvalidFastModeBindingType,
     )?;
+    layer.context = parse_switch(object, "context", LayerError::InvalidContextType)?;
     Ok(layer)
 }
 
@@ -615,6 +667,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::context_limits::{ContextLimitName, EMERGENCY_CEILING_BYTES};
 
     const PORTKEY_SETTINGS: &str = r#"{"provider":"portkey","model":"@openai/gpt-4o","providers":{"portkey":{"protocol":"openai-chat-completions","base_url":"https://portkey.internal.example.com/v1","auth":{"type":"none"},"headers":{"x-portkey-api-key":"${PORTKEY_API_KEY}"},"models":["@openai/gpt-4o"]}}}"#;
 
@@ -938,6 +991,118 @@ mod tests {
             assert_eq!(settings.reasoning_effort(), effort, "{entry}");
             assert_eq!(settings.fast_mode(), fast, "{entry}");
         }
+    }
+
+    #[test]
+    fn context_switch_follows_workspace_global_then_project_layers() {
+        assert!(fixture_settings("{}").context_enabled());
+        assert!(!fixture_settings(r#"{"context":false}"#).context_enabled());
+        let project_off = load(&fixture(None, Some(r#"{"context":false}"#))).unwrap();
+        assert!(project_off.diagnostics().is_empty());
+        assert!(!project_off.context_enabled());
+        let profile_on = load(&fixture(
+            Some(r#"{"context":true}"#),
+            Some(r#"{"context":false}"#),
+        ))
+        .unwrap();
+        assert!(profile_on.context_enabled());
+        let fixture = fixture(Some("{}"), None);
+        let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+        let json =
+            format!(r#"{{"context":true,"workspaces":{{{workspace}:{{"context":false}}}}}}"#);
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+        assert!(!load(&fixture).unwrap().context_enabled());
+    }
+
+    #[test]
+    fn invalid_context_switches_discard_their_layer() {
+        let profile = fixture_settings(r#"{"context":"no","max_agent_steps":4}"#);
+        assert_eq!(
+            profile.diagnostics()[0].to_string(),
+            "config user: malformed_settings"
+        );
+        assert!(profile.profile_is_unusable());
+        assert!(profile.context_enabled());
+        let project = load(&fixture(
+            None,
+            Some(r#"{"max_agent_steps":12,"context":null}"#),
+        ))
+        .unwrap();
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: malformed_settings"
+        );
+        assert!(!project.profile_is_unusable());
+        assert_eq!(project.max_agent_steps(&no_environment), 0);
+        assert!(project.context_enabled());
+    }
+
+    #[test]
+    fn context_limits_resolve_compiled_global_and_workspace_sources() {
+        let fixture = fixture(Some("{}"), None);
+        let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+        let json = format!(
+            r#"{{"context_limits":{{"skill_chunk_bytes":111,"mcp_description_bytes":"off","project_instruction_file_bytes":12}},"workspaces":{{{workspace}:{{"context_limits":{{"skill_chunk_bytes":222}}}}}}}}"#
+        );
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+        let settings = load(&fixture).unwrap();
+        assert!(settings.diagnostics().is_empty());
+        let limits = settings.context_limits();
+        let chunk = limits.get(ContextLimitName::SkillChunkBytes);
+        assert_eq!(chunk.effective_bytes(), 222);
+        assert_eq!(chunk.source, ContextLimitSource::WorkspaceSettings);
+        let description = limits.get(ContextLimitName::McpDescriptionBytes);
+        assert_eq!(description.effective_bytes(), EMERGENCY_CEILING_BYTES);
+        assert_eq!(description.source, ContextLimitSource::GlobalSettings);
+        let file = limits.get(ContextLimitName::ProjectInstructionFileBytes);
+        assert_eq!(file.effective_bytes(), 12);
+        assert_eq!(file.source.label(), "global settings");
+        let total = limits.get(ContextLimitName::ProjectInstructionsTotalBytes);
+        assert_eq!(total.effective_bytes(), 128 * 1024);
+        assert_eq!(total.source.label(), "compiled default");
+    }
+
+    #[test]
+    fn invalid_context_limits_are_diagnosed_without_blocking_the_profile() {
+        for json in [
+            r#"{"provider":"local","context_limits":{"unknown_limit":10},"permission_mode":"ask","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"}}}}"#,
+            r#"{"provider":"local","context_limits":[],"permission_mode":"ask","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"}}}}"#,
+            r#"{"provider":"local","context_limits":{"skill_chunk_bytes":-1},"permission_mode":"ask","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"}}}}"#,
+        ] {
+            let settings = fixture_settings(json);
+            assert_eq!(
+                settings.diagnostics()[0].to_string(),
+                "config user: invalid_context_limits; context_limits keys must be documented limit names with a non-negative integer or \"off\" value",
+                "{json}"
+            );
+            assert!(!settings.profile_is_unusable(), "{json}");
+            assert_eq!(settings.permission_mode(), PermissionMode::Auto, "{json}");
+            assert_eq!(
+                settings.selected_provider(&no_environment),
+                Ok(ProviderId::Configured("local".to_owned())),
+                "{json}"
+            );
+            assert_eq!(
+                settings.context_limits(),
+                ContextLimits::default(),
+                "{json}"
+            );
+        }
+        let model_first = fixture_settings(r#"{"model":" bad","context_limits":[]}"#);
+        assert_eq!(
+            model_first.diagnostics()[0].cause,
+            DiagnosticCause::InvalidModelId
+        );
+        let project = load(&fixture(
+            None,
+            Some(r#"{"context_limits":{"unknown_limit":1}}"#),
+        ))
+        .unwrap();
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=context_limits"
+        );
+        assert_eq!(project.context_limits(), ContextLimits::default());
     }
 
     #[test]
