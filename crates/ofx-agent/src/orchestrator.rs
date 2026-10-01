@@ -205,6 +205,7 @@ impl Agent {
                 self.history.push(ChatMessage::Assistant {
                     content: Some(STEP_LIMIT_NOTICE.to_owned()),
                     tool_calls: Vec::new(),
+                    provider_replay: None,
                 });
                 return Err(Stop::failed(TurnFailure::StepLimitReached));
             }
@@ -234,7 +235,7 @@ impl Agent {
             step += 1;
             match (completion.finish_reason, completion.tool_calls.is_empty()) {
                 (FinishReason::Stop, true) => {
-                    if let Some(text) = self.finish(turn, completion, events) {
+                    if let Some(text) = self.finish(turn, completion, events)? {
                         return Ok(text);
                     }
                 }
@@ -340,6 +341,7 @@ impl Agent {
         self.history.push(ChatMessage::Assistant {
             content: completion.content,
             tool_calls: completion.tool_calls,
+            provider_replay: completion.provider_replay,
         });
         let mut next = 0;
         let mut carried = None;
@@ -411,31 +413,50 @@ impl Agent {
         turn: &mut Turn,
         completion: Completion,
         events: EventSink<'_>,
-    ) -> Option<String> {
-        let text = completion.content.unwrap_or_default();
-        let has_content = !text.trim_matches(TRIMMED).is_empty();
+    ) -> Result<Option<String>, Stop> {
+        let has_content = completion
+            .content
+            .as_deref()
+            .is_some_and(|text| !text.trim_matches(TRIMMED).is_empty());
         if !has_content
             && !turn.summary_requested
             && turn.silent_tool_steps >= SILENT_STEPS_BEFORE_SUMMARY
         {
             turn.summary_requested = true;
+            if completion.provider_replay.is_some() {
+                self.history.push(ChatMessage::Assistant {
+                    content: completion.content,
+                    tool_calls: Vec::new(),
+                    provider_replay: completion.provider_replay,
+                });
+            }
             self.history.push(ChatMessage::user(SUMMARIZE_PROMPT));
-            return None;
+            return Ok(None);
         }
-        let history_text = if has_content {
-            text
+        let (history_text, history_replay) = if has_content {
+            (
+                completion.content.unwrap_or_default(),
+                completion.provider_replay,
+            )
         } else {
+            let replay = completion
+                .provider_replay
+                .map(|replay| self.provider.project_replay(&replay, false, true))
+                .transpose()
+                .map_err(|error| Stop::failed(TurnFailure::Provider(error)))?
+                .flatten();
             events(UiEvent::Operational {
                 turn_id: turn.id,
                 text: EMPTY_RESPONSE_TEXT.to_owned(),
             });
-            EMPTY_RESPONSE_TEXT.to_owned()
+            (EMPTY_RESPONSE_TEXT.to_owned(), replay)
         };
         self.history.push(ChatMessage::Assistant {
             content: Some(history_text.clone()),
             tool_calls: Vec::new(),
+            provider_replay: history_replay,
         });
-        Some(history_text)
+        Ok(Some(history_text))
     }
 
     fn has_completed_tool_steps(&self, start: usize) -> bool {
@@ -453,15 +474,24 @@ impl Agent {
             })
             .collect();
         for message in &mut self.history[start..] {
-            if let ChatMessage::Assistant { tool_calls, .. } = message {
+            if let ChatMessage::Assistant {
+                tool_calls,
+                provider_replay,
+                ..
+            } = message
+            {
+                let issued = tool_calls.len();
                 tool_calls.retain(|call| completed.iter().any(|id| id == call.id.as_str()));
+                if tool_calls.len() != issued {
+                    *provider_replay = None;
+                }
             }
         }
         let mut index = start;
         while index < self.history.len() {
             let empty = matches!(
                 &self.history[index],
-                ChatMessage::Assistant { content, tool_calls }
+                ChatMessage::Assistant { content, tool_calls, provider_replay: None }
                     if tool_calls.is_empty() && content.as_deref().is_none_or(str::is_empty)
             );
             if empty {
@@ -474,6 +504,7 @@ impl Agent {
             self.history.push(ChatMessage::Assistant {
                 content: Some(partial.to_owned()),
                 tool_calls: Vec::new(),
+                provider_replay: None,
             });
         }
     }

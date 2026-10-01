@@ -106,10 +106,12 @@ impl ChatCompletionsProvider {
             Err(SendFailure::Timeout) => {
                 return Err(ProviderError::new(ProviderErrorKind::Timeout, "Timeout"));
             }
-            Err(SendFailure::Transport(error)) => return Err(self.transport_failure(&error)),
+            Err(SendFailure::Transport(error)) => {
+                return Err(transport_failure(&error, &self.secrets));
+            }
         };
         if response.status() != StatusCode::OK {
-            return Err(self.http_failure(response, cancel).await);
+            return Err(http_failure(response, cancel, &self.secrets, Some(&self.chat_url)).await);
         }
         if let Some(media_type) = unexpected_media_type(response.headers()) {
             return Err(self.unexpected_body(&media_type, response, cancel).await);
@@ -125,53 +127,6 @@ impl ChatCompletionsProvider {
             .await
     }
 
-    fn sanitized(&self, text: String) -> String {
-        sanitize_external_text(
-            &mask_configured_secrets(text, &self.secrets),
-            MAX_DETAIL_BYTES,
-        )
-    }
-
-    fn transport_failure(&self, error: &reqwest::Error) -> ProviderError {
-        let (kind, code) = if error.is_connect() && is_connectivity_loss(error) {
-            (ProviderErrorKind::ConnectivityLost, "ConnectionFailed")
-        } else if error.is_connect() {
-            (ProviderErrorKind::ConnectionFailed, "ConnectionFailed")
-        } else if error.is_timeout() {
-            (ProviderErrorKind::Timeout, "Timeout")
-        } else {
-            (ProviderErrorKind::TransportInterrupted, "RequestFailed")
-        };
-        ProviderError::new(kind, code).with_detail(self.sanitized(error_chain(error)))
-    }
-
-    async fn http_failure(
-        &self,
-        mut response: Response,
-        cancel: &CancellationToken,
-    ) -> ProviderError {
-        let status = response.status();
-        let retry_after = retry_after(response.headers());
-        let detail = if status.is_redirection() {
-            redirect_notice(response.headers(), &self.chat_url)
-        } else {
-            match read_body(&mut response, cancel).await {
-                Ok(Some(body)) => redact_error_detail(&body, &self.secrets),
-                Ok(None) => ERROR_BODY_LIMIT_NOTICE.to_owned(),
-                Err(failure) => return failure,
-            }
-        };
-        let kind = failure_kind(status);
-        let displayed = detail.trim_matches([' ', '\t', '\r', '\n']);
-        let displayed = &displayed[..displayed.floor_char_boundary(MAX_DISPLAYED_BODY_BYTES)];
-        let mut error = ProviderError::new(kind, failure_code(kind))
-            .with_detail(format_http_error_message(status.as_u16(), displayed));
-        error.status = Some(status.as_u16());
-        error.diagnostic = Some(format_http_recovery_diagnostic(status.as_u16(), &detail));
-        error.retry_after = retry_after;
-        error
-    }
-
     async fn unexpected_body(
         &self,
         media_type: &str,
@@ -185,15 +140,62 @@ impl ChatCompletionsProvider {
         if let Some(error) = provider_error_body(&body) {
             let detail = redact_error_detail(error.as_bytes(), &self.secrets);
             return ProviderError::new(ProviderErrorKind::ProviderError, "ProviderError")
-                .with_detail(self.sanitized(format!("provider error: {detail}")));
+                .with_detail(sanitized(
+                    format!("provider error: {detail}"),
+                    &self.secrets,
+                ));
         }
         let detail = format!(
             "expected {EVENT_STREAM} but the provider sent {media_type}: {}",
             excerpt(&body)
         );
         ProviderError::new(ProviderErrorKind::Protocol, "UnexpectedContentType")
-            .with_detail(self.sanitized(detail))
+            .with_detail(sanitized(detail, &self.secrets))
     }
+}
+
+pub(crate) fn sanitized(text: String, secrets: &[String]) -> String {
+    sanitize_external_text(&mask_configured_secrets(text, secrets), MAX_DETAIL_BYTES)
+}
+
+pub(crate) fn transport_failure(error: &reqwest::Error, secrets: &[String]) -> ProviderError {
+    let (kind, code) = if error.is_connect() && is_connectivity_loss(error) {
+        (ProviderErrorKind::ConnectivityLost, "ConnectionFailed")
+    } else if error.is_connect() {
+        (ProviderErrorKind::ConnectionFailed, "ConnectionFailed")
+    } else if error.is_timeout() {
+        (ProviderErrorKind::Timeout, "Timeout")
+    } else {
+        (ProviderErrorKind::TransportInterrupted, "RequestFailed")
+    };
+    ProviderError::new(kind, code).with_detail(sanitized(error_chain(error), secrets))
+}
+
+pub(crate) async fn http_failure(
+    mut response: Response,
+    cancel: &CancellationToken,
+    secrets: &[String],
+    redirect_base: Option<&str>,
+) -> ProviderError {
+    let status = response.status();
+    let retry_after = retry_after(response.headers());
+    let detail = match redirect_base.filter(|_| status.is_redirection()) {
+        Some(base) => redirect_notice(response.headers(), base),
+        None => match read_body(&mut response, cancel).await {
+            Ok(Some(body)) => redact_error_detail(&body, secrets),
+            Ok(None) => ERROR_BODY_LIMIT_NOTICE.to_owned(),
+            Err(failure) => return failure,
+        },
+    };
+    let kind = failure_kind(status);
+    let displayed = detail.trim_matches([' ', '\t', '\r', '\n']);
+    let displayed = &displayed[..displayed.floor_char_boundary(MAX_DISPLAYED_BODY_BYTES)];
+    let mut error = ProviderError::new(kind, failure_code(kind))
+        .with_detail(format_http_error_message(status.as_u16(), displayed));
+    error.status = Some(status.as_u16());
+    error.diagnostic = Some(format_http_recovery_diagnostic(status.as_u16(), &detail));
+    error.retry_after = retry_after;
+    error
 }
 
 impl ModelProvider for ChatCompletionsProvider {
@@ -207,13 +209,13 @@ impl ModelProvider for ChatCompletionsProvider {
     }
 }
 
-enum SendFailure {
+pub(crate) enum SendFailure {
     Cancelled,
     Timeout,
     Transport(reqwest::Error),
 }
 
-async fn send(
+pub(crate) async fn send(
     builder: RequestBuilder,
     cancel: &CancellationToken,
 ) -> Result<Response, SendFailure> {
@@ -306,7 +308,7 @@ fn provider_error_body(body: &[u8]) -> Option<String> {
         .then(|| serde_json::Value::Object(root).to_string())
 }
 
-fn excerpt(data: &[u8]) -> String {
+pub(crate) fn excerpt(data: &[u8]) -> String {
     if data.is_empty() {
         return "no data".to_owned();
     }
@@ -474,7 +476,7 @@ impl Stream<'_> {
                         ProviderErrorKind::TransportInterrupted,
                         "ReadFailed",
                     )
-                    .with_detail(self.sanitized(detail)));
+                    .with_detail(sanitized(detail, self.secrets)));
                 }
             }
         }
@@ -489,13 +491,6 @@ impl Stream<'_> {
         reducer
             .finish(cancel.is_cancelled())
             .map_err(|error| self.completion_failure(error, reducer, head))
-    }
-
-    fn sanitized(&self, text: String) -> String {
-        sanitize_external_text(
-            &mask_configured_secrets(text, self.secrets),
-            MAX_DETAIL_BYTES,
-        )
     }
 
     fn event_failure(
@@ -518,7 +513,7 @@ impl Stream<'_> {
             ),
             None => format!("stream event: {}", excerpt(data)),
         };
-        failure.with_detail(self.sanitized(detail))
+        failure.with_detail(sanitized(detail, self.secrets))
     }
 
     fn completion_failure(
@@ -539,7 +534,7 @@ impl Stream<'_> {
                 None => return failure,
             },
         };
-        failure.with_detail(self.sanitized(detail))
+        failure.with_detail(sanitized(detail, self.secrets))
     }
 }
 
