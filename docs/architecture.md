@@ -53,7 +53,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 |---|---|---|
 | Async | tokio for the agent, transports, MCP, and processes; no runtime on fast paths such as `--version` | Cancellation of in-flight streams and process trees |
 | UI thread | A plain OS thread polling the tty, a wake pipe, and a signal pipe | Rendering never competes with tool tasks, and it mirrors upstream's event loop |
-| Agent and UI contract | Serializable `UiEvent` and `UiCommand` data. Approvals and questions are correlated by `RequestId` through a map of pending oneshots | One event stream drives the TUI, `ask --json`, ACP, and test fixtures |
+| Agent and UI contract | `UiEvent` and `UiCommand` data, which gain serialization with their first wire consumer (ACP or a JSON event stream). Approvals and questions are correlated by `RequestId` through a map of pending oneshots | One event stream drives the TUI, `ask --json`, ACP, and test fixtures |
 | HTTP and TLS | reqwest with rustls, the ring provider, and rustls-platform-verifier with extra roots from `SSL_CERT_FILE` or a connection's `tls.ca_file` | Corporate CAs and proxies work, and static musl builds need no cmake |
 | CLI | A static command spec table ported from upstream, scanned the way upstream scans arguments: no flag clustering, and values may start with `-` | One source for `--help`, `/help`, and the slash menus, with upstream's exact acceptance rules |
 | Terminal | rustix plus a port of upstream's escape parser | Upstream needs OSC 11, DSR, and DA1 replies that crossterm drops |

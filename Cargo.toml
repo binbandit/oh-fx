@@ -13,6 +13,7 @@ publish = false
 flate2 = "1.1.10"
 lexopt = "0.3.2"
 ofx-config = { path = "crates/ofx-config" }
+ofx-contract = { path = "crates/ofx-contract" }
 ofx-http = { path = "crates/ofx-http" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
 ra-ap-rustc_lexer = "0.174.0"
@@ -26,6 +27,7 @@ tar = "0.4.46"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["rt"] }
+tokio-util = "0.7.19"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

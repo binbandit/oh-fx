@@ -1,0 +1,138 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
+
+use crate::tool_dispatch::ToolSpec;
+use crate::types::{ChatMessage, FinishReason, ToolCall, ToolChoice, Usage};
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelRequest<'a> {
+    pub model: &'a str,
+    pub instructions: &'a [&'a str],
+    pub messages: &'a [ChatMessage],
+    pub tools: &'a [ToolSpec],
+    pub tool_choice: ToolChoice,
+    pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamEvent {
+    TextDelta { text: String },
+    ReasoningDelta { text: String },
+}
+
+pub trait StreamSink: Send {
+    fn emit(&mut self, event: StreamEvent);
+}
+
+impl<F: FnMut(StreamEvent) + Send> StreamSink for F {
+    fn emit(&mut self, event: StreamEvent) {
+        self(event);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub content: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
+    pub finish_reason: FinishReason,
+    pub usage: Usage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProviderErrorKind {
+    InvalidRequest,
+    Unauthorized,
+    Forbidden,
+    RequestTooLarge,
+    RateLimited,
+    ServerError,
+    BadGateway,
+    Unavailable,
+    GatewayTimeout,
+    ProviderError,
+    ConnectionFailed,
+    ConnectivityLost,
+    TransportInterrupted,
+    Timeout,
+    Protocol,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderError {
+    pub kind: ProviderErrorKind,
+    pub code: String,
+    pub status: Option<u16>,
+    pub detail: Option<String>,
+    pub diagnostic: Option<String>,
+    pub retry_after: Option<Duration>,
+}
+
+impl ProviderError {
+    pub fn new(kind: ProviderErrorKind, code: impl Into<String>) -> Self {
+        Self {
+            kind,
+            code: code.into(),
+            status: None,
+            detail: None,
+            diagnostic: None,
+            retry_after: None,
+        }
+    }
+
+    pub fn cancelled() -> Self {
+        Self::new(ProviderErrorKind::Cancelled, "Cancelled")
+    }
+
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+}
+
+pub trait ModelProvider: Send + Sync {
+    fn stream<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closures_are_stream_sinks() {
+        let mut seen = Vec::new();
+        let mut sink = |event: StreamEvent| seen.push(event);
+        sink.emit(StreamEvent::TextDelta {
+            text: "hi".to_owned(),
+        });
+        assert_eq!(
+            seen,
+            vec![StreamEvent::TextDelta {
+                text: "hi".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn provider_errors_carry_their_detail() {
+        let error = ProviderError::new(ProviderErrorKind::Protocol, "InvalidChunk")
+            .with_detail("stream data: {not json");
+        assert_eq!(error.code, "InvalidChunk");
+        assert_eq!(error.detail.as_deref(), Some("stream data: {not json"));
+        assert_eq!(
+            ProviderError::cancelled().kind,
+            ProviderErrorKind::Cancelled
+        );
+    }
+}
