@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'edited' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -61,10 +61,15 @@ jobs:
             git log --format='Author: %an <%ae>%nCommitter: %cn <%ce>%n%B' -n "$PR_COMMITS" "$HEAD_SHA"
           } > "$RUNNER_TEMP/attribution.txt"
           cargo xtask attribution "$RUNNER_TEMP/attribution.txt"
-          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/title.txt"
-          cargo xtask title "$RUNNER_TEMP/title.txt"
           git log --format=%s -n "$PR_COMMITS" "$HEAD_SHA" > "$RUNNER_TEMP/subjects.txt"
           cargo xtask subjects "$RUNNER_TEMP/subjects.txt"
+      - name: Conventional PR title
+        if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/')
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/title.txt"
+          cargo xtask title "$RUNNER_TEMP/title.txt"
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cargo-machete
