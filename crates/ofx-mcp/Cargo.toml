@@ -9,8 +9,10 @@ publish.workspace = true
 [dependencies]
 getrandom.workspace = true
 ofx-config.workspace = true
+ofx-http.workspace = true
 ofx-jsonrpc.workspace = true
 ofx-text.workspace = true
+reqwest.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 serde_json.workspace = true
 thiserror.workspace = true
@@ -18,7 +20,7 @@ tokio = { workspace = true, features = ["io-util", "process", "rt", "sync", "tim
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

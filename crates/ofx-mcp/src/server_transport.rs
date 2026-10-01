@@ -2,12 +2,16 @@ use std::env;
 use std::fmt;
 use std::time::Duration;
 
+use ofx_http::ConnectionOptions;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout_at};
 
 use crate::error::McpError;
 use crate::features::tools::{CatalogBuilder, Limits, ToolCatalog};
+use crate::legacy_streamable_http::{
+    HTTP_INITIALIZED_NOTIFICATION, HttpEndpoint, HttpVersion, LegacyHttpClient,
+};
 use crate::mcp_contract::McpServerConfig;
 use crate::protocol_messages::{
     ElicitationCapabilities, STDIO_INITIALIZED_NOTIFICATION, ServerCapabilities,
@@ -19,20 +23,25 @@ use crate::protocol_negotiation::{
     PROTOCOL_VERSION_ENVIRONMENT, classify_legacy_initialize_response,
     decide_legacy_initialize_transition, validate_startup_mode,
 };
+use crate::server_auth::resolve_headers;
 use crate::stdio_dispatcher::{ChildDiagnostics, StdioDispatcher, StdioLaunch, StopMode};
-use crate::transport::{McpTransport, TransportRequest};
+use crate::streamable_http::validate_endpoint;
+use crate::transport::{McpTransport, ShutdownMode, TransportRequest};
 
 pub(crate) const DISCOVERY_RESPONSE_FRAME_CAP_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectOptions {
     pub client_version: String,
+    pub user_agent: String,
 }
 
 impl Default for ConnectOptions {
     fn default() -> Self {
+        let client_version = env!("CARGO_PKG_VERSION").to_owned();
         Self {
-            client_version: env!("CARGO_PKG_VERSION").to_owned(),
+            user_agent: format!("oh-fx/{client_version}"),
+            client_version,
         }
     }
 }
@@ -321,6 +330,93 @@ async fn finish_stdio_startup(
         .await?;
     let catalog = discover_tools(dispatcher, deadline, stdio_discovery_error).await?;
     Ok((info, catalog))
+}
+
+pub(crate) async fn connect_http(
+    config: &McpServerConfig,
+    options: &ConnectOptions,
+) -> Result<Connected, StartupFailure> {
+    let deadline = startup_deadline(config);
+    let (endpoint, notifications) = http_endpoint(config, options)?;
+    let preferred = HttpVersion::PREFERRED;
+    let body = build_legacy_initialize_request(
+        1,
+        preferred.as_str(),
+        preferred.wire(),
+        ElicitationCapabilities::default(),
+        &options.client_version,
+    );
+    let initialize =
+        LegacyHttpClient::initialize(endpoint, &body, 1, DISCOVERY_RESPONSE_FRAME_CAP_BYTES);
+    let (client, response) = timeout_at(deadline, initialize)
+        .await
+        .map_err(|_| McpError::McpRequestTimedOut)??;
+    match finish_http_startup(&client, &response, deadline).await {
+        Ok((info, catalog)) => {
+            if wants_notification_stream(info.capabilities) {
+                client.start_notification_listener();
+            }
+            Ok(Connected {
+                wire: client.version().wire(),
+                transport: Box::new(client),
+                info,
+                catalog,
+                notifications,
+            })
+        }
+        Err(error) => {
+            Box::new(client).shutdown(ShutdownMode::Graceful).await;
+            Err(error.into())
+        }
+    }
+}
+
+fn http_endpoint(
+    config: &McpServerConfig,
+    options: &ConnectOptions,
+) -> Result<(HttpEndpoint, mpsc::UnboundedReceiver<Value>), McpError> {
+    validate_startup_mode(
+        &config.env,
+        env::var(PROTOCOL_VERSION_ENVIRONMENT).ok().as_deref(),
+    )?;
+    let url = config.remote_url()?;
+    validate_endpoint(url)?;
+    let headers = resolve_headers(config, &|name| env::var(name).ok())?;
+    let (sender, notifications) = mpsc::unbounded_channel();
+    let endpoint = HttpEndpoint {
+        http: ofx_http::build_connection_client(&ConnectionOptions {
+            user_agent: options.user_agent.clone(),
+            ..ConnectionOptions::default()
+        })
+        .map_err(|_| McpError::HttpClientUnavailable)?,
+        url: url.to_owned(),
+        headers,
+        notifications: sender,
+    };
+    Ok((endpoint, notifications))
+}
+
+async fn finish_http_startup(
+    client: &LegacyHttpClient,
+    response: &Value,
+    deadline: Instant,
+) -> Result<(ServerInfo, ToolCatalog), McpError> {
+    let info = server_info(response, client.version().as_str())?;
+    client
+        .notify(HTTP_INITIALIZED_NOTIFICATION.to_owned(), deadline)
+        .await?;
+    let catalog = discover_tools(client, deadline, |error| error).await?;
+    Ok((info, catalog))
+}
+
+fn wants_notification_stream(capabilities: ServerCapabilities) -> bool {
+    capabilities.tools_list_changed
+        || capabilities
+            .resources
+            .is_some_and(|resources| resources.list_changed)
+        || capabilities
+            .prompts
+            .is_some_and(|prompts| prompts.list_changed)
 }
 
 pub(crate) fn server_info(

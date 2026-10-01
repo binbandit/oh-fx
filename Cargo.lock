@@ -835,8 +835,10 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "ofx-config",
+ "ofx-http",
  "ofx-jsonrpc",
  "ofx-text",
+ "reqwest",
  "rustix",
  "serde_json",
  "tempfile",
