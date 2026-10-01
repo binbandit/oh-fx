@@ -117,6 +117,10 @@ pub trait Tool: Send + Sync {
     fn spec(&self) -> &ToolSpec;
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput>;
+
+    fn history_arguments(&self, _arguments: &str) -> Option<String> {
+        None
+    }
 }
 
 pub trait PreparedCall: Send {

@@ -2257,6 +2257,41 @@ fn shell_calls_that_fail_validation_are_rejected_before_the_permission_gate() {
 }
 
 #[test]
+fn shell_calls_return_to_the_model_in_the_request_form_upstream_replays() {
+    let server = FakeServer::start([
+        Reply::sse(&parallel_tool_call_events(&[
+            ("call_1", "shell", r#"{ "request" : { "action" : "run" } }"#),
+            ("call_2", "shell", r#"{"action":"run","timeout_ms":5E3}"#),
+            ("call_3", "read_file", r#"{ "path" :  "notes.txt" }"#),
+        ])),
+        Reply::sse(&chat_text_events(&["Done."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("notes.txt"), "alpha\n").unwrap();
+
+    let output = home.ask(&["ask", "--json", "run it"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let replayed: Vec<Value> = requests[1].json()["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "assistant")
+        .flat_map(|message| message["tool_calls"].as_array().unwrap().clone())
+        .map(|call| call["function"]["arguments"].clone())
+        .collect();
+    assert_eq!(
+        replayed,
+        [
+            r#"{"request":{"action":"run"}}"#,
+            r#"{"request":{"action":"run","timeout_ms":5000}}"#,
+            r#"{ "path" :  "notes.txt" }"#,
+        ]
+    );
+}
+
+#[test]
 fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands() {
     let server = FakeServer::start([
         shell_reply(
