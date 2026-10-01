@@ -2,17 +2,21 @@ mod file_mutation;
 mod file_mutation_execution;
 mod filesystem;
 mod shell;
+mod skill;
 mod tool_admission;
 mod tool_args;
 mod tool_runtime;
 
 pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
+pub use skill::SkillTool;
 
 #[cfg(test)]
 mod tests {
+    use ofx_config::ContextLimits;
     use ofx_contract::Tool;
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
+    use ofx_skills::{Locations, RootPolicy, SkillDiscoveryContext, SymlinkAuthorities};
     use serde_json::Value;
 
     use super::*;
@@ -24,13 +28,29 @@ mod tests {
             ManagedExecutions::new(SessionSupervisor::new("/nonexistent")),
             None,
         );
-        let tools: [&dyn Tool; 6] = [
+        let skill = SkillTool::new(
+            SkillDiscoveryContext {
+                workspace_root: None,
+                home: None,
+                managed_root: "/nonexistent".into(),
+                symlink_authorities: SymlinkAuthorities::default(),
+            },
+            RootPolicy {
+                workspace_roots: &[],
+                managed_root_source: None,
+                global_roots: &[],
+            },
+            ContextLimits::default(),
+            Locations::default(),
+        );
+        let tools: [&dyn Tool; 7] = [
             &ReadFile::new("/"),
             &GlobFiles::new("/"),
             &GrepFiles::new("/"),
             &WriteFile::new("/"),
             &EditFile::new("/"),
             &shell,
+            &skill,
         ];
         for tool in tools {
             let spec = tool.spec();

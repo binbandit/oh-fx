@@ -874,9 +874,11 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "memchr",
+ "ofx-config",
  "ofx-contract",
  "ofx-exec",
  "ofx-permissions",
+ "ofx-skills",
  "ofx-text",
  "ofx-workspace",
  "rustix",
