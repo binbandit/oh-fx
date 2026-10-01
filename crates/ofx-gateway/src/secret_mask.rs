@@ -2,32 +2,26 @@ use std::iter;
 use std::ops::Range;
 use std::slice;
 
-const DECODE_ROUNDS: usize = 3;
+const MAX_DECODE_ROUNDS: usize = 16;
 const MAX_DECODED_BYTES: usize = 64 * 1024;
+const MIN_DECODED_NEEDLE_BYTES: usize = 8;
 
 pub(crate) fn mask_configured_secrets(text: String, secrets: &[String]) -> String {
-    let secrets: Vec<&str> = secrets
-        .iter()
-        .map(String::as_str)
-        .filter(|secret| !secret.is_empty())
-        .collect();
-    if secrets.is_empty() {
+    let needles = needles(secrets);
+    if needles.is_empty() {
         return text;
     }
-    let mut hidden = vec![false; text.len()];
-    for secret in &secrets {
-        for (start, _) in text.match_indices(secret) {
-            hidden[start..start + secret.len()].fill(true);
-        }
+    if text.len() > MAX_DECODED_BYTES && decodes(text.as_bytes()) {
+        return withheld(&text);
     }
-    let window = &text.as_bytes()[..text.len().min(MAX_DECODED_BYTES)];
-    let mut layer = Layer::decode(window, |index| index..index + 1);
-    for round in 1..=DECODE_ROUNDS {
-        let Some(current) = layer else {
-            break;
-        };
-        current.hide(&secrets, &mut hidden);
-        layer = (round < DECODE_ROUNDS).then(|| current.decoded()).flatten();
+    let mut hidden = vec![false; text.len()];
+    if text.len() <= MAX_DECODED_BYTES && !hide_decoded(text.as_bytes(), &needles, &mut hidden) {
+        return withheld(&text);
+    }
+    for needle in &needles {
+        for (start, _) in text.match_indices(needle.as_str()) {
+            hidden[start..start + needle.len()].fill(true);
+        }
     }
     if !hidden.contains(&true) {
         return text;
@@ -44,17 +38,59 @@ pub(crate) fn mask_configured_secrets(text: String, secrets: &[String]) -> Strin
     masked
 }
 
+fn withheld(text: &str) -> String {
+    format!("content withheld ({} bytes)", text.len())
+}
+
+fn needles(secrets: &[String]) -> Vec<String> {
+    let mut needles = Vec::new();
+    for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
+        let decoded = iter::successors(Some(secret.as_bytes().to_vec()), |bytes| {
+            Layer::decode(bytes, |index| index..index + 1).map(|layer| layer.bytes)
+        })
+        .skip(1)
+        .take(MAX_DECODE_ROUNDS)
+        .take_while(|bytes| bytes.len() >= MIN_DECODED_NEEDLE_BYTES)
+        .filter_map(|bytes| String::from_utf8(bytes).ok());
+        for form in iter::once(secret.clone()).chain(decoded) {
+            if !needles.contains(&form) {
+                needles.push(form);
+            }
+        }
+    }
+    needles
+}
+
+fn decodes(text: &[u8]) -> bool {
+    (0..text.len()).any(|index| escape_at(&text[index..]).is_some())
+}
+
+fn hide_decoded(text: &[u8], needles: &[String], hidden: &mut [bool]) -> bool {
+    let mut layer = Layer::decode(text, |index| index..index + 1);
+    for _ in 1..MAX_DECODE_ROUNDS {
+        let Some(current) = layer else {
+            return true;
+        };
+        current.hide(needles, hidden);
+        layer = current.decoded();
+    }
+    layer.is_none_or(|last| {
+        last.hide(needles, hidden);
+        !decodes(&last.bytes)
+    })
+}
+
 struct Layer {
     bytes: Vec<u8>,
     sources: Vec<Range<usize>>,
 }
 
 impl Layer {
-    fn hide(&self, secrets: &[&str], hidden: &mut [bool]) {
-        for secret in secrets {
-            for start in occurrences(&self.bytes, secret) {
+    fn hide(&self, needles: &[String], hidden: &mut [bool]) {
+        for needle in needles {
+            for start in occurrences(&self.bytes, needle) {
                 let first = self.sources[start].start;
-                let last = self.sources[start + secret.len() - 1].end;
+                let last = self.sources[start + needle.len() - 1].end;
                 hidden[first..last].fill(true);
             }
         }
@@ -65,23 +101,17 @@ impl Layer {
     }
 
     fn decode(bytes: &[u8], source_of: impl Fn(usize) -> Range<usize>) -> Option<Self> {
-        if !bytes.iter().any(|byte| matches!(byte, b'%' | b'\\')) {
+        if !decodes(bytes) {
             return None;
         }
         let mut decoded = Self {
             bytes: Vec::with_capacity(bytes.len()),
             sources: Vec::with_capacity(bytes.len()),
         };
-        let mut changed = false;
         let mut index = 0;
         while index < bytes.len() {
-            let (consumed, unit) = match escape_at(&bytes[index..]) {
-                Some(escape) => {
-                    changed = true;
-                    escape
-                }
-                None => (1, Unit::Byte(bytes[index])),
-            };
+            let (consumed, unit) =
+                escape_at(&bytes[index..]).unwrap_or((1, Unit::Byte(bytes[index])));
             let source = source_of(index).start..source_of(index + consumed - 1).end;
             let mut buffer = [0; 4];
             let output = match &unit {
@@ -94,7 +124,7 @@ impl Layer {
             }
             index += consumed;
         }
-        changed.then_some(decoded)
+        Some(decoded)
     }
 }
 
@@ -166,6 +196,8 @@ fn hex_digit(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::*;
 
     fn masked(text: &str, secret: &str) -> String {
@@ -210,11 +242,70 @@ mod tests {
     }
 
     #[test]
-    fn long_text_masks_literal_secrets_throughout_and_decodes_its_first_64_kib() {
+    fn decoding_repeats_until_a_round_changes_nothing() {
+        let form = format!("{}u0070k-live-secret", "\\".repeat(8));
+        assert_eq!(
+            masked(&format!("rejected {form}."), "pk-live-secret"),
+            format!("rejected {}.", "*".repeat(form.len()))
+        );
+    }
+
+    #[test]
+    fn secrets_that_contain_escapes_are_found_after_their_own_escapes_decode() {
+        for form in [
+            "pk-live%41\"secret",
+            "pk-live%41\\\"secret",
+            "pk-live%2541%22secret",
+        ] {
+            assert_eq!(
+                masked(&format!("rejected key {form}."), "pk-live%41\"secret"),
+                format!("rejected key {}.", "*".repeat(form.len())),
+                "{form}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_that_still_decodes_after_the_last_round_is_withheld_quickly() {
+        for text in [
+            format!("%{}70k-live-secret", "25".repeat(30_000)),
+            format!("\\u005C{}u0070k-live-secret", "u005C".repeat(10_000)),
+        ] {
+            let started = Instant::now();
+            assert_eq!(
+                masked(&text, "pk-live-secret"),
+                format!("content withheld ({} bytes)", text.len())
+            );
+            assert!(started.elapsed() < Duration::from_secs(20));
+        }
+    }
+
+    #[test]
+    fn short_decoded_forms_of_a_secret_are_not_matched_on_their_own() {
+        assert_eq!(masked("A /// A", "%25252541"), "A /// A");
+        assert_eq!(masked("A %25252541", "%25252541"), "A *********");
+    }
+
+    #[test]
+    fn backslash_runs_that_fit_the_scan_window_settle_within_the_bound() {
+        let run = format!("{}x", "\\".repeat(MAX_DECODED_BYTES - 1));
+        assert_eq!(masked(&run, "pk-live-secret"), run);
+    }
+
+    #[test]
+    fn text_longer_than_the_scan_window_is_masked_literally_or_withheld_if_it_decodes() {
         let padding = "x".repeat(MAX_DECODED_BYTES);
-        let text = format!("%70k-live-secret {padding} pk-live-secret");
-        let expected = format!("{} {padding} {}", "*".repeat(16), "*".repeat(14));
-        assert_eq!(masked(&text, "pk-live-secret"), expected);
+        let plain = format!("pk-live-secret {padding} pk-live-secret");
+        assert_eq!(
+            masked(&plain, "pk-live-secret"),
+            format!("{} {padding} {}", "*".repeat(14), "*".repeat(14))
+        );
+        assert_eq!(masked(&padding, "pk-live-secret"), padding);
+        let straddling = format!("{}%70k-live-secret", &padding[8..]);
+        assert_eq!(
+            masked(&straddling, "pk-live-secret"),
+            format!("content withheld ({} bytes)", straddling.len())
+        );
     }
 
     #[test]
