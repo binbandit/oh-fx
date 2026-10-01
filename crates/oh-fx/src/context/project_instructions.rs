@@ -8,7 +8,9 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use ofx_agent::{DeliveryState, ProjectContext};
 use ofx_config::{ContextLimit, ContextLimitName, ContextLimits};
+use ofx_contract::{ApplicableTarget, TargetKind};
 use ofx_workspace::{basename, dirname, path_inside};
 
 use omissions::{OmissionReason, Omissions, separate, write_path};
@@ -19,12 +21,6 @@ const SCOPED_RULES: usize = 32;
 const GUIDANCE: &str = "Direct user instructions take precedence over project instructions. When project instructions conflict, follow the narrowest applicable project scope.";
 const FILE_LIMIT_OVERRIDE: &str = "--context-limit project_instruction_file_bytes=BYTES|off";
 const TOTAL_LIMIT_OVERRIDE: &str = "--context-limit project_instructions_total_bytes=BYTES|off";
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct ProjectContext {
-    pub(crate) content: Option<String>,
-    pub(crate) notices: Vec<String>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InstructionLimits {
@@ -52,7 +48,9 @@ pub(crate) fn gather_project_context(
     profile: ProfileLocation<'_>,
     limits: InstructionLimits,
 ) -> ProjectContext {
-    let mut selection = Selection::new(workspace_root, limits);
+    let nothing_delivered = DeliveryState::default();
+    let mut selection = Selection::new(workspace_root, limits, &nothing_delivered);
+    selection.add_evaluated(workspace_root);
     selection.add_ranking_endpoint(workspace_root);
     let mut global = None;
     let mut global_source = None;
@@ -88,6 +86,19 @@ pub(crate) fn gather_project_context(
     selection.finish(global.as_ref(), project.as_ref())
 }
 
+pub(crate) fn select_applicable_project_context(
+    workspace_root: &Path,
+    targets: &[ApplicableTarget],
+    delivery: &DeliveryState,
+    limits: InstructionLimits,
+) -> ProjectContext {
+    let mut selection = Selection::new(workspace_root, limits, delivery);
+    for target in targets {
+        selection.collect_target_candidates(target);
+    }
+    selection.finish(None, None)
+}
+
 fn global_rule_source(config_directory: &Path) -> PathBuf {
     fs::canonicalize(config_directory)
         .or_else(|_| std::path::absolute(config_directory))
@@ -95,9 +106,16 @@ fn global_rule_source(config_directory: &Path) -> PathBuf {
         .join(RULE_FILE_NAME)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateClass {
+    Ancestor,
+    Target,
+}
+
 struct Candidate {
     source: PathBuf,
     scope: PathBuf,
+    class: CandidateClass,
 }
 
 struct UsableRule {
@@ -123,24 +141,28 @@ struct RenderedRule {
 
 struct Selection<'a> {
     workspace_root: &'a Path,
+    prior: &'a DeliveryState,
     file_limit: ContextLimit,
     total_limit: ContextLimit,
     candidates: Vec<Candidate>,
     ranking_endpoints: Vec<PathBuf>,
     delivered_sources: Vec<PathBuf>,
+    evaluated_endpoints: Vec<PathBuf>,
     omissions: Omissions,
     notices: Vec<String>,
 }
 
 impl<'a> Selection<'a> {
-    fn new(workspace_root: &'a Path, limits: InstructionLimits) -> Self {
+    fn new(workspace_root: &'a Path, limits: InstructionLimits, prior: &'a DeliveryState) -> Self {
         Self {
             workspace_root,
+            prior,
             file_limit: limits.file,
             total_limit: limits.total,
             candidates: Vec::new(),
             ranking_endpoints: Vec::new(),
             delivered_sources: Vec::new(),
+            evaluated_endpoints: Vec::new(),
             omissions: Omissions::default(),
             notices: Vec::new(),
         }
@@ -152,6 +174,10 @@ impl<'a> Selection<'a> {
 
     fn add_delivered(&mut self, source: &Path) {
         push_unique(&mut self.delivered_sources, source);
+    }
+
+    fn add_evaluated(&mut self, endpoint: &Path) {
+        push_unique(&mut self.evaluated_endpoints, endpoint);
     }
 
     fn add_ranking_endpoint(&mut self, endpoint: &Path) {
@@ -182,14 +208,53 @@ impl<'a> Selection<'a> {
             if scope == home || !path_inside(home, scope) {
                 break;
             }
-            self.append_candidate(scope);
+            self.append_candidate(scope, CandidateClass::Ancestor);
             current = parent_directory(scope);
         }
     }
 
-    fn append_candidate(&mut self, scope: &Path) {
+    fn collect_target_candidates(&mut self, target: &ApplicableTarget) {
+        let endpoint = match target.kind {
+            TargetKind::File => parent_directory(&target.path).unwrap_or(&target.path),
+            TargetKind::Directory => &target.path,
+        };
+        if self
+            .prior
+            .evaluated_endpoints
+            .iter()
+            .any(|seen| seen == endpoint)
+            || self.evaluated_endpoints.iter().any(|seen| seen == endpoint)
+        {
+            return;
+        }
+        self.add_evaluated(endpoint);
+        if !endpoint.is_absolute() {
+            let source = if target.path.as_os_str().is_empty() {
+                Path::new("(empty target)")
+            } else {
+                target.path.as_path()
+            };
+            self.omit(source, OmissionReason::UnsafeTarget);
+            return;
+        }
+        if !path_inside(self.workspace_root, endpoint) {
+            return;
+        }
+        self.add_ranking_endpoint(endpoint);
+        let mut current = Some(endpoint);
+        while let Some(scope) = current {
+            if scope == self.workspace_root || !path_inside(self.workspace_root, scope) {
+                break;
+            }
+            self.append_candidate(scope, CandidateClass::Target);
+            current = parent_directory(scope);
+        }
+    }
+
+    fn append_candidate(&mut self, scope: &Path, class: CandidateClass) {
         let source = scope.join(RULE_FILE_NAME);
-        if self.delivered_sources.contains(&source)
+        if self.prior.delivered_sources.contains(&source)
+            || self.delivered_sources.contains(&source)
             || self
                 .candidates
                 .iter()
@@ -200,6 +265,7 @@ impl<'a> Selection<'a> {
         self.candidates.push(Candidate {
             source,
             scope: scope.to_path_buf(),
+            class,
         });
     }
 
@@ -225,7 +291,7 @@ impl<'a> Selection<'a> {
                 is_global: true,
             });
         }
-        self.render_scoped(&mut out, &mut rendered, &selected);
+        self.render_scoped(&mut out, &mut rendered, &selected, CandidateClass::Ancestor);
         if let Some(rule) = project {
             let start = out.len();
             append_section_from(&mut out, "project-rules", &rule.source, &rule.body);
@@ -237,6 +303,7 @@ impl<'a> Selection<'a> {
                 is_global: false,
             });
         }
+        self.render_scoped(&mut out, &mut rendered, &selected, CandidateClass::Target);
         let omissions = std::mem::take(&mut self.omissions);
         omissions.render(&mut out, &mut self.notices);
         let content = (!out.is_empty()).then(|| {
@@ -246,8 +313,13 @@ impl<'a> Selection<'a> {
                 out
             }
         });
+        for paths in [&mut self.delivered_sources, &mut self.evaluated_endpoints] {
+            sort_with(paths, |left, right| bytes(left).cmp(bytes(right)));
+        }
         ProjectContext {
             content,
+            delivered_sources: self.delivered_sources,
+            evaluated_endpoints: self.evaluated_endpoints,
             notices: self.notices,
         }
     }
@@ -289,8 +361,9 @@ impl<'a> Selection<'a> {
         out: &mut String,
         rendered: &mut Vec<RenderedRule>,
         selected: &[UsableRule],
+        class: CandidateClass,
     ) {
-        for rule in selected {
+        for rule in selected.iter().filter(|rule| rule.candidate.class == class) {
             let start = out.len();
             append_scoped_section_from(
                 out,

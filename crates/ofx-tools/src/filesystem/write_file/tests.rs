@@ -3,8 +3,8 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 
 use ofx_contract::{
-    CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess, ToolCallId,
-    ToolContext, ToolEffect, ToolResultStatus,
+    ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess,
+    TargetKind, ToolCallId, ToolContext, ToolEffect, ToolResultStatus,
 };
 use ofx_workspace::MAX_PATH_BYTES;
 use tempfile::TempDir;
@@ -43,7 +43,8 @@ struct Run {
 }
 
 fn run(tool: &WriteFile, arguments: &str, path_access: PathAccess) -> Run {
-    let prepared = tool.prepare(arguments).unwrap();
+    let mut prepared = tool.prepare(arguments).unwrap();
+    prepared.complete();
     let description = prepared.describe();
     let mutation = prepared.file_mutation().cloned();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -220,7 +221,8 @@ fn existing_and_unchanged_workspace_files_are_described_by_their_effect() {
 }
 
 fn execute_after(tool: &WriteFile, arguments: &str, change: impl FnOnce()) -> Run {
-    let prepared = tool.prepare(arguments).unwrap();
+    let mut prepared = tool.prepare(arguments).unwrap();
+    prepared.complete();
     let description = prepared.describe();
     let mutation = prepared.file_mutation().cloned();
     change();
@@ -340,7 +342,8 @@ fn progress_titles_name_the_prepared_target() {
         ),
     ];
     for (path, expected) in cases {
-        let prepared = tool.prepare(&arguments(&path, "x")).unwrap();
+        let mut prepared = tool.prepare(&arguments(&path, "x")).unwrap();
+        prepared.complete();
         assert_eq!(prepared.describe().title, expected, "{path}");
         assert_eq!(prepared.untargeted_title(), "Writing file", "{path}");
     }
@@ -351,7 +354,8 @@ fn full_access_writes_name_the_requested_path_and_read_the_target_when_they_run(
     let workspace = Fixture::new();
     let tool = workspace.tool().with_full_access(true);
     fs::write(workspace.workspace.join("note.txt"), "old\n").unwrap();
-    let prepared = tool.prepare(&arguments("./note.txt", "new\n")).unwrap();
+    let mut prepared = tool.prepare(&arguments("./note.txt", "new\n")).unwrap();
+    prepared.complete();
     assert_eq!(prepared.describe().title, "Writing ./note.txt");
     assert_eq!(
         prepared.file_mutation().cloned(),
@@ -382,6 +386,111 @@ fn full_access_writes_name_the_requested_path_and_read_the_target_when_they_run(
 }
 
 #[test]
+fn file_changes_keep_their_prepared_target_until_completion_resolves_and_reads_it_again() {
+    let workspace = Fixture::new();
+    let directory = workspace.workspace.join("sub");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("note.txt"), "old\n").unwrap();
+    let mut prepared = workspace
+        .tool()
+        .prepare(&arguments("sub/note.txt", "new\n"))
+        .unwrap();
+    let target = Some(ApplicableTarget {
+        path: directory.join("note.txt"),
+        kind: TargetKind::File,
+    });
+    assert_eq!(
+        prepared.file_mutation().map(|mutation| mutation.state),
+        Some(FileMutationState::Unread)
+    );
+    assert_eq!(prepared.applicable_target(), target);
+    fs::rename(&directory, workspace.workspace.join("moved")).unwrap();
+    fs::write(&directory, "now a file\n").unwrap();
+    assert_eq!(prepared.applicable_target(), target);
+    fs::remove_file(&directory).unwrap();
+    fs::rename(workspace.workspace.join("moved"), &directory).unwrap();
+    fs::write(directory.join("note.txt"), "new\n").unwrap();
+    prepared.complete();
+    assert_eq!(
+        prepared.file_mutation().map(|mutation| mutation.state),
+        Some(FileMutationState::Unchanged)
+    );
+    assert_eq!(prepared.describe().title, "Writing sub/note.txt");
+    assert_eq!(prepared.applicable_target(), target);
+    let mut stranded = workspace
+        .tool()
+        .prepare(&arguments("sub/note.txt", "newer\n"))
+        .unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+    fs::write(&directory, "now a file\n").unwrap();
+    stranded.complete();
+    assert_eq!(stranded.applicable_target(), None);
+    assert_eq!(stranded.file_mutation(), None);
+    assert_eq!(stranded.describe().effect, ToolEffect::None);
+}
+
+#[test]
+fn completion_reports_the_target_a_retargeted_path_now_resolves_to() {
+    let workspace = Fixture::new();
+    fs::create_dir_all(workspace.workspace.join("first")).unwrap();
+    fs::create_dir_all(workspace.workspace.join("second")).unwrap();
+    symlink("first", workspace.workspace.join("link")).unwrap();
+    let mut prepared = workspace
+        .tool()
+        .prepare(&arguments("link/new.txt", "new\n"))
+        .unwrap();
+    let prepared_target = workspace.workspace.join("first/new.txt");
+    assert_eq!(
+        prepared.applicable_target().map(|target| target.path),
+        Some(prepared_target)
+    );
+    fs::remove_file(workspace.workspace.join("link")).unwrap();
+    symlink("second", workspace.workspace.join("link")).unwrap();
+    prepared.complete();
+    let completed_target = workspace.workspace.join("second/new.txt");
+    assert_eq!(
+        prepared.applicable_target().map(|target| target.path),
+        Some(completed_target.clone())
+    );
+    assert_eq!(
+        prepared
+            .file_mutation()
+            .map(|mutation| mutation.target.clone()),
+        Some(completed_target)
+    );
+}
+
+#[test]
+fn a_call_executed_without_completion_refuses_a_path_that_now_resolves_elsewhere() {
+    let workspace = Fixture::new();
+    fs::create_dir_all(workspace.workspace.join("first")).unwrap();
+    fs::create_dir_all(workspace.workspace.join("second")).unwrap();
+    symlink("first", workspace.workspace.join("link")).unwrap();
+    let prepared = workspace
+        .tool()
+        .prepare(&arguments("link/new.txt", "new\n"))
+        .unwrap();
+    fs::remove_file(workspace.workspace.join("link")).unwrap();
+    symlink("second", workspace.workspace.join("link")).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let output = runtime.block_on(prepared.execute(ToolContext::new(
+        ToolCallId::new("call-1"),
+        CancellationToken::new(),
+        PathAccess::WorkspaceOnly,
+    )));
+    assert_eq!(
+        output,
+        ToolOutput::failure(
+            "file mutation preparation failed: approved target no longer matches the call"
+        )
+    );
+    assert!(!workspace.workspace.join("first/new.txt").exists());
+    assert!(!workspace.workspace.join("second/new.txt").exists());
+}
+
+#[test]
 fn deferred_external_writes_refuse_a_path_that_resolves_elsewhere_by_execution() {
     let workspace = Fixture::new();
     fs::create_dir_all(workspace.root.join("first")).unwrap();
@@ -389,10 +498,12 @@ fn deferred_external_writes_refuse_a_path_that_resolves_elsewhere_by_execution()
     symlink(workspace.root.join("first"), workspace.root.join("link")).unwrap();
     let requested = workspace.root.join("link/new.txt");
 
-    let prepared = workspace
+    let mut prepared = workspace
         .tool()
         .prepare(&arguments(&requested, "new\n"))
         .unwrap();
+
+    prepared.complete();
     fs::remove_file(workspace.root.join("link")).unwrap();
     symlink(workspace.root.join("second"), workspace.root.join("link")).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -419,10 +530,11 @@ fn a_new_external_file_that_appears_before_execution_is_not_overwritten() {
     let workspace = Fixture::new();
     let target = workspace.root.join("outside/new.txt");
     fs::create_dir_all(target.parent().unwrap()).unwrap();
-    let prepared = workspace
+    let mut prepared = workspace
         .tool()
         .prepare(&arguments(&target, "mine\n"))
         .unwrap();
+    prepared.complete();
     assert_eq!(
         prepared.file_mutation().map(|mutation| mutation.state),
         Some(FileMutationState::Creates)
@@ -449,10 +561,11 @@ fn a_new_external_file_that_appears_before_execution_is_not_overwritten() {
 #[test]
 fn cancelled_writes_report_cancellation_and_leave_no_file() {
     let workspace = Fixture::new();
-    let prepared = workspace
+    let mut prepared = workspace
         .tool()
         .prepare(&arguments("new.txt", "new\n"))
         .unwrap();
+    prepared.complete();
     let cancel = CancellationToken::new();
     cancel.cancel();
     let runtime = tokio::runtime::Builder::new_current_thread()

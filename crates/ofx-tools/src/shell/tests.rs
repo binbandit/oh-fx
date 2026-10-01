@@ -244,3 +244,44 @@ fn workspace_only_runs_fail_once_their_working_directory_leaves_the_workspace() 
     assert_eq!(output.status, ToolResultStatus::Failure);
     assert_eq!(output.content, runtime_failure(PATH_OUTSIDE_WORKSPACE));
 }
+
+#[test]
+fn only_resolved_run_directories_are_applicable_targets_and_they_resolve_again() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    std::fs::create_dir(root.join("sub")).unwrap();
+    let shell = Shell::new(
+        &root,
+        ManagedExecutions::new(SessionSupervisor::new("/nonexistent")),
+        None,
+    );
+    let target = |arguments: &str| shell.prepare(arguments).unwrap().applicable_target();
+    let directory = |path: PathBuf| {
+        Some(ApplicableTarget {
+            path,
+            kind: TargetKind::Directory,
+        })
+    };
+    assert_eq!(
+        target(r#"{"action":"run","command":"ls"}"#),
+        directory(root.clone())
+    );
+    assert_eq!(
+        target(r#"{"action":"run","command":"ls","cwd":"sub"}"#),
+        directory(root.join("sub"))
+    );
+    for arguments in [
+        r#"{"action":"run","command":"ls","cwd":"missing"}"#,
+        r#"{"action":"run","command":"ls","cwd":"/nonexistent/oh-fx-missing-directory"}"#,
+        r#"{"action":"interact","session_id":"s1"}"#,
+        r#"{"action":"stop","session_id":"s1"}"#,
+        r#"{"action":"run"}"#,
+    ] {
+        assert_eq!(target(arguments), None, "{arguments}");
+    }
+    let prepared = shell
+        .prepare(r#"{"action":"run","command":"ls","cwd":"sub"}"#)
+        .unwrap();
+    std::fs::remove_dir(root.join("sub")).unwrap();
+    assert_eq!(prepared.applicable_target(), None);
+}

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use ofx_contract::{ToolCall, parse_tool_args_object};
+use ofx_contract::{ApplicableTarget, TargetKind, ToolCall, parse_tool_args_object};
 use ofx_workspace::resolve_workspace_or_external_path;
 
 mod file_mutation_targets;
@@ -22,18 +22,37 @@ const EXTERNAL_PATH_TOOLS: [(&str, PermissionTargetKind); 3] = [
     ("grep_files", PermissionTargetKind::PathOptionalExisting),
 ];
 
+pub(crate) fn applicable_target(
+    workspace_root: &Path,
+    call: &ToolCall,
+) -> Option<ApplicableTarget> {
+    let (path, kind) = path_target(workspace_root, call)?;
+    Some(ApplicableTarget {
+        path,
+        kind: match kind {
+            PermissionTargetKind::PathExisting => TargetKind::File,
+            PermissionTargetKind::PathOptionalExisting => TargetKind::Directory,
+        },
+    })
+}
+
 pub(crate) fn external_path_target(workspace_root: &Path, call: &ToolCall) -> Option<PathBuf> {
+    path_target(workspace_root, call).map(|(path, _)| path)
+}
+
+fn path_target(workspace_root: &Path, call: &ToolCall) -> Option<(PathBuf, PermissionTargetKind)> {
     let (_, kind) = EXTERNAL_PATH_TOOLS
         .iter()
         .find(|(name, _)| *name == call.name)?;
     let arguments = parse_tool_args_object(&call.arguments).ok()?;
-    match (kind, arguments.optional_string("path")) {
+    let path = match (kind, arguments.optional_string("path")) {
         (PermissionTargetKind::PathOptionalExisting, None | Some("" | ".")) => {
             Some(workspace_root.to_path_buf())
         }
         (_, Some(path)) => resolve_workspace_or_external_path(workspace_root, path).ok(),
         (PermissionTargetKind::PathExisting, None) => None,
-    }
+    };
+    path.map(|path| (path, *kind))
 }
 
 #[cfg(test)]
@@ -85,6 +104,30 @@ mod tests {
                 "{name} {arguments}"
             );
         }
+        assert_eq!(
+            applicable_target(&workspace, &call("read_file", r#"{"path":"src/main.rs"}"#)),
+            Some(ApplicableTarget {
+                path: workspace.join("src/main.rs"),
+                kind: TargetKind::File,
+            })
+        );
+        assert_eq!(
+            applicable_target(&workspace, &call("grep_files", r#"{"pattern":"x"}"#)),
+            Some(ApplicableTarget {
+                path: workspace.clone(),
+                kind: TargetKind::Directory,
+            })
+        );
+        assert_eq!(
+            applicable_target(
+                &workspace,
+                &call("glob_files", r#"{"pattern":"*","path":".."}"#)
+            ),
+            Some(ApplicableTarget {
+                path: root.clone(),
+                kind: TargetKind::Directory,
+            })
+        );
         for (name, arguments) in [
             ("read_file", r#"{"path":"missing.txt"}"#),
             ("read_file", r#"{"path":7}"#),
@@ -94,6 +137,11 @@ mod tests {
         ] {
             assert_eq!(
                 external_path_target(&workspace, &call(name, arguments)),
+                None,
+                "{name} {arguments}"
+            );
+            assert_eq!(
+                applicable_target(&workspace, &call(name, arguments)),
                 None,
                 "{name} {arguments}"
             );

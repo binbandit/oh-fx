@@ -1,9 +1,11 @@
+use std::mem;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
-    CallDescription, CallPresentation, Concurrency, FileMutation, FileMutationState, PathAccess,
-    PreparedCall, ToolContext, ToolEffect, ToolOutput, format_tool_execution_error_json,
+    ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency, FileMutation,
+    FileMutationState, PathAccess, PreparedCall, TargetKind, ToolContext, ToolEffect, ToolOutput,
+    format_tool_execution_error_json,
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
@@ -13,7 +15,7 @@ use crate::file_mutation::{
     MAX_ENCODED_PATH_BYTES, MutationInput, PrepareFailure, PreparedMutation,
 };
 use crate::tool_admission::file_target_failure;
-use crate::tool_runtime::BlockingCall;
+use crate::tool_runtime::{BlockingCall, run_blocking};
 
 const TARGET_MISMATCH: &str =
     "file mutation preparation failed: approved target no longer matches the call";
@@ -33,52 +35,95 @@ impl MutationRequest {
         match decoded.and_then(|(path, input)| self.plan(path, input)) {
             Ok(plan) => {
                 let mutation = plan.file_mutation();
-                let title = plan.title(&self.presentation);
-                BlockingCall::mutation(
-                    self.description(title, ToolEffect::Irreversible),
-                    self.presentation,
-                    mutation,
-                    move |context| plan.execute(&context),
-                )
+                Box::new(MutationCall {
+                    presentation: self.presentation,
+                    target: Some(file_target(mutation.target.clone())),
+                    mutation: Some(mutation),
+                    plan: Ok(plan),
+                })
             }
             Err(failure) => BlockingCall::boxed(
-                self.description(self.presentation.untargeted_title(), ToolEffect::None),
+                description(&self.presentation, None, ToolEffect::None),
                 move |_| failure,
             ),
         }
     }
 
-    fn description(&self, title: String, effect: ToolEffect) -> CallDescription {
-        CallDescription {
-            title,
-            activity: self.presentation.activity,
-            effect,
-            concurrency: Concurrency::Serial,
-        }
-    }
-
     fn plan(&self, requested_path: String, input: MutationInput) -> Result<Plan, ToolOutput> {
-        let targets =
-            prepare_file_mutation_targets(&self.workspace_root, &requested_path, input.kind())
-                .map_err(|failure| {
-                    ToolOutput::failure(file_target_failure(self.tool_name, failure))
-                })?;
-        let stage = if targets.target.anchor_is_external || self.full_access {
-            Stage::Deferred(targets)
-        } else {
-            Stage::Prepared(
-                PreparedMutation::prepare(targets, &requested_path, &input)
-                    .map_err(|failure| prepare_failure(self.tool_name, failure))?,
-            )
-        };
+        let targets = resolve_targets(
+            self.tool_name,
+            &self.workspace_root,
+            &requested_path,
+            input.kind(),
+        )?;
         Ok(Plan {
             tool_name: self.tool_name,
             workspace_root: self.workspace_root.clone(),
             requested_path,
             full_access: self.full_access,
             input,
-            stage,
+            stage: Stage::Deferred(targets),
         })
+    }
+}
+
+struct MutationCall {
+    presentation: CallPresentation,
+    plan: Result<Plan, ToolOutput>,
+    target: Option<ApplicableTarget>,
+    mutation: Option<FileMutation>,
+}
+
+impl PreparedCall for MutationCall {
+    fn describe(&self) -> CallDescription {
+        match &self.plan {
+            Ok(plan) => description(&self.presentation, plan.label(), ToolEffect::Irreversible),
+            Err(_) => description(&self.presentation, None, ToolEffect::None),
+        }
+    }
+
+    fn untargeted_title(&self) -> String {
+        self.presentation.untargeted_title()
+    }
+
+    fn complete(&mut self) {
+        let placeholder = Err(ToolOutput::failure(String::new()));
+        match mem::replace(&mut self.plan, placeholder) {
+            Ok(plan) => (self.target, self.plan) = plan.complete(),
+            failed => self.plan = failed,
+        }
+        self.mutation = self.plan.as_ref().ok().map(Plan::file_mutation);
+    }
+
+    fn applicable_target(&self) -> Option<ApplicableTarget> {
+        self.target.clone()
+    }
+
+    fn file_mutation(&self) -> Option<&FileMutation> {
+        self.mutation.as_ref()
+    }
+
+    fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+        run_blocking(move || match self.plan {
+            Ok(plan) => plan.execute(&context),
+            Err(failure) => failure,
+        })
+    }
+}
+
+fn description(
+    presentation: &CallPresentation,
+    label: Option<String>,
+    effect: ToolEffect,
+) -> CallDescription {
+    CallDescription {
+        title: label.map_or_else(
+            || presentation.untargeted_title(),
+            |label| format!("{} {label}", presentation.action_label),
+        ),
+        activity: presentation.activity,
+        effect,
+        concurrency: Concurrency::Serial,
     }
 }
 
@@ -97,22 +142,40 @@ struct Plan {
 }
 
 impl Plan {
-    fn title(&self, presentation: &CallPresentation) -> String {
-        let label = if self.full_access {
-            Some(encode_terminal_safe(self.requested_path.as_bytes(), MAX_ENCODED_PATH_BYTES).text)
-        } else {
-            match &self.stage {
-                Stage::Prepared(prepared) => Some(prepared.display_path().to_owned()),
-                Stage::Deferred(targets) => encode_terminal_safe_path_tail(
-                    targets.target.path().as_os_str().as_bytes(),
-                    MAX_ENCODED_PATH_BYTES,
-                ),
-            }
+    fn complete(self) -> (Option<ApplicableTarget>, Result<Self, ToolOutput>) {
+        let targets = match resolve_targets(
+            self.tool_name,
+            &self.workspace_root,
+            &self.requested_path,
+            self.input.kind(),
+        ) {
+            Ok(targets) => targets,
+            Err(failure) => return (None, Err(failure)),
         };
-        label.map_or_else(
-            || presentation.untargeted_title(),
-            |label| format!("{} {label}", presentation.action_label),
-        )
+        let target = file_target(targets.target.path());
+        let stage = if targets.target.anchor_is_external || self.full_access {
+            Ok(Stage::Deferred(targets))
+        } else {
+            PreparedMutation::prepare(targets, &self.requested_path, &self.input)
+                .map(Stage::Prepared)
+                .map_err(|failure| prepare_failure(self.tool_name, failure))
+        };
+        (Some(target), stage.map(|stage| Self { stage, ..self }))
+    }
+
+    fn label(&self) -> Option<String> {
+        if self.full_access {
+            return Some(
+                encode_terminal_safe(self.requested_path.as_bytes(), MAX_ENCODED_PATH_BYTES).text,
+            );
+        }
+        match &self.stage {
+            Stage::Prepared(prepared) => Some(prepared.display_path().to_owned()),
+            Stage::Deferred(targets) => encode_terminal_safe_path_tail(
+                targets.target.path().as_os_str().as_bytes(),
+                MAX_ENCODED_PATH_BYTES,
+            ),
+        }
     }
 
     fn file_mutation(&self) -> FileMutation {
@@ -180,6 +243,23 @@ impl Plan {
             Err(rejection) => ToolOutput::failure(rejection.message()),
         }
     }
+}
+
+fn file_target(path: PathBuf) -> ApplicableTarget {
+    ApplicableTarget {
+        path,
+        kind: TargetKind::File,
+    }
+}
+
+fn resolve_targets(
+    tool_name: &str,
+    workspace_root: &Path,
+    requested_path: &str,
+    kind: FileMutationKind,
+) -> Result<FileMutationTargets, ToolOutput> {
+    prepare_file_mutation_targets(workspace_root, requested_path, kind)
+        .map_err(|failure| ToolOutput::failure(file_target_failure(tool_name, failure)))
 }
 
 fn target_still_matches(

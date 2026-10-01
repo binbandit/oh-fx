@@ -7,6 +7,7 @@ use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events};
 use serde_json::{Value, json};
 
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", "pk-test-0123456789")];
+const DEFERRED: &str = "Scoped project instructions were added before execution. Review them and reissue this tool call if it is still appropriate.";
 const GUIDANCE: &str = "<project-instructions-guidance>\nDirect user instructions take precedence over project instructions. When project instructions conflict, follow the narrowest applicable project scope.\n</project-instructions-guidance>";
 
 struct Home {
@@ -348,4 +349,421 @@ fn limits_that_ask_cannot_apply_still_fail_as_not_available() {
         );
     }
     assert!(server.requests().is_empty());
+}
+
+fn tool_calls(calls: &[(&str, &str, &str)]) -> Reply {
+    let chunk = |delta: Value, finish_reason: Value| {
+        json!({
+            "id": "chatcmpl-scoped",
+            "object": "chat.completion.chunk",
+            "model": "testkit-model",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        })
+        .to_string()
+    };
+    let calls: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (call_id, name, arguments))| {
+            json!({
+                "index": index,
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            })
+        })
+        .collect();
+    Reply::sse(&[
+        chunk(
+            json!({"role": "assistant", "tool_calls": calls}),
+            Value::Null,
+        ),
+        chunk(json!({}), json!("tool_calls")),
+        "[DONE]".to_owned(),
+    ])
+}
+
+fn tool_results(request: &RecordedRequest) -> Vec<(String, String)> {
+    request.json()["messages"]
+        .as_array()
+        .expect("the request carries messages")
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .map(|message| {
+            (
+                message["tool_call_id"]
+                    .as_str()
+                    .expect("tool results name their call")
+                    .to_owned(),
+                message["content"]
+                    .as_str()
+                    .expect("tool results carry text")
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn scoped(source: &Path) -> String {
+    format!(
+        "{GUIDANCE}\n\n<scoped-rules from=\"{}\" scope=\"{}\">\n{}\n</scoped-rules>",
+        display(source),
+        display(source.parent().expect("rule files have a directory")),
+        fs::read_to_string(source)
+            .expect("read the rule file")
+            .trim()
+    )
+}
+
+#[test]
+fn tool_targets_add_scoped_rules_and_a_lone_write_waits_for_them() {
+    let write = r#"{"path":"deep/new.txt","content":"hello\n"}"#;
+    let server = FakeServer::start([
+        tool_calls(&[("call_1", "read_file", r#"{"path":"sub/x.txt"}"#)]),
+        tool_calls(&[("call_2", "write_file", write)]),
+        tool_calls(&[("call_3", "write_file", write)]),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url(), &json!({}));
+    let sub = home.write("work/sub/AGENTS.md", "SUB RULE\n");
+    home.write("work/sub/x.txt", "x\n");
+    let deep = home.write("work/deep/AGENTS.md", "DEEP RULE\n");
+    let output = home.ask("work", &["ask", "--json", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Reading sub/x.txt\nWriting file\nWriting deep/new.txt\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["steps"], 3);
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "read_file", "status": "success"},
+            {"name": "write_file", "status": "success"},
+        ])
+    );
+    let requests = server.requests();
+    assert_eq!(system_texts(&requests[0]).len(), 4);
+    assert_eq!(system_texts(&requests[1])[1], scoped(&sub));
+    let texts = system_texts(&requests[3]);
+    assert_eq!(texts[1..3], [scoped(&sub), scoped(&deep)]);
+    assert!(texts[3].starts_with("<fx-turn-context>\n"));
+    assert_eq!(
+        tool_results(&requests[3]),
+        [
+            (
+                "call_1".to_owned(),
+                "<path>sub/x.txt</path>\n<content>\n1\tx\n</content>".to_owned()
+            ),
+            ("call_2".to_owned(), DEFERRED.to_owned()),
+            (
+                "call_3".to_owned(),
+                "wrote deep/new.txt (6 bytes)".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(home.path("work/deep/new.txt")).unwrap(),
+        "hello\n"
+    );
+}
+
+#[test]
+fn batches_defer_only_the_writes_whose_own_scope_brings_new_rules() {
+    let server = FakeServer::start([
+        tool_calls(&[
+            ("call_1", "read_file", r#"{"path":"a/x.txt"}"#),
+            (
+                "call_2",
+                "write_file",
+                r#"{"path":"b/new.txt","content":"b\n"}"#,
+            ),
+            (
+                "call_3",
+                "write_file",
+                r#"{"path":"c/new.txt","content":"c\n"}"#,
+            ),
+            (
+                "call_4",
+                "write_file",
+                r#"{"path":"a/new.txt","content":"a\n"}"#,
+            ),
+        ]),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url(), &json!({}));
+    let a = home.write("work/a/AGENTS.md", "A RULE\n");
+    home.write("work/a/x.txt", "x\n");
+    let b = home.write("work/b/AGENTS.md", "B RULE\n");
+    fs::create_dir_all(home.path("work/c")).unwrap();
+    let output = home.ask("work", &["ask", "--json", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Reading a/x.txt\nWriting file\nWriting c/new.txt\nWriting file\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["steps"], 4);
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "read_file", "status": "success"},
+            {"name": "write_file", "status": "success"},
+        ])
+    );
+    let requests = server.requests();
+    let combined = format!(
+        "{}\n\n<scoped-rules from=\"{}\" scope=\"{}\">\nB RULE\n</scoped-rules>",
+        scoped(&a),
+        display(&b),
+        display(b.parent().unwrap())
+    );
+    assert_eq!(system_texts(&requests[1])[1], combined);
+    assert_eq!(
+        tool_results(&requests[1])
+            .into_iter()
+            .map(|(id, content)| (id, content == DEFERRED))
+            .collect::<Vec<_>>(),
+        [
+            ("call_1".to_owned(), false),
+            ("call_2".to_owned(), true),
+            ("call_3".to_owned(), false),
+            ("call_4".to_owned(), true),
+        ]
+    );
+    assert!(!home.path("work/b/new.txt").exists());
+    assert!(home.path("work/c/new.txt").exists());
+}
+
+#[test]
+fn scoped_omission_notices_print_before_the_progress_lines_and_hide_link_targets() {
+    let server = FakeServer::start([
+        tool_calls(&[
+            ("call_1", "read_file", r#"{"path":"sub/x.txt"}"#),
+            ("call_2", "glob_files", r#"{"pattern":"*","path":"linked"}"#),
+            ("call_3", "grep_files", r#"{"pattern":"x","path":"dir"}"#),
+            ("call_4", "glob_files", r#"{"pattern":"*","path":"inv"}"#),
+        ]),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url(), &json!({}));
+    let secret = home.write("secret.txt", "DO_NOT_EXPOSE\n");
+    home.write("work/sub/x.txt", "x\n");
+    symlink(&secret, home.path("work/sub/AGENTS.md")).unwrap();
+    home.write("work/linked/CLAUDE.md", "REAL LINKED\n");
+    symlink("CLAUDE.md", home.path("work/linked/AGENTS.md")).unwrap();
+    fs::create_dir_all(home.path("work/dir/AGENTS.md")).unwrap();
+    fs::create_dir_all(home.path("work/inv")).unwrap();
+    fs::write(home.path("work/inv/AGENTS.md"), b"ok\n\xff").unwrap();
+    let output = home.ask("work", &["ask", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let source = |relative: &str| display(&home.path(relative));
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "[notice] [context] project instructions action=omitted reason=symlinked rule file source=\"{}\"; repair=replace the symlink with a regular file\n[notice] [context] project instructions action=omitted reason=non-regular rule file source=\"{}\"; repair=replace the source with a regular file\n[notice] [context] project instructions action=omitted reason=unreadable rule file source=\"{}\"; repair=make the rule file readable UTF-8\nReading sub/x.txt\nMatching *\nSearching x\nMatching *\n",
+            source("work/sub/AGENTS.md"),
+            source("work/dir/AGENTS.md"),
+            source("work/inv/AGENTS.md"),
+        )
+    );
+    let requests = server.requests();
+    assert_eq!(
+        system_texts(&requests[1])[1],
+        format!(
+            "{GUIDANCE}\n\n<scoped-rules from=\"{}\" scope=\"{}\">\nREAL LINKED\n</scoped-rules>\n\n<project-rules-omitted from=\"{}\" reason=\"non-regular rule file\" />\n\n<project-rules-omitted from=\"{}\" reason=\"unreadable rule file\" />\n\n<project-rules-omitted from=\"{}\" reason=\"symlinked rule file\" />",
+            source("work/linked/AGENTS.md"),
+            source("work/linked"),
+            source("work/dir/AGENTS.md"),
+            source("work/inv/AGENTS.md"),
+            source("work/sub/AGENTS.md"),
+        )
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.body_text().contains("DO_NOT_EXPOSE"))
+    );
+}
+
+fn shell_run(cwd: Option<&str>) -> String {
+    let mut request = json!({"action": "run", "command": "echo hi"});
+    if let Some(cwd) = cwd {
+        request["cwd"] = json!(cwd);
+    }
+    json!({ "request": request }).to_string()
+}
+
+fn yolo() -> Value {
+    json!({"permission_mode": "yolo", "yolo_acknowledged": true})
+}
+
+#[test]
+fn calls_whose_targets_appear_earlier_in_the_batch_are_not_executed() {
+    let server = FakeServer::start([
+        tool_calls(&[
+            (
+                "call_1",
+                "write_file",
+                r#"{"path":"n/new.txt","content":"hi\n"}"#,
+            ),
+            ("call_2", "read_file", r#"{"path":"n/new.txt"}"#),
+            (
+                "call_3",
+                "edit_file",
+                r#"{"path":"n/new.txt","old_string":"hi","new_string":"bye"}"#,
+            ),
+        ]),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url(), &json!({}));
+    let output = home.ask("work", &["ask", "--json", "--auto", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Writing n/new.txt\nReading n/new.txt\nEditing file\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["steps"], 3);
+    assert_eq!(
+        result["tool_calls"],
+        json!([
+            {"name": "write_file", "status": "success"},
+            {"name": "edit_file", "status": "error"},
+        ])
+    );
+    assert_eq!(
+        tool_results(&server.requests()[1]),
+        [
+            ("call_1".to_owned(), "wrote n/new.txt (3 bytes)".to_owned()),
+            ("call_2".to_owned(), "Not executed".to_owned()),
+            (
+                "call_3".to_owned(),
+                "file mutation target resolution failed: file_not_found".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(home.path("work/n/new.txt")).unwrap(),
+        "hi\n"
+    );
+}
+
+#[test]
+fn file_changes_whose_targets_move_or_vanish_earlier_in_the_batch_are_not_executed() {
+    let command = "rm sub/f.txt && rm -r d && ln -s other d";
+    let server = FakeServer::start([
+        tool_calls(&[
+            (
+                "call_1",
+                "shell",
+                &json!({"request": {"action": "run", "command": command}}).to_string(),
+            ),
+            (
+                "call_2",
+                "edit_file",
+                r#"{"path":"sub/f.txt","old_string":"old","new_string":"new"}"#,
+            ),
+            (
+                "call_3",
+                "write_file",
+                r#"{"path":"d/x.txt","content":"hi\n"}"#,
+            ),
+        ]),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url(), &yolo());
+    home.write("work/sub/f.txt", "old\n");
+    home.write("work/d/f.txt", "f\n");
+    home.write("work/other/AGENTS.md", "OTHER RULE\n");
+    let output = home.ask("work", &["ask", "--json", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        format!("Running {command}\nEditing file\nWriting file\n")
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["steps"], 3);
+    assert_eq!(result["tool_calls"].as_array().unwrap().len(), 1);
+    let requests = server.requests();
+    let results = tool_results(&requests[1]);
+    assert_eq!(
+        results[1..],
+        [
+            ("call_2".to_owned(), "Not executed".to_owned()),
+            ("call_3".to_owned(), "Not executed".to_owned()),
+        ]
+    );
+    assert!(!home.path("work/other/x.txt").exists());
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.body_text().contains("OTHER RULE"))
+    );
+}
+
+#[test]
+fn shell_runs_are_deferred_by_their_working_directory_rules_only() {
+    let server = FakeServer::start([
+        tool_calls(&[("call_1", "shell", &shell_run(Some("sub")))]),
+        tool_calls(&[
+            ("call_2", "read_file", r#"{"path":"deep/x.txt"}"#),
+            ("call_3", "shell", &shell_run(None)),
+            ("call_4", "shell", &shell_run(Some(".."))),
+            (
+                "call_5",
+                "shell",
+                r#"{"request":{"action":"interact","session_id":"missing"}}"#,
+            ),
+            (
+                "call_6",
+                "shell",
+                r#"{"request":{"action":"stop","session_id":"missing"}}"#,
+            ),
+        ]),
+        tool_calls(&[
+            (
+                "call_7",
+                "write_file",
+                r#"{"path":"build/x.txt","content":"x\n"}"#,
+            ),
+            ("call_8", "shell", &shell_run(Some("build"))),
+        ]),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url(), &yolo());
+    let sub = home.write("work/sub/AGENTS.md", "SUB RULE\n");
+    home.write("work/deep/AGENTS.md", "DEEP RULE\n");
+    home.write("work/deep/x.txt", "x\n");
+    home.write("outside/AGENTS.md", "OUTSIDE RULE\n");
+    let output = home.ask("work", &["ask", "--json", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).starts_with("Running echo hi\nReading deep/x.txt\nRunning echo hi\n"),
+        "{}",
+        stderr(&output)
+    );
+    let requests = server.requests();
+    assert_eq!(system_texts(&requests[1])[1], scoped(&sub));
+    let results = tool_results(&requests[3]);
+    assert_eq!(results[0], ("call_1".to_owned(), DEFERRED.to_owned()));
+    for (call_id, content) in &results[2..6] {
+        assert_ne!(content, DEFERRED, "{call_id}");
+        assert_ne!(content, "Not executed", "{call_id}");
+    }
+    assert!(results[2].1.contains("hi"), "{}", results[2].1);
+    assert!(results[3].1.contains("hi"), "{}", results[3].1);
+    assert_eq!(
+        results[7],
+        (
+            "call_8".to_owned(),
+            "shell run cwd is invalid: FileNotFound".to_owned()
+        )
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.body_text().contains("OUTSIDE RULE"))
+    );
 }
