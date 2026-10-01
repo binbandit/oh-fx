@@ -6,7 +6,7 @@ oh-fx talks to any OpenAI-compatible Chat Completions endpoint through a *custom
 
 | File | Purpose |
 | --- | --- |
-| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps` |
+| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps`, `effort`, `fast_mode`, `fast_mode_model_bound` |
 | `<workspace>/.oh-fx.json` | Project settings. Only project-safe keys such as `max_agent_steps` apply; `provider`, `model`, `providers` and other profile keys are ignored with a `config project: ignored_project_user_only_setting` notice |
 
 Settings files are JSON objects of at most 64 KiB. A leading UTF-8 byte order mark is ignored. Duplicate keys are rejected anywhere in the document.
@@ -285,7 +285,20 @@ The `model` key belongs to the gateway and is never used for Codex. Without a Co
 oh-fx ask --effort high --fast "Find the flaky test"
 ```
 
-When a run asks for an effort other than `auto` or for Fast mode, `ask` loads the model list once before its first request to see what the model supports; otherwise it does not load it. A level the model does not list, or Fast mode for a model without the fast tier, is left out of the request without a message. When the list cannot be loaded, both are left out, and if Fast mode was asked for, `ask` prints `Fast mode is unavailable for this model right now; continuing at standard speed.` When ChatGPT answers a Fast request with a server error before any reply text, oh-fx retries at standard speed for the rest of the run.
+To use them on every run, save them in `settings.json`; the flags still override them for one run, and `--effort auto` or `--no-fast` turns them off:
+
+```json
+{
+  "provider": "codex",
+  "models": {"codex": "gpt-6.1-sol"},
+  "effort": "high",
+  "fast_mode": true
+}
+```
+
+`effort` is a level name or `null`, which means `auto`, and `fast_mode` is `true` or `false`. A legacy workspace entry's `effort` and `fast_mode` still win in their workspace. `fast_mode_model_bound`, which upstream's interactive app writes, must be `true` or `false`; `ask` does not use it. Any other type or an invalid level name makes the profile invalid.
+
+When a run asks for an effort other than `auto` or for Fast mode, by flag or in `settings.json`, `ask` loads the model list once before its first request to see what the model supports; otherwise it does not load it. A level the model does not list, or Fast mode for a model without the fast tier, is left out of the request without a message. When the list cannot be loaded, both are left out, and if Fast mode was asked for, `ask` prints `Fast mode is unavailable for this model right now; continuing at standard speed.` When ChatGPT answers a Fast request with a server error before any reply text, oh-fx retries at standard speed for the rest of the run.
 
 ### List the models
 
