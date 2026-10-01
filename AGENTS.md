@@ -57,6 +57,6 @@ This points git at `.githooks/`: `pre-commit` runs `cargo xtask style`, `commit-
 
 ## Releases
 
-Every push to `main` that passes CI publishes a GitHub release tagged `v<version>-dev.<n>`, where `<version>` is `workspace.package.version` in `Cargo.toml` and `<n>` is the commit count on `main`. Each release carries `oh-fx-<os>-<arch>.tar.gz` archives with `.sha256` files and a `latest.txt` pointer. Installed binaries upgrade themselves from these releases, so every merge reaches users.
+Every push to `main` that passes CI and changes more than documentation publishes a GitHub release tagged `v<version>-dev.<n>`, where `<version>` is `workspace.package.version` in `Cargo.toml` and `<n>` is the commit count on `main`. Each release carries `oh-fx-<os>-<arch>.tar.gz` archives with `.sha256` files and a `latest.txt` pointer. Installed binaries upgrade themselves from these releases, so every code change reaches users. A push that only touches `docs/` or Markdown files publishes nothing, and the next release takes the next commit count.
 
 Never rewrite `main`'s history: installed binaries only upgrade to a higher version, so the dev number must keep increasing.
