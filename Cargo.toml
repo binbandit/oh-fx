@@ -20,6 +20,7 @@ ofx-auth = { path = "crates/ofx-auth" }
 ofx-cli = { path = "crates/ofx-cli" }
 ofx-config = { path = "crates/ofx-config" }
 ofx-contract = { path = "crates/ofx-contract" }
+ofx-exec = { path = "crates/ofx-exec" }
 ofx-gateway = { path = "crates/ofx-gateway" }
 ofx-http = { path = "crates/ofx-http" }
 ofx-markdown = { path = "crates/ofx-markdown" }
