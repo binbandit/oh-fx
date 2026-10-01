@@ -251,6 +251,26 @@ mod tests {
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn waits_for_a_staged_binary_to_close_for_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged = directory.path().join("oh-fx");
+        let mut writer = fs::File::create(&staged).unwrap();
+        writer.write_all(&version_script("0.1.0-dev.2")).unwrap();
+        fs::set_permissions(&staged, Permissions::from_mode(EXECUTABLE_MODE)).unwrap();
+        assert_eq!(
+            Command::new(&staged).output().unwrap_err().kind(),
+            io::ErrorKind::ExecutableFileBusy
+        );
+        let release = thread::spawn(move || {
+            thread::sleep(BUSY_RETRY_DELAY * 5);
+            drop(writer);
+        });
+        assert_eq!(reported_version(&staged).as_deref(), Some("0.1.0-dev.2"));
+        release.join().unwrap();
+    }
+
     #[test]
     fn refuses_to_replace_a_read_only_binary() {
         let directory = tempfile::tempdir().unwrap();
