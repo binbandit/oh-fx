@@ -1,4 +1,6 @@
+use std::any::Any;
 use std::collections::HashMap;
+use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +13,7 @@ use ofx_contract::{
     ToolEffect, ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
     review_unavailable_json, tool_execution_failure_json,
 };
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -344,19 +346,22 @@ impl Agent {
             provider_replay: completion.provider_replay,
         });
         let mut next = 0;
-        let mut carried = None;
+        let mut carried = Deferred(None);
         while next < calls.len() {
             if cancel.is_cancelled() {
                 return Err(Stop::interrupted());
             }
-            let head = carried.take().unwrap_or_else(|| self.prepare(&calls[next]));
+            let head = carried
+                .0
+                .take()
+                .unwrap_or_else(|| self.prepare(&calls[next]));
             let parallel = head.is_parallel();
             let mut group = vec![(&calls[next], head)];
             next += 1;
             while parallel && next < calls.len() {
                 let prepared = self.prepare(&calls[next]);
                 if !prepared.is_parallel() {
-                    carried = Some(prepared);
+                    carried.0 = Some(prepared);
                     break;
                 }
                 group.push((&calls[next], prepared));
@@ -389,26 +394,29 @@ impl Agent {
     }
 
     fn prepare(&self, call: &ToolCall) -> Prepared {
-        let Some(tool) = self.tools.iter().find(|tool| tool.spec().name == call.name) else {
+        let Some((tool, _)) = self
+            .tools
+            .iter()
+            .zip(&self.tool_specs)
+            .find(|(_, spec)| spec.name == call.name)
+        else {
             return Prepared::Rejected(ToolOutput::failure(format!(
                 "Unsupported tool: {}",
                 call.name
             )));
         };
-        let prepared = panic::catch_unwind(AssertUnwindSafe(|| {
-            tool.prepare(&call.arguments).map(|prepared| {
-                let description = prepared.describe();
-                let mutation = prepared.file_mutation().cloned();
-                (prepared, description, mutation)
-            })
-        }));
-        match prepared {
-            Ok(Ok((prepared, description, mutation))) => {
-                Prepared::Ready(prepared, description, mutation)
-            }
-            Ok(Err(output)) => Prepared::Rejected(output),
-            Err(_) => Prepared::Rejected(panicked(&call.name)),
-        }
+        let prepared = match contained(|| tool.prepare(&call.arguments)) {
+            Some(Ok(prepared)) => prepared,
+            Some(Err(output)) => return Prepared::Rejected(output),
+            None => return Prepared::Rejected(panicked(&call.name)),
+        };
+        let inspected =
+            contained(|| prepared.describe()).zip(contained(|| prepared.file_mutation().cloned()));
+        let Some((description, mutation)) = inspected else {
+            discard(prepared);
+            return Prepared::Rejected(panicked(&call.name));
+        };
+        Prepared::Ready(prepared, description, mutation)
     }
 
     fn finish(
@@ -546,6 +554,14 @@ enum Prepared {
     Ready(Box<dyn PreparedCall>, CallDescription, Option<FileMutation>),
 }
 
+struct Deferred(Option<Prepared>);
+
+impl Drop for Deferred {
+    fn drop(&mut self) {
+        discard(self.0.take());
+    }
+}
+
 impl Prepared {
     fn is_parallel(&self) -> bool {
         matches!(self, Self::Ready(_, description, _) if description.concurrency == Concurrency::Parallel)
@@ -587,8 +603,10 @@ async fn run_group<'c>(
 ) -> SettledGroup<'c> {
     let mut dispatched = Vec::with_capacity(group.len());
     let mut blocked = None;
-    for (call, prepared) in group {
+    let mut group = group.into_iter();
+    for (call, prepared) in group.by_ref() {
         if cancel.is_cancelled() {
+            discard(prepared);
             break;
         }
         match prepared {
@@ -618,18 +636,23 @@ async fn run_group<'c>(
                     Admission::Allowed(path_access) => {
                         let context =
                             ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
-                        let task = tokio::spawn(prepared.execute(context));
+                        let task = tokio::spawn(async move { prepared.execute(context).await });
                         dispatched.push((call, Dispatched::Running(task)));
                     }
                     Admission::ReviewUnavailable => {
+                        discard(prepared);
                         let held = ToolOutput::failure(review_unavailable_json(&call.name));
                         dispatched.push((call, Dispatched::Held(held)));
                     }
-                    Admission::ApprovalRequired => break,
+                    Admission::ApprovalRequired => {
+                        discard(prepared);
+                        break;
+                    }
                 }
             }
         }
     }
+    group.for_each(discard);
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched) in dispatched {
@@ -674,17 +697,42 @@ async fn settle(
         tokio::select! {
             biased;
             joined = &mut *task => {
-                return Some(joined.unwrap_or_else(|_| panicked(&call.name)));
+                return Some(settled_output(call, joined));
             }
             () = cancel.cancelled() => {}
         }
         *grace_deadline.insert(Instant::now() + TOOL_CANCEL_GRACE)
     };
     if let Ok(joined) = tokio::time::timeout_at(deadline, &mut *task).await {
-        return Some(joined.unwrap_or_else(|_| panicked(&call.name)));
+        return Some(settled_output(call, joined));
     }
     task.abort();
     None
+}
+
+fn settled_output(call: &ToolCall, joined: Result<ToolOutput, JoinError>) -> ToolOutput {
+    joined.unwrap_or_else(|error| {
+        if let Ok(payload) = error.try_into_panic() {
+            release(payload);
+        }
+        panicked(&call.name)
+    })
+}
+
+fn contained<T>(hook: impl FnOnce() -> T) -> Option<T> {
+    panic::catch_unwind(AssertUnwindSafe(hook))
+        .map_err(release)
+        .ok()
+}
+
+fn release(payload: Box<dyn Any + Send>) {
+    if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(move || drop(payload))) {
+        mem::forget(payload);
+    }
+}
+
+fn discard<T>(unused: T) {
+    contained(move || drop(unused));
 }
 
 fn panicked(tool_name: &str) -> ToolOutput {
