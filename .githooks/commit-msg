@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+cargo xtask commit-msg "$1"
