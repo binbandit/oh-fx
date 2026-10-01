@@ -379,14 +379,14 @@ fn rejected_transactions_remove_the_parents_they_created_or_report_them() {
     let fixture = Fixture::new();
     let prepared = fixture.prepared("a/b/new.txt", "new\n");
 
-    let mut transaction = Transaction::new(&prepared);
+    let mut transaction = Transaction::new(&prepared, rename_new);
     drop(transaction.realize_traversal().unwrap());
     assert!(fixture.workspace.join("a/b").is_dir());
     let rejection = transaction.reject(RejectReason::IoFailure);
     assert_eq!(rejection.message(), "file mutation failed before commit");
     assert!(!fixture.workspace.join("a").exists());
 
-    let mut transaction = Transaction::new(&prepared);
+    let mut transaction = Transaction::new(&prepared, rename_new);
     drop(transaction.realize_traversal().unwrap());
     fs::write(fixture.workspace.join("a/b/other.txt"), "other").unwrap();
     let rejection = transaction.reject(RejectReason::Cancelled);
@@ -400,7 +400,7 @@ fn rejected_transactions_remove_the_parents_they_created_or_report_them() {
     );
 
     fs::remove_dir_all(fixture.workspace.join("a")).unwrap();
-    let mut transaction = Transaction::new(&prepared);
+    let mut transaction = Transaction::new(&prepared, rename_new);
     drop(transaction.realize_traversal().unwrap());
     fs::rename(
         fixture.workspace.join("a/b"),
@@ -449,13 +449,26 @@ fn large_content_is_staged_in_chunks_and_installed_whole() {
 fn apply_at(
     prepared: &PreparedMutation,
     at: Checkpoint,
+    action: impl FnMut(),
+) -> Result<(), Rejection> {
+    apply_at_with(prepared, at, rename_new, action)
+}
+
+fn apply_at_with(
+    prepared: &PreparedMutation,
+    at: Checkpoint,
+    create_new: CreateNew,
     mut action: impl FnMut(),
 ) -> Result<(), Rejection> {
-    prepared.apply_with(&CancellationToken::new(), &mut |checkpoint| {
-        if checkpoint == at {
-            action();
-        }
-    })
+    prepared.apply_with(
+        &CancellationToken::new(),
+        &mut |checkpoint| {
+            if checkpoint == at {
+                action();
+            }
+        },
+        create_new,
+    )
 }
 
 fn stage_file(directory: &Path) -> PathBuf {
@@ -605,17 +618,51 @@ fn a_file_created_after_final_validation_is_not_replaced() {
 }
 
 #[test]
+fn without_an_exclusive_rename_a_file_created_after_final_validation_is_not_replaced() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepared("new.txt", "mine\n");
+    let path = fixture.workspace.join("new.txt");
+
+    let rejection = apply_at_with(&prepared, Checkpoint::Validated, link_new, || {
+        fs::write(&path, "theirs\n").unwrap();
+    })
+    .unwrap_err();
+
+    assert_eq!(rejection.reason, RejectReason::StalePreimage);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "theirs\n");
+    assert_eq!(fs::metadata(&path).unwrap().nlink(), 1);
+    assert!(stage_files(&fixture.root).is_empty());
+}
+
+#[test]
+fn without_an_exclusive_rename_a_new_file_is_linked_into_place() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepared("a/new.txt", "mine\n");
+    let path = fixture.workspace.join("a/new.txt");
+
+    apply_at_with(&prepared, Checkpoint::Validated, link_new, || {}).unwrap();
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), "mine\n");
+    assert_eq!(fs::metadata(&path).unwrap().nlink(), 1);
+    assert!(stage_files(&fixture.root).is_empty());
+}
+
+#[test]
 fn cancellation_inside_the_transaction_removes_the_stage_and_created_parents() {
     let fixture = Fixture::new();
     let prepared = fixture.prepared("a/b/new.txt", "new\n");
     let cancel = CancellationToken::new();
 
     let rejection = prepared
-        .apply_with(&cancel, &mut |checkpoint| {
-            if checkpoint == Checkpoint::Staged {
-                cancel.cancel();
-            }
-        })
+        .apply_with(
+            &cancel,
+            &mut |checkpoint| {
+                if checkpoint == Checkpoint::Staged {
+                    cancel.cancel();
+                }
+            },
+            rename_new,
+        )
         .unwrap_err();
 
     assert_eq!(rejection.message(), "file mutation cancelled before commit");

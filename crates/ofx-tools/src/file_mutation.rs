@@ -13,8 +13,8 @@ use ofx_workspace::{
     open_directory,
 };
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, RenameFlags, Stat, fchmod, fstat, mkdirat, openat, renameat,
-    renameat_with,
+    AtFlags, FileType, Mode, OFlags, RenameFlags, Stat, fchmod, fstat, linkat, mkdirat, openat,
+    renameat, renameat_with, unlinkat,
 };
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
@@ -174,18 +174,19 @@ impl PreparedMutation {
     }
 
     pub(crate) fn apply(&self, cancel: &CancellationToken) -> Result<(), Rejection> {
-        self.apply_with(cancel, &mut |_| {})
+        self.apply_with(cancel, &mut |_| {}, rename_new)
     }
 
     fn apply_with(
         &self,
         cancel: &CancellationToken,
         checkpoint: &mut dyn FnMut(Checkpoint),
+        create_new: CreateNew,
     ) -> Result<(), Rejection> {
         if cancel.is_cancelled() {
             return Err(Rejection::new(RejectReason::Cancelled, Vec::new()));
         }
-        let mut transaction = Transaction::new(self);
+        let mut transaction = Transaction::new(self, create_new);
         transaction
             .commit(cancel, checkpoint)
             .map_err(|reason| transaction.reject(reason))
@@ -400,17 +401,21 @@ struct Stage {
     identity: Option<FileIdentity>,
 }
 
+type CreateNew = fn(&OwnedFd, &OsStr, &OsStr) -> Result<(), RejectReason>;
+
 struct Transaction<'a> {
     mutation: &'a PreparedMutation,
+    create_new: CreateNew,
     realized: Vec<FileIdentity>,
     created: Vec<(usize, FileIdentity)>,
     stage: Option<Stage>,
 }
 
 impl<'a> Transaction<'a> {
-    fn new(mutation: &'a PreparedMutation) -> Self {
+    fn new(mutation: &'a PreparedMutation, create_new: CreateNew) -> Self {
         Self {
             mutation,
+            create_new,
             realized: Vec::new(),
             created: Vec::new(),
             stage: None,
@@ -497,7 +502,12 @@ impl<'a> Transaction<'a> {
         if cancel.is_cancelled() {
             return Err(RejectReason::Cancelled);
         }
-        install(&commit_parent, &stage_name, name, mutation.creates_file())?;
+        if mutation.creates_file() {
+            (self.create_new)(&commit_parent, &stage_name, name)?;
+        } else {
+            renameat(&commit_parent, &stage_name, &commit_parent, name)
+                .map_err(|_| RejectReason::IoFailure)?;
+        }
         self.stage = None;
         Ok(())
     }
@@ -559,7 +569,7 @@ impl<'a> Transaction<'a> {
             return;
         };
         if observed_staged_identity(parent, &name) == Some(identity) {
-            let _ = rustix::fs::unlinkat(parent, &name, AtFlags::empty());
+            let _ = unlinkat(parent, &name, AtFlags::empty());
         }
     }
 
@@ -603,7 +613,7 @@ impl<'a> Transaction<'a> {
         if descriptor_identity(&child).ok() != Some(created) {
             return changed();
         }
-        match rustix::fs::unlinkat(&current, component, AtFlags::REMOVEDIR) {
+        match unlinkat(&current, component, AtFlags::REMOVEDIR) {
             Ok(()) => None,
             Err(Errno::NOTEMPTY | Errno::EXIST) => residue(ResidueReason::NotEmpty),
             Err(_) => residue(ResidueReason::RemoveFailed),
@@ -631,25 +641,30 @@ fn create_directory(
         Ok((directory, identity))
     });
     if created.is_err() {
-        let _ = rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR);
+        let _ = unlinkat(parent, name, AtFlags::REMOVEDIR);
     }
     created.map_err(|_| RejectReason::IoFailure)
 }
 
-fn install(
-    parent: &OwnedFd,
-    stage: &OsStr,
-    name: &OsStr,
-    creates: bool,
-) -> Result<(), RejectReason> {
-    let replaced = || renameat(parent, stage, parent, name).map_err(|_| RejectReason::IoFailure);
-    if !creates {
-        return replaced();
-    }
+fn rename_new(parent: &OwnedFd, stage: &OsStr, name: &OsStr) -> Result<(), RejectReason> {
     match renameat_with(parent, stage, parent, name, RenameFlags::NOREPLACE) {
+        Err(Errno::INVAL | Errno::NOSYS | Errno::NOTSUP | Errno::PERM) => {
+            link_new(parent, stage, name)
+        }
+        result => exclusive(result),
+    }
+}
+
+fn link_new(parent: &OwnedFd, stage: &OsStr, name: &OsStr) -> Result<(), RejectReason> {
+    exclusive(linkat(parent, stage, parent, name, AtFlags::empty()))?;
+    let _ = unlinkat(parent, stage, AtFlags::empty());
+    Ok(())
+}
+
+fn exclusive(result: Result<(), Errno>) -> Result<(), RejectReason> {
+    match result {
         Ok(()) => Ok(()),
         Err(Errno::EXIST) => Err(RejectReason::StalePreimage),
-        Err(Errno::INVAL | Errno::NOSYS | Errno::NOTSUP | Errno::PERM) => replaced(),
         Err(_) => Err(RejectReason::IoFailure),
     }
 }
