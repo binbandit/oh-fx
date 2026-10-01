@@ -139,6 +139,7 @@ struct ProjectInstructions {
     snapshot: Option<String>,
     deltas: Vec<String>,
     delivery: DeliveryState,
+    initial: DeliveryState,
 }
 
 struct KnownCapabilities {
@@ -196,13 +197,30 @@ impl Agent {
         provider: Arc<dyn ProjectContextProvider>,
         snapshot: ProjectContext,
     ) -> Self {
+        let delivery = DeliveryState::from_snapshot(&snapshot);
         self.project = Some(ProjectInstructions {
             provider,
-            delivery: DeliveryState::from_snapshot(&snapshot),
+            initial: delivery.clone(),
+            delivery,
             snapshot: snapshot.content,
             deltas: Vec::new(),
         });
         self
+    }
+
+    pub fn set_config(&mut self, config: AgentConfig) {
+        if config.model != self.config.model {
+            self.capabilities = None;
+        }
+        self.config = config;
+    }
+
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        if let Some(project) = &mut self.project {
+            project.deltas.clear();
+            project.delivery = project.initial.clone();
+        }
     }
 
     pub async fn run_turn(
