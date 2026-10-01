@@ -12,6 +12,18 @@ This installs `oh-fx` and an `ofx` alias into `~/.local/bin`. Set `OH_FX_INSTALL
 
 Every push to `main` that passes CI publishes a release. Installed binaries check for a newer release in the background at most every five minutes and replace themselves, so the next launch runs it. Run `oh-fx upgrade` to upgrade immediately, or set `OH_FX_AUTO_UPGRADE=0` to turn background upgrades off and stay on the installed release.
 
+### From a checkout
+
+With [just](https://github.com/casey/just) installed:
+
+| Command | Effect |
+| --- | --- |
+| `just install` | Builds a release binary and installs `oh-fx` and the `ofx` alias the same way as the script, honoring `OH_FX_INSTALL_DIR`. |
+| `just build` | Builds the release binary only. |
+| `just run <args>` | Runs oh-fx from the checkout, for example `just run ask "summarize this repository"`. |
+
+Binaries built from a checkout report a `-local` version and never upgrade themselves.
+
 ## Automated pull requests
 
 Open a ready-for-review PR against `main`. Pullfrog reviews it and re-reviews
