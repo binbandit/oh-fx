@@ -7,7 +7,7 @@ use crate::configured_provider::{
 use crate::header_template::InterpolationError;
 
 pub(crate) const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
-const REDACTED: &str = "[redacted]";
+pub(crate) const REDACTED: &str = "[redacted]";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedConnection {
@@ -160,7 +160,34 @@ fn proxy_credentials(proxy: &str) -> Vec<String> {
     {
         credentials.push(password.to_owned());
     }
+    let decoded: Vec<String> = credentials
+        .iter()
+        .filter_map(|credential| percent_decode(credential))
+        .filter(|credential| !credentials.contains(credential))
+        .collect();
+    credentials.extend(decoded);
     credentials
+}
+
+fn percent_decode(text: &str) -> Option<String> {
+    let mut decoded = Vec::with_capacity(text.len());
+    let mut bytes = text.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = bytes.next().and_then(hex_value)?;
+            let low = bytes.next().and_then(hex_value)?;
+            decoded.push((high << 4) | low);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    char::from(byte)
+        .to_digit(16)
+        .and_then(|digit| u8::try_from(digit).ok())
 }
 
 fn expand_home(path: &str, home: Option<&Path>) -> Result<PathBuf, ConnectionError> {
@@ -298,6 +325,23 @@ mod tests {
         assert_eq!(
             proxy_credentials("http://proxy.corp:3128"),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn proxy_credentials_include_the_decoded_forms_the_client_sends() {
+        assert_eq!(
+            proxy_credentials("http://svc%2Duser:p%40ss%3Aword@proxy.corp:3128"),
+            [
+                "svc%2Duser:p%40ss%3Aword",
+                "p%40ss%3Aword",
+                "svc-user:p@ss:word",
+                "p@ss:word",
+            ]
+        );
+        assert_eq!(
+            proxy_credentials("http://user:bad%zzpass@proxy.corp:3128"),
+            ["user:bad%zzpass", "bad%zzpass"]
         );
     }
 }

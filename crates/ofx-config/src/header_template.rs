@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::configured_provider::{
     ConfiguredProviderError, MAX_ENV_BYTES, ProviderAuth, is_environment_name,
 };
@@ -31,7 +33,7 @@ const SENSITIVE_NAME_PARTS: [&str; 11] = [
 const MIN_UNNAMED_SECRET_BYTES: usize = 8;
 const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Segment {
     Literal(String),
     Variable {
@@ -40,10 +42,19 @@ enum Segment {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HeaderTemplate {
     name: String,
     segments: Vec<Segment>,
+}
+
+impl fmt::Debug for HeaderTemplate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HeaderTemplate")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

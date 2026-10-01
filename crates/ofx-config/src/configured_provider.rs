@@ -1,7 +1,9 @@
+use std::fmt;
 use std::net::Ipv6Addr;
 
 use serde_json::{Map, Value};
 
+use crate::connection::REDACTED;
 use crate::header_template::HeaderTemplate;
 use crate::model_capabilities::Capabilities;
 
@@ -115,7 +117,7 @@ pub(crate) struct ModelMetadata {
     pub(crate) max_output_tokens: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderDefinition {
     pub(crate) id: String,
     pub(crate) base_url: String,
@@ -127,6 +129,24 @@ pub struct ProviderDefinition {
     pub(crate) ca_file: Option<String>,
     pub(crate) proxy: Option<String>,
     pub(crate) models: Vec<String>,
+}
+
+impl fmt::Debug for ProviderDefinition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderDefinition")
+            .field("id", &self.id)
+            .field("base_url", &self.base_url)
+            .field("auth", &self.auth)
+            .field("tool_choice_mode", &self.tool_choice_mode)
+            .field("max_tokens_parameter", &self.max_tokens_parameter)
+            .field("model_metadata", &self.model_metadata)
+            .field("headers", &self.headers)
+            .field("ca_file", &self.ca_file)
+            .field("proxy", &self.proxy.as_ref().map(|_| REDACTED))
+            .field("models", &self.models)
+            .finish()
+    }
 }
 
 impl ProviderDefinition {
@@ -608,6 +628,19 @@ fn validate_path(path: &str) -> ParseResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_redacts_literal_headers_and_proxy_credentials() {
+        let json = r#"{"corp":{"protocol":"openai-chat-completions","base_url":"https://gateway.example.com/v1","auth":{"type":"none"},"headers":{"x-api-key":"literal-secret-value","x-portkey-api-key":"${PORTKEY_API_KEY}"},"proxy":"http://svc:proxy-password@proxy.corp:3128"}}"#;
+        let registry = ProviderRegistry::parse_json(json.as_bytes()).unwrap();
+        let rendered = format!("{registry:?}");
+        for secret in ["literal-secret-value", "proxy-password", "svc:"] {
+            assert!(!rendered.contains(secret), "{rendered}");
+        }
+        for visible in ["x-api-key", "x-portkey-api-key", "gateway.example.com"] {
+            assert!(rendered.contains(visible), "{rendered}");
+        }
+    }
 
     const TEST_JSON: &str = r#"{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:11434/v1/","auth":{"type":"none"}},
 "router":{"protocol":"openai-chat-completions","base_url":"https://openrouter.ai/api/v1","auth":{"type":"bearer","env":"OPENROUTER_API_KEY"},"tool_choice_mode":"send","reviewer_model":"openai/review","model_metadata":{"openai/gpt-4.1":{"context_window":8192,"max_output_tokens":1024,"supports_tool_use":true,"supports_vision":false},"unknown":{}}}}"#;
