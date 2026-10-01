@@ -178,7 +178,7 @@ async fn codex_needs_a_model_before_its_catalog_is_listed() {
     assert_eq!(unselected.listing, Listing::Failed);
     assert_eq!(
         unselected.stderr,
-        "oh-fx: no Codex model is selected; save one as \"codex\" under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL\n"
+        "oh-fx: no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL\n"
     );
     assert!(server.requests().is_empty());
     profile.lookup = |name| (name == "OH_FX_MODEL").then(|| "gpt-5.6-luna".to_owned());

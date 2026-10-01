@@ -120,7 +120,7 @@ fn the_environment_selects_codex_and_a_run_model() {
     assert_eq!(unselected.status.code(), Some(1));
     assert_eq!(
         stderr(&unselected),
-        "oh-fx ask: no Codex model is selected; save one as \"codex\" under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL\n"
+        "oh-fx ask: no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL\n"
     );
     let json = home.ask(&["ask", "--json", "hello"], &[("OH_FX_PROVIDER", "Codex")]);
     assert_eq!(stdout(&json), error_json("CodexModelNotSelected"));

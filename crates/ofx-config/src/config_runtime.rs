@@ -55,7 +55,7 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
     "skill_symlink_authorities",
 ];
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
-const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; save one as \"codex\" under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
+const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL";
 
 type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -960,7 +960,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, SelectionError::CodexModelNotSelected);
         assert_eq!(error.code(), "CodexModelNotSelected");
-        assert_eq!(error.to_string(), CODEX_MODEL_NOT_SELECTED);
+        assert_eq!(
+            error.to_string(),
+            "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL"
+        );
     }
 
     #[test]

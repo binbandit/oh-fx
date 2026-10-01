@@ -275,7 +275,7 @@ Model ids are the slugs from the Codex model list that ChatGPT offers your plan,
 3. `models.codex`, then the legacy `codex_model`, from the workspace entry
 4. `models.codex`, then `codex_model`, from the top level
 
-The `model` key belongs to the gateway and is never used for Codex. Without a Codex model, `oh-fx ask` stops with `no Codex model is selected; save one as "codex" under "models" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL`.
+The `model` key belongs to the gateway and is never used for Codex. Without a Codex model, `oh-fx ask` and `oh-fx models` stop with ``no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL``. As upstream does, `ask` never picks a model from the catalog on its own; `oh-fx login codex` and `oh-fx provider codex` save one.
 
 ### List the models
 
