@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
+use std::mem;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -43,6 +44,7 @@ const PERMISSION_REQUIRED_HEADLINE: &str =
 const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_unavailable";
 const ASK_MODE_APPROVAL_HINT: &str = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
 const AUTO_MODE_APPROVAL_HINT: &str = "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule";
+const BLANK_TEXT: [char; 4] = [' ', '\t', '\r', '\n'];
 
 struct Failure {
     code: String,
@@ -481,6 +483,13 @@ fn write_error_name(error: &io::Error) -> &'static str {
     }
 }
 
+fn without_leading_blank_lines(text: &str) -> &str {
+    let blank = text.len() - text.trim_start_matches(BLANK_TEXT).len();
+    text[..blank]
+        .rfind('\n')
+        .map_or(text, |end| &text[end + 1..])
+}
+
 fn write_stderr(text: &str) -> io::Result<()> {
     let mut stderr = io::stderr().lock();
     stderr.write_all(text.as_bytes())?;
@@ -635,14 +644,24 @@ enum OutputMode {
     Terminal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusBlock {
+    Progress,
+    Notice,
+    Operational,
+}
+
 struct Presenter {
     mode: OutputMode,
     permission_mode: PermissionMode,
     source: CredentialSource,
+    stdout: Box<dyn Write + Send>,
     output: String,
     has_output: bool,
     boundary_pending: bool,
     trailing_newlines: usize,
+    open_status_block: Option<StatusBlock>,
+    held_blank_text: String,
     steps: u64,
     tool_calls: Vec<ToolRecord>,
     settling_progress: Vec<(ToolCallId, String)>,
@@ -670,10 +689,13 @@ impl Presenter {
             mode,
             permission_mode,
             source,
+            stdout: Box::new(io::stdout()),
             output: String::new(),
             has_output: false,
             boundary_pending: false,
             trailing_newlines: 0,
+            open_status_block: None,
+            held_blank_text: String::new(),
             steps: 0,
             tool_calls: Vec::new(),
             settling_progress: Vec::new(),
@@ -685,12 +707,12 @@ impl Presenter {
     fn handle(&mut self, event: UiEvent) -> bool {
         let written = match event {
             UiEvent::AssistantText { text, .. } => self.push_assistant(&text),
-            UiEvent::Operational { text, .. } => write_stderr(&text),
+            UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
             UiEvent::Recovery { status, .. } => {
                 let notice = (self.mode != OutputMode::Quiet)
                     .then(|| format!("[notice] {}\n", status.label()));
                 self.recovery = Some(status);
-                notice.map_or(Ok(()), |line| write_stderr(&line))
+                notice.map_or(Ok(()), |line| self.write_status(StatusBlock::Notice, &line))
             }
             UiEvent::ToolStarted {
                 call_id,
@@ -703,7 +725,7 @@ impl Presenter {
                     self.settling_progress.push((call_id, line));
                     Ok(())
                 } else {
-                    write_stderr(&line)
+                    self.write_status(StatusBlock::Progress, &line)
                 }
             }
             UiEvent::ToolFinished {
@@ -714,7 +736,7 @@ impl Presenter {
             } => {
                 self.tool_calls.push(ToolRecord::new(tool_name, status));
                 match self.take_settling_progress(&call_id) {
-                    Some(line) => write_stderr(&line),
+                    Some(line) => self.write_status(StatusBlock::Progress, &line),
                     None => Ok(()),
                 }
             }
@@ -772,6 +794,7 @@ impl Presenter {
 
     fn start_step(&mut self) {
         self.steps += 1;
+        self.held_blank_text.clear();
         if self.has_output {
             self.boundary_pending = true;
         }
@@ -781,26 +804,76 @@ impl Presenter {
         if text.is_empty() || self.mode == OutputMode::Quiet {
             return Ok(());
         }
-        if self.boundary_pending && self.has_output {
-            let separator = match self.trailing_newlines {
-                0 => "\n\n",
-                1 => "\n",
-                _ => "",
-            };
-            self.write_assistant(separator)?;
+        if self.mode == OutputMode::Terminal {
+            return self.push_terminal_text(text);
+        }
+        if self.boundary_pending {
+            self.write_separator()?;
         }
         self.boundary_pending = false;
-        self.write_assistant(text)
+        self.write_output(text)
     }
 
-    fn write_assistant(&mut self, text: &str) -> io::Result<()> {
+    fn push_terminal_text(&mut self, text: &str) -> io::Result<()> {
+        let visible = text.trim_end_matches(BLANK_TEXT);
+        if visible.is_empty() {
+            self.held_blank_text.push_str(text);
+            return Ok(());
+        }
+        let mut pending = mem::replace(&mut self.held_blank_text, text[visible.len()..].to_owned());
+        pending.push_str(visible);
+        self.open_status_block = None;
+        if !mem::take(&mut self.boundary_pending) {
+            return self.write_output(&pending);
+        }
+        self.write_separator()?;
+        self.write_output(without_leading_blank_lines(&pending))
+    }
+
+    fn write_status(&mut self, block: StatusBlock, line: &str) -> io::Result<()> {
+        if self.mode != OutputMode::Terminal {
+            return write_stderr(line);
+        }
+        self.held_blank_text.clear();
+        if self.open_status_block == Some(block) {
+            self.end_line()?;
+        } else {
+            self.write_separator()?;
+            self.open_status_block = Some(block);
+        }
+        self.write_output(line)?;
+        self.boundary_pending = true;
+        Ok(())
+    }
+
+    fn write_separator(&mut self) -> io::Result<()> {
+        if !self.has_output {
+            return Ok(());
+        }
+        let separator = match self.trailing_newlines {
+            0 => "\n\n",
+            1 => "\n",
+            _ => "",
+        };
+        self.write_output(separator)
+    }
+
+    fn end_line(&mut self) -> io::Result<()> {
+        if self.has_output && self.trailing_newlines == 0 {
+            self.write_output("\n")?;
+        }
+        Ok(())
+    }
+
+    fn write_output(&mut self, text: &str) -> io::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
         if self.mode == OutputMode::Json {
             self.output.push_str(text);
         } else {
-            crate::write_stdout(text)?;
+            self.stdout.write_all(text.as_bytes())?;
+            self.stdout.flush()?;
         }
         self.has_output = true;
         let trailing = text.bytes().rev().take_while(|byte| *byte == b'\n').count();
@@ -875,6 +948,9 @@ impl Presenter {
     }
 
     fn finish(mut self, report: &TurnReport, model: &str) -> ExitCode {
+        if self.mode == OutputMode::Terminal {
+            let _ = self.end_line();
+        }
         if let (None, Some(failure @ TurnFailure::PermissionRequired(blocked))) =
             (self.write_error, &report.failure)
         {
@@ -897,9 +973,6 @@ impl Presenter {
         if self.mode != OutputMode::Json {
             if let Some(code) = self.write_error {
                 let _ = write_stderr(&format!("oh-fx: {code}\n"));
-            }
-            if completed && self.has_output && self.mode == OutputMode::Terminal {
-                let _ = crate::write_stdout("\n");
             }
             return if completed {
                 ExitCode::SUCCESS
@@ -961,7 +1034,7 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
     use std::process::{self, Child, Stdio};
-    use std::sync::mpsc;
+    use std::sync::{Mutex, mpsc};
     use std::time::{Duration, Instant};
 
     use ofx_auth::{ChatGptEndpoints, PreparationError};
@@ -1380,21 +1453,88 @@ mod tests {
         assert!(unselected.notice.is_some());
     }
 
+    fn started(call_id: &str, title: &str, effect: ToolEffect) -> UiEvent {
+        UiEvent::ToolStarted {
+            turn_id: TurnId::new(1),
+            call_id: ToolCallId::new(call_id),
+            tool_name: "read_file".to_owned(),
+            description: CallDescription {
+                title: title.to_owned(),
+                activity: ToolActivity::Read,
+                effect,
+                concurrency: Concurrency::Parallel,
+            },
+        }
+    }
+
+    fn finished(call_id: &str) -> UiEvent {
+        UiEvent::ToolFinished {
+            turn_id: TurnId::new(1),
+            call_id: ToolCallId::new(call_id),
+            tool_name: "read_file".to_owned(),
+            status: ToolResultStatus::Success,
+        }
+    }
+
+    fn assistant(text: &str) -> UiEvent {
+        UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: text.to_owned(),
+        }
+    }
+
+    fn present(presenter: &mut Presenter, events: impl IntoIterator<Item = UiEvent>) {
+        for event in events {
+            assert!(presenter.handle(event));
+        }
+    }
+
+    fn report(failure: Option<TurnFailure>) -> TurnReport {
+        TurnReport {
+            outcome: if failure.is_some() {
+                TurnOutcome::Failed
+            } else {
+                TurnOutcome::Completed
+            },
+            final_text: String::new(),
+            usage: Usage::default(),
+            failure,
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Screen(Arc<Mutex<Vec<u8>>>);
+
+    impl Screen {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl Write for Screen {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn terminal_presenter() -> (Presenter, Screen) {
+        let screen = Screen::default();
+        let mut presenter = json_presenter();
+        presenter.mode = OutputMode::Terminal;
+        presenter.stdout = Box::new(screen.clone());
+        (presenter, screen)
+    }
+
     #[test]
     fn raw_output_separates_text_around_tool_steps_and_counts_rejections() {
         let mut presenter = json_presenter();
         presenter.push_assistant("Looking.").unwrap();
-        assert!(presenter.handle(UiEvent::ToolStarted {
-            turn_id: TurnId::new(1),
-            call_id: ToolCallId::new("call-1"),
-            tool_name: "read_file".to_owned(),
-            description: CallDescription {
-                title: "Reading".to_owned(),
-                activity: ToolActivity::Read,
-                effect: ToolEffect::ReadOnly,
-                concurrency: Concurrency::Parallel,
-            },
-        }));
+        assert!(presenter.handle(started("call-1", "Reading", ToolEffect::ReadOnly)));
         presenter.push_assistant("Found it.").unwrap();
         assert!(presenter.handle(UiEvent::ToolRejected {
             turn_id: TurnId::new(1),
@@ -1405,5 +1545,382 @@ mod tests {
         assert_eq!(presenter.output, "Looking.\n\nFound it.\n\n\nDone");
         assert_eq!(presenter.steps, 2);
         assert_eq!(presenter.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn terminal_output_puts_tool_progress_on_its_own_line_between_blank_lines() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("I'll read `readme.md` to find the project name."),
+                started("call-1", "Reading readme.md", ToolEffect::ReadOnly),
+                finished("call-1"),
+                assistant(
+                    "The project is named **oh-fx**, as shown in the heading of `README.md`.",
+                ),
+            ],
+        );
+        assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+        assert_eq!(
+            screen.text(),
+            "I'll read `readme.md` to find the project name.\n\nReading readme.md\n\nThe project is named **oh-fx**, as shown in the heading of `README.md`.\n"
+        );
+    }
+
+    #[test]
+    fn terminal_output_leaves_one_blank_line_whatever_newlines_end_the_text() {
+        for looking in ["Looking.", "Looking.\n", "Looking.\n\n"] {
+            let (mut presenter, screen) = terminal_presenter();
+            present(
+                &mut presenter,
+                [
+                    assistant(looking),
+                    started("call-1", "Reading a.txt", ToolEffect::ReadOnly),
+                    finished("call-1"),
+                    assistant("Found it."),
+                ],
+            );
+            assert_eq!(
+                screen.text(),
+                "Looking.\n\nReading a.txt\n\nFound it.",
+                "{looking:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_output_keeps_consecutive_tool_progress_lines_together() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                started("call-1", "Reading a.txt", ToolEffect::ReadOnly),
+                started("call-2", "Reading b.txt", ToolEffect::ReadOnly),
+                finished("call-1"),
+                finished("call-2"),
+                started("call-3", "Reading c.txt", ToolEffect::ReadOnly),
+                finished("call-3"),
+                assistant("Read three files."),
+                started("call-4", "Reading d.txt", ToolEffect::ReadOnly),
+                finished("call-4"),
+                assistant("And one more."),
+            ],
+        );
+        assert_eq!(
+            screen.text(),
+            "Reading a.txt\nReading b.txt\nReading c.txt\n\nRead three files.\n\nReading d.txt\n\nAnd one more."
+        );
+        assert_eq!(presenter.steps, 4);
+    }
+
+    #[test]
+    fn terminal_output_shows_a_settling_tool_in_its_block_when_it_finishes() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Checking."),
+                started("call-1", "Reading a.txt", ToolEffect::None),
+            ],
+        );
+        assert_eq!(screen.text(), "Checking.");
+        present(
+            &mut presenter,
+            [started("call-2", "Reading b.txt", ToolEffect::ReadOnly)],
+        );
+        assert_eq!(screen.text(), "Checking.\n\nReading b.txt\n");
+        present(
+            &mut presenter,
+            [
+                finished("call-2"),
+                finished("call-1"),
+                assistant("Done checking."),
+            ],
+        );
+        assert_eq!(
+            screen.text(),
+            "Checking.\n\nReading b.txt\nReading a.txt\n\nDone checking."
+        );
+
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Checking."),
+                started("call-1", "Reading a.txt", ToolEffect::None),
+                finished("call-1"),
+                assistant("Done checking."),
+            ],
+        );
+        assert_eq!(
+            screen.text(),
+            "Checking.\n\nReading a.txt\n\nDone checking."
+        );
+    }
+
+    #[test]
+    fn terminal_output_groups_recovery_notices_apart_from_tool_progress() {
+        let retrying = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::AutoRetry,
+            failed_attempt: 1,
+            succeeded_attempt: 0,
+            attempt_limit: 10,
+            cause: Some(ModelRecoveryCause::RateLimited),
+            action: Some(ModelRecoveryAction::RetryingRequest),
+            delay_seconds: 2,
+            diagnostic: None,
+        };
+        let recovered = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::AutoRecovered,
+            failed_attempt: 0,
+            succeeded_attempt: 2,
+            cause: None,
+            action: None,
+            delay_seconds: 0,
+            ..retrying.clone()
+        };
+        let notice = |status: &RouteRecoveryStatus| UiEvent::Recovery {
+            turn_id: TurnId::new(1),
+            status: status.clone(),
+        };
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Looking."),
+                started("call-1", "Reading a.txt", ToolEffect::ReadOnly),
+                finished("call-1"),
+                notice(&retrying),
+                notice(&recovered),
+                started("call-2", "Reading b.txt", ToolEffect::ReadOnly),
+                finished("call-2"),
+                assistant("Found it."),
+            ],
+        );
+        assert_eq!(
+            screen.text(),
+            format!(
+                "Looking.\n\nReading a.txt\n\n[notice] {}\n[notice] {}\n\nReading b.txt\n\nFound it.",
+                retrying.label(),
+                recovered.label()
+            )
+        );
+    }
+
+    fn operational(text: &str) -> UiEvent {
+        UiEvent::Operational {
+            turn_id: TurnId::new(1),
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn terminal_output_shows_done_alone_for_a_blank_reply() {
+        for reply in [&["  "][..], &["  ", "\n"]] {
+            let (mut presenter, screen) = terminal_presenter();
+            present(&mut presenter, reply.iter().map(|text| assistant(text)));
+            present(&mut presenter, [operational("Done.")]);
+            assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+            assert_eq!(screen.text(), "Done.\n", "{reply:?}");
+        }
+
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Looking."),
+                started("call-1", "Reading a.txt", ToolEffect::ReadOnly),
+                finished("call-1"),
+                assistant("  \n"),
+                operational("Done."),
+            ],
+        );
+        assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+        assert_eq!(screen.text(), "Looking.\n\nReading a.txt\n\nDone.\n");
+    }
+
+    fn read(call_id: &str) -> [UiEvent; 2] {
+        [
+            started(call_id, "Reading a.txt", ToolEffect::ReadOnly),
+            finished(call_id),
+        ]
+    }
+
+    #[test]
+    fn terminal_output_merges_blank_text_with_the_separator_around_a_tool() {
+        let cases: [(&[&str], &[&str], &str); 4] = [
+            (
+                &["Looking."],
+                &["\n", "Found it."],
+                "Looking.\n\nReading a.txt\n\nFound it.\n",
+            ),
+            (
+                &["Looking."],
+                &["\n\n  Found", " it.\n\n"],
+                "Looking.\n\nReading a.txt\n\n  Found it.\n",
+            ),
+            (
+                &["Looking.\n\n\n"],
+                &["Found it."],
+                "Looking.\n\nReading a.txt\n\nFound it.\n",
+            ),
+            (
+                &["Looking.", "  \n"],
+                &["  \n", "\n", "Found", "\n\n", "it.\n"],
+                "Looking.\n\nReading a.txt\n\nFound\n\nit.\n",
+            ),
+        ];
+        for (before, after, expected) in cases {
+            let (mut presenter, screen) = terminal_presenter();
+            present(&mut presenter, before.iter().map(|text| assistant(text)));
+            present(&mut presenter, read("call-1"));
+            present(&mut presenter, after.iter().map(|text| assistant(text)));
+            assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+            assert_eq!(screen.text(), expected, "{before:?} {after:?}");
+        }
+    }
+
+    #[test]
+    fn terminal_output_keeps_blank_text_that_opens_the_output() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(&mut presenter, [assistant("\n\n"), assistant("  Hello")]);
+        assert_eq!(screen.text(), "\n\n  Hello");
+
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [assistant("Looking.")]
+                .into_iter()
+                .chain(read("call-1"))
+                .chain([assistant("\n")])
+                .chain(read("call-2"))
+                .chain([assistant("Found it.")]),
+        );
+        assert_eq!(
+            screen.text(),
+            "Looking.\n\nReading a.txt\nReading a.txt\n\nFound it."
+        );
+    }
+
+    fn sequence_events(piece: usize, index: usize) -> Vec<UiEvent> {
+        let call_id = format!("call-{index}");
+        match piece {
+            0 => read(&call_id).to_vec(),
+            1 => vec![
+                started(&call_id, "Reading b.txt", ToolEffect::None),
+                finished(&call_id),
+            ],
+            2 => vec![UiEvent::ToolRejected {
+                turn_id: TurnId::new(1),
+                call_id: ToolCallId::new(call_id),
+                tool_name: "missing".to_owned(),
+            }],
+            3 => vec![UiEvent::Recovery {
+                turn_id: TurnId::new(1),
+                status: RouteRecoveryStatus {
+                    kind: RouteRecoveryKind::AutoRecovered,
+                    failed_attempt: 0,
+                    succeeded_attempt: 2,
+                    attempt_limit: 10,
+                    cause: None,
+                    action: None,
+                    delay_seconds: 0,
+                    diagnostic: None,
+                },
+            }],
+            4 => vec![operational("Done.")],
+            _ => vec![assistant(
+                ["\n", "  ", "Text", "Text\n\n\n", "\n\nText", "  \n  Text  "][piece - 5],
+            )],
+        }
+    }
+
+    fn status_kind(line: &str) -> Option<StatusBlock> {
+        match line {
+            "Reading a.txt" | "Reading b.txt" => Some(StatusBlock::Progress),
+            "Done." => Some(StatusBlock::Operational),
+            line if line.starts_with("[notice] ") => Some(StatusBlock::Notice),
+            _ => None,
+        }
+    }
+
+    fn assert_status_lines_stand_apart(screen: &str, label: &str) {
+        assert!(!screen.ends_with("\n\n"), "{label}: {screen:?}");
+        assert!(
+            screen.is_empty() || screen.ends_with('\n'),
+            "{label}: {screen:?}"
+        );
+        let mut previous: Option<(Option<StatusBlock>, usize)> = None;
+        let mut blank_lines = 0;
+        for line in screen.lines() {
+            if line.trim_matches(BLANK_TEXT).is_empty() {
+                blank_lines += 1;
+                continue;
+            }
+            let kind = status_kind(line);
+            assert!(
+                kind.is_some()
+                    || !["Reading", "Done.", "[notice]"]
+                        .iter()
+                        .any(|status| line.contains(status)),
+                "{label}: a status line shares a line with text in {screen:?}"
+            );
+            let expected = match previous {
+                None => kind.map(|_| 0),
+                Some((previous_kind, _)) if previous_kind.is_none() && kind.is_none() => None,
+                Some((previous_kind, _)) => Some(usize::from(previous_kind != kind)),
+            };
+            if let Some(expected) = expected {
+                assert_eq!(blank_lines, expected, "{label}: {screen:?}");
+            }
+            previous = Some((kind, blank_lines));
+            blank_lines = 0;
+        }
+    }
+
+    #[test]
+    fn terminal_output_never_glues_or_doubles_blank_lines_around_status_lines() {
+        let pieces: usize = 11;
+        let length = 4;
+        for mut code in 0..pieces.pow(length) {
+            let mut sequence = Vec::new();
+            for _ in 0..length {
+                sequence.push(code % pieces);
+                code /= pieces;
+            }
+            let (mut presenter, screen) = terminal_presenter();
+            for (index, piece) in sequence.iter().enumerate() {
+                present(&mut presenter, sequence_events(*piece, index));
+            }
+            let _ = presenter.finish(&report(None), "m");
+            assert_status_lines_stand_apart(&screen.text(), &format!("{sequence:?}"));
+        }
+    }
+
+    #[test]
+    fn terminal_output_shows_operational_text_and_ends_the_line_before_failures() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Looking."),
+                started("call-1", "Reading a.txt", ToolEffect::ReadOnly),
+                finished("call-1"),
+                operational("Step limit reached.\n"),
+            ],
+        );
+        let failure = Some(TurnFailure::StepLimitReached);
+        assert_eq!(presenter.finish(&report(failure), "m"), ExitCode::FAILURE);
+        assert_eq!(
+            screen.text(),
+            "Looking.\n\nReading a.txt\n\nStep limit reached.\n"
+        );
+
+        let (mut presenter, screen) = terminal_presenter();
+        present(&mut presenter, [assistant("Partial answer")]);
+        let failure = Some(TurnFailure::StepLimitReached);
+        assert_eq!(presenter.finish(&report(failure), "m"), ExitCode::FAILURE);
+        assert_eq!(screen.text(), "Partial answer\n");
     }
 }
