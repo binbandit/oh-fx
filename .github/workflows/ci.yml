@@ -165,7 +165,7 @@ jobs:
           fi
           cargo xtask footprint "$@"
       - name: Note a missing report
-        if: env.MEASURE == 'true' && steps.report.outcome != 'success'
+        if: ${{ !cancelled() && env.MEASURE == 'true' && steps.report.outcome != 'success' }}
         timeout-minutes: 2
         run: |
           printf '## Footprint\n\nNo report: a setup or measurement step failed, so nothing was measured. See the job log.\n' >> "$GITHUB_STEP_SUMMARY"
