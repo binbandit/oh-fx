@@ -29,10 +29,26 @@ pub struct FileMutation {
     pub state: FileMutationState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CommandRequest {
+    Run {
+        command: String,
+        cwd: PathBuf,
+        terminal: bool,
+    },
+    Observe,
+    SendInput,
+    Stop,
+}
+
 pub trait PermissionGate: Send + Sync {
     fn admit(&self, call: &ToolCall) -> Admission;
 
     fn admit_file_mutation(&self, _mutation: &FileMutation) -> Admission {
+        Admission::ApprovalRequired
+    }
+
+    fn admit_command(&self, _request: &CommandRequest) -> Admission {
         Admission::ApprovalRequired
     }
 }
