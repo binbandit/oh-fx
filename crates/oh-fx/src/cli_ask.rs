@@ -197,6 +197,7 @@ struct Route {
     model: String,
     max_output_tokens: Option<u32>,
     source: CredentialSource,
+    uses_tls: bool,
 }
 
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -371,6 +372,7 @@ async fn prepare_agent(
             settings.selected_model(connection, model, &lookup)
         })?;
         let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
+        let uses_tls = uses_tls(&resolved.chat_url);
         let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
             .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
         let model = model.map_err(Failure::invalid_model)?;
@@ -379,8 +381,12 @@ async fn prepare_agent(
             max_output_tokens: request_output_tokens(connection.capabilities(&model)),
             model,
             source: CredentialSource::Configured,
+            uses_tls,
         }
     };
+    if route.uses_tls {
+        ofx_http::warm_tls_roots();
+    }
     let model = route.model;
     let config = AgentConfig {
         system_prompt: args
@@ -416,13 +422,20 @@ async fn codex_route(
         settings.selected_codex_model(model, lookup)
     })?
     .map_err(Failure::invalid_model)?;
+    let uses_tls = uses_tls(&endpoints.codex.responses);
     let provider = codex_provider(data_directory, &crate::user_agent(), endpoints, cancel).await?;
     Ok(Route {
         provider: Arc::new(provider),
         model,
         max_output_tokens: None,
         source: CredentialSource::Codex,
+        uses_tls,
     })
+}
+
+fn uses_tls(url: &str) -> bool {
+    url.get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
 }
 
 fn select_model(
@@ -1295,6 +1308,14 @@ mod tests {
         assert_eq!(failure.model, b" m\xff ");
         assert!(auth.requests().is_empty());
         assert_eq!(login.session(), EXPIRED_SESSION);
+    }
+
+    #[test]
+    fn only_https_endpoints_warm_the_tls_roots() {
+        assert!(uses_tls("https://gateway.example/v1/chat/completions"));
+        assert!(uses_tls("HTTPS://gateway.example/v1"));
+        assert!(!uses_tls("http://127.0.0.1:8080/v1/chat/completions"));
+        assert!(!uses_tls("https:"));
     }
 
     fn result_json(result: &RunResult<'_>) -> String {

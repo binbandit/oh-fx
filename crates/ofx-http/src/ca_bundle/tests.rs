@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ofx_testkit::{FakeServer, OTHER_CA_PEM, Reply, TEST_CA_PEM, TEST_SERVER_CERTIFICATE_PEM};
 use rustls::pki_types::pem::PemObject;
@@ -451,4 +451,14 @@ async fn https_load_failures_surface_as_named_errors() {
     );
     assert_eq!(server.offered_protocols().len(), 1);
     assert!(server.requests().is_empty());
+}
+
+#[test]
+fn warming_loads_the_shared_roots_on_a_background_thread() {
+    warm();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while SYSTEM_ROOTS.loaded.get().is_none() {
+        assert!(Instant::now() < deadline, "the roots never loaded");
+        thread::sleep(Duration::from_millis(1));
+    }
 }
