@@ -798,6 +798,10 @@ name = "ofx-shell"
 version = "0.1.0"
 
 [[package]]
+name = "ofx-skills"
+version = "0.1.0"
+
+[[package]]
 name = "ofx-testkit"
 version = "0.1.0"
 dependencies = [
