@@ -13,6 +13,14 @@ const CLIPPY: &[&str] = &[
     "warnings",
 ];
 const TEST: &[&str] = &["test", "--workspace", "--locked"];
+const GIT_REPOSITORY_VARIABLES: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
 
 pub(crate) fn style() -> Result<(), String> {
     workspace_files::enter_repository_root()?;
@@ -36,8 +44,12 @@ pub(crate) fn install_hooks() -> Result<(), String> {
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {
-    let status = Command::new(env!("CARGO"))
-        .args(args)
+    let mut command = Command::new(env!("CARGO"));
+    command.args(args);
+    for variable in GIT_REPOSITORY_VARIABLES {
+        command.env_remove(variable);
+    }
+    let status = command
         .status()
         .map_err(|error| format!("failed to run cargo: {error}"))?;
     if status.success() {
