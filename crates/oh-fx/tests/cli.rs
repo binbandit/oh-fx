@@ -1,5 +1,4 @@
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::ExitStatusExt;
@@ -28,8 +27,9 @@ fn oh_fx<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)]) -> Output {
     run(args, environment, Stdio::piped())
 }
 
+#[cfg(target_os = "linux")]
 fn into_full_device(args: &[&str]) -> Output {
-    let full = File::create("/dev/full").expect("open /dev/full");
+    let full = std::fs::File::create("/dev/full").expect("open /dev/full");
     run(args, &[], Stdio::from(full))
 }
 
@@ -158,7 +158,8 @@ fn unknown_commands_echo_a_terminal_safe_token() {
 }
 
 #[test]
-fn stdout_write_failures_follow_each_upstream_path() {
+#[cfg(target_os = "linux")]
+fn full_disk_writes_follow_each_upstream_path() {
     for (args, expected) in [
         (&["--help"][..], ""),
         (&["help", "--json"], ""),
@@ -170,6 +171,10 @@ fn stdout_write_failures_follow_each_upstream_path() {
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(stderr(&output), expected, "{args:?}");
     }
+}
+
+#[test]
+fn closed_pipes_follow_each_upstream_path() {
     for args in [&["--help"][..], &["--version"], &["sessions", "--help"]] {
         let output = into_closed_pipe(args);
         assert_eq!(output.status.signal(), Some(SIGPIPE), "{args:?}");
