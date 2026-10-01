@@ -1,3 +1,4 @@
+mod command_admission;
 mod permissions;
 mod tool_admission;
 

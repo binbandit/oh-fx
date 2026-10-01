@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use ofx_contract::{
     Admission, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage,
-    Completion, Concurrency, ExecutionFailure, FileMutation, FinishReason, ModelCapabilities,
-    ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess,
-    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
+    CommandRequest, Completion, Concurrency, ExecutionFailure, FileMutation, FinishReason,
+    ModelCapabilities, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
+    PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
     RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolCall, ToolChoice, ToolContext,
     ToolEffect, ToolOutput, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
     review_unavailable_json, tool_execution_failure_json,
@@ -481,13 +481,14 @@ impl Agent {
             Some(Err(output)) => return Prepared::Rejected(output),
             None => return Prepared::Rejected(panicked(&call.name)),
         };
-        let inspected =
-            contained(|| prepared.describe()).zip(contained(|| prepared.file_mutation().cloned()));
-        let Some((description, mutation)) = inspected else {
+        let inspected = contained(|| prepared.describe())
+            .zip(contained(|| prepared.file_mutation().cloned()))
+            .zip(contained(|| prepared.command_request().cloned()));
+        let Some(((description, mutation), command)) = inspected else {
             discard(prepared);
             return Prepared::Rejected(panicked(&call.name));
         };
-        Prepared::Ready(prepared, description, mutation)
+        Prepared::Ready(prepared, description, mutation, command)
     }
 
     fn finish(
@@ -622,7 +623,12 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
 
 enum Prepared {
     Rejected(ToolOutput),
-    Ready(Box<dyn PreparedCall>, CallDescription, Option<FileMutation>),
+    Ready(
+        Box<dyn PreparedCall>,
+        CallDescription,
+        Option<FileMutation>,
+        Option<CommandRequest>,
+    ),
 }
 
 struct Deferred(Option<Prepared>);
@@ -635,7 +641,7 @@ impl Drop for Deferred {
 
 impl Prepared {
     fn is_parallel(&self) -> bool {
-        matches!(self, Self::Ready(_, description, _) if description.concurrency == Concurrency::Parallel)
+        matches!(self, Self::Ready(_, description, ..) if description.concurrency == Concurrency::Parallel)
     }
 }
 
@@ -654,10 +660,14 @@ fn admit(
     permissions: &dyn PermissionGate,
     call: &ToolCall,
     mutation: Option<&FileMutation>,
+    command: Option<&CommandRequest>,
     description: &CallDescription,
 ) -> Admission {
     if let Some(mutation) = mutation {
         return permissions.admit_file_mutation(mutation);
+    }
+    if let Some(command) = command {
+        return permissions.admit_command(command);
     }
     if description.effect == ToolEffect::None {
         return Admission::Allowed(PathAccess::WorkspaceOnly);
@@ -689,8 +699,14 @@ async fn run_group<'c>(
                 });
                 dispatched.push((call, Dispatched::Rejected(output)));
             }
-            Prepared::Ready(prepared, description, mutation) => {
-                let admission = admit(permissions, call, mutation.as_ref(), &description);
+            Prepared::Ready(prepared, description, mutation, command) => {
+                let admission = admit(
+                    permissions,
+                    call,
+                    mutation.as_ref(),
+                    command.as_ref(),
+                    &description,
+                );
                 if admission == Admission::ApprovalRequired {
                     blocked = Some(BlockedCall {
                         tool_name: call.name.clone(),

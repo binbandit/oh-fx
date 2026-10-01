@@ -2,11 +2,12 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
-    Admission, FileMutation, FileMutationState, PathAccess, PermissionGate, PermissionMode,
-    ToolCall,
+    Admission, CommandRequest, FileMutation, FileMutationState, PathAccess, PermissionGate,
+    PermissionMode, ToolCall,
 };
 use ofx_workspace::path_inside;
 
+use crate::command_admission::{command_admission, undescribed_shell_call_admission};
 use crate::permissions::external_path_target;
 
 const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
@@ -58,12 +59,19 @@ impl PermissionGate for PermissionPolicy {
         if self.mode == PermissionMode::Yolo {
             return Admission::Allowed(PathAccess::WorkspaceOrExternal);
         }
+        if let Some(admission) = undescribed_shell_call_admission(self.mode, call) {
+            return admission;
+        }
         match external_path_target(&self.workspace_root, call) {
             Some(target) if !path_inside(&self.workspace_root, &target) => {
                 Admission::ApprovalRequired
             }
             _ => Admission::Allowed(PathAccess::WorkspaceOnly),
         }
+    }
+
+    fn admit_command(&self, request: &CommandRequest) -> Admission {
+        command_admission(self.mode, &self.workspace_root, request)
     }
 
     fn admit_file_mutation(&self, mutation: &FileMutation) -> Admission {

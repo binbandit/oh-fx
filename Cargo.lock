@@ -771,12 +771,17 @@ name = "ofx-permissions"
 version = "0.1.0"
 dependencies = [
  "ofx-contract",
+ "ofx-shell",
  "ofx-workspace",
  "tempfile",
 ]
 
 [[package]]
 name = "ofx-session"
+version = "0.1.0"
+
+[[package]]
+name = "ofx-shell"
 version = "0.1.0"
 
 [[package]]

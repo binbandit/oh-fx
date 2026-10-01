@@ -11,7 +11,9 @@ mod ui;
 
 pub use ids::{ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
-pub use permission_gate::{Admission, FileMutation, FileMutationState, PathAccess, PermissionGate};
+pub use permission_gate::{
+    Admission, CommandRequest, FileMutation, FileMutationState, PathAccess, PermissionGate,
+};
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
     ProviderOptions, StreamEvent, StreamSink,
