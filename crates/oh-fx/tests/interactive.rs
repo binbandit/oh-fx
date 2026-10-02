@@ -14,6 +14,9 @@ const APPROVAL_ARMING: Duration = Duration::from_millis(700);
 const CANCELLATION: &str = "■ Cancelled · What can oh-fx do differently?";
 const SIGTERM: i32 = 15;
 const SIGNAL_RESTORE: &[u8] = b"\x1b[<u\x1b[>4;0m\x1b[?2004l\x1b[?2031l\x1b[?25h";
+const SHIFT_TAB: &[u8] = b"\x1b[Z";
+const FULL_ACCESS_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
+const PERMISSIONS_USAGE: &str = "usage: /permissions [ask|auto|full-access|reset]";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -185,6 +188,113 @@ fn last_tool_result(request: &ofx_testkit::RecordedRequest) -> String {
         .and_then(|message| message["content"].as_str())
         .expect("a tool result")
         .to_owned()
+}
+
+fn settings_file(home: &Home) -> PathBuf {
+    home.root.join("config/oh-fx/settings.json")
+}
+
+fn saved_settings(home: &Home) -> Value {
+    let bytes = fs::read(settings_file(home)).expect("read settings.json");
+    serde_json::from_slice(&bytes).expect("settings.json holds JSON")
+}
+
+fn wait_saved(home: &Home, key: &str, value: &Value) {
+    let deadline = Instant::now() + WAIT;
+    while saved_settings(home)[key] != *value {
+        assert!(
+            Instant::now() < deadline,
+            "{key} never became {value}: {}",
+            saved_settings(home)
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn shift_tab_cycles_the_permission_mode_and_the_next_tool_call_follows_it() {
+    let read = chat_tool_call_events("call-1", "read_file", r#"{"path":"../notes.txt"}"#);
+    let server = FakeServer::start([
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["Read it."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    fs::write(home.root.join("notes.txt"), "outside notes\n").expect("write the outside file");
+    let mut session = home.shell(30, 100);
+    session.send(SHIFT_TAB);
+    let screen = wait(&session, FULL_ACCESS_WARNING);
+    assert!(screen.contains("full access · model-a"), "{screen}");
+    wait_saved(&home, "permission_mode", &json!("yolo"));
+    wait_saved(&home, "yolo_acknowledged", &json!(true));
+    session.send(b"read the notes\r");
+    wait(&session, "Read it.");
+    assert!(!session.screen().contains("Permission needed"));
+    assert!(last_tool_result(&server.requests()[1]).contains("outside notes"));
+    session.send(SHIFT_TAB);
+    wait(&session, "ask · model-a");
+    wait_saved(&home, "permission_mode", &json!("ask"));
+    session.send(b"/permissions\r");
+    let screen = wait(&session, "saved-session permission rules: none");
+    for line in [
+        "permissions: mode=ask",
+        "configured rules: (none)",
+        "session grants: (none)",
+        PERMISSIONS_USAGE,
+        "/permissions remember <allow|deny> <tool-name> <arguments-json>",
+        "/permissions revoke <rule-id>",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    session.send(b"/permissions sometimes\r");
+    session
+        .wait_for(WAIT, |screen| {
+            screen.matches(PERMISSIONS_USAGE).count() == 2
+        })
+        .unwrap_or_else(|screen| panic!("expected a second usage notice:\n{screen}"));
+    session.send(b"/permissions revoke 1\r");
+    wait(
+        &session,
+        "permissions: saved-session permission rules require an active saved session",
+    );
+    assert_eq!(saved_settings(&home)["permission_mode"], "ask");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    let mut session = home.shell_with(&[], 30, 100, "ask · model-a");
+    session.send(b"/permissions full-access\r");
+    wait(&session, "permissions: mode set to full access");
+    let screen = wait(&session, "full access · model-a");
+    assert!(!screen.contains(FULL_ACCESS_WARNING), "{screen}");
+    wait_saved(&home, "permission_mode", &json!("yolo"));
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn a_mode_that_cannot_be_saved_still_applies_and_says_so() {
+    let home = Home::with_settings(&settings("http://127.0.0.1:9"));
+    let unsaveable = fs::read_to_string(settings_file(&home))
+        .expect("read settings.json")
+        .replacen('{', "{\"note\":123456789012345678901234567890,", 1);
+    fs::write(settings_file(&home), &unsaveable).expect("write settings.json");
+    let mut session = home.shell(30, 120);
+    session.send(SHIFT_TAB);
+    let screen = wait(
+        &session,
+        "full-access-acknowledgment: active for this process but not saved to user settings (SettingsNumberNotPreserved)",
+    );
+    for line in [
+        "permission-mode: active for this process but not saved to user settings (SettingsNumberNotPreserved)",
+        "full access · model-a",
+        FULL_ACCESS_WARNING,
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    assert_eq!(
+        fs::read_to_string(settings_file(&home)).expect("read settings.json"),
+        unsaveable
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
 #[test]
@@ -397,8 +507,9 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 4");
-    assert!(screen.contains("  /quit     exit the interactive shell"));
+    let screen = wait(&session, "Commands 5");
+    assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
+    assert!(screen.contains("  /quit           exit the interactive shell"));
     session.send(b"go\r");
     wait(&session, "Switched reply.");
     assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
