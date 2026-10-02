@@ -138,7 +138,7 @@ async fn fetch(
     credential: Option<&CatalogCredential>,
 ) -> Result<Vec<String>, CatalogFailure> {
     let catalog = CodexModelCatalog::new(
-        &crate::user_agent(),
+        &ofx_app::user_agent(),
         profile.endpoints.models.clone(),
         profile.paths.as_ref().map(|paths| paths.cache.clone()),
     )

@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use ofx_app::SubscriptionEndpoints;
 use ofx_auth::{
     CHATGPT_SOURCE_LABEL, ChatGptAccess, ChatGptError, ChatGptOAuth, PreparationError,
     login_failure_detail, prepare_chatgpt_credential,
@@ -10,8 +11,6 @@ use ofx_auth::{
 use ofx_config::{ProfilePaths, Settings, save_codex_model};
 use ofx_gateway::{CatalogCredential, CodexModelCatalog};
 use tokio_util::sync::CancellationToken;
-
-use crate::codex_provider::SubscriptionEndpoints;
 
 const SETTINGS_UNAVAILABLE: &str = "could not load settings";
 
@@ -39,7 +38,7 @@ impl Profile {
             .ok_or(ChatGptError::CredentialStorageUnavailable)?;
         ChatGptOAuth::new(
             paths.data.clone(),
-            &crate::user_agent(),
+            &ofx_app::user_agent(),
             self.endpoints.chatgpt.clone(),
         )
     }
@@ -176,7 +175,7 @@ async fn fetch_catalog(
     credential: Option<&CatalogCredential>,
 ) -> Result<Vec<String>, ActivationFailure> {
     let catalog = CodexModelCatalog::new(
-        &crate::user_agent(),
+        &ofx_app::user_agent(),
         profile.endpoints.models.clone(),
         Some(paths.cache.clone()),
     )

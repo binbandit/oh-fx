@@ -16,6 +16,7 @@ getrandom = "0.4.3"
 memchr = "2.8.3"
 nix = { version = "0.31.3", default-features = false }
 ofx-agent = { path = "crates/ofx-agent" }
+ofx-app = { path = "crates/ofx-app" }
 ofx-auth = { path = "crates/ofx-auth" }
 ofx-cli = { path = "crates/ofx-cli" }
 ofx-config = { path = "crates/ofx-config" }
