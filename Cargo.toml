@@ -30,6 +30,7 @@ ofx-session = { path = "crates/ofx-session" }
 ofx-shell = { path = "crates/ofx-shell" }
 ofx-skills = { path = "crates/ofx-skills" }
 ofx-testkit = { path = "crates/ofx-testkit" }
+ofx-tui = { path = "crates/ofx-tui" }
 ofx-text = { path = "crates/ofx-text" }
 ofx-tools = { path = "crates/ofx-tools" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
