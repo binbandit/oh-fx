@@ -618,3 +618,21 @@ async fn a_measured_body_is_sent_as_it_was_measured() {
     assert_eq!(outcome.expect("completes").content.as_deref(), Some("hi"));
     assert_eq!(server.requests()[0].body_text(), body);
 }
+
+#[tokio::test]
+async fn a_context_overflow_failure_keeps_its_code_in_the_detail() {
+    let failed = json!({"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}});
+    let server = FakeServer::start([Reply::sse(&[failed.to_string()])]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let error = run(&codex, &[], &user("Hello."), &[])
+        .await
+        .0
+        .expect_err("failure");
+    assert_eq!(error.kind, ProviderErrorKind::ProviderError);
+    assert_eq!(
+        error.detail.as_deref(),
+        Some(
+            "provider error: context_length_exceeded: Your input exceeds the context window of this model."
+        )
+    );
+}

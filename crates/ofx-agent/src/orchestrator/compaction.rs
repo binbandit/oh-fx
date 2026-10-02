@@ -8,8 +8,9 @@ use crate::compactor::{self, Compacted, CompactionError, Correction, Size, Summa
 use crate::execution_memory::{history_turns, retain};
 use crate::prompt_context::{Calibration, RequestCost};
 
+const CONTEXT_LENGTH_EXCEEDED: &str = "context_length_exceeded";
 const OVERFLOW_DETAILS: [&str; 8] = [
-    "context_length_exceeded",
+    CONTEXT_LENGTH_EXCEEDED,
     "exceeds the context window",
     "exceeded the context window",
     "maximum context length",
@@ -282,14 +283,19 @@ pub(super) fn compaction_stop(error: CompactionError, cancel: &CancellationToken
 }
 
 fn is_context_overflow(error: &ProviderError) -> bool {
+    let detail = error.detail.as_deref().map(str::to_ascii_lowercase);
+    let mentions = |needles: &[&str]| {
+        detail
+            .as_deref()
+            .is_some_and(|detail| needles.iter().any(|needle| detail.contains(needle)))
+    };
     match error.kind {
         ProviderErrorKind::RequestTooLarge => true,
-        ProviderErrorKind::InvalidRequest => error.detail.as_deref().is_some_and(|detail| {
-            let detail = detail.to_ascii_lowercase();
-            OVERFLOW_DETAILS
-                .iter()
-                .any(|needle| detail.contains(needle))
-        }),
+        ProviderErrorKind::InvalidRequest => mentions(&OVERFLOW_DETAILS),
+        ProviderErrorKind::ProviderError => {
+            error.code.eq_ignore_ascii_case(CONTEXT_LENGTH_EXCEEDED)
+                || mentions(&[CONTEXT_LENGTH_EXCEEDED])
+        }
         _ => false,
     }
 }

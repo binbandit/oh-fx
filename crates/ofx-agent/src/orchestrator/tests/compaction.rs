@@ -378,6 +378,12 @@ async fn a_context_overflow_compacts_once_and_retries() {
             Some("prompt is too long: 1077372 tokens > 1000000 maximum"),
         ),
         overflow(ProviderErrorKind::RequestTooLarge, None),
+        overflow(
+            ProviderErrorKind::ProviderError,
+            Some(
+                "provider error: context_length_exceeded: Your input exceeds the context window of this model.",
+            ),
+        ),
     ];
     for rejection in rejections {
         let provider = FakeProvider::new(vec![
@@ -607,4 +613,29 @@ async fn a_measured_request_is_sent_as_measured_and_a_retry_builds_it_again() {
     let bodies = provider.bodies();
     assert_eq!(bodies.len(), 1);
     assert!(bodies[0].contains("hi again"));
+}
+
+#[tokio::test]
+async fn other_provider_failures_are_not_overflows() {
+    for rejection in [
+        overflow(
+            ProviderErrorKind::ProviderError,
+            Some("provider error: invalid_prompt: the prompt was rejected"),
+        ),
+        overflow(
+            ProviderErrorKind::InvalidRequest,
+            Some("API request failed · HTTP 400 · unknown parameter"),
+        ),
+    ] {
+        let provider = FakeProvider::new(vec![
+            spoken_tool_reply("", "prior-read", r#"{"value":"notes"}"#),
+            unmetered(text_reply("prior assistant")),
+            rejection,
+        ]);
+        let (mut agent, _) = windowed(&provider, 128_000, 16_384);
+        run(&mut agent, "prior user").await;
+        let (report, _) = run(&mut agent, "continue").await;
+        assert_eq!(report.outcome, TurnOutcome::Failed);
+        assert_eq!(provider.requests().len(), 3);
+    }
 }
