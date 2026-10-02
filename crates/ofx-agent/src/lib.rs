@@ -8,6 +8,7 @@ mod project_context;
 mod prompt_context;
 #[cfg(test)]
 mod scripted_provider;
+mod skill_context;
 mod text_completion;
 mod turn_reviews;
 
@@ -18,3 +19,4 @@ pub use orchestrator::{
     Agent, AgentConfig, BlockedCall, Compaction, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };
 pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
+pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};

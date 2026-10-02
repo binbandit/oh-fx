@@ -329,6 +329,30 @@ fn load_visible_skills_stops_ancestor_walking_before_home_and_keeps_home_agents_
 }
 
 #[test]
+fn a_workspace_outside_home_scans_only_its_own_roots_and_never_its_ancestors() {
+    let fixture = Fixture::new();
+    for (path, name) in [
+        ("shared/skills/planted/SKILL.md", "planted"),
+        ("shared/workspace/.agents/skills/parent/SKILL.md", "parent"),
+        ("shared/workspace/app/skills/local/SKILL.md", "local"),
+    ] {
+        fixture.write(path, format!("---\nname: {name}\ndescription: d\n---\n"));
+    }
+    let mut context = fixture.home_context("shared/workspace/app");
+    let names = |context: &SkillDiscoveryContext| {
+        context
+            .load_visible_skills(&TEST_ROOT_POLICY)
+            .skills
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&context), ["local"]);
+    context.home = None;
+    assert_eq!(names(&context), ["local"]);
+}
+
+#[test]
 fn load_visible_skills_discovers_workspace_and_global_codex_roots() {
     let fixture = Fixture::new();
     fixture.write(
@@ -1022,5 +1046,20 @@ fn managed_roots_never_follow_linked_candidates() {
     fixture.symlink("../elsewhere/linked", "root/linked");
 
     let discovery = fixture.managed_discovery("root");
+    assert_eq!(discovery, SkillDiscovery::default());
+}
+
+#[test]
+fn missing_roots_below_a_symlinked_workspace_and_home_stay_silent() {
+    let fixture = Fixture::new();
+    fixture.mkdir("real/home/code/app");
+    fixture.symlink("real", "link");
+    let context = SkillDiscoveryContext {
+        workspace_root: Some(fixture.path("link/home/code/app")),
+        home: Some(fixture.path("link/home")),
+        managed_root: fixture.path("link/home/.config/oh-fx/skills"),
+        symlink_authorities: SymlinkAuthorities::default(),
+    };
+    let discovery = context.load_visible_skills(&TEST_ROOT_POLICY);
     assert_eq!(discovery, SkillDiscovery::default());
 }

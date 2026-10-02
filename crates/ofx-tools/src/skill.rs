@@ -1,6 +1,6 @@
 use std::fmt::Display;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use ofx_config::ContextLimits;
 use ofx_contract::{
@@ -32,7 +32,7 @@ struct SkillContext {
     discovery: SkillDiscoveryContext,
     policy: RootPolicy,
     limits: ContextLimits,
-    locations: Locations,
+    locations: RwLock<Arc<Locations>>,
 }
 
 impl SkillTool {
@@ -40,7 +40,6 @@ impl SkillTool {
         discovery: SkillDiscoveryContext,
         policy: RootPolicy,
         limits: ContextLimits,
-        locations: Locations,
     ) -> Self {
         Self {
             spec: ToolSpec {
@@ -52,9 +51,17 @@ impl SkillTool {
                 discovery,
                 policy,
                 limits,
-                locations,
+                locations: RwLock::default(),
             }),
         }
+    }
+
+    pub fn advertise(&self, locations: Locations) {
+        *self
+            .context
+            .locations
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(locations);
     }
 }
 
@@ -154,32 +161,37 @@ impl SkillContext {
     fn select(&self, arguments: &SkillArgs) -> Result<PreparedSkill, ToolOutput> {
         match self.prepare(arguments) {
             CallPreparation::Selected(selected) => Ok(selected),
-            CallPreparation::Failure(output) => Err(ToolOutput::failure(output.model_output)),
+            CallPreparation::Failure(output) => Err(tool_output(ToolOutput::failure, output)),
         }
     }
 
     fn prepare(&self, arguments: &SkillArgs) -> CallPreparation {
         let name = arguments.name.as_deref();
+        let locations = Arc::clone(
+            &self
+                .locations
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
         let location = match arguments
             .location
             .as_deref()
-            .map(|location| self.locations.resolve(location))
+            .map(|location| locations.resolve(location))
             .transpose()
         {
             Ok(location) => location,
             Err(error) => return preparation_failure(error),
         };
         if let (Some(path), Some(requested)) = (&location, &arguments.location) {
-            let advertised = self
-                .locations
+            let advertised = locations
                 .skills
                 .iter()
                 .any(|skill| skill.path.as_os_str() == path.as_os_str());
             if advertised || requested.starts_with(LOCATION_PREFIX) {
                 return identity(
                     SkillInventory {
-                        skills: &self.locations.skills,
-                        diagnostics: &self.locations.diagnostics,
+                        skills: &locations.skills,
+                        diagnostics: &locations.diagnostics,
                     },
                     name,
                     Some(path),
@@ -221,11 +233,19 @@ impl SkillContext {
             loader.load_whole_by_location(&skill.path, resource)
         };
         match result {
-            Ok(ExecuteResult::Loaded(output)) => ToolOutput::success(output.model_output),
-            Ok(ExecuteResult::Failure(output)) => ToolOutput::failure(output.model_output),
+            Ok(ExecuteResult::Loaded(output)) => tool_output(ToolOutput::success, output),
+            Ok(ExecuteResult::Failure(output)) => tool_output(ToolOutput::failure, output),
             Err(error) => ToolOutput::failure(format!("skill failed: {error}")),
         }
     }
+}
+
+fn tool_output(status: fn(String) -> ToolOutput, output: ExecuteOutput) -> ToolOutput {
+    status(output.model_output).with_context_notices(
+        [output.notice, output.diagnostic_notice]
+            .into_iter()
+            .flatten(),
+    )
 }
 
 fn identity(

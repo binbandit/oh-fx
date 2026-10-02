@@ -69,7 +69,9 @@ fn skill(name: &str, path: PathBuf) -> Skill {
 }
 
 fn tool(discovery: SkillDiscoveryContext, policy: RootPolicy, locations: Locations) -> SkillTool {
-    SkillTool::new(discovery, policy, ContextLimits::default(), locations)
+    let tool = SkillTool::new(discovery, policy, ContextLimits::default());
+    tool.advertise(locations);
+    tool
 }
 
 fn arguments(location: &str) -> String {
@@ -293,6 +295,12 @@ fn skill_preparation_binds_retained_aliases_and_canonical_paths_before_reading()
                 .content
                 .starts_with("<skill_discovery_warning details=\"context_notice\" />\n")
         );
+        assert_eq!(
+            output.context_notices,
+            [
+                "skill discovery warning: candidate \"/malformed\" was skipped because its metadata is invalid (missing_name); use one safe name and an optional inline description or a >, >-, or | block, then reload skills"
+            ]
+        );
     }
     assert_eq!(
         refusal(&tool, &arguments("skill:0000000000000006:0/workflow")),
@@ -387,6 +395,32 @@ fn skill_tool_loads_whole_content_and_resources_from_an_advertised_catalog_locat
         run_with(&tool, &arguments(&location), cancellation).1,
         ToolOutput::failure("skill failed: Cancelled")
     );
+}
+
+#[test]
+fn a_newly_advertised_catalog_replaces_the_locations_the_tool_resolves() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "skills/review/SKILL.md",
+        "---\nname: review\n---\nREVIEW BODY\n",
+    );
+    let discovery = fixture.discovery("managed");
+    let tool = SkillTool::new(discovery.clone(), SHARED_POLICY, ContextLimits::default());
+    let found = discovery.load_visible_skills(&SHARED_POLICY);
+    let catalog = build_skill_prompt(
+        &found.skills,
+        &found.diagnostics,
+        &ContextLimits::default(),
+        None,
+    );
+    let location = format!("skill:{:016x}:0/review", catalog.locations.namespace);
+    let stale = refusal(&tool, &arguments(&location)).unwrap();
+    assert!(stale.content.contains("StaleSkillLocation"), "{stale:?}");
+    tool.advertise(catalog.locations);
+    let (_, output) = run(&tool, &arguments(&location));
+    assert_eq!(output.status, ToolResultStatus::Success);
+    assert!(output.content.contains("REVIEW BODY"));
+    assert!(output.context_notices.is_empty());
 }
 
 #[test]

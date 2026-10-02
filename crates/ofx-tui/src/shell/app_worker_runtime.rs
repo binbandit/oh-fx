@@ -406,8 +406,8 @@ impl Shell<'_> {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        CallDescription, CompactionActivity, CompactionEnd, Concurrency, ToolActivity, ToolCallId,
-        ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
+        CallDescription, CompactionActivity, CompactionEnd, Concurrency, Notice, NoticeTone,
+        ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
     };
 
     use super::super::SlashCommandSpec;
@@ -715,6 +715,33 @@ mod tests {
             screen.contains("  Working.\n  Agent step limit reached; continue with a follow-up prompt if needed.\n\n┃"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn requested_skill_notices_show_their_rows_under_the_prompt() {
+        let mut test = TestShell::start();
+        test.submit("$review and $release");
+        test.deliver(started(1));
+        test.deliver(UiEvent::Notice {
+            notice: Notice::new(
+                NoticeTone::Warning,
+                "",
+                "Requested skills \u{b7} 1 loaded \u{b7} 1 failed (ctrl+o for details)\n\u{251c} Loaded skill review\n\u{2514} Could not load release",
+            ),
+        });
+        test.deliver(text(1, "Reviewed."));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(
+            screen.contains(
+                "! Requested skills \u{b7} 1 loaded \u{b7} 1 failed (ctrl+o for details)\n\u{251c} Loaded skill review\n\u{2514} Could not load release\n"
+            ),
+            "{screen}"
+        );
+        let prompt = screen.find("$review and $release").unwrap();
+        let notice = screen.find("! Requested skills").unwrap();
+        let reply = screen.find("Reviewed.").unwrap();
+        assert!(prompt < notice && notice < reply, "{screen}");
     }
 
     fn tool_started(turn: u64) -> UiEvent {

@@ -154,7 +154,13 @@ fn agent_config(model: &str, effort: Option<&str>, fast_mode: bool) -> AgentConf
 
 fn ask_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
     let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
-    tool_set::ask_tools(workspace, &executions, None, &PermissionMode::Auto.into())
+    tool_set::ask_tools(
+        workspace,
+        &executions,
+        None,
+        &PermissionMode::Auto.into(),
+        crate::skills::rootless_skill_tool(),
+    )
 }
 
 fn now_ms() -> i64 {

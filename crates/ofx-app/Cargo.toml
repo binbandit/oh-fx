@@ -17,6 +17,7 @@ ofx-gateway.workspace = true
 ofx-http.workspace = true
 ofx-permissions.workspace = true
 ofx-session.workspace = true
+ofx-skills.workspace = true
 ofx-text.workspace = true
 ofx-tools.workspace = true
 ofx-tui.workspace = true

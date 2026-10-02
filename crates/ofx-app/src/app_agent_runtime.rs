@@ -325,6 +325,7 @@ impl Controller {
         prompt: &str,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
+        self.state.setup.refresh_skills();
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
         let running = Arc::new(Mutex::new(None));
@@ -556,7 +557,7 @@ mod tests {
         };
         let settings = Settings::load(&paths, &workspace).unwrap();
         let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
-        Profile::new(workspace, Some(paths), settings)
+        Profile::new(workspace, Some(home.path().into()), Some(paths), settings)
             .unwrap()
             .connect_interactive(
                 Launch {
@@ -1891,6 +1892,128 @@ mod tests {
             claimed(&mut notices, "[context] scoped").as_deref(),
             Some("scoped")
         );
+    }
+
+    fn write_skill(home: &tempfile::TempDir, directory: &str, name: &str) {
+        let path = home
+            .path()
+            .join("workspace")
+            .join(directory)
+            .join("SKILL.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            format!("---\nname: {name}\ndescription: {name} workflow\n---\n{name} steps\n"),
+        )
+        .unwrap();
+    }
+
+    fn system_text(body: &Value) -> String {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "system")
+            .map(|message| message["content"].as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn notices(events: &[UiEvent]) -> Vec<(NoticeTone, String, String)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::Notice { notice } => {
+                    Some((notice.tone, notice.topic.clone(), notice.body.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn each_prompt_rediscovers_skills_and_reports_the_skills_it_loaded() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["one"])),
+            Reply::sse(&chat_text_events(&["two"])),
+            Reply::sse(&chat_text_events(&["three"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, ".oh-fx/skills/review", "review");
+        harness.submit("$review the diff");
+        let first = harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            notices(first),
+            [(
+                NoticeTone::Neutral,
+                String::new(),
+                "1 requested skill loaded\n\u{2514} Loaded skill review".to_owned()
+            )]
+        );
+        write_skill(&harness.home, "skills/late", "late");
+        write_skill(&harness.home, ".claude/skills/review", "review");
+        harness.submit("$late and $review");
+        let second = harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            notices(second),
+            [(
+                NoticeTone::Warning,
+                String::new(),
+                "Requested skills \u{b7} 1 loaded \u{b7} 1 failed (ctrl+o for details)\n\u{251c} Loaded skill late\n\u{2514} Could not load review: ambiguous name".to_owned()
+            )]
+        );
+        harness.submit("plain question");
+        let third = harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(notices(third).is_empty());
+        let requests = server.requests();
+        let first_system = system_text(&requests[0].json());
+        assert!(first_system.contains("- review: review workflow (location: skill:"));
+        assert!(!first_system.contains("- late:"));
+        assert!(first_system.contains("<skill_content name=\"review\""));
+        let second_system = system_text(&requests[1].json());
+        assert!(second_system.contains("- late: late workflow (location: skill:"));
+        assert!(second_system.contains("<skill_content name=\"late\""));
+        assert!(second_system.contains(
+            "\"review\" is ambiguous. Retry with the name and one advertised location: "
+        ));
+        let third_system = system_text(&requests[2].json());
+        assert!(third_system.contains("<available_skills>"));
+        assert!(!third_system.contains("Explicitly invoked skill content"));
+    }
+
+    #[tokio::test]
+    async fn skipped_skills_warn_once_per_conversation_as_context_notices() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["one"])),
+            Reply::sse(&chat_text_events(&["two"])),
+            Reply::sse(&chat_text_events(&["three"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        let broken = fs::canonicalize(harness.home.path())
+            .unwrap()
+            .join("workspace/skills/broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("SKILL.md"), "---\ndescription: nameless\n---\n").unwrap();
+        harness.submit("one");
+        let first = harness.until(finished(TurnOutcome::Completed)).await;
+        let warned = notices(first);
+        assert_eq!(warned.len(), 1);
+        assert_eq!(warned[0].0, NoticeTone::Warning);
+        assert_eq!(warned[0].1, "context");
+        assert!(
+            warned[0].2.starts_with(&format!(
+                "skill discovery warning: candidate \"{}\" was skipped",
+                broken.display()
+            )),
+            "{warned:?}"
+        );
+        harness.submit("two");
+        let second = harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(notices(second).is_empty());
+        harness.command("/clear");
+        harness.submit("three");
+        let third = harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(notices(third), warned);
     }
 
     #[test]
