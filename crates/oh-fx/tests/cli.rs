@@ -209,6 +209,23 @@ fn with_settings_and_environment(
 }
 
 #[test]
+fn a_skill_or_context_limit_diagnostic_keeps_the_saved_ask_mode() {
+    for settings in [
+        r#"{"permission_mode":"ask","skill_match_fuzzy":true}"#,
+        r#"{"permission_mode":"ask","skill_symlink_authorities":"/nix/store"}"#,
+        r#"{"permission_mode":"ask","context_limits":{"unknown_limit":10}}"#,
+    ] {
+        let output = with_settings(Some(settings), &["permissions", "--json"]);
+        assert!(output.status.success(), "{settings}: {}", stderr(&output));
+        assert!(
+            stdout(&output).starts_with(r#"{"kind":"permissions","mode":"ask","#),
+            "{settings}: {}",
+            stdout(&output)
+        );
+    }
+}
+
+#[test]
 fn permissions_reports_the_saved_mode_with_upstreams_text_and_json() {
     let text = |mode: &str| {
         format!(

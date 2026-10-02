@@ -591,7 +591,7 @@ fn config_diagnostics_print_only_for_usable_profiles_in_every_mode() {
 }
 
 #[test]
-fn invalid_context_limits_print_a_diagnostic_and_discard_the_profile_layer() {
+fn invalid_context_limits_print_a_diagnostic_and_keep_the_rest_of_the_profile_layer() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["ok"]))]);
     let mut settings = portkey_settings(&server.base_url());
     settings["permission_mode"] = json!("ask");
@@ -608,7 +608,7 @@ fn invalid_context_limits_print_a_diagnostic_and_discard_the_profile_layer() {
         body["messages"][2]["content"]
             .as_str()
             .unwrap()
-            .starts_with("Runtime context: permission mode is auto.")
+            .starts_with("Runtime context: permission mode is ask.")
     );
 }
 

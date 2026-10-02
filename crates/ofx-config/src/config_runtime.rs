@@ -557,7 +557,12 @@ impl Settings {
 
     fn parse_profile_layer(&mut self, object: &Map<String, Value>) -> Result<Layer, SettingsError> {
         match parse_layer(object) {
-            Ok(layer) => Ok(layer),
+            Ok(ParsedLayer { layer, rejected }) => {
+                for error in rejected {
+                    self.diagnose(ConfigLayer::User, error.into(), None);
+                }
+                Ok(layer)
+            }
             Err(error) => {
                 self.diagnose(ConfigLayer::User, error.into(), None);
                 parse_routing(object).map_err(|_| SettingsError::Layer(error))
@@ -638,10 +643,17 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, DiagnosticCause> {
 }
 
 pub(crate) fn is_valid_profile_layer(object: &Map<String, Value>) -> bool {
-    parse_layer(object).is_ok()
+    parse_layer(object).is_ok_and(|parsed| parsed.rejected.is_empty())
 }
 
-fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedLayer {
+    layer: Layer,
+    rejected: Vec<LayerError>,
+}
+
+fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
+    let mut rejected = Vec::new();
     let model = object.get("model").map(parse_model).transpose()?;
     let mut layer = parse_routing(object)?;
     layer.model = model;
@@ -659,12 +671,14 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         "yolo_acknowledged",
         LayerError::InvalidYoloAcknowledgedType,
     )?;
-    layer.context_limits = object
+    match object
         .get("context_limits")
         .map(ContextLimitOverrides::parse_json)
         .transpose()
-        .map_err(LayerError::ContextLimits)?
-        .unwrap_or_default();
+    {
+        Ok(limits) => layer.context_limits = limits.unwrap_or_default(),
+        Err(error) => rejected.push(LayerError::ContextLimits(error)),
+    }
     layer.max_agent_steps = parse_steps(object)?;
     layer.auto_compact_percent = object
         .get("auto_compact_percent")
@@ -679,13 +693,17 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
     )?;
     layer.context = parse_switch(object, "context", LayerError::InvalidContextType)?;
     if object.contains_key("skill_match_fuzzy") {
-        return Err(LayerError::RetiredSkillMatchFuzzy);
+        rejected.push(LayerError::RetiredSkillMatchFuzzy);
     }
-    layer.skill_symlink_authorities = object
+    match object
         .get("skill_symlink_authorities")
         .map(parse_skill_symlink_authorities)
-        .transpose()?;
-    Ok(layer)
+        .transpose()
+    {
+        Ok(authorities) => layer.skill_symlink_authorities = authorities,
+        Err(error) => rejected.push(error),
+    }
+    Ok(ParsedLayer { layer, rejected })
 }
 
 fn parse_skill_symlink_authorities(value: &Value) -> Result<Vec<PathBuf>, LayerError> {
@@ -1453,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn the_retired_skill_match_fuzzy_setting_discards_its_layer_with_a_migration_hint() {
+    fn the_retired_skill_match_fuzzy_setting_keeps_the_rest_of_its_layer_with_a_migration_hint() {
         let settings = fixture_settings(r#"{"permission_mode":"ask","skill_match_fuzzy":true}"#);
         assert_eq!(
             settings.diagnostics()[0].to_string(),
@@ -1462,7 +1480,7 @@ mod tests {
         assert!(!settings.profile_is_unusable());
         assert_eq!(
             settings.permission_mode(&no_environment),
-            PermissionMode::Auto
+            PermissionMode::Ask
         );
         let project = load(&fixture(None, Some(r#"{"skill_match_fuzzy":false}"#))).unwrap();
         assert_eq!(
@@ -1472,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_skill_symlink_authorities_discard_the_layer_with_a_repair_hint() {
+    fn invalid_skill_symlink_authorities_keep_the_rest_of_the_layer_with_a_repair_hint() {
         for json in [
             r#"{"permission_mode":"ask","skill_symlink_authorities":"/nix/store"}"#,
             r#"{"permission_mode":"ask","skill_symlink_authorities":[7]}"#,
@@ -1488,7 +1506,7 @@ mod tests {
             assert!(!settings.profile_is_unusable(), "{json}");
             assert_eq!(
                 settings.permission_mode(&no_environment),
-                PermissionMode::Auto,
+                PermissionMode::Ask,
                 "{json}"
             );
             assert!(settings.skill_symlink_authorities().is_empty(), "{json}");
@@ -1510,6 +1528,52 @@ mod tests {
     }
 
     #[test]
+    fn a_skill_or_context_limit_diagnostic_keeps_a_saved_ask_mode_in_either_layer() {
+        for (field, cause) in [
+            (
+                r#""skill_match_fuzzy":true"#,
+                DiagnosticCause::RetiredSkillMatchFuzzy,
+            ),
+            (
+                r#""skill_symlink_authorities":"/nix/store""#,
+                DiagnosticCause::InvalidSkillSymlinkAuthorities,
+            ),
+            (
+                r#""context_limits":{"unknown_limit":10}"#,
+                DiagnosticCause::InvalidContextLimits,
+            ),
+        ] {
+            let global = fixture_settings(&format!(r#"{{"permission_mode":"ask",{field}}}"#));
+            assert_eq!(global.diagnostics().len(), 1, "{field}");
+            assert_eq!(global.diagnostics()[0].cause, cause, "{field}");
+            assert_eq!(
+                global.permission_mode(&no_environment),
+                PermissionMode::Ask,
+                "{field}"
+            );
+            let fixture = fixture(Some("{}"), None);
+            let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+            let json = format!(
+                r#"{{"permission_mode":"auto","workspaces":{{{workspace}:{{"permission_mode":"ask",{field}}}}}}}"#
+            );
+            fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+            let scoped = load(&fixture).unwrap();
+            assert_eq!(scoped.diagnostics().len(), 1, "{field}");
+            assert_eq!(scoped.diagnostics()[0].cause, cause, "{field}");
+            assert!(!scoped.profile_is_unusable(), "{field}");
+            assert_eq!(
+                scoped.permission_mode(&no_environment),
+                PermissionMode::Ask,
+                "{field}"
+            );
+        }
+        let fatal =
+            fixture_settings(r#"{"permission_mode":"ask","skill_match_fuzzy":true,"effort":7}"#);
+        assert!(fatal.profile_is_unusable());
+        assert_eq!(fatal.permission_mode(&no_environment), PermissionMode::Auto);
+    }
+
+    #[test]
     fn invalid_context_limits_are_diagnosed_without_blocking_the_profile() {
         for json in [
             r#"{"provider":"local","context_limits":{"unknown_limit":10},"permission_mode":"ask","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"}}}}"#,
@@ -1525,7 +1589,7 @@ mod tests {
             assert!(!settings.profile_is_unusable(), "{json}");
             assert_eq!(
                 settings.permission_mode(&no_environment),
-                PermissionMode::Auto,
+                PermissionMode::Ask,
                 "{json}"
             );
             assert_eq!(
