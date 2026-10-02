@@ -7,7 +7,7 @@ use ofx_text::contains_ignore_case;
 
 use super::{FreshScreen, Shell};
 use crate::footer::resume_menu_presentation::{
-    LoadState, MAX_INLINE_ROWS, SessionMenuView, menu_frame,
+    FALLBACK_TITLE, LoadState, MAX_INLINE_ROWS, SessionMenuView, menu_frame,
 };
 use crate::row_text::Row;
 use crate::terminal::Layout;
@@ -17,7 +17,6 @@ use crate::transcript::history_replay::replayed_entries;
 const DEFAULT_PAGE_LIMIT: usize = 10;
 const PAGE_CHROME_ROWS: usize = 7;
 const QUERY_TRIM: &[char] = &[' ', '\t', '\r', '\n'];
-const FALLBACK_TITLE: &str = "Untitled session";
 
 pub(super) struct SessionPicker {
     scope: SessionScope,
@@ -261,9 +260,8 @@ impl Shell<'_> {
     }
 
     pub(super) fn sync_picker_query(&mut self) {
-        let text = self.composer.text().to_owned();
         if let Some(picker) = &mut self.picker {
-            picker.set_query(&text);
+            picker.set_query(self.composer.text());
         }
     }
 }
