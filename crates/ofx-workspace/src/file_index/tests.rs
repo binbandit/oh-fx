@@ -498,6 +498,29 @@ fn a_cached_index_paints_first_and_a_real_scan_replaces_it() {
 }
 
 #[test]
+fn dropping_the_index_waits_for_a_cache_save_and_stops_later_ones() {
+    let (_temp, root) = workspace();
+    write(&root, "a.txt");
+    let cache = tempfile::tempdir().unwrap();
+    let mut index = FileIndex::new(Some(cache.path().to_owned()));
+    let saving = Arc::clone(&index.saving);
+    let held = saving.lock().unwrap();
+    index.ensure_scope(&root);
+    let done = Arc::clone(&index.loader.as_ref().unwrap().done);
+    let dropper = thread::spawn(move || drop(index));
+    thread::sleep(Duration::from_millis(50));
+    assert!(!dropper.is_finished());
+    drop(held);
+    dropper.join().unwrap();
+    let deadline = Instant::now() + WAIT;
+    while !done.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline, "the loader never finished");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!cache.path().join("file-index").exists());
+}
+
+#[test]
 fn a_missing_root_fails_the_first_load() {
     let (_temp, root) = workspace();
     let mut index = FileIndex::new(None);

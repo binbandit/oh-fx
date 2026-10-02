@@ -3,8 +3,8 @@ mod matcher;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 
 use ofx_text::is_terminal_safe;
@@ -173,6 +173,7 @@ pub struct FileIndex {
     loader: Option<Loader>,
     refresh_pending: bool,
     stop: Arc<AtomicBool>,
+    saving: Arc<Mutex<()>>,
     generation: usize,
     initial_failed: bool,
     cache_attempted: bool,
@@ -188,6 +189,7 @@ impl FileIndex {
             loader: None,
             refresh_pending: false,
             stop: Arc::new(AtomicBool::new(false)),
+            saving: Arc::new(Mutex::new(())),
             generation: 0,
             initial_failed: false,
             cache_attempted: false,
@@ -372,6 +374,7 @@ impl FileIndex {
             cache_dir: self.cache_dir.clone(),
             allow_cache,
             stop: Arc::clone(&self.stop),
+            saving: Arc::clone(&self.saving),
             done: Arc::clone(&done),
         };
         match thread::Builder::new()
@@ -395,6 +398,7 @@ impl FileIndex {
 impl Drop for FileIndex {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        drop(self.saving.lock().unwrap_or_else(PoisonError::into_inner));
     }
 }
 
@@ -405,6 +409,7 @@ struct LoadJob {
     cache_dir: Option<PathBuf>,
     allow_cache: bool,
     stop: Arc<AtomicBool>,
+    saving: Arc<Mutex<()>>,
     done: Arc<AtomicBool>,
 }
 
@@ -445,6 +450,10 @@ impl LoadJob {
             }
         };
         if let Some(cache_dir) = &self.cache_dir {
+            let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
+            if self.stopped() {
+                return LoaderOutcome::Canceled;
+            }
             let _ = file_index_cache::save(cache_dir, &roots, &candidates);
         }
         match Generation::build(self.id, self.scope_epoch, &candidates, Some(&self.stop)) {
