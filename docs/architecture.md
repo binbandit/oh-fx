@@ -80,6 +80,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - Saved sessions live in `$XDG_DATA_HOME/oh-fx/sessions/<id>`, and the session `-c` reopens for each workspace is named in `$XDG_DATA_HOME/oh-fx/continue/<sha256 of the workspace root>`, where upstream uses `~/.fx/sessions` and `~/.fx/continue`. File names, JSON fields, schema versions, and permissions inside them follow upstream.
 - Prompt history lives in `$XDG_DATA_HOME/oh-fx/history.jsonl`, guarded by `history.lock` beside it, where upstream uses `~/.fx/history.jsonl` and `~/.fx/history.lock`. Its records, size caps, compaction, deduplication, and permissions follow upstream.
 - The `@` file index cache lives in `$XDG_CACHE_HOME/oh-fx/file-index/<sha256 of the indexed roots>.idx`, where upstream uses `~/.fx/file-index`. Its format, size caps, integrity check, and permissions follow upstream.
+- Profile MCP servers live in `$XDG_CONFIG_HOME/oh-fx/mcp.json`, written with the `mcp.lock` advisory lock beside it, where upstream uses `~/.fx/mcp.json`. A workspace keeps its servers in `.mcp.json` at its root, the name other MCP clients read, and the project trust choices (`enabledMcpjsonServers`, `disabledMcpjsonServers`, and `enableAllProjectMcpServers`) live under the workspace's entry in the profile `settings.json`, as upstream keeps them.
 
 ## Deliberate differences from upstream
 

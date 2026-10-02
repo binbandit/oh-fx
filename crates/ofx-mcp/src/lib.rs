@@ -1,5 +1,6 @@
 mod command_provider;
 mod mcp_contract;
+mod native_config;
 mod profile_store;
 mod project_config;
 mod settings_choices;
@@ -14,6 +15,7 @@ pub use mcp_contract::{
     McpAuthConfig, McpServerConfig, ProfileConfigWarning, ProfileConfigWarningCause, TransportType,
     WorkspaceAdmission,
 };
+pub use native_config::{NativeConfigLoad, load_native_configs};
 pub use profile_store::{
     PROFILE_CONFIG_FILE_NAME, ProfileRemoveOutcome, ProfileStoreError, add_profile_server,
     load_profile_document, profile_config_path, remove_profile_server, render_profile_config,
