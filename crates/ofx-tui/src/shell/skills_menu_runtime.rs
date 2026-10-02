@@ -171,7 +171,10 @@ mod tests {
         assert!(composer < header && header < review && review < deploy && deploy < hint);
         assert!(screen.contains(&format!("┃ \n\n{HEADER}\n\n")), "{screen}");
         assert!(!screen.contains("auto · model-a"), "{screen}");
-        let screen = press(&mut test, b"\x1b[B\r");
+        press(&mut test, b"\x1b[B\x1b[B\x1b[A\x0e\x0b\n\x1b[5~\x1b[6~");
+        assert_eq!(test.shell.skills_menu.as_ref().unwrap().selected(), 1);
+        assert!(test.shell.composer.is_empty());
+        let screen = press(&mut test, b"\r");
         assert!(test.shell.skills_menu.is_none());
         assert_eq!(test.shell.composer.text(), "$deploy ");
         assert!(screen.contains("┃ deploy "), "{screen}");

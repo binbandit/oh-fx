@@ -96,6 +96,8 @@ impl Shell<'_> {
             b'\t' => {
                 self.cycle_skills_menu_source(1);
             }
+            b'\n' if self.move_skills_menu(1) => {}
+            11 if self.move_skills_menu(-1) => {}
             7 | 22 | 24 => {}
             _ => {
                 if let Some(action) = raw.composer_shortcut {
@@ -243,8 +245,6 @@ impl Shell<'_> {
         let limit = COMPOSER_INPUT_LIMIT_BYTES;
         match action {
             ShortcutAction::Move(intent) => match intent.kind {
-                MoveKind::VisualUp if self.move_skills_menu(-1) => {}
-                MoveKind::VisualDown if self.move_skills_menu(1) => {}
                 MoveKind::VisualUp
                 | MoveKind::VisualDown
                 | MoveKind::PageUp
@@ -264,7 +264,11 @@ impl Shell<'_> {
             ShortcutAction::Redo => {
                 self.composer.redo();
             }
-            ShortcutAction::HistoryNext => self.navigate_history(1),
+            ShortcutAction::HistoryNext => {
+                if !self.move_skills_menu(1) {
+                    self.navigate_history(1);
+                }
+            }
             ShortcutAction::DeleteBackward => {
                 self.composer.delete(DeletionKind::CharacterLeft);
             }
@@ -310,6 +314,11 @@ impl Shell<'_> {
                 self.layout.content_bottom,
             ))
         });
+        let menu_rows = isize::try_from(page_rows.unwrap_or(1)).unwrap_or(isize::MAX);
+        let menu_delta = if delta < 0 { -menu_rows } else { menu_rows };
+        if self.move_skills_menu(menu_delta) {
+            return;
+        }
         let outcome =
             self.composer
                 .move_vertical(direction, extend_selection, page_rows, self.layout.cols);
