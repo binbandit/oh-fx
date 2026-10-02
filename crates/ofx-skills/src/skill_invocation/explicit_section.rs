@@ -49,6 +49,7 @@ enum PlannedSkill<'a> {
 
 #[derive(Default)]
 struct SectionBuilder {
+    ceiling: usize,
     text: String,
     notices: String,
     diagnostic_notice: String,
@@ -71,6 +72,7 @@ impl SkillLoader<'_> {
             ..*self
         };
         let mut section = SectionBuilder {
+            ceiling: self.ceiling,
             text: SECTION_HEADER.to_owned(),
             ..SectionBuilder::default()
         };
@@ -88,7 +90,7 @@ impl SkillLoader<'_> {
                     }
                 }
                 PlannedSkill::Ambiguous(name) => {
-                    section.append_ambiguous(self.inventory.skills, name);
+                    section.append_ambiguous(self.inventory.skills, name)?;
                 }
             }
         }
@@ -148,14 +150,9 @@ impl SectionBuilder {
         loader: &SkillLoader<'_>,
         binding: ExplicitBinding<'_>,
     ) -> Result<bool, SkillError> {
-        let remaining = loader.ceiling.saturating_sub(self.text.len());
         let result = loader.load_whole_by_identity(binding)?;
         let output = result.output();
-        if output.model_output.len().saturating_add(1) > remaining {
-            return Err(SkillError::SkillContextTooLarge);
-        }
-        self.text.push_str(&output.model_output);
-        self.text.push('\n');
+        self.push_entry(&output.model_output)?;
         if let Some(notice) = &output.notice {
             push_line(&mut self.notices, notice);
         }
@@ -177,13 +174,23 @@ impl SectionBuilder {
         Ok(failure.is_none())
     }
 
-    fn append_ambiguous(&mut self, skills: &[Skill], name: &str) {
+    fn append_ambiguous(&mut self, skills: &[Skill], name: &str) -> Result<(), SkillError> {
         let failure = format_ambiguous_skill(skills, name, AMBIGUOUS_FAILURE_BYTES);
-        self.text.push_str(&failure);
-        self.text.push('\n');
+        self.push_entry(&failure)?;
         append_load_row(&mut self.load_rows, name, Some("ambiguous name"));
         append_load_row(&mut self.load_details, name, Some(&failure));
         self.load_details.push('\n');
+        Ok(())
+    }
+
+    fn push_entry(&mut self, entry: &str) -> Result<(), SkillError> {
+        let remaining = self.ceiling.saturating_sub(self.text.len());
+        if entry.len().saturating_add(1) > remaining {
+            return Err(SkillError::SkillContextTooLarge);
+        }
+        self.text.push_str(entry);
+        self.text.push('\n');
+        Ok(())
     }
 
     fn finish(self, loaded: usize, failed: usize) -> ExplicitPromptSection {

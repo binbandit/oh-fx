@@ -271,20 +271,37 @@ fn explicit_invocation_reports_user_byte_ceilings_without_partial_success() {
 
 #[test]
 fn explicit_sections_fail_rather_than_pass_the_safety_ceiling() {
-    let (_fixture, discovery) = workflow_fixture("body\n");
+    let (_fixture, mut discovery) = workflow_fixture("body\n");
+    discovery.skills.extend([
+        static_skill("review", "/workspace/review", SkillSource::WorkspaceOhFx),
+        static_skill("review", "/global/review", SkillSource::GlobalOhFx),
+    ]);
     let authorities = SymlinkAuthorities::default();
+    let unbounded = |prompt| {
+        explicit_loader(&discovery, &authorities)
+            .build_explicit_prompt_section(prompt, &[])
+            .unwrap()
+    };
+    for prompt in ["$workflow", "$workflow $review", "$review"] {
+        let complete = unbounded(prompt);
+        let mut loader = explicit_loader(&discovery, &authorities);
+        loader.ceiling = complete.text.len();
+        assert_eq!(
+            loader.build_explicit_prompt_section(prompt, &[]),
+            Ok(complete.clone()),
+            "{prompt}"
+        );
+        loader.ceiling = complete.text.len() - 1;
+        assert_eq!(
+            loader.build_explicit_prompt_section(prompt, &[]),
+            Err(SkillError::SkillContextTooLarge),
+            "{prompt}"
+        );
+    }
     let mut loader = explicit_loader(&discovery, &authorities);
-    let complete = loader
-        .build_explicit_prompt_section("$workflow", &[])
-        .unwrap();
-    loader.ceiling = complete.text.len();
+    loader.ceiling = unbounded("$workflow").text.len();
     assert_eq!(
-        loader.build_explicit_prompt_section("$workflow", &[]),
-        Ok(complete.clone())
-    );
-    loader.ceiling = complete.text.len() - 1;
-    assert_eq!(
-        loader.build_explicit_prompt_section("$workflow", &[]),
+        loader.build_explicit_prompt_section("$workflow $review", &[]),
         Err(SkillError::SkillContextTooLarge)
     );
 }
