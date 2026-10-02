@@ -221,6 +221,11 @@ impl ModelProvider for ChatCompletionsProvider {
     ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
         Box::pin(self.complete(request, sink, cancel))
     }
+
+    fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        let prepared = build_request(request, self.options).ok()?;
+        String::from_utf8(prepared.body).ok()
+    }
 }
 
 pub(crate) enum SendFailure {

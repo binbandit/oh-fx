@@ -261,6 +261,10 @@ impl ModelProvider for CodexProvider {
         Box::pin(self.complete(request, sink, cancel))
     }
 
+    fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        build_request(request, &replay_parts(request)).ok()
+    }
+
     fn project_replay(
         &self,
         replay: &ProviderReplay,

@@ -501,6 +501,7 @@ async fn stream_text(
 async fn portkey_connections_send_configured_headers_and_the_exact_body() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Hel", "lo"]))]);
     let provider = portkey(&server);
+    let measured = provider.request_body(&test_request().borrowed());
     let (outcome, text) = stream_text(&provider, &test_request()).await;
     let completion = outcome.unwrap();
     assert_eq!(text, "Hello");
@@ -521,6 +522,7 @@ async fn portkey_connections_send_configured_headers_and_the_exact_body() {
         request.body_text(),
         r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hi"}]}"#
     );
+    assert_eq!(measured.as_deref(), Some(&*request.body_text()));
 }
 
 #[tokio::test]

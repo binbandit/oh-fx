@@ -86,13 +86,12 @@ fn user(text: &str) -> Vec<ChatMessage> {
     vec![ChatMessage::user(text)]
 }
 
-async fn run(
-    provider: &CodexProvider,
-    instructions: &[&str],
-    messages: &[ChatMessage],
-    tools: &[ToolSpec],
-) -> (Result<Completion, ProviderError>, Vec<StreamEvent>) {
-    let request = ModelRequest {
+fn request<'a>(
+    instructions: &'a [&'a str],
+    messages: &'a [ChatMessage],
+    tools: &'a [ToolSpec],
+) -> ModelRequest<'a> {
+    ModelRequest {
         model: "gpt-5.4",
         instructions,
         messages,
@@ -100,7 +99,16 @@ async fn run(
         tool_choice: ToolChoice::Auto,
         max_output_tokens: Some(4096),
         provider_options: ProviderOptions::default(),
-    };
+    }
+}
+
+async fn run(
+    provider: &CodexProvider,
+    instructions: &[&str],
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+) -> (Result<Completion, ProviderError>, Vec<StreamEvent>) {
+    let request = request(instructions, messages, tools);
     let mut events = Vec::new();
     let mut sink = |event: StreamEvent| events.push(event);
     let result = provider
@@ -250,6 +258,12 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
         content: output.to_owned(),
         status: ToolResultStatus::Success,
     });
+    assert_eq!(
+        codex
+            .request_body(&request(&instructions, &history, &tools))
+            .as_deref(),
+        Some(AFTER_TOOL_GOLDEN)
+    );
     let (second, _) = run(&codex, &instructions, &history, &tools).await;
     let second = second.expect("final step completes");
     assert_eq!(second.content.as_deref(), Some("Done reading."));
