@@ -1,10 +1,18 @@
-use ofx_contract::{ApprovalDecision, ApprovalRequest, GatedAction, RequestId};
+use ofx_contract::{ApprovalDecision, ApprovalRequest, ApprovalScope, GatedAction, RequestId};
 
 use super::*;
 
 #[derive(Default)]
 struct RememberingGate {
+    scopes: AtomicUsize,
     remembered: Mutex<Vec<String>>,
+}
+
+fn approved_tree(scope: usize) -> ApprovalScope {
+    ApprovalScope {
+        target: Some(PathBuf::from(format!("/approved/{scope}/target"))),
+        access: PathAccess::Within(PathBuf::from(format!("/approved/{scope}"))),
+    }
 }
 
 impl PermissionGate for RememberingGate {
@@ -24,19 +32,19 @@ impl PermissionGate for RememberingGate {
         ArgumentGate.applicable_target(call)
     }
 
-    fn remember_approval(&self, action: GatedAction<'_>) {
+    fn approval_scope(&self, _action: GatedAction<'_>) -> ApprovalScope {
+        approved_tree(self.scopes.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    fn remember_approval(&self, action: GatedAction<'_>, access: &PathAccess) {
         let remembered = match action {
-            GatedAction::Call(call) => format!("call {}", call.id.as_str()),
+            GatedAction::Call(call) => format!("call {} {access:?}", call.id.as_str()),
             GatedAction::FileMutation(mutation) => {
                 format!("file {}", mutation.target.display())
             }
             GatedAction::Command(request) => format!("command {request:?}"),
         };
         self.remembered.lock().unwrap().push(remembered);
-    }
-
-    fn approved_access(&self, _action: GatedAction<'_>) -> PathAccess {
-        PathAccess::Within(PathBuf::from("/approved"))
     }
 }
 
@@ -99,10 +107,13 @@ fn started_titles(events: &[UiEvent]) -> Vec<(&str, &str)> {
 }
 
 #[tokio::test]
-async fn approved_calls_run_with_the_access_their_approval_grants_and_always_is_remembered() {
+async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remembers_it() {
     for (decision, remembered) in [
         (ApprovalDecision::Once, Vec::<String>::new()),
-        (ApprovalDecision::Always, vec!["call call-2".to_owned()]),
+        (
+            ApprovalDecision::Always,
+            vec![r#"call call-2 Within("/approved/1")"#.to_owned()],
+        ),
     ] {
         let provider = FakeProvider::new(vec![
             tool_reply(&[
@@ -121,6 +132,10 @@ async fn approved_calls_run_with_the_access_their_approval_grants_and_always_is_
                 id: RequestId::new(1),
                 tool_name: "echo".to_owned(),
                 title: r#"Echoing {"access":"outside"}"#.to_owned(),
+                tool_arguments_preview: r#"{"access":"outside"}"#.to_owned(),
+                scope: approved_tree(1),
+                command: None,
+                file: None,
             }]
         );
         assert_eq!(
@@ -129,11 +144,12 @@ async fn approved_calls_run_with_the_access_their_approval_grants_and_always_is_
                 tool_message("call-1", "WorkspaceOnly", ToolResultStatus::Success),
                 tool_message(
                     "call-2",
-                    r#"Within("/approved")"#,
+                    r#"Within("/approved/1")"#,
                     ToolResultStatus::Success
                 ),
             ]
         );
+        assert_eq!(gate.scopes.load(Ordering::SeqCst), 1);
         assert_eq!(*gate.remembered.lock().unwrap(), remembered);
     }
 }
@@ -184,16 +200,35 @@ async fn file_changes_and_commands_ask_with_their_target_and_remember_their_acti
     })
     .await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    let titles: Vec<String> = approval_requests(&events)
-        .into_iter()
-        .map(|request| request.title)
-        .collect();
+    let shown: Vec<(String, Option<CommandRequest>, Option<FileMutation>)> =
+        approval_requests(&events)
+            .into_iter()
+            .map(|request| (request.title, request.command, request.file))
+            .collect();
+    let note = || {
+        Some(FileMutation {
+            target: PathBuf::from("/workspace/note.txt"),
+            state: FileMutationState::Changes,
+        })
+    };
     assert_eq!(
-        titles,
+        shown,
         [
-            r#"Echoing {"changes":1,"serial":true}"#,
-            r#"Echoing {"stop":1,"serial":true}"#,
-            r#"Echoing {"changes":2,"serial":true}"#,
+            (
+                r#"Echoing {"changes":1,"serial":true}"#.to_owned(),
+                None,
+                note()
+            ),
+            (
+                r#"Echoing {"stop":1,"serial":true}"#.to_owned(),
+                Some(CommandRequest::Stop),
+                None
+            ),
+            (
+                r#"Echoing {"changes":2,"serial":true}"#.to_owned(),
+                None,
+                note()
+            ),
         ]
     );
     assert_eq!(
@@ -230,4 +265,24 @@ async fn cancelling_while_an_approval_is_pending_interrupts_without_running_the_
     assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
     let request = approval_requests(&events).remove(0);
     assert!(!approvals.resolve(request.id, ApprovalDecision::Once));
+}
+
+#[tokio::test]
+async fn requests_preview_the_arguments_terminal_safe_and_bounded_like_upstream() {
+    let long = format!(
+        "{{\"path\":\"outside\",\"text\":\"\u{7f}{}\"}}",
+        "x".repeat(5000)
+    );
+    let provider = FakeProvider::new(vec![tool_reply(&[("call-1", &long)]), text_reply("done")]);
+    let (_, events, _) = run_approving(provider, Arc::new(RememberingGate::default()), |_| {
+        Some(ApprovalDecision::Deny)
+    })
+    .await;
+    let preview = approval_requests(&events).remove(0).tool_arguments_preview;
+    assert_eq!(preview.len(), MAX_TOOL_ARGUMENTS_PREVIEW_BYTES);
+    assert!(
+        preview.starts_with(r#"{"path":"outside","text":"\x7fxxx"#),
+        "{preview}"
+    );
+    assert!(preview.ends_with("x..."), "{preview}");
 }

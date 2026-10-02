@@ -102,7 +102,9 @@ fn shell_calls_describe_the_decoded_request_the_gate_decides() {
     );
     assert_eq!(
         request(r#"{"request":{"action":"interact","session_id":"shell-1","chars":"y"}}"#),
-        Some(CommandRequest::SendInput)
+        Some(CommandRequest::SendInput {
+            input: "y".to_owned()
+        })
     );
     assert_eq!(
         request(r#"{"request":{"action":"stop","session_id":"shell-1"}}"#),

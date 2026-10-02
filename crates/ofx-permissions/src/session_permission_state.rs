@@ -1,10 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use ofx_contract::{CommandRequest, GatedAction};
+use ofx_contract::{CommandRequest, GatedAction, PathAccess};
 use ofx_workspace::path_inside;
-
-use crate::permissions::external_path_target;
 
 pub(crate) const EDIT_PERMISSION: &str = "edit";
 const BASH_PERMISSION: &str = "bash";
@@ -39,11 +37,20 @@ pub(crate) fn permission_name(tool_name: &str) -> &str {
 }
 
 impl SessionGrants {
-    pub(crate) fn remember(&self, workspace_root: &Path, action: GatedAction<'_>) {
+    pub(crate) fn remember(
+        &self,
+        workspace_root: &Path,
+        action: GatedAction<'_>,
+        access: &PathAccess,
+    ) {
         let grants = match action {
-            GatedAction::Call(call) => external_path_target(workspace_root, call)
-                .map(|target| path_grants(workspace_root, permission_name(&call.name), &target))
-                .unwrap_or_default(),
+            GatedAction::Call(call) => match access {
+                PathAccess::Within(root) => vec![Grant {
+                    permission: permission_name(&call.name).to_owned(),
+                    scope: Scope::Tree(root.clone()),
+                }],
+                PathAccess::WorkspaceOnly | PathAccess::WorkspaceOrExternal => Vec::new(),
+            },
             GatedAction::FileMutation(mutation) => {
                 path_grants(workspace_root, EDIT_PERMISSION, &mutation.target)
             }

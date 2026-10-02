@@ -6,18 +6,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApprovalDecision, ApprovalRequest, BoxFuture, CallDescription, CapabilityLookup,
-    CapabilityResolver, ChatMessage, CommandRequest, Completion, Concurrency,
+    Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, BoxFuture, CallDescription,
+    CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion, Concurrency,
     DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileMutation, FinishReason, GatedAction,
     ModelCapabilities, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
     PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
-    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic,
+    RequestId, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic,
     ToolArgumentIntegrity, ToolCall, ToolChoice, ToolContext, ToolEffect, ToolOutput,
     ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
     format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
     prepare_model_output, review_unavailable_json, tool_execution_failure_json,
     tool_permission_denied_json,
 };
+use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +46,7 @@ const RESPONSE_LANGUAGE_CONTROL: &str = "<response_language_control>\nUse the re
 const SILENT_STEPS_BEFORE_SUMMARY: u32 = 2;
 const TOOL_CANCEL_GRACE: Duration = Duration::from_secs(2);
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
+const MAX_TOOL_ARGUMENTS_PREVIEW_BYTES: usize = 4 * 1024;
 
 pub type EventSink<'a> = &'a mut (dyn FnMut(UiEvent) + Send);
 
@@ -991,41 +993,53 @@ async fn judge(
             let Some(approvals) = gate.approvals else {
                 return Verdict::Blocked;
             };
-            match request_approval(approvals, turn_id, call, description, events, cancel).await {
-                None => Verdict::Interrupted,
-                Some(ApprovalDecision::Deny) => Verdict::Denied,
-                Some(decision) => {
-                    if decision == ApprovalDecision::Always {
-                        gate.permissions.remember_approval(action);
-                    }
-                    Verdict::Run(gate.permissions.approved_access(action))
+            let scope = gate.permissions.approval_scope(action);
+            let mut pending = approvals.open();
+            events(UiEvent::ApprovalRequested {
+                turn_id,
+                request: approval_request(pending.id(), call, action, description, &scope),
+            });
+            let decision = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Verdict::Interrupted,
+                decision = pending.decision() => decision,
+            };
+            match decision {
+                ApprovalDecision::Deny => Verdict::Denied,
+                ApprovalDecision::Once => Verdict::Run(scope.access),
+                ApprovalDecision::Always => {
+                    gate.permissions.remember_approval(action, &scope.access);
+                    Verdict::Run(scope.access)
                 }
             }
         }
     }
 }
 
-async fn request_approval(
-    approvals: &Approvals,
-    turn_id: TurnId,
+fn approval_request(
+    id: RequestId,
     call: &ToolCall,
+    action: GatedAction<'_>,
     description: &CallDescription,
-    events: EventSink<'_>,
-    cancel: &CancellationToken,
-) -> Option<ApprovalDecision> {
-    let mut pending = approvals.open();
-    events(UiEvent::ApprovalRequested {
-        turn_id,
-        request: ApprovalRequest {
-            id: pending.id(),
-            tool_name: call.name.clone(),
-            title: description.title.clone(),
-        },
-    });
-    tokio::select! {
-        biased;
-        () = cancel.cancelled() => None,
-        decision = pending.decision() => Some(decision),
+    scope: &ApprovalScope,
+) -> ApprovalRequest {
+    let (command, file) = match action {
+        GatedAction::Call(_) => (None, None),
+        GatedAction::FileMutation(mutation) => (None, Some(mutation.clone())),
+        GatedAction::Command(command) => (Some(command.clone()), None),
+    };
+    ApprovalRequest {
+        id,
+        tool_name: call.name.clone(),
+        title: description.title.clone(),
+        tool_arguments_preview: encode_terminal_safe(
+            call.arguments.as_bytes(),
+            MAX_TOOL_ARGUMENTS_PREVIEW_BYTES,
+        )
+        .text,
+        scope: scope.clone(),
+        command,
+        file,
     }
 }
 

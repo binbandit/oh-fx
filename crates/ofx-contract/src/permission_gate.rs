@@ -49,7 +49,9 @@ pub enum CommandRequest {
         terminal: bool,
     },
     Observe,
-    SendInput,
+    SendInput {
+        input: String,
+    },
     Stop,
 }
 
@@ -58,6 +60,12 @@ pub enum GatedAction<'a> {
     Call(&'a ToolCall),
     FileMutation(&'a FileMutation),
     Command(&'a CommandRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ApprovalScope {
+    pub target: Option<PathBuf>,
+    pub access: PathAccess,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,9 +88,12 @@ pub trait PermissionGate: Send + Sync {
         Admission::ApprovalRequired
     }
 
-    fn remember_approval(&self, _action: GatedAction<'_>) {}
-
-    fn approved_access(&self, _action: GatedAction<'_>) -> PathAccess {
-        PathAccess::WorkspaceOrExternal
+    fn approval_scope(&self, _action: GatedAction<'_>) -> ApprovalScope {
+        ApprovalScope {
+            target: None,
+            access: PathAccess::WorkspaceOrExternal,
+        }
     }
+
+    fn remember_approval(&self, _action: GatedAction<'_>, _access: &PathAccess) {}
 }

@@ -1,5 +1,5 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
-use crate::permission_gate::ApprovalDecision;
+use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
 use crate::tool_dispatch::CallDescription;
 use crate::types::{RouteRecoveryStatus, ToolResultStatus, Usage};
 
@@ -67,6 +67,10 @@ pub struct ApprovalRequest {
     pub id: RequestId,
     pub tool_name: String,
     pub title: String,
+    pub tool_arguments_preview: String,
+    pub scope: ApprovalScope,
+    pub command: Option<CommandRequest>,
+    pub file: Option<FileMutation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
