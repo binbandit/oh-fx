@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
-use ofx_text::{display_unit_at, encode_terminal_safe, prefix_by_width, visible_width};
+use ofx_text::{
+    display_unit_at, encode_terminal_safe, is_terminal_control, prefix_by_width, visible_width,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Color {
@@ -193,7 +195,7 @@ impl Row {
         };
         let start = last.text.len();
         let _ = last.text.write_fmt(arguments);
-        if last.text[start..].contains(char::is_control) {
+        if last.text[start..].contains(escaped_in_rows) {
             let safe = terminal_safe(&last.text[start..]).into_owned();
             last.text.truncate(start);
             last.text.push_str(&safe);
@@ -323,14 +325,18 @@ impl Row {
     }
 }
 
+pub(crate) fn escaped_in_rows(character: char) -> bool {
+    character.is_control() || is_terminal_control(character)
+}
+
 pub(crate) fn terminal_safe(text: &str) -> Cow<'_, str> {
-    if !text.contains(char::is_control) {
+    if !text.contains(escaped_in_rows) {
         return Cow::Borrowed(text);
     }
     let mut safe = String::with_capacity(text.len());
     let mut scalar = [0_u8; 4];
     for character in text.chars() {
-        if character.is_control() {
+        if escaped_in_rows(character) {
             let encoded = character.encode_utf8(&mut scalar);
             safe.push_str(&encode_terminal_safe(encoded.as_bytes(), usize::MAX).text);
         } else {
@@ -381,6 +387,24 @@ mod tests {
         assert!(!encoded.contains('\u{9b}'));
         assert!(encoded.contains("\x1b]8;;https://x\\x1b]0;T\\x07y\x1b\\"));
         assert_eq!(Row::plain("👨\u{200d}👩").text(), "👨\u{200d}👩");
+    }
+
+    #[test]
+    fn bidi_reordering_controls_never_reach_the_terminal_raw() {
+        let title = "Reading notes\u{202e}txt.hsab/hss./~ \u{2066}x\u{2069}\u{2028}";
+        let row = Row::plain(title);
+        assert_eq!(
+            row.text(),
+            "Reading notes\\u{202e}txt.hsab/hss./~ \\u{2066}x\\u{2069}\\u{2028}"
+        );
+        let encoded = row.encode();
+        for control in ['\u{202e}', '\u{2066}', '\u{2069}', '\u{2028}'] {
+            assert!(!encoded.contains(control), "{encoded:?}");
+        }
+        let mut formatted = Row::new();
+        formatted.push_fmt(format_args!("{title}"), Paint::PLAIN);
+        assert_eq!(formatted.text(), row.text());
+        assert_eq!(Row::plain(&row.text()).text(), row.text());
     }
 
     #[test]
