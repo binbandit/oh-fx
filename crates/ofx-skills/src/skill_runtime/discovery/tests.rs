@@ -1050,23 +1050,16 @@ fn managed_roots_never_follow_linked_candidates() {
 }
 
 #[test]
-fn a_verified_directory_chain_covers_only_whole_leading_components() {
+fn missing_roots_below_a_symlinked_workspace_and_home_stay_silent() {
     let fixture = Fixture::new();
-    fixture.mkdir("a/bc");
-    fixture.symlink("bc", "a/b");
-    let mut chain = DirectoryChain::default();
-    assert!(chain.lacks(&fixture.path("a/bc/missing")));
-    assert!(!chain.lacks(&fixture.path("a/b/missing")));
-    assert!(chain.lacks(&fixture.path("a/bc/other/skills")));
-    assert!(!chain.lacks(&fixture.path("a/bc")));
-    assert!(!chain.lacks(&fixture.path("a/b")));
-    assert_eq!(chain.covered_length(b"/x/y"), 0);
-    let parent = fixture.path("a");
-    let parent = parent.as_os_str().as_bytes();
-    assert_eq!(chain.covered_length(parent), parent.len());
-    let partial = fixture.path("a/b");
-    assert_eq!(
-        chain.covered_length(partial.as_os_str().as_bytes()),
-        parent.len()
-    );
+    fixture.mkdir("real/home/code/app");
+    fixture.symlink("real", "link");
+    let context = SkillDiscoveryContext {
+        workspace_root: Some(fixture.path("link/home/code/app")),
+        home: Some(fixture.path("link/home")),
+        managed_root: fixture.path("link/home/.config/oh-fx/skills"),
+        symlink_authorities: SymlinkAuthorities::default(),
+    };
+    let discovery = context.load_visible_skills(&TEST_ROOT_POLICY);
+    assert_eq!(discovery, SkillDiscovery::default());
 }
