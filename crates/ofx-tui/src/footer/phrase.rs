@@ -1,6 +1,6 @@
-use ofx_text::{encode_terminal_safe, visible_width};
+use ofx_text::visible_width;
 
-use super::command_text::suffix_terminal_safe_by_width;
+use super::command_text::{approval_text, suffix_terminal_safe_by_width};
 
 const LEADING_ELLIPSIS: &str = "…";
 
@@ -18,10 +18,8 @@ impl PathText {
             .rposition(|byte| *byte == b'/')
             .map_or(0, |separator| separator + 1);
         Self {
-            text: encode_terminal_safe(raw, usize::MAX).text,
-            basename_len: encode_terminal_safe(&raw[basename_start..], usize::MAX)
-                .text
-                .len(),
+            text: approval_text(raw),
+            basename_len: approval_text(&raw[basename_start..]).len(),
         }
     }
 }

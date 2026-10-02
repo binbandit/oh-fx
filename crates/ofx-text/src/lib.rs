@@ -7,8 +7,8 @@ mod unicode_display_data;
 mod utf8_validator;
 
 pub use display_width::{
-    DisplayUnit, display_unit_at, next_tab_stop_column, prefix_by_width, should_wrap_at,
-    status_prefix_end, suffix_by_width, trim_break_whitespace, visible_width,
+    DisplayUnit, display_unit_at, escape_ambiguous_width, next_tab_stop_column, prefix_by_width,
+    should_wrap_at, status_prefix_end, suffix_by_width, trim_break_whitespace, visible_width,
     wrap_cut_ignoring_ansi,
 };
 pub use fmt::{lowercase_hex, parse_unsigned};

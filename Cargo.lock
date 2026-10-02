@@ -901,6 +901,7 @@ dependencies = [
  "rustix",
  "signal-hook",
  "thiserror",
+ "unicode-width",
  "vt100",
  "zeroize",
 ]

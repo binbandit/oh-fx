@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::fmt::Write;
+
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
@@ -139,6 +142,40 @@ pub fn display_unit_at(text: &str, index: usize) -> DisplayUnit {
         byte_len: first_len,
         cell_width: rune_width(first),
     }
+}
+
+pub fn escape_ambiguous_width(text: &str) -> Cow<'_, str> {
+    let mut escaped = String::new();
+    let mut copied = 0;
+    let mut index = 0;
+    while index < text.len() {
+        let unit = display_unit_at(text, index);
+        let end = index + unit.byte_len.max(1);
+        let rgi = unit.byte_len > 1 && match_rgi_sequence(&text[index..]) == unit.byte_len;
+        if !rgi {
+            for (offset, codepoint) in text[index..end].char_indices() {
+                if has_ambiguous_width(codepoint) {
+                    escaped.push_str(&text[copied..index + offset]);
+                    let _ = write!(escaped, "\\u{{{:04x}}}", u32::from(codepoint));
+                    copied = index + offset + codepoint.len_utf8();
+                }
+            }
+        }
+        index = end;
+    }
+    if copied == 0 {
+        return Cow::Borrowed(text);
+    }
+    escaped.push_str(&text[copied..]);
+    Cow::Owned(escaped)
+}
+
+fn has_ambiguous_width(codepoint: char) -> bool {
+    let width = rune_width(codepoint);
+    width == 0
+        || codepoint.width() != Some(width)
+        || ('\u{1f3fb}'..='\u{1f3ff}').contains(&codepoint)
+        || is_unassigned(codepoint)
 }
 
 fn has_emoji_suffix(suffix: &str) -> bool {
@@ -448,6 +485,33 @@ mod tests {
             "{:?}",
             differences.iter().take(16).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn width_ambiguous_code_points_outside_rgi_sequences_become_escapes() {
+        for (text, escaped) in [
+            ("plain ascii", "plain ascii"),
+            ("\u{1f44d}\u{1f3fd}", "\u{1f44d}\u{1f3fd}"),
+            ("1\u{fe0f}\u{20e3}", "1\u{fe0f}\u{20e3}"),
+            ("\u{2764}\u{fe0f}", "\u{2764}\\u{fe0f}"),
+            ("\u{1f1fa}\u{1f1f8}", "\u{1f1fa}\u{1f1f8}"),
+            ("\u{4e2d}\u{6587}", "\u{4e2d}\u{6587}"),
+            ("a\u{1f3fd}", "a\\u{1f3fd}"),
+            ("1\u{fe0f}", "1\\u{fe0f}"),
+            ("#\u{fe0f}x", "#\\u{fe0f}x"),
+            ("\u{231a}\u{fe0e}", "\u{231a}\\u{fe0e}"),
+            ("e\u{301}", "e\\u{0301}"),
+            ("\u{20ff}\u{1aff}", "\\u{20ff}\\u{1aff}"),
+            ("\u{17a4}", "\\u{17a4}"),
+            ("\u{1f1e6}", "\\u{1f1e6}"),
+            ("1\u{20e3}", "1\\u{20e3}"),
+        ] {
+            assert_eq!(escape_ambiguous_width(text), escaped, "{text:?}");
+        }
+        assert!(matches!(
+            escape_ambiguous_width("ok \u{1f600}"),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]

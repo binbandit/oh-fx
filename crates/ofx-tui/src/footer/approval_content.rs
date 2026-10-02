@@ -4,9 +4,8 @@ use std::path::Path;
 use ofx_contract::{
     ApprovalRequest, CommandProfile, CommandRequest, FileMutation, FileMutationState, SessionGrant,
 };
-use ofx_text::encode_terminal_safe;
 
-use super::command_text::project_command_text;
+use super::command_text::{approval_text, project_command_text, unambiguous};
 use super::phrase::{PathText, Phrase};
 
 const GENERIC_KIND: &str = "Tool";
@@ -103,7 +102,7 @@ impl ApprovalContent {
                 (None, None) if !request.tool_arguments_preview.is_empty() => Self::generic(
                     vec![ActionBlock::Arguments {
                         target: safe_text(request.title.as_bytes()),
-                        preview: request.tool_arguments_preview.clone(),
+                        preview: unambiguous(request.tool_arguments_preview.clone()),
                     }],
                     remember,
                 ),
@@ -293,7 +292,7 @@ fn authority_host(rest: &str) -> Option<String> {
 }
 
 fn safe_text(raw: &[u8]) -> String {
-    encode_terminal_safe(raw, usize::MAX).text
+    approval_text(raw)
 }
 
 #[cfg(test)]
