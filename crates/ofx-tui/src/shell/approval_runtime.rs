@@ -539,7 +539,7 @@ mod tests {
         press(&mut test, b"\r");
         press(&mut test, b"1");
         assert!(!approved(&test));
-        for _ in 0..2 {
+        for _ in 0..3 {
             press(&mut test, b"\x1b[6~");
             test.screen();
         }
