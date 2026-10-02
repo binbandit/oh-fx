@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 use std::path::{Component, Path};
 
 use ofx_contract::{CommandProfile, PermissionMode, SessionGrant};
+use ofx_text::escape_terminal_controls;
 
 const WORKSPACE_FILE_PERMISSIONS: [&str; 4] = ["edit", "read", "glob", "grep"];
 
@@ -44,7 +45,11 @@ fn grant_lines(workspace_root: &Path, grant: &SessionGrant) -> Vec<String> {
             shell,
             terminal,
         } => {
-            let mut line = format!(" - bash -> {command} (cwd={}", cwd.display());
+            let mut line = format!(
+                " - bash -> {} (cwd={}",
+                escape_terminal_controls(command),
+                displayed(cwd)
+            );
             if *profile == CommandProfile::Clean {
                 line.push_str(", profile=clean");
             }
@@ -52,7 +57,7 @@ fn grant_lines(workspace_root: &Path, grant: &SessionGrant) -> Vec<String> {
                 line.push_str(", tty=true");
             }
             if let Some(shell) = shell {
-                let _ = write!(line, ", shell={}", shell.display());
+                let _ = write!(line, ", shell={}", displayed(shell));
             }
             line.push(')');
             vec![line]
@@ -60,8 +65,12 @@ fn grant_lines(workspace_root: &Path, grant: &SessionGrant) -> Vec<String> {
     }
 }
 
+fn displayed(path: &Path) -> String {
+    escape_terminal_controls(&path.to_string_lossy()).into_owned()
+}
+
 fn tree_pattern(workspace_root: &Path, root: &Path) -> String {
-    let relative = relative_path(workspace_root, root);
+    let relative = escape_terminal_controls(&relative_path(workspace_root, root)).into_owned();
     if relative.is_empty() {
         "**".to_owned()
     } else {
@@ -142,6 +151,28 @@ mod tests {
                 " - grep -> ../**\n",
                 " - bash -> git status (cwd=/home/me/ws)\n",
                 " - bash -> npm test (cwd=/home/me/ws/app, profile=clean, tty=true, shell=/bin/sh)",
+            )
+        );
+    }
+
+    #[test]
+    fn line_breaks_and_controls_in_a_grant_cannot_forge_another_grant_line() {
+        let grants = [
+            SessionGrant::ReadsUnder(PathBuf::from("/ws/notes\n - edit -> **")),
+            SessionGrant::Command {
+                command: "true\n - read -> **\x1b[2J".to_owned(),
+                cwd: PathBuf::from("/ws/a\rb"),
+                profile: CommandProfile::User,
+                shell: Some(PathBuf::from("/bin/\x07sh")),
+                terminal: true,
+            },
+        ];
+        assert_eq!(
+            interactive_body(Path::new("/ws"), PermissionMode::Auto, &grants),
+            concat!(
+                "mode=auto\nconfigured rules: (none)\nsession grants:\n",
+                " - read -> notes\\x0a - edit -> **/**\n",
+                " - bash -> true\\x0a - read -> **\\x1b[2J (cwd=/ws/a\\x0db, tty=true, shell=/bin/\\x07sh)",
             )
         );
     }

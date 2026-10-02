@@ -823,6 +823,7 @@ version = "0.1.0"
 dependencies = [
  "ofx-contract",
  "ofx-shell",
+ "ofx-text",
  "ofx-workspace",
  "tempfile",
 ]
