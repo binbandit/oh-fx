@@ -223,6 +223,21 @@ fn session_creation_never_replaces_an_existing_session() {
 }
 
 #[test]
+fn publication_never_replaces_a_target_created_after_the_existence_check() {
+    let fixture = Fixture::new();
+    create_private_dir(&fixture.sessions, "creating+00").unwrap();
+    fs::write(fixture.dir("creating+00").join(MANIFEST_FILE), "{}").unwrap();
+    fs::create_dir(fixture.dir("racing")).unwrap();
+    assert_eq!(
+        publish_dir(&fixture.sessions, "creating+00", "racing"),
+        Err(SessionError::SessionAlreadyExists)
+    );
+    assert_eq!(fs::read_dir(fixture.dir("racing")).unwrap().count(), 0);
+    remove_created_dir(&fixture.sessions, "creating+00");
+    assert_eq!(fixture.names(), ["racing"]);
+}
+
+#[test]
 fn conversation_writer_appends_one_durable_line_per_event() {
     let fixture = Fixture::new();
     let mut session = fixture.start("lines");
