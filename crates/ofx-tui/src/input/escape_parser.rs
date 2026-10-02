@@ -700,8 +700,11 @@ fn kitty_unicode_key_action(keycode: u16, modifiers: u16, meta_prefixed: bool) -
         if is_letter(keycode, b'a') {
             return Action::ComposerShortcut(ShortcutAction::SelectAll);
         }
-        if is_letter(keycode, b'c') || is_letter(keycode, b'x') {
-            return Action::Ignore;
+        if is_letter(keycode, b'c') {
+            return Action::ComposerShortcut(ShortcutAction::CopySelection);
+        }
+        if is_letter(keycode, b'x') {
+            return Action::ComposerShortcut(ShortcutAction::CutSelection);
         }
         if is_letter(keycode, b'z') {
             return Action::ComposerShortcut(if mods & SHIFT != 0 {
@@ -1312,14 +1315,14 @@ mod tests {
     fn input_escape_parser_handles_delivered_command_editing_shortcuts() {
         let shortcut = Action::ComposerShortcut;
         expect_escape_action(b"[97;9u", shortcut(ShortcutAction::SelectAll));
-        expect_escape_action(b"[99;9u", Action::Ignore);
-        expect_escape_action(b"[120;9u", Action::Ignore);
+        expect_escape_action(b"[99;9u", shortcut(ShortcutAction::CopySelection));
+        expect_escape_action(b"[120;9u", shortcut(ShortcutAction::CutSelection));
         expect_escape_action(b"[122;9u", shortcut(ShortcutAction::Undo));
         expect_escape_action(b"[122;10u", shortcut(ShortcutAction::Redo));
         expect_escape_action(b"[95;5u", remapped(31));
         expect_escape_action(b"[27;9;97~", shortcut(ShortcutAction::SelectAll));
-        expect_escape_action(b"[27;9;99~", Action::Ignore);
-        expect_escape_action(b"[27;9;120~", Action::Ignore);
+        expect_escape_action(b"[27;9;99~", shortcut(ShortcutAction::CopySelection));
+        expect_escape_action(b"[27;9;120~", shortcut(ShortcutAction::CutSelection));
         expect_escape_action(b"[27;9;122~", shortcut(ShortcutAction::Undo));
         expect_escape_action(b"[27;10;122~", shortcut(ShortcutAction::Redo));
         expect_escape_action(b"[27;5;95~", remapped(31));

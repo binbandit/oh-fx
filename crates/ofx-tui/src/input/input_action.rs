@@ -58,6 +58,8 @@ impl MoveIntent {
 pub(crate) enum ShortcutAction {
     Move(MoveIntent),
     SelectAll,
+    CopySelection,
+    CutSelection,
     Undo,
     Redo,
     HistoryNext,

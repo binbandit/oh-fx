@@ -232,6 +232,31 @@ mod tests {
     }
 
     #[test]
+    fn encoded_copy_and_cut_reports_carry_their_composer_intents() {
+        let reports: [(&[u8], ShortcutAction); 4] = [
+            (b"[99;9u", ShortcutAction::CopySelection),
+            (b"[120;9u", ShortcutAction::CutSelection),
+            (b"[27;9;99~", ShortcutAction::CopySelection),
+            (b"[27;9;120~", ShortcutAction::CutSelection),
+        ];
+        for (report, intent) in reports {
+            let mut decoder = Decoder::default();
+            decoder.feed(0x1b, context(1, false));
+            let (last, prefix) = report.split_last().unwrap();
+            for byte in prefix {
+                assert_eq!(decoder.feed(*byte, context(1, false)).event, None);
+            }
+            let action = decoded(decoder.feed(*last, context(1, false)));
+            assert_eq!(
+                action.action,
+                Action::ComposerShortcut(intent),
+                "{report:?}"
+            );
+            assert_eq!(action.composer_shortcut, Some(intent), "{report:?}");
+        }
+    }
+
+    #[test]
     fn bare_escape_control_replay_preserves_event_order() {
         let mut decoder = Decoder::default();
         decoder.feed(0x1b, context(1, true));
