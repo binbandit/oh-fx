@@ -163,9 +163,8 @@ impl<T: CommandTree> Supervision<T> {
             TerminationAction::Force => {
                 self.termination_started.get_or_insert(now);
                 self.forced = true;
-                let forced = self.tree.force();
                 self.kill_target();
-                forced
+                self.tree.force()
             }
         }
     }
