@@ -227,6 +227,12 @@ pub trait Tool: Send + Sync {
     }
 }
 
+pub trait DynamicTools: Send + Sync {
+    fn generation(&self) -> u64;
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>>;
+}
+
 pub trait PreparedCall: Send {
     fn describe(&self) -> CallDescription;
 
