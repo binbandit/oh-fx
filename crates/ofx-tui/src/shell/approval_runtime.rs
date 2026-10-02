@@ -869,6 +869,25 @@ mod tests {
     }
 
     #[test]
+    fn an_eight_bit_terminal_reply_never_answers_the_prompt() {
+        for reply in [
+            &b"\x9d11;rgb:1111/2222/3333\x9c"[..],
+            b"\x9d11;rgb:1111/2222/3333\x07",
+            b"\x901+r544e=787465726d\x9c",
+            b"\x9b?997;1n",
+            b"\x9b?62;22c",
+            b"\x9f1\x9c",
+            b"\x9e2\x9c",
+            b"\x983\x9c",
+        ] {
+            let mut test = command_prompt_with_theme_monitor();
+            press(&mut test, reply);
+            assert!(!approved(&test), "{reply:?}");
+            assert!(test.shell.composer.is_empty(), "{reply:?}");
+        }
+    }
+
+    #[test]
     fn a_yes_dropped_while_a_reply_is_expected_restarts_the_wait() {
         let mut test = command_prompt_with_theme_monitor();
         press(&mut test, b"\x1b[?997;1n");

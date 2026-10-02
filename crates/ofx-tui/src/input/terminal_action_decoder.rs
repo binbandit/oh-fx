@@ -46,6 +46,12 @@ impl Decoder {
             return ingress;
         }
 
+        if self.parser.is_idle() && !context.text_pending && self.parser.begin_c1(byte) {
+            self.started_ms = context.now_ms;
+            self.cancel_pending = context.cancel_pending;
+            return ingress;
+        }
+
         if self.parser.is_mouse_report_discard() {
             match self.parser.consume_mouse_report_discard_byte(byte) {
                 MouseReportDiscardResult::Pending => self.started_ms = context.now_ms,
@@ -228,6 +234,7 @@ mod tests {
             now_ms,
             paste_active: false,
             cancel_pending,
+            text_pending: false,
         }
     }
 
@@ -306,6 +313,7 @@ mod tests {
                 now_ms: 1,
                 paste_active: true,
                 cancel_pending: true,
+                text_pending: false,
             },
         );
         assert_eq!(ingress.event, Some(TerminalInputEvent::PasteByte(0x1b)));

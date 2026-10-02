@@ -132,6 +132,7 @@ pub(crate) struct TerminalDecodeContext {
     pub(crate) now_ms: i64,
     pub(crate) paste_active: bool,
     pub(crate) cancel_pending: bool,
+    pub(crate) text_pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

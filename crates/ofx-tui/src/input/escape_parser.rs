@@ -4,6 +4,7 @@ use super::input_action::{
 
 const SGR_MOUSE_MAX_BYTES: u8 = 18;
 const CONTROL_SEQUENCE_DISCARD_MAX_BYTES: u16 = 256;
+const STRING_TERMINATOR_C1: u8 = 0x9c;
 const CONTROL_STRING_MAX_BYTES: u16 = 4096;
 const STRING_TERMINATOR_FINAL: u8 = b'\\';
 const KITTY_UP_KEY: u16 = 57352;
@@ -137,6 +138,19 @@ impl EscapeParser {
 
     pub(crate) fn is_swallowing(&self) -> bool {
         self.is_control_string() || self.is_control_sequence_discard()
+    }
+
+    pub(crate) fn begin_c1(&mut self, byte: u8) -> bool {
+        let stage = match byte {
+            0x9b => Stage::CsiEntry,
+            0x90 | 0x98 | 0x9d | 0x9e | 0x9f => Stage::ControlString,
+            _ => return false,
+        };
+        *self = Self {
+            stage,
+            ..Self::default()
+        };
+        true
     }
 
     pub(crate) fn begin_control_sequence_tail(&mut self) -> bool {
@@ -545,7 +559,18 @@ impl EscapeParser {
                 self.reset_decode();
                 Some(Action::Ignore)
             }
+            STRING_TERMINATOR_C1 if self.param2 == 0 => {
+                self.reset_decode();
+                Some(Action::Ignore)
+            }
             _ => {
+                self.param2 = match byte {
+                    0x80..=0xbf => self.param2.saturating_sub(1),
+                    0xc2..=0xdf => 1,
+                    0xe0..=0xef => 2,
+                    0xf0..=0xf4 => 3,
+                    _ => 0,
+                };
                 self.param = self.param.saturating_add(1);
                 if self.param >= CONTROL_STRING_MAX_BYTES {
                     self.reset_decode();

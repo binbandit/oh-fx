@@ -221,6 +221,7 @@ impl TerminalInput {
                 now_ms: context.now_ms,
                 paste_active: self.paste.active(),
                 cancel_pending: context.cancel_pending,
+                text_pending: text_scalar::has_pending(self.text),
             },
         );
         if ingress.interrupts_pending_text {
@@ -644,7 +645,15 @@ mod tests {
         assert!(!input.has_pending_input());
     }
 
-    const TERMINAL_STRINGS: [&[u8]; 13] = [
+    const TERMINAL_STRINGS: [&[u8]; 21] = [
+        b"\x9d11;rgb:1111/2222/3333\x9c",
+        b"\x9d11;rgb:1/2/3\x07",
+        b"\x901+r544e=787465726d\x9c",
+        b"\x9b?997;1n",
+        b"\x9b?62;22c",
+        b"\x9fGi=1;OK 12\x9c",
+        b"\x9eprivacy 12\x9c",
+        b"\x98start 3\x9c",
         b"\x1b]11;rgb:2828/2c2c/3434\x1b\\",
         b"\x1b]11;rgba:2828/2c2c/3434/ffff\x1b\\",
         b"\x1b]11;rgb:1111/2222/3333\x07",
@@ -702,6 +711,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn c1_valued_bytes_inside_utf8_text_never_start_or_end_a_sequence() {
+        let mut input = TerminalInput::new();
+        input.push_bytes("\u{dd}1\u{41b}2\u{271c}3".as_bytes());
+        assert_eq!(
+            drain(&mut input, 0),
+            vec![
+                InputEvent::Text('\u{dd}'),
+                raw(b'1'),
+                InputEvent::Text('\u{41b}'),
+                raw(b'2'),
+                InputEvent::Text('\u{271c}'),
+                raw(b'3'),
+            ]
+        );
+        let mut title = "\x1b]2;\u{271c}1\u{41b}2".as_bytes().to_vec();
+        title.push(0x9c);
+        input.push_bytes(&title);
+        assert!(only_ignored(&drain(&mut input, 0)));
+        input.push_bytes(b"x");
+        assert_eq!(drain(&mut input, 0), vec![raw(b'x')]);
     }
 
     #[test]
