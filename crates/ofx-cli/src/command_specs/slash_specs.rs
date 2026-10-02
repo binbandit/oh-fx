@@ -10,6 +10,53 @@ pub enum SlashKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlashPresentationCategory {
+    General,
+    Session,
+    Account,
+    Model,
+    Appearance,
+    Security,
+    Workspace,
+    Media,
+    Agents,
+    Extensions,
+    Product,
+}
+
+impl SlashPresentationCategory {
+    pub const ALL: [Self; 11] = [
+        Self::General,
+        Self::Session,
+        Self::Account,
+        Self::Model,
+        Self::Appearance,
+        Self::Security,
+        Self::Workspace,
+        Self::Media,
+        Self::Agents,
+        Self::Extensions,
+        Self::Product,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Session => "Session",
+            Self::Account => "Account",
+            Self::Model => "Model",
+            Self::Appearance => "Appearance",
+            Self::Security => "Security",
+            Self::Workspace => "Workspace",
+            Self::Media => "Media",
+            Self::Agents => "Agents",
+            Self::Extensions => "Extensions",
+            Self::Product => "Product",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SlashArguments {
     None,
     Payload,
@@ -22,6 +69,7 @@ pub struct SlashSpec {
     pub command: &'static str,
     pub aliases: &'static [&'static str],
     pub completion_description: &'static str,
+    pub presentation_category: SlashPresentationCategory,
     pub(crate) arguments: SlashArguments,
 }
 
@@ -30,12 +78,14 @@ impl SlashSpec {
         kind: SlashKind,
         command: &'static str,
         completion_description: &'static str,
+        presentation_category: SlashPresentationCategory,
     ) -> Self {
         Self {
             kind,
             command,
             aliases: &[],
             completion_description,
+            presentation_category,
             arguments: SlashArguments::None,
         }
     }
@@ -149,5 +199,51 @@ mod tests {
             spec(SlashKind::ClearScreen).completion_description,
             "start a fresh conversation while keeping managed processes"
         );
+    }
+
+    #[test]
+    fn every_command_carries_upstreams_presentation_category() {
+        let categories: Vec<(&str, &str)> = SLASH_REGISTRY
+            .commands()
+            .iter()
+            .map(|spec| (spec.command, spec.presentation_category.label()))
+            .collect();
+        assert_eq!(
+            categories,
+            [
+                ("/help", "General"),
+                ("/clear", "General"),
+                ("/model", "Model"),
+                ("/permissions", "Security"),
+                ("/quit", "General"),
+            ]
+        );
+    }
+
+    #[test]
+    fn presentation_categories_keep_upstreams_order_and_labels() {
+        let labels: Vec<&str> = SlashPresentationCategory::ALL
+            .iter()
+            .map(|category| category.label())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "General",
+                "Session",
+                "Account",
+                "Model",
+                "Appearance",
+                "Security",
+                "Workspace",
+                "Media",
+                "Agents",
+                "Extensions",
+                "Product"
+            ]
+        );
+        for (index, category) in SlashPresentationCategory::ALL.into_iter().enumerate() {
+            assert_eq!(category as usize, index);
+        }
     }
 }

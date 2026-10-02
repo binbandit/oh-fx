@@ -1,7 +1,7 @@
 mod slash_specs;
 mod top_level_help;
 
-pub use slash_specs::{SlashKind, SlashSpec};
+pub use slash_specs::{SlashKind, SlashPresentationCategory, SlashSpec};
 pub use top_level_help::{
     HelpStyle, TOP_LEVEL_HELP_DEFAULT_WIDTH, parse_column_count, render_command_help,
     render_top_level_help,
