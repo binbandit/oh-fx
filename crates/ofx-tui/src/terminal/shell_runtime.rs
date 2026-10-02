@@ -24,6 +24,7 @@ use super::{
 
 const CURSOR_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const BACKGROUND_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+const ABNORMAL_RESTORE_WAIT: Duration = Duration::from_millis(100);
 const PROBE_REPLY_LIMIT: usize = 64;
 const SYNC_UPDATES_ENV: &str = "OH_FX_SYNC_UPDATES";
 const LEGACY_SYNC_UPDATES_ENV: &str = "FLASH_SYNC_UPDATES";
@@ -273,8 +274,18 @@ impl Terminal {
     }
 
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
+        self.write_before(bytes, None)
+    }
+
+    pub(crate) fn write_abnormal_restore(&self) {
+        let sequence = app_lifecycle::abnormal_exit_restore_sequence(self.capabilities.tmux);
+        let deadline = Instant::now() + ABNORMAL_RESTORE_WAIT;
+        let _ = self.write_before(sequence.as_bytes(), Some(deadline));
+    }
+
+    fn write_before(&self, bytes: &[u8], deadline: Option<Instant>) -> Result<(), TerminalError> {
         let abort = self.write_abort.as_ref().map(AsFd::as_fd);
-        write_fully(self.output.as_fd(), bytes, abort).map_err(TerminalError::from)
+        write_fully(self.output.as_fd(), bytes, abort, deadline).map_err(TerminalError::from)
     }
 
     fn read_reply(
@@ -312,9 +323,8 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.raw_enabled {
-            let sequence = app_lifecycle::abnormal_exit_restore_sequence(self.capabilities.tmux);
-            let _ = self.write_all(sequence.as_bytes());
-            self.disable_raw_mode();
+            self.release_raw_mode(OptionalActions::Now);
+            self.write_abnormal_restore();
         }
     }
 }
@@ -345,20 +355,25 @@ fn write_fully(
     fd: BorrowedFd<'_>,
     mut bytes: &[u8],
     abort: Option<BorrowedFd<'_>>,
+    deadline: Option<Instant>,
 ) -> std::io::Result<()> {
     while !bytes.is_empty() {
         match rustix::io::write(fd, bytes) {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(written) => bytes = &bytes[written..],
             Err(Errno::INTR) => {}
-            Err(Errno::AGAIN) => wait_until_writable(fd, abort)?,
+            Err(Errno::AGAIN) => wait_until_writable(fd, abort, deadline)?,
             Err(errno) => return Err(errno.into()),
         }
     }
     Ok(())
 }
 
-fn wait_until_writable(fd: BorrowedFd<'_>, abort: Option<BorrowedFd<'_>>) -> std::io::Result<()> {
+fn wait_until_writable(
+    fd: BorrowedFd<'_>,
+    abort: Option<BorrowedFd<'_>>,
+    deadline: Option<Instant>,
+) -> std::io::Result<()> {
     let watched = abort.unwrap_or(fd);
     let abort_events = if abort.is_some() {
         PollFlags::IN
@@ -366,11 +381,16 @@ fn wait_until_writable(fd: BorrowedFd<'_>, abort: Option<BorrowedFd<'_>>) -> std
         PollFlags::empty()
     };
     loop {
+        let remaining = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        if remaining.is_some_and(|remaining| remaining.is_zero()) {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        let timeout = remaining.and_then(|remaining| Timespec::try_from(remaining).ok());
         let mut fds = [
             PollFd::new(&fd, PollFlags::OUT),
             PollFd::new(&watched, abort_events),
         ];
-        match rustix::event::poll(&mut fds, None) {
+        match rustix::event::poll(&mut fds, timeout.as_ref()) {
             Ok(_) => {}
             Err(Errno::INTR) => continue,
             Err(errno) => return Err(errno.into()),
@@ -510,6 +530,7 @@ pub(crate) mod test_pty {
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Child, ExitStatus, Stdio};
     use std::time::Duration;
 
     use rustix::termios::{self, InputModes, LocalModes, OptionalActions, SpecialCodeIndex};
@@ -762,6 +783,57 @@ mod tests {
         );
     }
 
+    fn spawn_on(pty: &PtyPair, test: &str) -> Child {
+        test_pty::child_command(test, &[])
+            .stdin(Stdio::from(pty.slave.try_clone().unwrap()))
+            .stdout(Stdio::from(pty.slave.try_clone().unwrap()))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn exit_within(mut child: Child, limit: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+
+    fn cooked(modes: LocalModes) -> bool {
+        modes.contains(LocalModes::ICANON | LocalModes::ECHO)
+    }
+
+    #[test]
+    fn unwinding_with_stalled_output_restores_termios_without_waiting_for_it() {
+        if test_pty::in_child() {
+            let unwound = std::panic::catch_unwind(|| {
+                let mut terminal = Terminal::open().unwrap();
+                terminal.enable_raw_mode().unwrap();
+                let chunk = [b'x'; 4096];
+                while rustix::io::write(&terminal.output, &chunk).is_ok() {}
+                panic!("unwinding with stalled output");
+            });
+            std::process::exit(i32::from(unwound.is_ok()));
+        }
+        let pty = test_pty::open();
+        let child = spawn_on(
+            &pty,
+            "terminal::shell_runtime::tests::unwinding_with_stalled_output_restores_termios_without_waiting_for_it",
+        );
+        let status = exit_within(child, test_pty::WAIT);
+        let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
+        assert!(
+            status.is_some_and(|status| status.success()) && cooked(modes),
+            "{status:?} {modes:?}"
+        );
+    }
+
     #[test]
     fn disabled_raw_mode_leaves_nothing_for_drop_to_restore() {
         let pty = test_pty::open();
@@ -805,6 +877,16 @@ mod tests {
         assert!(terminal.query_cursor_position().is_err());
         assert_eq!(terminal.take_typeahead(), b"etyped");
         assert!(terminal.take_typeahead().is_empty());
+        assert_eq!(
+            read_master(&pty),
+            [
+                THEME_BACKGROUND_QUERY,
+                CURSOR_POSITION_QUERY,
+                CURSOR_POSITION_QUERY
+            ]
+            .concat()
+            .as_bytes()
+        );
         terminal.disable_raw_mode();
     }
 
@@ -899,9 +981,9 @@ mod tests {
             "terminal::shell_runtime::tests::opening_without_a_terminal_fails",
             &[],
         )
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .unwrap();
         assert!(status.success());
@@ -909,7 +991,7 @@ mod tests {
 
     fn detected_in_child(test: &str, env: &[(&str, &str)]) -> String {
         let output = test_pty::child_command(test, env)
-            .stdin(std::process::Stdio::null())
+            .stdin(Stdio::null())
             .output()
             .unwrap();
         assert!(output.status.success());

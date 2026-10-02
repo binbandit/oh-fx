@@ -137,8 +137,8 @@ impl Terminal {
     }
 
     pub(crate) fn restore_after_signal(&mut self) {
-        let _ = self.write_all(abnormal_exit_restore_sequence(self.capabilities().tmux).as_bytes());
         self.release_raw_mode(OptionalActions::Now);
+        self.write_abnormal_restore();
     }
 
     pub(crate) fn suspend_to_job_control(
@@ -168,6 +168,8 @@ impl Terminal {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use ofx_testkit::PtyPair;
 
     use super::super::shell_runtime::test_pty;
@@ -365,22 +367,41 @@ mod tests {
         );
     }
 
+    fn drain_while(pty: &PtyPair, write: impl FnOnce()) -> Vec<u8> {
+        let finished = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut written = Vec::new();
+                while !finished.load(Ordering::SeqCst) {
+                    written.extend(drain(pty));
+                }
+                written.extend(drain(pty));
+                written
+            });
+            write();
+            finished.store(true, Ordering::SeqCst);
+            reader.join().unwrap()
+        })
+    }
+
     #[test]
     fn shutdown_writes_the_normal_restore_then_cleanup_and_disarms() {
         let pty = test_pty::open();
-        let mut terminal = test_pty::terminal(&pty);
-        terminal.enable_raw_mode().unwrap();
-        terminal.enter_interactive_mode().unwrap();
         let cleanup = ExitCleanup {
             footer_top: Some(21),
             cursor_row: 6,
             rows: 24,
             sync_updates: false,
         };
-        terminal.shutdown(&cleanup);
-        drop(terminal);
+        let written = drain_while(&pty, || {
+            let mut terminal = test_pty::terminal(&pty);
+            terminal.enable_raw_mode().unwrap();
+            terminal.enter_interactive_mode().unwrap();
+            terminal.shutdown(&cleanup);
+            drop(terminal);
+        });
 
-        let written = String::from_utf8(drain(&pty)).unwrap();
+        let written = String::from_utf8(written).unwrap();
         let expected = format!(
             "{}{}{}",
             super::super::interactive_mode_enable_sequence(false),
