@@ -23,7 +23,7 @@ impl ProviderId {
         Some(Self::Configured(text.to_owned()))
     }
 
-    pub(crate) fn label(&self) -> &str {
+    pub fn label(&self) -> &str {
         match self {
             Self::Gateway => "gateway",
             Self::Codex => "codex",
