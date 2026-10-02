@@ -7,6 +7,7 @@ use super::*;
 use crate::skill_contract::{
     InvalidMetadataCause, SkillDiagnosticCause, SkillDiagnosticScope, SkillSource,
 };
+use crate::skill_runtime::explicit_name_candidates;
 
 const MIN_CONFIGURED_TOOL_RESULT_BYTES: usize = 1024;
 
@@ -320,6 +321,35 @@ fn ambiguous_skill_failure_lists_locations_until_the_bound_and_counts_the_rest()
     assert_eq!(
         partial,
         "Skill \"review\" is ambiguous. Retry with the name and one advertised location: \"/workspace/review\"; 1 additional advertised location omitted by the 300-byte tool-result limit. Refresh available skills and retry with an advertised name and location."
+    );
+}
+
+#[test]
+fn ambiguous_skill_failure_names_each_candidate_when_their_names_differ() {
+    let long_global = format!("/global/{}", "g".repeat(200));
+    let skills = [
+        skill("review", "/workspace/review", SkillSource::WorkspaceShared),
+        skill("Review", "/global/review", SkillSource::GlobalOhFx),
+        skill("REVIEW", "/other/review", SkillSource::GlobalOhFx),
+    ];
+    assert_eq!(
+        format_ambiguous_skill(explicit_name_candidates(&skills, "review"), "review", 4096),
+        "Skill \"review\" is ambiguous. Retry with one advertised name and location: \"review\" at \"/workspace/review\", \"Review\" at \"/global/review\", \"REVIEW\" at \"/other/review\"."
+    );
+    let skills = [
+        skill("review", "/workspace/review", SkillSource::WorkspaceShared),
+        skill("Review", &long_global, SkillSource::GlobalOhFx),
+    ];
+    let partial =
+        format_ambiguous_skill(explicit_name_candidates(&skills, "review"), "review", 300);
+    assert!(partial.len() <= 300);
+    assert_eq!(
+        partial,
+        "Skill \"review\" is ambiguous. Retry with one advertised name and location: \"review\" at \"/workspace/review\"; 1 additional advertised location omitted by the 300-byte tool-result limit. Refresh available skills and retry with an advertised name and location."
+    );
+    assert_eq!(
+        format_ambiguous_skill(explicit_name_candidates(&skills, "review"), "review", 200),
+        "Requested skill name is ambiguous; all 2 advertised locations were omitted by the 200-byte tool-result limit. Refresh available skills and retry with an advertised name and location."
     );
 }
 

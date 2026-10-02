@@ -157,14 +157,26 @@ pub(crate) fn format_ambiguous_skill<'s>(
     max_bytes: usize,
 ) -> String {
     let match_count = candidates.clone().count();
+    let names_differ = candidates.clone().any(|skill| skill.name != name);
+    let retry = if names_differ {
+        "Retry with one advertised name and location"
+    } else {
+        "Retry with the name and one advertised location"
+    };
     let mut out = format!(
-        "{IDENTITY_PREFIX}{}\" is ambiguous. Retry with the name and one advertised location: ",
+        "{IDENTITY_PREFIX}{}\" is ambiguous. {retry}: ",
         encoded_scalar(name)
     )
     .into_bytes();
     let mut shown_count = 0;
     for skill in candidates {
-        let mut choice = vec![b'"'];
+        let mut choice = Vec::new();
+        if names_differ {
+            choice.push(b'"');
+            choice.extend_from_slice(encoded_scalar(&skill.name).as_bytes());
+            choice.extend_from_slice(b"\" at ");
+        }
+        choice.push(b'"');
         choice.extend(encoded_bytes(skill.path.as_os_str().as_bytes()));
         choice.push(b'"');
         let separator = if shown_count > 0 { ", " } else { "" };

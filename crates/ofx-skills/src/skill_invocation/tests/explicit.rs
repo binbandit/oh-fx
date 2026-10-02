@@ -7,9 +7,10 @@ use super::loading::{
     command_line, in_place_rewrite_cases, in_place_rewrite_fixture, off, rewrite_in_place,
     workflow_fixture,
 };
-use crate::skill_contract::{Skill, SkillSource};
+use crate::skill_contract::{CallPreparation, PreparedSkill, Skill, SkillSource};
 use crate::skill_invocation::{
     ExplicitBinding, ExplicitPromptSection, NoticeTone, SkillError, SkillInventory, SkillLoader,
+    prepare_identity,
 };
 use crate::skill_runtime::{SkillDiscovery, SymlinkAuthorities};
 use crate::test_fixture::Fixture;
@@ -85,7 +86,7 @@ fn explicit_skill_requests_report_ambiguous_names_without_selecting_a_source() {
 }
 
 #[test]
-fn explicit_ambiguity_lists_every_location_whose_name_differs_only_in_case() {
+fn explicit_ambiguity_lists_every_name_and_location_that_differs_only_in_case() {
     let discovery = SkillDiscovery {
         skills: vec![
             static_skill("Review", "/workspace/review", SkillSource::WorkspaceOhFx),
@@ -93,7 +94,7 @@ fn explicit_ambiguity_lists_every_location_whose_name_differs_only_in_case() {
         ],
         diagnostics: Vec::new(),
     };
-    let failure = "Skill \"Review\" is ambiguous. Retry with the name and one advertised location: \"/workspace/review\", \"/global/review\".";
+    let failure = "Skill \"Review\" is ambiguous. Retry with one advertised name and location: \"Review\" at \"/workspace/review\", \"review\" at \"/global/review\".";
     for prompt in [
         "$review this patch",
         "/review this patch",
@@ -110,6 +111,57 @@ fn explicit_ambiguity_lists_every_location_whose_name_differs_only_in_case() {
             load_body(&section).ends_with("\u{2514} Could not load Review: ambiguous name"),
             "{prompt}"
         );
+    }
+}
+
+fn displayed_retries(failure: &str) -> Vec<(&str, &Path)> {
+    let quoted: Vec<&str> = failure.split('"').skip(1).step_by(2).collect();
+    let (requested, choices) = quoted.split_first().unwrap();
+    if failure.contains("\" at \"") {
+        choices
+            .chunks(2)
+            .map(|pair| (pair[0], Path::new(pair[1])))
+            .collect()
+    } else {
+        choices
+            .iter()
+            .map(|location| (*requested, Path::new(*location)))
+            .collect()
+    }
+}
+
+#[test]
+fn explicit_ambiguity_failures_advertise_a_retry_that_selects_each_candidate() {
+    for names in [
+        ["review", "review"],
+        ["Review", "review"],
+        ["review", "Review"],
+    ] {
+        let discovery = SkillDiscovery {
+            skills: vec![
+                static_skill(names[0], "/workspace/review", SkillSource::WorkspaceOhFx),
+                static_skill(names[1], "/global/review", SkillSource::GlobalOhFx),
+            ],
+            diagnostics: Vec::new(),
+        };
+        let inventory = SkillInventory {
+            skills: &discovery.skills,
+            diagnostics: &discovery.diagnostics,
+        };
+        let section = section(&discovery, "$review this patch", &[]);
+        let failure = section.text.lines().last().unwrap();
+        let retries = displayed_retries(failure);
+        assert_eq!(retries.len(), discovery.skills.len(), "{failure}");
+        for (skill, (name, location)) in discovery.skills.iter().zip(retries) {
+            assert_eq!(
+                prepare_identity(&inventory, Some(name), Some(location), 4096),
+                Ok(CallPreparation::Selected(PreparedSkill {
+                    skill: skill.clone(),
+                    diagnostics: Vec::new(),
+                })),
+                "{failure}"
+            );
+        }
     }
 }
 
