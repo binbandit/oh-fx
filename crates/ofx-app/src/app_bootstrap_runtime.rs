@@ -242,7 +242,7 @@ impl Profile {
             self.home.as_deref(),
             self.paths.as_ref(),
             &self.settings,
-            limits,
+            &limits,
         ));
         let mut project = self.project_context(&limits);
         let context_notices = project

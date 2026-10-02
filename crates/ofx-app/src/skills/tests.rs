@@ -50,7 +50,7 @@ impl Fixture {
         Settings::load(&self.paths, &self.workspace).unwrap()
     }
 
-    fn load_with(&self, settings: &Settings, limits: ContextLimits) -> HostSkills {
+    fn load_with(&self, settings: &Settings, limits: &ContextLimits) -> HostSkills {
         HostSkills::load(
             &self.workspace,
             Some(self.home.as_os_str()),
@@ -61,7 +61,7 @@ impl Fixture {
     }
 
     fn load(&self) -> HostSkills {
-        self.load_with(&Settings::default(), ContextLimits::default())
+        self.load_with(&Settings::default(), &ContextLimits::default())
     }
 }
 
@@ -170,7 +170,7 @@ fn without_home_no_skills_are_discovered_or_loaded() {
         None,
         Some(&fixture.paths),
         &Settings::default(),
-        ContextLimits::default(),
+        &ContextLimits::default(),
     );
     assert!(names(&skills).is_empty());
     assert!(!skills.uses_context_window());
@@ -295,7 +295,7 @@ fn a_configured_catalog_budget_does_not_need_the_context_window() {
         name: ContextLimitName::SkillCatalogBytes,
         value: ContextLimitValue::Bytes(64 * 1024),
     }]);
-    let skills = fixture.load_with(&Settings::default(), limits);
+    let skills = fixture.load_with(&Settings::default(), &limits);
     assert!(!skills.uses_context_window());
     assert!(fixture.load().uses_context_window());
 }
@@ -317,7 +317,7 @@ fn configured_symlink_authorities_admit_linked_workspace_skills() {
         r#"{{"skill_symlink_authorities":["{}"]}}"#,
         fixture.home.join("shared").display()
     ));
-    let authorized = fixture.load_with(&settings, ContextLimits::default());
+    let authorized = fixture.load_with(&settings, &ContextLimits::default());
     assert_eq!(
         names(&authorized),
         [("linked".to_owned(), SkillSource::WorkspaceOhFx)]

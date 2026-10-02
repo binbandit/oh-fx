@@ -414,26 +414,7 @@ impl Agent {
                 self.resolve_capabilities(cancel).await?;
             }
             let context = self.context.runtime_context().await;
-            let deltas = self
-                .project
-                .as_ref()
-                .map_or(0, |project| project.deltas.len());
-            let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 5);
-            if !self.config.system_prompt.is_empty() {
-                instructions.push(&self.config.system_prompt);
-            }
-            if !skills.catalog.is_empty() {
-                instructions.push(&skills.catalog);
-            }
-            if let Some(project) = &self.project {
-                instructions.extend(project.snapshot.as_deref());
-                instructions.extend(project.deltas.iter().map(String::as_str));
-            }
-            if !skills.explicit.is_empty() {
-                instructions.push(&skills.explicit);
-            }
-            instructions.extend(context.iter().map(String::as_str));
-            instructions.push(RESPONSE_LANGUAGE_CONTROL);
+            let instructions = self.instructions(&skills, &context);
             let request = ModelRequest {
                 model: &self.config.model,
                 instructions: &instructions,
@@ -493,6 +474,30 @@ impl Agent {
                 _ => return Err(Stop::failed(TurnFailure::InvalidCompletion)),
             }
         }
+    }
+
+    fn instructions<'a>(&'a self, skills: &'a SkillContext, context: &'a [String]) -> Vec<&'a str> {
+        let deltas = self
+            .project
+            .as_ref()
+            .map_or(0, |project| project.deltas.len());
+        let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 5);
+        if !self.config.system_prompt.is_empty() {
+            instructions.push(&self.config.system_prompt);
+        }
+        if !skills.catalog.is_empty() {
+            instructions.push(&skills.catalog);
+        }
+        if let Some(project) = &self.project {
+            instructions.extend(project.snapshot.as_deref());
+            instructions.extend(project.deltas.iter().map(String::as_str));
+        }
+        if !skills.explicit.is_empty() {
+            instructions.push(&skills.explicit);
+        }
+        instructions.extend(context.iter().map(String::as_str));
+        instructions.push(RESPONSE_LANGUAGE_CONTROL);
+        instructions
     }
 
     async fn prepare_skills(

@@ -165,11 +165,11 @@ async fn the_catalog_follows_the_system_prompt_and_explicit_skills_precede_the_r
         .iter()
         .position(|event| matches!(event, UiEvent::TurnStarted { .. }))
         .unwrap();
-    let noticed = events
+    let summary = events
         .iter()
         .position(|event| matches!(event, UiEvent::Notice { .. }))
         .unwrap();
-    assert!(started < noticed);
+    assert!(started < summary);
     run(&mut agent, "again").await;
     assert_eq!(skills.calls()[1], ("again".to_owned(), Some(400_000)));
     assert_eq!(resolver.lookups.load(Ordering::SeqCst), 1);
