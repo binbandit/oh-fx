@@ -2,7 +2,7 @@ use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 
 use signal_hook::SigId;
 use signal_hook::consts::signal::{SIGCONT, SIGHUP, SIGTERM, SIGWINCH};
@@ -24,10 +24,14 @@ struct FatalFallback {
 }
 
 impl FatalFallback {
-    fn suspend() -> io::Result<()> {
-        let mut fallback = FATAL_FALLBACK
+    fn lock() -> MutexGuard<'static, Self> {
+        FATAL_FALLBACK
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn register() -> io::Result<()> {
+        let mut fallback = Self::lock();
         if !fallback.registered {
             for signal in FATAL_SIGNALS {
                 signal_hook::flag::register_conditional_default(
@@ -37,15 +41,17 @@ impl FatalFallback {
             }
             fallback.registered = true;
         }
-        fallback.live_pipes += 1;
-        fallback.armed.store(false, Ordering::SeqCst);
         Ok(())
     }
 
+    fn suspend() {
+        let mut fallback = Self::lock();
+        fallback.live_pipes += 1;
+        fallback.armed.store(false, Ordering::SeqCst);
+    }
+
     fn resume() {
-        let mut fallback = FATAL_FALLBACK
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut fallback = Self::lock();
         fallback.live_pipes -= 1;
         if fallback.live_pipes == 0 {
             fallback.armed.store(true, Ordering::SeqCst);
@@ -72,6 +78,7 @@ pub(crate) struct SignalPipe {
 
 impl SignalPipe {
     pub(crate) fn install() -> io::Result<Self> {
+        FatalFallback::register()?;
         let (reader, writer) = UnixStream::pair()?;
         reader.set_nonblocking(true)?;
         let (fatal_reader, fatal_writer) = UnixStream::pair()?;
@@ -109,7 +116,7 @@ impl SignalPipe {
                 writer.try_clone()?,
             )?);
         }
-        FatalFallback::suspend()?;
+        FatalFallback::suspend();
         pipe.suspends_fallback = true;
         Ok(pipe)
     }
@@ -158,6 +165,7 @@ mod tests {
     use super::*;
 
     const CHILD: &str = "OH_FX_SIGNAL_PIPE_CHILD";
+    const INSTALL_DESCRIPTORS: usize = 10;
 
     fn run_in_child(test: &str) -> std::process::ExitStatus {
         run_in_child_raising(test, 0)
@@ -167,6 +175,7 @@ mod tests {
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test, "--test-threads=1", "--nocapture"])
             .env(CHILD, signal.to_string())
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -188,6 +197,25 @@ mod tests {
             statuses.iter().all(|(_, status)| status.code() == Some(0)),
             "{statuses:?}"
         );
+    }
+
+    fn assert_children_die_by_each_fatal_signal(test: &str) {
+        let statuses = FATAL_SIGNALS.map(|signal| (signal, run_in_child_raising(test, signal)));
+        assert!(
+            statuses.iter().all(|(signal, status)| {
+                std::os::unix::process::ExitStatusExt::signal(status) == Some(*signal)
+            }),
+            "{statuses:?}"
+        );
+    }
+
+    fn hold_every_descriptor_but(free: usize) -> Vec<std::fs::File> {
+        let mut held = vec![std::fs::File::open("/dev/null").unwrap()];
+        while let Ok(file) = held[0].try_clone() {
+            held.push(file);
+        }
+        held.truncate(held.len() - free);
+        held
     }
 
     fn readable(fd: BorrowedFd<'_>, timeout_ms: u64) -> bool {
@@ -257,6 +285,31 @@ mod tests {
     }
 
     #[test]
+    fn failed_installs_leave_the_default_termination_in_place() {
+        if let Some(signal) = signal_for_child() {
+            let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
+            rustix::process::setrlimit(
+                rustix::process::Resource::Nofile,
+                rustix::process::Rlimit {
+                    current: Some(limit.current.map_or(256, |current| current.min(256))),
+                    maximum: limit.maximum,
+                },
+            )
+            .unwrap();
+            for free in 0..INSTALL_DESCRIPTORS {
+                let _held = hold_every_descriptor_but(free);
+                assert!(SignalPipe::install().is_err());
+            }
+            signal_hook::low_level::raise(signal).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            std::process::exit(0);
+        }
+        assert_children_die_by_each_fatal_signal(
+            "terminal::signal_pipe::tests::failed_installs_leave_the_default_termination_in_place",
+        );
+    }
+
+    #[test]
     fn reinstalled_pipes_intercept_fatal_signals_after_an_uninstall() {
         if let Some(signal) = signal_for_child() {
             let mut first = SignalPipe::install().unwrap();
@@ -304,16 +357,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_secs(5));
             std::process::exit(0);
         }
-        for signal in FATAL_SIGNALS {
-            let status = run_in_child_raising(
-                "terminal::signal_pipe::tests::reinstalled_pipes_restore_the_default_termination_once_torn_down",
-                signal,
-            );
-            assert_eq!(
-                std::os::unix::process::ExitStatusExt::signal(&status),
-                Some(signal)
-            );
-        }
+        assert_children_die_by_each_fatal_signal(
+            "terminal::signal_pipe::tests::reinstalled_pipes_restore_the_default_termination_once_torn_down",
+        );
     }
 
     #[test]
