@@ -78,6 +78,23 @@ impl TestShell {
         self.shell.apply_pending_resize(now_ms);
     }
 
+    pub(super) fn read_output_after(&self, delay: Duration) -> std::thread::JoinHandle<usize> {
+        let master = self.pty.master.try_clone().unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            let mut buffer = [0_u8; 4096];
+            let mut total = 0;
+            loop {
+                let mut fds = [PollFd::new(&master, PollFlags::IN)];
+                let timeout = Timespec::try_from(Duration::from_millis(200)).unwrap();
+                if rustix::event::poll(&mut fds, Some(&timeout)).unwrap() == 0 {
+                    return total;
+                }
+                total += rustix::io::read(&master, &mut buffer).unwrap();
+            }
+        })
+    }
+
     pub(super) fn written(&mut self) -> String {
         self.shell.commit_frame().unwrap();
         let output = drain(&self.pty);

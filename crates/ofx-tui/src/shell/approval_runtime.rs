@@ -305,6 +305,7 @@ impl Shell<'_> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     use ofx_contract::{
         ApprovalDecision, ApprovalRequest, ApprovalScope, CommandProfile, CommandRequest,
@@ -986,6 +987,27 @@ mod tests {
         test.shell.input.push_bytes(b"1");
         test.shell.process_input().unwrap();
         approved(test)
+    }
+
+    #[test]
+    fn the_wait_for_yes_starts_once_the_frame_has_reached_the_terminal() {
+        let mut test = TestShell::start();
+        test.submit("read the notes");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.screen();
+        test.deliver(UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: format!("{}\n", "y".repeat(70)).repeat(6_000),
+        });
+        test.deliver(request(1, 4));
+        let reader = test.read_output_after(Duration::from_millis(700));
+        let started = Instant::now();
+        test.shell.commit_frame().unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(600));
+        assert!(!approve_now(&mut test));
+        assert!(reader.join().unwrap() > 0);
     }
 
     #[test]

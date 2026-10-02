@@ -422,9 +422,10 @@ impl<'a> Shell<'a> {
             .len()
             .saturating_sub(usize::from(self.layout.rows));
         self.flush_output()?;
+        let drawn_ms = self.now_ms();
         if let (Some(prompt), Some(review)) = (&mut self.approval, &review) {
             let visible = live.composer_start + review.required_rows.start >= hidden_rows;
-            prompt.frame_drawn(self.layout, review, visible, now_ms);
+            prompt.frame_drawn(self.layout, review, visible, drawn_ms);
         }
         Ok(())
     }
