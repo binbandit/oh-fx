@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use rustix::process::{Pid, Signal, kill_process_group};
 
-use super::supervision::CommandTree;
+use super::supervision::{CommandTree, Escalation};
 
 pub(super) struct GroupTree {
     group: Pid,
@@ -16,6 +16,7 @@ impl GroupTree {
 
 impl CommandTree for GroupTree {
     fn stop_gracefully(&mut self) -> Result<(), &'static str> {
+        let _ = kill_process_group(self.group, Signal::TERM);
         Ok(())
     }
 
@@ -24,11 +25,15 @@ impl CommandTree for GroupTree {
         Ok(())
     }
 
-    fn settle_termination(&mut self, _: Instant, _: bool) -> Result<(), &'static str> {
+    fn settle_termination(
+        &mut self,
+        _: Instant,
+        _: &mut dyn Escalation,
+    ) -> Result<(), &'static str> {
         Ok(())
     }
 
-    fn settle_completion(&mut self) -> Result<(), &'static str> {
+    fn settle_completion(&mut self, _: &mut dyn Escalation) -> Result<(), &'static str> {
         Ok(())
     }
 }
