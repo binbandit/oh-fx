@@ -1,5 +1,6 @@
 mod budgets;
 mod build;
+mod cargo_env;
 mod measure;
 mod metric;
 mod peak;
