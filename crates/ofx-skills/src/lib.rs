@@ -13,7 +13,9 @@ pub use skill_contract::{
     RootPolicy, RootSpec, Skill, SkillDiagnostic, SkillDiagnosticCause, SkillDiagnosticScope,
     SkillSource,
 };
-pub use skill_invocation::{SkillError, SkillInventory, prepare_identity};
+pub use skill_invocation::{
+    ExecuteResult, SkillError, SkillInventory, SkillLoader, prepare_identity,
+};
 pub use skill_runtime::{
     ExplicitSelection, SkillCatalog, SkillDiscovery, SkillDiscoveryContext, SymlinkAuthorities,
     build_skill_prompt, collect_explicit_skill_selections,

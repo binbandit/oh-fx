@@ -322,3 +322,5 @@ fn ambiguous_skill_failure_lists_locations_until_the_bound_and_counts_the_rest()
         "Skill \"review\" is ambiguous. Retry with the name and one advertised location: \"/workspace/review\"; 1 additional advertised location omitted by the 300-byte tool-result limit. Refresh available skills and retry with an advertised name and location."
     );
 }
+
+mod loading;
