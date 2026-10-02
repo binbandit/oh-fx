@@ -873,6 +873,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-tui"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "signal-hook",
+ "thiserror",
+]
+
+[[package]]
 name = "ofx-upgrade"
 version = "0.1.0"
 dependencies = [
