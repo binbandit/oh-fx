@@ -627,7 +627,8 @@ fn slash_commands_switch_models_show_help_and_exit() {
     assert!(screen.contains("  /quit           exit the interactive shell"));
     assert!(screen.contains("  /reset          reset the current session context"));
     assert!(screen.contains("  /new            start a fresh session"));
-    assert!(screen.contains("Commands 16  [All]  General  Session  Account  Model"));
+    assert!(screen.contains("  /resume         resume a saved session"));
+    assert!(screen.contains("Commands 17  [All]  General  Session  Account  Model"));
     assert!(screen.contains("  /undo           undo the latest tracked file operation"));
     assert!(screen.contains("  /allowlist      manage trusted commands, tools, and URLs"));
     session.send(b"/version\r");

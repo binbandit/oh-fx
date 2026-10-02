@@ -1286,3 +1286,64 @@ fn more_sessions_load_as_the_selection_reaches_the_end_of_a_page() {
     wait(&session, "session resumed: seed");
     exit(session);
 }
+
+#[test]
+fn a_picked_session_brings_back_its_model_and_one_from_another_provider_is_refused() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["On b."])),
+        Reply::sse(&chat_text_events(&["Elsewhere."])),
+        Reply::sse(&chat_text_events(&["Back on b."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"/model vendor/model-b\r");
+    wait(&session, "auto · model-b");
+    session.send(b"use b\r");
+    wait(&session, "On b.");
+    exit(session);
+    let on_b = home.only_session();
+    let mut renamed = settings(&server.base_url());
+    renamed["providers"]["other"] = renamed["providers"]["local"].clone();
+    renamed["provider"] = json!("other");
+    fs::write(
+        home.root.join("config/oh-fx/settings.json"),
+        renamed.to_string(),
+    )
+    .expect("rewrite settings.json");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"elsewhere\r");
+    wait(&session, "Elsewhere.");
+    exit(session);
+    let other = session_with_prompt(&home, &home.session_ids(), "elsewhere");
+    renamed["provider"] = json!("local");
+    fs::write(
+        home.root.join("config/oh-fx/settings.json"),
+        renamed.to_string(),
+    )
+    .expect("restore the provider");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"/resume\r");
+    wait(&session, "Sessions 2  [Current workspace]  All workspaces");
+    session.send(b"\r");
+    let screen = wait(&session, "  Unable to resume this session.");
+    assert!(
+        screen.contains(&format!(
+            "This session was saved with another provider. Resume it with oh-fx resume {other}."
+        )),
+        "{screen}"
+    );
+    session.send(b"\x1b[B\r");
+    wait(&session, "session resumed: use b");
+    wait(&session, "auto · model-b");
+    session.send(b"again on b\r");
+    wait(&session, "Back on b.");
+    exit(session);
+    let models: Vec<Value> = server
+        .requests()
+        .iter()
+        .map(|request| request.json()["model"].clone())
+        .collect();
+    assert_eq!(models, ["vendor/model-b", "model-a", "vendor/model-b"]);
+    assert_eq!(home.metadata(&on_b)["model"], "vendor/model-b");
+    assert_eq!(home.metadata(&other)["provider"]["name"], "other");
+}

@@ -275,3 +275,180 @@ fn wall_clock_ms() -> i64 {
             i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use ofx_contract::{
+        HistoryEntry, ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope,
+        UiCommand, UiEvent,
+    };
+
+    use super::super::test_shell::TestShell;
+
+    fn row(id: &str, title: &str, updated_at_ms: i64) -> SessionRow {
+        SessionRow {
+            id: id.to_owned(),
+            title: Some(title.to_owned()),
+            workspace_root: "/work/proj".to_owned(),
+            updated_at_ms,
+            turns: 2,
+        }
+    }
+
+    fn list(scope: SessionScope, after: Option<SessionCursor>) -> UiCommand {
+        UiCommand::ListSessions {
+            scope,
+            after,
+            limit: 17,
+        }
+    }
+
+    fn opened(test: &mut TestShell) {
+        test.deliver(UiEvent::SessionPickerOpened {
+            scope: SessionScope::CurrentWorkspace,
+        });
+        test.deliver(UiEvent::SessionsListed {
+            page: SessionPage {
+                scope: SessionScope::CurrentWorkspace,
+                after: None,
+                rows: vec![row("a", "alpha", 3), row("b", "beta", 2)],
+                has_more: true,
+            },
+        });
+    }
+
+    fn keys(test: &mut TestShell, bytes: &[u8]) {
+        test.type_bytes(bytes);
+        test.step();
+    }
+
+    #[test]
+    fn the_picker_lists_pages_and_moves_without_wrapping() {
+        let mut test = TestShell::start();
+        test.deliver(UiEvent::SessionPickerOpened {
+            scope: SessionScope::CurrentWorkspace,
+        });
+        assert_eq!(test.sent(), [list(SessionScope::CurrentWorkspace, None)]);
+        assert!(test.screen().contains("Loading sessions…"));
+        opened(&mut test);
+        let screen = test.screen();
+        assert!(
+            screen.contains("Sessions 2  [Current workspace]  All workspaces"),
+            "{screen}"
+        );
+        assert!(screen.contains("  alpha    proj · "), "{screen}");
+        assert!(screen.contains("  ↓ Load more"), "{screen}");
+        assert!(!screen.contains("auto · model-a"), "{screen}");
+        keys(&mut test, b"\x1b[A\x1b[B");
+        let cursor = SessionCursor {
+            updated_at_ms: 2,
+            id: "b".to_owned(),
+        };
+        assert_eq!(
+            test.sent()[2..],
+            [list(SessionScope::CurrentWorkspace, Some(cursor.clone()))]
+        );
+        assert!(test.screen().contains("↓ Loading more…"));
+        test.deliver(UiEvent::SessionsListed {
+            page: SessionPage {
+                scope: SessionScope::CurrentWorkspace,
+                after: Some(cursor),
+                rows: vec![row("c", "gamma", 1)],
+                has_more: false,
+            },
+        });
+        keys(&mut test, b"\x1b[B\x1b[B\x1b[B\r");
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::ResumeSession { id: "c".to_owned() })
+        );
+        assert!(test.screen().contains("Sessions 3"));
+    }
+
+    #[test]
+    fn a_refused_choice_stays_in_the_picker_and_escape_closes_it() {
+        let mut test = TestShell::start();
+        opened(&mut test);
+        keys(&mut test, b"\r");
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::ResumeSession { id: "a".to_owned() })
+        );
+        test.deliver(UiEvent::SessionResumeFailed {
+            id: "a".to_owned(),
+            refusal: ResumeRefusal::OpenElsewhere,
+        });
+        let screen = test.screen();
+        assert!(
+            screen.contains("  This session is open in another oh-fx."),
+            "{screen}"
+        );
+        keys(&mut test, b"\x1b[B");
+        assert!(!test.screen().contains("open in another oh-fx"));
+        keys(&mut test, b"\x1b[Z");
+        assert_eq!(
+            test.sent().last(),
+            Some(&list(SessionScope::AllWorkspaces, None))
+        );
+        let screen = test.screen();
+        assert!(
+            screen.contains("Sessions 0  Current workspace  [All workspaces]"),
+            "{screen}"
+        );
+        test.deliver(UiEvent::SessionsListed {
+            page: SessionPage {
+                scope: SessionScope::CurrentWorkspace,
+                after: None,
+                rows: vec![row("stale", "stale page", 9)],
+                has_more: false,
+            },
+        });
+        assert!(!test.screen().contains("stale page"));
+        keys(&mut test, b"draft");
+        keys(&mut test, b"\x1b");
+        test.advance(1_000);
+        test.draining(super::super::Shell::flush_pending_input)
+            .unwrap();
+        assert_eq!(test.sent().last(), Some(&UiCommand::CloseSessionPicker));
+        assert!(test.shell.composer.is_empty());
+        let screen = test.screen();
+        assert!(screen.contains("auto · model-a"), "{screen}");
+    }
+
+    #[test]
+    fn typed_text_filters_the_loaded_sessions() {
+        let mut test = TestShell::start();
+        opened(&mut test);
+        keys(&mut test, b"BET");
+        let screen = test.screen();
+        assert!(screen.contains("Sessions 1"), "{screen}");
+        assert!(screen.contains("┃ BET"), "{screen}");
+        keys(&mut test, b"\r");
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::ResumeSession { id: "b".to_owned() })
+        );
+        keys(&mut test, b"x");
+        let screen = test.screen();
+        assert!(screen.contains("Sessions 0"), "{screen}");
+        assert!(screen.contains("  ↓ Load more"), "{screen}");
+    }
+
+    #[test]
+    fn a_resumed_session_replaces_the_screen_and_closes_the_picker() {
+        let mut test = TestShell::start();
+        test.submit("old prompt");
+        opened(&mut test);
+        test.deliver(UiEvent::SessionResumed {
+            history: vec![
+                HistoryEntry::User("alpha".to_owned()),
+                HistoryEntry::Assistant("Reply.".to_owned()),
+            ],
+        });
+        let screen = test.screen();
+        assert!(!screen.contains("old prompt"), "{screen}");
+        assert!(!screen.contains("Sessions"), "{screen}");
+        assert!(screen.contains("┃ alpha\n\n  Reply."), "{screen}");
+        assert!(screen.contains("auto · model-a"), "{screen}");
+    }
+}
