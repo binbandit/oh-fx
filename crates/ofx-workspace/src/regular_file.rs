@@ -1,10 +1,12 @@
 use std::ffi::OsStr;
 use std::fs::{File, Metadata};
 use std::io;
-use std::os::fd::AsFd;
-use std::path::Path;
+use std::os::fd::{AsFd, BorrowedFd};
+use std::path::{Path, PathBuf};
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, fcntl_getfl, fcntl_setfl, openat, statat};
+use rustix::fs::{
+    AtFlags, FileType, Mode, OFlags, fcntl_getfl, fcntl_setfl, fstat, openat, statat,
+};
 use rustix::io::Errno;
 
 use crate::path_error::PathError;
@@ -60,6 +62,37 @@ pub fn open_regular_file_following_at(
     let following = OPEN_FLAGS.difference(OFlags::NOFOLLOW);
     let file = openat(directory, name, following, Mode::empty()).map_err(open_failure)?;
     verified(File::from(file))
+}
+
+pub fn opened_file_path(file: impl AsFd) -> Option<PathBuf> {
+    let stat = fstat(&file).ok()?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink == 0 {
+        return None;
+    }
+    descriptor_path(file.as_fd()).filter(|path| path.is_absolute())
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_path(file: BorrowedFd<'_>) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()?;
+    (!path.as_os_str().as_bytes().ends_with(b" (deleted)")).then_some(path)
+}
+
+#[cfg(target_vendor = "apple")]
+fn descriptor_path(file: BorrowedFd<'_>) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let path = rustix::fs::getpath(file).ok()?;
+    Some(PathBuf::from(OsString::from_vec(path.into_bytes())))
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+fn descriptor_path(_file: BorrowedFd<'_>) -> Option<PathBuf> {
+    None
 }
 
 fn verified(file: File) -> Result<(File, Metadata), RegularFileError> {
@@ -272,6 +305,31 @@ mod tests {
             open_regular_file_following_at(&directory, OsStr::new("missing.txt")).err(),
             Some(RegularFileError::Path(PathError::FileNotFound))
         );
+    }
+
+    #[test]
+    fn an_opened_file_reports_its_canonical_path() {
+        let fixture = Fixture::new();
+        let target = fixture.file("dir/target.txt", "target\n");
+        symlink(fixture.root.join("dir"), fixture.root.join("dir-link")).unwrap();
+        symlink("dir-link/target.txt", fixture.root.join("link.txt")).unwrap();
+        let directory = rustix::fs::open(&fixture.root, DIRECTORY_FLAGS, Mode::empty()).unwrap();
+
+        let (file, _) = open_regular_file_following_at(&directory, OsStr::new("link.txt")).unwrap();
+
+        assert_eq!(opened_file_path(&file), Some(target));
+    }
+
+    #[test]
+    fn an_unlinked_file_and_a_directory_have_no_opened_path() {
+        let fixture = Fixture::new();
+        let path = fixture.file("a.txt", "inside\n");
+        let (file, _) = open_regular_file(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        let directory = rustix::fs::open(&fixture.root, DIRECTORY_FLAGS, Mode::empty()).unwrap();
+
+        assert_eq!(opened_file_path(&file), None);
+        assert_eq!(opened_file_path(&directory), None);
     }
 
     #[test]

@@ -658,15 +658,39 @@ fn linked_metadata_reauthorizes_a_target_changed_after_preflight() {
         "home/workspace/.codex/skills/linked-leaf/SKILL.md",
     );
     let (path, directory) = candidate_directory(&fixture, ".codex/skills/linked-leaf");
-    let preflight = LinkedSkillFile::preflight(
-        &path,
-        &fixture.real("home/workspace"),
-        &SymlinkAuthorities::default(),
-    )
-    .unwrap();
+    let authority = fixture.real("home/workspace");
+    let authorities = SymlinkAuthorities::default();
+    let preflight = LinkedSkillFile::preflight(&path, &authority, &authorities).unwrap();
 
     fs::remove_file(path.join("SKILL.md")).unwrap();
     symlink("../../../../outside/SKILL.md", path.join("SKILL.md")).unwrap();
+
+    assert!(preflight.open(&directory).is_none());
+}
+
+#[test]
+fn linked_metadata_reauthorizes_the_path_of_the_opened_file() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/workspace/source/SKILL.md",
+        "---\nname: linked-leaf\n---\ninside\n",
+    );
+    fixture.mkdir("home/outside");
+    fixture.symlink(
+        "../../../source/SKILL.md",
+        "home/workspace/.codex/skills/linked-leaf/SKILL.md",
+    );
+    let (path, directory) = candidate_directory(&fixture, ".codex/skills/linked-leaf");
+    let authority = fixture.real("home/workspace");
+    let authorities = SymlinkAuthorities::default();
+    let preflight = LinkedSkillFile::preflight(&path, &authority, &authorities).unwrap();
+
+    fs::rename(
+        fixture.path("home/workspace/source"),
+        fixture.path("home/outside/source"),
+    )
+    .unwrap();
+    fixture.symlink("../outside/source", "home/workspace/source");
 
     assert!(preflight.open(&directory).is_none());
 }

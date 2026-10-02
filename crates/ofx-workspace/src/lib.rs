@@ -25,6 +25,7 @@ pub use pathing::{
 };
 pub use regular_file::{
     RegularFileError, open_regular_file, open_regular_file_at, open_regular_file_following_at,
+    opened_file_path,
 };
 pub use workspace_files::{
     CandidatePaths, CandidateStats, DEFAULT_CANDIDATE_CAP, Discovery, DiscoveryOptions,
