@@ -170,8 +170,9 @@ impl LiveRegionRenderer {
                 out.push_str(ERASE_LINE_TAIL);
             }
         }
-        if target.len() < self.drawn.len() || !self.valid {
-            move_to(out, self.top + target.len(), 1);
+        let below = self.top + target.len();
+        if (target.len() < self.drawn.len() || !self.valid) && below <= self.rows {
+            move_to(out, below, 1);
             out.push_str(ERASE_BELOW);
         }
         self.padding = padding;
@@ -369,6 +370,19 @@ mod tests {
         screen.present(&["d"], &["", "┃ ", "status"], None);
         assert_eq!(screen.lines(), ["c", "d", "", "", "┃", "status"]);
         assert_eq!(screen.renderer.live_row(1), 5);
+    }
+
+    #[test]
+    fn a_redraw_that_fills_the_screen_keeps_its_bottom_row() {
+        let mut screen = Screen {
+            parser: vt100::Parser::new(3, 20, 200),
+            renderer: LiveRegionRenderer::new(3, 20, false, String::new()),
+        };
+        let live = ["first", "composer", "status"];
+        screen.present(&[], &live, None);
+        assert_eq!(screen.lines(), live);
+        assert!(screen.present(&[], &live, None).is_empty());
+        assert_eq!(screen.lines(), live);
     }
 
     #[test]
