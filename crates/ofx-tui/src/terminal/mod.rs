@@ -1,8 +1,10 @@
 mod app_lifecycle;
 mod cursor_probe;
+mod forwarded_bytes;
 mod shell_runtime;
 pub(crate) mod signal_pipe;
 mod theme_detection;
+mod theme_monitor;
 mod theme_protocol;
 
 use thiserror::Error;
