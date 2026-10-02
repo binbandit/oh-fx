@@ -29,6 +29,7 @@ pub(crate) enum CommandEffect {
     Clear,
     ToggleFast,
     Compact,
+    OpenSessions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +81,15 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
         SlashKind::ClearScreen | SlashKind::NewSession | SlashKind::ResetSession => {
             CommandEffect::Clear
         }
+        SlashKind::ResumeSession if work != Work::Idle => {
+            state.notice(
+                NoticeTone::Neutral,
+                "session",
+                "resume is unavailable until the response finishes",
+            );
+            CommandEffect::None
+        }
+        SlashKind::ResumeSession => CommandEffect::OpenSessions,
         SlashKind::Status => {
             state.notice(NoticeTone::Neutral, "status", &state.status_body());
             CommandEffect::None
@@ -221,6 +231,7 @@ mod tests {
                 "/clear",
                 "/new",
                 "/reset",
+                "/resume",
                 "/stats",
                 "/status",
                 "/model",
@@ -242,9 +253,10 @@ mod tests {
             .collect();
         assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[2].description, "start a fresh session");
-        assert_eq!(specs[10].description, "browse and manage skills");
-        assert_eq!(specs[15].aliases, ["/exit"]);
-        assert_eq!(specs[15].description, "exit the interactive shell");
+        assert_eq!(specs[4].description, "resume a saved session");
+        assert_eq!(specs[11].description, "browse and manage skills");
+        assert_eq!(specs[16].aliases, ["/exit"]);
+        assert_eq!(specs[16].description, "exit the interactive shell");
     }
 
     #[test]
@@ -262,6 +274,7 @@ mod tests {
                 ("/clear", "General"),
                 ("/new", "Session"),
                 ("/reset", "Session"),
+                ("/resume", "Session"),
                 ("/stats", "Account"),
                 ("/status", "General"),
                 ("/model", "Model"),

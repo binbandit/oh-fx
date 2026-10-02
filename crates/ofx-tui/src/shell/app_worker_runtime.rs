@@ -146,6 +146,13 @@ impl Shell<'_> {
             UiEvent::ConversationCleared { first_kept_prompt } => {
                 self.conversation_cleared(first_kept_prompt);
             }
+            UiEvent::SessionPickerOpened { scope } => self.session_picker_opened(scope),
+            UiEvent::SessionsListed { page } => self.sessions_listed(page),
+            UiEvent::SessionsUnavailable { scope } => self.sessions_unavailable(scope),
+            UiEvent::SessionResumeFailed { id, refusal } => {
+                self.session_resume_failed(&id, refusal);
+            }
+            UiEvent::SessionResumed { history } => self.session_resumed(history),
             UiEvent::ExitRequested => self.should_exit = true,
         }
     }

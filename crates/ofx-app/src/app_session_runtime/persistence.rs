@@ -4,7 +4,7 @@ use ofx_session::{SavedProvider, SessionError, SessionPreferences, SessionStore}
 
 use super::{LiveSession, ResumedSession};
 
-const SESSION_TOPIC: &str = "session";
+pub(super) const SESSION_TOPIC: &str = "session";
 
 pub(crate) struct Resumption {
     pub(crate) session: ResumedSession,
@@ -12,10 +12,10 @@ pub(crate) struct Resumption {
 }
 
 pub(crate) struct Persistence {
-    store: SessionStore,
-    provider: SavedProvider,
+    pub(super) store: SessionStore,
+    pub(super) provider: SavedProvider,
     preferences: SessionPreferences,
-    live: Option<LiveSession>,
+    pub(super) live: Option<LiveSession>,
     resumption: Option<Resumption>,
     remember_fresh: bool,
     degraded: bool,
@@ -68,6 +68,13 @@ impl Persistence {
         }
     }
 
+    pub(crate) fn begin_unless_open(&mut self, agent: &mut Agent) -> Option<Notice> {
+        if self.live.is_some() {
+            return None;
+        }
+        self.begin_fresh(agent)
+    }
+
     pub(crate) fn finish_turn(&mut self, report: &TurnReport) -> Option<Notice> {
         let live = self.live.as_ref()?;
         if let Some(TurnFailure::Persistence(failure)) = &report.failure
@@ -117,7 +124,7 @@ impl Persistence {
         self.remember_fresh = false;
     }
 
-    fn remember(&self, id: &str) -> Option<Notice> {
+    pub(super) fn remember(&self, id: &str) -> Option<Notice> {
         let error = self.store.remember_session_id(id).err()?;
         Some(Notice::new(
             NoticeTone::Warning,

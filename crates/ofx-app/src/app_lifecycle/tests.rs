@@ -242,6 +242,7 @@ fn run_a_codex_session(home: &Path) -> ! {
         permission_mode: PermissionMode::Auto,
         persistence: None,
         history: None,
+        pick_at_start: false,
     };
     process::exit(i32::from(run(session, None, runtime).is_err()));
 }

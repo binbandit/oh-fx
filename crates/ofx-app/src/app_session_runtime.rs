@@ -1,5 +1,6 @@
 mod persistence;
 mod resume_transcript;
+mod session_picker;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -39,7 +40,7 @@ impl ResumedSession {
         profile: &mut Profile,
         target: &ResumeTarget,
     ) -> Result<Self, ResumeFailure> {
-        let mut session = store.resume_target(target)?;
+        let session = store.resume_target(target)?;
         let preferences = &session.metadata().preferences;
         profile
             .resume_selection(
@@ -48,6 +49,10 @@ impl ResumedSession {
                 &preferences.model,
             )
             .map_err(ResumeFailure::Selection)?;
+        Ok(Self::load(session)?)
+    }
+
+    fn load(mut session: WritableSession) -> Result<Self, SessionError> {
         let title = session.display_title();
         let history = session.restored_history()?;
         Ok(Self {

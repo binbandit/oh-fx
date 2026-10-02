@@ -44,6 +44,7 @@ struct Session {
     permission_mode: PermissionMode,
     persistence: Option<Persistence>,
     history: Option<Vec<HistoryEntry>>,
+    pick_at_start: bool,
 }
 
 pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedResume>) -> ExitCode {
@@ -132,11 +133,13 @@ async fn bootstrap(
         )
         .await
         .map_err(|error| vec![failure_line(&error)])?;
+    let pick_at_start = resume == Some(&RequestedResume::Pick);
     let history = resumed
         .as_ref()
         .map(|resumed| resumed.session.transcript())
         .transpose()
-        .map_err(|error| vec![failure_line(&error)])?;
+        .map_err(|error| vec![failure_line(&error)])?
+        .or_else(|| pick_at_start.then(Vec::new));
     let persistence = match (store, running_provider(&setup)) {
         (Ok(store), Ok(provider)) => {
             let preferences = configured_preferences(&profile, &setup, provider.clone());
@@ -152,6 +155,7 @@ async fn bootstrap(
         permission_mode,
         persistence,
         history,
+        pick_at_start,
     })
 }
 
@@ -247,7 +251,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let refreshes = session.setup.refreshes();
     let agent = agent_work(
         session.setup,
-        session.persistence,
+        (session.persistence, session.pick_at_start),
         session.executions,
         runtime,
     );
@@ -256,7 +260,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
 
 fn agent_work(
     setup: AgentSetup,
-    persistence: Option<Persistence>,
+    (persistence, pick_at_start): (Option<Persistence>, bool),
     executions: ManagedExecutions,
     runtime: Runtime,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
@@ -266,6 +270,7 @@ fn agent_work(
             setup,
             Arc::new(move |event| events.send(event)),
             persistence,
+            pick_at_start,
         );
         runtime.block_on(async {
             controller.run(commands).await;

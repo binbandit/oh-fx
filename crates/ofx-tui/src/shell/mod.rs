@@ -11,6 +11,7 @@ mod input_selection_runtime;
 mod input_submit_runtime;
 mod leading_whitespace;
 pub(crate) mod question_prompt;
+mod session_picker_runtime;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
 #[cfg(test)]
@@ -36,6 +37,7 @@ use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
 use leading_whitespace::LeadingWhitespace;
 use question_prompt::QuestionPrompt;
+use session_picker_runtime::SessionPicker;
 use skills_menu::SkillsMenu;
 
 use crate::composer::Composer;
@@ -159,6 +161,7 @@ pub(crate) struct Shell<'a> {
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
     yolo_warning: YoloWarning,
+    picker: Option<SessionPicker>,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
     clipboard: ClipboardRuntime,
@@ -318,6 +321,7 @@ impl<'a> Shell<'a> {
             question: None,
             skills_menu: None,
             yolo_warning,
+            picker: None,
             events,
             send,
             clipboard: ClipboardRuntime::new(clipboard),
@@ -479,6 +483,21 @@ impl<'a> Shell<'a> {
                     ),
                 });
         let picker = self.file_picker_band(composer.rows.len().saturating_sub(1), banner_rows);
+        let sessions = match (&mut self.picker, &self.approval) {
+            (Some(sessions), None) => {
+                sessions.menu_rows(&self.theme, self.layout, composer.rows.len())
+            }
+            _ => Vec::new(),
+        };
+        let sessions_open = !sessions.is_empty();
+        let (menu, hint) = if sessions_open {
+            let mut band = vec![Row::new()];
+            band.extend(sessions);
+            (band, None)
+        } else {
+            (skills_menu.unwrap_or(picker.rows), Some(hint))
+        };
+        let warning_included = warning_included && !sessions_open;
         let review = composer.review.clone();
         let banner = if review.as_ref().is_some_and(|review| review.screen) {
             Vec::new()
@@ -493,7 +512,7 @@ impl<'a> Shell<'a> {
                 activity,
                 banner,
                 composer: &composer,
-                menu: skills_menu.unwrap_or(picker.rows),
+                menu,
                 hint,
             },
             usize::from(self.layout.rows),
@@ -676,15 +695,24 @@ impl<'a> Shell<'a> {
     }
 
     fn start_fresh_transcript(&mut self, screen: FreshScreen) {
+        let welcome = Entry::Welcome {
+            version: self.options.version.clone(),
+        };
+        self.restart_transcript(screen, [welcome]);
+    }
+
+    fn restart_transcript(
+        &mut self,
+        screen: FreshScreen,
+        entries: impl IntoIterator<Item = Entry>,
+    ) {
         match screen {
             FreshScreen::Erase => self.renderer.reset_screen(&mut self.output),
             FreshScreen::KeepScrollback => self.renderer.release_screen(&mut self.output),
         }
         self.transcript.clear();
         self.transcript.restart(self.cols());
-        self.push_entry(Entry::Welcome {
-            version: self.options.version.clone(),
-        });
+        entries.into_iter().for_each(|entry| self.push_entry(entry));
         self.invalidate();
     }
 

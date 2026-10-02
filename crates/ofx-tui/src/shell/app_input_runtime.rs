@@ -77,6 +77,7 @@ impl Shell<'_> {
             self.file_picker_after_edit();
         }
         self.sync_skills_menu();
+        self.sync_picker_query();
         Ok(())
     }
 
@@ -98,7 +99,9 @@ impl Shell<'_> {
             26 => return self.suspend(),
             3 => self.handle_ctrl_c(),
             4 => self.handle_ctrl_d(),
+            b'\r' if self.picker_active() => self.submit_picker_selection(),
             b'\r' => self.handle_enter(),
+            b'\t' if self.picker_active() => {}
             b'\t' => {
                 if !self.cycle_skills_menu_source(1)
                     && self.has_file_query()
@@ -134,6 +137,20 @@ impl Shell<'_> {
             _ => {}
         }
         self.gestures.disarm_ctrl_c_exit();
+        if self.picker_active() {
+            match decoded.action {
+                Action::Escape => {
+                    self.gestures.disarm_escape_clear();
+                    self.close_picker();
+                    return;
+                }
+                Action::TogglePermissionMode => {
+                    self.toggle_picker_scope();
+                    return;
+                }
+                _ => {}
+            }
+        }
         if decoded.action == Action::Escape {
             self.resolve_escape(decoded.cancel_pending);
             return;
@@ -256,6 +273,16 @@ impl Shell<'_> {
     fn route_shortcut(&mut self, action: ShortcutAction) {
         let limit = COMPOSER_INPUT_LIMIT_BYTES;
         match action {
+            ShortcutAction::Move(intent)
+                if self.picker_active()
+                    && matches!(intent.kind, MoveKind::VisualUp | MoveKind::VisualDown) =>
+            {
+                self.move_picker(if intent.kind == MoveKind::VisualUp {
+                    -1
+                } else {
+                    1
+                });
+            }
             ShortcutAction::Move(intent) => match intent.kind {
                 MoveKind::VisualUp
                 | MoveKind::VisualDown
@@ -358,8 +385,12 @@ impl Shell<'_> {
     }
 
     fn move_footer_menu(&mut self, delta: i32) -> bool {
-        self.move_skills_menu(isize::try_from(delta).unwrap_or_default())
-            || self.navigate_file_picker(delta)
+        let delta_rows = isize::try_from(delta).unwrap_or_default();
+        if self.picker_active() {
+            self.move_picker(delta_rows);
+            return true;
+        }
+        self.move_skills_menu(delta_rows) || self.navigate_file_picker(delta)
     }
 
     fn navigate_history(&mut self, delta: i32) {
