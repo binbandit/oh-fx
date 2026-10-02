@@ -128,11 +128,22 @@ impl TestShell {
     }
 
     pub(super) fn draining<T>(&mut self, action: impl FnOnce(&mut Shell<'static>) -> T) -> T {
+        self.draining_after(Duration::ZERO, action).0
+    }
+
+    pub(super) fn draining_after<T>(
+        &mut self,
+        delay: Duration,
+        action: impl FnOnce(&mut Shell<'static>) -> T,
+    ) -> (T, usize) {
         let done = AtomicBool::new(false);
         let master = &self.pty.master;
         let shell = &mut self.shell;
         let (result, output) = std::thread::scope(|scope| {
-            let reader = scope.spawn(|| drain(master, &done));
+            let reader = scope.spawn(|| {
+                std::thread::sleep(delay);
+                drain(master, &done)
+            });
             let result = {
                 let _finished = Finished(&done);
                 action(shell)
@@ -140,24 +151,7 @@ impl TestShell {
             (result, reader.join().unwrap())
         });
         self.output.extend_from_slice(&output);
-        result
-    }
-
-    pub(super) fn read_output_after(&self, delay: Duration) -> std::thread::JoinHandle<usize> {
-        let master = self.pty.master.try_clone().unwrap();
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            let mut buffer = [0_u8; 4096];
-            let mut total = 0;
-            loop {
-                let mut fds = [PollFd::new(&master, PollFlags::IN)];
-                let timeout = Timespec::try_from(Duration::from_millis(200)).unwrap();
-                if rustix::event::poll(&mut fds, Some(&timeout)).unwrap() == 0 {
-                    return total;
-                }
-                total += rustix::io::read(&master, &mut buffer).unwrap();
-            }
-        })
+        (result, output.len())
     }
 
     pub(super) fn written(&mut self) -> String {

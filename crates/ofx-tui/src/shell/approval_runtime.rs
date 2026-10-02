@@ -1002,12 +1002,14 @@ mod tests {
             text: format!("{}\n", "y".repeat(70)).repeat(6_000),
         });
         test.deliver(request(1, 4));
-        let reader = test.read_output_after(Duration::from_millis(700));
         let started = Instant::now();
-        test.shell.commit_frame().unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(600));
+        let (elapsed, written) = test.draining_after(Duration::from_millis(700), |shell| {
+            shell.commit_frame().unwrap();
+            started.elapsed()
+        });
+        assert!(elapsed >= Duration::from_millis(600));
         assert!(!approve_now(&mut test));
-        assert!(reader.join().unwrap() > 0);
+        assert!(written > 0);
     }
 
     #[test]
