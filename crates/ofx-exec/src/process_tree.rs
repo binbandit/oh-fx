@@ -41,7 +41,23 @@ struct ProcessSnapshot {
     identity: Identity,
     parent_pid: Option<Pid>,
     process_group: Option<Pid>,
+    session: Option<Pid>,
     zombie: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionStanding {
+    Attached,
+    Detached,
+    Gone,
+}
+
+fn completion_standing(command_session: Pid, session: Option<Pid>) -> CompletionStanding {
+    match session {
+        Some(value) if value == command_session => CompletionStanding::Attached,
+        Some(_) => CompletionStanding::Detached,
+        None => CompletionStanding::Attached,
+    }
 }
 
 trait Effects {
@@ -158,6 +174,14 @@ impl Tracker {
         })
     }
 
+    pub(crate) fn signal_attached(&self, signal: Signal, command_session: Pid) -> usize {
+        self.signal_attached_with(signal, command_session, &SystemEffects)
+    }
+
+    pub(crate) fn any_attached_alive(&self, command_session: Pid) -> bool {
+        self.any_attached_alive_with(command_session, &SystemEffects)
+    }
+
     fn newest_first(&self) -> impl Iterator<Item = TrackedProcess> + '_ {
         self.processes.iter().rev().chain(&self.root).copied()
     }
@@ -171,6 +195,28 @@ impl Tracker {
         self.newest_first()
             .filter(|&process| signal_tracked_process(process, signal, preserved_group, effects))
             .count()
+    }
+
+    fn signal_attached_with(
+        &self,
+        signal: Signal,
+        command_session: Pid,
+        effects: &impl Effects,
+    ) -> usize {
+        self.newest_first()
+            .filter(|&process| {
+                completion_standing_with(process, command_session, effects)
+                    == CompletionStanding::Attached
+                    && signal_tracked_process(process, signal, None, effects)
+            })
+            .count()
+    }
+
+    fn any_attached_alive_with(&self, command_session: Pid, effects: &impl Effects) -> bool {
+        self.newest_first().any(|process| {
+            completion_standing_with(process, command_session, effects)
+                == CompletionStanding::Attached
+        })
     }
 
     fn append_direct_children(
@@ -260,6 +306,24 @@ fn signal_tracked_process(
     };
     should_signal_process(Some(process_group), preserved_group)
         && effects.send(process.pid, signal).is_ok()
+}
+
+fn completion_standing_with(
+    process: TrackedProcess,
+    command_session: Pid,
+    effects: &impl Effects,
+) -> CompletionStanding {
+    let actual = match effects.capture(process.pid) {
+        Ok(actual) => actual,
+        Err(InspectionError::ProcessNotFound) => return CompletionStanding::Gone,
+        Err(InspectionError::Denied(_) | InspectionError::Failed(_)) => {
+            return CompletionStanding::Attached;
+        }
+    };
+    if process.identity != actual.identity || !snapshot_is_alive(actual) {
+        return CompletionStanding::Gone;
+    }
+    completion_standing(command_session, actual.session)
 }
 
 fn should_traverse_parent(expected: Identity, actual: Identity) -> bool {
