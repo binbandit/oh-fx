@@ -150,6 +150,7 @@ impl WritableSession {
         provider: &SavedProvider,
     ) -> Result<(), SessionError> {
         let open = self.writer.turn_open();
+        let fresh = self.started;
         let nothing_done = turn.steps.is_empty()
             && turn.end
                 == TurnEnd::Stopped {
@@ -164,8 +165,7 @@ impl WritableSession {
             self.writer.block_open_turn();
         }
         saved?;
-        self.write_first_title(turn.user);
-        Ok(())
+        self.write_first_title(fresh, turn.user)
     }
 
     fn append_turn(
@@ -188,6 +188,7 @@ impl WritableSession {
         provider: &SavedProvider,
     ) -> Result<(), SessionError> {
         self.require_writable()?;
+        let fresh = self.started;
         let timestamp_ms = now_ms();
         let mut events = match active {
             Some(active) => self.active_prefix(active, provider, timestamp_ms)?,
@@ -203,21 +204,20 @@ impl WritableSession {
             },
         ));
         self.append(timestamp_ms, &events)?;
-        if let Some(active) = active {
-            self.write_first_title(active.user);
+        match active {
+            Some(active) => self.write_first_title(fresh, active.user),
+            None => Ok(()),
         }
-        Ok(())
     }
 
-    fn write_first_title(&mut self, prompt: &str) {
-        if !self.started || self.metadata.title.is_some() {
-            return;
-        }
-        if let Some(title) = prompt_title(prompt) {
-            let mut proposed = self.metadata.clone();
-            proposed.title = Some(title);
-            let _ = self.write_metadata(proposed);
-        }
+    fn write_first_title(&mut self, fresh: bool, prompt: &str) -> Result<(), SessionError> {
+        let Some(title) = fresh.then(|| prompt_title(prompt)).flatten() else {
+            return Ok(());
+        };
+        let mut proposed = self.metadata.clone();
+        proposed.title = Some(title);
+        self.write_metadata(proposed)
+            .or_else(|_| self.require_writable())
     }
 
     fn active_prefix(
@@ -271,6 +271,7 @@ impl WritableSession {
         self.writer.append(timestamp_ms, events)?;
         if !events.is_empty() {
             self.metadata.updated_at_ms = timestamp_ms;
+            self.started = false;
         }
         Ok(())
     }

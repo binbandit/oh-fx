@@ -994,13 +994,9 @@ fn saved_title(fixture: &Fixture) -> Value {
 }
 
 #[test]
-fn the_first_saved_prompt_names_a_fresh_session_once() {
+fn only_the_first_save_of_a_fresh_session_names_it() {
     let fixture = Fixture::new();
     let mut session = fixture.start();
-    session
-        .record_turn(&simple_turn("/help", "commands"), &gateway())
-        .unwrap();
-    assert_eq!(saved_title(&fixture), Value::Null);
     session
         .record_turn(&simple_turn("  fix the\tbuild\nplease", "ok"), &gateway())
         .unwrap();
@@ -1010,6 +1006,41 @@ fn the_first_saved_prompt_names_a_fresh_session_once() {
         .unwrap();
     assert_eq!(saved_title(&fixture), "fix the build");
     assert_eq!(session.display_title(), "fix the build");
+
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("/help", "commands"), &gateway())
+        .unwrap();
+    session
+        .record_turn(&simple_turn("named too late", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+    drop(session);
+    let resumed = resume_session(&fixture.sessions, "restored", LOCK_DEADLINE).unwrap();
+    assert_eq!(resumed.display_title(), "named too late");
+
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session.select_model("openai/gpt-5-mini", false).unwrap();
+    session
+        .record_turn(&simple_turn("after a model choice", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+}
+
+#[test]
+fn a_title_that_cannot_be_written_leaves_the_turn_saved() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let manifest = fixture.dir().join("session.json");
+    fs::remove_file(&manifest).unwrap();
+    fs::create_dir(&manifest).unwrap();
+    session
+        .record_turn(&simple_turn("named", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(session.require_writable(), Ok(()));
+    assert_eq!(session.last_seq(), 3);
 }
 
 #[test]
