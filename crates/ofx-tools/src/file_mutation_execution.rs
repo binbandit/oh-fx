@@ -60,7 +60,7 @@ impl MutationRequest {
             tool_name: self.tool_name,
             workspace_root: self.workspace_root.clone(),
             requested_path,
-            full_access: in_full_access(self.permission_mode.as_ref()),
+            full_access: false,
             permission_mode: self.permission_mode.clone(),
             input,
             stage: Stage::Deferred(targets),
@@ -155,7 +155,10 @@ impl Plan {
             Err(failure) => return (None, Err(failure)),
         };
         let target = file_target(targets.target.path());
-        let full_access = in_full_access(self.permission_mode.as_ref());
+        let full_access = self
+            .permission_mode
+            .as_ref()
+            .is_some_and(|mode| mode.get() == PermissionMode::Yolo);
         let stage = if targets.target.anchor_is_external || full_access {
             Ok(Stage::Deferred(targets))
         } else {
@@ -253,10 +256,6 @@ impl Plan {
             Err(rejection) => ToolOutput::failure(rejection.message()),
         }
     }
-}
-
-fn in_full_access(mode: Option<&LivePermissionMode>) -> bool {
-    mode.is_some_and(|mode| mode.get() == PermissionMode::Yolo)
 }
 
 fn file_target(path: PathBuf) -> ApplicableTarget {
