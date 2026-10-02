@@ -21,7 +21,7 @@ use crate::legacy_elicitation_runtime::{
 use crate::mcp_contract::validate_json_rpc_response_envelope;
 use crate::protocol_messages::build_cancellation_notification;
 use crate::transport::{
-    BoxFuture, McpTransport, Progress, ProgressSink, ServerRequestPolicy, ShutdownMode,
+    BoxFuture, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy, ShutdownMode,
     TransportRequest,
 };
 
@@ -37,7 +37,7 @@ const STDERR_TAIL_CAPACITY: usize = 3072;
 const REJECTED_OUTPUT_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StderrCapture {
+pub(crate) struct StderrCapture {
     head: Vec<u8>,
     tail: Vec<u8>,
     omitted: bool,
@@ -64,21 +64,21 @@ impl StderrCapture {
         self.tail.extend_from_slice(rest);
     }
 
-    pub fn head(&self) -> &[u8] {
+    pub(crate) fn head(&self) -> &[u8] {
         &self.head
     }
 
-    pub fn tail(&self) -> &[u8] {
+    pub(crate) fn tail(&self) -> &[u8] {
         &self.tail
     }
 
-    pub fn omitted(&self) -> bool {
+    pub(crate) fn omitted(&self) -> bool {
         self.omitted
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RejectedOutput {
+pub(crate) struct RejectedOutput {
     pub bytes: Vec<u8>,
     pub truncated: bool,
 }
@@ -94,7 +94,7 @@ impl RejectedOutput {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ChildDiagnostics {
+pub(crate) struct ChildDiagnostics {
     pub status: Option<ExitStatus>,
     pub stderr: StderrCapture,
     pub rejected_output: Option<RejectedOutput>,
@@ -164,7 +164,7 @@ enum ProgressToken {
 #[derive(Debug, PartialEq)]
 enum Inbound {
     Response(ResponseId),
-    Progress(ProgressToken, Progress),
+    ProgressNotification(ProgressToken, ProgressNotification),
     Notification,
     Cancelled,
     Request,
@@ -397,8 +397,8 @@ impl McpTransport for StdioDispatcher {
         *lock(&self.shared.state) == ConnectionState::Running
     }
 
-    fn shutdown(self: Box<Self>, mode: ShutdownMode) -> BoxFuture<'static, ()> {
-        Box::pin(async move { self.stop(mode.into()).await })
+    fn shutdown(&self, mode: ShutdownMode) -> BoxFuture<'_, ()> {
+        Box::pin(self.stop(mode.into()))
     }
 }
 
@@ -527,7 +527,7 @@ impl Shared {
         };
         match inbound {
             Inbound::Response(ResponseId::Integer(id)) => self.deliver_response(id, frame),
-            Inbound::Progress(ProgressToken::Integer(id), progress) => {
+            Inbound::ProgressNotification(ProgressToken::Integer(id), progress) => {
                 let sink = lock(&self.pending)
                     .get(&id)
                     .and_then(|meta| meta.progress.clone());
@@ -540,7 +540,7 @@ impl Shared {
             }
             Inbound::Request => self.dispatch_server_request(frame),
             Inbound::Response(ResponseId::String)
-            | Inbound::Progress(ProgressToken::String, _)
+            | Inbound::ProgressNotification(ProgressToken::String, _)
             | Inbound::Cancelled => {}
         }
         Ok(())
@@ -694,7 +694,7 @@ fn classify_inbound(value: &Value) -> Result<Inbound, McpError> {
         if method == "notifications/progress" {
             let params = object.get("params").ok_or(McpError::McpInvalidProgress)?;
             let (token, progress) = parse_progress(params)?;
-            return Ok(Inbound::Progress(token, progress));
+            return Ok(Inbound::ProgressNotification(token, progress));
         }
         if method == "notifications/cancelled" && parse_cancelled_request_id(object.get("params")) {
             return Ok(Inbound::Cancelled);
@@ -720,7 +720,7 @@ fn parse_cancelled_request_id(params: Option<&Value>) -> bool {
         .is_some()
 }
 
-fn parse_progress(value: &Value) -> Result<(ProgressToken, Progress), McpError> {
+fn parse_progress(value: &Value) -> Result<(ProgressToken, ProgressNotification), McpError> {
     let object = value.as_object().ok_or(McpError::McpInvalidProgress)?;
     let token = match object.get("progressToken") {
         Some(Value::Number(number)) => {
@@ -741,7 +741,7 @@ fn parse_progress(value: &Value) -> Result<(ProgressToken, Progress), McpError> 
     };
     Ok((
         token,
-        Progress {
+        ProgressNotification {
             progress,
             total,
             message,
@@ -880,7 +880,7 @@ done"#;
         let progress = json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":8,"progress":2,"total":4,"message":"half"}});
         assert!(matches!(
             classify_inbound(&progress),
-            Ok(Inbound::Progress(ProgressToken::Integer(8), _))
+            Ok(Inbound::ProgressNotification(ProgressToken::Integer(8), _))
         ));
     }
 
@@ -889,9 +889,9 @@ done"#;
         let value = json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":42,"progress":1.5,"total":3,"message":"working"}});
         assert_eq!(
             classify_inbound(&value),
-            Ok(Inbound::Progress(
+            Ok(Inbound::ProgressNotification(
                 ProgressToken::Integer(42),
-                Progress {
+                ProgressNotification {
                     progress: 1.5,
                     total: Some(3.0),
                     message: Some("working".to_owned()),
@@ -977,7 +977,7 @@ cat >/dev/null"#;
         let (first, second) = tokio::join!(dispatcher.request(first), dispatcher.request(second));
         assert!(first.unwrap().contains("\"first\""));
         assert!(second.unwrap().contains("\"second\""));
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 
     #[tokio::test]
@@ -1000,7 +1000,7 @@ cat >/dev/null"#;
         );
         assert_eq!(
             *lock(&seen),
-            vec![Progress {
+            vec![ProgressNotification {
                 progress: 1.0,
                 total: Some(2.0),
                 message: None,
@@ -1010,7 +1010,7 @@ cat >/dev/null"#;
             notifications.recv().await.unwrap()["method"],
             "notifications/tools/list_changed"
         );
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 
     #[tokio::test]
@@ -1034,7 +1034,7 @@ done"#;
             )
             .await
         );
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 
     #[tokio::test]
@@ -1060,7 +1060,7 @@ while :; do sleep 1; done"#;
         );
         let started = std::time::Instant::now();
         let pid = dispatcher.shared.pid;
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(rustix::process::test_kill_process(rustix_pid(pid).unwrap()).is_err());
     }
@@ -1078,7 +1078,7 @@ while :; do sleep 1; done"#;
             diagnostics.rejected_output.map(|output| output.bytes),
             Some(b"Server banner v1".to_vec())
         );
-        Box::new(dispatcher).shutdown(ShutdownMode::Immediate).await;
+        dispatcher.shutdown(ShutdownMode::Immediate).await;
     }
 
     #[tokio::test]
@@ -1094,7 +1094,7 @@ while :; do sleep 1; done"#;
         assert_eq!(diagnostics.status.and_then(|status| status.code()), Some(3));
         assert_eq!(diagnostics.stderr.head(), b"fatal: missing token\n");
         assert!(!dispatcher.is_running());
-        Box::new(dispatcher).shutdown(ShutdownMode::Immediate).await;
+        dispatcher.shutdown(ShutdownMode::Immediate).await;
     }
 
     #[tokio::test]
@@ -1112,7 +1112,7 @@ cat >/dev/null";
             Err(McpError::McpResponseFrameTooLarge)
         );
         assert!(!dispatcher.is_running());
-        Box::new(dispatcher).shutdown(ShutdownMode::Immediate).await;
+        dispatcher.shutdown(ShutdownMode::Immediate).await;
     }
 
     #[tokio::test]
@@ -1179,7 +1179,7 @@ cat >/dev/null";
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let sleeper = sleeper.unwrap();
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
         let mut ended = false;
         for _ in 0..200 {
             if process_ended(sleeper) {
@@ -1203,6 +1203,6 @@ cat >/dev/null"#;
         let outcome = timeout(Duration::from_millis(200), dispatcher.request(call)).await;
         assert!(outcome.is_err());
         assert!(stderr_eventually_contains(&dispatcher, "\"reason\":\"Cancelled\"").await);
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 }

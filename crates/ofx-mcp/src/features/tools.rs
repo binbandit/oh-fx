@@ -52,7 +52,7 @@ impl Default for Limits {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Tool {
+pub(crate) struct Tool {
     pub name: String,
     pub title: Option<String>,
     pub description: String,
@@ -64,24 +64,24 @@ pub struct Tool {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ToolCatalog {
+pub(crate) struct ToolCatalog {
     pub tools: Vec<Tool>,
 }
 
 impl ToolCatalog {
-    pub fn get(&self, name: &str) -> Option<&Tool> {
+    pub(crate) fn get(&self, name: &str) -> Option<&Tool> {
         self.tools.iter().find(|tool| tool.name == name)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ResourceContents {
+pub(crate) enum ResourceContents {
     Text(String),
     Blob(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolContent {
+pub(crate) enum ToolContent {
     Text {
         text: String,
     },
@@ -108,7 +108,7 @@ pub enum ToolContent {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ToolCallResult {
+pub(crate) struct ToolCallResult {
     pub content: Vec<ToolContent>,
     pub is_error: bool,
     pub structured_content: Option<Value>,
@@ -116,7 +116,7 @@ pub struct ToolCallResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolCallOutcome {
+pub(crate) enum ToolCallOutcome {
     Complete(ToolCallResult),
     ProtocolFailure(RpcError),
 }

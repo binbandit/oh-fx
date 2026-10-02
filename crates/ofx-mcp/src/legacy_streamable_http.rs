@@ -17,7 +17,7 @@ use crate::protocol_messages::build_cancellation_notification;
 use crate::protocol_negotiation::ElicitationWire;
 use crate::streamable_http::{MediaType, parse_media_type, validate_header_value};
 use crate::transport::{
-    BoxFuture, McpTransport, Progress, ProgressSink, ServerRequestPolicy, ShutdownMode,
+    BoxFuture, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy, ShutdownMode,
     TransportRequest,
 };
 
@@ -137,7 +137,7 @@ enum StreamResult {
 enum EventOutcome {
     Empty,
     Notification,
-    Progress,
+    ProgressNotification,
     ServerRequest,
     Final,
 }
@@ -296,8 +296,8 @@ impl McpTransport for LegacyHttpClient {
         !self.shared.stopping.load(Ordering::Acquire)
     }
 
-    fn shutdown(self: Box<Self>, mode: ShutdownMode) -> BoxFuture<'static, ()> {
-        Box::pin(async move { self.stop(mode).await })
+    fn shutdown(&self, mode: ShutdownMode) -> BoxFuture<'_, ()> {
+        Box::pin(self.stop(mode))
     }
 }
 
@@ -507,7 +507,7 @@ impl HttpShared {
                     retry_ms = value;
                 }
                 match classify_event(&event.data, request_id, options.progress)? {
-                    EventOutcome::Empty | EventOutcome::Progress => {}
+                    EventOutcome::Empty | EventOutcome::ProgressNotification => {}
                     EventOutcome::Notification => self.route_notification(&event.data)?,
                     EventOutcome::ServerRequest => {
                         self.answer_server_request(&event, options.elicitation)
@@ -740,15 +740,15 @@ fn classify_event(
     if let Some(sink) = progress {
         sink(update);
     }
-    Ok(EventOutcome::Progress)
+    Ok(EventOutcome::ProgressNotification)
 }
 
-fn request_progress(params: Option<&Value>, request_id: u64) -> Option<Progress> {
+fn request_progress(params: Option<&Value>, request_id: u64) -> Option<ProgressNotification> {
     let params = params?.as_object()?;
     if params.get("progressToken")?.as_u64()? != request_id {
         return None;
     }
-    Some(Progress {
+    Some(ProgressNotification {
         progress: params.get("progress")?.as_f64()?,
         total: params.get("total").and_then(Value::as_f64),
         message: params
@@ -1154,8 +1154,8 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
         assert_eq!(
-            client.poll_notifications(),
-            [ServerNotification::ToolsListChanged]
+            client.next_notification().await,
+            Some(ServerNotification::ToolsListChanged)
         );
         assert_eq!(client.current_tools().await.unwrap().tools[0].name, "after");
         client.shutdown(ShutdownMode::ProcessExit).await;
@@ -1424,7 +1424,7 @@ mod tests {
                 7,
                 Some(&sink)
             ),
-            Ok(EventOutcome::Progress)
+            Ok(EventOutcome::ProgressNotification)
         );
         assert_eq!(lock(&seen).len(), 1);
         assert_eq!(
