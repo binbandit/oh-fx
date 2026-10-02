@@ -2,7 +2,7 @@ use ofx_contract::{ApprovalDecision, ApprovalRequest, TurnId, UiCommand};
 
 use super::Shell;
 use crate::footer::approval_content::ApprovalContent;
-use crate::footer::approval_panel::{Choice, PanelFrame, Review, approval_panel_rows, choices};
+use crate::footer::approval_panel::{Choice, PanelFrame, Review, approval_panel_rows, choices_for};
 use crate::footer::input_presentation::ComposerView;
 use crate::input::{Action, COMPOSER_INPUT_LIMIT_BYTES, InputEvent, PasteOwner};
 use crate::terminal::{Layout, TerminalError};
@@ -35,7 +35,7 @@ struct Shown {
 
 impl ApprovalPrompt {
     fn new(request: ApprovalRequest, content: ApprovalContent) -> Self {
-        let choices = choices(content.remember.as_ref());
+        let choices = choices_for(&content);
         Self {
             request,
             content,
@@ -329,11 +329,12 @@ mod tests {
     fn request_with(turn: u64, id: u64, always: Option<SessionGrant>) -> UiEvent {
         UiEvent::ApprovalRequested {
             turn_id: TurnId::new(turn),
-            request: ApprovalRequest {
+            request: Box::new(ApprovalRequest {
                 id: RequestId::new(id),
                 tool_name: "read_file".to_owned(),
                 title: "Reading ../notes.txt".to_owned(),
                 tool_arguments_preview: r#"{"path":"../notes.txt"}"#.to_owned(),
+                tool_arguments_truncated: false,
                 scope: ApprovalScope {
                     target: Some(PathBuf::from("/home/notes.txt")),
                     access: PathAccess::Within(PathBuf::from("/home")),
@@ -341,7 +342,7 @@ mod tests {
                 },
                 command: None,
                 file: None,
-            },
+            }),
         }
     }
 
@@ -372,7 +373,7 @@ mod tests {
     fn command_request(turn: u64, id: u64, command: &str) -> UiEvent {
         UiEvent::ApprovalRequested {
             turn_id: TurnId::new(turn),
-            request: ApprovalRequest {
+            request: Box::new(ApprovalRequest {
                 id: RequestId::new(id),
                 tool_name: "shell".to_owned(),
                 title: format!(
@@ -380,6 +381,7 @@ mod tests {
                     command.chars().take(60).collect::<String>()
                 ),
                 tool_arguments_preview: String::new(),
+                tool_arguments_truncated: false,
                 scope: ApprovalScope {
                     target: None,
                     access: PathAccess::WorkspaceOnly,
@@ -399,7 +401,7 @@ mod tests {
                     terminal: false,
                 }),
                 file: None,
-            },
+            }),
         }
     }
 
@@ -454,11 +456,12 @@ mod tests {
         let home = PathBuf::from(format!("/home{}", "/deep-directory-name".repeat(4)));
         test.deliver(UiEvent::ApprovalRequested {
             turn_id: TurnId::new(1),
-            request: ApprovalRequest {
+            request: Box::new(ApprovalRequest {
                 id: RequestId::new(4),
                 tool_name: "read_file".to_owned(),
                 title: format!("Reading {}../secret.txt", "../workspace/".repeat(8)),
                 tool_arguments_preview: String::new(),
+                tool_arguments_truncated: false,
                 scope: ApprovalScope {
                     target: Some(home.join("secret\u{202e}txt.hsab")),
                     access: PathAccess::Within(home.clone()),
@@ -466,7 +469,7 @@ mod tests {
                 },
                 command: None,
                 file: None,
-            },
+            }),
         });
         let screen = test.screen();
         for line in [
@@ -487,11 +490,12 @@ mod tests {
         });
         test.deliver(UiEvent::ApprovalRequested {
             turn_id: TurnId::new(1),
-            request: ApprovalRequest {
+            request: Box::new(ApprovalRequest {
                 id: RequestId::new(4),
                 tool_name: "write_file".to_owned(),
                 title: "Writing notes.md".to_owned(),
                 tool_arguments_preview: String::new(),
+                tool_arguments_truncated: false,
                 scope: ApprovalScope {
                     target: None,
                     access: PathAccess::WorkspaceOnly,
@@ -502,7 +506,7 @@ mod tests {
                     target: PathBuf::from("/workspace/docs/notes.md"),
                     state: FileMutationState::Changes,
                 }),
-            },
+            }),
         });
         let screen = test.screen();
         for line in [
@@ -866,6 +870,57 @@ mod tests {
             press(&mut test, b"1");
             assert!(approved(&test), "{first:?} {rest:?}");
         }
+    }
+
+    #[test]
+    fn arguments_cut_before_they_reach_the_prompt_can_only_be_denied() {
+        let mut test = TestShell::start();
+        test.submit("send it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        let arguments = format!(
+            r#"{{"to":"boss@corp","body":"{}","bcc":"attacker@evil"}}"#,
+            "hello ".repeat(800)
+        );
+        let preview = ofx_text::encode_terminal_safe(arguments.as_bytes(), 4096);
+        assert!(preview.truncated);
+        test.deliver(UiEvent::ApprovalRequested {
+            turn_id: TurnId::new(1),
+            request: Box::new(ApprovalRequest {
+                id: RequestId::new(4),
+                tool_name: "mcp_send".to_owned(),
+                title: "Calling mcp_send".to_owned(),
+                tool_arguments_preview: preview.text,
+                tool_arguments_truncated: preview.truncated,
+                scope: ApprovalScope {
+                    target: None,
+                    access: PathAccess::WorkspaceOnly,
+                    always: None,
+                },
+                command: None,
+                file: None,
+            }),
+        });
+        let screen = test.screen();
+        assert!(
+            screen
+                .contains("Its arguments are too long to show in full, so it can only be denied."),
+            "{screen}"
+        );
+        assert!(screen.contains("❯ 3. No"), "{screen}");
+        assert!(!screen.contains("1. Yes"), "{screen}");
+        test.advance(ARMED_MS);
+        test.screen();
+        for key in [&b"1"[..], b"2"] {
+            press(&mut test, key);
+        }
+        assert!(!approved(&test));
+        press(&mut test, b"\r");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Deny))
+        );
     }
 
     #[test]

@@ -53,9 +53,20 @@ impl Choice {
     }
 }
 
+pub(crate) fn choices_for(content: &ApprovalContent) -> Vec<Choice> {
+    if content.deny_only() {
+        return vec![no_choice()];
+    }
+    choices(content.remember.as_ref())
+}
+
+fn no_choice() -> Choice {
+    Choice::new(b'3', Phrase::plain("3. No"), ApprovalDecision::Deny)
+}
+
 pub(crate) fn choices(remember: Option<&Phrase>) -> Vec<Choice> {
     let yes = Choice::new(b'1', Phrase::plain("1. Yes"), ApprovalDecision::Once);
-    let no = Choice::new(b'3', Phrase::plain("3. No"), ApprovalDecision::Deny);
+    let no = no_choice();
     match remember {
         Some(remember) => vec![
             yes,
@@ -306,6 +317,7 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bo
             let complete = row.width() <= cols;
             (vec![row], complete)
         }
+        ActionBlock::Refusal(refusal) => wrapped_rows("", refusal, theme.statusline, cols),
         ActionBlock::Arguments { target, preview } => {
             let verbose_prefix =
                 INSET + target.len() + ARGUMENTS_SEPARATOR.len() + ARGUMENTS_LABEL.len();
@@ -441,6 +453,7 @@ mod tests {
             tool_name: "shell".to_owned(),
             title: "Running a command".to_owned(),
             tool_arguments_preview: String::new(),
+            tool_arguments_truncated: false,
             scope: ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOnly,
@@ -777,6 +790,7 @@ mod tests {
             tool_name: "read_file".to_owned(),
             title: format!("Reading {raw}"),
             tool_arguments_preview: String::new(),
+            tool_arguments_truncated: false,
             scope: ApprovalScope {
                 target: Some(target.clone()),
                 access: PathAccess::Within(target.clone()),
@@ -798,6 +812,7 @@ mod tests {
                 usize::MAX,
             )
             .text,
+            tool_arguments_truncated: false,
             scope: ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOnly,

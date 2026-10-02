@@ -108,7 +108,7 @@ impl Shell<'_> {
             }
             UiEvent::ApprovalRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
-                self.approval_requested(turn_id, request);
+                self.approval_requested(turn_id, *request);
             }
             UiEvent::ToolRejected { turn_id, .. } => self.end_assistant_step(turn_id),
             UiEvent::ToolFinished { .. }

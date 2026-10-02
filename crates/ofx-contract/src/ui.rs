@@ -68,6 +68,7 @@ pub struct ApprovalRequest {
     pub tool_name: String,
     pub title: String,
     pub tool_arguments_preview: String,
+    pub tool_arguments_truncated: bool,
     pub scope: ApprovalScope,
     pub command: Option<CommandRequest>,
     pub file: Option<FileMutation>,
@@ -123,7 +124,7 @@ pub enum UiEvent {
     },
     ApprovalRequested {
         turn_id: TurnId,
-        request: ApprovalRequest,
+        request: Box<ApprovalRequest>,
     },
     UsageReported {
         turn_id: TurnId,

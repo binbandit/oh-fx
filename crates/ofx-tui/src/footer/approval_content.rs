@@ -21,6 +21,8 @@ const HEADER_LEAD: &str = "# ";
 const RUN_HEADER: &str = "shell.run";
 const REMEMBER_COMMAND: &str = "don't ask again for this exact command in ";
 const FOR_THIS_SESSION: &str = " for this session";
+const ARGUMENTS_TOO_LONG: &str =
+    "Its arguments are too long to show in full, so it can only be denied.";
 const URL_SCHEMES: [&str; 2] = ["http://", "https://"];
 const AUTHORITY_ENDS: [char; 14] = [
     '/', '?', '#', ' ', '\t', '\n', '\r', ';', '|', '&', '(', ')', '<', '>',
@@ -40,6 +42,7 @@ pub(crate) struct ApprovalContent {
 pub(crate) enum ActionBlock {
     Line(Phrase),
     Note(&'static str),
+    Refusal(&'static str),
     Header { lead: &'static str, text: String },
     Wrapped { lead: &'static str, text: String },
     Arguments { target: String, preview: String },
@@ -99,6 +102,13 @@ impl ApprovalContent {
                 (None, Some(target)) => {
                     Self::generic(vec![labelled_path(request, target)], remember)
                 }
+                (None, None) if request.tool_arguments_truncated => Self::generic(
+                    vec![
+                        title_line(request),
+                        ActionBlock::Refusal(ARGUMENTS_TOO_LONG),
+                    ],
+                    None,
+                ),
                 (None, None) if !request.tool_arguments_preview.is_empty() => Self::generic(
                     vec![ActionBlock::Arguments {
                         target: safe_text(request.title.as_bytes()),
@@ -151,6 +161,12 @@ impl ApprovalContent {
             ],
             remember,
         }
+    }
+
+    pub(crate) fn deny_only(&self) -> bool {
+        self.action
+            .iter()
+            .any(|block| matches!(block, ActionBlock::Refusal(_)))
     }
 
     fn generic(action: Vec<ActionBlock>, remember: Option<Phrase>) -> Self {
@@ -309,6 +325,7 @@ mod tests {
             tool_name: "shell".to_owned(),
             title: "Running echo hi".to_owned(),
             tool_arguments_preview: String::new(),
+            tool_arguments_truncated: false,
             scope: ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOnly,
@@ -519,6 +536,7 @@ mod tests {
             tool_name: tool.to_owned(),
             title: "Reading ../workspace/../secret.txt".to_owned(),
             tool_arguments_preview: String::new(),
+            tool_arguments_truncated: false,
             scope: ApprovalScope {
                 target: Some(PathBuf::from("/home/me/secret.txt")),
                 access: PathAccess::Within(PathBuf::from("/home/me")),
@@ -572,6 +590,7 @@ mod tests {
             tool_name: tool.to_owned(),
             title: "Writing notes.md".to_owned(),
             tool_arguments_preview: String::new(),
+            tool_arguments_truncated: false,
             scope: ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOnly,
@@ -640,6 +659,7 @@ mod tests {
             tool_name: "mcp_fixture_echo".to_owned(),
             title: "Calling mcp_fixture_echo".to_owned(),
             tool_arguments_preview: r#"{"text":"\x1b\x0a\xff sentinel"}"#.to_owned(),
+            tool_arguments_truncated: false,
             scope: ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOrExternal,

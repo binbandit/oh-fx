@@ -165,7 +165,7 @@ impl Session {
                 &mut |event| match event {
                     UiEvent::ApprovalRequested { request, .. } => {
                         assert!(approvals.resolve(request.id, decide(&request)));
-                        requests.push(request);
+                        requests.push(*request);
                     }
                     UiEvent::ToolFinished {
                         status, content, ..
