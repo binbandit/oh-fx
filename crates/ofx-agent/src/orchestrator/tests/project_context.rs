@@ -306,7 +306,7 @@ fn built(scripts: Vec<Script>, snapshot: Option<ProjectContext>) -> Harness {
         spec: ToolSpec {
             name: "scoped".to_owned(),
             description: "Scoped tool.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
         world: Arc::clone(&world),
     });

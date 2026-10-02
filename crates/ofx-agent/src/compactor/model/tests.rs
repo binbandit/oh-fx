@@ -82,7 +82,7 @@ async fn a_request_after_the_conversation_sends_it_unchanged_then_the_request() 
     let tools = [ToolSpec {
         name: "shell".to_owned(),
         description: String::new(),
-        input_schema: "{}",
+        input_schema: "{}".into(),
     }];
     let conversation = ModelRequest {
         model: "m",

@@ -184,7 +184,7 @@ fn golden_tools(golden: &Value) -> Vec<ToolSpec> {
         .map(|tool| ToolSpec {
             name: tool["name"].as_str().expect("tool name").to_owned(),
             description: tool["description"].as_str().unwrap_or_default().to_owned(),
-            input_schema: tool["parameters"].to_string().leak(),
+            input_schema: tool["parameters"].to_string().into(),
         })
         .collect()
 }
