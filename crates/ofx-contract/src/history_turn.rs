@@ -79,6 +79,6 @@ pub trait ConversationLog: Send + Sync {
         &mut self,
         checkpoint: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure>;
 }

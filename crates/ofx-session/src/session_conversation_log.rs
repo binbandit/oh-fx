@@ -36,7 +36,7 @@ impl ConversationLog for SessionLog {
         &mut self,
         checkpoint: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure> {
         self.session()
             .record_compaction(checkpoint, cut, active, &self.provider)

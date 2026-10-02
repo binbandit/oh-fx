@@ -58,6 +58,63 @@ async fn manual_compaction_keeps_the_newest_turns_and_replaces_the_rest_with_a_c
 }
 
 #[tokio::test]
+async fn manual_compaction_logs_its_checkpoint_without_an_active_turn() {
+    let provider = FakeProvider::new(chat_replies(6));
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = turn_log::logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    chat(&mut agent, 6).await;
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 7);
+    let turn_log::Logged::Compaction {
+        checkpoint,
+        cut,
+        user,
+        steps,
+    } = &entries[6]
+    else {
+        panic!("{entries:?}");
+    };
+    assert_eq!(
+        *cut,
+        HistoryCut {
+            turns: 2,
+            tool_steps: 0
+        }
+    );
+    assert_eq!(*user, None);
+    assert!(steps.is_empty());
+    let (text, payload) = crate::compactor::restore_checkpoint(checkpoint);
+    assert!(payload.is_some());
+    assert_eq!(text, user_text(&agent.history[0]));
+}
+
+#[tokio::test]
+async fn a_manual_compaction_that_cannot_be_saved_keeps_the_whole_history() {
+    let mut scripts = chat_replies(6);
+    scripts.push(text_reply("answer 7"));
+    let provider = FakeProvider::new(scripts);
+    let log = Box::new(turn_log::MemoryLog {
+        refused_checkpoint: Some("SessionCommitFailed"),
+        ..turn_log::MemoryLog::default()
+    });
+    let mut agent = turn_log::logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    chat(&mut agent, 6).await;
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Err(CompactionError::NotSaved)
+    );
+    assert!(agent.compacted.is_none());
+    run(&mut agent, "question 7").await;
+    let requests = provider.requests();
+    assert_eq!(user_text(&requests[6].messages[0]), "question 1");
+    assert_eq!(requests[6].messages.len(), 6 * 2 + 1);
+}
+
+#[tokio::test]
 async fn manual_compaction_asks_the_conversations_model_for_notes_on_tool_work() {
     let mut scripts = vec![
         tool_reply(&[("call-1", r#"{"value":"notes.md"}"#)]),
@@ -704,7 +761,7 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
             tool_steps: 1
         }
     );
-    assert_eq!(user, "read the notes");
+    assert_eq!(user.as_deref(), Some("read the notes"));
     assert_eq!(steps.len(), 1);
     assert!(steps[0].starts_with("\"STEP_SENTINEL"));
     let (text, payload) = crate::compactor::restore_checkpoint(checkpoint);

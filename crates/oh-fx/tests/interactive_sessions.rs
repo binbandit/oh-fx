@@ -717,3 +717,55 @@ fn a_turn_whose_tool_result_cannot_be_saved_after_a_checkpoint_blocks_the_next_p
         Some(&("user".to_owned(), "fourth".to_owned()))
     );
 }
+
+#[test]
+fn a_manual_compaction_is_saved_and_a_resumed_session_continues_from_its_checkpoint() {
+    let server = FakeServer::start(
+        (1..=7).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))),
+    );
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    for turn in 1..=5 {
+        session.send(format!("question {turn}\r").as_bytes());
+        wait(&session, &format!("answer {turn}"));
+    }
+    session.send(b"/compact\r");
+    session.send(b"question 6\r");
+    wait(&session, "answer 6");
+    exit(session);
+    let id = home.only_session();
+    let frames = home.frames(&id);
+    assert_eq!(
+        kinds(&frames)[15..],
+        ["context_checkpoint", "user", "assistant", "turn_completed"]
+    );
+    assert_eq!(
+        frames[15]["event"]["context_checkpoint"]["covers_through_seq"],
+        3
+    );
+    let live = chat(&server.requests()[5]);
+    assert!(
+        live[0].1.starts_with("<compacted_conversation>\n"),
+        "{live:?}"
+    );
+    assert!(
+        live.iter().all(|(_, text)| text != "question 1"),
+        "{live:?}"
+    );
+
+    let session = home.shell(&["-c"], "session resumed");
+    session.send(b"question 7\r");
+    wait(&session, "answer 7");
+    exit(session);
+    assert_eq!(
+        chat(&server.requests()[6]),
+        [
+            live,
+            vec![
+                ("assistant".to_owned(), "answer 6".to_owned()),
+                ("user".to_owned(), "question 7".to_owned())
+            ]
+        ]
+        .concat()
+    );
+}

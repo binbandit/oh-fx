@@ -548,7 +548,8 @@ fn compaction_activity(result: Result<Compaction, CompactionError>) -> Compactio
             CompactionError::ModelFailed
             | CompactionError::SummaryIncomplete
             | CompactionError::EmptySummary
-            | CompactionError::InvalidCheckpoint,
+            | CompactionError::InvalidCheckpoint
+            | CompactionError::NotSaved,
         ) => CompactionEnd::Failed,
     };
     CompactionActivity::Ended(end)

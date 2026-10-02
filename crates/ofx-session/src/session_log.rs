@@ -178,22 +178,15 @@ impl WritableSession {
         &mut self,
         summary: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
         provider: &SavedProvider,
     ) -> Result<(), SessionError> {
-        let replied_nothing = TurnEnd::Replied {
-            text: "",
-            provider_replay: None,
-        };
-        if active.end != replied_nothing {
-            return Err(SessionError::InvalidConversationEvent);
-        }
-        let open = self.writer.turn_open();
+        self.require_writable()?;
         let timestamp_ms = now_ms();
-        let written = self.written_steps()?;
-        let mut events = turn_events(&self.artifacts(provider, timestamp_ms), active, written)?;
-        events.pop();
-        events.drain(..usize::from(open));
+        let mut events = match active {
+            Some(active) => self.active_prefix(active, provider, timestamp_ms)?,
+            None => Vec::new(),
+        };
         let covers_through_seq = self
             .writer
             .context_coverage(ProgressPoint::from(cut), &events)?;
@@ -204,6 +197,26 @@ impl WritableSession {
             },
         ));
         self.append(timestamp_ms, &events)
+    }
+
+    fn active_prefix(
+        &self,
+        active: &HistoryTurn<'_>,
+        provider: &SavedProvider,
+        timestamp_ms: i64,
+    ) -> Result<Vec<ConversationEvent>, SessionError> {
+        let replied_nothing = TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        };
+        if active.end != replied_nothing {
+            return Err(SessionError::InvalidConversationEvent);
+        }
+        let written = self.written_steps()?;
+        let mut events = turn_events(&self.artifacts(provider, timestamp_ms), active, written)?;
+        events.pop();
+        events.drain(..usize::from(self.writer.turn_open()));
+        Ok(events)
     }
 
     pub(crate) fn is_pristine(&self) -> bool {

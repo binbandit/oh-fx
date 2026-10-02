@@ -94,25 +94,27 @@ impl Agent {
 
     pub(super) fn record_compaction(
         &mut self,
-        turn: &Turn,
+        turn: Option<&Turn>,
         compacted: &Compacted,
     ) -> Result<(), LogFailure> {
         let Some(log) = self.log.as_mut() else {
             return Ok(());
         };
-        let parsed = history_turn(&self.history, turn.start, self.history.len());
-        let active = HistoryTurn {
-            user: parsed.user,
-            steps: logged_steps(&parsed.steps, &turn.raw_outputs),
-            end: TurnEnd::Replied {
-                text: "",
-                provider_replay: None,
-            },
-        };
+        let active = turn.map(|turn| {
+            let parsed = history_turn(&self.history, turn.start, self.history.len());
+            HistoryTurn {
+                user: parsed.user,
+                steps: logged_steps(&parsed.steps, &turn.raw_outputs),
+                end: TurnEnd::Replied {
+                    text: "",
+                    provider_replay: None,
+                },
+            }
+        });
         let cut = HistoryCut {
             turns: compacted.cut.turns,
             tool_steps: compacted.cut.tool_steps,
         };
-        log.record_compaction(&encode_checkpoint(&compacted.payload), cut, &active)
+        log.record_compaction(&encode_checkpoint(&compacted.payload), cut, active.as_ref())
     }
 }

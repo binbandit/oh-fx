@@ -12,7 +12,7 @@ pub(super) enum Logged {
     Compaction {
         checkpoint: String,
         cut: HistoryCut,
-        user: String,
+        user: Option<String>,
         steps: Vec<String>,
     },
 }
@@ -22,6 +22,7 @@ pub(super) struct MemoryLog {
     pub(super) entries: Arc<Mutex<Vec<Logged>>>,
     pub(super) failing: Option<&'static str>,
     pub(super) blocked: Option<&'static str>,
+    pub(super) refused_checkpoint: Option<&'static str>,
 }
 
 impl MemoryLog {
@@ -115,21 +116,28 @@ impl ConversationLog for MemoryLog {
         &mut self,
         checkpoint: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure> {
         self.outcome()?;
-        assert_eq!(
-            active.end,
-            TurnEnd::Replied {
-                text: "",
-                provider_replay: None
-            }
-        );
+        if let Some(code) = self.refused_checkpoint {
+            return Err(LogFailure {
+                code: code.to_owned(),
+            });
+        }
+        if let Some(active) = active {
+            assert_eq!(
+                active.end,
+                TurnEnd::Replied {
+                    text: "",
+                    provider_replay: None
+                }
+            );
+        }
         self.entries.lock().unwrap().push(Logged::Compaction {
             checkpoint: checkpoint.to_owned(),
             cut,
-            user: active.user.to_owned(),
-            steps: described_steps(active),
+            user: active.map(|active| active.user.to_owned()),
+            steps: active.map(described_steps).unwrap_or_default(),
         });
         Ok(())
     }

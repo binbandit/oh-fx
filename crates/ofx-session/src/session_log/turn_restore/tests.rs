@@ -397,7 +397,7 @@ fn a_mid_turn_checkpoint_covers_the_cut_and_the_rest_of_the_turn_follows_it() {
         tool_steps: 1,
     };
     session
-        .record_compaction("SUMMARY", cut, &active, &gateway())
+        .record_compaction("SUMMARY", cut, Some(&active), &gateway())
         .unwrap();
     assert!(session.turn_open());
     let frames = fixture.frames();
@@ -451,17 +451,17 @@ fn a_checkpoint_at_a_turn_boundary_keeps_the_running_turn_after_it() {
         tool_steps: 0,
     };
     session
-        .record_compaction("S", cut, &simple_turn("second", ""), &gateway())
+        .record_compaction("S", cut, Some(&simple_turn("second", "")), &gateway())
         .unwrap();
     session
-        .record_compaction("S2", cut, &simple_turn("second", ""), &gateway())
+        .record_compaction("S2", cut, Some(&simple_turn("second", "")), &gateway())
         .unwrap_err();
     let cut = HistoryCut {
         turns: 0,
         tool_steps: 0,
     };
     session
-        .record_compaction("S2", cut, &simple_turn("second", ""), &gateway())
+        .record_compaction("S2", cut, Some(&simple_turn("second", "")), &gateway())
         .unwrap();
     session
         .record_turn(&simple_turn("second", "two"), &gateway())
@@ -481,6 +481,45 @@ fn a_checkpoint_at_a_turn_boundary_keeps_the_running_turn_after_it() {
     assert_eq!(
         restored.messages,
         [ChatMessage::user("second"), assistant(Some("two"), &[])]
+    );
+}
+
+#[test]
+fn a_checkpoint_between_turns_is_written_alone_and_keeps_the_turns_after_its_cut() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    for (prompt, reply) in [("first", "one"), ("second", "two"), ("third", "three")] {
+        session
+            .record_turn(&simple_turn(prompt, reply), &gateway())
+            .unwrap();
+    }
+    let cut = HistoryCut {
+        turns: 2,
+        tool_steps: 0,
+    };
+    session
+        .record_compaction("S", cut, None, &gateway())
+        .unwrap();
+    assert!(!session.turn_open());
+    session
+        .record_turn(&simple_turn("fourth", "four"), &gateway())
+        .unwrap();
+    drop(session);
+    assert_eq!(fixture.events()[9], (10, "context_checkpoint".to_owned()));
+    assert_eq!(
+        fixture.frames()[9]["event"]["context_checkpoint"]["covers_through_seq"],
+        6
+    );
+    let restored = fixture.resumed();
+    assert_eq!(restored.checkpoint.as_deref(), Some("S"));
+    assert_eq!(
+        restored.messages,
+        [
+            ChatMessage::user("third"),
+            assistant(Some("three"), &[]),
+            ChatMessage::user("fourth"),
+            assistant(Some("four"), &[]),
+        ]
     );
 }
 
@@ -511,7 +550,7 @@ fn a_crash_after_a_mid_turn_checkpoint_closes_the_turn_on_resume() {
         tool_steps: 1,
     };
     session
-        .record_compaction("S", cut, &active, &gateway())
+        .record_compaction("S", cut, Some(&active), &gateway())
         .unwrap();
     drop(session);
     let restored = fixture.resumed();
@@ -536,7 +575,7 @@ fn checkpoint_prefixes_must_not_carry_a_reply() {
         session.record_compaction(
             "S",
             HistoryCut::default(),
-            &simple_turn("q", "answer"),
+            Some(&simple_turn("q", "answer")),
             &gateway()
         ),
         Err(SessionError::InvalidConversationEvent)
@@ -546,7 +585,7 @@ fn checkpoint_prefixes_must_not_carry_a_reply() {
         tool_steps: 0,
     };
     assert_eq!(
-        session.record_compaction("S", missing, &simple_turn("q", ""), &gateway()),
+        session.record_compaction("S", missing, Some(&simple_turn("q", "")), &gateway()),
         Err(SessionError::InvalidContextHistoryStart)
     );
     assert_eq!(fixture.frames().len(), 0);
@@ -769,7 +808,7 @@ fn a_turn_left_open_by_a_failed_save_blocks_every_later_save() {
         tool_steps: 0,
     };
     session
-        .record_compaction("S", cut, &simple_turn("second", ""), &gateway())
+        .record_compaction("S", cut, Some(&simple_turn("second", "")), &gateway())
         .unwrap();
     assert_eq!(session.require_writable(), Ok(()));
     session.writer.fail_next_syncs(1);
@@ -786,6 +825,10 @@ fn a_turn_left_open_by_a_failed_save_blocks_every_later_save() {
         session.record_turn(&simple_turn("third", "three"), &gateway()),
         Err(SessionError::SessionCommitFailed)
     );
+    assert_eq!(
+        session.record_compaction("S2", HistoryCut::default(), None, &gateway()),
+        Err(SessionError::SessionCommitFailed)
+    );
 }
 
 #[test]
@@ -800,7 +843,7 @@ fn a_turn_whose_results_cannot_be_stored_after_a_checkpoint_blocks_every_later_s
         tool_steps: 0,
     };
     session
-        .record_compaction("S", cut, &simple_turn("second", ""), &gateway())
+        .record_compaction("S", cut, Some(&simple_turn("second", "")), &gateway())
         .unwrap();
     let results = fixture.dir().join("tool-results");
     fs::write(&results, "not a directory").unwrap();
