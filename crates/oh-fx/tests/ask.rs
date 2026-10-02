@@ -377,6 +377,31 @@ fn protocol_failures_name_the_error_and_the_rejected_event() {
 }
 
 #[test]
+fn chat_calls_with_malformed_or_non_object_arguments_fail_before_any_tool_runs() {
+    for arguments in [
+        "[]",
+        r#"{"path":"a.txt","offset":"#,
+        r#"{"path":"a.txt","path":"b.txt"}"#,
+    ] {
+        let server = FakeServer::start([Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            arguments,
+        ))]);
+        let home = Home::with_settings(&portkey_settings(&server.base_url()));
+        let output = home.ask(&["ask", "--json", "go"], &KEY);
+        assert_eq!(output.status.code(), Some(1), "{arguments}");
+        assert_eq!(
+            stdout(&output),
+            "{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":\"@openai/gpt-4o\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{\"input_tokens\":null,\"output_tokens\":null},\"error\":\"InvalidToolArguments\"}\n",
+            "{arguments}"
+        );
+        assert_eq!(stderr(&output), "", "{arguments}");
+        assert_eq!(server.requests().len(), 1, "{arguments}");
+    }
+}
+
+#[test]
 fn transient_failures_retry_with_upstream_notices_and_recovery_json() {
     let failure = r#"{"error":{"message":"boom"}}"#;
     let server = FakeServer::start([

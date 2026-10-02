@@ -2185,4 +2185,5 @@ async fn an_interrupted_summary_keeps_the_replay_only_answer() {
 }
 
 mod capabilities;
+mod malformed_arguments;
 mod project_context;

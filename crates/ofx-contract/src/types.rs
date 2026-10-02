@@ -4,7 +4,8 @@ use ofx_text::mask_secrets;
 
 use crate::ids::ToolCallId;
 
-pub use tool_argument_integrity::ToolArgumentIntegrity;
+pub(crate) use tool_argument_integrity::ToolArgumentFailure;
+pub use tool_argument_integrity::{ToolArgumentDiagnostic, ToolArgumentIntegrity};
 
 const MAX_REASONING_EFFORT_NAME_BYTES: usize = 64;
 

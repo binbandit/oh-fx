@@ -26,7 +26,53 @@ impl ToolArgumentIntegrity {
     }
 }
 
-struct Malformed;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolArgumentFailure {
+    Truncated,
+    SyntaxError,
+    RejectedValue,
+}
+
+impl ToolArgumentFailure {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Truncated => "truncated",
+            Self::SyntaxError => "syntax_error",
+            Self::RejectedValue => "rejected_value",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolArgumentDiagnostic {
+    pub(crate) failure: ToolArgumentFailure,
+    pub(crate) input_bytes: usize,
+    pub(crate) error_offset: Option<usize>,
+}
+
+impl ToolArgumentDiagnostic {
+    pub fn diagnose(raw: &str) -> Self {
+        let input_bytes = raw.len();
+        let (failure, error_offset) = match scan(raw.as_bytes()) {
+            Ok(_) => (ToolArgumentFailure::RejectedValue, None),
+            Err(Stopped::Truncated) => (ToolArgumentFailure::Truncated, Some(input_bytes)),
+            Err(Stopped::Syntax(offset)) => (
+                ToolArgumentFailure::SyntaxError,
+                Some(offset.min(input_bytes)),
+            ),
+        };
+        Self {
+            failure,
+            input_bytes,
+            error_offset,
+        }
+    }
+}
+
+enum Stopped {
+    Truncated,
+    Syntax(usize),
+}
 
 enum Keys {
     Unique,
@@ -38,7 +84,7 @@ enum Frame {
     Object(usize),
 }
 
-type Scanned<T> = Result<T, Malformed>;
+type Scanned<T> = Result<T, Stopped>;
 
 fn scan(bytes: &[u8]) -> Scanned<Keys> {
     let mut scanner = Scanner {
@@ -78,7 +124,7 @@ impl Scanner<'_> {
                 return if self.frames.is_empty() {
                     Ok(())
                 } else {
-                    Err(Malformed)
+                    Err(Stopped::Truncated)
                 };
             };
             expects_value = match (byte, self.frames.last()) {
@@ -97,7 +143,7 @@ impl Scanner<'_> {
                     self.member()?;
                     true
                 }
-                _ => return Err(Malformed),
+                _ => return Err(self.syntax_error()),
             };
         }
     }
@@ -139,7 +185,7 @@ impl Scanner<'_> {
             b't' => self.literal(b"true"),
             b'f' => self.literal(b"false"),
             b'n' => self.literal(b"null"),
-            _ => Err(Malformed),
+            _ => Err(self.syntax_error()),
         }
     }
 
@@ -161,7 +207,7 @@ impl Scanner<'_> {
         loop {
             let byte = self.byte()?;
             match byte {
-                0..0x20 => return Err(Malformed),
+                0..0x20 => return Err(self.syntax_error()),
                 b'"' => {
                     self.at += 1;
                     return Ok(());
@@ -198,7 +244,7 @@ impl Scanner<'_> {
                 self.at += 1;
                 return self.unicode_escape();
             }
-            _ => return Err(Malformed),
+            _ => return Err(self.syntax_error()),
         };
         self.at += 1;
         Ok(unescaped)
@@ -207,10 +253,10 @@ impl Scanner<'_> {
     fn unicode_escape(&mut self) -> Scanned<char> {
         let first = self.hex_digits(4)?;
         if (0xDC00..0xE000).contains(&first) {
-            return Err(Malformed);
+            return Err(self.syntax_error());
         }
         if !(0xD800..0xDC00).contains(&first) {
-            return char::from_u32(first).ok_or(Malformed);
+            return char::from_u32(first).ok_or_else(|| self.syntax_error());
         }
         self.expect(|byte| byte == b'\\')?;
         self.expect(|byte| byte == b'u')?;
@@ -218,7 +264,8 @@ impl Scanner<'_> {
         let second = self.expect(|byte| matches!(byte, b'C'..=b'F' | b'c'..=b'f'))?;
         let rest = self.hex_digits(2)?;
         let low = (hex_value(high) << 12) | (hex_value(second) << 8) | rest;
-        char::from_u32(0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00)).ok_or(Malformed)
+        char::from_u32(0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00))
+            .ok_or_else(|| self.syntax_error())
     }
 
     fn hex_digits(&mut self, count: usize) -> Scanned<u32> {
@@ -262,7 +309,7 @@ impl Scanner<'_> {
     fn expect(&mut self, accepts: impl FnOnce(u8) -> bool) -> Scanned<u8> {
         let byte = self.byte()?;
         if !accepts(byte) {
-            return Err(Malformed);
+            return Err(self.syntax_error());
         }
         self.at += 1;
         Ok(byte)
@@ -272,7 +319,7 @@ impl Scanner<'_> {
         if self.significant()? == expected {
             Ok(())
         } else {
-            Err(Malformed)
+            Err(self.syntax_error())
         }
     }
 
@@ -282,7 +329,7 @@ impl Scanner<'_> {
     }
 
     fn byte(&self) -> Scanned<u8> {
-        self.peek().ok_or(Malformed)
+        self.peek().ok_or(Stopped::Truncated)
     }
 
     fn peek(&self) -> Option<u8> {
@@ -300,6 +347,10 @@ impl Scanner<'_> {
             self.at += 1;
         }
     }
+
+    fn syntax_error(&self) -> Stopped {
+        Stopped::Syntax(self.at)
+    }
 }
 
 fn hex_value(digit: u8) -> u32 {
@@ -309,6 +360,15 @@ fn hex_value(digit: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn diagnosis(raw: &str) -> (&'static str, usize, Option<usize>) {
+        let diagnostic = ToolArgumentDiagnostic::diagnose(raw);
+        (
+            diagnostic.failure.name(),
+            diagnostic.input_bytes,
+            diagnostic.error_offset,
+        )
+    }
 
     #[test]
     fn function_input_classification_distinguishes_syntax_from_object_shape() {
@@ -402,6 +462,63 @@ mod tests {
             assert_eq!(
                 ToolArgumentIntegrity::classify_function_input(input),
                 ToolArgumentIntegrity::MalformedJson,
+                "{input}"
+            );
+            assert_eq!(diagnosis(input), ("rejected_value", input.len(), None));
+        }
+    }
+
+    #[test]
+    fn truncated_input_is_diagnosed_at_its_end() {
+        for input in [
+            "",
+            "   ",
+            "{",
+            r#"{"path":"src/main.zig","offset":"#,
+            r#"{"a":"unterminated"#,
+            r#"{"a":tr"#,
+            r#"{"a":-"#,
+            r#"{"a":1."#,
+            r#"{"a":1e+"#,
+            r#"{"a":"\u12"#,
+            r#"{"a":"\ud83d"#,
+            "[1,2",
+        ] {
+            assert_eq!(
+                diagnosis(input),
+                ("truncated", input.len(), Some(input.len())),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn syntax_errors_are_diagnosed_where_the_upstream_scanner_stops() {
+        for (input, offset) in [
+            (r#"{"path":"a",}"#, 12),
+            ("{} trailing", 3),
+            ("{]", 1),
+            ("[}", 1),
+            (r#"{"a" 1}"#, 5),
+            (r#"{"a":1 "b":2}"#, 7),
+            (r#"{"a":01}"#, 6),
+            (r#"{"a":.5}"#, 5),
+            (r#"{"a":+1}"#, 5),
+            (r#"{"a":tRue}"#, 6),
+            (r#"{"a":"\x"}"#, 7),
+            (r#"{"a":"\udc00"}"#, 12),
+            (r#"{"a":"\ud800x"}"#, 12),
+            (r#"{"a":"\ud800\u0041"}"#, 14),
+            ("{\"a\":\"tab\there\"}", 9),
+            (r#"{"a":1,}"#, 7),
+            ("[1,]", 3),
+            ("{,}", 1),
+            (r#"{"a":1}}"#, 7),
+            (r#"{"a":1,"a":2,}"#, 13),
+        ] {
+            assert_eq!(
+                diagnosis(input),
+                ("syntax_error", input.len(), Some(offset)),
                 "{input}"
             );
         }

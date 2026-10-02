@@ -12,6 +12,7 @@ pub enum TurnOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolRejection {
     Unsupported,
+    MalformedArguments,
     Invalid,
     Panicked,
 }
