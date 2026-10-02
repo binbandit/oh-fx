@@ -52,6 +52,7 @@ impl SkillDiscoveryContext {
             authorities: &self.symlink_authorities,
             discovery: SkillDiscovery::default(),
             canonical_paths: HashSet::new(),
+            directories: DirectoryChain::default(),
         };
         for root in self.roots(policy) {
             scan.append_root(&root);
@@ -60,7 +61,8 @@ impl SkillDiscoveryContext {
     }
 
     fn roots(&self, policy: &RootPolicy) -> Vec<SkillRoot<'_>> {
-        let mut roots = Vec::new();
+        let mut roots =
+            Vec::with_capacity(policy.workspace_roots.len() + 1 + policy.global_roots.len());
         if let Some(workspace_root) = &self.workspace_root {
             self.append_workspace_roots(&mut roots, workspace_root, policy.workspace_roots);
         }
@@ -99,7 +101,10 @@ impl SkillDiscoveryContext {
 }
 
 fn push_spec_root<'a>(roots: &mut Vec<SkillRoot<'a>>, base: &'a Path, spec: &RootSpec) {
-    push_root(roots, base.join(spec.path), spec.source, Some(base));
+    let mut path = PathBuf::with_capacity(base.as_os_str().len() + 1 + spec.path.len());
+    path.push(base);
+    path.push(spec.path);
+    push_root(roots, path, spec.source, Some(base));
 }
 
 fn push_root<'a>(
@@ -125,6 +130,12 @@ struct DiscoveryScan<'a> {
     authorities: &'a SymlinkAuthorities,
     discovery: SkillDiscovery,
     canonical_paths: HashSet<PathBuf>,
+    directories: DirectoryChain,
+}
+
+#[derive(Default)]
+struct DirectoryChain {
+    verified: Vec<u8>,
 }
 
 struct CandidateEntry {
@@ -158,7 +169,7 @@ impl DiscoveryScan<'_> {
     }
 
     fn append_root(&mut self, root: &SkillRoot<'_>) {
-        if root_path_is_missing(&root.path) {
+        if self.directories.lacks(&root.path) {
             return;
         }
         let opened = match root.read_authority {
@@ -168,7 +179,8 @@ impl DiscoveryScan<'_> {
         let directory = match opened {
             Ok(directory) => directory,
             Err(error) => {
-                if !(error.is_missing() && root_path_is_missing(&root.path)) {
+                self.directories.verified.clear();
+                if !(error.is_missing() && self.directories.lacks(&root.path)) {
                     self.diagnose_unreadable_root(root);
                 }
                 return;
@@ -303,27 +315,51 @@ fn candidate_entries(directory: &OwnedFd, allow_linked: bool) -> io::Result<Vec<
     Ok(entries)
 }
 
-fn root_path_is_missing(path: &Path) -> bool {
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.first() != Some(&b'/') {
-        return false;
-    }
-    let mut end = 0;
-    for name in bytes.split(|&byte| byte == b'/') {
-        end += name.len() + 1;
-        match name {
-            b"" | b"." => continue,
-            b".." => return false,
-            _ => {}
+impl DirectoryChain {
+    fn lacks(&mut self, path: &Path) -> bool {
+        let bytes = path.as_os_str().as_bytes();
+        if bytes.first() != Some(&b'/') {
+            return false;
         }
-        let prefix = OsStr::from_bytes(&bytes[..end - 1]);
-        match entry_identity(CWD, prefix).map(FileIdentity::kind) {
-            Err(error) => return error == PathError::FileNotFound,
-            Ok(FileKind::Directory) => {}
-            Ok(_) => return false,
+        let covered = self.covered_length(bytes);
+        let mut end = 0;
+        for name in bytes.split(|&byte| byte == b'/') {
+            end += name.len() + 1;
+            match name {
+                b"" | b"." => continue,
+                b".." => return false,
+                _ if end - 1 <= covered => continue,
+                _ => {}
+            }
+            let prefix = &bytes[..end - 1];
+            match entry_identity(CWD, OsStr::from_bytes(prefix)).map(FileIdentity::kind) {
+                Err(error) => return error == PathError::FileNotFound,
+                Ok(FileKind::Directory) => {
+                    self.verified.clear();
+                    self.verified.extend_from_slice(prefix);
+                }
+                Ok(_) => return false,
+            }
         }
+        false
     }
-    false
+
+    fn covered_length(&self, path: &[u8]) -> usize {
+        let common = self
+            .verified
+            .iter()
+            .zip(path)
+            .take_while(|(verified, byte)| verified == byte)
+            .count();
+        let at_boundary = |bytes: &[u8]| bytes.get(common).is_none_or(|&byte| byte == b'/');
+        if at_boundary(&self.verified) && at_boundary(path) {
+            return common;
+        }
+        path[..common]
+            .iter()
+            .rposition(|&byte| byte == b'/')
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

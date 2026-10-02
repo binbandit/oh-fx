@@ -1048,3 +1048,25 @@ fn managed_roots_never_follow_linked_candidates() {
     let discovery = fixture.managed_discovery("root");
     assert_eq!(discovery, SkillDiscovery::default());
 }
+
+#[test]
+fn a_verified_directory_chain_covers_only_whole_leading_components() {
+    let fixture = Fixture::new();
+    fixture.mkdir("a/bc");
+    fixture.symlink("bc", "a/b");
+    let mut chain = DirectoryChain::default();
+    assert!(chain.lacks(&fixture.path("a/bc/missing")));
+    assert!(!chain.lacks(&fixture.path("a/b/missing")));
+    assert!(chain.lacks(&fixture.path("a/bc/other/skills")));
+    assert!(!chain.lacks(&fixture.path("a/bc")));
+    assert!(!chain.lacks(&fixture.path("a/b")));
+    assert_eq!(chain.covered_length(b"/x/y"), 0);
+    let parent = fixture.path("a");
+    let parent = parent.as_os_str().as_bytes();
+    assert_eq!(chain.covered_length(parent), parent.len());
+    let partial = fixture.path("a/b");
+    assert_eq!(
+        chain.covered_length(partial.as_os_str().as_bytes()),
+        parent.len()
+    );
+}
