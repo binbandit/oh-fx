@@ -792,6 +792,9 @@ dependencies = [
 [[package]]
 name = "ofx-session"
 version = "0.1.0"
+dependencies = [
+ "ofx-text",
+]
 
 [[package]]
 name = "ofx-shell"
