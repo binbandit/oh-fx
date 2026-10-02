@@ -9,6 +9,8 @@
 
 mod composer;
 mod input;
+mod row_text;
 mod terminal;
+mod theme;
 
 pub use terminal::TerminalError;
