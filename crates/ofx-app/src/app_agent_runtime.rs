@@ -203,10 +203,8 @@ impl Controller {
 fn failure_status(failure: &TurnFailure, source: CredentialSource) -> Option<String> {
     match failure {
         TurnFailure::Provider(error) => Some(provider_status(error, source)),
-        TurnFailure::InvalidCompletion
-        | TurnFailure::PermissionRequired(_)
-        | TurnFailure::ProjectContext => Some(format!("⚠ {}", failure.code())),
         TurnFailure::StepLimitReached | TurnFailure::RepeatedMalformedArguments => None,
+        _ => Some(format!("⚠ {}", failure.code())),
     }
 }
 
