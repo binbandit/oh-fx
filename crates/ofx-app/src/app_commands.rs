@@ -78,14 +78,16 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
         }
         SlashKind::Fast => CommandEffect::ToggleFast,
         SlashKind::Compact => match work {
-            Work::Idle => CommandEffect::Compact,
-            Work::Turn => {
-                state.emit(UiEvent::CompactionActivity {
-                    activity: CompactionActivity::Ended(CompactionEnd::Busy),
-                });
+            Work::Compaction => CommandEffect::None,
+            _ if !state.has_context_to_compact() => {
+                state.compaction(CompactionActivity::Ended(CompactionEnd::NothingToCompact));
                 CommandEffect::None
             }
-            Work::Compaction => CommandEffect::None,
+            Work::Idle => CommandEffect::Compact,
+            Work::Turn => {
+                state.compaction(CompactionActivity::Ended(CompactionEnd::Busy));
+                CommandEffect::None
+            }
         },
         SlashKind::Copy => {
             copy_last_reply(state);

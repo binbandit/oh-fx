@@ -36,6 +36,7 @@ pub(crate) struct ControllerState {
     clipboard: Arc<dyn Clipboard>,
     last_reply: Option<String>,
     history_turns: usize,
+    context_to_compact: bool,
 }
 
 impl ControllerState {
@@ -79,6 +80,10 @@ impl ControllerState {
         self.setup
             .status(&self.model, self.history_turns)
             .render_interactive_body()
+    }
+
+    pub(crate) fn has_context_to_compact(&self) -> bool {
+        self.context_to_compact
     }
 
     pub(crate) fn last_reply(&self) -> Option<&str> {
@@ -182,6 +187,7 @@ impl Controller {
             clipboard: Arc::new(NativeClipboard),
             last_reply: None,
             history_turns: 0,
+            context_to_compact: false,
         };
         Self {
             agent: state.setup.agent(),
@@ -249,11 +255,6 @@ impl Controller {
     }
 
     async fn compact(&mut self, commands: &mut UnboundedReceiver<UiCommand>) -> bool {
-        if !self.agent.has_context_to_compact() {
-            self.state
-                .compaction(CompactionActivity::Ended(CompactionEnd::NothingToCompact));
-            return true;
-        }
         self.state.compaction(CompactionActivity::Preparing);
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
@@ -303,6 +304,7 @@ impl Controller {
     fn remember_agent_facts(&mut self) {
         self.state.last_reply = self.agent.last_assistant_reply().map(str::to_owned);
         self.state.history_turns = self.agent.history_turns();
+        self.state.context_to_compact = self.agent.has_context_to_compact();
     }
 
     fn clear(&mut self, first_kept_prompt: u64) {
@@ -1201,23 +1203,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_during_a_turn_asks_to_wait_for_it() {
-        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
-        let server = FakeServer::start([held]);
+    async fn compact_during_a_turn_asks_to_wait_for_it_once_there_is_context() {
+        let held = || Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held(), held()]);
         let mut harness = Harness::start(&server).await;
-        harness.submit("slow");
-        harness
-            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
-            .await;
-        harness.command("/compact");
-        let busy = harness.until(compaction_settled).await;
-        assert_eq!(
-            activities(busy),
-            [CompactionActivity::Ended(CompactionEnd::Busy)]
-        );
-        let turn_id = harness.running_turn();
-        harness.send(UiCommand::Cancel { turn_id });
-        harness.until(finished(TurnOutcome::Interrupted)).await;
+        for (prompt, end) in [
+            ("first", CompactionEnd::NothingToCompact),
+            ("second", CompactionEnd::Busy),
+        ] {
+            harness.submit(prompt);
+            harness
+                .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+                .await;
+            harness.command("/compact");
+            let settled = harness.until(compaction_settled).await;
+            assert_eq!(activities(settled), [CompactionActivity::Ended(end)]);
+            let turn_id = harness.running_turn();
+            harness.send(UiCommand::Cancel { turn_id });
+            harness.until(finished(TurnOutcome::Interrupted)).await;
+        }
     }
 
     #[tokio::test]
