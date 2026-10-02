@@ -40,4 +40,4 @@ pub use types::{
     ToolCall, ToolChoice, ToolResultStatus, Usage, is_valid_reasoning_effort,
     valid_credential_account_id,
 };
-pub use ui::{ToolRejection, TurnOutcome, UiEvent};
+pub use ui::{Notice, NoticeLink, NoticeTone, ToolRejection, TurnOutcome, UiCommand, UiEvent};

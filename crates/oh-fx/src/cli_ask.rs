@@ -1016,7 +1016,13 @@ impl Presenter {
             UiEvent::TurnStarted { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
-            | UiEvent::TurnFinished { .. } => Ok(()),
+            | UiEvent::TurnFinished { .. }
+            | UiEvent::ApiStatus { .. }
+            | UiEvent::Notice { .. }
+            | UiEvent::ModelSelected { .. }
+            | UiEvent::HelpRequested
+            | UiEvent::ConversationCleared { .. }
+            | UiEvent::ExitRequested => Ok(()),
         };
         match written {
             Ok(()) => true,
