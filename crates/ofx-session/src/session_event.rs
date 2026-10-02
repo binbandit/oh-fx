@@ -273,11 +273,24 @@ struct PendingToolCall {
     seq: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AnsweredToolSpan {
+    first_call_seq: u64,
+    last_result_seq: u64,
+}
+
+impl AnsweredToolSpan {
+    fn splits_at(self, covers_through_seq: u64) -> bool {
+        self.first_call_seq <= covers_through_seq && covers_through_seq < self.last_result_seq
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ConversationState {
     last_seq: u64,
     latest_checkpoint_coverage: u64,
     pending_tool_calls: Vec<PendingToolCall>,
+    answered_tool_spans: Vec<AnsweredToolSpan>,
     turn_open: bool,
 }
 
@@ -314,12 +327,13 @@ impl ConversationState {
                 tool_name: call.tool_name.clone(),
                 seq,
             }),
-            ConversationEvent::ToolResult(result) => self
-                .pending_tool_calls
-                .retain(|pending| pending.call_id != result.call_id),
+            ConversationEvent::ToolResult(result) => self.answer(&result.call_id, seq),
             ConversationEvent::Interrupted(_) => self.pending_tool_calls.clear(),
             ConversationEvent::ContextCheckpoint(checkpoint) => {
-                self.latest_checkpoint_coverage = checkpoint.covers_through_seq;
+                let coverage = checkpoint.covers_through_seq;
+                self.latest_checkpoint_coverage = coverage;
+                self.answered_tool_spans
+                    .retain(|span| span.last_result_seq > coverage);
             }
             ConversationEvent::User(_)
             | ConversationEvent::Assistant(_)
@@ -334,6 +348,8 @@ impl ConversationState {
     pub(crate) fn rewind_open_turn(&mut self, last_seq: u64, keeps_checkpoint: bool) {
         self.last_seq = last_seq;
         self.pending_tool_calls.clear();
+        self.answered_tool_spans
+            .retain(|span| span.last_result_seq <= last_seq);
         self.turn_open = keeps_checkpoint;
     }
 
@@ -377,6 +393,13 @@ impl ConversationState {
                 {
                     return Err(SessionError::UnresolvedToolCall);
                 }
+                if self
+                    .answered_tool_spans
+                    .iter()
+                    .any(|span| span.splits_at(checkpoint.covers_through_seq))
+                {
+                    return Err(SessionError::InvalidCheckpointCoverage);
+                }
             }
             ConversationEvent::TurnCompleted(_) => {
                 if self.has_pending_tool_calls() {
@@ -408,6 +431,27 @@ impl ConversationState {
             }
             ConversationEvent::ContextCheckpoint(_) => Ok(open),
             _ => Err(SessionError::InvalidConversationFrame),
+        }
+    }
+
+    fn answer(&mut self, call_id: &str, result_seq: u64) {
+        let Some(index) = self
+            .pending_tool_calls
+            .iter()
+            .position(|pending| pending.call_id == call_id)
+        else {
+            return;
+        };
+        let call_seq = self.pending_tool_calls.remove(index).seq;
+        match self.answered_tool_spans.last_mut() {
+            Some(span) if call_seq <= span.last_result_seq => {
+                span.first_call_seq = span.first_call_seq.min(call_seq);
+                span.last_result_seq = result_seq;
+            }
+            _ => self.answered_tool_spans.push(AnsweredToolSpan {
+                first_call_seq: call_seq,
+                last_result_seq: result_seq,
+            }),
         }
     }
 

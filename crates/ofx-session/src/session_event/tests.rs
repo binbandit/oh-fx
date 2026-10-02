@@ -378,6 +378,60 @@ fn conversation_transition_validates_sequence_tool_identity_and_checkpoint_safet
 }
 
 #[test]
+fn checkpoint_coverage_never_ends_between_a_call_and_its_result() {
+    let answered = state_after(&[
+        user("request"),
+        assistant(""),
+        call("a", "shell"),
+        call("b", "shell"),
+        result("b", "shell"),
+        result("a", "shell"),
+        assistant("done"),
+        completed(),
+    ]);
+    for coverage in [3, 4, 5] {
+        assert_eq!(
+            apply(&answered, &checkpoint(coverage)),
+            Err(SessionError::InvalidCheckpointCoverage),
+            "{coverage}"
+        );
+    }
+    for coverage in [0, 1, 2, 6, 7, 8] {
+        assert!(
+            apply(&answered, &checkpoint(coverage)).is_ok(),
+            "{coverage}"
+        );
+    }
+
+    let mid_turn = state_after(&[
+        user("request"),
+        call("a", "shell"),
+        result("a", "shell"),
+        checkpoint(3),
+        call("b", "shell"),
+        result("b", "shell"),
+    ]);
+    assert_eq!(mid_turn.answered_tool_spans.len(), 1);
+    assert!(apply(&mid_turn, &checkpoint(4)).is_ok());
+    assert_eq!(
+        apply(&mid_turn, &checkpoint(5)),
+        Err(SessionError::InvalidCheckpointCoverage)
+    );
+    assert!(apply(&mid_turn, &checkpoint(6)).is_ok());
+
+    let mut rewound = mid_turn.clone();
+    rewound.rewind_open_turn(4, true);
+    assert!(rewound.answered_tool_spans.is_empty());
+
+    let abandoned = state_after(&[
+        user("request"),
+        call("a", "shell"),
+        ConversationEvent::Interrupted(InterruptedEvent::new(InterruptReason::Failed, None)),
+    ]);
+    assert!(apply(&abandoned, &checkpoint(2)).is_ok());
+}
+
+#[test]
 fn turns_open_with_a_user_and_close_once() {
     let idle = ConversationState::default();
     for event in [assistant("x"), call("c", "t"), completed()] {

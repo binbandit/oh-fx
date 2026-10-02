@@ -1,7 +1,7 @@
 use std::fs::File;
 
 use crate::session_error::SessionError;
-use crate::session_event::{ConversationEvent, decode_conversation_frame};
+use crate::session_event::{ConversationEvent, ToolResultEvent, decode_conversation_frame};
 use crate::session_replay::{LineRead, LineReader};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -172,9 +172,15 @@ pub(crate) fn replay_history(
                     events.push(event);
                 }
             }
+            ConversationEvent::ToolResult(ref result) => {
+                let events = current
+                    .as_mut()
+                    .filter(|events| answers_a_replayed_call(events, result))
+                    .ok_or(SessionError::InvalidConversationFrame)?;
+                events.push(event);
+            }
             ConversationEvent::Assistant(_)
             | ConversationEvent::ToolCall(_)
-            | ConversationEvent::ToolResult(_)
             | ConversationEvent::Steering(_) => current
                 .as_mut()
                 .ok_or(SessionError::InvalidConversationFrame)?
@@ -182,6 +188,13 @@ pub(crate) fn replay_history(
         }
     }
     Ok(SavedHistory { compacted, turns })
+}
+
+fn answers_a_replayed_call(events: &[ConversationEvent], result: &ToolResultEvent) -> bool {
+    events.iter().any(|event| {
+        matches!(event, ConversationEvent::ToolCall(call)
+            if call.call_id == result.call_id && call.tool_name == result.tool_name)
+    })
 }
 
 fn read_event_at(file: &File, offset: u64, end: u64) -> Result<ConversationEvent, SessionError> {

@@ -444,6 +444,103 @@ fn conversation_writer_removes_an_unfinished_turn_before_a_torn_final_record() {
 }
 
 #[test]
+fn a_checkpoint_never_covers_an_answered_call_without_its_result() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("split");
+    session
+        .append(1, &[user("inspect"), call("c1"), result("c1"), completed()])
+        .unwrap();
+    let before = fs::read(fixture.events("split")).unwrap();
+    assert_eq!(
+        session.append(2, &[checkpoint(2, "covers the call only")]),
+        Err(SessionError::InvalidCheckpointCoverage)
+    );
+    assert_eq!(fs::read(fixture.events("split")).unwrap(), before);
+    session
+        .append(
+            3,
+            &[
+                user("two steps"),
+                assistant(""),
+                call("c2"),
+                result("c2"),
+                assistant(""),
+                call("c3"),
+                result("c3"),
+                assistant("done"),
+                completed(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        session.append(4, &[checkpoint(10, "covers half of the second step")]),
+        Err(SessionError::InvalidCheckpointCoverage)
+    );
+    session
+        .append(4, &[checkpoint(8, "covers the first step")])
+        .unwrap();
+    drop(session);
+    let loaded = load_session(&fixture.sessions, "split").unwrap();
+    assert_eq!(loaded.history.compacted.unwrap().removed_turn_count, 1);
+    assert_eq!(
+        loaded.history.turns[0].events,
+        [
+            user("two steps"),
+            assistant(""),
+            call("c3"),
+            result("c3"),
+            assistant("done"),
+            completed(),
+        ]
+    );
+
+    drop(fixture.start("forged"));
+    let forged = [
+        frame(1, &user("inspect")),
+        frame(2, &call("c1")),
+        frame(3, &result("c1")),
+        frame(4, &completed()),
+        frame(5, &checkpoint(2, "covers the call only")),
+    ]
+    .concat();
+    fixture.append_raw("forged", &forged);
+    assert_eq!(
+        load_session(&fixture.sessions, "forged").err(),
+        Some(SessionError::InvalidCheckpointCoverage)
+    );
+    assert_eq!(
+        fixture.resume("forged").err(),
+        Some(SessionError::InvalidCheckpointCoverage)
+    );
+    assert_eq!(fs::read(fixture.events("forged")).unwrap(), forged);
+}
+
+#[test]
+fn replay_refuses_a_result_whose_call_it_did_not_restore() {
+    let events = [
+        user("inspect"),
+        call("c1"),
+        result("c1"),
+        completed(),
+        checkpoint(2, "covers the call only"),
+    ];
+    let mut file = tempfile::tempfile().unwrap();
+    let mut replay = ReplayScan::default();
+    let mut end = 0;
+    for (seq, event) in (1..).zip(&events) {
+        let bytes = frame(seq, event);
+        file.write_all(&bytes).unwrap();
+        replay.observe(end, seq, event).unwrap();
+        end += u64::try_from(bytes.len()).unwrap();
+    }
+    let window = replay.finish(&file, end).unwrap();
+    assert_eq!(
+        replay_history(&file, end, &window),
+        Err(SessionError::InvalidConversationFrame)
+    );
+}
+
+#[test]
 fn a_mid_turn_checkpoint_survives_restart_and_closes_its_turn() {
     let fixture = Fixture::new();
     let mut session = fixture.start("mid");
