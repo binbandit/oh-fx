@@ -108,6 +108,12 @@ impl ApprovalPrompt {
         };
     }
 
+    pub(super) fn forget_review(&mut self) {
+        self.shown = None;
+        self.seen.clear();
+        self.seen_cols = 0;
+    }
+
     fn scroll_by(&mut self, pages: isize) {
         self.scroll = self
             .scroll
@@ -287,6 +293,7 @@ mod tests {
         UiCommand, UiEvent,
     };
 
+    use super::super::Shell;
     use super::super::test_shell::TestShell;
 
     const PANEL: &str = "Permission needed · Choose one";
@@ -804,6 +811,59 @@ mod tests {
             test.sent().last(),
             Some(&decision(4, ApprovalDecision::Once))
         );
+    }
+
+    fn approve_now(test: &mut TestShell) -> bool {
+        test.shell.input.push_bytes(b"1");
+        test.shell.process_input().unwrap();
+        approved(test)
+    }
+
+    #[test]
+    fn a_terminal_too_small_to_draw_the_prompt_restarts_the_wait_for_yes() {
+        let mut test = approving();
+        test.resize(3, 80);
+        test.screen();
+        test.advance(5_000);
+        test.resize(24, 80);
+        assert!(!approve_now(&mut test));
+        test.screen();
+        assert!(!approve_now(&mut test));
+        test.advance(ARMED_MS);
+        assert!(approve_now(&mut test));
+    }
+
+    #[test]
+    fn a_theme_change_or_a_resume_restarts_the_wait_for_yes() {
+        for redraw in [
+            (|shell: &mut Shell<'_>| shell.apply_theme(true)) as fn(&mut Shell<'_>),
+            |shell| {
+                let layout = shell.layout;
+                shell.repaint_after_stop(Some(layout)).unwrap();
+            },
+        ] {
+            let mut test = approving();
+            redraw(&mut test.shell);
+            assert!(!approve_now(&mut test));
+            test.screen();
+            assert!(!approve_now(&mut test));
+            test.advance(ARMED_MS);
+            test.screen();
+            assert!(approve_now(&mut test));
+        }
+    }
+
+    #[test]
+    fn a_resume_that_cannot_read_the_size_refuses_yes_until_it_can() {
+        let mut test = approving();
+        test.shell.repaint_after_stop(None).unwrap();
+        assert!(test.shell.dimensions_invalid);
+        test.advance(ARMED_MS);
+        assert!(!approve_now(&mut test));
+        test.resize(24, 80);
+        test.screen();
+        test.advance(ARMED_MS);
+        assert!(approve_now(&mut test));
     }
 
     #[test]

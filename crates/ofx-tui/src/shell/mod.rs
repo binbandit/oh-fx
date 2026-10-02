@@ -291,10 +291,22 @@ impl<'a> Shell<'a> {
     }
 
     fn replay(&mut self) {
+        self.forget_approval_review();
         self.renderer.resize(self.layout.rows, self.layout.cols);
         self.renderer.reset_screen(&mut self.output);
         self.transcript.restart(self.cols());
         self.invalidate();
+    }
+
+    fn forget_approval_review(&mut self) {
+        if let Some(prompt) = &mut self.approval {
+            prompt.forget_review();
+        }
+    }
+
+    fn lose_dimensions(&mut self) {
+        self.dimensions_invalid = true;
+        self.forget_approval_review();
     }
 
     fn activity_phase(&self, now_ms: i64) -> Option<i64> {
@@ -465,7 +477,7 @@ impl<'a> Shell<'a> {
         }
         self.resize_due_ms = None;
         let Ok(layout) = self.terminal.query_layout(FOOTER_ROWS) else {
-            self.dimensions_invalid = true;
+            self.lose_dimensions();
             return;
         };
         if self.dimensions_invalid
@@ -484,6 +496,9 @@ impl<'a> Shell<'a> {
         }
         if let Some(layout) = layout {
             self.layout = layout;
+        } else {
+            self.lose_dimensions();
+            self.handle_resize_signal(self.now_ms());
         }
         self.replay();
         Ok(())
