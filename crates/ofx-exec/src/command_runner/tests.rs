@@ -8,8 +8,7 @@ use tokio::time::{Instant, timeout};
 use rustix::process::Signal;
 
 use super::{
-    Collection, FORCE_SIGNAL, OutputStream, SignalScope, StopIntent, child_pid, termination_signal,
-    watch_exit,
+    Collection, FORCE_SIGNAL, OutputStream, StopIntent, child_pid, termination_signal, watch_exit,
 };
 use crate::command_contract::CommandStatus;
 
@@ -96,12 +95,6 @@ fn a_slow_consumer_still_receives_every_leftover_byte_after_exit() {
 #[test]
 fn foreground_force_cleanup_preserves_the_supervisor() {
     assert_eq!(FORCE_SIGNAL, Signal::USR1);
-    assert_eq!(
-        termination_signal(StopIntent::Force),
-        (SignalScope::Supervisor, FORCE_SIGNAL)
-    );
-    assert_eq!(
-        termination_signal(StopIntent::Graceful),
-        (SignalScope::ProcessGroup, Signal::TERM)
-    );
+    assert_eq!(termination_signal(StopIntent::Force), FORCE_SIGNAL);
+    assert_eq!(termination_signal(StopIntent::Graceful), Signal::TERM);
 }

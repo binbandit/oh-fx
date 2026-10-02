@@ -4,7 +4,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
@@ -16,12 +16,29 @@ use crate::command_runner::TERMINATION_GRACE;
 pub(in crate::command_runner) const FORCE_SIGNAL: Signal = Signal::USR1;
 const SURVIVED_SIGNALS: [i32; 4] = [SIGINT, SIGHUP, SIGQUIT, SIGUSR2];
 const READ_BYTES: usize = 64;
+const LONGEST_POLL_MILLISECONDS: u32 = i32::MAX.unsigned_abs();
 
 pub(super) trait CommandTree {
     fn stop_gracefully(&mut self) -> Result<(), &'static str>;
     fn force(&mut self) -> Result<(), &'static str>;
-    fn settle_termination(&mut self, started: Instant, forced: bool) -> Result<(), &'static str>;
-    fn settle_completion(&mut self) -> Result<(), &'static str>;
+    fn settle_termination(
+        &mut self,
+        started: Instant,
+        escalation: &mut dyn Escalation,
+    ) -> Result<(), &'static str>;
+    fn settle_completion(&mut self, escalation: &mut dyn Escalation) -> Result<(), &'static str>;
+}
+
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the Linux process tree waits for a tree to settle"
+    )
+)]
+pub(super) trait Escalation {
+    fn forced(&mut self) -> bool;
+    fn pause(&mut self, duration: Duration);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,14 +82,10 @@ impl Requests {
         })
     }
 
-    pub(super) fn graceful_requested(&self) -> bool {
-        self.graceful.load(Ordering::SeqCst)
-    }
-
     fn observed(&self) -> TerminationRequest {
         if self.force.load(Ordering::SeqCst) {
             TerminationRequest::Force
-        } else if self.graceful_requested() {
+        } else if self.graceful.load(Ordering::SeqCst) {
             TerminationRequest::Graceful
         } else {
             TerminationRequest::None
@@ -82,6 +95,50 @@ impl Requests {
     fn drain(&self) {
         let mut buffer = [0; READ_BYTES];
         while matches!((&self.wake).read(&mut buffer), Ok(length) if length > 0) {}
+    }
+
+    fn owner_alive_after_wait(&self, owner_alive: bool, until: Option<Instant>) -> bool {
+        let timeout = poll_timeout(until, Instant::now());
+        let stdin = io::stdin();
+        let watched = if owner_alive { 2 } else { 1 };
+        let mut descriptors = [
+            PollFd::new(&self.wake, PollFlags::IN),
+            PollFd::new(&stdin, PollFlags::IN),
+        ];
+        let polled = poll(&mut descriptors[..watched], timeout.as_ref());
+        let owner_ready = polled.is_ok() && watched == 2 && !descriptors[1].revents().is_empty();
+        if owner_ready {
+            owner_still_open(&stdin)
+        } else {
+            owner_alive
+        }
+    }
+}
+
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the Linux process tree waits for a tree to settle"
+    )
+)]
+struct Watch<'a> {
+    requests: &'a Requests,
+    owner_alive: &'a mut bool,
+    forced: &'a mut bool,
+}
+
+impl Escalation for Watch<'_> {
+    fn forced(&mut self) -> bool {
+        *self.forced |= !*self.owner_alive || self.requests.observed() == TerminationRequest::Force;
+        *self.forced
+    }
+
+    fn pause(&mut self, duration: Duration) {
+        self.requests.drain();
+        *self.owner_alive = self
+            .requests
+            .owner_alive_after_wait(*self.owner_alive, Some(Instant::now() + duration));
     }
 }
 
@@ -133,9 +190,14 @@ impl<T: CommandTree> Supervision<T> {
     }
 
     pub(super) fn settle(&mut self) -> Result<(), &'static str> {
+        let mut watch = Watch {
+            requests: &self.requests,
+            owner_alive: &mut self.owner_alive,
+            forced: &mut self.forced,
+        };
         match self.termination_started {
-            Some(started) => self.tree.settle_termination(started, self.forced),
-            None => self.tree.settle_completion(),
+            Some(started) => self.tree.settle_termination(started, &mut watch),
+            None => self.tree.settle_completion(&mut watch),
         }
     }
 
@@ -170,21 +232,9 @@ impl<T: CommandTree> Supervision<T> {
     }
 
     fn wait_for_event(&mut self) {
-        let now = Instant::now();
-        let timeout = self
-            .next_timer()
-            .and_then(|at| Timespec::try_from(at.saturating_duration_since(now)).ok());
-        let stdin = io::stdin();
-        let watched = if self.owner_alive { 2 } else { 1 };
-        let mut descriptors = [
-            PollFd::new(&self.requests.wake, PollFlags::IN),
-            PollFd::new(&stdin, PollFlags::IN),
-        ];
-        let polled = poll(&mut descriptors[..watched], timeout.as_ref());
-        let owner_ready = polled.is_ok() && watched == 2 && !descriptors[1].revents().is_empty();
-        if owner_ready {
-            self.owner_alive = owner_still_open(&stdin);
-        }
+        self.owner_alive = self
+            .requests
+            .owner_alive_after_wait(self.owner_alive, self.next_timer());
     }
 
     fn next_timer(&self) -> Option<Instant> {
@@ -196,6 +246,11 @@ impl<T: CommandTree> Supervision<T> {
             .map(|started| started + TERMINATION_GRACE);
         self.deadline.into_iter().chain(grace_ends).min()
     }
+}
+
+fn poll_timeout(next_timer: Option<Instant>, now: Instant) -> Option<Timespec> {
+    let wait = next_timer?.saturating_duration_since(now);
+    Timespec::try_from(wait.min(Duration::from_millis(LONGEST_POLL_MILLISECONDS.into()))).ok()
 }
 
 fn owner_still_open(stdin: &io::Stdin) -> bool {
@@ -247,18 +302,20 @@ fn request_at_deadline(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::{Duration, Instant};
 
     use rustix::process::{Pid, Signal};
 
     use super::{
-        CommandTree, Requests, Supervision, TerminationAction, TerminationRequest,
-        decide_termination_action, request_at_deadline,
+        CommandTree, Escalation, Requests, Supervision, TerminationAction, TerminationRequest,
+        Watch, decide_termination_action, poll_timeout, request_at_deadline,
     };
 
     const EXIT_LIMIT: Duration = Duration::from_secs(5);
@@ -275,11 +332,15 @@ mod tests {
             Ok(())
         }
 
-        fn settle_termination(&mut self, _: Instant, _: bool) -> Result<(), &'static str> {
+        fn settle_termination(
+            &mut self,
+            _: Instant,
+            _: &mut dyn Escalation,
+        ) -> Result<(), &'static str> {
             Ok(())
         }
 
-        fn settle_completion(&mut self) -> Result<(), &'static str> {
+        fn settle_completion(&mut self, _: &mut dyn Escalation) -> Result<(), &'static str> {
             Ok(())
         }
     }
@@ -318,6 +379,75 @@ mod tests {
             "the forced stop left the command running"
         );
         assert_eq!(supervision.next_timer(), None);
+    }
+
+    #[test]
+    fn settling_escalates_on_a_force_request_or_the_loss_of_the_owner() {
+        let (wake, alarm) = UnixStream::pair().expect("the wake pipe opens");
+        wake.set_nonblocking(true)
+            .expect("the wake pipe stops blocking");
+        let requests = Requests {
+            graceful: Arc::default(),
+            force: Arc::default(),
+            wake,
+        };
+        let (mut owner_alive, mut forced) = (true, false);
+        let mut watch = Watch {
+            requests: &requests,
+            owner_alive: &mut owner_alive,
+            forced: &mut forced,
+        };
+        requests.graceful.store(true, Ordering::SeqCst);
+        assert!(!watch.forced());
+        requests.force.store(true, Ordering::SeqCst);
+        assert!(watch.forced());
+        requests.force.store(false, Ordering::SeqCst);
+        assert!(watch.forced(), "a forced stop stays forced");
+
+        let quiet = Requests {
+            graceful: Arc::default(),
+            force: Arc::default(),
+            wake: requests.wake.try_clone().expect("the wake pipe clones"),
+        };
+        let (mut owner_alive, mut forced) = (false, false);
+        let mut orphaned = Watch {
+            requests: &quiet,
+            owner_alive: &mut owner_alive,
+            forced: &mut forced,
+        };
+        assert!(orphaned.forced());
+
+        let signalled = thread::spawn(move || {
+            thread::sleep(POLL);
+            (&alarm).write_all(&[1]).expect("the alarm rings");
+        });
+        let begun = Instant::now();
+        orphaned.pause(EXIT_LIMIT);
+        signalled.join().expect("the alarm thread ends");
+        assert!(
+            begun.elapsed() < EXIT_LIMIT,
+            "a request did not end the pause"
+        );
+    }
+
+    #[test]
+    fn a_distant_timer_waits_no_longer_than_poll_can_express() {
+        let now = Instant::now();
+        let soon = poll_timeout(Some(now + Duration::from_millis(5)), now)
+            .expect("a near timer sets a timeout");
+        assert_eq!((soon.tv_sec, soon.tv_nsec), (0, 5_000_000));
+        assert_eq!(poll_timeout(None, now), None);
+        assert_eq!(
+            poll_timeout(Some(now), now + Duration::from_millis(1)).map(|due| due.tv_nsec),
+            Some(0)
+        );
+        let distant = poll_timeout(Some(now + Duration::from_hours(720)), now)
+            .expect("a distant timer sets a timeout");
+        let milliseconds = distant.tv_sec * 1000 + (distant.tv_nsec + 999_999) / 1_000_000;
+        assert!(
+            milliseconds <= i64::from(i32::MAX),
+            "{milliseconds} ms does not fit poll's timeout"
+        );
     }
 
     #[test]

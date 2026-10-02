@@ -1,5 +1,9 @@
 mod group_tree;
+#[cfg(target_os = "linux")]
+mod linux_tree;
 mod supervision;
+#[cfg(target_os = "linux")]
+mod tracked_tree;
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -10,7 +14,10 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal, kill_process_group, setsid};
 
 use super::{error_name, launch_failure_prefix, status_prefix};
+#[cfg(not(target_os = "linux"))]
 use group_tree::GroupTree;
+#[cfg(target_os = "linux")]
+use linux_tree::LinuxTree;
 pub(super) use supervision::FORCE_SIGNAL;
 use supervision::{Requests, Supervision};
 
@@ -61,6 +68,8 @@ fn supervise(args: &[OsString]) -> Result<ExitStatus, Failure> {
     let deadline = parse_deadline(deadline)?;
     let session = setsid().map_err(|_| Failure::Setup)?;
     let requests = Requests::register().map_err(|_| Failure::Setup)?;
+    #[cfg(target_os = "linux")]
+    rustix::process::set_child_subreaper(Some(session)).map_err(|_| Failure::Setup)?;
     io::stderr()
         .write_all(&[READY_BYTE])
         .map_err(|_| Failure::Setup)?;
@@ -75,17 +84,22 @@ fn supervise(args: &[OsString]) -> Result<ExitStatus, Failure> {
         .spawn()
         .map_err(|error| launch(error_name(&error)))?;
     let target = Pid::from_child(&target);
-    if requests.graceful_requested() {
-        let _ = kill_process_group(session, Signal::TERM);
-    }
-    let mut supervision = Supervision::new(target, deadline, requests, GroupTree::new(session));
+    #[cfg(target_os = "linux")]
+    let tree = LinuxTree::new(target, session).map_err(|name| {
+        let _ = rustix::process::kill_process(target, Signal::KILL);
+        launch(name)
+    })?;
+    #[cfg(not(target_os = "linux"))]
+    let tree = GroupTree::new(session);
+    let mut supervision = Supervision::new(target, deadline, requests, tree);
     let status = supervision.wait_for_target().map_err(|name| {
         supervision.kill_target();
         launch(name)
     })?;
     report_status(&nonce, status);
-    supervision.settle().map_err(launch)?;
+    let settled = supervision.settle();
     let _ = kill_process_group(session, Signal::KILL);
+    settled.map_err(launch)?;
     Ok(status)
 }
 

@@ -105,12 +105,6 @@ impl RunError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SignalScope {
-    ProcessGroup,
-    Supervisor,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     Natural,
     Cancelled,
@@ -531,10 +525,7 @@ impl<'a> Collection<'a> {
         if self.exit.is_some() {
             return;
         }
-        let _ = match termination_signal(intent) {
-            (SignalScope::ProcessGroup, signal) => kill_process_group(self.group, signal),
-            (SignalScope::Supervisor, signal) => kill_process(self.group, signal),
-        };
+        let _ = kill_process(self.group, termination_signal(intent));
     }
 
     fn kill_group(&self) {
@@ -575,10 +566,10 @@ impl<'a> Collection<'a> {
     }
 }
 
-fn termination_signal(intent: StopIntent) -> (SignalScope, Signal) {
+fn termination_signal(intent: StopIntent) -> Signal {
     match intent {
-        StopIntent::Graceful => (SignalScope::ProcessGroup, Signal::TERM),
-        StopIntent::Force => (SignalScope::Supervisor, FORCE_SIGNAL),
+        StopIntent::Graceful => Signal::TERM,
+        StopIntent::Force => FORCE_SIGNAL,
     }
 }
 
