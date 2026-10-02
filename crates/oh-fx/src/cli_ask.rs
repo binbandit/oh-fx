@@ -22,7 +22,7 @@ use ofx_config::{
     Settings, save_yolo_acknowledged,
 };
 use ofx_contract::{
-    FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
+    CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
     RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
     TurnOutcome, UiEvent, Usage,
 };
@@ -863,22 +863,7 @@ impl Presenter {
                 tool_name,
                 description,
                 ..
-            } => {
-                self.start_step();
-                if description.activity == ToolActivity::Command {
-                    self.command_calls.push(call_id.clone());
-                }
-                if self.mode != OutputMode::Terminal && tool_name == WEB_FETCH_TOOL {
-                    return true;
-                }
-                let line = self.progress_line(&description.title);
-                if description.effect == ToolEffect::None {
-                    self.settling_progress.push((call_id, line));
-                    Ok(())
-                } else {
-                    self.write_status(StatusBlock::Progress, &line)
-                }
-            }
+            } => self.tool_started(call_id, &tool_name, &description),
             UiEvent::ToolFinished {
                 call_id,
                 tool_name,
@@ -950,6 +935,28 @@ impl Presenter {
                 self.write_error.get_or_insert(write_error_name(&error));
                 false
             }
+        }
+    }
+
+    fn tool_started(
+        &mut self,
+        call_id: ToolCallId,
+        tool_name: &str,
+        description: &CallDescription,
+    ) -> io::Result<()> {
+        self.start_step();
+        if description.activity == ToolActivity::Command {
+            self.command_calls.push(call_id.clone());
+        }
+        if self.mode != OutputMode::Terminal && tool_name == WEB_FETCH_TOOL {
+            return Ok(());
+        }
+        let line = self.progress_line(&description.title);
+        if description.effect == ToolEffect::None {
+            self.settling_progress.push((call_id, line));
+            Ok(())
+        } else {
+            self.write_status(StatusBlock::Progress, &line)
         }
     }
 
