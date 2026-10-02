@@ -4,9 +4,9 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use ofx_config::ContextLimits;
 use ofx_contract::{
-    BoxFuture, CallDescription, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES, PreparedCall, Tool,
-    ToolActivity, ToolArgValue, ToolArgs, ToolContext, ToolEffect, ToolOutput, ToolSpec,
-    format_unknown_action, parse_tool_args_object,
+    ActionLabel, BoxFuture, CallDescription, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES,
+    PreparedCall, Tool, ToolActivity, ToolArgValue, ToolArgs, ToolContext, ToolEffect, ToolOutput,
+    ToolSpec, format_plain_action, parse_tool_args_object,
 };
 use ofx_skills::{
     CallPreparation, ExecuteOutput, ExecuteResult, Locations, PreparedSkill, RootPolicy,
@@ -79,8 +79,10 @@ impl Tool for SkillTool {
             .as_ref()
             .ok()
             .map(|(_, selected)| selected.skill.name.as_str());
+        let label = label(arguments, resolved_name);
         let description = CallDescription {
-            title: title(arguments, resolved_name),
+            title: format_plain_action(TOOL_NAME, label.as_ref()),
+            label,
             activity: ToolActivity::Read,
             effect: if checked.is_ok() {
                 ToolEffect::ReadOnly
@@ -266,17 +268,23 @@ fn preparation_failure(error: impl Display) -> CallPreparation {
     })
 }
 
-fn title(arguments: &str, resolved_name: Option<&str>) -> String {
-    let Ok(arguments) = parse_tool_args_object(arguments) else {
-        return format_unknown_action(TOOL_NAME);
-    };
+fn label(arguments: &str, resolved_name: Option<&str>) -> Option<ActionLabel> {
+    let arguments = parse_tool_args_object(arguments).ok()?;
     if let Some(resource) = resource_label(&arguments) {
-        return format!("Reading skill resource {resource}");
+        return Some(ActionLabel {
+            active: "Reading skill resource",
+            completed: "Read skill resource",
+            target: resource.to_owned(),
+        });
     }
     let name = resolved_name
         .or_else(|| arguments.optional_string("name"))
         .unwrap_or(TOOL_NAME);
-    format!("Loading skill {name}")
+    Some(ActionLabel {
+        active: "Loading skill",
+        completed: "Loaded skill",
+        target: name.to_owned(),
+    })
 }
 
 fn resource_label(arguments: &ToolArgs) -> Option<&str> {

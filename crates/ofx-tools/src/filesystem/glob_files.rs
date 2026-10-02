@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use ofx_contract::{
     CallDescription, CallPresentation, Concurrency, PathAccess, PreparedCall, Tool, ToolActivity,
-    ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action,
+    ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action, plain_action_label,
 };
 use ofx_text::sanitize_model_text_owned;
 use ofx_workspace::{
@@ -30,6 +30,7 @@ const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"pattern":{"type":"
 const PRESENTATION: CallPresentation = CallPresentation {
     activity: ToolActivity::List,
     action_label: "Matching",
+    completed_label: "Matched",
     label_argument: "pattern",
     label_default: "pattern",
 };
@@ -55,8 +56,10 @@ impl Tool for GlobFiles {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let decoded = GlobFilesArgs::decode(arguments);
+        let label = plain_action_label(&PRESENTATION, arguments);
         let description = CallDescription {
-            title: format_plain_action(TOOL_NAME, &PRESENTATION, arguments),
+            title: format_plain_action(TOOL_NAME, label.as_ref()),
+            label,
             activity: PRESENTATION.activity,
             effect: read_only_effect(&decoded),
             concurrency: Concurrency::Parallel,
@@ -484,7 +487,7 @@ fn merge_root_untracked_candidates(
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    use ofx_contract::ToolEffect;
+    use ofx_contract::{ToolEffect, ToolStatusDetail};
     use tempfile::TempDir;
 
     use super::*;
@@ -1013,6 +1016,7 @@ mod tests {
             description,
             CallDescription {
                 title: "Matching *.txt".to_owned(),
+                label: Some(PRESENTATION.label("*.txt")),
                 activity: ToolActivity::List,
                 effect: ToolEffect::ReadOnly,
                 concurrency: Concurrency::Parallel,
@@ -1026,7 +1030,11 @@ mod tests {
         let (description, output) = run_tool(&tool, "{\"pattern\":\"*\",\"path\":\"nope\"}");
         assert_eq!(description.title, "Matching *");
         assert_eq!(description.effect, ToolEffect::ReadOnly);
-        assert_eq!(output, ToolOutput::failure("Path not found: nope"));
+        assert_eq!(
+            output,
+            ToolOutput::failure("Path not found: nope")
+                .with_status_detail(ToolStatusDetail::PreflightFailed)
+        );
 
         let (description, output) = run_tool(&tool, "{\"path\":\".\"}");
         assert_eq!(description.title, "Matching pattern");

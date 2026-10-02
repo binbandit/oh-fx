@@ -45,28 +45,30 @@ pub use subagent::{
 };
 pub use tool_args::{ToolArgValue, ToolArgs, ToolArgsError, parse_tool_args_object};
 pub use tool_dispatch::{
-    CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity, ToolContext,
-    ToolEffect, ToolOutput, ToolSpec,
+    ActionLabel, CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity,
+    ToolContext, ToolEffect, ToolOutput, ToolSpec,
 };
 pub use tool_presentation::{
     SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
-    format_unknown_action, subagent_action, subagent_failure_label, subagent_status_line,
+    format_unknown_action, plain_action_label, subagent_action, subagent_failure_label,
+    subagent_status_line,
 };
 pub use tool_result_errors::{
-    DetailValue, ExecutionFailure, ReviewHold, filesystem_access_denied_json,
-    format_tool_execution_error_json, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
-    tool_review_held_json, valued_execution_failure_json,
+    DetailValue, ExecutionFailure, ReviewHold, ToolPermissionDenialReason,
+    filesystem_access_denied_json, format_tool_execution_error_json, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denial_reason,
+    tool_permission_denied_json, tool_review_held_json, valued_execution_failure_json,
 };
 pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 pub use types::{
-    CODEX_ORIGINATOR, ChatMessage, FULL_ACCESS_WARNING, FinishReason, LivePermissionMode,
-    ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    ProviderReplay, ReasoningEffort, ReplaySource, RouteRecoveryKind, RouteRecoveryStatus,
-    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolResultStatus, Usage,
-    is_valid_reasoning_effort, valid_credential_account_id,
+    CODEX_ORIGINATOR, ChatMessage, FULL_ACCESS_WARNING, FileChangeStats, FinishReason,
+    LivePermissionMode, ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause,
+    PermissionMode, ProviderReplay, ReasoningEffort, ReplaySource, RouteRecoveryKind,
+    RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice,
+    ToolResultStatus, ToolStatusDetail, Usage, is_valid_reasoning_effort,
+    valid_credential_account_id,
 };
 pub use ui::{
     ApprovalRequest, CompactionActivity, CompactionEnd, HistoryEntry, Notice, NoticeLink,
-    NoticeTone, ToolRejection, TurnOutcome, UiCommand, UiEvent,
+    NoticeTone, ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent,
 };

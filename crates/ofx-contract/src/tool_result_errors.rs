@@ -13,6 +13,12 @@ const USER_DENIED_MESSAGE: &str = "Permission denied by user";
 const USER_DENIED_SUGGESTION: &str = "The tool did not run. Do not retry unchanged; explain the denial or use a safer allowed alternative.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolPermissionDenialReason {
+    UserDenied,
+    ReviewUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionFailure<'a> {
     pub tool_name: &'a str,
     pub message: &'a str,
@@ -218,6 +224,24 @@ pub fn tool_permission_denied_json(tool_name: &str) -> String {
     Value::Object(envelope).to_string()
 }
 
+pub fn tool_permission_denial_reason(output: &str) -> Option<ToolPermissionDenialReason> {
+    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(output) else {
+        return None;
+    };
+    let error = root.get("error")?.as_object()?;
+    let held = match error.get("type")?.as_str()? {
+        "tool_review_held" => true,
+        "tool_permission_denied" => false,
+        _ => return None,
+    };
+    let reason = match error.get("reason")?.as_str()? {
+        "user_denied" => ToolPermissionDenialReason::UserDenied,
+        "review_unavailable" => ToolPermissionDenialReason::ReviewUnavailable,
+        _ => return None,
+    };
+    (held == (reason == ToolPermissionDenialReason::ReviewUnavailable)).then_some(reason)
+}
+
 fn masked(text: &str) -> Value {
     Value::from(mask_secrets(text).into_owned())
 }
@@ -285,6 +309,34 @@ mod tests {
             tool_permission_denied_json("read_file"),
             "{\"error\":{\"type\":\"tool_permission_denied\",\"tool_name\":\"read_file\",\"message\":\"Permission denied by user\",\"reason\":\"user_denied\",\"denied\":true,\"suggestion\":\"The tool did not run. Do not retry unchanged; explain the denial or use a safer allowed alternative.\"}}"
         );
+    }
+
+    #[test]
+    fn permission_denial_reasons_come_only_from_matching_denial_envelopes() {
+        assert_eq!(
+            tool_permission_denial_reason(&tool_permission_denied_json("read_file")),
+            Some(ToolPermissionDenialReason::UserDenied)
+        );
+        assert_eq!(
+            tool_permission_denial_reason(&tool_review_held_json(
+                "edit_file",
+                ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured)
+            )),
+            Some(ToolPermissionDenialReason::ReviewUnavailable)
+        );
+        for output in [
+            "",
+            "user_denied",
+            "[]",
+            r#"{"error":"user_denied"}"#,
+            r#"{"error":{"type":"tool_review_held","reason":"user_denied"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":"review_unavailable"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":"auto_denied"}}"#,
+            r#"{"error":{"type":"tool_execution_failed","reason":"user_denied"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":7}}"#,
+        ] {
+            assert_eq!(tool_permission_denial_reason(output), None, "{output}");
+        }
     }
 
     #[test]

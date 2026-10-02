@@ -113,6 +113,7 @@ impl PreparedCall for ScopedCall {
         let writes = self.writes();
         CallDescription {
             title: format!("Scoping {}", self.arguments),
+            label: None,
             activity: if writes {
                 ToolActivity::Write
             } else {
@@ -133,12 +134,12 @@ impl PreparedCall for ScopedCall {
         }
     }
 
-    fn untargeted_title(&self) -> String {
-        if self.writes() {
-            "Writing file".to_owned()
-        } else {
-            self.describe().title
-        }
+    fn untargeted_label(&self) -> Option<ActionLabel> {
+        self.writes().then(|| ActionLabel {
+            active: "Writing",
+            completed: "Wrote",
+            target: "file".to_owned(),
+        })
     }
 
     fn complete(&mut self) {
@@ -383,6 +384,9 @@ fn lifecycle(events: &[UiEvent]) -> Vec<String> {
             } => Some(format!("start {} {}", call_id.as_str(), description.title)),
             UiEvent::ToolFinished { call_id, .. } => Some(format!("finish {}", call_id.as_str())),
             UiEvent::ToolRejected { call_id, .. } => Some(format!("reject {}", call_id.as_str())),
+            UiEvent::ToolDeferred {
+                call_id, deferral, ..
+            } => Some(format!("defer {} {deferral:?}", call_id.as_str())),
             UiEvent::ContextNotice { text, .. } => Some(format!("notice {text}")),
             _ => None,
         })
@@ -527,6 +531,7 @@ async fn a_lone_write_with_new_rules_is_deferred_until_the_model_reissues_it() {
         [
             "notice notice for RULE /w/b/file",
             "start call-1 Writing file",
+            "defer call-1 ProjectInstructions",
             &format!("start call-2 Scoping {write}"),
             "finish call-2",
         ]
@@ -688,9 +693,11 @@ async fn calls_whose_targets_change_before_they_run_are_not_executed() {
             r#"start call-1 Scoping {"write":"/w/x","creates":"/w/missing"}"#,
             "finish call-1",
             r#"start call-2 Scoping {"read":"/w/missing"}"#,
+            "defer call-2 TargetChanged",
             r#"start call-3 Scoping {"read":"/w/c"}"#,
             "finish call-3",
             "start call-4 Writing file",
+            "defer call-4 TargetChanged",
             r#"start call-5 Scoping {"read":"/w/missing"}"#,
             "finish call-5",
         ]
@@ -722,6 +729,7 @@ async fn a_parallel_group_runs_together_only_while_every_target_is_fresh() {
         lifecycle(&events)[2..],
         [
             r#"start call-2 Scoping {"read":"/w/missing"}"#,
+            "defer call-2 TargetChanged",
             r#"start call-3 Scoping {"read":"/w/c"}"#,
             r#"start call-4 Scoping {"read":"/w/d"}"#,
             "finish call-3",
@@ -828,12 +836,15 @@ async fn file_changes_run_only_when_their_completed_target_is_the_gate_target() 
         lifecycle(&events)[2..],
         [
             "start call-2 Writing file",
+            "defer call-2 TargetChanged",
             "start call-3 Writing file",
+            "defer call-3 TargetChanged",
             &format!("start call-4 Scoping {unreadable}"),
             "finish call-4",
             &format!("start call-5 Scoping {fresh}"),
             "finish call-5",
             "start call-6 Writing file",
+            "defer call-6 TargetChanged",
         ]
     );
 }
@@ -900,8 +911,8 @@ async fn a_refused_call_is_rejected_before_its_target_reaches_the_gate() {
     assert_eq!(probed, [&vec![PathBuf::from("/w/c")]]);
     assert!(events.iter().any(|event| matches!(
         event,
-        UiEvent::ToolRejected { call_id, reason: ToolRejection::Invalid, title: Some(title), .. }
-            if call_id.as_str() == "call-1" && title == &format!("Scoping {refused}")
+        UiEvent::ToolRejected { call_id, reason: ToolRejection::Invalid, description: Some(description), .. }
+            if call_id.as_str() == "call-1" && description.title == format!("Scoping {refused}")
     )));
     assert!(!log(&harness).iter().any(|entry| entry.contains("refused")));
 }
@@ -969,7 +980,7 @@ async fn malformed_calls_never_reach_preparation_or_target_selection() {
                 UiEvent::ToolRejected {
                     reason: ToolRejection::MalformedArguments,
                     arguments,
-                    title: None,
+                    description: None,
                     ..
                 } if arguments == "{}"
             ))

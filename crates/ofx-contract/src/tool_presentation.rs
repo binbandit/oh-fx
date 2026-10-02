@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 
 use crate::subagent::SteeringDelivery;
 use crate::tool_args::parse_tool_args_object;
-use crate::tool_dispatch::CallPresentation;
+use crate::tool_dispatch::{ActionLabel, CallPresentation};
 
 const SUBAGENT_TOOL_NAME: &str = "subagent";
 const SUBAGENT_NAME_BYTES: usize = 64;
@@ -33,18 +33,16 @@ pub struct SubagentActionText {
     pub detail: String,
 }
 
-pub fn format_plain_action(
-    tool_name: &str,
-    presentation: &CallPresentation,
-    arguments: &str,
-) -> String {
-    let Ok(arguments) = parse_tool_args_object(arguments) else {
-        return format_unknown_action(tool_name);
-    };
+pub fn plain_action_label(presentation: &CallPresentation, arguments: &str) -> Option<ActionLabel> {
+    let arguments = parse_tool_args_object(arguments).ok()?;
     let value = arguments
         .optional_string(presentation.label_argument)
         .unwrap_or(presentation.label_default);
-    format!("{} {value}", presentation.action_label)
+    Some(presentation.label(value))
+}
+
+pub fn format_plain_action(tool_name: &str, label: Option<&ActionLabel>) -> String {
+    label.map_or_else(|| format_unknown_action(tool_name), ActionLabel::title)
 }
 
 pub fn format_unknown_action(tool_name: &str) -> String {
@@ -212,6 +210,7 @@ mod tests {
     const READ: CallPresentation = CallPresentation {
         activity: ToolActivity::Read,
         action_label: "Reading",
+        completed_label: "Read",
         label_argument: "path",
         label_default: "file",
     };
@@ -230,8 +229,9 @@ mod tests {
             (r#"{"path":"a.txt","path":"b.txt"}"#, "Working: read_file"),
         ];
         for (arguments, expected) in cases {
+            let label = plain_action_label(&READ, arguments);
             assert_eq!(
-                format_plain_action("read_file", &READ, arguments),
+                format_plain_action("read_file", label.as_ref()),
                 expected,
                 "{arguments}"
             );
@@ -427,5 +427,18 @@ mod tests {
             .as_deref(),
             Some("reviewer busy; message not sent · check this")
         );
+    }
+
+    #[test]
+    fn plain_action_labels_carry_both_tenses_and_the_target() {
+        assert_eq!(
+            plain_action_label(&READ, r#"{"path":"src/main.zig"}"#),
+            Some(ActionLabel {
+                active: "Reading",
+                completed: "Read",
+                target: "src/main.zig".to_owned(),
+            })
+        );
+        assert_eq!(plain_action_label(&READ, "[]"), None);
     }
 }

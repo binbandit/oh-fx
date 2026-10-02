@@ -1,6 +1,11 @@
+use ofx_contract::{ToolCallId, TurnOutcome};
 use ofx_markdown::Event;
 
-use crate::render_engine::transcript_blocks::{Entry, render_assistant_event};
+use super::tool_group_projection::ToolGroup;
+use super::tool_presentation::ToolActivityRow;
+use crate::render_engine::transcript_blocks::{
+    Entry, is_blank_line, render_assistant_event, trailing_blank_lines,
+};
 use crate::row_text::Row;
 use crate::theme::Theme;
 
@@ -9,12 +14,18 @@ pub(crate) struct Transcript {
     entries: Vec<Entry>,
     rendered: usize,
     pending: Vec<Row>,
+    held_blanks: Vec<Row>,
     cols: usize,
+    open_group: bool,
+    provisional: Option<Vec<Row>>,
 }
 
 impl Transcript {
     pub(crate) fn push(&mut self, entry: Entry) {
+        self.open_group = false;
+        self.held_blanks.clear();
         self.entries.push(entry);
+        self.provisional = None;
     }
 
     pub(crate) fn append_assistant(&mut self, events: Vec<Event>, theme: &Theme) {
@@ -26,13 +37,72 @@ impl Transcript {
         }
         if self.rendered == self.entries.len() {
             for event in &events {
-                self.pending
-                    .extend(render_assistant_event(event, self.cols, theme));
+                let rows = render_assistant_event(event, self.cols, theme);
+                if is_blank_line(event) {
+                    self.held_blanks.extend(rows);
+                } else {
+                    self.pending.append(&mut self.held_blanks);
+                    self.pending.extend(rows);
+                }
             }
+        } else {
+            self.provisional = None;
         }
         if let Some(Entry::Assistant { events: existing }) = self.entries.last_mut() {
             existing.extend(events);
         }
+    }
+
+    pub(crate) fn add_tool_row(&mut self, row: ToolActivityRow) {
+        if let Some(existing) = self
+            .tool_row_mut(&row.call_id)
+            .filter(|existing| existing.is_active())
+        {
+            *existing = row;
+            return;
+        }
+        match self.entries.last_mut() {
+            Some(Entry::ToolGroup(group)) if self.open_group => group.push(row),
+            _ => {
+                self.push(Entry::ToolGroup(ToolGroup::new(row)));
+                self.open_group = true;
+            }
+        }
+        self.provisional = None;
+    }
+
+    pub(crate) fn tool_row_mut(&mut self, call_id: &ToolCallId) -> Option<&mut ToolActivityRow> {
+        let start = self.rendered.min(self.entries.len());
+        let row = self.entries[start..]
+            .iter_mut()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::ToolGroup(group) => group.row_mut(call_id),
+                _ => None,
+            })?;
+        self.provisional = None;
+        Some(row)
+    }
+
+    pub(crate) fn cancel_active_tools(&mut self) -> bool {
+        self.settle_active_tools(ToolGroup::cancel_active)
+    }
+
+    pub(crate) fn abandon_active_tools(&mut self, outcome: TurnOutcome) -> bool {
+        self.settle_active_tools(|group| group.abandon_active(outcome))
+    }
+
+    fn settle_active_tools(&mut self, mut settle: impl FnMut(&mut ToolGroup) -> bool) -> bool {
+        let start = self.rendered.min(self.entries.len());
+        let mut settled = false;
+        for entry in &mut self.entries[start..] {
+            if let Entry::ToolGroup(group) = entry {
+                settled |= settle(group);
+            }
+        }
+        self.open_group = false;
+        self.provisional = None;
+        settled
     }
 
     pub(crate) fn tail_wants_footer_gap(&self) -> bool {
@@ -43,24 +113,71 @@ impl Transcript {
         self.entries.clear();
         self.rendered = 0;
         self.pending.clear();
+        self.held_blanks.clear();
+        self.open_group = false;
+        self.provisional = None;
     }
 
     pub(crate) fn restart(&mut self, cols: usize) {
         self.cols = cols;
         self.rendered = 0;
         self.pending.clear();
+        self.held_blanks.clear();
+        self.provisional = None;
     }
 
     pub(crate) fn take_new_rows(&mut self, theme: &Theme) -> Vec<Row> {
-        for index in self.rendered..self.entries.len() {
-            if index > 0 && !self.entries[index - 1].keeps_trailing_blank() {
-                self.pending.push(Row::new());
-            }
+        while self.rendered < self.entries.len() && self.is_final(self.rendered) {
+            let index = self.rendered;
+            self.push_separator(index);
             self.pending
                 .extend(self.entries[index].render(self.cols, theme));
+            self.hold_trailing_blanks(index, theme);
+            self.rendered += 1;
+            self.provisional = None;
         }
-        self.rendered = self.entries.len();
         std::mem::take(&mut self.pending)
+    }
+
+    pub(crate) fn provisional_rows(&mut self, theme: &Theme) -> &[Row] {
+        if self.provisional.is_none() {
+            let mut rows = Vec::new();
+            for index in self.rendered..self.entries.len() {
+                if index > 0 && !self.entries[index - 1].keeps_trailing_blank() {
+                    rows.push(Row::new());
+                }
+                rows.extend(self.entries[index].render(self.cols, theme));
+            }
+            self.provisional = Some(rows);
+        }
+        self.provisional.as_deref().unwrap_or_default()
+    }
+
+    fn is_final(&self, index: usize) -> bool {
+        match &self.entries[index] {
+            Entry::ToolGroup(group) => {
+                group.is_settled() && !(self.open_group && index + 1 == self.entries.len())
+            }
+            _ => true,
+        }
+    }
+
+    fn hold_trailing_blanks(&mut self, index: usize, theme: &Theme) {
+        if index + 1 != self.entries.len() {
+            return;
+        }
+        if let Entry::Assistant { events } = &self.entries[index] {
+            for event in &events[events.len() - trailing_blank_lines(events)..] {
+                self.held_blanks
+                    .extend(render_assistant_event(event, self.cols, theme));
+            }
+        }
+    }
+
+    fn push_separator(&mut self, index: usize) {
+        if index > 0 && !self.entries[index - 1].keeps_trailing_blank() {
+            self.pending.push(Row::new());
+        }
     }
 }
 

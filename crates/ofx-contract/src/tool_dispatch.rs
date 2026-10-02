@@ -4,7 +4,7 @@ use crate::applicable_target::ApplicableTarget;
 use crate::ids::ToolCallId;
 use crate::permission_gate::{CommandRequest, FileChange, FileMutation, PathAccess};
 use crate::stream_provider::BoxFuture;
-use crate::types::ToolResultStatus;
+use crate::types::{FileChangeStats, ToolResultStatus, ToolStatusDetail};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolSpec {
@@ -43,22 +43,48 @@ pub enum Concurrency {
 pub struct CallPresentation {
     pub activity: ToolActivity,
     pub action_label: &'static str,
+    pub completed_label: &'static str,
     pub label_argument: &'static str,
     pub label_default: &'static str,
 }
 
 impl CallPresentation {
-    pub fn untargeted_title(&self) -> String {
-        format!("{} {}", self.action_label, self.label_default)
+    pub fn label(&self, target: impl Into<String>) -> ActionLabel {
+        ActionLabel {
+            active: self.action_label,
+            completed: self.completed_label,
+            target: target.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionLabel {
+    pub active: &'static str,
+    pub completed: &'static str,
+    pub target: String,
+}
+
+impl ActionLabel {
+    pub fn title(&self) -> String {
+        format!("{} {}", self.active, self.target)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallDescription {
     pub title: String,
+    pub label: Option<ActionLabel>,
     pub activity: ToolActivity,
     pub effect: ToolEffect,
     pub concurrency: Concurrency,
+}
+
+impl CallDescription {
+    pub fn relabel(&mut self, label: ActionLabel) {
+        self.title = label.title();
+        self.label = Some(label);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +93,8 @@ pub struct ToolOutput {
     pub content: String,
     pub command_result: Option<String>,
     pub context_notices: Vec<String>,
+    pub status_detail: Option<ToolStatusDetail>,
+    pub file_change: Option<FileChangeStats>,
 }
 
 impl ToolOutput {
@@ -76,6 +104,8 @@ impl ToolOutput {
             content: content.into(),
             command_result: None,
             context_notices: Vec::new(),
+            status_detail: None,
+            file_change: None,
         }
     }
 
@@ -85,6 +115,8 @@ impl ToolOutput {
             content: content.into(),
             command_result: None,
             context_notices: Vec::new(),
+            status_detail: None,
+            file_change: None,
         }
     }
 
@@ -97,6 +129,18 @@ impl ToolOutput {
     #[must_use]
     pub fn with_context_notices(mut self, notices: impl IntoIterator<Item = String>) -> Self {
         self.context_notices.extend(notices);
+        self
+    }
+
+    #[must_use]
+    pub fn with_status_detail(mut self, detail: ToolStatusDetail) -> Self {
+        self.status_detail = Some(detail);
+        self
+    }
+
+    #[must_use]
+    pub fn with_file_change(mut self, change: FileChangeStats) -> Self {
+        self.file_change = Some(change);
         self
     }
 }
@@ -136,8 +180,8 @@ pub trait Tool: Send + Sync {
 pub trait PreparedCall: Send {
     fn describe(&self) -> CallDescription;
 
-    fn untargeted_title(&self) -> String {
-        self.describe().title
+    fn untargeted_label(&self) -> Option<ActionLabel> {
+        None
     }
 
     fn complete(&mut self) {}

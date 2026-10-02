@@ -22,6 +22,7 @@ const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"url":{"type":"stri
 const PRESENTATION: CallPresentation = CallPresentation {
     activity: ToolActivity::Read,
     action_label: "Fetching",
+    completed_label: "Fetched",
     label_argument: "url",
     label_default: "url",
 };
@@ -87,13 +88,11 @@ impl Tool for WebFetch {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let url = validate(&decode(arguments)?)?;
+        let label = PRESENTATION.label(redact_url_for_display(&url.retrieval_url));
         Ok(Box::new(WebFetchCall {
             description: CallDescription {
-                title: format!(
-                    "{} {}",
-                    PRESENTATION.action_label,
-                    redact_url_for_display(&url.retrieval_url)
-                ),
+                title: label.title(),
+                label: Some(label),
                 activity: PRESENTATION.activity,
                 effect: ToolEffect::ReadOnly,
                 concurrency: Concurrency::Parallel,

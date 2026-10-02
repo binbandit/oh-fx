@@ -1,4 +1,4 @@
-use ofx_contract::{ApprovalDecision, ApprovalRequest, TurnId, UiCommand};
+use ofx_contract::{ApprovalDecision, ApprovalRequest, PermissionMode, TurnId, UiCommand};
 
 use super::Shell;
 use crate::footer::approval_content::ApprovalContent;
@@ -7,6 +7,7 @@ use crate::footer::input_presentation::ComposerView;
 use crate::input::{Action, COMPOSER_INPUT_LIMIT_BYTES, InputEvent, PasteOwner};
 use crate::terminal::{Layout, TerminalError};
 use crate::theme::Theme;
+use crate::transcript::tool_presentation::{FILE_MUTATION_TARGET, ToolActivityRow};
 
 const AFFIRMATIVE_ARMING_MS: i64 = 500;
 const LIVE_ROWS_BELOW_PANEL: usize = 2;
@@ -149,6 +150,13 @@ impl Shell<'_> {
             });
             return;
         }
+        if starts_before_permission(&request, self.options.permission_mode) {
+            self.transcript.add_tool_row(ToolActivityRow::started(
+                request.call_id.clone(),
+                &request.tool_name,
+                request.description.clone(),
+            ));
+        }
         let content = ApprovalContent::from_request(&request, &self.options.workspace_root);
         if let Some(displaced) = self.approval.replace(ApprovalPrompt::new(request, content)) {
             self.send(UiCommand::Approval {
@@ -194,8 +202,26 @@ impl Shell<'_> {
     }
 
     pub(super) fn approval_escape(&mut self) {
-        self.dismiss_approval();
         self.cancel_visible_turn();
+        self.dismiss_approval();
+    }
+
+    pub(super) fn reveal_pending_approval_call(&mut self) {
+        let Some(prompt) = &self.approval else {
+            return;
+        };
+        let request = &prompt.request;
+        if self.transcript.tool_row_mut(&request.call_id).is_none() {
+            let mut description = request.description.clone();
+            if let (Some(_), Some(label)) = (&request.file, &mut description.label) {
+                FILE_MUTATION_TARGET.clone_into(&mut label.target);
+            }
+            self.transcript.add_tool_row(ToolActivityRow::started(
+                request.call_id.clone(),
+                &request.tool_name,
+                description,
+            ));
+        }
     }
 
     pub(super) fn dismiss_approval(&mut self) {
@@ -302,15 +328,20 @@ impl Shell<'_> {
     }
 }
 
+fn starts_before_permission(request: &ApprovalRequest, mode: PermissionMode) -> bool {
+    request.file.is_none() && !(mode == PermissionMode::Auto && request.command.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use ofx_contract::{
-        ApprovalDecision, ApprovalRequest, ApprovalScope, CommandProfile, CommandRequest,
-        FileMutation, FileMutationState, PathAccess, RequestId, SessionGrant, TurnId, TurnOutcome,
-        UiCommand, UiEvent,
+        ApprovalDecision, ApprovalRequest, ApprovalScope, CallDescription, CommandProfile,
+        CommandRequest, Concurrency, FileMutation, FileMutationState, PathAccess, RequestId,
+        SessionGrant, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome, UiCommand,
+        UiEvent,
     };
 
     use super::super::Shell;
@@ -333,7 +364,14 @@ mod tests {
             request: Box::new(ApprovalRequest {
                 id: RequestId::new(id),
                 tool_name: "read_file".to_owned(),
-                title: "Reading ../notes.txt".to_owned(),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: "Reading ../notes.txt".to_owned(),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::ReadOnly,
+                    concurrency: Concurrency::Serial,
+                },
                 tool_arguments_preview: r#"{"path":"../notes.txt"}"#.to_owned(),
                 tool_arguments_truncated: false,
                 scope: ApprovalScope {
@@ -377,10 +415,17 @@ mod tests {
             request: Box::new(ApprovalRequest {
                 id: RequestId::new(id),
                 tool_name: "shell".to_owned(),
-                title: format!(
-                    "Running {}...",
-                    command.chars().take(60).collect::<String>()
-                ),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: format!(
+                        "Running {}...",
+                        command.chars().take(60).collect::<String>()
+                    ),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::ReadOnly,
+                    concurrency: Concurrency::Serial,
+                },
                 tool_arguments_preview: String::new(),
                 tool_arguments_truncated: false,
                 scope: ApprovalScope {
@@ -460,7 +505,14 @@ mod tests {
             request: Box::new(ApprovalRequest {
                 id: RequestId::new(4),
                 tool_name: "read_file".to_owned(),
-                title: format!("Reading {}../secret.txt", "../workspace/".repeat(8)),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: format!("Reading {}../secret.txt", "../workspace/".repeat(8)),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::ReadOnly,
+                    concurrency: Concurrency::Serial,
+                },
                 tool_arguments_preview: String::new(),
                 tool_arguments_truncated: false,
                 scope: ApprovalScope {
@@ -479,7 +531,11 @@ mod tests {
         ] {
             assert!(screen.contains(line), "{line}\n{screen}");
         }
-        assert!(!screen.contains("../workspace"), "{screen}");
+        assert!(!screen.contains("read_file ../workspace"), "{screen}");
+        assert!(
+            screen.contains("└ Reading ../workspace/../workspace/"),
+            "{screen}"
+        );
     }
 
     #[test]
@@ -494,7 +550,14 @@ mod tests {
             request: Box::new(ApprovalRequest {
                 id: RequestId::new(4),
                 tool_name: "write_file".to_owned(),
-                title: "Writing notes.md".to_owned(),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: "Writing notes.md".to_owned(),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::ReadOnly,
+                    concurrency: Concurrency::Serial,
+                },
                 tool_arguments_preview: String::new(),
                 tool_arguments_truncated: false,
                 scope: ApprovalScope {
@@ -892,7 +955,14 @@ mod tests {
             request: Box::new(ApprovalRequest {
                 id: RequestId::new(4),
                 tool_name: "mcp_send".to_owned(),
-                title: "Calling mcp_send".to_owned(),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: "Calling mcp_send".to_owned(),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::ReadOnly,
+                    concurrency: Concurrency::Serial,
+                },
                 tool_arguments_preview: preview.text,
                 tool_arguments_truncated: preview.truncated,
                 scope: ApprovalScope {

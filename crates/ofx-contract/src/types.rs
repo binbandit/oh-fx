@@ -25,6 +25,31 @@ pub enum ToolResultStatus {
     Failure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileChangeStats {
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolStatusDetail {
+    PreflightFailed,
+    StalePreview,
+    Cancelled,
+    Rejected,
+}
+
+impl ToolStatusDetail {
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::PreflightFailed => "preflight failed",
+            Self::StalePreview => "stale preview",
+            Self::Cancelled => "cancelled",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplaySource {
     pub provider: String,

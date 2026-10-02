@@ -2,8 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess,
-    PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect,
+    ActionLabel, ApplicableTarget, CallDescription, Concurrency, FileChangeStats, FileMutation,
+    FileMutationState, PathAccess, PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect,
+    ToolStatusDetail,
 };
 use ofx_workspace::MAX_PATH_BYTES;
 use tempfile::TempDir;
@@ -152,6 +153,11 @@ fn one_exact_occurrence_is_replaced() {
         run.description,
         CallDescription {
             title: "Editing note.txt".to_owned(),
+            label: Some(ActionLabel {
+                active: "Editing",
+                completed: "Edited",
+                target: "note.txt".to_owned(),
+            }),
             activity: ToolActivity::Edit,
             effect: ToolEffect::Irreversible,
             concurrency: Concurrency::Serial,
@@ -166,7 +172,10 @@ fn one_exact_occurrence_is_replaced() {
     );
     assert_eq!(
         run.output,
-        ToolOutput::success("edited note.txt (17 bytes)")
+        ToolOutput::success("edited note.txt (17 bytes)").with_file_change(FileChangeStats {
+            additions: 1,
+            deletions: 1,
+        })
     );
     assert_eq!(fixture.read("note.txt"), "alpha\nBETA\ngamma\n");
 }
@@ -262,7 +271,10 @@ fn a_second_edit_prepared_before_the_first_ran_reads_the_file_it_finds() {
     };
     assert_eq!(
         execute(first),
-        ToolOutput::success("edited note.txt (4 bytes)")
+        ToolOutput::success("edited note.txt (4 bytes)").with_file_change(FileChangeStats {
+            additions: 1,
+            deletions: 1,
+        })
     );
     assert_eq!(
         execute(second).content,
@@ -295,8 +307,20 @@ fn matching_is_exact_and_failures_leave_the_file_untouched() {
     ];
     for (old_string, new_string, expected) in cases {
         let run = fixture.run(&arguments("note.txt", old_string, new_string));
-        assert_eq!(run.output, ToolOutput::failure(expected), "{old_string:?}");
+        assert_eq!(
+            run.output,
+            ToolOutput::failure(expected).with_status_detail(ToolStatusDetail::PreflightFailed),
+            "{old_string:?}"
+        );
         assert_eq!(run.description.effect, ToolEffect::None, "{old_string:?}");
+        assert_eq!(run.description.title, "Editing file", "{old_string:?}");
+        assert_eq!(
+            run.description
+                .label
+                .map(|label| (label.completed, label.target)),
+            Some(("Edited", "note.txt".to_owned())),
+            "{old_string:?}"
+        );
         assert_eq!(run.mutation, None);
     }
     assert_eq!(fixture.read("note.txt"), original);
@@ -304,7 +328,10 @@ fn matching_is_exact_and_failures_leave_the_file_untouched() {
     let crlf = fixture.run(&arguments("note.txt", "line two\r\n", "line 2\r\n"));
     assert_eq!(
         crlf.output,
-        ToolOutput::success("edited note.txt (25 bytes)")
+        ToolOutput::success("edited note.txt (25 bytes)").with_file_change(FileChangeStats {
+            additions: 1,
+            deletions: 1,
+        })
     );
     assert_eq!(fixture.read("note.txt"), "same twice same\r\nline 2\r\n");
 }
@@ -316,7 +343,13 @@ fn occurrences_are_counted_without_overlap() {
 
     let run = fixture.run(&arguments("note.txt", "aa", "b"));
 
-    assert_eq!(run.output, ToolOutput::success("edited note.txt (2 bytes)"));
+    assert_eq!(
+        run.output,
+        ToolOutput::success("edited note.txt (2 bytes)").with_file_change(FileChangeStats {
+            additions: 1,
+            deletions: 1,
+        })
+    );
     assert_eq!(fixture.read("note.txt"), "ba");
 }
 
@@ -339,7 +372,11 @@ fn edits_need_an_existing_regular_file() {
         ),
     ] {
         let run = fixture.run(&arguments(path, "old", "new"));
-        assert_eq!(run.output, ToolOutput::failure(expected), "{path}");
+        assert_eq!(
+            run.output,
+            ToolOutput::failure(expected).with_status_detail(ToolStatusDetail::PreflightFailed),
+            "{path}"
+        );
     }
     assert!(!fixture.workspace.join("missing").exists());
 }
@@ -356,6 +393,7 @@ fn postimages_over_the_limit_fail_before_approval() {
     assert_eq!(
         run.output,
         ToolOutput::failure("edit_file failed: postimage exceeds the 4 MiB preparation limit")
+            .with_status_detail(ToolStatusDetail::PreflightFailed)
     );
     assert_eq!(fixture.read("large.txt").len(), MAX_CONTENT_BYTES);
 }
@@ -379,7 +417,12 @@ fn external_edits_are_deferred_until_admission() {
     let edited = fixture.run(&arguments(&outside, "secret", "public"));
     assert_eq!(
         edited.output,
-        ToolOutput::success(format!("edited {} (13 bytes)", outside.display()))
+        ToolOutput::success(format!("edited {} (13 bytes)", outside.display())).with_file_change(
+            FileChangeStats {
+                additions: 1,
+                deletions: 1,
+            }
+        )
     );
     assert_eq!(fs::read_to_string(&outside).unwrap(), "public value\n");
 }

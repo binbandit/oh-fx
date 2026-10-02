@@ -20,6 +20,7 @@ pub(crate) struct Theme {
     pub(crate) divider: Paint,
     pub(crate) permission_auto: Paint,
     pub(crate) user_card_marker: Paint,
+    pub(crate) tool_stdout: Paint,
     diff_added_marker: Option<Color>,
     diff_removed_marker: Option<Color>,
     inline_code: Paint,
@@ -47,6 +48,7 @@ const FX_DARK: Theme = Theme {
     divider: Paint::fg(240),
     permission_auto: Paint::fg(252),
     user_card_marker: Paint::fg(255),
+    tool_stdout: Paint::fg(245),
     diff_added_marker: None,
     diff_removed_marker: None,
     inline_code: Paint::fg(245),
@@ -74,6 +76,7 @@ const FX_LIGHT: Theme = Theme {
     divider: Paint::fg(250),
     permission_auto: Paint::fg(238),
     user_card_marker: Paint::fg(235),
+    tool_stdout: Paint::fg(245),
     diff_added_marker: None,
     diff_removed_marker: None,
     inline_code: Paint::fg(247),
@@ -97,6 +100,13 @@ impl Theme {
             theme.diff_removed_marker = Some(removed);
         }
         theme
+    }
+
+    pub(crate) fn diff_marker_paints(&self) -> Option<(Paint, Paint)> {
+        Some((
+            Paint::colored(Some(self.diff_added_marker?)),
+            Paint::colored(Some(self.diff_removed_marker?)),
+        ))
     }
 
     pub(crate) fn accented_diff_markers(&self) -> bool {
@@ -151,7 +161,7 @@ mod tests {
 
     use super::*;
 
-    fn paints(theme: &Theme) -> [Paint; 18] {
+    fn paints(theme: &Theme) -> [Paint; 19] {
         [
             theme.hint,
             theme.statusline,
@@ -165,6 +175,7 @@ mod tests {
             theme.selected_completion,
             theme.permission_auto,
             theme.user_card_marker,
+            theme.tool_stdout,
             theme.inline_code,
             theme.task_completed,
             theme.link,
@@ -224,6 +235,7 @@ mod tests {
         assert_eq!(FX_DARK.hint, Paint::fg(255));
         assert_eq!(FX_DARK.statusline, Paint::fg(245));
         assert_eq!(FX_DARK.user_card_marker, Paint::fg(255));
+        assert_eq!(FX_DARK.tool_stdout, Paint::fg(245));
         assert_eq!(FX_DARK.inline_code, Paint::fg(245));
         assert_eq!(FX_DARK.task_completed, Paint::fg(252));
         assert_eq!(FX_DARK.syntax_strong, Paint::fg(252));
@@ -231,6 +243,7 @@ mod tests {
         assert_eq!(FX_LIGHT.hint, Paint::fg(235));
         assert_eq!(FX_LIGHT.statusline, Paint::fg(241));
         assert_eq!(FX_LIGHT.user_card_marker, Paint::fg(235));
+        assert_eq!(FX_LIGHT.tool_stdout, Paint::fg(245));
         assert_eq!(FX_LIGHT.inline_code, Paint::fg(247));
         assert_eq!(FX_LIGHT.task_completed, Paint::fg(238));
         assert_eq!(FX_LIGHT.syntax_strong, Paint::fg(238));

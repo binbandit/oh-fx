@@ -3,9 +3,9 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 
 use ofx_contract::{
-    Admission, ApplicableTarget, CallDescription, Concurrency, FileChange, FileMutation,
-    FileMutationState, PathAccess, PermissionGate, PermissionMode, TargetKind, ToolCallId,
-    ToolContext, ToolEffect, ToolResultStatus,
+    ActionLabel, Admission, ApplicableTarget, CallDescription, Concurrency, FileChange,
+    FileChangeStats, FileMutation, FileMutationState, PathAccess, PermissionGate, PermissionMode,
+    TargetKind, ToolCallId, ToolContext, ToolEffect, ToolResultStatus, ToolStatusDetail,
 };
 use ofx_permissions::PermissionPolicy;
 use ofx_workspace::MAX_PATH_BYTES;
@@ -114,6 +114,11 @@ fn invalid_arguments_fail_without_touching_the_filesystem() {
         let run = run(&workspace.tool(), &arguments, PathAccess::WorkspaceOnly);
         assert_eq!(run.output, ToolOutput::failure(expected), "{expected}");
         assert_eq!(run.description.title, "Writing file", "{expected}");
+        assert_eq!(
+            run.description.label.map(|label| label.target),
+            Some("file".to_owned()),
+            "{expected}"
+        );
         assert_eq!(run.description.effect, ToolEffect::None);
         assert_eq!(run.mutation, None);
     }
@@ -146,8 +151,17 @@ fn target_and_preparation_failures_are_reported_before_approval() {
             &arguments(path, "new"),
             PathAccess::WorkspaceOrExternal,
         );
-        assert_eq!(run.output, ToolOutput::failure(expected), "{path}");
+        assert_eq!(
+            run.output,
+            ToolOutput::failure(expected).with_status_detail(ToolStatusDetail::PreflightFailed),
+            "{path}"
+        );
         assert_eq!(run.description.title, "Writing file", "{path}");
+        assert_eq!(
+            run.description.label.map(|label| label.target),
+            Some(path.to_owned()),
+            "{path}"
+        );
         assert_eq!(run.description.effect, ToolEffect::None, "{path}");
         assert_eq!(run.mutation, None, "{path}");
     }
@@ -166,6 +180,11 @@ fn workspace_writes_describe_their_target_and_write_it() {
         run.description,
         CallDescription {
             title: "Writing src/new.rs".to_owned(),
+            label: Some(ActionLabel {
+                active: "Writing",
+                completed: "Wrote",
+                target: "src/new.rs".to_owned(),
+            }),
             activity: ToolActivity::Write,
             effect: ToolEffect::Irreversible,
             concurrency: Concurrency::Serial,
@@ -180,7 +199,10 @@ fn workspace_writes_describe_their_target_and_write_it() {
     );
     assert_eq!(
         run.output,
-        ToolOutput::success("wrote src/new.rs (13 bytes)")
+        ToolOutput::success("wrote src/new.rs (13 bytes)").with_file_change(FileChangeStats {
+            additions: 1,
+            deletions: 0,
+        })
     );
     assert_eq!(
         fs::read_to_string(workspace.workspace.join("src/new.rs")).unwrap(),
@@ -218,7 +240,10 @@ fn existing_and_unchanged_workspace_files_are_described_by_their_effect() {
     );
     assert_eq!(
         changed.output,
-        ToolOutput::success("wrote note.txt (10 bytes)")
+        ToolOutput::success("wrote note.txt (10 bytes)").with_file_change(FileChangeStats {
+            additions: 1,
+            deletions: 1,
+        })
     );
 }
 
@@ -257,14 +282,20 @@ fn an_unchanged_file_that_changes_before_execution_is_reported_stale_and_left_al
         changed.mutation.map(|mutation| mutation.state),
         Some(FileMutationState::Unchanged)
     );
-    assert_eq!(changed.output, ToolOutput::failure(stale));
+    assert_eq!(
+        changed.output,
+        ToolOutput::failure(stale).with_status_detail(ToolStatusDetail::StalePreview)
+    );
     assert_eq!(fs::read_to_string(&path).unwrap(), "edited elsewhere\n");
 
     fs::write(&path, "same\n").unwrap();
     let deleted = execute_after(&workspace.tool(), &arguments("note.txt", "same\n"), || {
         fs::remove_file(&path).unwrap();
     });
-    assert_eq!(deleted.output, ToolOutput::failure(stale));
+    assert_eq!(
+        deleted.output,
+        ToolOutput::failure(stale).with_status_detail(ToolStatusDetail::StalePreview)
+    );
     assert!(!path.exists());
 }
 
@@ -291,6 +322,7 @@ fn external_files_are_not_read_until_the_write_is_admitted() {
     assert_eq!(
         held.output,
         ToolOutput::failure("file mutation target resolution failed: path_outside_workspace")
+            .with_status_detail(ToolStatusDetail::PreflightFailed)
     );
 
     let new = run(
@@ -323,7 +355,12 @@ fn external_files_are_not_read_until_the_write_is_admitted() {
     );
     assert_eq!(
         written.output,
-        ToolOutput::success(format!("wrote {} (6 bytes)", created.display()))
+        ToolOutput::success(format!("wrote {} (6 bytes)", created.display())).with_file_change(
+            FileChangeStats {
+                additions: 1,
+                deletions: 0,
+            }
+        )
     );
     assert_eq!(fs::read_to_string(created).unwrap(), "fresh\n");
 }
@@ -347,7 +384,15 @@ fn progress_titles_name_the_prepared_target() {
         let mut prepared = tool.prepare(&arguments(&path, "x")).unwrap();
         prepared.complete();
         assert_eq!(prepared.describe().title, expected, "{path}");
-        assert_eq!(prepared.untargeted_title(), "Writing file", "{path}");
+        assert_eq!(
+            prepared.untargeted_label(),
+            Some(ActionLabel {
+                active: "Writing",
+                completed: "Wrote",
+                target: "file".to_owned(),
+            }),
+            "{path}"
+        );
     }
 }
 
@@ -453,6 +498,7 @@ fn a_completed_write_keeps_its_staging_when_the_mode_changes_before_it_runs() {
         ToolOutput::failure(
             "file mutation rejected because the file changed after preview; make a new tool call for a fresh preview"
         )
+        .with_status_detail(ToolStatusDetail::StalePreview)
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), "edited elsewhere\n");
 }
@@ -557,6 +603,7 @@ fn a_call_executed_without_completion_refuses_a_path_that_now_resolves_elsewhere
         ToolOutput::failure(
             "file mutation preparation failed: approved target no longer matches the call"
         )
+        .with_status_detail(ToolStatusDetail::Rejected)
     );
     assert!(!workspace.workspace.join("first/new.txt").exists());
     assert!(!workspace.workspace.join("second/new.txt").exists());
@@ -592,6 +639,7 @@ fn deferred_external_writes_refuse_a_path_that_resolves_elsewhere_by_execution()
         ToolOutput::failure(
             "file mutation preparation failed: approved target no longer matches the call"
         )
+        .with_status_detail(ToolStatusDetail::Rejected)
     );
     assert!(!workspace.root.join("first/new.txt").exists());
     assert!(!workspace.root.join("second/new.txt").exists());
@@ -626,6 +674,7 @@ fn a_new_external_file_that_appears_before_execution_is_not_overwritten() {
         ToolOutput::failure(
             "file mutation preparation failed: approved filesystem identity changed"
         )
+        .with_status_detail(ToolStatusDetail::PreflightFailed)
     );
     assert_eq!(fs::read_to_string(&target).unwrap(), "theirs\n");
 }
@@ -652,6 +701,7 @@ fn cancelled_writes_report_cancellation_and_leave_no_file() {
     assert_eq!(
         output,
         ToolOutput::failure("file mutation cancelled before commit")
+            .with_status_detail(ToolStatusDetail::Cancelled)
     );
     assert_eq!(output.status, ToolResultStatus::Failure);
     assert!(!workspace.workspace.join("new.txt").exists());

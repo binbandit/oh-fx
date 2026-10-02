@@ -12,6 +12,7 @@ use crate::output::activity_status::{ProgressSuffix, TokenProgress, static_statu
 use crate::render::welcome_rows;
 use crate::row_text::{Paint, Row, terminal_safe, terminal_safe_keeping_breaks};
 use crate::theme::Theme;
+use crate::transcript::tool_group_projection::ToolGroup;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HelpEntry {
@@ -43,6 +44,7 @@ pub(crate) enum Entry {
         categories: Vec<String>,
         commands: Vec<HelpEntry>,
     },
+    ToolGroup(ToolGroup),
 }
 
 impl Entry {
@@ -58,7 +60,7 @@ impl Entry {
         match self {
             Self::Welcome { version } => welcome_rows(theme, version, cols),
             Self::UserTurn { text } => user_prompt_card(text, cols, theme),
-            Self::Assistant { events } => events
+            Self::Assistant { events } => events[..events.len() - trailing_blank_lines(events)]
                 .iter()
                 .flat_map(|event| render_assistant_event(event, cols, theme))
                 .collect(),
@@ -73,8 +75,21 @@ impl Entry {
                 categories,
                 commands,
             } => help_catalog_rows(categories, commands, cols, theme),
+            Self::ToolGroup(group) => group.render(cols, theme),
         }
     }
+}
+
+pub(crate) fn is_blank_line(event: &Event) -> bool {
+    matches!(event, Event::Line(line) if line.spans.iter().all(|span| span.text.is_empty()))
+}
+
+pub(crate) fn trailing_blank_lines(events: &[Event]) -> usize {
+    events
+        .iter()
+        .rev()
+        .take_while(|event| is_blank_line(event))
+        .count()
 }
 
 pub(crate) fn render_assistant_event(event: &Event, cols: usize, theme: &Theme) -> Vec<Row> {

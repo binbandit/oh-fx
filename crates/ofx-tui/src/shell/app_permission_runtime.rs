@@ -111,7 +111,8 @@ impl Shell<'_> {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        ApprovalRequest, ApprovalScope, FULL_ACCESS_WARNING, PathAccess, RequestId, TurnId, UiEvent,
+        ApprovalRequest, ApprovalScope, CallDescription, Concurrency, FULL_ACCESS_WARNING,
+        PathAccess, RequestId, ToolActivity, ToolCallId, ToolEffect, TurnId, UiEvent,
     };
 
     use super::*;
@@ -204,7 +205,14 @@ mod tests {
             request: Box::new(ApprovalRequest {
                 id: RequestId::new(4),
                 tool_name: "read_file".to_owned(),
-                title: "Reading ../notes.txt".to_owned(),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: "Reading ../notes.txt".to_owned(),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::ReadOnly,
+                    concurrency: Concurrency::Parallel,
+                },
                 tool_arguments_preview: "{}".to_owned(),
                 tool_arguments_truncated: false,
                 scope: ApprovalScope {

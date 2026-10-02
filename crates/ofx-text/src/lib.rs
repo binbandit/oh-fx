@@ -17,10 +17,10 @@ pub use fmt::{lowercase_hex, parse_unsigned, shell_word};
 pub use model_context_encoding::write_scalar;
 pub use text_utils::{
     EncodedText, HeadRounding, contains_ignore_case, encode_terminal_safe,
-    encode_terminal_safe_path_tail, escape_terminal_controls, is_model_safe_text, is_posix_space,
-    is_terminal_control, is_terminal_safe, is_terminal_safe_char, mask_secrets,
-    normalize_line_endings_in_place, sanitize_assistant_text, sanitize_model_text_owned,
-    write_head_tail_bounded,
+    encode_terminal_safe_inline, encode_terminal_safe_path_tail, escape_terminal_controls,
+    is_model_safe_text, is_posix_space, is_terminal_control, is_terminal_safe,
+    is_terminal_safe_char, mask_secrets, normalize_line_endings_in_place, sanitize_assistant_text,
+    sanitize_model_text_owned, write_head_tail_bounded,
 };
 pub use token_estimate::StreamingEstimator;
 pub use url_display::{clipped_label, redact_url_for_display};

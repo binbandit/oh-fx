@@ -138,8 +138,15 @@ async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remem
             approval_requests(&events),
             [ApprovalRequest {
                 id: RequestId::new(1),
+                call_id: ToolCallId::new("call-2"),
                 tool_name: "echo".to_owned(),
-                title: r#"Echoing {"access":"outside"}"#.to_owned(),
+                description: CallDescription {
+                    title: r#"Echoing {"access":"outside"}"#.to_owned(),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::ReadOnly,
+                    concurrency: Concurrency::Parallel,
+                },
                 tool_arguments_preview: r#"{"access":"outside"}"#.to_owned(),
                 tool_arguments_truncated: false,
                 scope: approved_tree(1),
@@ -201,7 +208,7 @@ async fn file_changes_and_commands_ask_with_their_target_and_always_remembers_on
     ]);
     let gate = Arc::new(RememberingGate::default());
     let (report, events, _) = run_approving(Arc::clone(&provider), Arc::clone(&gate), |request| {
-        Some(if request.title.contains(r#""changes":2"#) {
+        Some(if request.description.title.contains(r#""changes":2"#) {
             ApprovalDecision::Deny
         } else {
             ApprovalDecision::Always
@@ -223,7 +230,7 @@ async fn file_changes_and_commands_ask_with_their_target_and_always_remembers_on
     );
     let shown: Vec<(String, Option<CommandRequest>, Option<FileMutation>)> = requests
         .into_iter()
-        .map(|request| (request.title, request.command, request.file))
+        .map(|request| (request.description.title, request.command, request.file))
         .collect();
     let note = || {
         Some(FileMutation {

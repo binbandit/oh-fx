@@ -361,7 +361,11 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
         .call("shell", &arguments.to_string(), deny)
         .await
         .denied_request("shell");
-    assert!(!run.title.contains("rm -rf /private"), "{}", run.title);
+    assert!(
+        !run.description.title.contains("rm -rf /private"),
+        "{}",
+        run.description.title
+    );
     assert_eq!(
         run.command,
         Some(CommandRequest::Run {
@@ -391,7 +395,7 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
         )
         .await
         .denied_request("shell");
-    assert_eq!(input.title, "Sending input to session shell-1");
+    assert_eq!(input.description.title, "Sending input to session shell-1");
     assert_eq!(
         input.command,
         Some(CommandRequest::SendInput {
@@ -429,7 +433,7 @@ async fn searches_of_different_external_roots_ask_with_roots_a_host_can_tell_apa
                 "{name}"
             );
             assert_eq!(request.tool_arguments_preview, arguments, "{name}");
-            titles.push(request.title);
+            titles.push(request.description.title);
         }
         assert_eq!(titles[0], titles[1], "{name}");
     }

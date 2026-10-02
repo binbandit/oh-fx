@@ -8,7 +8,7 @@ use memchr::{memchr, memchr_iter};
 use ofx_contract::{
     CallDescription, CallPresentation, Concurrency, ExecutionFailure, PathAccess, PreparedCall,
     Tool, ToolActivity, ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action,
-    tool_execution_failure_json,
+    plain_action_label, tool_execution_failure_json,
 };
 use ofx_text::{is_model_safe_text, sanitize_model_text_owned};
 use ofx_workspace::{
@@ -27,6 +27,7 @@ const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"str
 const PRESENTATION: CallPresentation = CallPresentation {
     activity: ToolActivity::Read,
     action_label: "Reading",
+    completed_label: "Read",
     label_argument: "path",
     label_default: "file",
 };
@@ -60,8 +61,10 @@ impl Tool for ReadFile {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let decoded = ReadFileArgs::decode(arguments);
+        let label = plain_action_label(&PRESENTATION, arguments);
         let description = CallDescription {
-            title: format_plain_action(TOOL_NAME, &PRESENTATION, arguments),
+            title: format_plain_action(TOOL_NAME, label.as_ref()),
+            label,
             activity: PRESENTATION.activity,
             effect: read_only_effect(&decoded),
             concurrency: Concurrency::Parallel,
@@ -412,7 +415,7 @@ mod tests {
     use std::fs::{self, File};
     use std::os::unix::fs::symlink;
 
-    use ofx_contract::{ToolEffect, ToolResultStatus};
+    use ofx_contract::{ToolEffect, ToolResultStatus, ToolStatusDetail};
     use tempfile::TempDir;
 
     use super::*;
@@ -945,7 +948,11 @@ mod tests {
         let (description, output) = run_tool(&tool, "{\"path\":\" missing.txt\"}");
 
         assert_eq!(description.title, "Reading  missing.txt");
-        assert_eq!(output, ToolOutput::failure("Path not found:  missing.txt"));
+        assert_eq!(
+            output,
+            ToolOutput::failure("Path not found:  missing.txt")
+                .with_status_detail(ToolStatusDetail::PreflightFailed)
+        );
     }
 
     #[test]
@@ -974,6 +981,7 @@ mod tests {
             description,
             CallDescription {
                 title: "Reading a.txt".to_owned(),
+                label: Some(PRESENTATION.label("a.txt")),
                 activity: ToolActivity::Read,
                 effect: ToolEffect::ReadOnly,
                 concurrency: Concurrency::Parallel,

@@ -3,6 +3,7 @@ use crate::row_text::Row;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LiveParts<'a> {
+    pub(crate) provisional: &'a [Row],
     pub(crate) tail_gap: bool,
     pub(crate) activity: Vec<Row>,
     pub(crate) banner: Vec<Row>,
@@ -33,12 +34,12 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
         footer.extend(parts.menu);
     }
     footer.push(parts.hint);
-    let mut body = Vec::new();
-    let mut leading_gaps: usize = 0;
+    let mut body = parts.provisional.to_vec();
+    let mut leading_gaps = parts.provisional.len();
     if parts.activity.is_empty() {
         if parts.tail_gap {
             body.push(Row::new());
-            leading_gaps = 1;
+            leading_gaps += 1;
         }
     } else {
         let body_room = max_rows.saturating_sub(footer.len());
@@ -46,7 +47,7 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
             body.push(Row::new());
             body.extend(parts.activity);
             body.push(Row::new());
-            leading_gaps = 1;
+            leading_gaps += 1;
         } else {
             body.extend(parts.activity.into_iter().take(body_room));
         }
@@ -92,6 +93,7 @@ mod tests {
         banner: &[&str],
     ) -> LiveParts<'a> {
         LiveParts {
+            provisional: &[],
             tail_gap,
             activity: activity.iter().map(|text| Row::plain(text)).collect(),
             banner: banner.iter().map(|text| Row::plain(text)).collect(),

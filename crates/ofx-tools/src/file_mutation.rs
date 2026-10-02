@@ -7,7 +7,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use memchr::memmem;
-use ofx_contract::{FileChange, ToolOutput};
+use ofx_contract::{FileChange, FileChangeStats, ToolOutput, ToolStatusDetail};
+use ofx_markdown::FileReview;
 use ofx_permissions::{FileMutationKind, FileMutationTargets, TraversalDirectory};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
 use ofx_workspace::{
@@ -247,6 +248,19 @@ impl PreparedMutation {
         Ok(())
     }
 
+    pub(crate) fn change_stats(&self) -> FileChangeStats {
+        let before = match &self.preimage {
+            Preimage::Absent => &[][..],
+            Preimage::Present { content, .. } => content.as_slice(),
+        };
+        let review = FileReview::new(before, &self.after);
+        let count = |lines: usize| u32::try_from(lines).unwrap_or(u32::MAX);
+        FileChangeStats {
+            additions: count(review.additions()),
+            deletions: count(review.deletions()),
+        }
+    }
+
     pub(crate) fn noop_message(&self) -> String {
         format!(
             "No changes to {}; it already contains the requested content",
@@ -472,6 +486,17 @@ impl Rejection {
             );
         }
         message
+    }
+
+    pub(crate) fn output(&self) -> ToolOutput {
+        let detail = match self.reason {
+            RejectReason::StalePreimage => ToolStatusDetail::StalePreview,
+            RejectReason::Cancelled => ToolStatusDetail::Cancelled,
+            RejectReason::TraversalChanged
+            | RejectReason::StagedSourceChanged
+            | RejectReason::IoFailure => ToolStatusDetail::Rejected,
+        };
+        ToolOutput::failure(self.message()).with_status_detail(detail)
     }
 }
 

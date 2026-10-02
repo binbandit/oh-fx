@@ -2,7 +2,9 @@ use crate::ids::{RequestId, ToolCallId, TurnId};
 use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::tool_dispatch::CallDescription;
-use crate::types::{PermissionMode, RouteRecoveryStatus, ToolResultStatus, Usage};
+use crate::types::{
+    FileChangeStats, PermissionMode, RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, Usage,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TurnOutcome {
@@ -17,6 +19,12 @@ pub enum ToolRejection {
     MalformedArguments,
     Invalid,
     Panicked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolDeferral {
+    ProjectInstructions,
+    TargetChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,8 +99,9 @@ pub enum HistoryEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub id: RequestId,
+    pub call_id: ToolCallId,
     pub tool_name: String,
-    pub title: String,
+    pub description: CallDescription,
     pub tool_arguments_preview: String,
     pub tool_arguments_truncated: bool,
     pub scope: ApprovalScope,
@@ -135,6 +144,13 @@ pub enum UiEvent {
         status: ToolResultStatus,
         content: String,
         command_result: Option<String>,
+        status_detail: Option<ToolStatusDetail>,
+        file_change: Option<FileChangeStats>,
+    },
+    ToolDeferred {
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        deferral: ToolDeferral,
     },
     ToolRejected {
         turn_id: TurnId,
@@ -142,7 +158,7 @@ pub enum UiEvent {
         tool_name: String,
         arguments: String,
         reason: ToolRejection,
-        title: Option<String>,
+        description: Option<CallDescription>,
     },
     ContextNotice {
         turn_id: TurnId,

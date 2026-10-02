@@ -5,6 +5,10 @@ use ofx_text::{
     display_unit_at, encode_terminal_safe, is_terminal_control, prefix_by_width, visible_width,
 };
 
+use crate::render_engine::display_units::{Unit, display_units};
+
+const SUMMARY_ELLIPSIS: &str = "\u{2026}";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Color {
     Indexed(u8),
@@ -284,6 +288,51 @@ impl Row {
             }
         }
         clipped
+    }
+
+    #[must_use]
+    pub(crate) fn summary_clipped(&self, max_width: usize, lone_paint: Paint) -> Self {
+        if self.width() <= max_width {
+            return self.clone();
+        }
+        if max_width <= 1 {
+            let mut lone = Self::new();
+            if max_width == 1 {
+                lone.push(SUMMARY_ELLIPSIS, lone_paint);
+            }
+            return lone;
+        }
+        let mut clipped = Self::new();
+        let mut remaining = max_width - 1;
+        let mut ellipsis = lone_paint;
+        for segment in &self.segments {
+            let prefix = prefix_by_width(&segment.text, remaining);
+            clipped.push_linked(prefix, segment.paint, segment.link.as_deref());
+            remaining -= visible_width(prefix);
+            if prefix.len() < segment.text.len() {
+                ellipsis = segment.paint;
+                break;
+            }
+        }
+        clipped.push(SUMMARY_ELLIPSIS, ellipsis);
+        clipped
+    }
+
+    pub(crate) fn units(&self) -> Vec<Unit<'_>> {
+        self.segments
+            .iter()
+            .flat_map(|segment| {
+                display_units(&segment.text, segment.paint, segment.link.as_deref())
+            })
+            .collect()
+    }
+
+    pub(crate) fn from_units(units: &[Unit<'_>]) -> Self {
+        let mut row = Self::new();
+        for unit in units {
+            row.push_linked(unit.text, unit.paint, unit.link);
+        }
+        row
     }
 
     pub(crate) fn wrapped(&self, width: usize) -> Vec<Self> {

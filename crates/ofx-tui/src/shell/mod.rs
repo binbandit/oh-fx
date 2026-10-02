@@ -470,8 +470,10 @@ impl<'a> Shell<'a> {
         } else {
             banner
         };
+        let provisional = self.transcript.provisional_rows(&self.theme);
         let live = solve(
             LiveParts {
+                provisional,
                 tail_gap,
                 activity,
                 banner,

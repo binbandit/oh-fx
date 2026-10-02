@@ -150,6 +150,23 @@ pub fn is_terminal_safe(raw: &[u8]) -> bool {
     true
 }
 
+pub fn encode_terminal_safe_inline(raw: &[u8], max_encoded_bytes: usize) -> EncodedText {
+    let mut flattened = Vec::with_capacity(raw.len());
+    let mut pending_space = false;
+    for &byte in raw {
+        if byte.is_ascii_whitespace() || byte == 0x0b {
+            pending_space = !flattened.is_empty();
+            continue;
+        }
+        if pending_space {
+            flattened.push(b' ');
+            pending_space = false;
+        }
+        flattened.push(byte);
+    }
+    encode_terminal_safe(&flattened, max_encoded_bytes)
+}
+
 pub fn encode_terminal_safe_path_tail(raw: &[u8], max_encoded_bytes: usize) -> Option<String> {
     let basename_len = path_basename(raw).len();
     if basename_len == 0 {
@@ -985,6 +1002,26 @@ fn is_credential_char(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_encoding_folds_whitespace_runs_before_encoding() {
+        let cases: [(&[u8], usize, &str); 6] = [
+            (b"", 256, ""),
+            (b"  lead\n\n\ttrail  ", 256, "lead trail"),
+            (b"a\x0b\x0cb\r\nc", 256, "a b c"),
+            (b"red\x1b[31m text", 256, "red\\x1b[31m text"),
+            (b"one   two three", 10, "one two..."),
+            (b"\xff \xfe", 256, "\\xff \\xfe"),
+        ];
+        for (raw, limit, expected) in cases {
+            assert_eq!(
+                encode_terminal_safe_inline(raw, limit).text,
+                expected,
+                "{raw:?}"
+            );
+        }
+        assert!(encode_terminal_safe_inline(b"one   two three", 10).truncated);
+    }
 
     #[test]
     fn is_model_safe_text_rejects_nul_bytes_and_invalid_utf_8() {

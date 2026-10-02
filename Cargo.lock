@@ -927,6 +927,7 @@ dependencies = [
  "ofx-contract",
  "ofx-exec",
  "ofx-http",
+ "ofx-markdown",
  "ofx-permissions",
  "ofx-skills",
  "ofx-testkit",

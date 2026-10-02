@@ -9,7 +9,7 @@ use std::sync::Arc;
 use memchr::{memchr, memchr_iter};
 use ofx_contract::{
     CallDescription, CallPresentation, Concurrency, PathAccess, PreparedCall, Tool, ToolActivity,
-    ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action,
+    ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action, plain_action_label,
 };
 use ofx_text::sanitize_model_text_owned;
 use ofx_workspace::{
@@ -32,6 +32,7 @@ const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"pattern":{"type":"
 const PRESENTATION: CallPresentation = CallPresentation {
     activity: ToolActivity::Read,
     action_label: "Searching",
+    completed_label: "Searched",
     label_argument: "pattern",
     label_default: "pattern",
 };
@@ -57,8 +58,10 @@ impl Tool for GrepFiles {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let decoded = GrepFilesArgs::decode(arguments);
+        let label = plain_action_label(&PRESENTATION, arguments);
         let description = CallDescription {
-            title: format_plain_action(TOOL_NAME, &PRESENTATION, arguments),
+            title: format_plain_action(TOOL_NAME, label.as_ref()),
+            label,
             activity: PRESENTATION.activity,
             effect: read_only_effect(&decoded),
             concurrency: Concurrency::Parallel,
@@ -564,7 +567,7 @@ fn display_path(workspace_root: &Path, absolute_path: &Path) -> Vec<u8> {
 mod tests {
     use std::os::unix::fs::symlink;
 
-    use ofx_contract::ToolEffect;
+    use ofx_contract::{ToolEffect, ToolStatusDetail};
     use ofx_workspace::CandidateStats;
     use serde_json::{Value, json};
     use tempfile::TempDir;
@@ -1200,6 +1203,7 @@ mod tests {
             description,
             CallDescription {
                 title: "Searching needle".to_owned(),
+                label: Some(PRESENTATION.label("needle")),
                 activity: ToolActivity::Read,
                 effect: ToolEffect::ReadOnly,
                 concurrency: Concurrency::Parallel,
@@ -1212,7 +1216,11 @@ mod tests {
 
         let (description, output) = run_tool(&tool, "{\"pattern\":\"needle\",\"path\":\"nope\"}");
         assert_eq!(description.effect, ToolEffect::ReadOnly);
-        assert_eq!(output, ToolOutput::failure("Path not found: nope"));
+        assert_eq!(
+            output,
+            ToolOutput::failure("Path not found: nope")
+                .with_status_detail(ToolStatusDetail::PreflightFailed)
+        );
 
         let (description, output) = run_tool(&tool, "{\"pattern\":\"needle\",\"offset\":-1}");
         assert_eq!(description.title, "Searching needle");

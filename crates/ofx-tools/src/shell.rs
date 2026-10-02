@@ -73,7 +73,7 @@ impl Tool for Shell {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let arguments = request::unwrap_request(arguments);
-        let title = presentation::title(
+        let presented = presentation::presentation(
             &arguments,
             &self.context.workspace_root,
             &self.context.executions,
@@ -88,7 +88,8 @@ impl Tool for Shell {
         let request = validated.as_ref().ok().map(Validated::command_request);
         Ok(Box::new(ShellCall {
             description: CallDescription {
-                title,
+                title: presented.title,
+                label: presented.label,
                 activity: ToolActivity::Command,
                 effect,
                 concurrency: Concurrency::Serial,
