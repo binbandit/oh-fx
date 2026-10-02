@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::future;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -158,7 +159,7 @@ impl Shared {
         cancel: &CancellationToken,
     ) -> Result<SkillContext, SkillContextFailure> {
         let found = self.snapshot();
-        if found.skills.is_empty() && found.diagnostics.is_empty() {
+        if !renders(&found) {
             self.tool.advertise(ofx_skills::Locations::default());
             return Ok(SkillContext::default());
         }
@@ -206,9 +207,7 @@ impl Shared {
 
 impl SkillContextProvider for HostSkills {
     fn uses_context_window(&self) -> bool {
-        let found = self.shared.snapshot();
-        let rendered = !found.skills.is_empty() || !found.diagnostics.is_empty();
-        rendered
+        renders(&self.shared.snapshot())
             && self
                 .shared
                 .limits
@@ -223,6 +222,13 @@ impl SkillContextProvider for HostSkills {
         context_window: Option<u32>,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<SkillContext, SkillContextFailure>> {
+        if !renders(&self.shared.snapshot()) {
+            return Box::pin(future::ready(self.shared.prepare(
+                prompt,
+                context_window,
+                cancel,
+            )));
+        }
         let shared = Arc::clone(&self.shared);
         let prompt = prompt.to_owned();
         let cancel = cancel.clone();
@@ -240,6 +246,10 @@ impl SkillContextProvider for HostSkills {
             }
         })
     }
+}
+
+fn renders(found: &SkillDiscovery) -> bool {
+    !found.skills.is_empty() || !found.diagnostics.is_empty()
 }
 
 fn load_notice(notice: LoadNotice) -> Notice {
