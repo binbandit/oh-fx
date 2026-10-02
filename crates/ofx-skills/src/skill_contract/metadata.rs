@@ -17,7 +17,7 @@ pub enum InvalidMetadataCause {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetadataStatus {
+pub(crate) enum MetadataStatus {
     NoFrontmatter,
     Valid,
     Invalid(InvalidMetadataCause),
@@ -37,21 +37,21 @@ struct BlockDescription {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedSkillFile<'a> {
-    pub name: Option<&'a [u8]>,
-    pub description: Option<&'a [u8]>,
-    pub body: &'a [u8],
-    pub status: MetadataStatus,
+pub(crate) struct ParsedSkillFile<'a> {
+    pub(crate) name: Option<&'a [u8]>,
+    pub(crate) description: Option<&'a [u8]>,
+    pub(crate) body: &'a [u8],
+    pub(crate) status: MetadataStatus,
     description_block: Option<BlockDescription>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillMetadata {
-    pub name: String,
-    pub description: String,
+pub(crate) struct SkillMetadata {
+    pub(crate) name: String,
+    pub(crate) description: String,
 }
 
-pub fn resolve_metadata(
+pub(crate) fn resolve_metadata(
     parsed: &ParsedSkillFile<'_>,
     fallback_name: &[u8],
 ) -> Result<SkillMetadata, InvalidMetadataCause> {
@@ -88,7 +88,7 @@ fn utf8_text(bytes: &[u8]) -> Result<String, InvalidMetadataCause> {
         .map_err(|_| InvalidMetadataCause::InvalidUtf8)
 }
 
-pub fn parse_skill_file(content: &[u8]) -> ParsedSkillFile<'_> {
+pub(crate) fn parse_skill_file(content: &[u8]) -> ParsedSkillFile<'_> {
     let unparsed = |status| ParsedSkillFile {
         name: None,
         description: None,
@@ -387,7 +387,7 @@ fn decode_block_description(raw: &[u8], block: BlockDescription) -> Vec<u8> {
     output
 }
 
-fn frontmatter_header_start(content: &[u8]) -> Option<usize> {
+pub(super) fn frontmatter_header_start(content: &[u8]) -> Option<usize> {
     if content.starts_with(b"---\r\n") {
         Some(5)
     } else if content.starts_with(b"---\n") {

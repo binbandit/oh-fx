@@ -800,6 +800,11 @@ version = "0.1.0"
 [[package]]
 name = "ofx-skills"
 version = "0.1.0"
+dependencies = [
+ "ofx-workspace",
+ "rustix",
+ "tempfile",
+]
 
 [[package]]
 name = "ofx-testkit"
