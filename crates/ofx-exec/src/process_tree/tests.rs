@@ -1,14 +1,17 @@
 use std::cell::RefCell;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, getpid};
 
 use super::{
-    CompletionStanding, Effects, Identity, InspectionError, ProcessSnapshot, TrackedProcess,
-    Tracker, completion_standing, proc_fs, should_signal_process, should_traverse_parent,
-    snapshot_belongs_to_parent, snapshot_is_alive,
+    CompletionStanding, Effects, Frozen, Identity, InspectionError, ProcessSnapshot, Selection,
+    SystemEffects, TrackedProcess, Tracker, completion_standing, proc_fs, should_signal_process,
+    should_traverse_parent, snapshot_belongs_to_parent, snapshot_is_alive,
 };
 
 type Capture = fn(i32) -> Result<ProcessSnapshot, InspectionError>;
@@ -19,7 +22,7 @@ struct FakeEffects {
     tasks: fn(i32) -> Result<Vec<Pid>, InspectionError>,
     task_children: fn(i32, i32) -> Children,
     send: fn(i32) -> Result<(), Errno>,
-    sent: RefCell<Vec<i32>>,
+    sent: RefCell<Vec<(i32, Signal)>>,
 }
 
 impl FakeEffects {
@@ -34,6 +37,10 @@ impl FakeEffects {
     }
 
     fn sent(&self) -> Vec<i32> {
+        self.sent.borrow().iter().map(|&(raw, _)| raw).collect()
+    }
+
+    fn deliveries(&self) -> Vec<(i32, Signal)> {
         self.sent.borrow().clone()
     }
 }
@@ -51,9 +58,31 @@ impl Effects for FakeEffects {
         (self.task_children)(pid.as_raw_pid(), task.as_raw_pid())
     }
 
-    fn send(&self, pid: Pid, _: Signal) -> Result<(), Errno> {
-        self.sent.borrow_mut().push(pid.as_raw_pid());
+    fn send(&self, pid: Pid, signal: Signal) -> Result<(), Errno> {
+        self.sent.borrow_mut().push((pid.as_raw_pid(), signal));
         (self.send)(pid.as_raw_pid())
+    }
+}
+
+struct SlowSignals;
+
+impl Effects for SlowSignals {
+    fn capture(&self, pid: Pid) -> Result<ProcessSnapshot, InspectionError> {
+        SystemEffects.capture(pid)
+    }
+
+    fn tasks(&self, pid: Pid) -> Result<Vec<Pid>, InspectionError> {
+        SystemEffects.tasks(pid)
+    }
+
+    fn task_children(&self, pid: Pid, task: Pid) -> Children {
+        SystemEffects.task_children(pid, task)
+    }
+
+    fn send(&self, pid: Pid, signal: Signal) -> Result<(), Errno> {
+        let sent = SystemEffects.send(pid, signal);
+        thread::sleep(Duration::from_millis(50));
+        sent
     }
 }
 
@@ -133,6 +162,12 @@ fn denied_children(raw: i32, task: i32) -> Children {
     }
 }
 
+fn kill(tracker: &Tracker, selection: Selection, effects: &impl Effects) -> usize {
+    let mut frozen = Frozen::default();
+    tracker.freeze_with(&mut frozen, selection, effects);
+    frozen.kill_with(selection, effects)
+}
+
 fn tracking(pids: impl IntoIterator<Item = i32>) -> Tracker {
     Tracker {
         root: None,
@@ -200,7 +235,7 @@ fn checked_signal_delivery_distinguishes_vanished_stale_and_failed_targets() {
         })
     };
     let tracker = tracking(10..19);
-    let delivered = tracker.signal_processes_with(Signal::TERM, Some(pid(41)), &effects);
+    let delivered = tracker.signal_processes_with(Signal::TERM, pid(41), &effects);
     assert_eq!(delivered, 1);
     assert_eq!(effects.sent(), [18, 17, 10]);
 }
@@ -214,7 +249,7 @@ fn checked_signal_delivery_keeps_vanished_stale_and_excluded_targets_complete() 
         _ => Ok(grouped(raw, Some(41))),
     });
     let tracker = tracking(21..25);
-    let delivered = tracker.signal_processes_with(Signal::TERM, Some(pid(41)), &effects);
+    let delivered = tracker.signal_processes_with(Signal::TERM, pid(41), &effects);
     assert_eq!(delivered, 0);
     assert!(effects.sent().is_empty());
 }
@@ -292,8 +327,18 @@ fn natural_completion_stops_attached_processes_and_keeps_detached_daemons() {
         _ => Ok(own_snapshot(raw)),
     });
     let tracker = tracking(30..38);
-    let delivered = tracker.signal_attached_with(Signal::KILL, pid(500), &effects);
-    assert_eq!(effects.sent(), [37, 32, 30]);
+    let delivered = kill(&tracker, Selection::AttachedTo(pid(500)), &effects);
+    assert_eq!(
+        effects.deliveries(),
+        [
+            (30, Signal::STOP),
+            (32, Signal::STOP),
+            (37, Signal::STOP),
+            (37, Signal::KILL),
+            (32, Signal::KILL),
+            (30, Signal::KILL),
+        ]
+    );
     assert_eq!(delivered, 3);
     assert!(tracker.any_attached_alive_with(pid(500), &effects));
 
@@ -308,10 +353,136 @@ fn natural_completion_keeps_an_unreadable_process_attached_and_reports_it() {
         _ => Err(InspectionError::Denied("PermissionDenied")),
     });
     let tracker = tracking([40, 41]);
-    let delivered = tracker.signal_attached_with(Signal::KILL, pid(500), &effects);
+    let delivered = kill(&tracker, Selection::AttachedTo(pid(500)), &effects);
     assert!(effects.sent().is_empty());
     assert_eq!(delivered, 0);
     assert!(tracker.any_attached_alive_with(pid(500), &effects));
+}
+
+#[test]
+fn a_kill_stops_every_process_parents_first_before_killing_any() {
+    let effects = FakeEffects::new(|raw| Ok(own_snapshot(raw)));
+    let tracker = Tracker {
+        root: Some(TrackedProcess {
+            pid: pid(60),
+            identity: identity(60),
+        }),
+        ..tracking([61, 62])
+    };
+    let delivered = kill(&tracker, Selection::Every, &effects);
+    assert_eq!(
+        effects.deliveries(),
+        [
+            (60, Signal::STOP),
+            (61, Signal::STOP),
+            (62, Signal::STOP),
+            (62, Signal::KILL),
+            (61, Signal::KILL),
+            (60, Signal::KILL),
+        ]
+    );
+    assert_eq!(delivered, 3);
+}
+
+#[test]
+fn a_process_that_left_the_session_while_being_stopped_is_continued() {
+    let effects = FakeEffects::new(|raw| {
+        static DAEMON_CAPTURES: AtomicU8 = AtomicU8::new(0);
+        if raw == 51 && DAEMON_CAPTURES.fetch_add(1, Ordering::Relaxed) >= 2 {
+            return Ok(in_session(51, Some(700)));
+        }
+        Ok(in_session(raw, Some(500)))
+    });
+    let tracker = tracking([50, 51]);
+    let delivered = kill(&tracker, Selection::AttachedTo(pid(500)), &effects);
+    assert_eq!(
+        effects.deliveries(),
+        [
+            (50, Signal::STOP),
+            (51, Signal::STOP),
+            (51, Signal::CONT),
+            (50, Signal::KILL),
+        ]
+    );
+    assert_eq!(delivered, 1);
+}
+
+#[test]
+fn a_process_stopped_before_it_turned_unreadable_is_still_killed() {
+    let effects = FakeEffects::new(|raw| {
+        static CAPTURES: AtomicU8 = AtomicU8::new(0);
+        if CAPTURES.fetch_add(1, Ordering::Relaxed) >= 2 {
+            return Err(InspectionError::Denied("PermissionDenied"));
+        }
+        Ok(in_session(raw, Some(500)))
+    });
+    let tracker = tracking([70]);
+    let delivered = kill(&tracker, Selection::AttachedTo(pid(500)), &effects);
+    assert_eq!(
+        effects.deliveries(),
+        [(70, Signal::STOP), (70, Signal::KILL)]
+    );
+    assert_eq!(delivered, 1);
+}
+
+#[test]
+fn a_later_freeze_stops_only_what_the_walk_found_since() {
+    let effects = FakeEffects::new(|raw| Ok(own_snapshot(raw)));
+    let mut tracker = tracking([80]);
+    let mut frozen = Frozen::default();
+    assert!(tracker.freeze_with(&mut frozen, Selection::Every, &effects));
+    tracker.processes.push(TrackedProcess {
+        pid: pid(81),
+        identity: identity(81),
+    });
+    assert!(tracker.freeze_with(&mut frozen, Selection::Every, &effects));
+    assert!(!tracker.freeze_with(&mut frozen, Selection::Every, &effects));
+    let delivered = frozen.kill_with(Selection::Every, &effects);
+    assert_eq!(
+        effects.deliveries(),
+        [
+            (80, Signal::STOP),
+            (81, Signal::STOP),
+            (81, Signal::KILL),
+            (80, Signal::KILL),
+        ]
+    );
+    assert_eq!(delivered, 2);
+}
+
+#[test]
+fn a_parent_never_runs_on_after_its_child_is_killed() {
+    let mut command = Command::new("/bin/sh")
+        .args(["-c", "printf R; sleep 30; printf survived"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start the shell");
+    let mut output = command.stdout.take().expect("the shell's stdout");
+    let mut ready = [0; 1];
+    output
+        .read_exact(&mut ready)
+        .expect("the shell reports readiness");
+    let mut tracker = Tracker::default();
+    tracker
+        .track_root(Pid::from_child(&command))
+        .expect("record the shell");
+    for _ in 0..1000 {
+        tracker.refresh().expect("inspect the shell's tree");
+        if !tracker.processes.is_empty() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let delivered = kill(&tracker, Selection::Every, &SlowSignals);
+    let mut rest = String::new();
+    let read = output.read_to_string(&mut rest);
+    let _ = command.kill();
+    let _ = command.wait();
+    assert!(read.is_ok());
+    assert_eq!(rest, "");
+    assert_eq!(delivered, 2);
 }
 
 #[test]
@@ -364,7 +535,7 @@ fn a_tracked_pid_with_another_identity_is_never_signalled() {
         }),
         processes: Vec::new(),
     };
-    let delivered = reused.signal_all(Signal::KILL);
+    let delivered = kill(&reused, Selection::Every, &SystemEffects);
     let still_running = live.try_wait().expect("poll the live process").is_none();
     let _ = live.kill();
     let _ = live.wait();
@@ -395,9 +566,9 @@ fn a_refresh_tracks_descendants_that_left_the_session_and_signals_them() {
         if descendants == 2 {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(5));
     }
-    let delivered = tracker.signal_all(Signal::KILL);
+    let delivered = kill(&tracker, Selection::Every, &SystemEffects);
     let _ = command.wait();
     assert_eq!(descendants, 2);
     assert_eq!(delivered, 3);
@@ -405,7 +576,7 @@ fn a_refresh_tracks_descendants_that_left_the_session_and_signals_them() {
         if !tracker.any_alive() {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!("killed descendants are still alive");
 }

@@ -4,7 +4,7 @@ use rustix::process::{Pid, Signal, kill_process_group};
 
 use super::supervision::{CommandTree, Escalation};
 use crate::command_runner::TERMINATION_GRACE;
-use crate::process_tree::{InspectionError, Tracker};
+use crate::process_tree::{Frozen, InspectionError, Selection, Tracker};
 
 const CLEANUP_WAIT: Duration = Duration::from_millis(250);
 const RESCAN_PAUSE: Duration = Duration::from_millis(1);
@@ -32,14 +32,23 @@ impl TrackedTree {
             .map_err(InspectionError::name)
     }
 
+    fn kill(&mut self, selection: Selection) -> Result<(), &'static str> {
+        let mut frozen = Frozen::default();
+        let mut walked = Ok(());
+        while self.tracker.freeze(&mut frozen, selection) && walked.is_ok() {
+            walked = self.refresh();
+        }
+        frozen.kill(selection);
+        walked
+    }
+
     fn kill_left_behind(&mut self, forced: bool) -> Result<(), &'static str> {
         self.refresh()?;
         if forced {
-            self.tracker.signal_all(Signal::KILL);
+            self.kill(Selection::Every)
         } else {
-            self.tracker.signal_attached(Signal::KILL, self.supervisor);
+            self.kill(Selection::AttachedTo(self.supervisor))
         }
-        Ok(())
     }
 
     fn left_behind_alive(&self, forced: bool) -> bool {
@@ -61,10 +70,9 @@ impl CommandTree for TrackedTree {
         Ok(())
     }
 
-    fn force(&mut self) -> Result<(), &'static str> {
+    fn force(&mut self, _: Option<Pid>) -> Result<(), &'static str> {
         self.refresh()?;
-        self.tracker.signal_all(Signal::KILL);
-        Ok(())
+        self.kill(Selection::Every)
     }
 
     fn settle_termination(
@@ -81,7 +89,7 @@ impl CommandTree for TrackedTree {
             let elapsed = started.elapsed();
             let forced = elapsed >= TERMINATION_GRACE || escalation.forced();
             if forced {
-                self.tracker.signal_all(Signal::KILL);
+                self.kill(Selection::Every)?;
             }
             if self.tracker.any_alive() {
                 empty_scans = 0;

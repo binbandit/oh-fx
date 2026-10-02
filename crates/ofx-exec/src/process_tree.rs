@@ -46,6 +46,37 @@ struct ProcessSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Selection {
+    Every,
+    AttachedTo(Pid),
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Frozen(Vec<TrackedProcess>);
+
+impl Frozen {
+    pub(crate) fn kill(&self, selection: Selection) -> usize {
+        self.kill_with(selection, &SystemEffects)
+    }
+
+    fn kill_with(&self, selection: Selection, effects: &impl Effects) -> usize {
+        self.0
+            .iter()
+            .rev()
+            .filter(|&&process| {
+                if selects(process, selection, effects)
+                    && signal_frozen(process, Signal::KILL, effects)
+                {
+                    return true;
+                }
+                signal_frozen(process, Signal::CONT, effects);
+                false
+            })
+            .count()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompletionStanding {
     Attached,
     Detached,
@@ -158,16 +189,12 @@ impl Tracker {
         self.processes.is_empty()
     }
 
-    pub(crate) fn signal_all(&self, signal: Signal) -> usize {
-        self.signal_processes_with(signal, None, &SystemEffects)
-    }
-
     pub(crate) fn signal_outside_process_group(
         &self,
         signal: Signal,
         preserved_group: Pid,
     ) -> usize {
-        self.signal_processes_with(signal, Some(preserved_group), &SystemEffects)
+        self.signal_processes_with(signal, preserved_group, &SystemEffects)
     }
 
     pub(crate) fn any_alive(&self) -> bool {
@@ -178,8 +205,8 @@ impl Tracker {
         })
     }
 
-    pub(crate) fn signal_attached(&self, signal: Signal, command_session: Pid) -> usize {
-        self.signal_attached_with(signal, command_session, &SystemEffects)
+    pub(crate) fn freeze(&self, frozen: &mut Frozen, selection: Selection) -> bool {
+        self.freeze_with(frozen, selection, &SystemEffects)
     }
 
     pub(crate) fn any_attached_alive(&self, command_session: Pid) -> bool {
@@ -190,30 +217,39 @@ impl Tracker {
         self.processes.iter().rev().chain(&self.root).copied()
     }
 
+    fn oldest_first(&self) -> impl Iterator<Item = TrackedProcess> + '_ {
+        self.root.iter().chain(&self.processes).copied()
+    }
+
     fn signal_processes_with(
         &self,
         signal: Signal,
-        preserved_group: Option<Pid>,
-        effects: &impl Effects,
-    ) -> usize {
-        self.newest_first()
-            .filter(|&process| signal_tracked_process(process, signal, preserved_group, effects))
-            .count()
-    }
-
-    fn signal_attached_with(
-        &self,
-        signal: Signal,
-        command_session: Pid,
+        preserved_group: Pid,
         effects: &impl Effects,
     ) -> usize {
         self.newest_first()
             .filter(|&process| {
-                completion_standing_with(process, command_session, effects)
-                    == CompletionStanding::Attached
-                    && signal_tracked_process(process, signal, None, effects)
+                signal_tracked_process(process, signal, Some(preserved_group), effects)
             })
             .count()
+    }
+
+    fn freeze_with(
+        &self,
+        frozen: &mut Frozen,
+        selection: Selection,
+        effects: &impl Effects,
+    ) -> bool {
+        let before = frozen.0.len();
+        for process in self.oldest_first() {
+            if !frozen.0.contains(&process)
+                && selects(process, selection, effects)
+                && signal_tracked_process(process, Signal::STOP, None, effects)
+            {
+                frozen.0.push(process);
+            }
+        }
+        frozen.0.len() > before
     }
 
     fn any_attached_alive_with(&self, command_session: Pid, effects: &impl Effects) -> bool {
@@ -328,6 +364,24 @@ fn completion_standing_with(
         return CompletionStanding::Gone;
     }
     completion_standing(command_session, actual.session)
+}
+
+fn selects(process: TrackedProcess, selection: Selection, effects: &impl Effects) -> bool {
+    match selection {
+        Selection::Every => true,
+        Selection::AttachedTo(command_session) => {
+            completion_standing_with(process, command_session, effects)
+                == CompletionStanding::Attached
+        }
+    }
+}
+
+fn signal_frozen(process: TrackedProcess, signal: Signal, effects: &impl Effects) -> bool {
+    match effects.capture(process.pid) {
+        Ok(actual) if process.identity != actual.identity || actual.zombie => false,
+        Err(InspectionError::ProcessNotFound) => false,
+        _ => effects.send(process.pid, signal).is_ok(),
+    }
 }
 
 fn should_traverse_parent(expected: Identity, actual: Identity) -> bool {

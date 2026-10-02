@@ -7,6 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+ofx-contract.workspace = true
+ofx-markdown.workspace = true
 ofx-text.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "termios"] }
 signal-hook.workspace = true
@@ -16,6 +18,7 @@ zeroize.workspace = true
 [dev-dependencies]
 ofx-testkit.workspace = true
 rustix = { workspace = true, features = ["pty"] }
+vt100.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["thread"] }

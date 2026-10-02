@@ -893,11 +893,14 @@ dependencies = [
 name = "ofx-tui"
 version = "0.1.0"
 dependencies = [
+ "ofx-contract",
+ "ofx-markdown",
  "ofx-testkit",
  "ofx-text",
  "rustix",
  "signal-hook",
  "thiserror",
+ "vt100",
  "zeroize",
 ]
 
