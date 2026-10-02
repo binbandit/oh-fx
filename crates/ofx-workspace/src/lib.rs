@@ -1,4 +1,5 @@
 mod bounded_process;
+mod change_tracker;
 mod current_branch;
 mod file_index;
 mod file_index_cache;
@@ -13,6 +14,7 @@ mod regular_file;
 mod unicode_simple_fold;
 mod workspace_files;
 
+pub use change_tracker::{ChangeTracker, FileOperation, UndoResult};
 pub use current_branch::current_branch;
 pub use file_index::{
     CandidateKind, FileIndex, IndexState, InvalidIndexData, MAX_PATH_LEN, ReadableRevision,

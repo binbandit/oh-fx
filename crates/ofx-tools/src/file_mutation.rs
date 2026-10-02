@@ -13,7 +13,7 @@ use ofx_markdown::FileReview;
 use ofx_permissions::{FileMutationKind, FileMutationTargets, TraversalDirectory};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
 use ofx_workspace::{
-    FileIdentity, MAX_PATH_BYTES, PathError, descriptor_identity, entry_identity,
+    FileIdentity, FileOperation, MAX_PATH_BYTES, PathError, descriptor_identity, entry_identity,
     open_child_directory, open_directory,
 };
 use rustix::fs::{
@@ -282,6 +282,16 @@ impl PreparedMutation {
         };
         let encoded = encode_terminal_safe(target.as_os_str().as_bytes(), MAX_ENCODED_PATH_BYTES);
         format!("{verb} {} ({} bytes)", encoded.text, self.after.len())
+    }
+
+    pub(crate) fn into_tracked_operation(self) -> FileOperation {
+        FileOperation {
+            path: self.targets.target.path(),
+            previous_content: match self.preimage {
+                Preimage::Absent => None,
+                Preimage::Present { content, .. } => Some(content),
+            },
+        }
     }
 
     pub(crate) fn apply(&self, cancel: &CancellationToken) -> Result<Committed, Rejection> {

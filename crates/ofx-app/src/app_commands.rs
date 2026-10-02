@@ -1,7 +1,12 @@
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+
 use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
 use ofx_contract::{CompactionActivity, CompactionEnd, NoticeTone, UiEvent};
 use ofx_session::resolve_model_query_from_ids;
+use ofx_text::encode_terminal_safe;
 use ofx_tui::SlashCommandSpec;
+use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 
 use crate::app_agent_runtime::ControllerState;
 use crate::skill_commands::handle_skills;
@@ -13,6 +18,8 @@ const COPIED: &str = "Copied to clipboard.";
 const COPY_FAILED: &str = "Failed to copy to clipboard.";
 const FAST_TOPIC: &str = "fast";
 const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
+const UNDO_TOPIC: &str = "undo";
+const NOTHING_TO_UNDO: &str = "Nothing to undo.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
@@ -93,6 +100,13 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
                 CommandEffect::None
             }
         },
+        SlashKind::Undo => {
+            let result = state
+                .change_tracker()
+                .map_or(UndoResult::Empty, ChangeTracker::undo_last);
+            state.notice(NoticeTone::Neutral, UNDO_TOPIC, &undo_message(&result));
+            CommandEffect::None
+        }
         SlashKind::Copy => {
             copy_last_reply(state);
             CommandEffect::None
@@ -143,6 +157,19 @@ pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
     true
 }
 
+fn undo_message(result: &UndoResult) -> String {
+    match result {
+        UndoResult::Restored(path) => format!("Restored {}", display_path(path)),
+        UndoResult::Deleted(path) => format!("Deleted {} (was newly created)", display_path(path)),
+        UndoResult::Unavailable(path) => format!("Could not undo {}", display_path(path)),
+        UndoResult::Empty => NOTHING_TO_UNDO.to_owned(),
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    encode_terminal_safe(path.as_os_str().as_bytes(), MAX_PATH_BYTES).text
+}
+
 fn copy_last_reply(state: &ControllerState) {
     let Some(reply) = state.last_reply() else {
         state.notice(NoticeTone::Neutral, CLIPBOARD_TOPIC, NO_REPLY_TO_COPY);
@@ -171,6 +198,9 @@ fn resolve_model_query(ids: &[String], query: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -188,6 +218,7 @@ mod tests {
                 "/status",
                 "/model",
                 "/permissions",
+                "/undo",
                 "/skills",
                 "/copy",
                 "/compact",
@@ -203,9 +234,9 @@ mod tests {
             .collect();
         assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[2].description, "start a fresh session");
-        assert_eq!(specs[8].description, "browse and manage skills");
-        assert_eq!(specs[13].aliases, ["/exit"]);
-        assert_eq!(specs[13].description, "exit the interactive shell");
+        assert_eq!(specs[9].description, "browse and manage skills");
+        assert_eq!(specs[14].aliases, ["/exit"]);
+        assert_eq!(specs[14].description, "exit the interactive shell");
     }
 
     #[test]
@@ -227,6 +258,7 @@ mod tests {
                 ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/undo", "Session"),
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),
@@ -238,6 +270,29 @@ mod tests {
         assert_eq!(categories.len(), 11);
         assert_eq!(categories[0], "General");
         assert_eq!(categories[10], "Product");
+    }
+
+    #[test]
+    fn undo_reports_each_outcome_with_a_terminal_safe_path() {
+        assert_eq!(
+            undo_message(&UndoResult::Restored("/work/a.txt".into())),
+            "Restored /work/a.txt"
+        );
+        assert_eq!(
+            undo_message(&UndoResult::Deleted("/work/new.txt".into())),
+            "Deleted /work/new.txt (was newly created)"
+        );
+        assert_eq!(
+            undo_message(&UndoResult::Unavailable("/work/\x1b[2Jx.txt".into())),
+            "Could not undo /work/\\x1b[2Jx.txt"
+        );
+        assert_eq!(
+            undo_message(&UndoResult::Restored(PathBuf::from(OsStr::from_bytes(
+                b"/work/\xffname"
+            )))),
+            "Restored /work/\\xffname"
+        );
+        assert_eq!(undo_message(&UndoResult::Empty), "Nothing to undo.");
     }
 
     #[test]

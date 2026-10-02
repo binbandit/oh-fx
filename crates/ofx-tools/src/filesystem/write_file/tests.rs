@@ -9,7 +9,7 @@ use ofx_contract::{
     TargetKind, ToolCallId, ToolContext, ToolEffect, ToolResultStatus, ToolStatusDetail,
 };
 use ofx_permissions::PermissionPolicy;
-use ofx_workspace::MAX_PATH_BYTES;
+use ofx_workspace::{MAX_PATH_BYTES, UndoResult};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -822,4 +822,57 @@ fn a_reviewed_change_reports_the_line_counts_its_review_recorded() {
         fs::read_to_string(workspace.workspace.join("note.txt")).unwrap(),
         "new\n"
     );
+}
+
+#[test]
+fn committed_writes_are_tracked_with_the_content_they_replaced() {
+    let workspace = Fixture::new();
+    let tracker = ChangeTracker::default();
+    let tool = workspace.tool().with_change_tracker(tracker.clone());
+    let path = workspace.workspace.join("note.txt");
+    fs::write(&path, "before\n").unwrap();
+
+    run(
+        &tool,
+        &arguments("note.txt", "before\n"),
+        PathAccess::WorkspaceOnly,
+    );
+    assert_eq!(tracker.undo_last(), UndoResult::Empty);
+
+    run(
+        &tool,
+        &arguments("note.txt", "after\n"),
+        PathAccess::WorkspaceOnly,
+    );
+    run(
+        &tool,
+        &arguments("new.txt", "new\n"),
+        PathAccess::WorkspaceOnly,
+    );
+    let created = workspace.workspace.join("new.txt");
+    assert_eq!(tracker.undo_last(), UndoResult::Deleted(created.clone()));
+    assert!(!created.exists());
+    assert_eq!(tracker.undo_last(), UndoResult::Restored(path.clone()));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "before\n");
+    assert_eq!(tracker.undo_last(), UndoResult::Empty);
+}
+
+#[test]
+fn writes_that_never_commit_are_not_tracked() {
+    let workspace = Fixture::new();
+    let tracker = ChangeTracker::default();
+    let tool = workspace.tool().with_change_tracker(tracker.clone());
+    let mut prepared = tool.prepare(&arguments("new.txt", "new\n")).unwrap();
+    prepared.complete();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    runtime.block_on(prepared.execute(ToolContext::new(
+        ToolCallId::new("call-1"),
+        cancel,
+        PathAccess::WorkspaceOnly,
+    )));
+    assert_eq!(tracker.undo_last(), UndoResult::Empty);
 }
