@@ -78,6 +78,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_takes_reset_and_version_without_a_payload() {
+        for (input, kind) in [
+            ("/reset", SlashKind::ResetSession),
+            ("/version", SlashKind::Version),
+        ] {
+            assert_eq!(parse(input), Some((kind, "")), "{input}");
+            assert_eq!(parse(&format!("{input}\t ")), Some((kind, "")), "{input}");
+            assert_eq!(parse(&format!("{input} now")), None, "{input}");
+        }
+    }
+
+    #[test]
     fn parse_returns_empty_payload_for_bare_prefix_commands() {
         assert_eq!(parse("/model"), Some((SlashKind::Model, "")));
     }

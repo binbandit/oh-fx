@@ -543,6 +543,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reset_starts_a_fresh_conversation_like_clear() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["one"])),
+            Reply::sse(&chat_text_events(&["two"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("first");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.command("/reset");
+        let cleared = harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        assert_eq!(
+            cleared.last(),
+            Some(&UiEvent::ConversationCleared {
+                first_kept_prompt: 1
+            })
+        );
+        harness.submit("second");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(user_messages(&server.requests()[1].json()), 1);
+    }
+
+    #[tokio::test]
+    async fn reset_during_a_turn_cancels_it_and_drops_the_prompts_queued_before_it() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["after"]))]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.submit("dropped");
+        harness.command("/reset");
+        harness.submit("kept");
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let next = timeout(
+            Duration::from_secs(10),
+            harness.until(finished(TurnOutcome::Completed)),
+        )
+        .await
+        .expect("the prompt sent after reset runs");
+        assert!(
+            next.iter().any(
+                |event| matches!(event, UiEvent::AssistantText { text, .. } if text == "after")
+            )
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(user_messages(&requests[1].json()), 1);
+    }
+
+    #[tokio::test]
+    async fn version_reports_the_running_build() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/version");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        assert_eq!(
+            notice_body(shown),
+            [format!("version|{}", ofx_upgrade::VERSION)]
+        );
+        let Some(UiEvent::Notice { notice }) = shown.last() else {
+            unreachable!()
+        };
+        assert_eq!(notice.tone, NoticeTone::Neutral);
+    }
+
+    #[tokio::test]
     async fn prompts_submitted_after_a_mid_turn_clear_run_in_the_fresh_conversation() {
         let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
         let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["after"]))]);

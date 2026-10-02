@@ -502,6 +502,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::General,
     ),
     SlashSpec::new(
+        SlashKind::ResetSession,
+        "/reset",
+        "reset the current session context",
+        SlashPresentationCategory::Session,
+    ),
+    SlashSpec::new(
         SlashKind::Model,
         "/model",
         "choose what model and reasoning effort to use",
@@ -515,6 +521,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Security,
     )
     .with_payload(),
+    SlashSpec::new(
+        SlashKind::Version,
+        "/version",
+        "show the oh-fx version",
+        SlashPresentationCategory::General,
+    ),
     SlashSpec::new(
         SlashKind::Quit,
         "/quit",

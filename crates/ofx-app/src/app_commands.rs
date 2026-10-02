@@ -56,7 +56,11 @@ pub(crate) fn handle_command(
             state.emit(UiEvent::HelpRequested);
             CommandEffect::None
         }
-        SlashKind::ClearScreen => CommandEffect::Clear,
+        SlashKind::ClearScreen | SlashKind::ResetSession => CommandEffect::Clear,
+        SlashKind::Version => {
+            state.notice(NoticeTone::Neutral, "version", ofx_upgrade::VERSION);
+            CommandEffect::None
+        }
         SlashKind::Model if command.payload.is_empty() => {
             state.notice(NoticeTone::Neutral, "model", &model_status(state));
             CommandEffect::None
@@ -102,10 +106,10 @@ mod tests {
         let commands: Vec<&str> = specs.iter().map(|spec| spec.command.as_str()).collect();
         assert_eq!(
             commands,
-            ["/help", "/clear", "/model", "/permissions", "/quit"]
+            ["/help", "/clear", "/reset", "/model", "/permissions", "/version", "/quit"]
         );
-        assert_eq!(specs[4].aliases, ["/exit"]);
-        assert_eq!(specs[4].description, "exit the interactive shell");
+        assert_eq!(specs[6].aliases, ["/exit"]);
+        assert_eq!(specs[6].description, "exit the interactive shell");
     }
 
     #[test]
@@ -121,8 +125,10 @@ mod tests {
             [
                 ("/help", "General"),
                 ("/clear", "General"),
+                ("/reset", "Session"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/version", "General"),
                 ("/quit", "General"),
             ]
         );

@@ -4,8 +4,10 @@ use super::matches_command_token;
 pub enum SlashKind {
     Help,
     ClearScreen,
+    ResetSession,
     Model,
     Permissions,
+    Version,
     Quit,
 }
 
@@ -188,7 +190,7 @@ mod tests {
             .collect();
         assert_eq!(
             commands,
-            ["/help", "/clear", "/model", "/permissions", "/quit"]
+            ["/help", "/clear", "/reset", "/model", "/permissions", "/version", "/quit"]
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
         assert_eq!(
@@ -198,6 +200,14 @@ mod tests {
         assert_eq!(
             spec(SlashKind::ClearScreen).completion_description,
             "start a fresh conversation while keeping managed processes"
+        );
+        assert_eq!(
+            spec(SlashKind::ResetSession).completion_description,
+            "reset the current session context"
+        );
+        assert_eq!(
+            spec(SlashKind::Version).completion_description,
+            "show the oh-fx version"
         );
     }
 
@@ -213,8 +223,10 @@ mod tests {
             [
                 ("/help", "General"),
                 ("/clear", "General"),
+                ("/reset", "Session"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/version", "General"),
                 ("/quit", "General"),
             ]
         );

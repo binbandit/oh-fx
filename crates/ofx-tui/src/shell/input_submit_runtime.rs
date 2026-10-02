@@ -126,7 +126,9 @@ mod tests {
         [
             ("/help", &[][..]),
             ("/clear", &[]),
+            ("/reset", &[]),
             ("/model", &[]),
+            ("/version", &[]),
             ("/quit", &["/exit"]),
         ]
         .into_iter()
@@ -176,7 +178,19 @@ mod tests {
         );
         assert_eq!(
             slash_completions(&commands, "/"),
-            ["/help", "/clear", "/model", "/quit"]
+            ["/help", "/clear", "/reset", "/model", "/version", "/quit"]
+        );
+        assert_eq!(
+            classify("/res", &commands),
+            Submit::Command("/reset".to_owned())
+        );
+        assert_eq!(
+            classify("/ver", &commands),
+            Submit::Command("/version".to_owned())
+        );
+        assert_eq!(
+            slash_completions(&commands, "/e"),
+            ["/exit", "/help", "/clear", "/reset", "/model", "/version"]
         );
     }
 
