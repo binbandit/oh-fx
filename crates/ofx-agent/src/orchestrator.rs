@@ -517,16 +517,23 @@ impl Agent {
             .capabilities
             .as_ref()
             .and_then(|known| known.model.context_window);
+        let mut report = |notices: Vec<String>| {
+            for text in notices {
+                events(UiEvent::ContextNotice { turn_id, text });
+            }
+        };
         let mut prepared = match skills.prepare(prompt, context_window, cancel).await {
             Ok(prepared) => prepared,
             Err(SkillContextFailure::Cancelled) => return Err(Stop::interrupted()),
-            Err(SkillContextFailure::Failed(code)) => {
+            Err(SkillContextFailure::Failed {
+                code,
+                context_notices,
+            }) => {
+                report(context_notices);
                 return Err(Stop::failed(TurnFailure::SkillContext(code)));
             }
         };
-        for text in mem::take(&mut prepared.context_notices) {
-            events(UiEvent::ContextNotice { turn_id, text });
-        }
+        report(mem::take(&mut prepared.context_notices));
         if let Some(notice) = prepared.load_notice.take() {
             events(UiEvent::Notice { notice });
         }

@@ -185,7 +185,15 @@ impl Shared {
             Err(SkillError::Cancelled) if cancel.is_cancelled() => {
                 return Err(SkillContextFailure::Cancelled);
             }
-            Err(error) => return Err(SkillContextFailure::Failed(error.to_string())),
+            Err(error) => {
+                return Err(SkillContextFailure::Failed {
+                    code: error.to_string(),
+                    context_notices: [catalog.notice, catalog.diagnostic_notice]
+                        .into_iter()
+                        .flatten()
+                        .collect(),
+                });
+            }
         };
         let context_notices = [
             catalog.notice,

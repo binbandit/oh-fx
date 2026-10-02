@@ -218,16 +218,21 @@ async fn a_failed_skill_load_fails_the_turn_with_its_error_name() {
     let provider = FakeProvider::new(vec![text_reply("never")]);
     let skills = FakeSkills::new(
         false,
-        Err(SkillContextFailure::Failed(
-            "SkillContextTooLarge".to_owned(),
-        )),
+        Err(SkillContextFailure::Failed {
+            code: "SkillContextTooLarge".to_owned(),
+            context_notices: vec!["skill descriptions shortened: 1".to_owned()],
+        }),
     );
     let resolver = resolver();
     let mut agent = skilled_agent(&provider, &skills, &resolver);
-    let (report, _) = run(&mut agent, "$review").await;
+    let (report, events) = run(&mut agent, "$review").await;
     assert_eq!(report.outcome, TurnOutcome::Failed);
     let failure = report.failure.unwrap();
     assert_eq!(failure.code(), "SkillContextTooLarge");
+    assert_eq!(
+        context_notices(&events),
+        ["skill descriptions shortened: 1"]
+    );
     assert!(provider.requests().is_empty());
 }
 
@@ -354,7 +359,7 @@ async fn a_checkpoint_lists_the_skills_the_compacted_turns_loaded() {
         run(&mut agent, &format!("question {turn}")).await;
     }
     assert_eq!(
-        agent.compact(&CancellationToken::new()).await,
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
         Ok(Compaction::Compacted)
     );
     let requests = provider.requests();

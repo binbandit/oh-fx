@@ -12,7 +12,10 @@ pub struct SkillContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkillContextFailure {
     Cancelled,
-    Failed(String),
+    Failed {
+        code: String,
+        context_notices: Vec<String>,
+    },
 }
 
 pub trait SkillContextProvider: Send + Sync {
