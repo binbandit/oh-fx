@@ -23,7 +23,10 @@ pub use pathing::{
     resolve_file_mutation_target, resolve_workspace_or_external_path, resolve_workspace_path,
     workspace_relative_path,
 };
-pub use regular_file::{RegularFileError, open_regular_file, open_regular_file_at};
+pub use regular_file::{
+    RegularFileError, open_regular_file, open_regular_file_at, open_regular_file_following_at,
+    opened_file_path,
+};
 pub use workspace_files::{
     CandidatePaths, CandidateStats, DEFAULT_CANDIDATE_CAP, Discovery, DiscoveryOptions,
     GIT_REPOSITORY_VARIABLES, MAX_RELATIVE_PATH_BYTES, Source, UntrackedFiles, discover,
