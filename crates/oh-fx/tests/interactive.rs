@@ -526,14 +526,67 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 5");
+    let screen = wait(&session, "Commands 12");
     assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
     assert!(screen.contains("  /quit           exit the interactive shell"));
+    assert!(screen.contains("  /reset          reset the current session context"));
+    assert!(screen.contains("Commands 12  [All]  General  Session  Account  Model"));
+    session.send(b"/version\r");
+    wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
+    session.send(b"/stats\r");
+    wait(&session, "* stats: ansi_bytes=");
+    session.send(b"/copy\r");
+    wait(&session, "* clipboard: No assistant reply to copy.");
+    session.send(b"/fast\r");
+    wait(
+        &session,
+        "* fast: This model does not come with a fast mode.",
+    );
+    session.send(b"/status\r");
+    let screen = wait(&session, "* status: model=vendor/model-b");
+    assert!(screen.contains("permission_mode=auto"), "{screen}");
+    assert!(screen.contains("history_turns=0"), "{screen}");
+    let saved = saved_settings(&home);
+    assert_eq!(saved["models"]["local"], "vendor/model-b");
+    assert_eq!(saved["fast_mode"], false);
+    session.send(b"/compact\r");
+    wait(&session, "No context to compact.");
     session.send(b"go\r");
     wait(&session, "Switched reply.");
     assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
     session.send(b"/exit\r");
     assert!(session.wait_exit(WAIT).expect("oh-fx exits").success());
+}
+
+#[test]
+fn a_saved_fast_choice_follows_only_the_model_it_was_saved_with() {
+    let server = FakeServer::start([]);
+    let mut saved = settings(&server.base_url());
+    saved["models"] = json!({"local": "model-a"});
+    saved["fast_mode"] = json!(true);
+    saved["fast_mode_model_bound"] = json!(true);
+    let home = Home::with_settings(&saved);
+    for (args, hint, fast) in [
+        (&[][..], "auto · model-a", "* fast: off"),
+        (&["--model", "model-a"], "auto · model-a", "* fast: off"),
+        (
+            &["--model", "vendor/model-b"],
+            "auto · model-b",
+            "* fast: This model does not come with a fast mode.",
+        ),
+        (
+            &["--model", "vendor/model-b", "--fast"],
+            "auto · model-b",
+            "* fast: off",
+        ),
+    ] {
+        let mut session = home.shell_with(args, 24, 100, hint);
+        session.send(b"/fast\r");
+        wait(&session, fast);
+        session.send(b"\x04");
+        assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+        fs::write(settings_file(&home), saved.to_string()).expect("restore settings.json");
+    }
 }
 
 #[test]

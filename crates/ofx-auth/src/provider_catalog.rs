@@ -41,7 +41,7 @@ pub fn parse(value: &str) -> Option<ProviderId> {
         .map(|entry| entry.id.clone())
 }
 
-pub(crate) fn label(id: &ProviderId) -> &'static str {
+pub fn label(id: &ProviderId) -> &'static str {
     ENTRIES
         .iter()
         .find(|entry| entry.id == *id)

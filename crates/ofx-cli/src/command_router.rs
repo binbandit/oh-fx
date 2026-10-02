@@ -78,6 +78,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_takes_the_ported_commands_without_a_payload() {
+        for (input, kind) in [
+            ("/reset", SlashKind::ResetSession),
+            ("/stats", SlashKind::Stats),
+            ("/status", SlashKind::Status),
+            ("/copy", SlashKind::Copy),
+            ("/compact", SlashKind::Compact),
+            ("/fast", SlashKind::Fast),
+            ("/version", SlashKind::Version),
+        ] {
+            assert_eq!(parse(input), Some((kind, "")), "{input}");
+            assert_eq!(parse(&format!("{input}\t ")), Some((kind, "")), "{input}");
+            assert_eq!(parse(&format!("{input} now")), None, "{input}");
+        }
+    }
+
+    #[test]
     fn parse_returns_empty_payload_for_bare_prefix_commands() {
         assert_eq!(parse("/model"), Some((SlashKind::Model, "")));
     }

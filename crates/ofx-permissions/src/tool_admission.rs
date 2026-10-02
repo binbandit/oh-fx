@@ -64,6 +64,10 @@ impl PermissionPolicy {
             &self.session_grants.snapshot(),
         )
     }
+
+    pub fn session_grant_count(&self) -> usize {
+        self.session_grants.count()
+    }
 }
 
 impl PermissionGate for PermissionPolicy {
@@ -282,6 +286,23 @@ mod tests {
     fn admissions(mode: PermissionMode, workspace: &Path, paths: &[&str]) -> Vec<Admission> {
         let policy = PermissionPolicy::new(mode, workspace);
         paths.iter().map(|path| policy.admit(&read(path))).collect()
+    }
+
+    #[test]
+    fn the_session_grant_count_counts_each_remembered_grant_once_until_forgotten() {
+        let policy = PermissionPolicy::new(PermissionMode::Ask, "/workspace");
+        assert_eq!(policy.session_grant_count(), 0);
+        let reads = SessionGrant::ReadsUnder(PathBuf::from("/elsewhere"));
+        for grant in [
+            &reads,
+            &SessionGrant::GrepsUnder(PathBuf::from("/elsewhere")),
+            &reads,
+        ] {
+            policy.remember_approval(grant);
+        }
+        assert_eq!(policy.session_grant_count(), 2);
+        policy.forget_approvals();
+        assert_eq!(policy.session_grant_count(), 0);
     }
 
     #[test]

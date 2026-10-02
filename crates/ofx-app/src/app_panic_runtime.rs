@@ -318,6 +318,7 @@ mod tests {
             workspace_label: "workspace".to_owned(),
             workspace_root: PathBuf::from("/workspace"),
             commands: Vec::new(),
+            command_categories: Vec::new(),
         };
         let outcome = panics.contain_shell(|| {
             run_shell(options, events, NativeClipboard, |command| {

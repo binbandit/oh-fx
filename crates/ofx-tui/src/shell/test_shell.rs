@@ -231,10 +231,12 @@ fn drain(master: &OwnedFd, done: &AtomicBool) -> Vec<u8> {
 }
 
 fn options() -> ShellOptions {
-    let spec = |command: &str, aliases: &[&str]| SlashCommandSpec {
+    let spec = |command: &str, aliases: &[&str], category: usize| SlashCommandSpec {
         command: command.to_owned(),
         aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
         description: String::new(),
+        category,
+        compacts: false,
     };
     ShellOptions {
         version: "0.1.0".to_owned(),
@@ -244,11 +246,12 @@ fn options() -> ShellOptions {
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
         commands: vec![
-            spec("/help", &[]),
-            spec("/clear", &[]),
-            spec("/model", &[]),
-            spec("/quit", &["/exit"]),
+            spec("/help", &[], 0),
+            spec("/clear", &[], 0),
+            spec("/model", &[], 1),
+            spec("/quit", &["/exit"], 0),
         ],
+        command_categories: vec!["General".to_owned(), "Model".to_owned()],
     }
 }
 

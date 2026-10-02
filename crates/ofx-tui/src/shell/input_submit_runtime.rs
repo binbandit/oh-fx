@@ -1,6 +1,7 @@
 use ofx_contract::UiCommand;
 
 use super::{MAX_PROMPT_HISTORY, Shell, SlashCommandSpec, Submission, SubmissionState};
+use crate::output::compaction_activity::CompactionStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Submit {
@@ -42,6 +43,10 @@ fn best_match<'a>(spec: &'a SlashCommandSpec, prefix: &str) -> Option<(usize, &'
         }
     }
     best
+}
+
+fn compacts(commands: &[SlashCommandSpec], command: &str) -> bool {
+    lookup(commands, command.trim_end_matches([' ', '\t'])).is_some_and(|spec| spec.compacts)
 }
 
 pub(crate) fn slash_completions<'a>(
@@ -93,13 +98,19 @@ pub(crate) fn classify(text: &str, commands: &[SlashCommandSpec]) -> Submit {
 
 impl Shell<'_> {
     pub(super) fn submit(&mut self) {
+        self.dismiss_compaction_feedback();
         let text = self.composer.expanded_text().into_owned();
         match classify(&text, &self.options.commands) {
             Submit::Empty => self.composer.clear(),
             Submit::Command(command) => {
                 self.composer.record_history(MAX_PROMPT_HISTORY);
                 self.composer.clear();
+                let requests_compaction =
+                    !self.working() && compacts(&self.options.commands, &command);
                 self.send(UiCommand::RunCommand { text: command });
+                if requests_compaction {
+                    self.compaction = Some(CompactionStatus::requested(self.now_ms()));
+                }
             }
             Submit::Prompt(prompt) => {
                 self.composer.record_history(MAX_PROMPT_HISTORY);
@@ -126,7 +137,14 @@ mod tests {
         [
             ("/help", &[][..]),
             ("/clear", &[]),
+            ("/reset", &[]),
+            ("/stats", &[]),
+            ("/status", &[]),
             ("/model", &[]),
+            ("/copy", &[]),
+            ("/compact", &[]),
+            ("/fast", &[]),
+            ("/version", &[]),
             ("/quit", &["/exit"]),
         ]
         .into_iter()
@@ -137,8 +155,25 @@ mod tests {
                 .map(|alias: &&str| (*alias).to_owned())
                 .collect(),
             description: String::new(),
+            category: 0,
+            compacts: command == "/compact",
         })
         .collect()
+    }
+
+    #[test]
+    fn only_the_exact_compact_command_requests_compaction() {
+        let commands = commands();
+        for (text, expected) in [
+            ("/compact", true),
+            ("/compact\t ", true),
+            ("/compact now", false),
+            ("/compact\n", false),
+            ("/clear", false),
+            ("/bogus", false),
+        ] {
+            assert_eq!(compacts(&commands, text), expected, "{text:?}");
+        }
     }
 
     #[test]
@@ -175,7 +210,47 @@ mod tests {
         );
         assert_eq!(
             slash_completions(&commands, "/"),
-            ["/help", "/clear", "/model", "/quit"]
+            [
+                "/help", "/clear", "/reset", "/stats", "/status", "/model", "/copy", "/compact",
+                "/fast", "/version", "/quit"
+            ]
+        );
+        assert_eq!(
+            classify("/co", &commands),
+            Submit::Command("/copy".to_owned())
+        );
+        assert_eq!(
+            classify("/com", &commands),
+            Submit::Command("/compact".to_owned())
+        );
+        assert_eq!(
+            classify("/statu", &commands),
+            Submit::Command("/status".to_owned())
+        );
+        assert_eq!(slash_completions(&commands, "/sta"), ["/stats", "/status"]);
+        assert_eq!(
+            classify("/fa", &commands),
+            Submit::Command("/fast".to_owned())
+        );
+        assert_eq!(
+            classify("/st", &commands),
+            Submit::Command("/stats".to_owned())
+        );
+        assert_eq!(
+            classify("/cop", &commands),
+            Submit::Command("/copy".to_owned())
+        );
+        assert_eq!(
+            classify("/res", &commands),
+            Submit::Command("/reset".to_owned())
+        );
+        assert_eq!(
+            classify("/ver", &commands),
+            Submit::Command("/version".to_owned())
+        );
+        assert_eq!(
+            slash_completions(&commands, "/e"),
+            ["/exit", "/help", "/clear", "/reset", "/model", "/version"]
         );
     }
 

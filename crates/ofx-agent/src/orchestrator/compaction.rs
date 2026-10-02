@@ -3,7 +3,7 @@ use std::mem;
 use ofx_contract::{ChatMessage, ModelRequest, ProviderError, ProviderErrorKind, ProviderOptions};
 use tokio_util::sync::CancellationToken;
 
-use super::{Agent, Stop, Turn, TurnFailure};
+use super::{Agent, LastReply, Stop, Turn, TurnFailure};
 use crate::compactor::{self, Compacted, CompactionError, Correction, Size, Summarizer};
 use crate::execution_memory::{history_turns, retain};
 use crate::prompt_context::{Calibration, RequestCost};
@@ -20,9 +20,8 @@ const OVERFLOW_DETAILS: [&str; 8] = [
     "too many input tokens",
 ];
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Compaction {
+pub enum Compaction {
     Compacted,
     Unchanged,
 }
@@ -49,9 +48,13 @@ pub(super) struct Measured {
 }
 
 impl Agent {
-    #[cfg(test)]
-    pub(crate) async fn compact(
+    pub fn has_context_to_compact(&self) -> bool {
+        !self.turn_starts.is_empty()
+    }
+
+    pub async fn compact(
         &mut self,
+        summarizing: &mut (dyn FnMut() + Send),
         cancel: &CancellationToken,
     ) -> Result<Compaction, CompactionError> {
         if self.resolve_capabilities(cancel).await.is_err() {
@@ -68,7 +71,7 @@ impl Agent {
             });
         let size = self.compaction_size(self.request_fixed_tokens);
         let compacted = self
-            .compacted_history(size, false, options, None, cancel)
+            .compacted_history(size, false, options, None, summarizing, cancel)
             .await?;
         Ok(match compacted {
             Some(compacted) => {
@@ -136,7 +139,14 @@ impl Agent {
             if !rebuilt && (pending || size.due()) {
                 let conversation = (!pending).then_some(request);
                 let compacted = self
-                    .compacted_history(size, true, request.provider_options, conversation, cancel)
+                    .compacted_history(
+                        size,
+                        true,
+                        request.provider_options,
+                        conversation,
+                        &mut || {},
+                        cancel,
+                    )
                     .await?;
                 if compacted.is_some() {
                     return Ok(compacted);
@@ -201,10 +211,7 @@ impl Agent {
         let Some(measured) = measured else {
             return;
         };
-        #[cfg(test)]
-        {
-            self.request_fixed_tokens = measured.fixed_tokens;
-        }
+        self.request_fixed_tokens = measured.fixed_tokens;
         if let Some(exact) = input_tokens {
             self.calibration = Some(Calibration {
                 model: self.config.model.clone(),
@@ -242,6 +249,7 @@ impl Agent {
         active: bool,
         options: ProviderOptions<'_>,
         conversation: Option<ModelRequest<'_>>,
+        summarizing: &mut (dyn FnMut() + Send),
         cancel: &CancellationToken,
     ) -> Result<Option<Compacted>, CompactionError> {
         let turns = history_turns(&self.history, &self.turn_starts);
@@ -267,10 +275,16 @@ impl Agent {
             model: &self.config.model,
             sends_after_conversation: conversation.is_some(),
         };
-        compactor::compact(request, &mut summarizer, cancel).await
+        compactor::compact(request, &mut summarizer, summarizing, cancel).await
     }
 
     fn install_compaction(&mut self, compacted: Compacted) {
+        self.last_reply = self.last_reply.take().and_then(|reply| {
+            reply
+                .turn
+                .checked_sub(compacted.cut.turns)
+                .map(|turn| LastReply { turn, ..reply })
+        });
         retain(
             &mut self.history,
             &mut self.turn_starts,

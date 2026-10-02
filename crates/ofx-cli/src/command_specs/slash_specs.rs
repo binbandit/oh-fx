@@ -4,9 +4,63 @@ use super::matches_command_token;
 pub enum SlashKind {
     Help,
     ClearScreen,
+    ResetSession,
+    Stats,
+    Status,
     Model,
     Permissions,
+    Copy,
+    Compact,
+    Fast,
+    Version,
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlashPresentationCategory {
+    General,
+    Session,
+    Account,
+    Model,
+    Appearance,
+    Security,
+    Workspace,
+    Media,
+    Agents,
+    Extensions,
+    Product,
+}
+
+impl SlashPresentationCategory {
+    pub const ALL: [Self; 11] = [
+        Self::General,
+        Self::Session,
+        Self::Account,
+        Self::Model,
+        Self::Appearance,
+        Self::Security,
+        Self::Workspace,
+        Self::Media,
+        Self::Agents,
+        Self::Extensions,
+        Self::Product,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Session => "Session",
+            Self::Account => "Account",
+            Self::Model => "Model",
+            Self::Appearance => "Appearance",
+            Self::Security => "Security",
+            Self::Workspace => "Workspace",
+            Self::Media => "Media",
+            Self::Agents => "Agents",
+            Self::Extensions => "Extensions",
+            Self::Product => "Product",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,10 +72,11 @@ pub(crate) enum SlashArguments {
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlashSpec {
-    pub(crate) kind: SlashKind,
+    pub kind: SlashKind,
     pub command: &'static str,
     pub aliases: &'static [&'static str],
     pub completion_description: &'static str,
+    pub presentation_category: SlashPresentationCategory,
     pub(crate) arguments: SlashArguments,
 }
 
@@ -30,12 +85,14 @@ impl SlashSpec {
         kind: SlashKind,
         command: &'static str,
         completion_description: &'static str,
+        presentation_category: SlashPresentationCategory,
     ) -> Self {
         Self {
             kind,
             command,
             aliases: &[],
             completion_description,
+            presentation_category,
             arguments: SlashArguments::None,
         }
     }
@@ -138,7 +195,20 @@ mod tests {
             .collect();
         assert_eq!(
             commands,
-            ["/help", "/clear", "/model", "/permissions", "/quit"]
+            [
+                "/help",
+                "/clear",
+                "/reset",
+                "/stats",
+                "/status",
+                "/model",
+                "/permissions",
+                "/copy",
+                "/compact",
+                "/fast",
+                "/version",
+                "/quit",
+            ]
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
         assert_eq!(
@@ -149,5 +219,86 @@ mod tests {
             spec(SlashKind::ClearScreen).completion_description,
             "start a fresh conversation while keeping managed processes"
         );
+        assert_eq!(
+            spec(SlashKind::ResetSession).completion_description,
+            "reset the current session context"
+        );
+        assert_eq!(
+            spec(SlashKind::Version).completion_description,
+            "show the oh-fx version"
+        );
+        assert_eq!(
+            spec(SlashKind::Stats).completion_description,
+            "show token and turn statistics"
+        );
+        assert_eq!(
+            spec(SlashKind::Copy).completion_description,
+            "copy the last assistant response"
+        );
+        assert_eq!(
+            spec(SlashKind::Fast).completion_description,
+            "toggle Fast mode when supported"
+        );
+        assert_eq!(
+            spec(SlashKind::Status).completion_description,
+            "show runtime configuration"
+        );
+        assert_eq!(
+            spec(SlashKind::Compact).completion_description,
+            "summarize context into a fresh window"
+        );
+    }
+
+    #[test]
+    fn every_command_carries_upstreams_presentation_category() {
+        let categories: Vec<(&str, &str)> = SLASH_REGISTRY
+            .commands()
+            .iter()
+            .map(|spec| (spec.command, spec.presentation_category.label()))
+            .collect();
+        assert_eq!(
+            categories,
+            [
+                ("/help", "General"),
+                ("/clear", "General"),
+                ("/reset", "Session"),
+                ("/stats", "Account"),
+                ("/status", "General"),
+                ("/model", "Model"),
+                ("/permissions", "Security"),
+                ("/copy", "Session"),
+                ("/compact", "Session"),
+                ("/fast", "Model"),
+                ("/version", "General"),
+                ("/quit", "General"),
+            ]
+        );
+    }
+
+    #[test]
+    fn presentation_categories_keep_upstreams_order_and_labels() {
+        let labels: Vec<&str> = SlashPresentationCategory::ALL
+            .iter()
+            .map(|category| category.label())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "General",
+                "Session",
+                "Account",
+                "Model",
+                "Appearance",
+                "Security",
+                "Workspace",
+                "Media",
+                "Agents",
+                "Extensions",
+                "Product"
+            ]
+        );
+        for (index, category) in SlashPresentationCategory::ALL.into_iter().enumerate() {
+            assert_eq!(category as usize, index);
+        }
     }
 }

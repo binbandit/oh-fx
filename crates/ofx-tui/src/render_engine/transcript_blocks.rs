@@ -40,6 +40,7 @@ pub(crate) enum Entry {
         text: String,
     },
     HelpCatalog {
+        categories: Vec<String>,
         commands: Vec<HelpEntry>,
     },
 }
@@ -68,7 +69,10 @@ impl Entry {
             } => vec![turn_summary_row(*duration_ms, *progress, theme).clipped(cols)],
             Self::Cancellation => vec![cancellation_row(theme).clipped(cols)],
             Self::TurnFailure { text } => static_status_rows(text, theme.red, cols),
-            Self::HelpCatalog { commands } => help_catalog_rows(commands, cols, theme),
+            Self::HelpCatalog {
+                categories,
+                commands,
+            } => help_catalog_rows(categories, commands, cols, theme),
         }
     }
 }
@@ -427,26 +431,102 @@ pub(crate) fn render_semantic_notice(notice: &Notice, cols: usize, theme: &Theme
     rows
 }
 
-pub(crate) fn help_catalog_rows(commands: &[HelpEntry], cols: usize, theme: &Theme) -> Vec<Row> {
-    let mut rows = vec![Row::styled(
-        &format!("Commands {}", commands.len()),
-        theme.selected_completion,
-    )];
+const HELP_ALL_CATEGORIES: &str = "All";
+const HELP_COLUMN_GAP: usize = 4;
+const HELP_TAB_GAP: usize = 2;
+const HELP_ELLIPSIS: &str = "…";
+
+pub(crate) fn help_catalog_rows(
+    categories: &[String],
+    commands: &[HelpEntry],
+    cols: usize,
+    theme: &Theme,
+) -> Vec<Row> {
+    let mut rows = vec![help_header_row(categories, commands.len(), cols, theme)];
     rows.push(Row::new());
+    let indent = if cols <= 2 { 0 } else { 2 };
     let widest = commands
         .iter()
         .map(|entry| visible_width(&entry.command))
         .max()
         .unwrap_or(0);
+    let description_col = (indent + widest + HELP_COLUMN_GAP).min(cols);
+    let gutter = if description_col >= indent + HELP_COLUMN_GAP {
+        HELP_COLUMN_GAP
+    } else {
+        0
+    };
+    let command_width = description_col.saturating_sub(indent + gutter);
     for entry in commands {
         let mut row = Row::new();
-        row.push_spaces(2);
-        row.push(&entry.command, theme.hint);
-        row.push_spaces(widest + 4 - visible_width(&entry.command));
-        row.push(&entry.description, theme.dim);
-        rows.push(row.clipped(cols));
+        row.push_spaces(indent);
+        row.push(&ellipsized(&entry.command, command_width), theme.hint);
+        row.push_spaces(description_col.saturating_sub(row.width()));
+        row.push(
+            &ellipsized(&entry.description, cols.saturating_sub(description_col)),
+            theme.dim,
+        );
+        rows.push(row);
     }
     rows
+}
+
+fn help_header_row(categories: &[String], count: usize, cols: usize, theme: &Theme) -> Row {
+    let title = || Row::styled(&format!("Commands {count}"), theme.selected_completion);
+    let push_all = |row: &mut Row| {
+        row.push(
+            &format!("[{HELP_ALL_CATEGORIES}]"),
+            theme.selected_completion,
+        );
+    };
+    let mut wide = title();
+    wide.push_spaces(HELP_TAB_GAP);
+    push_all(&mut wide);
+    for label in categories {
+        wide.push_spaces(HELP_TAB_GAP);
+        wide.push(label, theme.dim);
+    }
+    if wide.width() <= cols {
+        return wide;
+    }
+    for shown in (0..categories.len()).rev() {
+        let mut packed = title();
+        packed.push_spaces(HELP_TAB_GAP);
+        push_all(&mut packed);
+        for label in &categories[..shown] {
+            packed.push_spaces(HELP_TAB_GAP);
+            packed.push(label, theme.dim);
+        }
+        packed.push_spaces(HELP_TAB_GAP);
+        packed.push(HELP_ELLIPSIS, theme.dim);
+        if packed.width() <= cols {
+            return packed;
+        }
+    }
+    let mut compact = title();
+    compact.push_spaces(HELP_TAB_GAP);
+    push_all(&mut compact);
+    if compact.width() <= cols {
+        return compact;
+    }
+    let mut active = Row::new();
+    push_all(&mut active);
+    active.clipped(cols)
+}
+
+fn ellipsized(text: &str, width: usize) -> String {
+    let single_line = text.replace(['\n', '\r'], " ");
+    if visible_width(&single_line) <= width {
+        return single_line;
+    }
+    match width {
+        0 => String::new(),
+        1 => HELP_ELLIPSIS.to_owned(),
+        _ => format!(
+            "{}{HELP_ELLIPSIS}",
+            prefix_by_width(&single_line, width - 1)
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -477,6 +557,7 @@ mod tests {
             text: "⚠ request failed: ConnectionFailed".to_owned(),
         };
         let help = Entry::HelpCatalog {
+            categories: vec!["General".to_owned()],
             commands: vec![HelpEntry {
                 command: "/help".to_owned(),
                 description: "show commands".to_owned(),
@@ -492,7 +573,7 @@ mod tests {
                 vec!["  1m 5s (↑1.2k ↓34)"],
                 vec!["■ Cancelled · What can oh-fx do differently?"],
                 vec!["⚠ request failed: ConnectionFailed"],
-                vec!["Commands 1", "", "  /help    show commands"],
+                vec!["Commands 1  [All]  General", "", "  /help    show commands"],
             ]
         );
         assert_eq!(failure.render(80, &theme)[0].segments()[0].paint, theme.red);
@@ -594,27 +675,106 @@ mod tests {
         assert_eq!(row.segments()[2].paint, Paint::fg(255));
     }
 
+    fn upstream_categories() -> Vec<String> {
+        [
+            "General",
+            "Session",
+            "Account",
+            "Model",
+            "Appearance",
+            "Security",
+            "Workspace",
+            "Media",
+            "Agents",
+            "Extensions",
+            "Product",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+
+    fn help_entry(command: &str, description: &str) -> HelpEntry {
+        HelpEntry {
+            command: command.to_owned(),
+            description: description.to_owned(),
+        }
+    }
+
     #[test]
     fn the_help_catalog_aligns_descriptions_after_the_widest_command() {
         let commands = vec![
-            HelpEntry {
-                command: "/help".to_owned(),
-                description: "show available slash commands".to_owned(),
-            },
-            HelpEntry {
-                command: "/model".to_owned(),
-                description: "choose what model and reasoning effort to use".to_owned(),
-            },
+            help_entry("/help", "show available slash commands"),
+            help_entry("/model", "choose what model and reasoning effort to use"),
         ];
-        let rows = help_catalog_rows(&commands, 100, &theme());
+        let rows = help_catalog_rows(&upstream_categories(), &commands, 120, &theme());
         assert_eq!(
             texts(&rows),
             [
-                "Commands 2",
+                "Commands 2  [All]  General  Session  Account  Model  Appearance  Security  Workspace  Media  Agents  Extensions  Product",
                 "",
                 "  /help     show available slash commands",
                 "  /model    choose what model and reasoning effort to use"
             ]
+        );
+        let header = rows[0].segments();
+        assert_eq!(header[0].text, "Commands 2");
+        assert_eq!(header[0].paint, theme().selected_completion);
+        assert_eq!(header[2].text, "[All]");
+        assert_eq!(header[2].paint, theme().selected_completion);
+        assert_eq!(header[4].text, "General");
+        assert_eq!(header[4].paint, theme().dim);
+        assert_eq!(rows[2].segments()[1].paint, theme().hint);
+        assert_eq!(rows[2].segments()[3].paint, theme().dim);
+    }
+
+    #[test]
+    fn the_help_header_packs_category_tabs_like_upstreams_menu() {
+        let categories = upstream_categories();
+        let header = |count: usize, cols: usize| {
+            let commands = vec![help_entry("/help", "show"); count];
+            help_catalog_rows(&categories, &commands, cols, &theme())[0].text()
+        };
+        assert_eq!(
+            header(2, 100),
+            "Commands 2  [All]  General  Session  Account  Model  Appearance  Security  Workspace  Media  …"
+        );
+        assert_eq!(
+            header(37, 100),
+            "Commands 37  [All]  General  Session  Account  Model  Appearance  Security  Workspace  Media  …"
+        );
+        assert_eq!(
+            header(11, 80),
+            "Commands 11  [All]  General  Session  Account  Model  Appearance  Security  …"
+        );
+        assert_eq!(header(11, 24), "Commands 11  [All]  …");
+        assert_eq!(header(11, 18), "Commands 11  [All]");
+        assert_eq!(header(11, 4), "[All");
+        assert_eq!(header(2, 120).len(), 120);
+    }
+
+    #[test]
+    fn help_rows_keep_a_four_column_gutter_and_ellipsize_what_does_not_fit() {
+        let commands = vec![
+            help_entry("/permissions", "choose permission behavior"),
+            help_entry("/help", "show available slash commands"),
+        ];
+        let rows = help_catalog_rows(&[], &commands, 160, &theme());
+        assert_eq!(
+            texts(&rows)[2],
+            "  /permissions    choose permission behavior"
+        );
+        let narrow = help_catalog_rows(&[], &commands, 24, &theme());
+        assert_eq!(
+            texts(&narrow)[2..],
+            ["  /permissions    choos…", "  /help           show …"]
+        );
+        let tight = help_catalog_rows(&[], &commands, 10, &theme());
+        assert_eq!(texts(&tight)[2..], ["  /pe…    ", "  /he…    "]);
+        assert!(tight.iter().all(|row| row.width() <= 10));
+        let multiline = vec![help_entry("/x", "first\nsecond")];
+        assert_eq!(
+            texts(&help_catalog_rows(&[], &multiline, 40, &theme()))[2],
+            "  /x    first second"
         );
     }
 

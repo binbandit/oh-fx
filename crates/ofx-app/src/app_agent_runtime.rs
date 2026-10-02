@@ -1,30 +1,42 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ofx_agent::{Agent, TurnFailure};
-use ofx_contract::{Notice, NoticeTone, ProviderError, UiCommand, UiEvent};
+use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure};
+use ofx_config::save_model_preference;
+use ofx_contract::{
+    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, UiCommand, UiEvent,
+};
+use ofx_tui::Clipboard;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
-use crate::app_commands::{CommandEffect, handle_command};
+use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
+use crate::native::NativeClipboard;
+use crate::user_settings::{self, unsaved_notice};
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 const CONTEXT_TOPIC: &str = "context";
+const MODEL_TOPIC: &str = "model";
 const LEGACY_CONTEXT_LINE: &str = "[context]";
 const LEGACY_CONTEXT_PREFIX: &str = "[context] ";
 
 pub(crate) struct ControllerState {
     setup: AgentSetup,
     model: String,
-    model_pending: bool,
+    fast_mode: bool,
+    config_pending: bool,
     pending_clear: Option<u64>,
     received_prompts: u64,
     queue: VecDeque<String>,
     permissions: PermissionRuntime,
     emit: Emit,
+    clipboard: Arc<dyn Clipboard>,
+    last_reply: Option<Arc<str>>,
+    history_turns: usize,
+    context_to_compact: bool,
 }
 
 impl ControllerState {
@@ -40,8 +52,54 @@ impl ControllerState {
         &self.permissions
     }
 
+    pub(crate) fn fast_mode(&self) -> bool {
+        self.fast_mode
+    }
+
+    pub(crate) fn set_fast_mode(&mut self, enabled: bool) {
+        self.fast_mode = enabled;
+    }
+
+    pub(crate) fn save_model_preference(&self, topic: &str) {
+        let provider = self.setup.provider();
+        let saved = user_settings::save(self.setup.preferences(), |paths| {
+            save_model_preference(paths, &provider, &self.model, self.fast_mode)
+        });
+        if let Err(unsaved) = saved {
+            self.emit(UiEvent::Notice {
+                notice: unsaved_notice(topic, &unsaved),
+            });
+        }
+    }
+
+    pub(crate) async fn supports_fast_mode(&self) -> bool {
+        self.setup.supports_fast_mode(&self.model).await
+    }
+
+    pub(crate) fn status_body(&self) -> String {
+        self.setup
+            .status(&self.model, self.history_turns)
+            .render_interactive_body()
+    }
+
+    pub(crate) fn has_context_to_compact(&self) -> bool {
+        self.context_to_compact
+    }
+
+    pub(crate) fn last_reply(&self) -> Option<&str> {
+        self.last_reply.as_deref()
+    }
+
+    pub(crate) fn clipboard(&self) -> &dyn Clipboard {
+        &*self.clipboard
+    }
+
     pub(crate) fn emit(&self, event: UiEvent) {
         (self.emit)(event);
+    }
+
+    pub(crate) fn compaction(&self, activity: CompactionActivity) {
+        self.emit(UiEvent::CompactionActivity { activity });
     }
 
     pub(crate) fn notice(&self, tone: NoticeTone, topic: &str, body: &str) {
@@ -51,10 +109,14 @@ impl ControllerState {
     }
 
     fn select_model(&mut self, model: String) {
+        if model != self.model {
+            self.fast_mode = false;
+        }
         self.model = model;
         self.emit(UiEvent::ModelSelected {
             model: self.model.clone(),
         });
+        self.save_model_preference(MODEL_TOPIC);
     }
 
     fn receive_prompt(&mut self, prompt: String) {
@@ -115,18 +177,29 @@ impl Controller {
         let state = ControllerState {
             model: setup.model().to_owned(),
             permissions: setup.permission_runtime(Arc::clone(&emit)),
+            fast_mode: setup.fast_mode(),
             setup,
-            model_pending: false,
+            config_pending: false,
             pending_clear: None,
             received_prompts: 0,
             queue: VecDeque::new(),
             emit,
+            clipboard: Arc::new(NativeClipboard),
+            last_reply: None,
+            history_turns: 0,
+            context_to_compact: false,
         };
         Self {
             agent: state.setup.agent(),
             state,
             notices,
         }
+    }
+
+    #[cfg(test)]
+    fn with_clipboard(mut self, clipboard: Arc<dyn Clipboard>) -> Self {
+        self.state.clipboard = clipboard;
+        self
     }
 
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
@@ -143,34 +216,99 @@ impl Controller {
             };
             match command {
                 UiCommand::Submit { prompt } => self.state.receive_prompt(prompt),
-                UiCommand::RunCommand { text } => self.run_idle_command(&text),
+                UiCommand::RunCommand { text } => {
+                    if !self.run_idle_command(&text, &mut commands).await {
+                        return;
+                    }
+                }
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
                 }
-                UiCommand::Cancel { .. } | UiCommand::Approval { .. } => {}
+                UiCommand::Cancel { .. }
+                | UiCommand::Approval { .. }
+                | UiCommand::CancelCompaction => {}
             }
         }
     }
 
-    fn run_idle_command(&mut self, text: &str) {
-        match handle_command(&self.state, text, false) {
+    async fn run_idle_command(
+        &mut self,
+        text: &str,
+        commands: &mut UnboundedReceiver<UiCommand>,
+    ) -> bool {
+        match handle_command(&self.state, text, Work::Idle) {
             CommandEffect::None => {}
             CommandEffect::SwitchModel(model) => {
                 self.state.select_model(model);
                 self.reconfigure();
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
+            CommandEffect::ToggleFast => {
+                toggle_fast(&mut self.state).await;
+                self.reconfigure();
+            }
+            CommandEffect::Compact => return self.compact(commands).await,
         }
+        true
+    }
+
+    async fn compact(&mut self, commands: &mut UnboundedReceiver<UiCommand>) -> bool {
+        self.state.compaction(CompactionActivity::Preparing);
+        let cancel = CancellationToken::new();
+        let emit = Arc::clone(&self.state.emit);
+        let state = &mut self.state;
+        let mut open = true;
+        let result = {
+            let mut summarizing = move || {
+                emit(UiEvent::CompactionActivity {
+                    activity: CompactionActivity::Summarizing,
+                });
+            };
+            let compaction = self.agent.compact(&mut summarizing, &cancel);
+            tokio::pin!(compaction);
+            loop {
+                tokio::select! {
+                    result = &mut compaction => break result,
+                    command = commands.recv(), if open => match command {
+                        None => {
+                            open = false;
+                            cancel.cancel();
+                        }
+                        Some(UiCommand::Submit { prompt }) => state.receive_prompt(prompt),
+                        Some(UiCommand::CancelCompaction) => cancel.cancel(),
+                        Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
+                        Some(UiCommand::FullAccessWarningShown) => {
+                            state.permissions.full_access_warning_shown();
+                        }
+                        Some(UiCommand::Cancel { .. } | UiCommand::Approval { .. }) => {}
+                        Some(UiCommand::RunCommand { text }) => {
+                            run_deferred_command(state, &text, Work::Compaction, &cancel).await;
+                        }
+                    },
+                }
+            }
+        };
+        self.state.compaction(compaction_activity(result));
+        self.settle_deferred_commands();
+        open
     }
 
     fn reconfigure(&mut self) {
-        self.agent
-            .set_config(self.state.setup.config(&self.state.model));
+        let mut config = self.state.setup.config(&self.state.model);
+        config.fast_mode = self.state.fast_mode;
+        self.agent.set_config(config);
+    }
+
+    fn remember_agent_facts(&mut self) {
+        self.state.last_reply = self.agent.last_assistant_reply();
+        self.state.history_turns = self.agent.history_turns();
+        self.state.context_to_compact = self.agent.has_context_to_compact();
     }
 
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
+        self.remember_agent_facts();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
         self.show_startup_notices();
@@ -236,19 +374,9 @@ impl Controller {
                             state.permissions.full_access_warning_shown();
                         }
                         Some(UiCommand::RunCommand { text }) => {
-                            match handle_command(state, &text, true) {
-                                CommandEffect::None => {}
-                                CommandEffect::SwitchModel(model) => {
-                                    state.model_pending = true;
-                                    state.select_model(model);
-                                }
-                                CommandEffect::Clear => {
-                                    state.pending_clear = Some(state.received_prompts);
-                                    state.queue.clear();
-                                    cancel.cancel();
-                                }
-                            }
+                            run_deferred_command(state, &text, Work::Turn, &cancel).await;
                         }
+                        Some(UiCommand::CancelCompaction) => {}
                     },
                 }
             }
@@ -267,14 +395,61 @@ impl Controller {
                 outcome: report.outcome,
             });
         }
-        if std::mem::take(&mut self.state.model_pending) {
+        self.settle_deferred_commands();
+        open
+    }
+
+    fn settle_deferred_commands(&mut self) {
+        self.remember_agent_facts();
+        if std::mem::take(&mut self.state.config_pending) {
             self.reconfigure();
         }
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
             self.clear(first_kept_prompt);
         }
-        open
     }
+}
+
+async fn run_deferred_command(
+    state: &mut ControllerState,
+    text: &str,
+    work: Work,
+    cancel: &CancellationToken,
+) {
+    match handle_command(state, text, work) {
+        CommandEffect::None | CommandEffect::Compact => {}
+        CommandEffect::SwitchModel(model) => {
+            state.config_pending = true;
+            state.select_model(model);
+        }
+        CommandEffect::Clear => {
+            state.pending_clear = Some(state.received_prompts);
+            state.queue.clear();
+            cancel.cancel();
+        }
+        CommandEffect::ToggleFast => {
+            toggle_fast(state).await;
+            state.config_pending = true;
+        }
+    }
+}
+
+fn compaction_activity(result: Result<Compaction, CompactionError>) -> CompactionActivity {
+    let end = match result {
+        Ok(Compaction::Compacted) => return CompactionActivity::Compacted,
+        Ok(Compaction::Unchanged) | Err(CompactionError::NothingToCompact) => {
+            CompactionEnd::NothingToCompact
+        }
+        Err(CompactionError::Cancelled) => CompactionEnd::Cancelled,
+        Err(CompactionError::ContextCapacityExceeded) => CompactionEnd::ContextTooLarge,
+        Err(
+            CompactionError::ModelFailed
+            | CompactionError::SummaryIncomplete
+            | CompactionError::EmptySummary
+            | CompactionError::InvalidCheckpoint,
+        ) => CompactionEnd::Failed,
+    };
+    CompactionActivity::Ended(end)
 }
 
 fn failure_status(failure: &TurnFailure, source: CredentialSource) -> Option<String> {
@@ -302,6 +477,8 @@ fn provider_status(error: &ProviderError, source: CredentialSource) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use ofx_config::{ProfilePaths, Settings};
@@ -309,6 +486,7 @@ mod tests {
         ApprovalDecision, PermissionMode, ProviderErrorKind, ToolResultStatus, TurnId, TurnOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
+    use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
     use ofx_testkit::{FakeServer, Reply, chat_text_events, chat_tool_call_events};
     use serde_json::{Value, json};
     use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -323,13 +501,29 @@ mod tests {
         commands: UnboundedSender<UiCommand>,
         events: UnboundedReceiver<UiEvent>,
         seen: Vec<UiEvent>,
+        clipboard: Arc<TestClipboard>,
+    }
+
+    #[derive(Default)]
+    struct TestClipboard {
+        copied: Mutex<Vec<String>>,
+        fails: AtomicBool,
+    }
+
+    impl TestClipboard {
+        fn copied(&self) -> Vec<String> {
+            self.copied.lock().unwrap().clone()
+        }
+    }
+
+    impl Clipboard for TestClipboard {
+        fn copy(&self, text: &str) -> bool {
+            self.copied.lock().unwrap().push(text.to_owned());
+            !self.fails.load(Ordering::SeqCst)
+        }
     }
 
     async fn agent_setup(home: &tempfile::TempDir, server: &FakeServer) -> AgentSetup {
-        let config = home.path().join("config");
-        let workspace = home.path().join("workspace");
-        fs::create_dir_all(&config).unwrap();
-        fs::create_dir_all(&workspace).unwrap();
         let settings = json!({
             "provider": "local",
             "providers": {
@@ -341,6 +535,18 @@ mod tests {
                 }
             }
         });
+        agent_setup_with(home, &settings, SubscriptionEndpoints::default()).await
+    }
+
+    async fn agent_setup_with(
+        home: &tempfile::TempDir,
+        settings: &Value,
+        endpoints: SubscriptionEndpoints,
+    ) -> AgentSetup {
+        let config = home.path().join("config");
+        let workspace = home.path().join("workspace");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
         fs::write(config.join("settings.json"), settings.to_string()).unwrap();
         let paths = ProfilePaths {
             config,
@@ -358,11 +564,11 @@ mod tests {
                     permission_mode: PermissionMode::Auto,
                     system_prompt: None,
                     reasoning_effort: None,
-                    fast_mode: false,
+                    fast_mode: None,
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
-                    endpoints: SubscriptionEndpoints::default(),
+                    endpoints,
                 },
                 &CancellationToken::new(),
             )
@@ -370,21 +576,108 @@ mod tests {
             .unwrap()
     }
 
+    const CODEX_MODEL: &str = "gpt-6.1-sol";
+    const OTHER_CODEX_MODEL: &str = "gpt-6.1-luna";
+
+    fn codex_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let data = home.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+        let session = json!({
+            "version": 1,
+            "access_token": "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl",
+            "refresh_token": "rt-refresh-secret-0123456789",
+            "expires_at_ms": 4_102_444_800_000_i64,
+            "account_id": "acct_test",
+        });
+        let file = data.join("chatgpt-auth.json");
+        fs::write(&file, format!("{session}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        home
+    }
+
+    fn codex_endpoints(codex: &FakeServer, catalog: &FakeServer) -> SubscriptionEndpoints {
+        SubscriptionEndpoints {
+            codex: CodexEndpoints {
+                responses: format!("{}/backend-api/codex/responses", codex.base_url()),
+            },
+            models: CodexModelsEndpoints {
+                models: format!("{}/backend-api/codex/models", catalog.base_url()),
+                client_version: format!("{}/@openai/codex/latest", catalog.base_url()),
+            },
+            ..SubscriptionEndpoints::default()
+        }
+    }
+
+    fn catalog_version() -> Reply {
+        Reply::status(200, json!({"version": "0.153.1"}).to_string())
+    }
+
+    fn catalog_listing(fast: bool) -> Reply {
+        let tiers: &[&str] = if fast { &["fast"] } else { &[] };
+        let model = |slug: &str| {
+            json!({
+                "slug": slug,
+                "visibility": "list",
+                "supported_in_api": true,
+                "supported_reasoning_levels": [{"effort": "low"}],
+                "additional_speed_tiers": tiers,
+            })
+        };
+        let listing = json!({"models": [model(CODEX_MODEL), model(OTHER_CODEX_MODEL)]});
+        Reply::status(200, listing.to_string())
+    }
+
+    fn codex_catalog(fast: bool, lookups: usize) -> FakeServer {
+        let mut replies = vec![catalog_version()];
+        replies.extend((0..lookups).map(|_| catalog_listing(fast)));
+        FakeServer::start(replies)
+    }
+
+    fn codex_text(text: &str) -> Reply {
+        let events = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
+            json!({"type":"response.output_text.delta","output_index":0,"delta":text}),
+            json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}),
+        ]
+        .map(|event| event.to_string());
+        Reply::sse(&events)
+    }
+
     impl Harness {
         async fn start(server: &FakeServer) -> Self {
             let home = tempfile::tempdir().unwrap();
             let setup = agent_setup(&home, server).await;
+            Self::with_setup(home, setup)
+        }
+
+        async fn codex(codex: &FakeServer, catalog: &FakeServer) -> Self {
+            let home = codex_home();
+            let settings = json!({"provider": "codex", "models": {"codex": CODEX_MODEL}});
+            let setup = agent_setup_with(&home, &settings, codex_endpoints(codex, catalog)).await;
+            Self::with_setup(home, setup)
+        }
+
+        fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
             let (events_sender, events) = unbounded_channel();
             let emit: Emit = Arc::new(move |event| {
                 let _ = events_sender.send(event);
             });
             let (commands, receiver) = unbounded_channel();
-            tokio::spawn(Controller::new(setup, emit).run(receiver));
+            let clipboard = Arc::new(TestClipboard::default());
+            let shared: Arc<dyn Clipboard> = clipboard.clone();
+            tokio::spawn(
+                Controller::new(setup, emit)
+                    .with_clipboard(shared)
+                    .run(receiver),
+            );
             Self {
                 home,
                 commands,
                 events,
                 seen: Vec::new(),
+                clipboard,
             }
         }
 
@@ -540,6 +833,696 @@ mod tests {
         harness.submit("second");
         harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(user_messages(&server.requests()[1].json()), 1);
+    }
+
+    #[tokio::test]
+    async fn reset_starts_a_fresh_conversation_like_clear() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["one"])),
+            Reply::sse(&chat_text_events(&["two"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("first");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.command("/reset");
+        let cleared = harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        assert_eq!(
+            cleared.last(),
+            Some(&UiEvent::ConversationCleared {
+                first_kept_prompt: 1
+            })
+        );
+        harness.submit("second");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(user_messages(&server.requests()[1].json()), 1);
+    }
+
+    #[tokio::test]
+    async fn reset_during_a_turn_cancels_it_and_drops_the_prompts_queued_before_it() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["after"]))]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.submit("dropped");
+        harness.command("/reset");
+        harness.submit("kept");
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let next = timeout(
+            Duration::from_secs(10),
+            harness.until(finished(TurnOutcome::Completed)),
+        )
+        .await
+        .expect("the prompt sent after reset runs");
+        assert!(
+            next.iter().any(
+                |event| matches!(event, UiEvent::AssistantText { text, .. } if text == "after")
+            )
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(user_messages(&requests[1].json()), 1);
+    }
+
+    #[tokio::test]
+    async fn stats_ask_the_shell_for_its_renderer_counts_even_during_a_turn() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/stats");
+        let idle = harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        assert_eq!(idle, [UiEvent::StatsRequested]);
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.command("/stats");
+        harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+    }
+
+    async fn copy_notice(harness: &mut Harness) -> Notice {
+        harness.command("/copy");
+        let shown = harness
+            .until(
+                |event| matches!(event, UiEvent::Notice { notice } if notice.topic == "clipboard"),
+            )
+            .await;
+        let Some(UiEvent::Notice { notice }) = shown.last() else {
+            unreachable!()
+        };
+        notice.clone()
+    }
+
+    #[tokio::test]
+    async fn copy_puts_the_last_completed_reply_on_the_clipboard() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["First ", "answer."])),
+            Reply::sse(&chat_text_events(&["Second answer."])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        let empty = copy_notice(&mut harness).await;
+        assert_eq!(
+            (empty.tone, empty.body.as_str()),
+            (NoticeTone::Neutral, "No assistant reply to copy.")
+        );
+        assert!(harness.clipboard.copied().is_empty());
+        harness.submit("first");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let copied = copy_notice(&mut harness).await;
+        assert_eq!(
+            (copied.tone, copied.body.as_str()),
+            (NoticeTone::Neutral, "Copied to clipboard.")
+        );
+        harness.submit("second");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        copy_notice(&mut harness).await;
+        assert_eq!(
+            harness.clipboard.copied(),
+            ["First answer.", "Second answer."]
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_reports_a_clipboard_that_refuses_the_text() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["answer"]))]);
+        let mut harness = Harness::start(&server).await;
+        harness.clipboard.fails.store(true, Ordering::SeqCst);
+        harness.submit("go");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let failed = copy_notice(&mut harness).await;
+        assert_eq!(
+            (failed.tone, failed.body.as_str()),
+            (NoticeTone::Error, "Failed to copy to clipboard.")
+        );
+        assert_eq!(harness.clipboard.copied(), ["answer"]);
+    }
+
+    #[tokio::test]
+    async fn copy_during_a_turn_takes_the_previous_reply_and_clear_forgets_it() {
+        let held = Reply::held_sse(&chat_text_events(&["streaming\n"])[..2]);
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["Done before."])), held]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("first");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        copy_notice(&mut harness).await;
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        copy_notice(&mut harness).await;
+        assert_eq!(harness.clipboard.copied(), ["Done before.", "Done before."]);
+        harness.command("/clear");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let cleared = copy_notice(&mut harness).await;
+        assert_eq!(cleared.body, "No assistant reply to copy.");
+    }
+
+    async fn status_notice(harness: &mut Harness) -> String {
+        harness.command("/status");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "status"))
+            .await;
+        notice_body(shown).pop().unwrap()
+    }
+
+    #[tokio::test]
+    async fn status_reports_the_connection_mode_workspace_and_conversation() {
+        let read = Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "read_file",
+            r#"{"path":"../outside.txt"}"#,
+        ));
+        let server = FakeServer::start([read, Reply::sse(&chat_text_events(&["done"]))]);
+        let mut harness = Harness::start(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "notes\n").unwrap();
+        let workspace = harness.home.path().join("workspace");
+        let expected = |turns: usize, grants: usize| {
+            format!(
+                "status|model=model-a\nmodel_source=local\nprovider_endpoint={}\nauth=configured provider\nconnected_providers=local\nauth_refreshable=false\npermission_mode=auto\nworkspace={}\nhistory_turns={turns}\nsession_permission_grants={grants}\nagent_step_limit=0",
+                server.base_url(),
+                workspace.display()
+            )
+        };
+        assert_eq!(status_notice(&mut harness).await, expected(0, 0));
+        harness.submit("read it");
+        let Some(UiEvent::ApprovalRequested { request, .. }) = harness
+            .until(|event| matches!(event, UiEvent::ApprovalRequested { .. }))
+            .await
+            .last()
+            .cloned()
+        else {
+            unreachable!()
+        };
+        assert_eq!(status_notice(&mut harness).await, expected(0, 0));
+        harness.send(UiCommand::Approval {
+            request_id: request.id,
+            decision: ApprovalDecision::Always,
+        });
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(status_notice(&mut harness).await, expected(1, 1));
+        harness.command("/model model-b");
+        let switched = status_notice(&mut harness).await;
+        assert!(
+            switched.starts_with("status|model=vendor/model-b\n"),
+            "{switched}"
+        );
+        harness.command("/clear");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let cleared = status_notice(&mut harness).await;
+        assert!(
+            cleared.contains("\nhistory_turns=0\nsession_permission_grants=0\n"),
+            "{cleared}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_names_the_codex_subscription() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        let status = status_notice(&mut harness).await;
+        assert!(
+            status.starts_with(&format!(
+                "status|model={CODEX_MODEL}\nmodel_source=Codex subscription\nauth=Codex subscription\nconnected_providers=Codex\nauth_refreshable=true\npermission_mode=auto\n"
+            )),
+            "{status}"
+        );
+    }
+
+    fn activities(events: &[UiEvent]) -> Vec<CompactionActivity> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::CompactionActivity { activity } => Some(*activity),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn compaction_settled(event: &UiEvent) -> bool {
+        matches!(
+            event,
+            UiEvent::CompactionActivity {
+                activity: CompactionActivity::Compacted | CompactionActivity::Ended(_)
+            }
+        )
+    }
+
+    async fn chat(harness: &mut Harness, prompts: &[&str]) {
+        for prompt in prompts {
+            harness.submit(prompt);
+            harness.until(finished(TurnOutcome::Completed)).await;
+        }
+    }
+
+    fn tool_work_then_chat(summary: Reply, after: &[&str]) -> FakeServer {
+        let mut replies = vec![
+            Reply::sse(&chat_tool_call_events(
+                "call-1",
+                "read_file",
+                r#"{"path":"notes.md"}"#,
+            )),
+            Reply::sse(&chat_text_events(&["Read the notes."])),
+        ];
+        replies.extend(
+            (1..=4).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))),
+        );
+        replies.push(summary);
+        replies.extend(
+            after
+                .iter()
+                .map(|text| Reply::sse(&chat_text_events(&[text]))),
+        );
+        FakeServer::start(replies)
+    }
+
+    fn first_user_message(body: &Value) -> &str {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap()
+    }
+
+    fn held_summary() -> Reply {
+        Reply::held_sse(&chat_text_events(&["Turn 1\n"])[..1])
+    }
+
+    async fn summary_requested(server: &FakeServer) {
+        timeout(Duration::from_secs(10), async {
+            while server.requests().len() < 7 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the summary request reaches the provider");
+        let body = server.requests()[6].json();
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("You write compaction notes"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_reports_when_there_is_nothing_to_compact() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/compact");
+        let empty = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(empty),
+            [CompactionActivity::Ended(CompactionEnd::NothingToCompact)]
+        );
+        chat(&mut harness, &["first"]).await;
+        harness.command("/compact");
+        let fits = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(fits),
+            [
+                CompactionActivity::Preparing,
+                CompactionActivity::Ended(CompactionEnd::NothingToCompact)
+            ]
+        );
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compact_replaces_older_turns_with_a_checkpoint_for_the_next_request() {
+        let server = FakeServer::start(
+            (1..=6).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))),
+        );
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["one", "two", "three", "four", "five"]).await;
+        harness.command("/compact");
+        let compacted = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(compacted),
+            [
+                CompactionActivity::Preparing,
+                CompactionActivity::Summarizing,
+                CompactionActivity::Compacted
+            ]
+        );
+        let status = status_notice(&mut harness).await;
+        assert!(status.contains("\nhistory_turns=5\n"), "{status}");
+        let copied = copy_notice(&mut harness).await;
+        assert_eq!(copied.body, "Copied to clipboard.");
+        assert_eq!(harness.clipboard.copied(), ["answer 5"]);
+        chat(&mut harness, &["six"]).await;
+        let body = server.requests()[5].json();
+        let checkpoint = first_user_message(&body);
+        assert!(
+            checkpoint.starts_with("<compacted_conversation>\n"),
+            "{checkpoint}"
+        );
+        assert!(checkpoint.contains("one"), "{checkpoint}");
+        assert_eq!(user_messages(&body), 1 + 4 + 1);
+    }
+
+    #[tokio::test]
+    async fn compact_during_a_turn_asks_to_wait_for_it_once_there_is_context() {
+        let held = || Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held(), held()]);
+        let mut harness = Harness::start(&server).await;
+        for (prompt, end) in [
+            ("first", CompactionEnd::NothingToCompact),
+            ("second", CompactionEnd::Busy),
+        ] {
+            harness.submit(prompt);
+            harness
+                .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+                .await;
+            harness.command("/compact");
+            let settled = harness.until(compaction_settled).await;
+            assert_eq!(activities(settled), [CompactionActivity::Ended(end)]);
+            let turn_id = harness.running_turn();
+            harness.send(UiCommand::Cancel { turn_id });
+            harness.until(finished(TurnOutcome::Interrupted)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_compaction_keeps_the_history_and_runs_the_prompts_sent_meanwhile() {
+        let server = tool_work_then_chat(held_summary(), &["after"]);
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.command("/compact");
+        let summarizing = harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::CompactionActivity {
+                        activity: CompactionActivity::Summarizing
+                    }
+                )
+            })
+            .await;
+        assert_eq!(
+            activities(summarizing),
+            [
+                CompactionActivity::Preparing,
+                CompactionActivity::Summarizing
+            ]
+        );
+        summary_requested(&server).await;
+        harness.submit("queued");
+        harness.command("/compact");
+        harness.send(UiCommand::CancelCompaction);
+        let cancelled = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(cancelled),
+            [CompactionActivity::Ended(CompactionEnd::Cancelled)]
+        );
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = server.requests();
+        assert_eq!(requests.len(), 8);
+        let body = requests[7].json();
+        assert_eq!(user_messages(&body), 6);
+        assert_eq!(first_user_message(&body), "read the notes");
+    }
+
+    #[tokio::test]
+    async fn clear_during_a_compaction_cancels_it_and_starts_over() {
+        let server = tool_work_then_chat(held_summary(), &["fresh"]);
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.command("/compact");
+        harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::CompactionActivity {
+                        activity: CompactionActivity::Summarizing
+                    }
+                )
+            })
+            .await;
+        summary_requested(&server).await;
+        harness.command("/clear");
+        let cleared = harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        assert_eq!(
+            activities(cleared),
+            [CompactionActivity::Ended(CompactionEnd::Cancelled)]
+        );
+        chat(&mut harness, &["start over"]).await;
+        assert_eq!(user_messages(&server.requests()[7].json()), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_summary_reports_the_failure_and_keeps_the_history() {
+        let failure = Reply::status(400, r#"{"error":{"message":"summary rejected"}}"#);
+        let server = tool_work_then_chat(failure, &["after"]);
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.command("/compact");
+        let failed = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(failed).last(),
+            Some(&CompactionActivity::Ended(CompactionEnd::Failed))
+        );
+        chat(&mut harness, &["after"]).await;
+        assert_eq!(user_messages(&server.requests()[7].json()), 6);
+    }
+
+    async fn fast_notice(harness: &mut Harness) -> String {
+        harness.command("/fast");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "fast"))
+            .await;
+        notice_body(shown).pop().unwrap()
+    }
+
+    #[tokio::test]
+    async fn fast_mode_needs_a_model_that_comes_with_it() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        assert_eq!(
+            fast_notice(&mut harness).await,
+            "fast|This model does not come with a fast mode."
+        );
+        assert_eq!(
+            fast_notice(&mut harness).await,
+            "fast|This model does not come with a fast mode."
+        );
+    }
+
+    #[tokio::test]
+    async fn fast_mode_toggles_the_priority_tier_of_the_next_codex_requests() {
+        let codex = FakeServer::start([codex_text("fast"), codex_text("standard")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        harness.submit("hurry");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|off");
+        harness.submit("relax");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_eq!(requests[0].json()["service_tier"], "priority");
+        assert_eq!(requests[1].json().get("service_tier"), None);
+    }
+
+    #[tokio::test]
+    async fn the_codex_catalog_is_fetched_once_for_every_later_fast_check() {
+        let codex = FakeServer::start([codex_text("fast")]);
+        let catalog = codex_catalog(true, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        for expected in ["fast|on", "fast|off", "fast|on"] {
+            assert_eq!(fast_notice(&mut harness).await, expected);
+        }
+        harness.command(&format!("/model {OTHER_CODEX_MODEL}"));
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        harness.submit("hurry");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(codex.requests()[0].json()["service_tier"], "priority");
+        assert_eq!(catalog.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fast_mode_enabled_after_a_failed_catalog_lookup_reaches_the_next_request() {
+        let codex = FakeServer::start([codex_text("one"), codex_text("two"), codex_text("three")]);
+        let catalog = FakeServer::start([
+            catalog_version(),
+            Reply::status(400, "{}"),
+            catalog_listing(true),
+        ]);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        chat(&mut harness, &["one", "two"]).await;
+        assert_eq!(catalog.requests().len(), 2);
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        chat(&mut harness, &["three"]).await;
+        let requests = codex.requests();
+        assert_eq!(requests[1].json().get("service_tier"), None);
+        assert_eq!(requests[2].json()["service_tier"], "priority");
+        assert_eq!(catalog.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn fast_mode_stays_off_for_a_codex_model_without_a_fast_tier() {
+        let codex = FakeServer::start([codex_text("standard")]);
+        let catalog = codex_catalog(false, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(
+            fast_notice(&mut harness).await,
+            "fast|This model does not come with a fast mode."
+        );
+        harness.submit("go");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(codex.requests()[0].json().get("service_tier"), None);
+    }
+
+    #[tokio::test]
+    async fn fast_mode_switched_during_a_turn_applies_to_the_next_one() {
+        let held = Reply::held_sse(&[json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}).to_string(), json!({"type":"response.output_text.delta","output_index":0,"delta":"partial\n"}).to_string()]);
+        let codex = FakeServer::start([held, codex_text("next")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        harness.submit("next");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_eq!(requests[0].json().get("service_tier"), None);
+        assert_eq!(requests[1].json()["service_tier"], "priority");
+    }
+
+    #[tokio::test]
+    async fn another_model_starts_without_fast_mode_and_the_same_one_keeps_it() {
+        let codex = FakeServer::start([codex_text("same"), codex_text("other")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        harness.command(&format!("/model {CODEX_MODEL}"));
+        harness.submit("same");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.command(&format!("/model {OTHER_CODEX_MODEL}"));
+        harness.submit("other");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_eq!(requests[0].json()["service_tier"], "priority");
+        assert_eq!(requests[1].json()["model"], OTHER_CODEX_MODEL);
+        assert_eq!(requests[1].json().get("service_tier"), None);
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+    }
+
+    fn saved_settings(harness: &Harness) -> Value {
+        let text = fs::read_to_string(harness.home.path().join("config/settings.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    async fn notices_until(harness: &mut Harness, topic: &str) -> Vec<String> {
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == topic))
+            .await;
+        notice_body(shown)
+    }
+
+    #[tokio::test]
+    async fn fast_mode_and_the_model_choice_are_saved_to_user_settings() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["provider"], "codex");
+        assert_eq!(saved["models"]["codex"], CODEX_MODEL);
+        assert_eq!(saved["fast_mode"], true);
+        assert_eq!(saved["fast_mode_model_bound"], true);
+        harness.command(&format!("/model {OTHER_CODEX_MODEL}"));
+        harness.command("/version");
+        assert_eq!(
+            notices_until(&mut harness, "version").await[0],
+            format!("|Switched to {OTHER_CODEX_MODEL}")
+        );
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["models"]["codex"], OTHER_CODEX_MODEL);
+        assert_eq!(saved["fast_mode"], false);
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        assert_eq!(saved_settings(&harness)["fast_mode"], true);
+        assert_eq!(fast_notice(&mut harness).await, "fast|off");
+        assert_eq!(saved_settings(&harness)["fast_mode"], false);
+    }
+
+    #[tokio::test]
+    async fn a_choice_user_settings_cannot_hold_still_applies_and_says_so() {
+        let codex = FakeServer::start([codex_text("fast")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        let settings = harness.home.path().join("config/settings.json");
+        fs::write(&settings, r#"{"workspaces":"legacy"}"#).unwrap();
+        harness.command("/fast");
+        assert_eq!(
+            notices_until(&mut harness, "fast").await,
+            ["fast|active for this process but not saved to user settings (InvalidSettingsFormat)"]
+        );
+        assert_eq!(notices_until(&mut harness, "fast").await, ["fast|on"]);
+        harness.command(&format!("/model {CODEX_MODEL}"));
+        assert_eq!(
+            notices_until(&mut harness, "model").await,
+            [
+                format!("|Switched to {CODEX_MODEL}"),
+                "model|active for this process but not saved to user settings (InvalidSettingsFormat)".to_owned()
+            ]
+        );
+        harness.submit("hurry");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(codex.requests()[0].json()["service_tier"], "priority");
+        assert_eq!(
+            fs::read_to_string(&settings).unwrap(),
+            r#"{"workspaces":"legacy"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn version_reports_the_running_build() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/version");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        assert_eq!(
+            notice_body(shown),
+            [format!("version|{}", ofx_upgrade::VERSION)]
+        );
+        let Some(UiEvent::Notice { notice }) = shown.last() else {
+            unreachable!()
+        };
+        assert_eq!(notice.tone, NoticeTone::Neutral);
     }
 
     #[tokio::test]

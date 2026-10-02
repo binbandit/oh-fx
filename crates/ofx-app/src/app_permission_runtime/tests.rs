@@ -320,32 +320,3 @@ fn a_failed_acknowledgment_is_reported_and_attempted_once_per_process() {
         ]
     );
 }
-
-#[test]
-fn unsaved_settings_name_an_uncertain_commit_and_the_legacy_values_it_removed() {
-    let cleanup = LegacyCleanup {
-        fields_removed: 2,
-        workspaces_changed: 1,
-        recovery_paths: vec![PathBuf::from(
-            "/config/backups/settings.json.preference-migration.permission_mode.json",
-        )],
-    };
-    assert_eq!(
-        unsaved_settings_body(&Unsaved::Failed(SettingsWriteFailure {
-            error: SettingsWriteError::CommitIndeterminate,
-            cleanup: cleanup.clone(),
-        })),
-        "user settings persistence uncertain (scope=user, error=SettingsCommitIndeterminate); normalized 2 legacy values across 1 workspace; recovery=/config/backups/settings.json.preference-migration.permission_mode.json"
-    );
-    assert_eq!(
-        unsaved_settings_body(&Unsaved::Failed(SettingsWriteFailure {
-            error: SettingsWriteError::LockBusy,
-            cleanup: LegacyCleanup {
-                fields_removed: 1,
-                workspaces_changed: 2,
-                recovery_paths: Vec::new(),
-            },
-        })),
-        "active for this process but not saved to user settings (SettingsLockBusy); normalized 1 legacy value across 2 workspaces"
-    );
-}

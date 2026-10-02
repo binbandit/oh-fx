@@ -34,6 +34,7 @@ use crate::output::activity_status::{
     ACTIVITY_BLINK_HALF_PERIOD_MS, TurnPhase, TurnTokens, activity_phase, clip_with_ellipsis,
     turn_activity_row,
 };
+use crate::output::compaction_activity::CompactionStatus;
 use crate::render::hint_line;
 use crate::render_engine::frame_layout::{LiveParts, solve};
 use crate::render_engine::frame_sink::{Frame, FrameSink, LiveRegionRenderer};
@@ -57,6 +58,8 @@ pub struct SlashCommandSpec {
     pub command: String,
     pub aliases: Vec<String>,
     pub description: String,
+    pub category: usize,
+    pub compacts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +71,7 @@ pub struct ShellOptions {
     pub workspace_label: String,
     pub workspace_root: PathBuf,
     pub commands: Vec<SlashCommandSpec>,
+    pub command_categories: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +128,7 @@ pub(crate) struct Shell<'a> {
     outstanding: VecDeque<Submission>,
     submitted_prompts: u64,
     turn: Option<ActiveTurn>,
+    compaction: Option<CompactionStatus>,
     approval: Option<ApprovalPrompt>,
     yolo_warning: YoloWarning,
     events: UiEventReceiver,
@@ -136,6 +141,14 @@ pub(crate) struct Shell<'a> {
     footer_row: usize,
     should_exit: bool,
     frame: FrameCache,
+    metrics: Metrics,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Metrics {
+    ansi_bytes: usize,
+    full_redraws: usize,
+    debounced_resizes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +277,7 @@ impl<'a> Shell<'a> {
             outstanding: VecDeque::new(),
             submitted_prompts: 0,
             turn: None,
+            compaction: None,
             approval: None,
             yolo_warning,
             events,
@@ -279,6 +293,7 @@ impl<'a> Shell<'a> {
                 stale: true,
                 ..FrameCache::default()
             },
+            metrics: Metrics::default(),
         }
     }
 
@@ -304,6 +319,7 @@ impl<'a> Shell<'a> {
     }
 
     fn replay(&mut self) {
+        self.metrics.full_redraws += 1;
         self.forget_approval_review();
         self.renderer.resize(self.layout.rows, self.layout.cols);
         self.renderer.reset_screen(&mut self.output);
@@ -322,10 +338,23 @@ impl<'a> Shell<'a> {
         self.forget_approval_review();
     }
 
+    fn compaction_running(&self) -> bool {
+        self.compaction.is_some_and(|status| status.running())
+    }
+
+    fn working(&self) -> bool {
+        self.turn.is_some() || self.compaction_running()
+    }
+
+    fn activity_clock_ms(&self) -> Option<i64> {
+        self.compaction
+            .and_then(|status| status.clock_ms())
+            .or_else(|| self.turn.as_ref().map(|turn| turn.started_ms))
+    }
+
     fn activity_phase(&self, now_ms: i64) -> Option<i64> {
-        self.turn
-            .as_ref()
-            .map(|turn| activity_phase(turn.started_ms, now_ms))
+        self.activity_clock_ms()
+            .map(|started_ms| activity_phase(started_ms, now_ms))
     }
 
     fn frame_due(&self, now_ms: i64) -> bool {
@@ -333,6 +362,9 @@ impl<'a> Shell<'a> {
     }
 
     fn activity_rows(&self, now_ms: i64) -> Vec<Row> {
+        if let Some(status) = &self.compaction {
+            return status.rows(&self.theme, now_ms, self.cols());
+        }
         self.turn
             .iter()
             .map(|turn| {
@@ -451,7 +483,9 @@ impl<'a> Shell<'a> {
             return Ok(());
         }
         let bytes = std::mem::take(&mut self.output);
-        self.terminal.write_all(bytes.as_bytes())
+        self.terminal.write_all(bytes.as_bytes())?;
+        self.metrics.ansi_bytes += bytes.len();
+        Ok(())
     }
 
     fn exit_cleanup(&self) -> ExitCleanup {
@@ -505,6 +539,7 @@ impl<'a> Shell<'a> {
             self.lose_dimensions();
             return;
         };
+        self.metrics.debounced_resizes += 1;
         if self.dimensions_invalid
             || layout.rows != self.layout.rows
             || layout.cols != self.layout.cols
@@ -576,9 +611,8 @@ impl<'a> Shell<'a> {
 
     fn next_deadline_ms(&self, now_ms: i64) -> Option<i64> {
         let pending_input = self.input.has_pending_input().then_some(now_ms + 10);
-        let blink = self.turn.as_ref().map(|turn| {
-            turn.started_ms
-                + (activity_phase(turn.started_ms, now_ms) + 1) * ACTIVITY_BLINK_HALF_PERIOD_MS
+        let blink = self.activity_clock_ms().map(|started_ms| {
+            started_ms + (activity_phase(started_ms, now_ms) + 1) * ACTIVITY_BLINK_HALF_PERIOD_MS
         });
         [
             pending_input,
@@ -586,6 +620,7 @@ impl<'a> Shell<'a> {
             self.gestures.next_expiry_ms(),
             self.yolo_warning.deadline_ms(),
             self.resize_due_ms,
+            self.compaction.and_then(|status| status.expires_ms()),
         ]
         .into_iter()
         .flatten()
@@ -744,6 +779,7 @@ mod tests {
             workspace_label: "proj\x07".to_owned(),
             workspace_root: PathBuf::from("/proj"),
             commands: Vec::new(),
+            command_categories: Vec::new(),
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
     }

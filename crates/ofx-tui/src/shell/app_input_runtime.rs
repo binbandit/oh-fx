@@ -25,7 +25,7 @@ impl Shell<'_> {
             }
             let context = InputContext {
                 now_ms: self.now_ms(),
-                cancel_pending: self.turn.is_some(),
+                cancel_pending: self.working(),
                 text_owner: TextOwner::Composer,
             };
             let Some(event) = self.input.next_event(context) else {
@@ -170,9 +170,14 @@ impl Shell<'_> {
 
     fn resolve_escape(&mut self, cancel_pending: bool) {
         let now_ms = self.now_ms();
-        if cancel_pending && self.turn.is_some() {
+        if self.dismiss_compaction_feedback() {
+            self.gestures.disarm_escape_clear();
+            self.gestures.disarm_escape_interrupt();
+            return;
+        }
+        if cancel_pending && self.working() {
             if self.gestures.press_escape_interrupt(now_ms) == PressResult::Activated {
-                self.cancel_visible_turn();
+                self.interrupt();
             }
             self.gestures.disarm_escape_clear();
             return;
@@ -196,11 +201,19 @@ impl Shell<'_> {
             self.should_exit = true;
             return;
         }
-        if self.turn.is_some() {
-            self.cancel_visible_turn();
+        if self.working() {
+            self.interrupt();
             return;
         }
         self.composer.clear();
+    }
+
+    fn interrupt(&mut self) {
+        if self.compaction_running() {
+            self.cancel_compaction();
+        } else {
+            self.cancel_visible_turn();
+        }
     }
 
     fn handle_ctrl_d(&mut self) {

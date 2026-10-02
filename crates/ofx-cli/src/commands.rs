@@ -1,6 +1,6 @@
 use crate::command_specs::{
-    OptionDoc, SlashKind, SlashSpec, TopLevelExample, TopLevelFlag, TopLevelHelp,
-    TopLevelHelpEntry, TopLevelKind, TopLevelResource, TopLevelSpec,
+    OptionDoc, SlashKind, SlashPresentationCategory, SlashSpec, TopLevelExample, TopLevelFlag,
+    TopLevelHelp, TopLevelHelpEntry, TopLevelKind, TopLevelResource, TopLevelSpec,
 };
 use crate::registry::SlashRegistry;
 
@@ -489,25 +489,81 @@ pub(crate) static TOP_LEVEL_HELP: TopLevelHelp = TopLevelHelp {
 };
 
 pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
-    SlashSpec::new(SlashKind::Help, "/help", "show available slash commands"),
+    SlashSpec::new(
+        SlashKind::Help,
+        "/help",
+        "show available slash commands",
+        SlashPresentationCategory::General,
+    ),
     SlashSpec::new(
         SlashKind::ClearScreen,
         "/clear",
         "start a fresh conversation while keeping managed processes",
+        SlashPresentationCategory::General,
+    ),
+    SlashSpec::new(
+        SlashKind::ResetSession,
+        "/reset",
+        "reset the current session context",
+        SlashPresentationCategory::Session,
+    ),
+    SlashSpec::new(
+        SlashKind::Stats,
+        "/stats",
+        "show token and turn statistics",
+        SlashPresentationCategory::Account,
+    ),
+    SlashSpec::new(
+        SlashKind::Status,
+        "/status",
+        "show runtime configuration",
+        SlashPresentationCategory::General,
     ),
     SlashSpec::new(
         SlashKind::Model,
         "/model",
         "choose what model and reasoning effort to use",
+        SlashPresentationCategory::Model,
     )
     .with_payload(),
     SlashSpec::new(
         SlashKind::Permissions,
         "/permissions",
         "choose what oh-fx is allowed to do",
+        SlashPresentationCategory::Security,
     )
     .with_payload(),
-    SlashSpec::new(SlashKind::Quit, "/quit", "exit the interactive shell").with_aliases(&["/exit"]),
+    SlashSpec::new(
+        SlashKind::Copy,
+        "/copy",
+        "copy the last assistant response",
+        SlashPresentationCategory::Session,
+    ),
+    SlashSpec::new(
+        SlashKind::Compact,
+        "/compact",
+        "summarize context into a fresh window",
+        SlashPresentationCategory::Session,
+    ),
+    SlashSpec::new(
+        SlashKind::Fast,
+        "/fast",
+        "toggle Fast mode when supported",
+        SlashPresentationCategory::Model,
+    ),
+    SlashSpec::new(
+        SlashKind::Version,
+        "/version",
+        "show the oh-fx version",
+        SlashPresentationCategory::General,
+    ),
+    SlashSpec::new(
+        SlashKind::Quit,
+        "/quit",
+        "exit the interactive shell",
+        SlashPresentationCategory::General,
+    )
+    .with_aliases(&["/exit"]),
 ];
 
 pub static SLASH_REGISTRY: SlashRegistry<'static> = SlashRegistry::new(SLASH_SPECS);

@@ -36,8 +36,7 @@ mod compaction;
 mod project_gate;
 mod turn_log;
 
-#[cfg(test)]
-use compaction::Compaction;
+pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
 #[cfg(test)]
@@ -170,6 +169,11 @@ struct KnownCapabilities {
     catalog_unavailable: bool,
 }
 
+struct LastReply {
+    turn: usize,
+    text: Arc<str>,
+}
+
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
@@ -187,9 +191,9 @@ pub struct Agent {
     calibration: Option<Calibration>,
     session_id: Option<String>,
     log: Option<Box<dyn ConversationLog>>,
-    #[cfg(test)]
     request_fixed_tokens: Option<usize>,
     turns: u64,
+    last_reply: Option<LastReply>,
 }
 
 impl Agent {
@@ -218,9 +222,9 @@ impl Agent {
             calibration: None,
             session_id: None,
             log: None,
-            #[cfg(test)]
             request_fixed_tokens: None,
             turns: 0,
+            last_reply: None,
         }
     }
 
@@ -254,7 +258,12 @@ impl Agent {
     }
 
     pub fn set_config(&mut self, config: AgentConfig) {
-        if config.model != self.config.model {
+        if config.model != self.config.model
+            || self
+                .capabilities
+                .as_ref()
+                .is_some_and(|known| known.catalog_unavailable)
+        {
             self.capabilities = None;
         }
         self.config = config;
@@ -265,6 +274,7 @@ impl Agent {
         self.turn_starts.clear();
         self.compacted = None;
         self.calibration = None;
+        self.last_reply = None;
         self.permissions.forget_approvals();
         if let Some(project) = &mut self.project {
             project.deltas.clear();
@@ -338,12 +348,28 @@ impl Agent {
             turn_id: id,
             outcome,
         });
+        if outcome == TurnOutcome::Completed {
+            self.last_reply = Some(LastReply {
+                turn: self.turn_starts.len().saturating_sub(1),
+                text: Arc::from(final_text.as_str()),
+            });
+        }
         TurnReport {
             outcome,
             final_text,
             usage: turn.usage,
             failure,
         }
+    }
+
+    pub fn history_turns(&self) -> usize {
+        self.turn_starts.len() + usize::from(self.compacted.is_some())
+    }
+
+    pub fn last_assistant_reply(&self) -> Option<Arc<str>> {
+        self.last_reply
+            .as_ref()
+            .map(|reply| Arc::clone(&reply.text))
     }
 
     async fn drive(
