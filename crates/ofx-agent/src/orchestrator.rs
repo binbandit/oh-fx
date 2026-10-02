@@ -36,8 +36,7 @@ mod compaction;
 mod project_gate;
 mod turn_log;
 
-#[cfg(test)]
-use compaction::Compaction;
+pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
 #[cfg(test)]
@@ -192,7 +191,6 @@ pub struct Agent {
     calibration: Option<Calibration>,
     session_id: Option<String>,
     log: Option<Box<dyn ConversationLog>>,
-    #[cfg(test)]
     request_fixed_tokens: Option<usize>,
     turns: u64,
     last_reply: Option<LastReply>,
@@ -224,7 +222,6 @@ impl Agent {
             calibration: None,
             session_id: None,
             log: None,
-            #[cfg(test)]
             request_fixed_tokens: None,
             turns: 0,
             last_reply: None,
