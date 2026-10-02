@@ -11,5 +11,9 @@ rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "ter
 signal-hook.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+ofx-testkit.workspace = true
+rustix = { workspace = true, features = ["pty"] }
+
 [lints]
 workspace = true

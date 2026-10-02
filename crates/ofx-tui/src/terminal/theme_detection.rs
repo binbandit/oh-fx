@@ -1,5 +1,7 @@
 use super::theme_protocol::{Rgb, TerminalBackground, parse_color_fg_bg_light};
 
+pub(crate) const THEME_ENV: &str = "OH_FX_THEME";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ThemeDetection {
     pub(crate) light: bool,
