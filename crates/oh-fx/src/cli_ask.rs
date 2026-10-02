@@ -13,6 +13,7 @@ use ofx_agent::{
 };
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, SubscriptionEndpoints,
+    WebFetchProgress,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -564,7 +565,7 @@ fn without_leading_blank_lines(text: &str) -> &str {
         .map_or(text, |end| &text[end + 1..])
 }
 
-fn web_fetch_progress(mode: OutputMode) -> Option<Arc<dyn Fn(&str) + Send + Sync>> {
+fn web_fetch_progress(mode: OutputMode) -> Option<WebFetchProgress> {
     if mode == OutputMode::Terminal {
         return None;
     }
