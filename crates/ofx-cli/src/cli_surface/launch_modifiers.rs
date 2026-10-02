@@ -1,18 +1,29 @@
+use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
 use ofx_config::{
     ContextLimitError, ContextLimitOverride, is_valid_provider_id, parse_context_limit_override,
 };
+use ofx_contract::ReasoningEffort;
 
 use super::arg_stream::{ArgStream, MissingValue, ValueForm};
-use super::model_overrides::ModelOverrides;
+use super::model_overrides::{ModelOverride, ModelOverrides};
 
 #[derive(Debug, Default)]
 pub struct LaunchModifiers {
     context_limits: Vec<ContextLimitOverride>,
     workspace: WorkspaceModifiers,
-    model_overrides: bool,
+    model: ModelModifiers,
     sessions_v2: bool,
+}
+
+#[derive(Debug, Default)]
+struct ModelModifiers {
+    overridden: bool,
+    provider: bool,
+    model: Option<OsString>,
+    effort: Option<ReasoningEffort>,
+    fast: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -34,12 +45,28 @@ impl LaunchModifiers {
         self.sessions_v2
     }
 
+    pub fn overrides_provider(&self) -> bool {
+        self.model.provider
+    }
+
+    pub fn model(&self) -> Option<&OsStr> {
+        self.model.model.as_deref()
+    }
+
+    pub fn reasoning_effort(&self) -> Option<&ReasoningEffort> {
+        self.model.effort.as_ref()
+    }
+
+    pub fn fast_mode(&self) -> Option<bool> {
+        self.model.fast
+    }
+
     pub(crate) fn has_workspace_modifiers(&self) -> bool {
         self.workspace.additional_directories || self.workspace.saved_directories_suppressed
     }
 
     pub(crate) fn has_model_overrides(&self) -> bool {
-        self.model_overrides
+        self.model.overridden
     }
 }
 
@@ -79,6 +106,8 @@ pub(crate) fn parse_launch_modifiers(
     let mut modifiers = LaunchModifiers::default();
     let mut model_overrides = ModelOverrides::default();
     while modifiers.take_next(args, &mut model_overrides)? {}
+    modifiers.model.effort = model_overrides.effort;
+    modifiers.model.fast = model_overrides.fast;
     Ok(modifiers)
 }
 
@@ -113,9 +142,13 @@ impl LaunchModifiers {
             if !value.to_str().is_some_and(is_valid_provider_id) {
                 return Err(GlobalLaunchError::InvalidProviderValue);
             }
-            self.model_overrides = true;
-        } else if model_overrides.take(args, joined)?.is_some() {
-            self.model_overrides = true;
+            self.model.overridden = true;
+            self.model.provider = true;
+        } else if let Some(model_override) = model_overrides.take(args, joined)? {
+            if let ModelOverride::Model(model) = model_override {
+                self.model.model = Some(model);
+            }
+            self.model.overridden = true;
         } else {
             return Ok(false);
         }
@@ -224,6 +257,8 @@ mod tests {
         ])
         .unwrap();
         assert!(modifiers.has_model_overrides());
+        assert!(modifiers.overrides_provider());
+        assert_eq!(modifiers.model(), Some(OsStr::new("provider/launch-model")));
         assert!(modifiers.adds_directories());
         assert!(remaining.is_empty());
 
@@ -242,6 +277,25 @@ mod tests {
         let (untouched, remaining) = parse(&["ask", "--fast"]).unwrap();
         assert!(!untouched.has_model_overrides());
         assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn global_launch_modifiers_keep_the_requested_model_for_interactive_launches() {
+        let (modifiers, _) = parse(&["--fast", "--model=vendor/model-b"]).unwrap();
+        assert_eq!(modifiers.model(), Some(OsStr::new("vendor/model-b")));
+        assert!(!modifiers.overrides_provider());
+        assert_eq!(modifiers.fast_mode(), Some(true));
+        assert_eq!(modifiers.reasoning_effort(), None);
+        let (settings_only, _) = parse(&["--effort", "low", "--no-fast"]).unwrap();
+        assert!(settings_only.has_model_overrides());
+        assert_eq!(settings_only.model(), None);
+        assert_eq!(
+            settings_only.reasoning_effort(),
+            Some(&ReasoningEffort::Named("low".to_owned()))
+        );
+        assert_eq!(settings_only.fast_mode(), Some(false));
+        let (raw, _) = parse_raw(vec![OsString::from_vec(b"--model=m\xff".to_vec())]).unwrap();
+        assert_eq!(raw.model().map(OsStrExt::as_bytes), Some(&b"m\xff"[..]));
     }
 
     #[test]

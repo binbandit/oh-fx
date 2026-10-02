@@ -15,12 +15,14 @@ use zeroize::Zeroizing;
 use crate::browser_callback::{
     AwaitError, BindError, CallbackListener, Classifier, ParseResult, Response,
 };
-use crate::chatgpt_session::{DeleteOutcome, Mutation, Session, SessionStore, refresh_deadline_ms};
+use crate::chatgpt_session::{
+    DeleteOutcome, MUTATION_LOCK_WAIT, Mutation, Session, SessionStore, refresh_deadline_ms,
+};
 use crate::oauth::{
     self, BrowserTokenSet, FormBody, OAuthError, parse_object, pkce_challenge,
     query_value_non_empty, random_url_safe_secret,
 };
-use crate::oauth_transport::{Method, Transport, TransportError};
+use crate::oauth_transport::{Method, REQUEST_TIMEOUT, Transport, TransportError};
 use crate::secret::Secret;
 use crate::session_presence::Presence;
 use crate::url_opener;
@@ -37,6 +39,10 @@ const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 const CALLBACK_PREFIX: &str = "/auth/callback?";
 const MILLISECONDS_PER_SECOND: i64 = 1000;
 const REFRESH_CANCEL_GRACE: Duration = Duration::from_secs(2);
+const REFRESH_SAVE_TIME: Duration = Duration::from_secs(3);
+pub const CHATGPT_REFRESH_LIMIT: Duration = MUTATION_LOCK_WAIT
+    .saturating_add(REQUEST_TIMEOUT)
+    .saturating_add(REFRESH_SAVE_TIME);
 const TERMINAL_REFRESH_CODES: [&str; 4] = [
     "\"refresh_token_expired\"",
     "\"refresh_token_reused\"",
