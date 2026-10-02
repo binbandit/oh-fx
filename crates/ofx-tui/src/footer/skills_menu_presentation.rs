@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use ofx_text::{prefix_by_width, visible_width};
 
-use crate::row_text::{Paint, Row};
+use crate::row_text::{Paint, Row, terminal_safe};
 use crate::shell::skills_menu::{SOURCE_FILTERS, SkillsMenu, edge_window_start, filter_label};
 use crate::theme::Theme;
 
@@ -104,7 +104,7 @@ pub(crate) fn skills_menu_rows(
     );
     let name_column = matches
         .iter()
-        .map(|index| visible_width(&menu.item(*index).name))
+        .map(|index| visible_width(&terminal_safe(&menu.item(*index).name)))
         .max()
         .unwrap_or_default();
     let visible = &matches[window_start..window_start + layout.visible_items];
@@ -217,7 +217,10 @@ fn item_row(name: &str, scope: &str, columns: Columns, paint: Paint, width: usiz
     } else {
         width.saturating_sub(prefix)
     };
-    row.push(&single_line_ellipsized(name, name_budget), paint);
+    row.push(
+        &single_line_ellipsized(&terminal_safe(name), name_budget),
+        paint,
+    );
     if show_scope {
         let scope_start = prefix + columns.name + COLUMN_GAP;
         row.push(&" ".repeat(scope_start.saturating_sub(row.width())), paint);
@@ -338,6 +341,22 @@ mod tests {
         assert_eq!(texts(&rows)[2..], ["  managed", "  workspace"]);
         let rows = skills_menu_rows(&menu, 8, 8, &theme());
         assert_eq!(texts(&rows)[3], "  works…");
+    }
+
+    #[test]
+    fn names_with_bidi_or_control_characters_keep_rows_within_the_width() {
+        let menu = menu(vec![
+            item("a\u{202e}b", SkillMenuSource::OhFx, "oh-fx · Global"),
+            item("plain", SkillMenuSource::Codex, "Codex · Workspace"),
+        ]);
+        for width in [12, 30, 80] {
+            for row in &skills_menu_rows(&menu, 8, width, &theme())[2..] {
+                assert!(row.width() <= width, "{width}: {:?}", row.text());
+            }
+        }
+        let rows = texts(&skills_menu_rows(&menu, 8, 80, &theme()));
+        let scope = |row: &str| row.find(" · ").unwrap();
+        assert_eq!(scope(&rows[2]), scope(&rows[3]), "{rows:?}");
     }
 
     #[test]
