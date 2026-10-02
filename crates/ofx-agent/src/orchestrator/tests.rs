@@ -1993,6 +1993,48 @@ async fn later_turns_replay_history() {
     );
 }
 
+fn started_turn(events: &[UiEvent]) -> TurnId {
+    events
+        .iter()
+        .find_map(|event| match event {
+            UiEvent::TurnStarted { turn_id } => Some(*turn_id),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn reconfigured_models_apply_to_later_turns_and_keep_history() {
+    let provider = FakeProvider::new(vec![text_reply("first"), text_reply("second")]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    run(&mut agent, "one").await;
+    agent.set_config(AgentConfig {
+        model: "next-model".to_owned(),
+        max_output_tokens: Some(128),
+        ..config()
+    });
+    run(&mut agent, "two").await;
+    let requests = provider.requests();
+    assert_eq!(requests[0].model, "test-model");
+    assert_eq!(requests[1].model, "next-model");
+    assert_eq!(requests[1].max_output_tokens, Some(128));
+    assert_eq!(requests[1].messages.len(), 3);
+}
+
+#[tokio::test]
+async fn clearing_history_starts_fresh_but_keeps_turn_ids_unique() {
+    let provider = FakeProvider::new(vec![text_reply("first"), text_reply("second")]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (_, first) = run(&mut agent, "one").await;
+    agent.clear_history();
+    let (_, second) = run(&mut agent, "two").await;
+    assert_ne!(started_turn(&first), started_turn(&second));
+    assert_eq!(
+        provider.requests()[1].messages,
+        vec![ChatMessage::user("two")]
+    );
+}
+
 #[tokio::test]
 async fn invalid_completions_fail_the_turn() {
     let provider = FakeProvider::new(vec![Script::Reply(
