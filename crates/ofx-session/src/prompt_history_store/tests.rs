@@ -152,6 +152,69 @@ fn reverse_load_reads_records_however_their_json_spells_the_workspace() {
 }
 
 #[test]
+fn concurrent_appends_from_separate_stores_keep_every_record_whole() {
+    let fixture = Fixture::new();
+    fixture.store().append(0, "/tmp/workspace", "seed").unwrap();
+    let writers: Vec<_> = (0..4)
+        .map(|writer| {
+            let data = fixture.data();
+            std::thread::spawn(move || {
+                let mut store = PromptHistoryStore::open(&data).unwrap();
+                for index in 0..25 {
+                    let text = format!("writer-{writer}-prompt-{index}-{}", "x".repeat(300));
+                    assert_eq!(
+                        store.append(index, "/tmp/workspace", &text).unwrap(),
+                        AppendOutcome::Appended
+                    );
+                }
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let bytes = fs::read(fixture.history()).unwrap();
+    assert!(bytes.ends_with(b"\n"));
+    assert_eq!(
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count(),
+        101
+    );
+    assert_eq!(valid_record_count(&fixture.history()), 101);
+    let entries = fixture.store().load_recent("/tmp/workspace", 200).unwrap();
+    assert_eq!(entries.len(), 101);
+    for writer in 0..4 {
+        let prefix = format!("writer-{writer}-prompt-");
+        let order: Vec<usize> = entries
+            .iter()
+            .filter_map(|entry| entry.strip_prefix(&prefix))
+            .map(|rest| rest.split('-').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(order, (0..25).collect::<Vec<usize>>());
+    }
+}
+
+#[test]
+fn a_compaction_interrupted_before_its_rename_leaves_the_history_whole() {
+    let fixture = Fixture::new();
+    fixture.write(line(1, "/tmp/workspace", "kept").as_bytes());
+    let leftover = fixture
+        .data()
+        .join(".history.jsonl.tmp.00112233445566778899aabbccddeeff");
+    fs::write(&leftover, "{\"partial").unwrap();
+    let mut store = fixture.store();
+    assert_eq!(store.load_recent("/tmp/workspace", 100).unwrap(), ["kept"]);
+    store.append(2, "/tmp/workspace", "next").unwrap();
+    assert_eq!(
+        store.load_recent("/tmp/workspace", 100).unwrap(),
+        ["kept", "next"]
+    );
+    assert_eq!(fs::read_to_string(&leftover).unwrap(), "{\"partial");
+}
+
+#[test]
 fn reverse_load_skips_records_longer_than_the_record_cap() {
     let fixture = Fixture::new();
     let oversized = line(1, "/tmp/workspace", &"x".repeat(MAX_RECORD_BYTES));
