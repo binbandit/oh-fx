@@ -240,7 +240,8 @@ impl Monitor {
             return;
         }
         debug_assert_eq!(self.deferred_start, self.deferred.len());
-        self.deferred = std::mem::take(&mut self.candidate);
+        std::mem::swap(&mut self.deferred, &mut self.candidate);
+        self.candidate.clear();
         self.deferred_start = 0;
         self.candidate_deadline_ms = 0;
     }
@@ -448,6 +449,27 @@ mod tests {
         assert_eq!(forwarded, b"\x1b[");
         assert_eq!(monitor.take_deferred_byte(), None);
         assert!(!monitor.has_pending_input());
+    }
+
+    #[test]
+    fn theme_monitor_reuses_its_buffers_across_timed_out_candidates() {
+        let mut monitor = started();
+        for cycle in 0..3 {
+            let now_ms = cycle * RESPONSE_IDLE_TIMEOUT_MS * 2;
+            feed_all(&mut monitor, b"\x1b[", now_ms);
+            monitor.poll(now_ms + RESPONSE_IDLE_TIMEOUT_MS);
+            if cycle > 0 {
+                assert!(monitor.candidate.is_empty());
+                assert!(monitor.candidate.capacity() >= 2, "cycle {cycle}");
+            }
+            let mut forwarded = Vec::new();
+            while let Some(byte) = monitor.take_deferred_byte() {
+                forwarded.push(byte);
+            }
+            assert_eq!(forwarded, b"\x1b[");
+            assert!(monitor.deferred.capacity() >= 2, "cycle {cycle}");
+            assert!(!monitor.has_pending_input());
+        }
     }
 
     #[test]
