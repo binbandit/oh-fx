@@ -354,6 +354,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         version: "0.1.0".to_owned(),
         model: "model-a".to_owned(),
         permission_mode: PermissionMode::Auto,
+        full_access_warning: false,
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
         commands: Vec::new(),
