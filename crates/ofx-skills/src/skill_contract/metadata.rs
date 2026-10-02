@@ -17,6 +17,23 @@ pub enum InvalidMetadataCause {
     ControlByte,
 }
 
+impl InvalidMetadataCause {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::FrontmatterTooLong => "frontmatter_too_long",
+            Self::MissingClosingDelimiter => "missing_closing_delimiter",
+            Self::MissingName => "missing_name",
+            Self::DuplicateRecognizedKey => "duplicate_recognized_key",
+            Self::InvalidName => "invalid_name",
+            Self::NameTooLong => "name_too_long",
+            Self::MalformedQuote => "malformed_quote",
+            Self::UnsupportedMultiline => "unsupported_multiline",
+            Self::InvalidUtf8 => "invalid_utf8",
+            Self::ControlByte => "control_byte",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataStatus {
     NoFrontmatter,

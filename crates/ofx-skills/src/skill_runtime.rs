@@ -1,4 +1,5 @@
 mod catalog;
+mod diagnostics;
 mod discovery;
 mod skill_file;
 mod symlink_authorities;
