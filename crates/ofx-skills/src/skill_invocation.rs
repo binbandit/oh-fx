@@ -13,17 +13,20 @@ use ofx_config::{
     ContextLimit, ContextLimitName, ContextLimits, EMERGENCY_CEILING_BYTES, line_safe_prefix_length,
 };
 use ofx_workspace::PathError;
-use resource::{SkillResourceRead, check_cancelled, read_skill_file, verify_read_identity};
+use resource::{
+    SkillResourceRead, check_cancelled, read_skill_resource, revalidate_primary_identity,
+    verify_read_identity,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::encoded_scalar::encoded_scalar;
 use crate::skill_contract::{
-    CallPreparation, ExecuteOutput, PreparedSkill, SKILL_FILE_NAME, Skill, SkillDiagnostic,
-    SkillDiagnosticScope,
+    CallPreparation, ExecuteOutput, PreparedSkill, Skill, SkillDiagnostic, SkillDiagnosticScope,
+    resource_path_or_main,
 };
 use crate::skill_runtime::{
     CandidateOpen, OpenedSkillCandidate, SkillResolution, SymlinkAuthorities, diagnostic_summary,
-    find_skill_at, open_validated_skill_candidate, resolve_skill,
+    find_skill_at, open_validated_skill_candidate, resolve_skill, resource_is_skill_file,
 };
 
 const OFFSET_BOUNDARY_FAILURE: &str =
@@ -41,6 +44,8 @@ pub enum SkillError {
     InvalidSkillLocation,
     #[error("Cancelled")]
     Cancelled,
+    #[error("InvalidSkillResourcePath")]
+    InvalidSkillResourcePath,
     #[error("InvalidSkillResource")]
     InvalidSkillResource,
     #[error("BinarySkillResource")]
@@ -187,10 +192,13 @@ impl<'a> SkillLoader<'a> {
         &self,
         name: &str,
         location: Option<&Path>,
+        resource: Option<&str>,
         offset: usize,
     ) -> Result<ExecuteResult, SkillError> {
         match self.select(name, location)? {
-            Selected::Ready(selection) => self.load_chunk(selection, offset),
+            Selected::Ready(selection) => {
+                self.load_chunk(selection, resource_path_or_main(resource), offset)
+            }
             Selected::Failed(failure) => Ok(failure),
         }
     }
@@ -253,27 +261,36 @@ impl<'a> SkillLoader<'a> {
         }
     }
 
-    fn read(&self, selection: &Selection<'_>) -> Result<SkillResourceRead, SkillError> {
+    fn read(
+        &self,
+        selection: &Selection<'_>,
+        resource: &str,
+    ) -> Result<SkillResourceRead, SkillError> {
         let candidate = &selection.candidate;
-        let read = read_skill_file(
-            candidate.skill_file(),
-            candidate.freshness(),
+        let read = read_skill_resource(
+            candidate,
+            resource,
             self.limits.file,
             self.ceiling,
             self.cancellation,
         )?;
         check_cancelled(self.cancellation)?;
-        verify_read_identity(candidate, selection.skill, &read)?;
+        if resource_is_skill_file(resource) {
+            verify_read_identity(candidate, selection.skill, &read)?;
+        } else {
+            revalidate_primary_identity(candidate, selection.skill)?;
+        }
         Ok(read)
     }
 
     fn load_chunk(
         &self,
         selection: Selection<'_>,
+        resource: &str,
         offset: usize,
     ) -> Result<ExecuteResult, SkillError> {
-        let read = self.read(&selection)?;
-        let result = self.chunk(selection.skill, SKILL_FILE_NAME, &read, offset);
+        let read = self.read(&selection, resource)?;
+        let result = self.chunk(selection.skill, resource, &read, offset);
         Ok(self.finish(result, selection.notice))
     }
 

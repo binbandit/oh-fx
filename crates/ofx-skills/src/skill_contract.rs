@@ -93,3 +93,34 @@ pub enum CallPreparation {
     Selected(PreparedSkill),
     Failure(ExecuteOutput),
 }
+
+pub(crate) fn resource_path_or_main(resource: Option<&str>) -> &str {
+    match resource {
+        Some(path) if !path.is_empty() => path,
+        _ => SKILL_FILE_NAME,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_resource_defaulting_preserves_explicit_paths() {
+        for (input, expected) in [
+            (None, "SKILL.md"),
+            (Some(""), "SKILL.md"),
+            (Some("SKILL.md"), "SKILL.md"),
+            (Some("references/rules.md"), "references/rules.md"),
+            (Some(" "), " "),
+            (Some("../outside"), "../outside"),
+        ] {
+            let path = resource_path_or_main(input);
+            assert_eq!(path, expected);
+            assert_eq!(resource_path_or_main(Some(path)), path);
+            if let Some(input) = input.filter(|input| !input.is_empty()) {
+                assert_eq!(input.as_ptr(), path.as_ptr());
+            }
+        }
+    }
+}

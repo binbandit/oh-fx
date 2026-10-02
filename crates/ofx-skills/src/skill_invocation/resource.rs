@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use super::SkillError;
 use crate::io::{FileFreshness, read_positional_all};
 use crate::skill_contract::{MAX_FRONTMATTER_BYTES, Skill, parse_skill_file, resolve_metadata};
-use crate::skill_runtime::OpenedSkillCandidate;
+use crate::skill_runtime::{OpenedSkillCandidate, ResourceOpenError, resource_is_skill_file};
 
 const VALIDATION_CHUNK_BYTES: usize = 16 * 1024;
 const READ_CHUNK_BYTES: usize = 64 * 1024;
@@ -28,6 +28,32 @@ pub(crate) fn check_cancelled(cancellation: Option<&CancellationToken>) -> Resul
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn read_skill_resource(
+    candidate: &OpenedSkillCandidate,
+    resource: &str,
+    limit: ContextLimit,
+    safety_ceiling: usize,
+    cancellation: Option<&CancellationToken>,
+) -> Result<SkillResourceRead, SkillError> {
+    if resource_is_skill_file(resource) {
+        return read_skill_file(
+            candidate.skill_file(),
+            candidate.freshness(),
+            limit,
+            safety_ceiling,
+            cancellation,
+        );
+    }
+    let (file, opened) = candidate
+        .open_resource(resource)
+        .map_err(|error| match error {
+            ResourceOpenError::InvalidPath => SkillError::InvalidSkillResourcePath,
+            ResourceOpenError::NotRegularFile => SkillError::InvalidSkillResource,
+            ResourceOpenError::Path(error) => SkillError::Path(error),
+        })?;
+    read_skill_file(&file, opened, limit, safety_ceiling, cancellation)
 }
 
 pub(crate) fn read_skill_file(
@@ -127,7 +153,7 @@ pub(crate) fn verify_read_identity(
     }
 }
 
-fn revalidate_primary_identity(
+pub(crate) fn revalidate_primary_identity(
     candidate: &OpenedSkillCandidate,
     skill: &Skill,
 ) -> Result<(), SkillError> {

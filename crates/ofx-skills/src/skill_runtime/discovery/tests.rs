@@ -650,6 +650,51 @@ fn load_visible_skills_discovers_and_reopens_contained_linked_metadata() {
 }
 
 #[test]
+fn linked_metadata_and_resources_stay_on_the_opened_candidate_after_rebinding() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "home/workspace/.codex/skills/linked/metadata.md",
+        "---\nname: linked\n---\noriginal metadata",
+    );
+    fixture.write(
+        "home/workspace/.codex/skills/linked/asset.txt",
+        "original resource",
+    );
+    fixture.symlink(
+        "metadata.md",
+        "home/workspace/.codex/skills/linked/SKILL.md",
+    );
+    let discovery = linked_discovery(&fixture, SymlinkAuthorities::default());
+    let CandidateOpen::Current(candidate) =
+        open_validated_skill_candidate(&discovery.skills[0], &SymlinkAuthorities::default())
+    else {
+        panic!("expected the current skill");
+    };
+
+    fs::rename(
+        fixture.path("home/workspace/.codex/skills/linked"),
+        fixture.path("home/workspace/.codex/skills/original-linked"),
+    )
+    .unwrap();
+    fixture.write(
+        "home/workspace/.codex/skills/linked/metadata.md",
+        "replacement metadata",
+    );
+    fixture.write(
+        "home/workspace/.codex/skills/linked/asset.txt",
+        "replacement resource",
+    );
+    fixture.symlink(
+        "metadata.md",
+        "home/workspace/.codex/skills/linked/SKILL.md",
+    );
+
+    assert!(read_to_string(candidate.skill_file()).ends_with("original metadata"));
+    let (resource, _) = candidate.open_resource("asset.txt").unwrap();
+    assert_eq!(read_to_string(&resource), "original resource");
+}
+
+#[test]
 fn linked_metadata_reauthorizes_a_target_changed_after_preflight() {
     let fixture = Fixture::new();
     fixture.write(
