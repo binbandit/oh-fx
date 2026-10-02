@@ -31,11 +31,16 @@ async fn manual_compaction_keeps_the_newest_turns_and_replaces_the_rest_with_a_c
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
     chat(&mut agent, 6).await;
 
+    let mut summarizing = 0;
     assert_eq!(
-        agent.compact(&CancellationToken::new()).await,
+        agent
+            .compact(&mut || summarizing += 1, &CancellationToken::new())
+            .await,
         Ok(Compaction::Compacted)
     );
+    assert_eq!(summarizing, 1);
     assert_eq!(provider.requests().len(), 6);
+    assert_eq!(agent.last_assistant_reply().as_deref(), Some("answer 6"));
 
     run(&mut agent, "question 7").await;
     let requests = provider.requests();
@@ -69,7 +74,7 @@ async fn manual_compaction_asks_the_conversations_model_for_notes_on_tool_work()
     chat(&mut agent, 4).await;
 
     assert_eq!(
-        agent.compact(&CancellationToken::new()).await,
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
         Ok(Compaction::Compacted)
     );
     let requests = provider.requests();
@@ -94,14 +99,37 @@ async fn manual_compaction_asks_the_conversations_model_for_notes_on_tool_work()
 }
 
 #[tokio::test]
+async fn history_turns_count_the_checkpoint_as_one_turn() {
+    let provider = FakeProvider::new(chat_replies(6));
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    assert_eq!(agent.history_turns(), 0);
+    chat(&mut agent, 6).await;
+    assert_eq!(agent.history_turns(), 6);
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    assert_eq!(agent.history_turns(), 5);
+    agent.clear_history();
+    assert_eq!(agent.history_turns(), 0);
+    assert!(!agent.has_context_to_compact());
+}
+
+#[tokio::test]
 async fn a_conversation_that_fits_is_left_alone() {
     let provider = FakeProvider::new(chat_replies(2));
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    assert!(!agent.has_context_to_compact());
     chat(&mut agent, 1).await;
+    assert!(agent.has_context_to_compact());
+    let mut summarizing = false;
     assert_eq!(
-        agent.compact(&CancellationToken::new()).await,
+        agent
+            .compact(&mut || summarizing = true, &CancellationToken::new())
+            .await,
         Ok(Compaction::Unchanged)
     );
+    assert!(!summarizing);
     run(&mut agent, "question 2").await;
     assert_eq!(provider.requests()[1].messages.len(), 3);
 }
@@ -124,7 +152,7 @@ async fn a_failed_summary_keeps_the_whole_history() {
     chat(&mut agent, 4).await;
 
     assert_eq!(
-        agent.compact(&CancellationToken::new()).await,
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
         Err(CompactionError::ModelFailed)
     );
     run(&mut agent, "and now?").await;
@@ -141,7 +169,7 @@ async fn a_cancelled_compaction_sends_nothing_and_keeps_the_history() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     assert_eq!(
-        agent.compact(&cancel).await,
+        agent.compact(&mut || {}, &cancel).await,
         Err(CompactionError::Cancelled)
     );
     assert_eq!(provider.requests().len(), 6);
@@ -155,7 +183,7 @@ async fn clearing_the_history_forgets_the_checkpoint() {
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
     chat(&mut agent, 6).await;
     assert_eq!(
-        agent.compact(&CancellationToken::new()).await,
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
         Ok(Compaction::Compacted)
     );
     agent.clear_history();
@@ -445,6 +473,7 @@ async fn a_second_context_overflow_fails_the_turn() {
     assert_eq!(provider.requests().len(), 5);
     assert_eq!(agent.history.len(), 1);
     assert!(user_text(&agent.history[0]).starts_with("<compacted_conversation>\n"));
+    assert_eq!(agent.last_assistant_reply().as_deref(), None);
 }
 
 #[tokio::test]

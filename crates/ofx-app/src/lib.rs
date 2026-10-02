@@ -8,7 +8,9 @@ mod app_upgrade_runtime;
 mod codex_provider;
 mod context;
 mod native;
+mod output_contracts;
 mod tool_set;
+mod user_settings;
 
 pub use app_bootstrap_runtime::{
     AgentSetup, ConnectError, CredentialSource, Launch, Profile, ProfileError, user_agent,

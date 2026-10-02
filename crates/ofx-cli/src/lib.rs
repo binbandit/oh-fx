@@ -13,8 +13,8 @@ pub use cli_surface::{
 };
 pub use command_router::SlashCommand;
 pub use command_specs::{
-    HelpStyle, SlashKind, SlashSpec, TOP_LEVEL_HELP_DEFAULT_WIDTH, TopLevelKind,
-    parse_column_count, render_command_help, render_top_level_help,
+    HelpStyle, SlashKind, SlashPresentationCategory, SlashSpec, TOP_LEVEL_HELP_DEFAULT_WIDTH,
+    TopLevelKind, parse_column_count, render_command_help, render_top_level_help,
 };
 pub use commands::SLASH_REGISTRY;
 pub use registry::SlashRegistry;

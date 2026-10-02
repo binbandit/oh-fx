@@ -84,7 +84,7 @@ impl SavedAsk {
             provider: provider.clone(),
             model: setup.configured_model().to_owned(),
             effort: settings.reasoning_effort(),
-            fast_mode: settings.fast_mode(),
+            fast_mode: settings.fast_mode_for(&setup.provider(), setup.configured_model()),
         })?;
         Ok(Self::new(store, session, provider, false))
     }

@@ -30,6 +30,6 @@ pub use model_provider::{ProviderId, is_valid_provider_id};
 pub use paths::ProfilePaths;
 pub use settings_store::{
     LegacyCleanup, SettingsWriteError, SettingsWriteFailure, save_codex_model,
-    save_permission_mode, save_yolo_acknowledged,
+    save_model_preference, save_permission_mode, save_yolo_acknowledged,
 };
 pub use strict_json::{StrictJsonError, parse as parse_strict_json};

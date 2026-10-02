@@ -521,7 +521,7 @@ fn a_permission_mode_patch_snapshots_and_removes_legacy_workspace_copies() {
         .paths
         .config
         .join(BACKUPS_DIRECTORY)
-        .join(PERMISSION_MODE_MIGRATION_SNAPSHOT);
+        .join(PERMISSION_MODE_MIGRATION.snapshot);
     assert_eq!(fs::read_to_string(&snapshot).unwrap(), original);
     assert_eq!(mode(&snapshot), 0o600);
     let settings = Settings::load(&fixture.paths, Path::new("/workspace/b")).unwrap();
@@ -537,6 +537,85 @@ fn a_missing_migration_snapshot_stops_the_permission_mode_save() {
         save_permission_mode(&fixture.paths, PermissionMode::Yolo),
         Err(SettingsWriteError::MigrationSnapshotFailed.into())
     );
+    assert_eq!(fixture.read(), original);
+}
+
+#[test]
+fn a_model_preference_saves_the_provider_its_model_and_the_bound_fast_choice() {
+    let fixture = Fixture::with_settings("{\"future\":true,\"provider\":\"codex\"}");
+    let local = ProviderId::Configured("local".to_owned());
+    save_model_preference(&fixture.paths, &local, "m-1", true).unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"future\":true,\"provider\":\"local\",\"models\":{\"local\":\"m-1\"},\"fast_mode\":true,\"fast_mode_model_bound\":true}\n"
+    );
+    save_model_preference(&fixture.paths, &local, "m-2", false).unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"future\":true,\"provider\":\"local\",\"models\":{\"local\":\"m-2\"},\"fast_mode\":false,\"fast_mode_model_bound\":true}\n"
+    );
+    let backups = fixture.copies("backup").len();
+    save_model_preference(&fixture.paths, &local, "m-2", false).unwrap();
+    assert_eq!(fixture.copies("backup").len(), backups);
+    let fresh =
+        Fixture::with_settings("{\"codex_model\":\"gpt-5.6-terra\",\"model\":\"gateway/model\"}");
+    save_model_preference(&fresh.paths, &ProviderId::Codex, MODEL, true).unwrap();
+    assert_eq!(
+        fresh.read(),
+        "{\"model\":\"gateway/model\",\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":true,\"fast_mode_model_bound\":true}\n"
+    );
+}
+
+#[test]
+fn a_model_preference_snapshots_and_removes_workspace_fast_choices() {
+    let original = concat!(
+        "{\"workspaces\":{",
+        "\"/workspace/a\":{\"fast_mode\":false,\"fast_mode_model_bound\":true,\"effort\":\"low\"},",
+        "\"/workspace/b\":{\"fast_mode\":false},",
+        "\"/workspace/c\":{\"permission_mode\":\"ask\"}}}\n"
+    );
+    let fixture = Fixture::with_settings(original);
+    save_model_preference(&fixture.paths, &ProviderId::Codex, MODEL, true).unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"workspaces\":{\"/workspace/a\":{\"effort\":\"low\"},\"/workspace/c\":{\"permission_mode\":\"ask\"}},\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":true,\"fast_mode_model_bound\":true}\n"
+    );
+    let snapshot = fixture
+        .paths
+        .config
+        .join(BACKUPS_DIRECTORY)
+        .join(FAST_MODE_MIGRATION.snapshot);
+    assert_eq!(fs::read_to_string(&snapshot).unwrap(), original);
+    let settings = Settings::load(&fixture.paths, Path::new("/workspace/b")).unwrap();
+    assert!(settings.fast_mode_for(&ProviderId::Codex, MODEL));
+    let bound_only = Fixture::with_settings(
+        r#"{"workspaces":{"/workspace":{"fast_mode_model_bound":true,"effort":"low"}}}"#,
+    );
+    save_model_preference(&bound_only.paths, &ProviderId::Codex, MODEL, false).unwrap();
+    assert_eq!(
+        bound_only.read(),
+        "{\"workspaces\":{\"/workspace\":{\"effort\":\"low\"}},\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":false,\"fast_mode_model_bound\":true}\n"
+    );
+    assert!(
+        !bound_only
+            .paths
+            .config
+            .join(BACKUPS_DIRECTORY)
+            .join(FAST_MODE_MIGRATION.snapshot)
+            .exists()
+    );
+}
+
+#[test]
+fn a_model_preference_refuses_a_model_settings_cannot_hold() {
+    let original = "{\"provider\":\"codex\"}";
+    let fixture = Fixture::with_settings(original);
+    for model in [" padded", ""] {
+        assert_eq!(
+            save_model_preference(&fixture.paths, &ProviderId::Codex, model, true),
+            Err(SettingsWriteError::InvalidField.into())
+        );
+    }
     assert_eq!(fixture.read(), original);
 }
 

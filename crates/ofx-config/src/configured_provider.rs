@@ -165,6 +165,10 @@ impl ProviderDefinition {
         &self.id
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     pub fn binding_identity(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(BINDING_IDENTITY_DOMAIN);
@@ -740,6 +744,8 @@ mod tests {
             local.chat_url(),
             "http://localhost:11434/v1/chat/completions"
         );
+        assert_eq!(local.id(), "local");
+        assert_eq!(local.base_url(), "http://localhost:11434/v1");
         let router = registry.get("router").unwrap();
         assert_eq!(
             router.auth,

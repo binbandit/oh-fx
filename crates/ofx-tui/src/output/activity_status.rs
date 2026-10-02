@@ -157,6 +157,24 @@ pub(crate) fn turn_activity_row(
     progress: TokenProgress,
     max_width: usize,
 ) -> Row {
+    activity_row(
+        theme,
+        phase.label(),
+        turn_started_ms,
+        now_ms,
+        progress,
+        max_width,
+    )
+}
+
+pub(crate) fn activity_row(
+    theme: &Theme,
+    label: &str,
+    turn_started_ms: i64,
+    now_ms: i64,
+    progress: TokenProgress,
+    max_width: usize,
+) -> Row {
     let paint = theme.permission_auto;
     let mut row = Row::new();
     let marker = if activity_blink_visible(turn_started_ms, now_ms) {
@@ -166,7 +184,7 @@ pub(crate) fn turn_activity_row(
     };
     row.push(marker, paint);
     row.push(" ", paint);
-    row.push(phase.label(), paint);
+    row.push(label, paint);
     if now_ms >= turn_started_ms {
         row.push_fmt(
             format_args!(" ({})", Elapsed((now_ms - turn_started_ms) / 1000)),

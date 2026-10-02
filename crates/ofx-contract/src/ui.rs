@@ -62,6 +62,23 @@ impl Notice {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionEnd {
+    NothingToCompact,
+    Busy,
+    Cancelled,
+    Failed,
+    ContextTooLarge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionActivity {
+    Preparing,
+    Summarizing,
+    Compacted,
+    Ended(CompactionEnd),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub id: RequestId,
@@ -149,6 +166,10 @@ pub enum UiEvent {
         full_access_warning: bool,
     },
     HelpRequested,
+    StatsRequested,
+    CompactionActivity {
+        activity: CompactionActivity,
+    },
     ConversationCleared {
         first_kept_prompt: u64,
     },
@@ -172,6 +193,7 @@ pub enum UiCommand {
     },
     TogglePermissionMode,
     FullAccessWarningShown,
+    CancelCompaction,
 }
 
 #[cfg(test)]

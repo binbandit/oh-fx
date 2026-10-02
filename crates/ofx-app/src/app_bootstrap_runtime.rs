@@ -32,6 +32,7 @@ use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
     ProfileLocation, gather_project_context,
 };
+use crate::output_contracts::StatusSnapshot;
 use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
@@ -88,6 +89,10 @@ impl CredentialSource {
         }
     }
 
+    pub(crate) const fn refreshable(self) -> bool {
+        matches!(self, Self::Codex)
+    }
+
     pub(crate) const fn repair(self) -> &'static str {
         match self {
             Self::Configured => CONFIGURED_SOURCE_REPAIR,
@@ -101,7 +106,7 @@ pub struct Launch<'a> {
     pub permission_mode: PermissionMode,
     pub system_prompt: Option<String>,
     pub reasoning_effort: Option<String>,
-    pub fast_mode: bool,
+    pub fast_mode: Option<bool>,
     pub context_limits: &'a [ContextLimitOverride],
     pub command_timeout: Option<Duration>,
     pub executions: &'a ManagedExecutions,
@@ -117,6 +122,7 @@ pub struct AgentSetup {
     tools: Vec<Arc<dyn Tool>>,
     context: Arc<dyn RuntimeContext>,
     permission_mode: LivePermissionMode,
+    workspace_root: PathBuf,
     permissions: Arc<PermissionPolicy>,
     preferences: Option<ProfilePaths>,
     yolo_acknowledged: bool,
@@ -227,6 +233,12 @@ impl Profile {
             .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
             .unwrap_or_default();
         let lookup = |name: &str| env::var(name).ok();
+        let fast_mode = launch.fast_mode.unwrap_or_else(|| {
+            self.settings.fast_mode_for(
+                &connection_provider(route.connection.as_ref()),
+                &route.model,
+            )
+        });
         let config = AgentConfig {
             system_prompt: launch
                 .system_prompt
@@ -235,7 +247,7 @@ impl Profile {
             step_limit: self.settings.max_agent_steps(&lookup),
             model: route.model,
             reasoning_effort: launch.reasoning_effort,
-            fast_mode: launch.fast_mode,
+            fast_mode,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         };
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
@@ -263,6 +275,7 @@ impl Profile {
             permission_mode,
             preferences: self.paths.clone(),
             yolo_acknowledged: self.settings.yolo_acknowledged(),
+            workspace_root: self.workspace_root.clone(),
             approvals: interactive.then(Approvals::default),
             refreshes,
             project,
@@ -391,6 +404,12 @@ fn select_model(
     }
 }
 
+fn connection_provider(connection: Option<&ProviderDefinition>) -> ProviderId {
+    connection.map_or(ProviderId::Codex, |connection| {
+        ProviderId::Configured(connection.id().to_owned())
+    })
+}
+
 fn output_tokens(connection: Option<&ProviderDefinition>, model: &str) -> Option<u32> {
     connection.and_then(|connection| request_output_tokens(connection.capabilities(model)))
 }
@@ -410,11 +429,7 @@ impl AgentSetup {
     }
 
     pub fn provider(&self) -> ProviderId {
-        self.connection
-            .as_ref()
-            .map_or(ProviderId::Codex, |connection| {
-                ProviderId::Configured(connection.id().to_owned())
-            })
+        connection_provider(self.connection.as_ref())
     }
 
     pub fn provider_binding(&self) -> Option<[u8; 32]> {
@@ -439,8 +454,39 @@ impl AgentSetup {
             .map_or(&[], |connection| connection.models())
     }
 
+    pub(crate) fn fast_mode(&self) -> bool {
+        self.config.fast_mode
+    }
+
+    pub(crate) fn status<'a>(&'a self, model: &'a str, history_turns: usize) -> StatusSnapshot<'a> {
+        StatusSnapshot {
+            model,
+            connection: self.connection.as_ref(),
+            source: self.source,
+            permission_mode: self.permission_mode.get(),
+            workspace_root: &self.workspace_root,
+            history_turns,
+            session_permission_grants: self.permissions.session_grant_count(),
+            agent_step_limit: self.config.step_limit,
+        }
+    }
+
+    pub(crate) async fn supports_fast_mode(&self, model: &str) -> bool {
+        let Some(resolver) = &self.capabilities else {
+            return false;
+        };
+        matches!(
+            resolver.resolve(model, &CancellationToken::new()).await,
+            CapabilityLookup::Resolved(capabilities) if capabilities.supports_fast_mode
+        )
+    }
+
     pub(crate) fn approvals(&self) -> Option<&Approvals> {
         self.approvals.as_ref()
+    }
+
+    pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {
+        self.preferences.as_ref()
     }
 
     pub(crate) fn permission_runtime(&self, emit: Emit) -> PermissionRuntime {
@@ -538,7 +584,7 @@ mod tests {
                     permission_mode: PermissionMode::Auto,
                     system_prompt: None,
                     reasoning_effort: None,
-                    fast_mode: false,
+                    fast_mode: None,
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
@@ -565,6 +611,45 @@ mod tests {
         );
         assert!(auth.requests().is_empty());
         assert_eq!(fs::read_to_string(session).unwrap(), EXPIRED_SESSION);
+    }
+
+    #[tokio::test]
+    async fn a_saved_fast_choice_reaches_only_the_model_saved_with_it_unless_a_flag_decides() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = profile(
+            directory.path(),
+            r#"{"provider":"local","models":{"local":"model-a"},"fast_mode":true,"fast_mode_model_bound":true,"providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:9/v1","auth":{"type":"none"}}}}"#,
+        );
+        let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+        for (model, flag, fast) in [
+            (None, None, true),
+            (Some("model-a"), None, true),
+            (Some("model-b"), None, false),
+            (Some("model-b"), Some(true), true),
+            (None, Some(false), false),
+        ] {
+            for interactive in [false, true] {
+                let launch = Launch {
+                    model: model.map(OsStr::new),
+                    permission_mode: PermissionMode::Auto,
+                    system_prompt: None,
+                    reasoning_effort: None,
+                    fast_mode: flag,
+                    context_limits: &[],
+                    command_timeout: None,
+                    executions: &executions,
+                    endpoints: SubscriptionEndpoints::default(),
+                };
+                let cancel = CancellationToken::new();
+                let setup = if interactive {
+                    profile.connect_interactive(launch, &cancel).await
+                } else {
+                    profile.connect(launch, &cancel).await
+                }
+                .unwrap();
+                assert_eq!(setup.fast_mode(), fast, "{model:?} {flag:?} {interactive}");
+            }
+        }
     }
 
     #[tokio::test]

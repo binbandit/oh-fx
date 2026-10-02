@@ -92,6 +92,7 @@ impl Shell<'_> {
             self.mark_dirty();
         }
         self.expire_yolo_warning(now_ms);
+        self.expire_compaction_feedback(now_ms);
         if let Some(query) = self.input.take_theme_query(now_ms) {
             let written = match query {
                 ThemeQuery::ResponseFence => self.terminal.request_theme_response_fence(),

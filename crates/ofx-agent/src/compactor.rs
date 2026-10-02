@@ -69,6 +69,7 @@ pub(crate) struct Compacted {
 pub(crate) async fn compact(
     request: Request<'_>,
     summary_model: &mut dyn SummaryModel,
+    summarizing: &mut (dyn FnMut() + Send),
     cancel: &CancellationToken,
 ) -> Result<Option<Compacted>, CompactionError> {
     let Some(chosen) = window::choose(request.turns, request.active, request.size, request.model)?
@@ -78,6 +79,7 @@ pub(crate) async fn compact(
     if cancel.is_cancelled() {
         return Err(CompactionError::Cancelled);
     }
+    summarizing();
     let turns = turns_from(request.turns, chosen.cut);
     let size = request.size;
     let summary = summarize::compact(

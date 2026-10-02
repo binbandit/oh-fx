@@ -49,5 +49,6 @@ pub use types::{
     is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{
-    ApprovalRequest, Notice, NoticeLink, NoticeTone, ToolRejection, TurnOutcome, UiCommand, UiEvent,
+    ApprovalRequest, CompactionActivity, CompactionEnd, Notice, NoticeLink, NoticeTone,
+    ToolRejection, TurnOutcome, UiCommand, UiEvent,
 };
