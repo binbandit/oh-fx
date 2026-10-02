@@ -28,12 +28,14 @@ pub use tool_dispatch::{
 pub use tool_presentation::{format_plain_action, format_unknown_action};
 pub use tool_result_errors::{
     ExecutionFailure, filesystem_access_denied_json, format_tool_execution_error_json,
-    review_unavailable_json, tool_execution_failure_json,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, review_unavailable_json,
+    tool_execution_failure_json,
 };
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction,
     ModelRecoveryCause, PermissionMode, ProviderReplay, ReasoningEffort, ReplaySource,
-    RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentIntegrity, ToolCall, ToolChoice,
-    ToolResultStatus, Usage, is_valid_reasoning_effort, valid_credential_account_id,
+    RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity,
+    ToolCall, ToolChoice, ToolResultStatus, Usage, is_valid_reasoning_effort,
+    valid_credential_account_id,
 };
 pub use ui::{ToolRejection, TurnOutcome, UiEvent};

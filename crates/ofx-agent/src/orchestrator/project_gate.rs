@@ -7,7 +7,8 @@ use ofx_contract::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Agent, EventSink, Prepared, Rejection, Stop, TurnFailure, completed, contained, discard,
+    Agent, EventSink, Prepared, Rejection, Stop, ToolOutput, TurnFailure, completed, contained,
+    discard,
 };
 
 pub(super) const CONTEXT_DEFERRED_OUTPUT: &str = "Scoped project instructions were added before execution. Review them and reissue this tool call if it is still appropriate.";
@@ -75,11 +76,16 @@ impl Agent {
         &mut self,
         turn_id: TurnId,
         calls: &[ToolCall],
+        malformed: &mut [Option<ToolOutput>],
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<ProjectGate, Stop> {
         let mut gate = ProjectGate {
-            calls: calls.iter().map(|call| self.gated_call(call)).collect(),
+            calls: calls
+                .iter()
+                .zip(malformed)
+                .map(|(call, malformed)| self.gated_call(call, malformed.take()))
+                .collect(),
             delta: false,
         };
         let targets: Vec<ApplicableTarget> = gate
@@ -133,8 +139,8 @@ impl Agent {
         Ok(gate)
     }
 
-    fn gated_call(&self, call: &ToolCall) -> GatedCall {
-        let (prepared, description, mutates) = match self.prepare_uncompleted(call) {
+    fn gated_call(&self, call: &ToolCall, malformed: Option<ToolOutput>) -> GatedCall {
+        let (prepared, description, mutates) = match self.prepare_uncompleted(call, malformed) {
             Prepared::Ready(prepared, description, mutation, _)
                 if description.effect != ToolEffect::None =>
             {

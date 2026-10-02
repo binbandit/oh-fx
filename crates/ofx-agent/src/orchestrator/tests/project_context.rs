@@ -840,3 +840,73 @@ async fn a_refused_call_is_rejected_before_its_target_reaches_the_gate() {
     )));
     assert!(!log(&harness).iter().any(|entry| entry.contains("refused")));
 }
+
+#[tokio::test]
+async fn malformed_calls_never_reach_preparation_or_target_selection() {
+    let truncated = r#"{"write":"/w/b/file""#;
+    let mut harness = harness(
+        vec![
+            scoped_reply(&[("call-1", truncated), ("call-2", r#"{"read":"/w/c"}"#)]),
+            scoped_reply(&[("call-3", "[]")]),
+            text_reply("done"),
+        ],
+        snapshot(),
+    );
+    let (report, events) = run(&mut harness.agent, "malformed").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let malformed =
+        malformed_tool_arguments_json("scoped", &ToolArgumentDiagnostic::diagnose(truncated));
+    let non_object = non_object_tool_arguments_json("scoped");
+    let messages = &harness.provider.requests()[2].messages;
+    assert_eq!(
+        scoped_messages(messages),
+        [
+            ("call-1", malformed.as_str(), ToolResultStatus::Failure),
+            ("call-2", "scoped", ToolResultStatus::Success),
+            ("call-3", non_object.as_str(), ToolResultStatus::Failure),
+        ]
+    );
+    let replayed: Vec<(&str, &str)> = messages
+        .iter()
+        .flat_map(|message| match message {
+            ChatMessage::Assistant { tool_calls, .. } => tool_calls.as_slice(),
+            _ => &[],
+        })
+        .map(|call| (call.id.as_str(), call.arguments.as_str()))
+        .collect();
+    assert_eq!(
+        replayed,
+        [
+            ("call-1", "{}"),
+            ("call-2", r#"{"read":"/w/c"}"#),
+            ("call-3", "{}")
+        ]
+    );
+    assert_eq!(
+        lifecycle(&events),
+        [
+            "reject call-1",
+            r#"start call-2 Scoping {"read":"/w/c"}"#,
+            "finish call-2",
+            "reject call-3",
+        ]
+    );
+    assert_eq!(harness.world.lock().unwrap().prepared, 1);
+    let selections = harness.project.selections.lock().unwrap();
+    let probed: Vec<&Vec<PathBuf>> = selections.iter().map(|(paths, _)| paths).collect();
+    assert_eq!(probed, [&vec![PathBuf::from("/w/c")]]);
+    assert!(
+        events
+            .iter()
+            .filter(|event| matches!(event, UiEvent::ToolRejected { .. }))
+            .all(|event| matches!(
+                event,
+                UiEvent::ToolRejected {
+                    reason: ToolRejection::MalformedArguments,
+                    arguments,
+                    title: None,
+                    ..
+                } if arguments == "{}"
+            ))
+    );
+}

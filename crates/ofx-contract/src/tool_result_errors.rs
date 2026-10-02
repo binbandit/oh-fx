@@ -1,6 +1,8 @@
 use ofx_text::mask_secrets;
 use serde_json::{Map, Value};
 
+use crate::types::{ToolArgumentDiagnostic, ToolArgumentFailure};
+
 #[cfg(target_os = "macos")]
 const FILESYSTEM_ACCESS_DENIED_SUGGESTION: &str = "Do not retry this path unchanged or propose a symlink. oh-fx permissions cannot override the operating system. If the path is in a protected folder such as Desktop, Documents, or Downloads, ask the user to grant the terminal app Files and Folders or Full Disk Access. Otherwise, ask the user to correct OS filesystem permissions or move/copy the project to an accessible location.";
 #[cfg(not(target_os = "macos"))]
@@ -15,19 +17,72 @@ pub struct ExecutionFailure<'a> {
 }
 
 pub fn tool_execution_failure_json(failure: &ExecutionFailure<'_>) -> String {
+    let details = failure
+        .details
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), masked(value)))
+        .collect();
+    failure_json(
+        failure.tool_name,
+        failure.message,
+        details,
+        failure.suggestion,
+    )
+}
+
+pub fn malformed_tool_arguments_json(
+    tool_name: &str,
+    diagnostic: &ToolArgumentDiagnostic,
+) -> String {
+    let mut details = Map::new();
+    details.insert("failure".to_owned(), masked(diagnostic.failure.name()));
+    details.insert(
+        "received_bytes".to_owned(),
+        Value::from(diagnostic.input_bytes),
+    );
+    if let Some(offset) = diagnostic.error_offset {
+        details.insert("error_offset".to_owned(), Value::from(offset));
+    }
+    let (message, suggestion) = match diagnostic.failure {
+        ToolArgumentFailure::Truncated => (
+            "Tool arguments ended before the JSON was complete, so oh-fx did not run the call. The conversation shows its arguments as {}.",
+            "Reissue the complete call. Your arguments stopped after received_bytes; keep long arguments concise or split the work into smaller calls.",
+        ),
+        ToolArgumentFailure::SyntaxError => (
+            "Tool arguments were not valid JSON, so oh-fx did not run the call. The conversation shows its arguments as {}.",
+            "Reissue the call with valid JSON. Parsing failed at error_offset; escape quotes, backslashes, and newlines inside strings.",
+        ),
+        ToolArgumentFailure::RejectedValue => (
+            "Tool arguments repeated an object key or held a value oh-fx cannot accept, so oh-fx did not run the call. The conversation shows its arguments as {}.",
+            "Reissue the call with each object key used once and values matching the tool schema.",
+        ),
+    };
+    failure_json(tool_name, message, details, Some(suggestion))
+}
+
+pub fn non_object_tool_arguments_json(tool_name: &str) -> String {
+    tool_execution_failure_json(&ExecutionFailure {
+        tool_name,
+        message: "Tool arguments must be a JSON object. The call was not executed.",
+        details: &[],
+        suggestion: Some("Reissue the tool call with a JSON object matching the tool schema."),
+    })
+}
+
+fn failure_json(
+    tool_name: &str,
+    message: &str,
+    details: Map<String, Value>,
+    suggestion: Option<&str>,
+) -> String {
     let mut error = Map::new();
     error.insert("type".to_owned(), Value::from("tool_execution_failed"));
-    error.insert("tool_name".to_owned(), masked(failure.tool_name));
-    error.insert("message".to_owned(), masked(failure.message));
-    if !failure.details.is_empty() {
-        let details: Map<String, Value> = failure
-            .details
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), masked(value)))
-            .collect();
+    error.insert("tool_name".to_owned(), masked(tool_name));
+    error.insert("message".to_owned(), masked(message));
+    if !details.is_empty() {
         error.insert("details".to_owned(), Value::Object(details));
     }
-    if let Some(suggestion) = failure.suggestion {
+    if let Some(suggestion) = suggestion {
         error.insert("suggestion".to_owned(), masked(suggestion));
     }
     let mut envelope = Map::new();
@@ -153,5 +208,53 @@ mod tests {
         assert!(body.starts_with(
             "{\"error\":{\"type\":\"tool_execution_failed\",\"tool_name\":\"glob_files\",\"message\":\"Operating system denied filesystem access\",\"details\":{\"path\":\"/tmp/blocked\",\"error\":\"AccessDenied\"},\"suggestion\":\"Do not retry this path unchanged or propose a symlink."
         ));
+    }
+
+    #[test]
+    fn malformed_tool_arguments_json_reports_the_diagnosis_without_source_bytes() {
+        let raw = r#"{"request":{"task":"REJECTED_SOURCE_SENTINEL and more"#;
+        let payload =
+            malformed_tool_arguments_json("subagent", &ToolArgumentDiagnostic::diagnose(raw));
+        assert!(!payload.contains("REJECTED_SOURCE_SENTINEL"));
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let error = &parsed["error"];
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains("ended before the JSON was complete"));
+        assert!(message.contains("{}"));
+        assert_eq!(error["details"]["failure"], "truncated");
+        assert_eq!(error["details"]["received_bytes"], raw.len());
+        assert_eq!(error["details"]["error_offset"], raw.len());
+
+        let rejected = malformed_tool_arguments_json(
+            "read_file",
+            &ToolArgumentDiagnostic::diagnose(r#"{"a":1,"a":2}"#),
+        );
+        let rejected: Value = serde_json::from_str(&rejected).unwrap();
+        let details = &rejected["error"]["details"];
+        assert_eq!(details["failure"], "rejected_value");
+        assert!(details.get("error_offset").is_none());
+    }
+
+    #[test]
+    fn rejected_arguments_produce_the_upstream_results_in_order() {
+        let diagnosed = |raw: &str| {
+            malformed_tool_arguments_json("read_file", &ToolArgumentDiagnostic::diagnose(raw))
+        };
+        assert_eq!(
+            diagnosed(r#"{"path":"a.txt","offset":"#),
+            r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"Tool arguments ended before the JSON was complete, so oh-fx did not run the call. The conversation shows its arguments as {}.","details":{"failure":"truncated","received_bytes":25,"error_offset":25},"suggestion":"Reissue the complete call. Your arguments stopped after received_bytes; keep long arguments concise or split the work into smaller calls."}}"#
+        );
+        assert_eq!(
+            diagnosed(r#"{"path":"a",}"#),
+            r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"Tool arguments were not valid JSON, so oh-fx did not run the call. The conversation shows its arguments as {}.","details":{"failure":"syntax_error","received_bytes":13,"error_offset":12},"suggestion":"Reissue the call with valid JSON. Parsing failed at error_offset; escape quotes, backslashes, and newlines inside strings."}}"#
+        );
+        assert_eq!(
+            diagnosed(r#"{"path":"a.txt","path":"b.txt"}"#),
+            r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"Tool arguments repeated an object key or held a value oh-fx cannot accept, so oh-fx did not run the call. The conversation shows its arguments as {}.","details":{"failure":"rejected_value","received_bytes":31},"suggestion":"Reissue the call with each object key used once and values matching the tool schema."}}"#
+        );
+        assert_eq!(
+            non_object_tool_arguments_json("read_file"),
+            r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"Tool arguments must be a JSON object. The call was not executed.","suggestion":"Reissue the tool call with a JSON object matching the tool schema."}}"#
+        );
     }
 }

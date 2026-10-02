@@ -402,6 +402,77 @@ async fn stream_failures_map_to_retryable_and_terminal_provider_errors() {
 }
 
 #[tokio::test]
+async fn malformed_call_arguments_arrive_as_sent_and_replay_only_as_an_empty_object() {
+    let malformed = r#"{"path":"a",}"#;
+    let call_events: Vec<String> = [
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":""}}),
+        json!({"type":"response.function_call_arguments.done","output_index":0,"arguments":malformed}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+    ]
+    .iter()
+    .map(Value::to_string)
+    .collect();
+    let server = FakeServer::start([
+        Reply::sse(&call_events),
+        Reply::sse(&text_events("Recovered.")),
+    ]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let golden: Value = serde_json::from_str(AFTER_TOOL_GOLDEN).expect("golden parses");
+    let tools = golden_tools(&golden);
+    let prompt = user("Read a");
+
+    let (first, _) = run(&codex, &[], &prompt, &tools).await;
+    let first = first.expect("a malformed call still completes the step");
+    assert_eq!(first.finish_reason, FinishReason::ToolCalls);
+    assert_eq!(
+        first.tool_calls,
+        [ToolCall {
+            id: ToolCallId::new("call_1"),
+            name: "read_file".to_owned(),
+            arguments: malformed.to_owned(),
+        }]
+    );
+
+    let result = ChatMessage::Tool {
+        call_id: ToolCallId::new("call_1"),
+        tool_name: "read_file".to_owned(),
+        content: "rejected".to_owned(),
+        status: ToolResultStatus::Failure,
+    };
+    let as_sent = [prompt[0].clone(), answered(&first), result.clone()];
+    let (refused, _) = run(&codex, &[], &as_sent, &tools).await;
+    assert_eq!(
+        refused.expect_err("raw arguments are never replayed").code,
+        "InvalidToolArguments"
+    );
+    assert_eq!(server.requests().len(), 1);
+
+    let replayed = ChatMessage::Assistant {
+        content: None,
+        tool_calls: vec![ToolCall {
+            arguments: "{}".to_owned(),
+            ..first.tool_calls[0].clone()
+        }],
+        provider_replay: first.provider_replay.clone(),
+    };
+    let history = [prompt[0].clone(), replayed, result];
+    let (second, _) = run(&codex, &[], &history, &tools).await;
+    let second = second.expect("the empty object replays");
+    assert_eq!(second.content.as_deref(), Some("Recovered."));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let input = requests[1].json()["input"].clone();
+    assert_eq!(
+        input[1],
+        json!({"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"})
+    );
+    assert_eq!(
+        input[2],
+        json!({"type":"function_call_output","call_id":"call_1","output":"rejected"})
+    );
+}
+
+#[tokio::test]
 async fn invalid_models_fail_before_any_request() {
     let server = FakeServer::start([]);
     let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
