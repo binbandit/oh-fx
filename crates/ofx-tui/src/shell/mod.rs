@@ -466,6 +466,10 @@ impl<'a> Shell<'a> {
 
     fn handle_resize_signal(&mut self, now_ms: i64) {
         self.resize_due_ms = Some(now_ms + RESIZE_DEBOUNCE_MS);
+        if self.approval.is_some() {
+            self.forget_approval_review();
+            self.invalidate();
+        }
     }
 
     fn apply_pending_resize(&mut self, now_ms: i64) {

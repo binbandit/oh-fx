@@ -988,6 +988,22 @@ mod tests {
     }
 
     #[test]
+    fn a_resize_back_to_the_same_size_restarts_the_wait_for_yes() {
+        let mut test = approving();
+        test.screen();
+        let now_ms = test.shell.now_ms();
+        test.shell.handle_resize_signal(now_ms);
+        test.advance(200);
+        let now_ms = test.shell.now_ms();
+        test.shell.apply_pending_resize(now_ms);
+        assert!(!approve_now(&mut test));
+        test.screen();
+        assert!(!approve_now(&mut test));
+        test.advance(ARMED_MS);
+        assert!(approve_now(&mut test));
+    }
+
+    #[test]
     fn a_terminal_too_small_to_draw_the_prompt_restarts_the_wait_for_yes() {
         let mut test = approving();
         test.resize(3, 80);
