@@ -2,9 +2,10 @@ use std::path::PathBuf;
 
 use ofx_contract::{
     ActionLabel, ApprovalRequest, ApprovalScope, CallDescription, CommandProcessPresentation,
-    Concurrency, FileChangeStats, FileMutation, FileMutationState, PathAccess, RequestId,
-    ToolActivity, ToolCallId, ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus,
-    ToolStatusDetail, TurnId, TurnOutcome, UiCommand, UiEvent, tool_permission_denied_json,
+    CommandProfile, CommandRequest, Concurrency, FileChangeStats, FileMutation, FileMutationState,
+    PathAccess, RequestId, ReviewHold, ToolActivity, ToolCallId, ToolDeferral, ToolEffect,
+    ToolRejection, ToolResultStatus, ToolStatusDetail, TurnId, TurnOutcome, UiCommand, UiEvent,
+    tool_permission_denied_json, tool_review_held_json,
 };
 
 use super::super::test_shell::TestShell;
@@ -659,6 +660,90 @@ fn a_reused_call_id_settles_the_newest_row_with_that_id() {
     let screen = test.screen();
     assert!(
         screen.contains("● 2 tool calls · 2 read · 1 failed\n├ Read a.txt\n└ Failed b.txt\n"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_call_under_review_shows_one_running_row_until_the_review_settles_it() {
+    let mut test = running("go");
+    test.deliver(command("a", "touch marker"));
+    assert!(
+        test.screen()
+            .contains("● 1 tool call · 1 command\n└ Running touch marker")
+    );
+    let UiEvent::ApprovalRequested {
+        turn_id,
+        mut request,
+    } = approval(
+        "a",
+        "shell",
+        ToolActivity::Command,
+        ("Running", "Ran", "touch marker"),
+        None,
+    )
+    else {
+        unreachable!()
+    };
+    request.command = Some(CommandRequest::Run {
+        command: "touch marker".to_owned(),
+        cwd: PathBuf::from("/home"),
+        profile: CommandProfile::User,
+        shell: None,
+        terminal: false,
+    });
+    test.deliver(UiEvent::ApprovalRequested { turn_id, request });
+    test.deliver(finished(
+        "a",
+        "shell",
+        failure(&tool_permission_denied_json("shell")),
+    ));
+    test.deliver(command("b", "rm -rf build"));
+    test.deliver(finished(
+        "b",
+        "shell",
+        failure(&tool_review_held_json(
+            "shell",
+            ReviewHold::Caution("deletes the build"),
+        )),
+    ));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "● 2 tool calls · 2 commands · 2 denied\n├ Denied touch marker\n└ Safety caution rm -rf build\n"
+        ),
+        "{screen}"
+    );
+    assert_eq!(screen.matches("touch marker").count(), 1, "{screen}");
+}
+
+#[test]
+fn a_skill_context_notice_follows_the_group_its_call_settles_in() {
+    let mut test = running("go");
+    test.deliver(started(
+        "a",
+        "skill",
+        ToolActivity::Read,
+        ("Loading skill", "Loaded skill", "review"),
+    ));
+    test.deliver(UiEvent::Notice {
+        notice: ofx_contract::Notice::new(
+            ofx_contract::NoticeTone::Warning,
+            "context",
+            "skill review shortened",
+        ),
+    });
+    test.deliver(finished("a", "skill", success()));
+    test.deliver(read("b", "a.txt"));
+    test.deliver(finished("b", "read_file", success()));
+    test.deliver(text("Done.\n"));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "● 2 tool calls · 2 read\n├ Loaded skill review\n└ Read a.txt\n\n! context: skill review shortened\n\n  Done."
+        ),
         "{screen}"
     );
 }
