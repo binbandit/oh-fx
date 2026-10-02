@@ -82,6 +82,7 @@ mod tests {
         for (input, kind) in [
             ("/reset", SlashKind::ResetSession),
             ("/stats", SlashKind::Stats),
+            ("/status", SlashKind::Status),
             ("/copy", SlashKind::Copy),
             ("/fast", SlashKind::Fast),
             ("/version", SlashKind::Version),

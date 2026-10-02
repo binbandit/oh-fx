@@ -32,6 +32,7 @@ use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
     ProfileLocation, gather_project_context,
 };
+use crate::output_contracts::StatusSnapshot;
 use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
@@ -88,6 +89,10 @@ impl CredentialSource {
         }
     }
 
+    pub(crate) const fn refreshable(self) -> bool {
+        matches!(self, Self::Codex)
+    }
+
     pub(crate) const fn repair(self) -> &'static str {
         match self {
             Self::Configured => CONFIGURED_SOURCE_REPAIR,
@@ -117,6 +122,7 @@ pub struct AgentSetup {
     tools: Vec<Arc<dyn Tool>>,
     context: Arc<dyn RuntimeContext>,
     permission_mode: LivePermissionMode,
+    workspace_root: PathBuf,
     permissions: Arc<PermissionPolicy>,
     preferences: Option<ProfilePaths>,
     yolo_acknowledged: bool,
@@ -263,6 +269,7 @@ impl Profile {
             permission_mode,
             preferences: self.paths.clone(),
             yolo_acknowledged: self.settings.yolo_acknowledged(),
+            workspace_root: self.workspace_root.clone(),
             approvals: interactive.then(Approvals::default),
             refreshes,
             project,
@@ -441,6 +448,19 @@ impl AgentSetup {
 
     pub(crate) fn fast_mode(&self) -> bool {
         self.config.fast_mode
+    }
+
+    pub(crate) fn status<'a>(&'a self, model: &'a str, history_turns: usize) -> StatusSnapshot<'a> {
+        StatusSnapshot {
+            model,
+            connection: self.connection.as_ref(),
+            source: self.source,
+            permission_mode: self.permission_mode.get(),
+            workspace_root: &self.workspace_root,
+            history_turns,
+            session_permission_grants: self.permissions.session_grant_count(),
+            agent_step_limit: self.config.step_limit,
+        }
     }
 
     pub(crate) async fn supports_fast_mode(&self, model: &str) -> bool {

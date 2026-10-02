@@ -6,6 +6,7 @@ pub enum SlashKind {
     ClearScreen,
     ResetSession,
     Stats,
+    Status,
     Model,
     Permissions,
     Copy,
@@ -198,12 +199,13 @@ mod tests {
                 "/clear",
                 "/reset",
                 "/stats",
+                "/status",
                 "/model",
                 "/permissions",
                 "/copy",
                 "/fast",
                 "/version",
-                "/quit"
+                "/quit",
             ]
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
@@ -235,6 +237,10 @@ mod tests {
             spec(SlashKind::Fast).completion_description,
             "toggle Fast mode when supported"
         );
+        assert_eq!(
+            spec(SlashKind::Status).completion_description,
+            "show runtime configuration"
+        );
     }
 
     #[test]
@@ -251,6 +257,7 @@ mod tests {
                 ("/clear", "General"),
                 ("/reset", "Session"),
                 ("/stats", "Account"),
+                ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
                 ("/copy", "Session"),

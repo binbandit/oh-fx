@@ -64,6 +64,10 @@ pub(crate) fn handle_command(
             CommandEffect::None
         }
         SlashKind::ClearScreen | SlashKind::ResetSession => CommandEffect::Clear,
+        SlashKind::Status => {
+            state.notice(NoticeTone::Neutral, "status", &state.status_body());
+            CommandEffect::None
+        }
         SlashKind::Stats => {
             state.emit(UiEvent::StatsRequested);
             CommandEffect::None
@@ -154,16 +158,17 @@ mod tests {
                 "/clear",
                 "/reset",
                 "/stats",
+                "/status",
                 "/model",
                 "/permissions",
                 "/copy",
                 "/fast",
                 "/version",
-                "/quit"
+                "/quit",
             ]
         );
-        assert_eq!(specs[9].aliases, ["/exit"]);
-        assert_eq!(specs[9].description, "exit the interactive shell");
+        assert_eq!(specs[10].aliases, ["/exit"]);
+        assert_eq!(specs[10].description, "exit the interactive shell");
     }
 
     #[test]
@@ -181,6 +186,7 @@ mod tests {
                 ("/clear", "General"),
                 ("/reset", "Session"),
                 ("/stats", "Account"),
+                ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
                 ("/copy", "Session"),

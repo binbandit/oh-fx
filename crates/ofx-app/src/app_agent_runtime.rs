@@ -30,6 +30,7 @@ pub(crate) struct ControllerState {
     emit: Emit,
     clipboard: Arc<dyn Clipboard>,
     last_reply: Option<String>,
+    history_turns: usize,
 }
 
 impl ControllerState {
@@ -55,6 +56,12 @@ impl ControllerState {
 
     pub(crate) async fn supports_fast_mode(&self) -> bool {
         self.setup.supports_fast_mode(&self.model).await
+    }
+
+    pub(crate) fn status_body(&self) -> String {
+        self.setup
+            .status(&self.model, self.history_turns)
+            .render_interactive_body()
     }
 
     pub(crate) fn last_reply(&self) -> Option<&str> {
@@ -149,6 +156,7 @@ impl Controller {
             emit,
             clipboard: Arc::new(NativeClipboard),
             last_reply: None,
+            history_turns: 0,
         };
         Self {
             agent: state.setup.agent(),
@@ -211,6 +219,7 @@ impl Controller {
 
     fn remember_agent_facts(&mut self) {
         self.state.last_reply = self.agent.last_assistant_reply().map(str::to_owned);
+        self.state.history_turns = self.agent.history_turns();
     }
 
     fn clear(&mut self, first_kept_prompt: u64) {
@@ -861,6 +870,80 @@ mod tests {
             .await;
         let cleared = copy_notice(&mut harness).await;
         assert_eq!(cleared.body, "No assistant reply to copy.");
+    }
+
+    async fn status_notice(harness: &mut Harness) -> String {
+        harness.command("/status");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "status"))
+            .await;
+        notice_body(shown).pop().unwrap()
+    }
+
+    #[tokio::test]
+    async fn status_reports_the_connection_mode_workspace_and_conversation() {
+        let read = Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "read_file",
+            r#"{"path":"../outside.txt"}"#,
+        ));
+        let server = FakeServer::start([read, Reply::sse(&chat_text_events(&["done"]))]);
+        let mut harness = Harness::start(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "notes\n").unwrap();
+        let workspace = harness.home.path().join("workspace");
+        let expected = |turns: usize, grants: usize| {
+            format!(
+                "status|model=model-a\nmodel_source=local\nprovider_endpoint={}\nauth=configured provider\nconnected_providers=local\nauth_refreshable=false\npermission_mode=auto\nworkspace={}\nhistory_turns={turns}\nsession_permission_grants={grants}\nagent_step_limit=0",
+                server.base_url(),
+                workspace.display()
+            )
+        };
+        assert_eq!(status_notice(&mut harness).await, expected(0, 0));
+        harness.submit("read it");
+        let Some(UiEvent::ApprovalRequested { request, .. }) = harness
+            .until(|event| matches!(event, UiEvent::ApprovalRequested { .. }))
+            .await
+            .last()
+            .cloned()
+        else {
+            unreachable!()
+        };
+        assert_eq!(status_notice(&mut harness).await, expected(0, 0));
+        harness.send(UiCommand::Approval {
+            request_id: request.id,
+            decision: ApprovalDecision::Always,
+        });
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(status_notice(&mut harness).await, expected(1, 1));
+        harness.command("/model model-b");
+        let switched = status_notice(&mut harness).await;
+        assert!(
+            switched.starts_with("status|model=vendor/model-b\n"),
+            "{switched}"
+        );
+        harness.command("/clear");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let cleared = status_notice(&mut harness).await;
+        assert!(
+            cleared.contains("\nhistory_turns=0\nsession_permission_grants=0\n"),
+            "{cleared}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_names_the_codex_subscription() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        let status = status_notice(&mut harness).await;
+        assert!(
+            status.starts_with(&format!(
+                "status|model={CODEX_MODEL}\nmodel_source=Codex subscription\nauth=Codex subscription\nconnected_providers=Codex\nauth_refreshable=true\npermission_mode=auto\n"
+            )),
+            "{status}"
+        );
     }
 
     async fn fast_notice(harness: &mut Harness) -> String {

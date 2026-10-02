@@ -514,6 +514,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Account,
     ),
     SlashSpec::new(
+        SlashKind::Status,
+        "/status",
+        "show runtime configuration",
+        SlashPresentationCategory::General,
+    ),
+    SlashSpec::new(
         SlashKind::Model,
         "/model",
         "choose what model and reasoning effort to use",

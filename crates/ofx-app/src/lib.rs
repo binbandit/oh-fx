@@ -8,6 +8,7 @@ mod app_upgrade_runtime;
 mod codex_provider;
 mod context;
 mod native;
+mod output_contracts;
 mod tool_set;
 
 pub use app_bootstrap_runtime::{
