@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
-use ofx_text::{encode_terminal_safe, prefix_by_width, visible_width};
+use ofx_text::{display_unit_at, encode_terminal_safe, prefix_by_width, visible_width};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Color {
@@ -86,6 +86,16 @@ impl Paint {
 
     pub(crate) const fn has(self, attribute: Attribute) -> bool {
         self.attributes & attribute.bit() != 0
+    }
+
+    #[must_use]
+    pub(crate) const fn with_bold(self) -> Self {
+        self.with(Attribute::Bold)
+    }
+
+    #[must_use]
+    pub(crate) const fn with_dim(self) -> Self {
+        self.with(Attribute::Dim)
     }
 
     #[must_use]
@@ -255,6 +265,32 @@ impl Row {
             }
         }
         clipped
+    }
+
+    pub(crate) fn wrapped(&self, width: usize) -> Vec<Self> {
+        let mut rows = vec![Self::new()];
+        let mut used = 0;
+        for segment in &self.segments {
+            let mut index = 0;
+            while index < segment.text.len() {
+                let unit = display_unit_at(&segment.text, index);
+                let end = index + unit.byte_len.max(1);
+                if used + unit.cell_width > width.max(1) && used > 0 {
+                    rows.push(Self::new());
+                    used = 0;
+                }
+                if let Some(row) = rows.last_mut() {
+                    row.push_linked(
+                        &segment.text[index..end],
+                        segment.paint,
+                        segment.link.as_deref(),
+                    );
+                }
+                used += unit.cell_width;
+                index = end;
+            }
+        }
+        rows
     }
 
     pub(crate) fn encode(&self) -> String {

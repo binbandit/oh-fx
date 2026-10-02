@@ -90,6 +90,10 @@ impl Theme {
         theme
     }
 
+    pub(crate) fn accented_diff_markers(&self) -> bool {
+        self.diff_added_marker.is_some()
+    }
+
     pub(crate) fn markdown(&self, style: Style) -> Paint {
         let base = match style.slot {
             None => Paint::PLAIN,
