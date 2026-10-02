@@ -4,7 +4,7 @@ use std::ops::Range;
 use ofx_contract::ApprovalDecision;
 use ofx_text::visible_width;
 
-use super::approval_content::{ActionBlock, ApprovalContent};
+use super::approval_content::{ActionBlock, ApprovalContent, MCP_KIND};
 use super::command_text::command_segments;
 use super::phrase::Phrase;
 use crate::row_text::{Paint, Row};
@@ -57,6 +57,17 @@ impl Choice {
 pub(crate) fn choices_for(content: &ApprovalContent) -> Vec<Choice> {
     if content.deny_only() {
         return vec![no_choice()];
+    }
+    if content.kind == MCP_KIND {
+        return vec![
+            Choice::new(b'1', Phrase::plain("1. Allow once"), ApprovalDecision::Once),
+            Choice::new(
+                b'2',
+                Phrase::plain("2. Allow this MCP tool for this session"),
+                ApprovalDecision::Always,
+            ),
+            Choice::new(b'3', Phrase::plain("3. Deny"), ApprovalDecision::Deny),
+        ];
     }
     choices(content.remember.as_ref())
 }

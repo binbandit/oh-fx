@@ -9,6 +9,9 @@ use super::command_text::{approval_text, project_command_text, unambiguous};
 use super::phrase::{PathText, Phrase};
 
 const GENERIC_KIND: &str = "Tool";
+pub(crate) const MCP_KIND: &str = "MCP tool";
+const MCP_QUESTION: &str = "Allow this MCP tool call?";
+const MCP_REASON: &str = "This MCP tool needs approval before oh-fx can send the request.";
 const COMMAND_KIND: &str = "Command";
 const GENERIC_QUESTION: &str = "Would you like to allow this action?";
 const COMMAND_QUESTION: &str = "Would you like to run the following command?";
@@ -57,6 +60,9 @@ impl ApprovalContent {
     }
 
     fn for_action(request: &ApprovalRequest) -> Self {
+        if matches!(request.scope.always, Some(SessionGrant::McpTool(_))) {
+            return Self::mcp_tool(request);
+        }
         let remember = request.scope.always.as_ref().map(remember_label);
         match &request.command {
             Some(CommandRequest::Run {
@@ -118,6 +124,29 @@ impl ApprovalContent {
                 ),
                 None => Self::generic(vec![title_line(request)], remember),
             },
+        }
+    }
+
+    fn mcp_tool(request: &ApprovalRequest) -> Self {
+        let target = safe_text(request.tool_name.as_bytes());
+        let action = if request.tool_arguments_truncated {
+            vec![
+                ActionBlock::Line(Phrase::plain(target)),
+                ActionBlock::Refusal(ARGUMENTS_TOO_LONG),
+            ]
+        } else {
+            vec![ActionBlock::Arguments {
+                target,
+                preview: unambiguous(request.tool_arguments_preview.clone()),
+            }]
+        };
+        Self {
+            kind: MCP_KIND,
+            question: MCP_QUESTION,
+            reason: Some(MCP_REASON.to_owned()),
+            requester: None,
+            action,
+            remember: None,
         }
     }
 
@@ -226,6 +255,7 @@ pub(super) fn remember_label(grant: &SessionGrant) -> Phrase {
         SessionGrant::ReadsUnder(root) => under("allow reads under ", root),
         SessionGrant::GlobsUnder(root) => under("allow name searches under ", root),
         SessionGrant::GrepsUnder(root) => under("allow content searches under ", root),
+        SessionGrant::McpTool(_) => Phrase::plain(format!("allow this MCP tool{FOR_THIS_SESSION}")),
     }
 }
 

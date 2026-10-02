@@ -72,6 +72,7 @@ pub enum CommandRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatedAction<'a> {
     Call(&'a ToolCall),
+    McpTool(&'a ToolCall),
     FileMutation(&'a FileMutation),
     Command(&'a CommandRequest),
 }
@@ -90,6 +91,7 @@ pub enum SessionGrant {
         shell: Option<PathBuf>,
         terminal: bool,
     },
+    McpTool(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -187,6 +189,10 @@ pub trait PermissionGate: Send + Sync {
     }
 
     fn admit_command(&self, _request: &CommandRequest) -> Admission {
+        Admission::ApprovalRequired
+    }
+
+    fn admit_mcp_tool(&self, _call: &ToolCall) -> Admission {
         Admission::ApprovalRequired
     }
 

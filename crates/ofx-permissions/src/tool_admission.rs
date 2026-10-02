@@ -138,9 +138,26 @@ impl PermissionGate for PermissionPolicy {
         command_admission(self.mode.get(), &self.workspace_root, request)
     }
 
+    fn admit_mcp_tool(&self, call: &ToolCall) -> Admission {
+        let grant = SessionGrant::McpTool(call.name.clone());
+        match self.mode.get() {
+            PermissionMode::Yolo => Admission::Allowed(PathAccess::WorkspaceOrExternal),
+            _ if self.session_grants.contains(&grant) => {
+                Admission::Allowed(PathAccess::WorkspaceOrExternal)
+            }
+            PermissionMode::Ask => Admission::ApprovalRequired,
+            PermissionMode::Auto => Admission::ReviewRequired,
+        }
+    }
+
     fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
         match action {
             GatedAction::Call(call) => self.call_approval_scope(call),
+            GatedAction::McpTool(call) => ApprovalScope {
+                target: None,
+                access: PathAccess::WorkspaceOrExternal,
+                always: Some(SessionGrant::McpTool(call.name.clone())),
+            },
             GatedAction::FileMutation(mutation) => ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOrExternal,

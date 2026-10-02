@@ -101,6 +101,10 @@ impl SessionGrants {
             .map(Path::to_path_buf)
     }
 
+    pub(crate) fn contains(&self, grant: &SessionGrant) -> bool {
+        self.lock().contains(grant)
+    }
+
     pub(crate) fn allow_command(&self, request: &CommandRequest) -> bool {
         command_grant(request).is_some_and(|grant| self.lock().contains(&grant))
     }
