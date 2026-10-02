@@ -75,6 +75,9 @@ impl CommandTree for TrackedTree {
         let mut empty_scans = 0;
         loop {
             self.refresh()?;
+            if self.tracker.is_empty() {
+                return Ok(());
+            }
             let elapsed = started.elapsed();
             let forced = elapsed >= TERMINATION_GRACE || escalation.forced();
             if forced {
@@ -101,6 +104,9 @@ impl CommandTree for TrackedTree {
         while started.elapsed() < CLEANUP_WAIT {
             let forced = escalation.forced();
             self.kill_left_behind(forced)?;
+            if self.tracker.is_empty() {
+                return Ok(());
+            }
             if self.left_behind_alive(forced) {
                 empty_scans = 0;
             } else {
