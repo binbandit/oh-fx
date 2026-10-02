@@ -1,7 +1,9 @@
+use std::borrow::Cow;
+
 use ofx_text::{prefix_by_width, visible_width};
 
 use crate::composer::{Composer, LayoutEvent, UnitKind, terminal_column, visible_window};
-use crate::row_text::{Paint, Row};
+use crate::row_text::{Paint, Row, escaped_in_rows};
 use crate::theme::Theme;
 
 const CTRL_C_EXIT_HINT: &str = "press ctrl+c again to exit";
@@ -76,9 +78,9 @@ pub(crate) fn composer_view(
                         *remaining -= spaces;
                     }
                     UnitKind::Text | UnitKind::PastePlaceholder => {
-                        let visible = prefix_by_width(text, *remaining);
-                        row.push(visible, paint);
-                        *remaining -= visible_width(visible);
+                        let visible = drawable(prefix_by_width(text, *remaining));
+                        row.push(&visible, paint);
+                        *remaining -= visible_width(&visible);
                     }
                 }
             }
@@ -101,6 +103,18 @@ pub(crate) fn composer_view(
     ComposerView {
         rows,
         cursor: (cursor_row, cursor_col),
+    }
+}
+
+fn drawable(text: &str) -> Cow<'_, str> {
+    if text.contains(escaped_in_rows) {
+        Cow::Owned(
+            text.chars()
+                .filter(|character| !escaped_in_rows(*character))
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(text)
     }
 }
 
@@ -194,6 +208,14 @@ mod tests {
         );
         assert_eq!(view.cursor, (2, 11));
         assert_eq!(view.rows[0].segments()[0].paint, Paint::fg(255));
+    }
+
+    #[test]
+    fn invisible_controls_take_no_cells_where_the_layout_gives_them_none() {
+        let view = composer_view(&composer("ab\u{85}\u{9b}c\u{202e}d"), 40, 5, &theme());
+        assert_eq!(texts(&view), ["┃ abcd"]);
+        assert_eq!(view.cursor, (0, 6));
+        assert_eq!(view.rows[0].width(), 6);
     }
 
     #[test]
