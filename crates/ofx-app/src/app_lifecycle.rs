@@ -5,9 +5,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use ofx_auth::OAUTH_REQUEST_TIMEOUT;
 use ofx_cli::LaunchModifiers;
 use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
@@ -259,22 +258,16 @@ impl Worker {
         refreshes: Option<&DetachedRefreshes>,
         panics: &PanicCapture,
     ) -> Result<(), SessionError> {
-        let exiting = Instant::now();
-        let mut limit = WORKER_SHUTDOWN_GRACE;
+        if let Some(refreshes) = refreshes {
+            refreshes.close();
+        }
         loop {
-            match self
-                .finished
-                .recv_timeout(limit.saturating_sub(exiting.elapsed()))
-            {
+            match self.finished.recv_timeout(WORKER_SHUTDOWN_GRACE) {
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(SessionError::AgentStopped(panics.take_worker_report()));
                 }
                 Err(RecvTimeoutError::Timeout)
-                    if limit < OAUTH_REQUEST_TIMEOUT
-                        && refreshes.is_some_and(DetachedRefreshes::pending) =>
-                {
-                    limit = OAUTH_REQUEST_TIMEOUT;
-                }
+                    if refreshes.is_some_and(DetachedRefreshes::wait_for_running) => {}
                 Ok(()) | Err(RecvTimeoutError::Timeout) => return Ok(()),
             }
         }

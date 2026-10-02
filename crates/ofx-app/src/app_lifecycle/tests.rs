@@ -4,9 +4,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::PoisonError;
+use std::time::Instant;
 
 use ofx_auth::ChatGptEndpoints;
-use ofx_config::{ProfilePaths, Settings};
+use ofx_config::{PrivateDir, ProfilePaths, Settings};
 use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
 use ofx_testkit::{FakeServer, PtySession, Reply};
 use serde_json::{Value, json};
@@ -21,10 +22,12 @@ const CHILD_CATALOG: &str = "OH_FX_LIFECYCLE_CHILD_CATALOG";
 const CHILD_PANIC: &str = "OH_FX_LIFECYCLE_CHILD_PANIC";
 const PANIC_TEST: &str =
     "app_lifecycle::tests::a_worker_panic_ends_the_shell_and_a_contained_one_does_not";
-const REFRESH_TEST: &str = "app_lifecycle::tests::an_exit_during_a_codex_refresh_restores_the_terminal_then_saves_the_rotated_login";
+const REFRESH_TEST: &str = "app_lifecycle::tests::an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rotated_login";
 const FIRST_FRAME: &str = "Run /help for commands";
 const WAIT: Duration = Duration::from_secs(15);
-const REFRESH_DELAY: Duration = Duration::from_secs(4);
+const LOCK_HELD: Duration = Duration::from_millis(1500);
+const REFRESH_DELAY: Duration = Duration::from_millis(14_500);
+const SAVED_WAIT: Duration = Duration::from_secs(30);
 const SAVED_TOKEN: &str = "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl";
 const FRESH_TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF90ZXN0In0sImV4cCI6NDEwMjQ0NDgwMCwibWFya2VyIjoiZnJlc2gifQ.c2lnbmF0dXJl";
 const REFRESH_TOKEN: &str = "rt-refresh-secret-0123456789";
@@ -66,7 +69,7 @@ fn worker_panics_are_reported_instead_of_printed_and_clean_exits_are_quiet() {
 }
 
 #[test]
-fn an_exit_during_a_codex_refresh_restores_the_terminal_then_saves_the_rotated_login() {
+fn an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rotated_login() {
     if let Some(home) = env::var_os(CHILD_HOME) {
         run_a_codex_session(Path::new(&home));
     }
@@ -101,21 +104,35 @@ fn an_exit_during_a_codex_refresh_restores_the_terminal_then_saves_the_rotated_l
     session
         .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
         .unwrap_or_else(|screen| panic!("the shell never started:\n{screen}"));
+    let held = PrivateDir::open_existing_private(&paths.data)
+        .unwrap()
+        .unwrap()
+        .try_lock("chatgpt-auth.lock")
+        .unwrap()
+        .expect("the credential lock is free");
     session.send(b"hello\r");
-    wait_until(|| !auth.requests().is_empty());
+    wait_until(|| !codex.requests().is_empty());
+    let refreshing = Instant::now();
+    let release = thread::spawn(move || {
+        thread::sleep(LOCK_HELD.saturating_sub(refreshing.elapsed()));
+        drop(held);
+    });
     session.send(b"\x03");
     session
         .wait_for(WAIT, |screen| screen.contains("Cancelled"))
         .unwrap_or_else(|screen| panic!("the turn was not cancelled:\n{screen}"));
     session.send(b"\x04");
     wait_until(|| session.cooked().unwrap());
+    wait_until(|| !auth.requests().is_empty());
+    assert!(refreshing.elapsed() >= LOCK_HELD);
+    release.join().unwrap();
     assert!(
         session.wait_exit(Duration::ZERO).is_none(),
         "the exit did not wait for the refresh"
     );
     assert_eq!(saved(&paths)["refresh_token"], REFRESH_TOKEN);
     let status = session
-        .wait_exit(WAIT)
+        .wait_exit(SAVED_WAIT)
         .expect("the exit ends once the refresh is saved");
     assert!(status.success(), "{status:?}");
     assert_eq!(auth.requests().len(), 1);

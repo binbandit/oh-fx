@@ -1,10 +1,11 @@
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use ofx_auth::{
-    ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, MISSING_CHATGPT_CREDENTIAL_MESSAGE,
-    PreparationError, RefreshMode, prepare_chatgpt_credential, refresh_chatgpt_credential,
+    CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptOAuth,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, prepare_chatgpt_credential,
+    refresh_chatgpt_credential,
 };
 use ofx_config::ProfilePaths;
 use ofx_contract::{BoxFuture, CapabilityLookup, CapabilityResolver};
@@ -76,18 +77,63 @@ impl CapabilityResolver for CatalogCapabilities {
 
 #[derive(Debug, Default)]
 pub(crate) struct DetachedRefreshes {
-    running: AtomicUsize,
+    state: Mutex<Refreshes>,
+    drained: Condvar,
     settled: Notify,
 }
 
+#[derive(Debug, Default)]
+struct Refreshes {
+    running: usize,
+    latest_start: Option<Instant>,
+    closed: bool,
+}
+
 impl DetachedRefreshes {
-    fn start(self: &Arc<Self>) -> RunningRefresh {
-        self.running.fetch_add(1, Ordering::SeqCst);
-        RunningRefresh(Arc::clone(self))
+    fn state(&self) -> MutexGuard<'_, Refreshes> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(crate) fn pending(&self) -> bool {
-        self.running.load(Ordering::SeqCst) > 0
+    fn start(self: &Arc<Self>) -> Option<RunningRefresh> {
+        let mut state = self.state();
+        if state.closed {
+            return None;
+        }
+        state.running += 1;
+        state.latest_start = Some(Instant::now());
+        Some(RunningRefresh(Arc::clone(self)))
+    }
+
+    fn pending(&self) -> bool {
+        self.state().running > 0
+    }
+
+    pub(crate) fn close(&self) {
+        self.state().closed = true;
+    }
+
+    pub(crate) fn wait_for_running(&self) -> bool {
+        let mut state = self.state();
+        let Some(deadline) = state
+            .latest_start
+            .map(|started| started + CHATGPT_REFRESH_LIMIT)
+        else {
+            return false;
+        };
+        let mut waited = false;
+        while state.running > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            waited = true;
+            state = self
+                .drained
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        waited
     }
 
     pub(crate) async fn settle(&self) {
@@ -105,7 +151,10 @@ struct RunningRefresh(Arc<DetachedRefreshes>);
 
 impl Drop for RunningRefresh {
     fn drop(&mut self) {
-        if self.0.running.fetch_sub(1, Ordering::SeqCst) == 1 {
+        let mut state = self.0.state();
+        state.running -= 1;
+        if state.running == 0 {
+            self.0.drained.notify_all();
             self.0.settled.notify_waiters();
         }
     }
@@ -135,10 +184,10 @@ impl CodexCredentials for SubscriptionCredentials {
                     .flatten()
                     .map(codex_access);
             };
+            let running = detached.start()?;
             let (finished, refreshed) = oneshot::channel();
             let oauth = Arc::clone(&self.oauth);
             let account_id = account_id.to_owned();
-            let running = detached.start();
             tokio::spawn(async move {
                 let never = CancellationToken::new();
                 let access = refresh_chatgpt_credential(&oauth, mode, &account_id, &never).await;

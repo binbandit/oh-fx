@@ -482,6 +482,37 @@ async fn an_interactive_turn_cancelled_during_a_refresh_stops_while_the_refresh_
 }
 
 #[tokio::test]
+async fn no_interactive_refresh_starts_once_the_exit_has_begun() {
+    let fixture = Fixture::new();
+    fixture.write_session(FAR_FUTURE_MS, 0o600);
+    let auth = FakeServer::start([]);
+    let codex = FakeServer::start([Reply::status(
+        401,
+        r#"{"error":{"message":"token expired"}}"#,
+    )]);
+    let refreshes = Arc::new(DetachedRefreshes::default());
+    let provider = codex_subscription(
+        Some(&fixture.paths),
+        "oh-fx/test",
+        subscription_endpoints(&auth, &codex),
+        Some(Arc::clone(&refreshes)),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("provider")
+    .provider;
+    refreshes.close();
+    let mut agent = fixture.agent(provider);
+    let (report, _) = run(&mut agent, "Hello").await;
+
+    assert_eq!(report.outcome, TurnOutcome::Failed, "{report:?}");
+    assert_eq!(codex.requests().len(), 1);
+    assert!(auth.requests().is_empty());
+    assert!(!refreshes.wait_for_running());
+    assert_eq!(fixture.saved()["refresh_token"], REFRESH_TOKEN);
+}
+
+#[tokio::test]
 async fn a_rejected_refresh_after_unauthorized_retires_the_login() {
     let fixture = Fixture::new();
     fixture.write_session(FAR_FUTURE_MS, 0o600);
