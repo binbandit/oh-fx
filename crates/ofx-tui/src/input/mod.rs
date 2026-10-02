@@ -86,7 +86,7 @@ impl TerminalInput {
     }
 
     pub(crate) fn settle_delivery_epoch(&mut self) -> Option<InputEvent> {
-        if !self.paste.active() || self.has_queued_input() {
+        if !self.paste.active() || self.has_unclassified_input() {
             return None;
         }
         self.paste.settle_delivery_epoch().map(InputEvent::Paste)
@@ -139,6 +139,10 @@ impl TerminalInput {
 
     pub(crate) fn take_theme_update(&mut self) -> Option<ThemeUpdate> {
         self.theme_monitor.take_settled_update()
+    }
+
+    fn has_unclassified_input(&self) -> bool {
+        self.has_queued_input() || self.theme_monitor.has_pending_input()
     }
 
     fn has_queued_input(&self) -> bool {
@@ -456,6 +460,69 @@ mod tests {
                 owner: PasteOwner::Composer
             }))
         );
+    }
+
+    fn paste_after_an_in_flight_theme_query(suffix: &[u8]) -> TerminalInput {
+        let mut input = TerminalInput::new();
+        input.start_theme_monitor();
+        input.push_bytes(b"\x1b[?997;1n");
+        assert!(drain(&mut input, 0).is_empty());
+        assert_eq!(input.take_theme_query(0), Some(ThemeQuery::ResponseFence));
+        input.begin_paste(PasteOwner::Composer, usize::MAX);
+        let mut read = b"safe\x1b[201~".to_vec();
+        read.extend_from_slice(suffix);
+        input.push_bytes(&read);
+        assert!(drain(&mut input, 1).is_empty());
+        input
+    }
+
+    fn trailing_input() -> InputEvent {
+        InputEvent::Paste(PasteOutcome::TrailingInput {
+            owner: PasteOwner::Composer,
+        })
+    }
+
+    #[test]
+    fn a_partial_theme_candidate_after_the_end_marker_holds_the_paste_until_it_resolves() {
+        for (rest, decoded) in [(&b"13u"[..], "kitty enter"), (&b"A"[..], "cursor up")] {
+            let mut input = paste_after_an_in_flight_theme_query(b"\x1b[");
+            assert_eq!(input.settle_delivery_epoch(), None, "{decoded}");
+            input.push_bytes(rest);
+            assert!(drain(&mut input, 2).is_empty(), "{decoded}");
+            assert_eq!(
+                input.settle_delivery_epoch(),
+                Some(trailing_input()),
+                "{decoded}"
+            );
+            assert!(!input.has_pending_input(), "{decoded}");
+        }
+    }
+
+    #[test]
+    fn a_theme_reply_completing_after_the_end_marker_is_not_a_paste_suffix() {
+        let mut input = paste_after_an_in_flight_theme_query(b"\x1b[?1;");
+        assert_eq!(input.settle_delivery_epoch(), None);
+        input.push_bytes(b"2c");
+        assert!(drain(&mut input, 2).is_empty());
+        assert_eq!(
+            input.settle_delivery_epoch(),
+            Some(InputEvent::Paste(PasteOutcome::Text {
+                owner: PasteOwner::Composer,
+                text: "safe".to_owned(),
+            }))
+        );
+        assert_eq!(input.take_theme_query(3), Some(ThemeQuery::Background));
+    }
+
+    #[test]
+    fn a_theme_candidate_that_never_completes_rejects_the_paste_after_the_idle_timeout() {
+        let mut input = paste_after_an_in_flight_theme_query(b"\x1b[");
+        assert_eq!(input.settle_delivery_epoch(), None);
+        input.poll_theme_monitor(76);
+        assert_eq!(input.settle_delivery_epoch(), None);
+        assert!(drain(&mut input, 76).is_empty());
+        assert_eq!(input.settle_delivery_epoch(), Some(trailing_input()));
+        assert!(!input.has_pending_input());
     }
 
     #[test]
