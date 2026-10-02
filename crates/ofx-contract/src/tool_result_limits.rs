@@ -1,8 +1,8 @@
 use ofx_text::sanitize_model_text_owned;
 
-pub(crate) const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
+pub const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 
-pub(crate) fn prepare_model_output(tool_name: &str, raw: String, max_bytes: usize) -> String {
+pub fn prepare_model_output(tool_name: &str, raw: String, max_bytes: usize) -> String {
     let sanitized = sanitize_model_text_owned(raw.into_bytes());
     if sanitized.len() <= max_bytes {
         return sanitized;
