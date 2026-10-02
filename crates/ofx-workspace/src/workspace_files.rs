@@ -148,6 +148,12 @@ impl CandidatePaths {
         self.push_joined(&[], path);
     }
 
+    pub(crate) fn contains(&self, path: &[u8]) -> bool {
+        self.spans
+            .binary_search_by(|span| self.path(*span).cmp(path))
+            .is_ok()
+    }
+
     pub fn sort(&mut self) {
         let bytes = &self.bytes;
         self.spans.sort_unstable_by(|left, right| {
@@ -297,7 +303,7 @@ pub(crate) fn discover_listing_directories(
                 workspace_root,
                 &git_options,
                 WalkTarget::Directories,
-                Some(ignored.as_slice()),
+                Some(&ignored),
             ));
         }
         if has_git_metadata(workspace_root) {
@@ -321,28 +327,27 @@ fn has_git_metadata(workspace_root: &Path) -> bool {
     })
 }
 
-fn parse_ignored_directories(raw: &[u8]) -> Vec<Vec<u8>> {
+fn parse_ignored_directories(raw: &[u8]) -> CandidatePaths {
     let separator = if memchr(0, raw).is_some() { 0 } else { b'\n' };
-    let mut ignored: Vec<Vec<u8>> = raw
-        .split(|byte| *byte == separator)
-        .filter_map(|entry| {
-            let entry = if separator == b'\n' {
-                trim_trailing_carriage_returns(entry)
-            } else {
-                entry
-            };
-            if entry.last() != Some(&b'/') {
-                return None;
-            }
-            let end = entry
-                .iter()
-                .rposition(|byte| *byte != b'/')
-                .map(|index| index + 1)?;
-            entry.get(..end).map(<[u8]>::to_vec)
-        })
-        .collect();
-    ignored.sort_unstable();
-    ignored.dedup();
+    let mut ignored = CandidatePaths::default();
+    for entry in raw.split(|byte| *byte == separator) {
+        let entry = if separator == b'\n' {
+            trim_trailing_carriage_returns(entry)
+        } else {
+            entry
+        };
+        if entry.last() != Some(&b'/') {
+            continue;
+        }
+        if let Some(directory) = entry
+            .iter()
+            .rposition(|byte| *byte != b'/')
+            .and_then(|end| entry.get(..=end))
+        {
+            ignored.push(directory);
+        }
+    }
+    ignored.sort();
     ignored
 }
 
@@ -497,7 +502,7 @@ fn walk_workspace_paths(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
     target: WalkTarget,
-    ignored_paths: Option<&[Vec<u8>]>,
+    ignored_paths: Option<&CandidatePaths>,
 ) -> Discovery {
     let mut files = CandidatePaths::default();
     let mut stats = CandidateStats::default();
@@ -547,7 +552,7 @@ fn walk_workspace_paths(
             } else {
                 [&top.prefix[..], b"/", name].concat()
             };
-            if ignored_paths.is_some_and(|ignored| ignored.binary_search(&prefix).is_ok()) {
+            if ignored_paths.is_some_and(|ignored| ignored.contains(&prefix)) {
                 continue;
             }
             if target == WalkTarget::Directories {
@@ -1102,14 +1107,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ignored_directory_listings_keep_each_directory_once_in_byte_order() {
-        assert_eq!(
-            parse_ignored_directories(b"z/\0a/b//\0debug.log\0a/b/\0/\0"),
-            [b"a/b".to_vec(), b"z".to_vec()]
-        );
-        assert_eq!(
-            parse_ignored_directories(b"build/\r\nnotes.txt\n"),
-            [b"build".to_vec()]
-        );
+    fn ignored_directory_listings_keep_only_directories() {
+        let ignored = parse_ignored_directories(b"z/\0a/b//\0debug.log\0a/b/\0/\0");
+        assert!(ignored.contains(b"a/b"));
+        assert!(ignored.contains(b"z"));
+        assert!(!ignored.contains(b"debug.log"));
+        assert!(!ignored.contains(b"a"));
+        assert!(!ignored.contains(b""));
+        let lines = parse_ignored_directories(b"build/\r\nnotes.txt\n");
+        assert_eq!(listed(&lines), ["build"]);
     }
 }
