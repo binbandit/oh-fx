@@ -75,7 +75,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 
 - Binary `oh-fx`, with an `ofx` symlink installed next to it.
 - Environment variables use the `OH_FX_` prefix in place of upstream's `FX_`.
-- Settings live in `$XDG_CONFIG_HOME/oh-fx` (default `~/.config/oh-fx`), sessions and credentials in `$XDG_DATA_HOME/oh-fx`, logs and upgrade state in `$XDG_STATE_HOME/oh-fx`, and caches in `$XDG_CACHE_HOME/oh-fx`, on Linux and macOS alike.
+- Settings live in `$XDG_CONFIG_HOME/oh-fx` (default `~/.config/oh-fx`), sessions, prompt history, and credentials in `$XDG_DATA_HOME/oh-fx`, logs and upgrade state in `$XDG_STATE_HOME/oh-fx`, and caches in `$XDG_CACHE_HOME/oh-fx`, on Linux and macOS alike.
 - Project configuration is `.oh-fx.json`, and project skills live in `.oh-fx/skills`. The managed skill install root is `$XDG_CONFIG_HOME/oh-fx/skills` (default `~/.config/oh-fx/skills`), beside the global `AGENTS.md`, where upstream uses `~/.fx/skills`; the configuration directory is canonicalized first, as it is for `AGENTS.md`. The other agents' compatibility roots keep upstream's paths.
 - Saved sessions live in `$XDG_DATA_HOME/oh-fx/sessions/<id>`, and the session `-c` reopens for each workspace is named in `$XDG_DATA_HOME/oh-fx/continue/<sha256 of the workspace root>`, where upstream uses `~/.fx/sessions` and `~/.fx/continue`. File names, JSON fields, schema versions, and permissions inside them follow upstream.
 - Prompt history lives in `$XDG_DATA_HOME/oh-fx/history.jsonl`, guarded by `history.lock` beside it, where upstream uses `~/.fx/history.jsonl` and `~/.fx/history.lock`. Its records, size caps, compaction, deduplication, and permissions follow upstream.
