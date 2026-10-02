@@ -857,18 +857,19 @@ mod tests {
             (b"\x1b_Gi=", b"1;OK\x1b\\", 150),
         ] {
             let mut test = command_prompt_with_theme_monitor();
-            press(&mut test, first);
-            test.advance(gap);
-            test.step();
-            test.step();
-            press(&mut test, rest);
-            test.advance(100);
-            test.step();
+            let feed = |test: &mut TestShell, bytes: &[u8], wait_ms: u64| {
+                test.shell.input.push_bytes(bytes);
+                test.shell.flush_pending_input().unwrap();
+                test.advance(wait_ms);
+                test.shell.flush_pending_input().unwrap();
+            };
+            feed(&mut test, first, gap);
+            feed(&mut test, b"", gap);
+            feed(&mut test, rest, 100);
             assert!(!approved(&test), "{first:?} {rest:?}");
             assert!(test.shell.composer.is_empty(), "{first:?} {rest:?}");
             test.advance(ARMED_MS);
-            press(&mut test, b"1");
-            assert!(approved(&test), "{first:?} {rest:?}");
+            assert!(approve_now(&mut test), "{first:?} {rest:?}");
         }
     }
 
