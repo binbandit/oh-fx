@@ -108,11 +108,10 @@ mod tests {
 
     use super::*;
 
-    const SHORT_LIMIT: Duration = Duration::from_millis(300);
     const HANG_LIMIT: Duration = Duration::from_secs(1);
 
     fn large_text() -> String {
-        "clipboard ✓\n".repeat(128 * 1024)
+        "clipboard ✓\n".repeat(8 * 1024 * 1024 / "clipboard ✓\n".len())
     }
 
     fn still_running(pid: &str) -> bool {
@@ -137,26 +136,50 @@ mod tests {
 
     #[test]
     fn native_clipboard_accepts_only_a_successful_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let cases = [
+            ("cat >/dev/null", COPY_LIMIT, true),
+            ("cat >/dev/null; exit 1", COPY_LIMIT, false),
+            ("cat >/dev/null; kill -TERM $$", COPY_LIMIT, false),
+            ("cat >/dev/null; kill -STOP $$", HANG_LIMIT, false),
+        ];
+        for (index, (script, limit, copied)) in cases.into_iter().enumerate() {
+            let pid_file = directory.path().join(index.to_string());
+            let script = format!("echo $$ > \"$0\"; {script}");
+            assert_eq!(
+                copy_through(
+                    &["sh", "-c", &script, pid_file.to_str().unwrap()],
+                    b"text",
+                    limit
+                ),
+                copied,
+                "{script}"
+            );
+            let pid = fs::read_to_string(&pid_file).unwrap();
+            assert!(!still_running(pid.trim()), "{script}");
+        }
+    }
+
+    #[test]
+    fn the_text_reaches_the_command_only_on_its_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input");
+        let arguments = directory.path().join("arguments");
+        let text = "$(touch injected) `touch injected`; touch injected\n-selection primary \u{1b}]52;c;aGk=\u{7}\0";
         assert!(copy_through(
-            &["sh", "-c", "cat >/dev/null"],
-            b"text",
+            &[
+                "sh",
+                "-c",
+                "cd \"$(dirname \"$0\")\" && echo \"$#\" > \"$1\" && cat > \"$0\"",
+                input.to_str().unwrap(),
+                arguments.to_str().unwrap(),
+            ],
+            text.as_bytes(),
             COPY_LIMIT
         ));
-        assert!(!copy_through(
-            &["sh", "-c", "cat >/dev/null; exit 1"],
-            b"text",
-            COPY_LIMIT
-        ));
-        assert!(!copy_through(
-            &["sh", "-c", "cat >/dev/null; kill -TERM $$"],
-            b"text",
-            COPY_LIMIT
-        ));
-        assert!(!copy_through(
-            &["sh", "-c", "cat >/dev/null; kill -STOP $$"],
-            b"text",
-            SHORT_LIMIT
-        ));
+        assert_eq!(fs::read(&input).unwrap(), text.as_bytes());
+        assert_eq!(fs::read_to_string(&arguments).unwrap(), "1\n");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
     }
 
     #[test]
@@ -182,10 +205,40 @@ mod tests {
             COPY_LIMIT
         ));
         assert!(!copy_through(
+            &["oh-fx-clipboard-missing-from-path"],
+            b"text",
+            COPY_LIMIT
+        ));
+        assert!(!copy_through(
             &["true"],
             large_text().as_bytes(),
             COPY_LIMIT
         ));
+    }
+
+    #[test]
+    fn a_command_that_leaves_a_server_running_still_finishes_the_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let server_pid_file = directory.path().join("server");
+        assert!(copy_through(
+            &[
+                "sh",
+                "-c",
+                "cat >/dev/null; sleep 30 & echo $! > \"$0\"",
+                server_pid_file.to_str().unwrap()
+            ],
+            b"text",
+            COPY_LIMIT
+        ));
+        let server = fs::read_to_string(&server_pid_file).unwrap();
+        assert!(still_running(server.trim()));
+        assert!(
+            Command::new("kill")
+                .arg(server.trim())
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 
     #[test]

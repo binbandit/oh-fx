@@ -141,7 +141,9 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::super::test_shell::TestShell;
-    use crate::input::{COMPOSER_INPUT_LIMIT_BYTES, MoveIntent, MoveKind};
+    use crate::input::{
+        COMPOSER_INPUT_LIMIT_BYTES, MoveIntent, MoveKind, PasteOutcome, PasteOwner,
+    };
 
     const SELECT_ALL: &[u8] = b"\x1b[97;9u";
     const COPY: &[u8] = b"\x1b[99;9u";
@@ -319,5 +321,87 @@ mod tests {
         settle(&mut test);
         assert_eq!(test.copied(), ["alpha beta", "beta"]);
         assert_eq!(test.shell.composer.text(), "alpha ");
+    }
+
+    #[test]
+    fn a_pasted_block_is_copied_as_its_placeholder_and_cut_with_its_text() {
+        let mut test = TestShell::start();
+        let pasted = "api_key=sk-live-0123456789\n".repeat(64);
+        test.shell.handle_paste(PasteOutcome::Text {
+            owner: PasteOwner::Composer,
+            text: pasted.clone(),
+        });
+        let placeholder = test.shell.composer.text().to_owned();
+        assert!(placeholder.starts_with("[Pasted text #1"));
+        press(&mut test, SELECT_ALL);
+        press(&mut test, COPY);
+        settle(&mut test);
+        assert_eq!(test.copied(), [placeholder.as_str()]);
+        assert_eq!(test.shell.composer.expanded_text(), pasted);
+
+        press(&mut test, CUT);
+        settle(&mut test);
+        assert_eq!(test.copied(), [placeholder.as_str(), placeholder.as_str()]);
+        assert_eq!(test.shell.composer.expanded_text(), "");
+        assert!(!test.screen().contains("sk-live"));
+    }
+
+    #[test]
+    fn an_authorization_code_paste_never_reaches_the_clipboard() {
+        let mut test = TestShell::start();
+        press(&mut test, b"keep ");
+        test.shell.input.begin_paste(PasteOwner::AuthCode, 64);
+        press(&mut test, b"code-123\x1b[201~");
+        press(&mut test, SELECT_ALL);
+        press(&mut test, CUT);
+        settle(&mut test);
+        assert_eq!(test.copied(), ["keep "]);
+        assert_eq!(test.shell.composer.text(), "");
+        assert!(!test.screen().contains("code-123"));
+    }
+
+    #[test]
+    fn a_copy_never_writes_the_selection_to_the_terminal() {
+        let mut test = TestShell::start();
+        let hostile = "keep \u{1b}]52;c;cm0gLXJmIH4=\u{7} me";
+        draft(&mut test, hostile);
+        press(&mut test, SELECT_ALL);
+        let mut written = test.written();
+        press(&mut test, COPY);
+        settle(&mut test);
+        press(&mut test, CUT);
+        settle(&mut test);
+        written.push_str(&test.written());
+        assert_eq!(test.copied(), [hostile, hostile]);
+        assert_eq!(test.shell.composer.text(), "");
+        assert!(!written.contains("\u{1b}]52"), "{written:?}");
+        assert!(!written.contains('\u{7}'), "{written:?}");
+    }
+
+    #[test]
+    fn a_large_selection_is_copied_and_cut_whole() {
+        let mut test = TestShell::start();
+        let huge = "clipboard ✓\n".repeat(1024 * 1024 / "clipboard ✓\n".len());
+        draft(&mut test, &huge);
+        assert_eq!(test.shell.composer.text().len(), huge.len());
+        press(&mut test, SELECT_ALL);
+        press(&mut test, CUT);
+        settle(&mut test);
+        assert_eq!(test.copied(), [huge]);
+        assert_eq!(test.shell.composer.text(), "");
+    }
+
+    #[test]
+    fn a_failed_copy_reports_nothing_on_screen() {
+        let mut test = TestShell::start();
+        test.clipboard.fails.store(true, Ordering::Release);
+        press(&mut test, b"keep me");
+        press(&mut test, SELECT_ALL);
+        let before = test.screen();
+        press(&mut test, CUT);
+        settle(&mut test);
+        assert_eq!(test.copied(), ["keep me"]);
+        assert_eq!(test.screen(), before);
+        assert_eq!(test.shell.composer.selected_text(), Some("keep me"));
     }
 }
