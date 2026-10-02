@@ -18,7 +18,8 @@ const WORKSPACE_CHANGE_REASON: &str = "This action changes files in your workspa
 const EXTERNAL_CHANGE_REASON: &str = "This action changes a file outside your workspace.";
 const COMMAND_LEAD: &str = "$ ";
 const INPUT_LEAD: &str = "> ";
-const RUN_HEADER: &str = "# shell.run";
+const HEADER_LEAD: &str = "# ";
+const RUN_HEADER: &str = "shell.run";
 const REMEMBER_COMMAND: &str = "don't ask again for this exact command in ";
 const FOR_THIS_SESSION: &str = " for this session";
 
@@ -35,6 +36,7 @@ pub(crate) struct ApprovalContent {
 pub(crate) enum ActionBlock {
     Line(Phrase),
     Note(&'static str),
+    Header { lead: &'static str, text: String },
     Wrapped { lead: &'static str, text: String },
     Arguments { target: String, preview: String },
 }
@@ -58,18 +60,21 @@ impl ApprovalContent {
                         safe_text(host.as_bytes())
                     )
                 }),
-                action: vec![ActionBlock::Wrapped {
-                    lead: COMMAND_LEAD,
-                    text: run_text(
-                        command,
-                        &RunSettings {
-                            cwd: (cwd != workspace_root).then_some(cwd.as_path()),
+                action: vec![
+                    ActionBlock::Header {
+                        lead: HEADER_LEAD,
+                        text: run_header(&RunSettings {
+                            cwd: Some(cwd),
                             profile: *profile,
                             shell: shell.as_deref(),
                             terminal: *terminal,
-                        },
-                    ),
-                }],
+                        }),
+                    },
+                    ActionBlock::Wrapped {
+                        lead: COMMAND_LEAD,
+                        text: project_command_text(command),
+                    },
+                ],
                 remember,
             },
             Some(CommandRequest::SendInput { input }) => Self::generic(
@@ -177,11 +182,11 @@ struct RunSettings<'a> {
 impl RunSettings<'_> {
     fn describe(&self) -> Vec<String> {
         let mut parts = Vec::new();
-        if self.profile == CommandProfile::Clean {
-            parts.push("profile=clean".to_owned());
-        }
         if let Some(cwd) = self.cwd {
             parts.push(format!("cwd={}", safe_text(cwd.as_os_str().as_bytes())));
+        }
+        if self.profile == CommandProfile::Clean {
+            parts.push("profile=clean".to_owned());
         }
         if self.terminal {
             parts.push("tty=true".to_owned());
@@ -193,14 +198,13 @@ impl RunSettings<'_> {
     }
 }
 
-fn run_text(command: &str, settings: &RunSettings<'_>) -> String {
-    let command = project_command_text(command);
-    let parts = settings.describe();
-    if parts.is_empty() {
-        command
-    } else {
-        format!("{RUN_HEADER} {}\n{command}", parts.join(" "))
+fn run_header(settings: &RunSettings<'_>) -> String {
+    let mut header = RUN_HEADER.to_owned();
+    for part in settings.describe() {
+        header.push(' ');
+        header.push_str(&part);
     }
+    header
 }
 
 fn remember_label(grant: &SessionGrant) -> Phrase {
@@ -331,10 +335,16 @@ mod tests {
         assert_eq!(shown.reason, None);
         assert_eq!(
             shown.action,
-            [ActionBlock::Wrapped {
-                lead: "$ ",
-                text: "echo hi\n\\x1b[31mdone".to_owned()
-            }]
+            [
+                ActionBlock::Header {
+                    lead: "# ",
+                    text: "shell.run cwd=/ws".to_owned()
+                },
+                ActionBlock::Wrapped {
+                    lead: "$ ",
+                    text: "echo hi\n\\x1b[31mdone".to_owned()
+                }
+            ]
         );
         assert_eq!(
             shown.remember,
@@ -379,10 +389,16 @@ mod tests {
         );
         assert_eq!(
             shown.action,
-            [ActionBlock::Wrapped {
-                lead: "$ ",
-                text: "# shell.run profile=clean cwd=/tmp/a\\x0ab tty=true\nmake".to_owned()
-            }]
+            [
+                ActionBlock::Header {
+                    lead: "# ",
+                    text: "shell.run cwd=/tmp/a\\x0ab profile=clean tty=true".to_owned()
+                },
+                ActionBlock::Wrapped {
+                    lead: "$ ",
+                    text: "make".to_owned()
+                }
+            ]
         );
         assert_eq!(
             shown.remember,
@@ -409,10 +425,16 @@ mod tests {
         let shown = content(named, Some(named_grant));
         assert_eq!(
             shown.action,
-            [ActionBlock::Wrapped {
-                lead: "$ ",
-                text: "# shell.run tty=true shell=/opt/fish\\x1b\ntop".to_owned()
-            }]
+            [
+                ActionBlock::Header {
+                    lead: "# ",
+                    text: "shell.run cwd=/ws tty=true shell=/opt/fish\\x1b".to_owned()
+                },
+                ActionBlock::Wrapped {
+                    lead: "$ ",
+                    text: "top".to_owned()
+                }
+            ]
         );
         assert_eq!(
             shown.remember,
