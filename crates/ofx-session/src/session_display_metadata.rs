@@ -15,13 +15,21 @@ pub(crate) fn derive_display_title(history: &SavedHistory) -> String {
             Some(ConversationEvent::User(user)) => titled_prompt(&user.text),
             _ => None,
         })
-        .and_then(|prompt| {
-            prompt
-                .split('\n')
-                .map(|line| line.trim_matches(LINE_TRIM))
-                .find(|line| !line.is_empty())
-        })
-        .map_or_else(|| FALLBACK_TITLE.to_owned(), capped_title)
+        .and_then(first_line_title)
+        .unwrap_or_else(|| FALLBACK_TITLE.to_owned())
+}
+
+pub(crate) fn prompt_title(prompt: &str) -> Option<String> {
+    titled_prompt(prompt).and_then(first_line_title)
+}
+
+fn first_line_title(prompt: &str) -> Option<String> {
+    prompt
+        .split('\n')
+        .map(|line| line.trim_matches(LINE_TRIM))
+        .find(|line| !line.is_empty())
+        .map(capped_title)
+        .filter(|title| title != FALLBACK_TITLE)
 }
 
 fn titled_prompt(text: &str) -> Option<&str> {
@@ -104,6 +112,18 @@ mod tests {
             compaction_count: 1,
         });
         assert_eq!(derive_display_title(&compacted), FALLBACK_TITLE);
+    }
+
+    #[test]
+    fn a_prompt_names_a_session_only_when_it_is_not_a_command_or_blank() {
+        assert_eq!(
+            prompt_title("  \n  fix the flaky test\nmore").as_deref(),
+            Some("fix the flaky test")
+        );
+        assert_eq!(prompt_title("/help"), None);
+        assert_eq!(prompt_title(" \n\t"), None);
+        assert_eq!(prompt_title("\x0b\x0c"), None);
+        assert_eq!(prompt_title(FALLBACK_TITLE), None);
     }
 
     #[test]

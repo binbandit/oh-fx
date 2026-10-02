@@ -17,7 +17,7 @@ use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
 };
-use crate::session_display_metadata::derive_display_title;
+use crate::session_display_metadata::{derive_display_title, prompt_title};
 use crate::session_error::SessionError;
 use crate::session_event::{
     ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent, ToolResultEvent,
@@ -163,7 +163,9 @@ impl WritableSession {
         if saved.is_err() && self.writer.turn_open() {
             self.writer.block_open_turn();
         }
-        saved
+        saved?;
+        self.write_first_title(turn.user);
+        Ok(())
     }
 
     fn append_turn(
@@ -200,7 +202,22 @@ impl WritableSession {
                 summary: summary.to_owned(),
             },
         ));
-        self.append(timestamp_ms, &events)
+        self.append(timestamp_ms, &events)?;
+        if let Some(active) = active {
+            self.write_first_title(active.user);
+        }
+        Ok(())
+    }
+
+    fn write_first_title(&mut self, prompt: &str) {
+        if !self.started || self.metadata.title.is_some() {
+            return;
+        }
+        if let Some(title) = prompt_title(prompt) {
+            let mut proposed = self.metadata.clone();
+            proposed.title = Some(title);
+            let _ = self.write_metadata(proposed);
+        }
     }
 
     fn active_prefix(

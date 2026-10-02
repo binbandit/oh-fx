@@ -987,3 +987,65 @@ fn saved_results_larger_than_replay_limit_keep_the_complete_sidecar() {
         .unwrap();
     assert!(found);
 }
+
+fn saved_title(fixture: &Fixture) -> Value {
+    let manifest = fs::read_to_string(fixture.dir().join("session.json")).unwrap();
+    serde_json::from_str::<Value>(&manifest).unwrap()["title"].clone()
+}
+
+#[test]
+fn the_first_saved_prompt_names_a_fresh_session_once() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("/help", "commands"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+    session
+        .record_turn(&simple_turn("  fix the\tbuild\nplease", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "fix the build");
+    session
+        .record_turn(&simple_turn("rename me", "no"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "fix the build");
+    assert_eq!(session.display_title(), "fix the build");
+}
+
+#[test]
+fn a_resumed_session_or_a_checkpointed_first_turn_keeps_titles_as_upstream() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let cut = HistoryCut {
+        turns: 0,
+        tool_steps: 0,
+    };
+    session
+        .record_compaction(
+            "S",
+            cut,
+            Some(&simple_turn("compacted first", "")),
+            &gateway(),
+        )
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "compacted first");
+    drop(session);
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_compaction("S", cut, None, &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+    drop(session);
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("/model", "listed"), &gateway())
+        .unwrap();
+    drop(session);
+    let mut resumed = resume_session(&fixture.sessions, "restored", LOCK_DEADLINE).unwrap();
+    resumed
+        .record_turn(&simple_turn("named later", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+}

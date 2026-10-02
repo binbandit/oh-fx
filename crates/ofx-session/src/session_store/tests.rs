@@ -323,6 +323,33 @@ fn latest_resume_reports_a_busy_session_instead_of_skipping_it() {
 }
 
 #[test]
+fn resuming_without_waiting_reports_a_held_session_busy_at_once() {
+    let fixture = Fixture::new();
+    fixture.seed("held", "/w", 1, 10);
+    let store = fixture.store("/w");
+    let held = store.resume("held").unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        store.resume_without_waiting("held").err(),
+        Some(SessionError::SessionBusy)
+    );
+    assert!(started.elapsed() < LOCK_DEADLINE);
+    drop(held);
+    let reopened = store.resume_without_waiting("held").unwrap();
+    assert_eq!(reopened.id(), "held");
+    let elsewhere = fixture.store("/elsewhere");
+    drop(reopened);
+    assert_eq!(
+        elsewhere
+            .resume_without_waiting("held")
+            .unwrap()
+            .metadata()
+            .workspace_root,
+        "/elsewhere"
+    );
+}
+
+#[test]
 fn a_fifo_never_blocks_listing_or_latest_resume() {
     for file in ["events.jsonl", "session.json"] {
         let fixture = Fixture::new();
