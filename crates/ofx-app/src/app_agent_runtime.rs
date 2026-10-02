@@ -402,11 +402,11 @@ impl Controller {
         self.state.emit(UiEvent::SessionPickerOpened { scope });
     }
 
-    fn list_sessions(&self, scope: SessionScope, after: Option<SessionCursor>, limit: usize) {
+    fn list_sessions(&mut self, scope: SessionScope, after: Option<SessionCursor>, limit: usize) {
         let more = after.is_some();
         let listed = self
             .persistence
-            .as_ref()
+            .as_mut()
             .map_or(Err(SessionError::SessionStoreUnavailable), |persistence| {
                 persistence.page(scope, after, limit)
             });

@@ -111,7 +111,9 @@ fn opening_a_store_creates_a_private_layout_and_reading_creates_nothing() {
     let fixture = Fixture::new();
     let reader = fixture.reader("/workspace");
     assert_eq!(
-        reader.resumable_page(ListScope::AllWorkspaces, None, None, 10),
+        reader
+            .catalog()
+            .map(|catalog| catalog.page(ListScope::AllWorkspaces, None, None, 10)),
         Ok(ResumablePage::default())
     );
     assert_eq!(
@@ -189,7 +191,8 @@ fn listing_is_newest_first_with_ties_broken_by_descending_id() {
     fixture.seed("tie-b", "/workspace", 1, 200);
     let page = fixture
         .reader("/workspace")
-        .resumable_page(ListScope::AllWorkspaces, None, None, 10)
+        .catalog()
+        .map(|catalog| catalog.page(ListScope::AllWorkspaces, None, None, 10))
         .unwrap();
     assert_eq!(ids(&page), ["newer", "tie-b", "tie-a", "older"]);
     assert_eq!(page.summaries[0].updated_at_ms, 300_000);
@@ -207,7 +210,8 @@ fn resumable_pages_filter_before_paging_and_preserve_continuation_order() {
     fixture.seed("a3", "/a", 1, 50);
     let store = fixture.reader("/a");
     let first = store
-        .resumable_page(ListScope::CurrentWorkspace, Some("a3"), None, 1)
+        .catalog()
+        .map(|catalog| catalog.page(ListScope::CurrentWorkspace, Some("a3"), None, 1))
         .unwrap();
     assert_eq!(ids(&first), ["a2"]);
     assert!(first.has_more);
@@ -216,14 +220,44 @@ fn resumable_pages_filter_before_paging_and_preserve_continuation_order() {
         id: first.summaries[0].id.clone(),
     };
     let second = store
-        .resumable_page(ListScope::CurrentWorkspace, Some("a3"), Some(&after), 1)
+        .catalog()
+        .map(|catalog| catalog.page(ListScope::CurrentWorkspace, Some("a3"), Some(&after), 1))
         .unwrap();
     assert_eq!(ids(&second), ["a1"]);
     assert!(!second.has_more);
     let everywhere = store
-        .resumable_page(ListScope::AllWorkspaces, None, None, 10)
+        .catalog()
+        .map(|catalog| catalog.page(ListScope::AllWorkspaces, None, None, 10))
         .unwrap();
     assert_eq!(ids(&everywhere), ["a3", "a2", "b1", "a1"]);
+}
+
+#[test]
+fn a_catalog_pages_through_the_sessions_it_scanned() {
+    let fixture = Fixture::new();
+    fixture.seed("a1", "/a", 1, 10);
+    fixture.seed("a2", "/a", 1, 20);
+    let store = fixture.reader("/a");
+    let catalog = store.catalog().unwrap();
+    fixture.seed("a3", "/a", 1, 30);
+    fs::remove_dir_all(fixture.data().join("sessions/a1")).unwrap();
+    let first = catalog.page(ListScope::CurrentWorkspace, None, None, 1);
+    assert_eq!(ids(&first), ["a2"]);
+    let after = ResumeContinuation {
+        updated_at_ms: first.summaries[0].updated_at_ms,
+        id: first.summaries[0].id.clone(),
+    };
+    assert_eq!(
+        ids(&catalog.page(ListScope::CurrentWorkspace, None, Some(&after), 1)),
+        ["a1"]
+    );
+    assert_eq!(
+        ids(&store
+            .catalog()
+            .unwrap()
+            .page(ListScope::CurrentWorkspace, None, None, 10)),
+        ["a3", "a2"]
+    );
 }
 
 #[test]
@@ -245,7 +279,8 @@ fn checkpoints_make_a_session_resumable_and_listing_counts_turns() {
         .unwrap();
     drop(session);
     let page = store
-        .resumable_page(ListScope::CurrentWorkspace, None, None, 10)
+        .catalog()
+        .map(|catalog| catalog.page(ListScope::CurrentWorkspace, None, None, 10))
         .unwrap();
     assert_eq!(page.summaries.len(), 1);
     assert_eq!(page.summaries[0].history_len, 2);
@@ -269,7 +304,8 @@ fn listing_skips_entries_that_are_not_sessions() {
     symlink(sessions.join("good"), sessions.join("alias")).unwrap();
     let page = fixture
         .reader("/w")
-        .resumable_page(ListScope::AllWorkspaces, None, None, 10)
+        .catalog()
+        .map(|catalog| catalog.page(ListScope::AllWorkspaces, None, None, 10))
         .unwrap();
     assert_eq!(ids(&page), ["good"]);
 }
@@ -344,7 +380,8 @@ fn opening_without_waiting_reports_a_held_session_busy_at_once_and_moves_nothing
     drop(opened);
     assert_eq!(
         store
-            .resumable_page(ListScope::CurrentWorkspace, None, None, 10)
+            .catalog()
+            .map(|catalog| catalog.page(ListScope::CurrentWorkspace, None, None, 10))
             .unwrap()
             .summaries
             .len(),
@@ -357,7 +394,8 @@ fn opening_without_waiting_reports_a_held_session_busy_at_once_and_moves_nothing
     drop(opened);
     assert!(
         store
-            .resumable_page(ListScope::CurrentWorkspace, None, None, 10)
+            .catalog()
+            .map(|catalog| catalog.page(ListScope::CurrentWorkspace, None, None, 10))
             .unwrap()
             .summaries
             .is_empty()
@@ -381,7 +419,8 @@ fn a_fifo_never_blocks_listing_or_latest_resume() {
         );
         let store = fixture.store("/w");
         let page = store
-            .resumable_page(ListScope::AllWorkspaces, None, None, 10)
+            .catalog()
+            .map(|catalog| catalog.page(ListScope::AllWorkspaces, None, None, 10))
             .unwrap();
         assert_eq!(ids(&page), ["older"], "{file}");
         assert_eq!(store.resume_latest().unwrap().id(), "older", "{file}");

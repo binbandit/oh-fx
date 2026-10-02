@@ -21,7 +21,7 @@ pub(crate) struct Refused {
 
 impl Persistence {
     pub(crate) fn page(
-        &self,
+        &mut self,
         scope: SessionScope,
         after: Option<SessionCursor>,
         limit: usize,
@@ -30,7 +30,11 @@ impl Persistence {
             updated_at_ms: cursor.updated_at_ms,
             id: cursor.id.clone(),
         });
-        let listed = self.store.resumable_page(
+        let catalog = match self.catalog.take() {
+            Some(catalog) if after.is_some() => catalog,
+            _ => self.store.catalog()?,
+        };
+        let listed = catalog.page(
             match scope {
                 SessionScope::CurrentWorkspace => ListScope::CurrentWorkspace,
                 SessionScope::AllWorkspaces => ListScope::AllWorkspaces,
@@ -38,7 +42,8 @@ impl Persistence {
             self.live.as_ref().map(LiveSession::id),
             continuation.as_ref(),
             limit,
-        )?;
+        );
+        self.catalog = Some(catalog);
         Ok(SessionPage {
             scope,
             after,

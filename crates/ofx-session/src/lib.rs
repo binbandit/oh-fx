@@ -32,5 +32,5 @@ pub use session_layout::is_valid_session_id;
 pub use session_log::{
     CompactedHistory, SavedHistory, SavedSession, SavedTurn, SessionDisposal, WritableSession,
 };
-pub use session_store::{ListScope, ResumeTarget, SessionStore};
+pub use session_store::{ListScope, ResumeTarget, SessionCatalog, SessionStore};
 pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSummary};

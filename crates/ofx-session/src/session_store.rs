@@ -43,6 +43,33 @@ pub enum ListScope {
     CurrentWorkspace,
 }
 
+pub struct SessionCatalog {
+    summaries: Vec<SessionSummary>,
+    workspace_root: String,
+}
+
+impl SessionCatalog {
+    pub fn page(
+        &self,
+        scope: ListScope,
+        active_id: Option<&str>,
+        continuation: Option<&ResumeContinuation>,
+        limit: usize,
+    ) -> ResumablePage {
+        let workspace_root = match scope {
+            ListScope::AllWorkspaces => None,
+            ListScope::CurrentWorkspace => Some(self.workspace_root.as_str()),
+        };
+        resumable_page_from_summaries(
+            &self.summaries,
+            workspace_root,
+            active_id,
+            continuation,
+            limit,
+        )
+    }
+}
+
 pub struct SessionStore {
     data: Option<PrivateDir>,
     sessions: Option<PrivateDir>,
@@ -192,25 +219,11 @@ impl SessionStore {
         load_session(sessions, id)
     }
 
-    pub fn resumable_page(
-        &self,
-        scope: ListScope,
-        active_id: Option<&str>,
-        continuation: Option<&ResumeContinuation>,
-        limit: usize,
-    ) -> Result<ResumablePage, SessionError> {
-        let scan = self.scan_summaries()?;
-        let workspace_root = match scope {
-            ListScope::AllWorkspaces => None,
-            ListScope::CurrentWorkspace => Some(self.workspace_root.as_str()),
-        };
-        Ok(resumable_page_from_summaries(
-            &scan.summaries,
-            workspace_root,
-            active_id,
-            continuation,
-            limit,
-        ))
+    pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
+        Ok(SessionCatalog {
+            summaries: self.scan_summaries()?.summaries,
+            workspace_root: self.workspace_root.clone(),
+        })
     }
 
     pub fn remembered_session_id(&self) -> Result<Option<String>, SessionError> {
