@@ -8,7 +8,8 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use rustix::termios::{
-    self, ControlModes, InputModes, LocalModes, OptionalActions, SpecialCodeIndex, Termios,
+    self, ControlModes, InputModes, LocalModes, OptionalActions, QueueSelector, SpecialCodeIndex,
+    Termios,
 };
 
 use super::app_lifecycle;
@@ -101,6 +102,7 @@ pub(crate) struct Terminal {
     raw_enabled: bool,
     capabilities: Capabilities,
     write_abort: Option<OwnedFd>,
+    restore_wait: Duration,
     typeahead: Vec<u8>,
 }
 
@@ -111,7 +113,7 @@ impl Terminal {
         if !termios::isatty(stdin) || !termios::isatty(stdout) {
             return Err(TerminalError::NotATerminal);
         }
-        let output = nonblocking_output(stdout)?;
+        let output = terminal_output(stdout)?;
         Self::from_fds(
             rustix::io::fcntl_dupfd_cloexec(stdin, 0)?,
             output,
@@ -136,6 +138,7 @@ impl Terminal {
             raw_enabled: false,
             capabilities,
             write_abort: None,
+            restore_wait: ABNORMAL_RESTORE_WAIT,
             typeahead: Vec::new(),
         })
     }
@@ -174,15 +177,21 @@ impl Terminal {
     }
 
     pub(crate) fn disable_raw_mode(&mut self) {
-        self.release_raw_mode(OptionalActions::Flush);
+        if self.raw_enabled {
+            let _ = termios::tcsetattr(&self.input, OptionalActions::Flush, &self.original);
+            self.raw_enabled = false;
+        }
     }
 
-    pub(crate) fn release_raw_mode(&mut self, when: OptionalActions) {
-        if !self.raw_enabled {
-            return;
+    pub(crate) fn restore_abnormally(&mut self) {
+        let was_raw = std::mem::take(&mut self.raw_enabled);
+        if was_raw {
+            let _ = termios::tcsetattr(&self.input, OptionalActions::Now, &self.original);
         }
-        let _ = termios::tcsetattr(&self.input, when, &self.original);
-        self.raw_enabled = false;
+        self.write_abnormal_restore();
+        if was_raw {
+            let _ = termios::tcflush(&self.input, QueueSelector::IFlush);
+        }
     }
 
     pub(crate) fn query_layout(&self, footer_rows: u16) -> Result<Layout, TerminalError> {
@@ -273,18 +282,18 @@ impl Terminal {
     }
 
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
-        self.write_before(bytes, None)
-    }
-
-    pub(crate) fn write_abnormal_restore(&self) {
-        let sequence = app_lifecycle::abnormal_exit_restore_sequence(self.capabilities.tmux);
-        let deadline = Instant::now() + ABNORMAL_RESTORE_WAIT;
-        let _ = self.write_before(sequence.as_bytes(), Some(deadline));
-    }
-
-    fn write_before(&self, bytes: &[u8], deadline: Option<Instant>) -> Result<(), TerminalError> {
         let abort = self.write_abort.as_ref().map(AsFd::as_fd);
-        write_fully(self.output.as_fd(), bytes, abort, deadline).map_err(TerminalError::from)
+        write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
+    }
+
+    fn write_abnormal_restore(&self) {
+        let output = self.output.as_fd();
+        let deadline = Some(Instant::now() + self.restore_wait);
+        let _ = app_lifecycle::abnormal_exit_restore_sequences(self.capabilities.tmux)
+            .try_for_each(|sequence| {
+                wait_until_writable(output, None, deadline)?;
+                write_fully(output, sequence.as_bytes(), None, deadline)
+            });
     }
 
     fn read_reply(
@@ -322,8 +331,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.raw_enabled {
-            self.release_raw_mode(OptionalActions::Now);
-            self.write_abnormal_restore();
+            self.restore_abnormally();
         }
     }
 }
@@ -344,18 +352,31 @@ fn poll_retrying_interrupts(
     }
 }
 
-fn nonblocking_output(stdout: BorrowedFd<'_>) -> Result<OwnedFd, TerminalError> {
+fn terminal_output(stdout: BorrowedFd<'_>) -> rustix::io::Result<OwnedFd> {
     let flags = OFlags::WRONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-    termios::ttyname(stdout, Vec::new())
-        .and_then(|path| rustix::fs::open(path.as_c_str(), flags, Mode::empty()))
-        .or_else(|error| {
-            if controls_this_session(stdout) {
-                rustix::fs::open(CONTROLLING_TERMINAL, flags, Mode::empty()).map_err(|_| error)
-            } else {
-                Err(error)
-            }
-        })
-        .map_err(|error| TerminalError::OutputUnavailable(error.into()))
+    let reopen = |path: &CStr| {
+        rustix::fs::open(path, flags, Mode::empty())
+            .ok()
+            .filter(pollable)
+    };
+    if let Some(output) = termios::ttyname(stdout, Vec::new())
+        .ok()
+        .and_then(|path| reopen(&path))
+    {
+        return Ok(output);
+    }
+    if controls_this_session(stdout)
+        && let Some(output) = reopen(CONTROLLING_TERMINAL)
+    {
+        return Ok(output);
+    }
+    rustix::io::fcntl_dupfd_cloexec(stdout, 0)
+}
+
+fn pollable(output: &OwnedFd) -> bool {
+    let mut fds = [PollFd::new(output, PollFlags::OUT)];
+    rustix::event::poll(&mut fds, Some(&Timespec::default())).is_ok()
+        && !fds[0].revents().contains(PollFlags::NVAL)
 }
 
 fn controls_this_session(terminal: BorrowedFd<'_>) -> bool {
@@ -409,12 +430,26 @@ fn wait_until_writable(
             Err(Errno::INTR) => continue,
             Err(errno) => return Err(errno.into()),
         }
-        if abort.is_some() && fds[1].revents().contains(PollFlags::IN) {
-            return Err(std::io::ErrorKind::Interrupted.into());
+        let aborted = if abort.is_some() {
+            fds[1].revents()
+        } else {
+            PollFlags::empty()
+        };
+        if let Some(ready) = write_readiness(fds[0].revents(), aborted) {
+            return ready;
         }
-        if !fds[0].revents().is_empty() {
-            return Ok(());
-        }
+    }
+}
+
+fn write_readiness(output: PollFlags, abort: PollFlags) -> Option<std::io::Result<()>> {
+    if abort.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
+        Some(Err(std::io::ErrorKind::Interrupted.into()))
+    } else if output.union(abort).contains(PollFlags::NVAL) {
+        Some(Err(Errno::BADF.into()))
+    } else if output.is_empty() {
+        None
+    } else {
+        Some(Ok(()))
     }
 }
 
@@ -527,6 +562,15 @@ pub(crate) mod test_pty {
         }
     }
 
+    pub(crate) fn type_ahead(pty: &PtyPair, terminal: &Terminal) {
+        rustix::io::write(&pty.master, b"git push --force\r").unwrap();
+        assert!(terminal.poll_input(Some(WAIT)).unwrap().readable);
+    }
+
+    pub(crate) fn unread_input(pty: &PtyPair) -> u64 {
+        rustix::io::ioctl_fionread(&pty.slave).unwrap()
+    }
+
     pub(crate) fn terminal(pty: &PtyPair) -> Terminal {
         Terminal::from_fds(
             pty.slave.try_clone().unwrap(),
@@ -634,6 +678,116 @@ mod tests {
         assert!(!read_master(&pty).is_empty());
     }
 
+    fn abnormal_restore() -> String {
+        app_lifecycle::abnormal_exit_restore_sequences(false).collect()
+    }
+
+    fn drain_until(master: &OwnedFd, needle: &[u8]) -> Vec<u8> {
+        let deadline = Instant::now() + test_pty::WAIT;
+        let mut collected = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        while Instant::now() < deadline
+            && !collected
+                .windows(needle.len())
+                .any(|window| window == needle)
+        {
+            let mut fds = [PollFd::new(master, PollFlags::IN)];
+            let timeout = Timespec::try_from(Duration::from_millis(50)).unwrap();
+            if rustix::event::poll(&mut fds, Some(&timeout)).unwrap() > 0 {
+                let count = rustix::io::read(master, &mut buffer).unwrap();
+                collected.extend_from_slice(&buffer[..count]);
+            }
+        }
+        collected
+    }
+
+    fn fill_output_queue(terminal: &Terminal) {
+        let chunk = [b'x'; 4096];
+        loop {
+            while rustix::io::write(&terminal.output, &chunk).is_ok() {}
+            let mut fds = [PollFd::new(&terminal.output, PollFlags::OUT)];
+            let settle = Timespec::try_from(Duration::from_millis(50)).unwrap();
+            if rustix::event::poll(&mut fds, Some(&settle)).unwrap() == 0 {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn the_signal_restore_waits_for_a_full_queue_after_the_abort_descriptor_wakes() {
+        let pty = test_pty::open();
+        let mut terminal = nonblocking_terminal(&pty);
+        let (abort, wake) = std::os::unix::net::UnixStream::pair().unwrap();
+        terminal.abort_writes_when_readable(abort.into());
+        rustix::io::write(&wake, &[1]).unwrap();
+        terminal.enable_raw_mode().unwrap();
+        fill_output_queue(&terminal);
+        let started = Instant::now();
+        terminal.restore_abnormally();
+        assert!(started.elapsed() >= ABNORMAL_RESTORE_WAIT);
+        terminal.restore_wait = test_pty::WAIT;
+        let restore = abnormal_restore().replace('\n', "\r\n");
+        let master = pty.master.try_clone().unwrap();
+        let needle = restore.clone().into_bytes();
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            drain_until(&master, &needle)
+        });
+        terminal.restore_abnormally();
+        let written = reader.join().unwrap();
+        assert!(
+            written.ends_with(restore.as_bytes()),
+            "{:?}",
+            String::from_utf8_lossy(&written[written.len().saturating_sub(200)..])
+        );
+    }
+
+    #[test]
+    fn the_signal_restore_discards_input_typed_while_it_waits_for_the_terminal() {
+        let pty = test_pty::open();
+        let mut quiet = termios::tcgetattr(&pty.slave).unwrap();
+        quiet.local_modes.remove(LocalModes::ECHO);
+        termios::tcsetattr(&pty.slave, OptionalActions::Now, &quiet).unwrap();
+        let mut terminal = nonblocking_terminal(&pty);
+        terminal.restore_wait = test_pty::WAIT;
+        terminal.enable_raw_mode().unwrap();
+        fill_output_queue(&terminal);
+        let master = pty.master.try_clone().unwrap();
+        let slave = pty.slave.try_clone().unwrap();
+        let restore = abnormal_restore().replace('\n', "\r\n").into_bytes();
+        let needle = restore.clone();
+        let typist = std::thread::spawn(move || {
+            let deadline = Instant::now() + test_pty::WAIT;
+            while !termios::tcgetattr(&slave)
+                .unwrap()
+                .local_modes
+                .contains(LocalModes::ICANON)
+            {
+                assert!(Instant::now() < deadline, "termios never became canonical");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            rustix::io::write(&master, b"git push --force\r").unwrap();
+            let mut fds = [PollFd::new(&slave, PollFlags::IN)];
+            let wait = Timespec::try_from(test_pty::WAIT).unwrap();
+            assert_eq!(rustix::event::poll(&mut fds, Some(&wait)).unwrap(), 1);
+            drain_until(&master, &needle)
+        });
+        terminal.restore_abnormally();
+        assert!(typist.join().unwrap().ends_with(&restore));
+        assert_eq!(test_pty::unread_input(&pty), 0);
+    }
+
+    #[test]
+    fn an_abnormal_restore_outside_raw_mode_keeps_unread_input() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        rustix::io::write(&pty.master, b"typed\r").unwrap();
+        assert!(terminal.poll_input(Some(test_pty::WAIT)).unwrap().readable);
+        terminal.restore_abnormally();
+        assert_eq!(test_pty::unread_input(&pty), 6);
+    }
+
     #[test]
     fn nonblocking_writes_wait_for_a_slow_reader_without_losing_bytes() {
         let pty = test_pty::open();
@@ -653,6 +807,25 @@ mod tests {
         });
         terminal.write_all(&vec![b'y'; total]).unwrap();
         assert_eq!(reader.join().unwrap(), total);
+    }
+
+    #[test]
+    fn write_waits_end_on_room_errors_or_an_abort_but_not_on_an_unpollable_descriptor() {
+        let quiet = PollFlags::empty();
+        assert!(write_readiness(quiet, quiet).is_none());
+        for output in [PollFlags::OUT, PollFlags::HUP, PollFlags::ERR] {
+            assert!(matches!(write_readiness(output, quiet), Some(Ok(()))));
+        }
+        for (output, abort) in [(PollFlags::NVAL, quiet), (PollFlags::OUT, PollFlags::NVAL)] {
+            let error = write_readiness(output, abort).unwrap().unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(Errno::BADF.raw_os_error()));
+        }
+        for abort in [PollFlags::IN, PollFlags::HUP, PollFlags::ERR] {
+            for output in [quiet, PollFlags::OUT, PollFlags::NVAL] {
+                let error = write_readiness(output, abort).unwrap().unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+            }
+        }
     }
 
     #[test]
@@ -757,11 +930,7 @@ mod tests {
         let restored = termios::tcgetattr(&pty.slave).unwrap();
         assert!(restored.local_modes.contains(LocalModes::ICANON));
         let written = String::from_utf8(read_master(&pty)).unwrap();
-        assert!(
-            written
-                .replace("\r\n", "\n")
-                .ends_with(app_lifecycle::abnormal_exit_restore_sequence(false))
-        );
+        assert!(written.replace("\r\n", "\n").ends_with(&abnormal_restore()));
     }
 
     #[test]
@@ -790,11 +959,48 @@ mod tests {
         let restored = termios::tcgetattr(&pty.slave).unwrap();
         assert!(restored.local_modes.contains(LocalModes::ICANON));
         let written = String::from_utf8(read_master(&pty)).unwrap();
-        assert!(
-            written
-                .replace("\r\n", "\n")
-                .ends_with(app_lifecycle::abnormal_exit_restore_sequence(false))
-        );
+        assert!(written.replace("\r\n", "\n").ends_with(&abnormal_restore()));
+    }
+
+    #[test]
+    fn unwinding_through_the_owner_discards_input_typed_for_it() {
+        let pty = test_pty::open();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut terminal = test_pty::terminal(&pty);
+            terminal.enable_raw_mode().unwrap();
+            test_pty::type_ahead(&pty, &terminal);
+            panic!("fatal");
+        }));
+        assert!(unwound.is_err());
+        let restored = termios::tcgetattr(&pty.slave).unwrap();
+        assert!(restored.local_modes.contains(LocalModes::ICANON));
+        assert_eq!(test_pty::unread_input(&pty), 0);
+    }
+
+    #[test]
+    fn a_startup_error_after_raw_mode_discards_input_typed_for_the_session() {
+        let pty = test_pty::open();
+        let empty = termios::Winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        termios::tcsetwinsize(&pty.master, empty).unwrap();
+        let start = || -> Result<Terminal, TerminalError> {
+            let mut terminal = test_pty::terminal(&pty);
+            terminal.enable_raw_mode()?;
+            test_pty::type_ahead(&pty, &terminal);
+            terminal.query_layout(4)?;
+            Ok(terminal)
+        };
+        assert!(matches!(
+            start(),
+            Err(TerminalError::UnableToReadTerminalSize)
+        ));
+        let restored = termios::tcgetattr(&pty.slave).unwrap();
+        assert!(restored.local_modes.contains(LocalModes::ICANON));
+        assert_eq!(test_pty::unread_input(&pty), 0);
     }
 
     fn spawn_on(pty: &PtyPair, test: &str) -> Child {
@@ -865,6 +1071,43 @@ mod tests {
         );
     }
 
+    fn stall_blocking_output() {
+        std::thread::spawn(|| {
+            let chunk = [b'x'; 4096];
+            while rustix::io::write(rustix::stdio::stdout(), &chunk).is_ok() {}
+        });
+        let stdout = rustix::stdio::stdout();
+        let mut fds = [PollFd::new(&stdout, PollFlags::OUT)];
+        let settle = Timespec::try_from(Duration::from_millis(50)).unwrap();
+        while rustix::event::poll(&mut fds, Some(&settle)).unwrap() > 0 {}
+    }
+
+    #[test]
+    fn unwinding_on_blocking_output_gives_up_on_a_stalled_terminal() {
+        if test_pty::in_child() {
+            forbid_reopening_by_path();
+            let mut terminal = Terminal::open().unwrap();
+            stall_blocking_output();
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                terminal.enable_raw_mode().unwrap();
+                let _owner = terminal;
+                panic!("unwinding with stalled blocking output");
+            }));
+            std::process::exit(i32::from(unwound.is_ok()));
+        }
+        let pty = test_pty::open();
+        let child = spawn_on(
+            &pty,
+            "terminal::shell_runtime::tests::unwinding_on_blocking_output_gives_up_on_a_stalled_terminal",
+        );
+        let status = exit_within(child, test_pty::WAIT);
+        let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
+        assert!(
+            status.is_some_and(|status| status.success()) && cooked(modes),
+            "{status:?} {modes:?}"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn sigterm_ends_a_stalled_write_when_the_terminal_path_cannot_be_reopened() {
@@ -888,7 +1131,7 @@ mod tests {
             terminal.enable_raw_mode().unwrap();
             assert!(terminal.write_all(&vec![b'x'; 1 << 22]).is_err());
             let signal = signals.take().fatal.unwrap();
-            terminal.restore_after_signal();
+            terminal.restore_abnormally();
             drop(terminal);
             signals.uninstall();
             raise_default(signal);
@@ -921,22 +1164,34 @@ mod tests {
     }
 
     #[test]
-    fn opening_fails_when_no_independent_output_can_be_opened() {
+    fn opening_falls_back_to_blocking_output_when_the_terminal_cannot_be_reopened() {
         if test_pty::in_child() {
             forbid_reopening_by_path();
-            match Terminal::open() {
-                Ok(_) => println!("opened"),
-                Err(error) => println!("refused: {error}"),
-            }
+            let mut terminal = Terminal::open().unwrap();
+            let flags = rustix::fs::fcntl_getfl(&terminal.output).unwrap();
+            let output = rustix::fs::fstat(&terminal.output).unwrap().st_rdev;
+            let stdout = rustix::fs::fstat(rustix::stdio::stdout()).unwrap().st_rdev;
+            terminal.enable_raw_mode().unwrap();
+            let line = format!(
+                "fallback blocking={} same={}\r\n",
+                !flags.contains(OFlags::NONBLOCK),
+                output == stdout
+            );
+            terminal.write_all(line.as_bytes()).unwrap();
+            drop(terminal);
             return;
         }
         let mut session = test_pty::child_session(
-            "terminal::shell_runtime::tests::opening_fails_when_no_independent_output_can_be_opened",
+            "terminal::shell_runtime::tests::opening_falls_back_to_blocking_output_when_the_terminal_cannot_be_reopened",
             &[],
         );
-        test_pty::wait_output(
-            &session,
-            b"refused: oh-fx cannot reopen its terminal for nonblocking output: Permission denied",
+        let restore = abnormal_restore().replace('\n', "\r\n");
+        let output = test_pty::wait_output(&session, restore.as_bytes());
+        let reported = b"fallback blocking=true same=true";
+        assert!(
+            output
+                .windows(reported.len())
+                .any(|window| window == reported)
         );
         assert!(session.wait_exit(test_pty::WAIT).unwrap().success());
     }

@@ -1,13 +1,31 @@
 use rustix::process::Signal;
-use rustix::termios::OptionalActions;
 
 use super::cursor_probe::CursorPosition;
 use super::{
     Layout, Terminal, TerminalError, move_cursor_sequence, unstacked_interactive_mode_sequence,
 };
 
-const ABNORMAL_EXIT_RESTORE: &str = "\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1004l\x1b[?1006l\x1b[?1l\x1b>\x1b[?1049l\x1b[?7h\x1b[4l\x1b[?6l\x1b[0m\x1b[?25h\x1b[?2031l\x1b[?2004l\x1b[<u\x1b[>4;0m\n";
-const TMUX_ABNORMAL_EXIT_RESTORE: &str = "\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1004l\x1b[?1006l\x1b[?1l\x1b>\x1b[?1049l\x1b[?7h\x1b[4l\x1b[?6l\x1b[0m\x1b[?25h\x1b[?2031l\x1b[?2004l\x1b[>4;0m\n";
+const KITTY_KEYBOARD_POP: &str = "\x1b[<u";
+const ABNORMAL_EXIT_RESTORE: [&str; 18] = [
+    "\x1b[?2026l",
+    "\x1b[?1000l",
+    "\x1b[?1002l",
+    "\x1b[?1004l",
+    "\x1b[?1006l",
+    "\x1b[?1049l",
+    KITTY_KEYBOARD_POP,
+    "\x1b[>4;0m",
+    "\x1b[?2004l",
+    "\x1b[?2031l",
+    "\x1b[?25h",
+    "\x1b[?7h",
+    "\x1b[?1l",
+    "\x1b>",
+    "\x1b[4l",
+    "\x1b[?6l",
+    "\x1b[0m",
+    "\n",
+];
 const NORMAL_EXIT_RESTORE: &str = "\x1b[?2031l\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1004l\x1b[?1006l\x1b[?1l\x1b>\x1b[4l\x1b[?6l\x1b[?2004l\x1b[<u\x1b[>4;0m";
 const TMUX_NORMAL_EXIT_RESTORE: &str = "\x1b[?2031l\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1004l\x1b[?1006l\x1b[?1l\x1b>\x1b[4l\x1b[?6l\x1b[?2004l\x1b[>4;0m";
 
@@ -19,12 +37,10 @@ pub(crate) fn normal_exit_restore_sequence(tmux: bool) -> &'static str {
     }
 }
 
-pub(crate) fn abnormal_exit_restore_sequence(tmux: bool) -> &'static str {
-    if tmux {
-        TMUX_ABNORMAL_EXIT_RESTORE
-    } else {
-        ABNORMAL_EXIT_RESTORE
-    }
+pub(crate) fn abnormal_exit_restore_sequences(tmux: bool) -> impl Iterator<Item = &'static str> {
+    ABNORMAL_EXIT_RESTORE
+        .into_iter()
+        .filter(move |sequence| !tmux || *sequence != KITTY_KEYBOARD_POP)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,11 +152,6 @@ impl Terminal {
         self.restore_cooked_mode(cleanup);
     }
 
-    pub(crate) fn restore_after_signal(&mut self) {
-        self.release_raw_mode(OptionalActions::Now);
-        self.write_abnormal_restore();
-    }
-
     pub(crate) fn suspend_to_job_control(
         &mut self,
         cleanup: &ExitCleanup,
@@ -171,9 +182,14 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use ofx_testkit::PtyPair;
+    use rustix::termios::OptionalActions;
 
     use super::super::shell_runtime::test_pty;
     use super::*;
+
+    fn abnormal_restore(tmux: bool) -> String {
+        abnormal_exit_restore_sequences(tmux).collect()
+    }
 
     fn layout_24x80() -> Layout {
         Layout::from_size(24, 80, 4).unwrap()
@@ -181,7 +197,7 @@ mod tests {
 
     #[test]
     fn abnormal_exit_restoration_leaves_the_alternate_screen() {
-        let abnormal = abnormal_exit_restore_sequence(false);
+        let abnormal = abnormal_restore(false);
         let normal = normal_exit_restore_sequence(false);
         assert!(abnormal.starts_with("\x1b[?2026l"));
         assert!(abnormal.find("\x1b[?2026l").unwrap() < abnormal.find("\x1b[?1049l").unwrap());
@@ -194,13 +210,28 @@ mod tests {
     }
 
     #[test]
+    fn abnormal_restore_ends_the_modes_that_break_a_shell_first() {
+        for (tmux, keyboard_pop) in [(false, "\x1b[<u"), (true, "")] {
+            let restore = abnormal_restore(tmux);
+            let first = format!(
+                "\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1004l\x1b[?1006l\x1b[?1049l{keyboard_pop}\x1b[>4;0m\x1b[?2004l\x1b[?2031l\x1b[?25h\x1b[?7h"
+            );
+            assert!(restore.starts_with(&first), "{restore:?}");
+            for sequence in abnormal_exit_restore_sequences(tmux) {
+                let escapes = sequence.matches('\x1b').count();
+                assert!(sequence == "\n" || (sequence.starts_with('\x1b') && escapes == 1));
+            }
+        }
+    }
+
+    #[test]
     fn terminal_keyboard_stack_restore_stays_paired_with_enable_policy() {
         assert!(normal_exit_restore_sequence(false).contains("\x1b[<u"));
-        assert!(abnormal_exit_restore_sequence(false).contains("\x1b[<u"));
+        assert!(abnormal_restore(false).contains("\x1b[<u"));
 
         let tmux_restore = normal_exit_restore_sequence(true);
         assert!(!tmux_restore.contains("\x1b[<u"));
-        assert!(!abnormal_exit_restore_sequence(true).contains("\x1b[<u"));
+        assert!(!abnormal_restore(true).contains("\x1b[<u"));
         assert!(tmux_restore.contains("\x1b[?2004l"));
         assert!(tmux_restore.contains("\x1b[>4;0m"));
     }
@@ -212,8 +243,8 @@ mod tests {
             normal_exit_restore_sequence(true)
         );
         assert_eq!(
-            abnormal_exit_restore_sequence(false).replace("\x1b[<u", ""),
-            abnormal_exit_restore_sequence(true)
+            abnormal_restore(false).replace("\x1b[<u", ""),
+            abnormal_restore(true)
         );
     }
 
@@ -432,9 +463,9 @@ mod tests {
         terminal.enable_raw_mode().unwrap();
         terminal.enter_interactive_mode().unwrap();
         drain(&pty);
-        terminal.restore_after_signal();
+        terminal.restore_abnormally();
         let written = String::from_utf8(drain(&pty)).unwrap();
-        assert_eq!(written.replace("\r\n", "\n"), ABNORMAL_EXIT_RESTORE);
+        assert_eq!(written.replace("\r\n", "\n"), abnormal_restore(false));
         let restored = rustix::termios::tcgetattr(&pty.slave).unwrap();
         assert!(
             restored
@@ -443,6 +474,16 @@ mod tests {
         );
         drop(terminal);
         assert!(drain(&pty).is_empty());
+    }
+
+    #[test]
+    fn signal_restoration_discards_input_typed_for_the_session() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        terminal.enable_raw_mode().unwrap();
+        test_pty::type_ahead(&pty, &terminal);
+        terminal.restore_abnormally();
+        assert_eq!(test_pty::unread_input(&pty), 0);
     }
 
     #[test]
