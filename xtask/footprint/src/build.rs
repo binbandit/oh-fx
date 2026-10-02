@@ -7,7 +7,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::cargo_env::{config_variables, set_by_head};
+use crate::cargo_env::{cargo_home, config_variables, set_by_head};
 use crate::repository::{self, GIT_REPOSITORY_VARIABLES};
 
 pub(crate) const TARGET: &str = "x86_64-unknown-linux-musl";
@@ -19,6 +19,7 @@ pub(crate) struct Builds {
     repository: PathBuf,
     target_dir: PathBuf,
     staging: PathBuf,
+    cargo_home: Option<PathBuf>,
 }
 
 impl Builds {
@@ -35,6 +36,7 @@ impl Builds {
             repository,
             target_dir,
             staging,
+            cargo_home: cargo_home(),
         })
     }
 
@@ -44,9 +46,8 @@ impl Builds {
     }
 
     pub(crate) fn base(&self, commit: &str) -> Result<PathBuf, String> {
-        let head_variables = set_by_head(&config_variables(&self.repository)?, |name| {
-            env::var_os(name)
-        });
+        let exported = config_variables(&self.repository, self.cargo_home.as_deref())?;
+        let head_variables = set_by_head(&exported, |name| env::var_os(name));
         let source = base_source(&temp_dir()?, &self.repository, &self.target_dir)?;
         let source_text = source.to_string_lossy().into_owned();
         remove_if_present(&source)?;
