@@ -14,6 +14,10 @@ pub(crate) const TARGET: &str = "x86_64-unknown-linux-musl";
 pub(crate) const BINARY: &str = "oh-fx";
 pub(crate) const ARCHIVE_FILES: [&str; 3] = [BINARY, "LICENSE", "NOTICE"];
 const RELEASE_VERSION: &str = "0.1.0-dev.1";
+const RELEASE: [&str; 4] = ["--release", "--locked", "--target", TARGET];
+const BUILD: [&str; 3] = ["build", "--package", BINARY];
+const CLEAN: [&str; 2] = ["clean", "--workspace"];
+const CHECKOUT: &str = "checkout";
 
 const HEAD: &str = "head";
 const BASE: &str = "base";
@@ -53,14 +57,11 @@ impl Builds {
     }
 
     pub(crate) fn head(&self) -> Result<PathBuf, String> {
-        let mut command = self.command(Path::new("."), HEAD, |name| env::var_os(name))?;
-        cargo_build(&mut command, Path::new("."))?;
-        self.stage(Path::new("."), HEAD)
+        self.build(Path::new("."), HEAD)
     }
 
     pub(crate) fn base(&self, commit: &str) -> Result<PathBuf, String> {
         let source = base_source(&temp_dir()?, &self.repository, &self.target_dir)?;
-        let mut command = self.command(&source, BASE, |name| env::var_os(name))?;
         let source_text = source.to_string_lossy().into_owned();
         remove_if_present(&source)?;
         repository::git(&["worktree", "prune"])?;
@@ -73,7 +74,7 @@ impl Builds {
             &source_text,
             commit,
         ])?;
-        let staged = cargo_build(&mut command, &source).and_then(|()| self.stage(&source, BASE));
+        let staged = self.build(&source, BASE);
         if repository::git(&["worktree", "remove", "--force", &source_text]).is_err() {
             let _ = fs::remove_dir_all(&source);
             let _ = repository::git(&["worktree", "prune"]);
@@ -81,15 +82,61 @@ impl Builds {
         staged
     }
 
+    fn build(&self, source: &Path, side: &str) -> Result<PathBuf, String> {
+        let checkout = fs::canonicalize(source)
+            .map_err(|error| format!("resolve {}: {error}", source.display()))?;
+        if !self.built_from(side, &checkout) {
+            self.cargo(source, side, &CLEAN)?;
+            self.record(side, &checkout)?;
+        }
+        self.cargo(source, side, &BUILD)?;
+        self.stage(source, side)
+    }
+
+    fn built_from(&self, side: &str, checkout: &Path) -> bool {
+        fs::read(self.build_dir(side).join(CHECKOUT))
+            .is_ok_and(|recorded| recorded == checkout.as_os_str().as_encoded_bytes())
+    }
+
+    fn record(&self, side: &str, checkout: &Path) -> Result<(), String> {
+        let build_dir = self.build_dir(side);
+        create_dir(&build_dir)?;
+        let record = build_dir.join(CHECKOUT);
+        fs::write(&record, checkout.as_os_str().as_encoded_bytes())
+            .map_err(|error| format!("write {}: {error}", record.display()))
+    }
+
+    fn cargo(&self, source: &Path, side: &str, action: &[&str]) -> Result<(), String> {
+        let action_text = action.join(" ");
+        let status = self
+            .command(source, side, action, |name| env::var_os(name))?
+            .status()
+            .map_err(|error| format!("run cargo {action_text}: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "cargo {action_text} failed in {}",
+                source.display()
+            ))
+        }
+    }
+
     fn command(
         &self,
         source: &Path,
         side: &str,
+        action: &[&str],
         current: impl Fn(&str) -> Option<OsString>,
     ) -> Result<Command, String> {
         let exported = config_variables(&self.repository, self.cargo_home.as_deref())?;
         let hidden = set_by_head(&exported, current);
-        Ok(cargo_command(source, &self.build_dir(side), &hidden))
+        Ok(cargo_command(
+            source,
+            &self.build_dir(side),
+            &hidden,
+            action,
+        ))
     }
 
     fn build_dir(&self, side: &str) -> PathBuf {
@@ -118,33 +165,15 @@ impl Builds {
     }
 }
 
-fn cargo_build(command: &mut Command, source: &Path) -> Result<(), String> {
-    let status = command
-        .status()
-        .map_err(|error| format!("run cargo build: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("cargo build failed in {}", source.display()))
-    }
-}
-
-fn cargo_command(source: &Path, build_dir: &Path, hidden: &[String]) -> Command {
+fn cargo_command(source: &Path, build_dir: &Path, hidden: &[String], action: &[&str]) -> Command {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(cargo);
     for variable in hidden {
         command.env_remove(variable);
     }
     build_in(&mut command, build_dir)
-        .args([
-            "build",
-            "--release",
-            "--locked",
-            "--package",
-            BINARY,
-            "--target",
-            TARGET,
-        ])
+        .args(action)
+        .args(RELEASE)
         .current_dir(source)
         .env("OH_FX_RELEASE_VERSION", RELEASE_VERSION);
     for variable in GIT_REPOSITORY_VARIABLES {
@@ -324,12 +353,16 @@ mod tests {
         let (head, base) = (builds.build_dir(HEAD), builds.build_dir(BASE));
         assert!(!head.starts_with(&base) && !base.starts_with(&head));
         for (side, build_dir) in [(HEAD, &head), (BASE, &base)] {
-            let command = builds
-                .command(Path::new("."), side, |_| None)
-                .expect("a build command");
-            let envs: Vec<_> = command.get_envs().collect();
-            for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"] {
-                assert!(envs.contains(&(OsStr::new(variable), Some(build_dir.as_os_str()))));
+            for action in [&BUILD[..], &CLEAN[..]] {
+                let command = builds
+                    .command(Path::new("."), side, action, |_| None)
+                    .expect("a cargo command");
+                let envs: Vec<_> = command.get_envs().collect();
+                for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"] {
+                    assert!(envs.contains(&(OsStr::new(variable), Some(build_dir.as_os_str()))));
+                }
+                let args: Vec<_> = command.get_args().collect();
+                assert_eq!(args, [action, &RELEASE[..]].concat());
             }
             for dir in [build_dir.clone(), builds.staged(side)] {
                 create_dir(&dir).expect("a directory");
@@ -341,6 +374,26 @@ mod tests {
             assert!(builds.build_dir(side).join("marker").exists(), "{side}");
             assert!(!builds.staged(side).exists(), "{side}");
         }
+    }
+
+    #[test]
+    fn a_build_dir_is_reused_only_by_the_checkout_that_last_built_in_it() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let builds = Builds::at(
+            scratch.path().to_path_buf(),
+            scratch.path().join("target"),
+            None,
+        )
+        .expect("prepared builds");
+        let (first, second) = (scratch.path().join("first"), scratch.path().join("second"));
+        assert!(!builds.built_from(HEAD, &first));
+        builds.record(HEAD, &first).expect("a recorded checkout");
+        assert!(builds.built_from(HEAD, &first));
+        assert!(!builds.built_from(HEAD, &second));
+        assert!(!builds.built_from(BASE, &first));
+        builds.record(HEAD, &second).expect("a recorded checkout");
+        assert!(builds.built_from(HEAD, &second));
+        assert!(!builds.built_from(HEAD, &first));
     }
 
     #[test]
@@ -379,7 +432,12 @@ mod tests {
             "CARGO_TARGET_DIR".to_owned(),
             "CARGO_BUILD_BUILD_DIR".to_owned(),
         ];
-        let command = cargo_command(Path::new("/base"), Path::new("/side/target"), &hidden);
+        let command = cargo_command(
+            Path::new("/base"),
+            Path::new("/side/target"),
+            &hidden,
+            &BUILD,
+        );
         let envs: Vec<_> = command.get_envs().collect();
         assert!(envs.contains(&(OsStr::new("FROM_HEAD"), None)));
         for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"] {
@@ -408,7 +466,7 @@ mod tests {
         };
         for (source, side) in [(Path::new("."), HEAD), (Path::new("/base"), BASE)] {
             let command = builds
-                .command(source, side, current)
+                .command(source, side, &BUILD, current)
                 .expect("a build command");
             let envs: Vec<_> = command.get_envs().collect();
             assert!(envs.contains(&(OsStr::new("EXPORTED"), None)));
