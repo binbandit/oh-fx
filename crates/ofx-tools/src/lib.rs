@@ -15,7 +15,7 @@ pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
 pub use skill::SkillTool;
 pub use subagent::SubagentTool;
-pub use web::{WebFetch, WebFetchProgress};
+pub use web::{WebFetch, WebFetchProgress, WebSearch};
 
 #[cfg(test)]
 mod tests {
@@ -66,7 +66,7 @@ mod tests {
         );
         let subagent = SubagentTool::new(Arc::new(NoProvider));
         let ask = AskUserQuestion::new(None);
-        let tools: [&dyn Tool; 9] = [
+        let tools: [&dyn Tool; 11] = [
             &ReadFile::new("/"),
             &GlobFiles::new("/"),
             &GrepFiles::new("/"),
@@ -76,6 +76,8 @@ mod tests {
             &skill,
             &subagent,
             &ask,
+            &WebFetch::default(),
+            &WebSearch::default(),
         ];
         for tool in tools {
             let spec = tool.spec();
