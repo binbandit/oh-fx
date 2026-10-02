@@ -7,6 +7,7 @@ mod input_submit_runtime;
 mod test_shell;
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use ofx_contract::{PermissionMode, TurnId, UiCommand};
@@ -58,6 +59,7 @@ pub struct ShellOptions {
     pub model: String,
     pub permission_mode: PermissionMode,
     pub workspace_label: String,
+    pub workspace_root: PathBuf,
     pub commands: Vec<SlashCommandSpec>,
 }
 
@@ -617,6 +619,7 @@ mod tests {
             model: "m".to_owned(),
             permission_mode: PermissionMode::Auto,
             workspace_label: "proj\x07".to_owned(),
+            workspace_root: PathBuf::from("/proj"),
             commands: Vec::new(),
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");

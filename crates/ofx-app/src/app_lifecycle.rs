@@ -171,6 +171,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        workspace_root: session.profile.workspace_root().to_owned(),
         commands: slash_command_specs(),
     };
     let (commands, worker_commands) = tokio::sync::mpsc::unbounded_channel();

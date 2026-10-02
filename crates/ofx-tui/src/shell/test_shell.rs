@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -140,6 +141,7 @@ fn options() -> ShellOptions {
         model: "model-a".to_owned(),
         permission_mode: PermissionMode::Auto,
         workspace_label: "workspace".to_owned(),
+        workspace_root: PathBuf::from("/workspace"),
         commands: vec![
             spec("/help", &[]),
             spec("/clear", &[]),

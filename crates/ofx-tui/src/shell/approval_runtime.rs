@@ -1,6 +1,7 @@
 use ofx_contract::{ApprovalDecision, ApprovalRequest, TurnId, UiCommand};
 
 use super::Shell;
+use crate::footer::approval_content::ApprovalContent;
 use crate::footer::approval_panel::{Choice, approval_panel_rows, choices};
 use crate::footer::input_presentation::ComposerView;
 use crate::input::{Action, COMPOSER_INPUT_LIMIT_BYTES, InputEvent, PasteOwner};
@@ -10,16 +11,28 @@ use crate::theme::Theme;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ApprovalPrompt {
     request: ApprovalRequest,
+    content: ApprovalContent,
+    choices: Vec<Choice>,
     choice: usize,
 }
 
 impl ApprovalPrompt {
+    fn new(request: ApprovalRequest, content: ApprovalContent) -> Self {
+        let choices = choices(content.remember.as_deref());
+        Self {
+            request,
+            content,
+            choices,
+            choice: 0,
+        }
+    }
+
     pub(super) fn view(&self, theme: &Theme, cols: u16, rows: u16) -> ComposerView {
         ComposerView {
             rows: approval_panel_rows(
                 theme,
-                &self.request.title,
-                self.choices(),
+                &self.content,
+                &self.choices,
                 self.choice,
                 usize::from(cols),
                 rows,
@@ -28,8 +41,8 @@ impl ApprovalPrompt {
         }
     }
 
-    fn choices(&self) -> &'static [Choice] {
-        choices(self.request.scope.always.is_some())
+    fn choices(&self) -> &[Choice] {
+        &self.choices
     }
 }
 
@@ -42,7 +55,8 @@ impl Shell<'_> {
             });
             return;
         }
-        self.approval = Some(ApprovalPrompt { request, choice: 0 });
+        let content = ApprovalContent::from_request(&request, &self.options.workspace_root);
+        self.approval = Some(ApprovalPrompt::new(request, content));
         self.invalidate();
     }
 
@@ -127,8 +141,8 @@ mod tests {
     use std::path::PathBuf;
 
     use ofx_contract::{
-        ApprovalDecision, ApprovalRequest, ApprovalScope, PathAccess, RequestId, SessionGrant,
-        TurnId, TurnOutcome, UiCommand, UiEvent,
+        ApprovalDecision, ApprovalRequest, ApprovalScope, CommandProfile, CommandRequest,
+        PathAccess, RequestId, SessionGrant, TurnId, TurnOutcome, UiCommand, UiEvent,
     };
 
     use super::super::test_shell::TestShell;
@@ -182,6 +196,59 @@ mod tests {
     fn press(test: &mut TestShell, bytes: &[u8]) {
         test.type_bytes(bytes);
         test.step();
+    }
+
+    fn command_request(turn: u64, id: u64, command: &str) -> UiEvent {
+        UiEvent::ApprovalRequested {
+            turn_id: TurnId::new(turn),
+            request: ApprovalRequest {
+                id: RequestId::new(id),
+                tool_name: "shell".to_owned(),
+                title: format!("Running {}...", &command[..60]),
+                tool_arguments_preview: String::new(),
+                scope: ApprovalScope {
+                    target: None,
+                    access: PathAccess::WorkspaceOnly,
+                    always: Some(SessionGrant::Command {
+                        command: command.to_owned(),
+                        profile: CommandProfile::User,
+                        shell: None,
+                        terminal: false,
+                    }),
+                },
+                command: Some(CommandRequest::Run {
+                    command: command.to_owned(),
+                    cwd: PathBuf::from("/workspace"),
+                    profile: CommandProfile::User,
+                    shell: None,
+                    terminal: false,
+                }),
+                file: None,
+            },
+        }
+    }
+
+    #[test]
+    fn the_prompt_shows_the_whole_command_it_approves() {
+        let mut test = TestShell::start();
+        test.submit("build it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        let command = format!(
+            "echo {} && touch ../PWNED_BY_HIDDEN_TAIL",
+            ["building-the-project-please-wait"; 3].join(" ")
+        );
+        test.deliver(command_request(1, 4, &command));
+        let screen = test.screen();
+        for line in [
+            "Would you like to run the following command?",
+            "$ echo building-the-project-please-wait",
+            "touch ../PWNED_BY_HIDDEN_TAIL",
+            "2. Yes, and don't ask again for this exact command",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
     }
 
     #[test]
