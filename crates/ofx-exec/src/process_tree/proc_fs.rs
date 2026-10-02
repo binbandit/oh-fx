@@ -9,7 +9,8 @@ use super::{Identity, InspectionError, ProcessSnapshot};
 use crate::command_runner::error_name;
 
 const STAT_BYTES: usize = 4096;
-const START_TICKS_AFTER_PARENT: usize = 17;
+const THREADS_AFTER_PARENT: usize = 15;
+const START_TICKS_AFTER_THREADS: usize = 1;
 const IDENTITY_UNAVAILABLE: InspectionError = InspectionError::Failed("ProcessIdentityUnavailable");
 const INSPECTION_FAILED: InspectionError = InspectionError::Failed("ProcessTreeInspectionFailed");
 
@@ -70,11 +71,12 @@ fn parse_stat(stat: &[u8]) -> Option<ProcessSnapshot> {
         .filter(|field| !field.is_empty());
     let state = fields.next()?;
     let parent_pid = parse_field::<i32>(fields.next()?)?;
-    let start_ticks = parse_field::<u64>(fields.nth(START_TICKS_AFTER_PARENT)?)?;
+    let threads = parse_field::<u32>(fields.nth(THREADS_AFTER_PARENT)?)?;
+    let start_ticks = parse_field::<u64>(fields.nth(START_TICKS_AFTER_THREADS)?)?;
     Some(ProcessSnapshot {
         identity: Identity { start_ticks },
         parent_pid: positive_pid(parent_pid),
-        zombie: state == b"Z",
+        zombie: state == b"Z" && threads <= 1,
     })
 }
 
@@ -144,5 +146,24 @@ mod tests {
         );
         assert_eq!(parse_stat(b"42 (sh) S 0 42"), None);
         assert_eq!(parse_stat(b"42 sh S 1"), None);
+    }
+
+    #[test]
+    fn stat_parsing_counts_a_zombie_leader_with_live_threads_as_running() {
+        let leader = b"42 (worker) Z 7 42 42 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 2 0 98765 1 1 \n";
+        let exited = b"42 (worker) Z 7 42 42 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 98765 1 1 \n";
+        let released = b"42 (worker) Z 7 42 42 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 0 0 98765 1 1 \n";
+        assert_eq!(
+            parse_stat(leader).map(|snapshot| snapshot.zombie),
+            Some(false)
+        );
+        assert_eq!(
+            parse_stat(exited).map(|snapshot| snapshot.zombie),
+            Some(true)
+        );
+        assert_eq!(
+            parse_stat(released).map(|snapshot| snapshot.zombie),
+            Some(true)
+        );
     }
 }

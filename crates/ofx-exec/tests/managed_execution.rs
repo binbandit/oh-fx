@@ -26,10 +26,30 @@ const SUPERVISOR_RELEASE: &[u8] = b"0123456789abcdef0123456789abcdef\x06";
 const NO_SUPERVISOR_DEADLINE: &str = "none";
 const SUPERVISOR_DEADLINE_MILLISECONDS: &str = "3000";
 const ESCAPED_PID: &str = "escaped.pid";
+const LEFT_SESSION: &str = "import os, sys, time
+os.setsid()
+with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))
+os.rename(sys.argv[1] + '.tmp', sys.argv[1])
+time.sleep(60)
+";
+const MAIN_THREAD_EXITED: &str = "import ctypes, os, sys, threading, time
+def state():
+    return open('/proc/%d/stat' % os.getpid()).read().rsplit(')', 1)[1].split()[0]
+def publish():
+    while state() != 'Z': time.sleep(0.001)
+    with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))
+    os.rename(sys.argv[1] + '.tmp', sys.argv[1])
+    while True: time.sleep(1)
+if os.fork() == 0:
+    os.setsid()
+    threading.Thread(target=publish).start()
+    ctypes.CDLL(None).pthread_exit(None)
+while True: time.sleep(1)
+";
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 21] = [
+const TESTS: [(&str, Test); 24] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -113,6 +133,18 @@ const TESTS: [(&str, Test); 21] = [
     (
         "a_deadline_stops_a_descendant_that_left_the_command_session",
         a_deadline_stops_a_descendant_that_left_the_command_session,
+    ),
+    (
+        "a_forced_stop_kills_a_descendant_whose_main_thread_exited",
+        a_forced_stop_kills_a_descendant_whose_main_thread_exited,
+    ),
+    (
+        "a_graceful_stop_kills_a_descendant_whose_main_thread_exited",
+        a_graceful_stop_kills_a_descendant_whose_main_thread_exited,
+    ),
+    (
+        "losing_the_owner_kills_a_descendant_whose_main_thread_exited",
+        losing_the_owner_kills_a_descendant_whose_main_thread_exited,
     ),
 ];
 
@@ -695,23 +727,53 @@ fn losing_the_owner_kills_the_command_group() {
 }
 
 fn a_forced_stop_kills_a_direct_command_that_left_the_session() {
-    let escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE);
+    let escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE, LEFT_SESSION);
     let pid = escaped.await_pid();
     kill_process(escaped.supervisor(), Signal::USR1).expect("the test step succeeds");
     assert_killed(pid, "a forced stop");
 }
 
 fn losing_the_owner_kills_a_direct_command_that_left_the_session() {
-    let mut escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE);
+    let mut escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE, LEFT_SESSION);
     let pid = escaped.await_pid();
     drop(escaped.owner.take());
     assert_killed(pid, "the loss of its owner");
 }
 
 fn a_passed_deadline_kills_a_direct_command_that_left_the_session() {
-    let escaped = EscapedCommand::start(SUPERVISOR_DEADLINE_MILLISECONDS);
+    let escaped = EscapedCommand::start(SUPERVISOR_DEADLINE_MILLISECONDS, LEFT_SESSION);
     let pid = escaped.await_pid();
     assert_killed(pid, "its deadline");
+}
+
+fn a_forced_stop_kills_a_descendant_whose_main_thread_exited() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE, MAIN_THREAD_EXITED);
+    let pid = escaped.await_pid();
+    kill_process(escaped.supervisor(), Signal::USR1).expect("the test step succeeds");
+    assert_killed(pid, "a forced stop");
+}
+
+fn a_graceful_stop_kills_a_descendant_whose_main_thread_exited() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE, MAIN_THREAD_EXITED);
+    let pid = escaped.await_pid();
+    kill_process(escaped.supervisor(), Signal::TERM).expect("the test step succeeds");
+    assert_killed(pid, "a graceful stop");
+}
+
+fn losing_the_owner_kills_a_descendant_whose_main_thread_exited() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let mut escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE, MAIN_THREAD_EXITED);
+    let pid = escaped.await_pid();
+    drop(escaped.owner.take());
+    assert_killed(pid, "the loss of its owner");
 }
 
 struct EscapedCommand {
@@ -721,25 +783,15 @@ struct EscapedCommand {
 }
 
 impl EscapedCommand {
-    fn start(deadline: &str) -> Self {
+    fn start(deadline: &str, body: &str) -> Self {
         let directory = tempfile::tempdir().expect("the test step succeeds");
         let script = directory.path().join("escape.py");
-        fs::write(
-            &script,
-            format!(
-                "import os, time\n\
-                 os.setsid()\n\
-                 with open({pid:?} + '.tmp', 'w') as f: f.write(str(os.getpid()))\n\
-                 os.rename({pid:?} + '.tmp', {pid:?})\n\
-                 time.sleep(60)\n",
-                pid = directory.path().join(ESCAPED_PID).display().to_string(),
-            ),
-        )
-        .expect("the test step succeeds");
+        fs::write(&script, body).expect("the test step succeeds");
         let mut supervisor =
             process::Command::new(env::current_exe().expect("the test step succeeds"))
                 .args([SUPERVISOR_TOKEN, deadline, "python3"])
                 .arg(&script)
+                .arg(directory.path().join(ESCAPED_PID))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -810,9 +862,11 @@ fn assert_killed(pid: Pid, stop: &str) {
 
 fn alive(pid: Pid) -> bool {
     if cfg!(target_os = "linux") {
-        return fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(')')
-                .is_some_and(|(_, fields)| !fields.trim_start().starts_with('Z'))
+        return tasks(pid).any(|task| {
+            fs::read_to_string(task.join("stat")).is_ok_and(|stat| {
+                stat.rsplit_once(')')
+                    .is_some_and(|(_, fields)| !fields.trim_start().starts_with('Z'))
+            })
         });
     }
     let state = ps(pid, "stat=");
@@ -821,11 +875,20 @@ fn alive(pid: Pid) -> bool {
 
 fn command_line(pid: Pid) -> String {
     if cfg!(target_os = "linux") {
-        return fs::read(format!("/proc/{pid}/cmdline"))
+        return tasks(pid)
+            .filter_map(|task| fs::read(task.join("cmdline")).ok())
             .map(|line| String::from_utf8_lossy(&line).into_owned())
-            .unwrap_or_default();
+            .collect();
     }
     ps(pid, "args=")
+}
+
+fn tasks(pid: Pid) -> impl Iterator<Item = PathBuf> {
+    fs::read_dir(format!("/proc/{pid}/task"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|task| task.path())
 }
 
 fn ps(pid: Pid, field: &str) -> String {
