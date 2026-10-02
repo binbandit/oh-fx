@@ -2,16 +2,16 @@ use std::io::{self, PipeReader, PipeWriter};
 use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use rustix::event::{PollFd, PollFlags, poll};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, WaitOptions};
 use rustix::pty::OpenptFlags;
-use rustix::termios::{self, Winsize};
+use rustix::termios::{self, LocalModes, Winsize};
 
 const CURSOR_POSITION_REPORT: u16 = 6;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -30,12 +30,7 @@ impl PtyPair {
         let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
         rustix::pty::grantpt(&master)?;
         rustix::pty::unlockpt(&master)?;
-        let name = rustix::pty::ptsname(&master, Vec::new())?;
-        let slave = rustix::fs::open(
-            name.as_c_str(),
-            OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
+        let slave = open_slave(&master)?;
         termios::tcsetwinsize(&slave, winsize(rows, cols))?;
         Ok(Self { master, slave })
     }
@@ -47,8 +42,82 @@ pub struct PtySession {
     exit: OnceLock<ExitStatus>,
     terminal: Terminal,
     output: Arc<Mutex<Vec<u8>>>,
+    stall: Arc<Stall>,
+    held_slave: Option<OwnedFd>,
     reader_stop: PipeWriter,
     reader: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct Stall {
+    state: Mutex<StallState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct StallState {
+    needle: Vec<u8>,
+    tripped: bool,
+    parked: bool,
+}
+
+impl Stall {
+    fn arm(&self, needle: &[u8]) {
+        let mut state = lock(&self.state);
+        state.needle = needle.to_vec();
+        state.tripped = false;
+    }
+
+    fn trip_if_shown(&self, output: &[u8], new_from: usize) {
+        let mut state = lock(&self.state);
+        if state.needle.is_empty() {
+            return;
+        }
+        let start = new_from.saturating_sub(state.needle.len() - 1);
+        if output[start..]
+            .windows(state.needle.len())
+            .any(|window| window == state.needle)
+        {
+            state.needle.clear();
+            state.tripped = true;
+        }
+    }
+
+    fn park_while_tripped(&self) {
+        let mut state = lock(&self.state);
+        while state.tripped {
+            state.parked = true;
+            self.changed.notify_all();
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        state.parked = false;
+    }
+
+    fn wait_until_parked(&self, deadline: Instant) -> bool {
+        let mut state = lock(&self.state);
+        while !state.parked {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
+    fn release(&self) {
+        let mut state = lock(&self.state);
+        state.needle.clear();
+        state.tripped = false;
+        self.changed.notify_all();
+    }
 }
 
 impl PtySession {
@@ -70,11 +139,13 @@ impl PtySession {
             CursorReplies::default(),
         )));
         let output = Arc::new(Mutex::new(Vec::new()));
+        let stall = Arc::new(Stall::default());
         let reader = Reader {
             master: master.try_clone()?,
             stop,
             terminal: Arc::clone(&terminal),
             output: Arc::clone(&output),
+            stall: Arc::clone(&stall),
             replies: Vec::new(),
         };
         let child = command.spawn()?;
@@ -84,9 +155,59 @@ impl PtySession {
             exit: OnceLock::new(),
             terminal,
             output,
+            stall,
+            held_slave: None,
             reader_stop,
             reader: Some(thread::spawn(move || reader.run())),
         })
+    }
+
+    pub fn stall_output_after(&mut self, needle: &[u8]) -> io::Result<()> {
+        self.held_slave = Some(open_slave(&self.master)?);
+        self.stall.arm(needle);
+        Ok(())
+    }
+
+    pub fn wait_for_pending_output(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        if !self.stall.wait_until_parked(deadline) {
+            return false;
+        }
+        let mut fds = [PollFd::new(&self.master, PollFlags::IN)];
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = Timespec::try_from(remaining).unwrap_or_default();
+            match poll(&mut fds, Some(&timeout)) {
+                Err(Errno::INTR) => {}
+                result => return result.is_ok() && fds[0].revents().contains(PollFlags::IN),
+            }
+        }
+    }
+
+    pub fn drain_output(&mut self, timeout: Duration) -> bool {
+        self.stall.release();
+        self.held_slave = None;
+        let deadline = Instant::now() + timeout;
+        while !self.reader.as_ref().is_none_or(JoinHandle::is_finished) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+        true
+    }
+
+    pub fn cooked(&self) -> io::Result<bool> {
+        let modes = match &self.held_slave {
+            Some(slave) => termios::tcgetattr(slave)?,
+            None => termios::tcgetattr(open_slave(&self.master)?)?,
+        }
+        .local_modes;
+        Ok(modes.contains(LocalModes::ICANON | LocalModes::ECHO))
+    }
+
+    pub fn terminate(&self) -> io::Result<()> {
+        self.signal(Signal::TERM)
     }
 
     pub fn send(&self, bytes: &[u8]) {
@@ -216,6 +337,8 @@ impl Drop for PtySession {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        self.stall.release();
+        self.held_slave = None;
         let _ = rustix::io::write(&self.reader_stop, &[0]);
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -228,6 +351,7 @@ struct Reader {
     stop: PipeReader,
     terminal: Terminal,
     output: Arc<Mutex<Vec<u8>>>,
+    stall: Arc<Stall>,
     replies: Vec<u8>,
 }
 
@@ -236,6 +360,7 @@ impl Reader {
         let mut buffer = [0_u8; READ_CHUNK_BYTES];
         while self.wait_for_master() && self.read(&mut buffer) {
             self.flush_replies();
+            self.stall.park_while_tripped();
         }
     }
 
@@ -271,7 +396,12 @@ impl Reader {
     }
 
     fn record(&mut self, chunk: &[u8]) {
-        lock(&self.output).extend_from_slice(chunk);
+        {
+            let mut output = lock(&self.output);
+            let new_from = output.len();
+            output.extend_from_slice(chunk);
+            self.stall.trip_if_shown(&output, new_from);
+        }
         let mut terminal = lock(&self.terminal);
         terminal.process(chunk);
         self.replies.append(&mut terminal.callbacks_mut().0);
@@ -309,6 +439,15 @@ impl vt100::Callbacks for CursorReplies {
             self.0.extend_from_slice(reply.as_bytes());
         }
     }
+}
+
+fn open_slave(master: &OwnedFd) -> io::Result<OwnedFd> {
+    let name = rustix::pty::ptsname(master, Vec::new())?;
+    Ok(rustix::fs::open(
+        name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?)
 }
 
 fn winsize(rows: u16, cols: u16) -> Winsize {
@@ -399,6 +538,44 @@ mod tests {
             .wait_for(WAIT, |screen| screen.contains(" end"))
             .unwrap();
         assert!(screen.contains("replies E[1;6R E[2;3R end"), "{screen}");
+    }
+
+    #[test]
+    fn stalled_output_stays_pending_until_the_child_is_terminated() {
+        let mut session =
+            shell("read line; printf 'ready\\n'; read line; printf 'pending'; exec sleep 10");
+        session.stall_output_after(b"ready\r\n").unwrap();
+        session.send(b"start\n");
+        let deadline = Instant::now() + WAIT;
+        while !session.output().ends_with(b"ready\r\n") {
+            assert!(Instant::now() < deadline, "the child never got ready");
+            thread::sleep(POLL_INTERVAL);
+        }
+        let seen = session.output().len();
+        session.send(b"go\n");
+        assert!(
+            session.wait_for_pending_output(WAIT),
+            "the child output never queued"
+        );
+        assert_eq!(session.output().len(), seen);
+        assert!(session.cooked().unwrap());
+        session.terminate().unwrap();
+        let status = session.wait_exit(WAIT).unwrap();
+        assert_eq!(status.signal(), Some(15));
+        assert_eq!(session.output().len(), seen);
+        assert!(session.drain_output(WAIT));
+        assert!(session.output()[seen..].starts_with(b"go\r\n"));
+    }
+
+    #[test]
+    fn a_raw_child_leaves_the_terminal_uncooked() {
+        let mut session = shell("stty raw -echo; printf 'raw\\r\\n'; exec sleep 10");
+        session
+            .wait_for(WAIT, |screen| screen.contains("raw"))
+            .unwrap();
+        assert!(!session.cooked().unwrap());
+        session.terminate().unwrap();
+        assert_eq!(session.wait_exit(WAIT).unwrap().signal(), Some(15));
     }
 
     #[test]
