@@ -1,6 +1,7 @@
 mod assistant;
 mod composer;
 mod footer;
+mod host;
 mod input;
 mod output;
 mod render;
@@ -11,6 +12,7 @@ mod terminal;
 mod theme;
 mod transcript;
 
+pub use host::Clipboard;
 pub use shell::{
     ShellOptions, SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell, ui_channel,
 };

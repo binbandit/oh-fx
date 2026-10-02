@@ -135,7 +135,7 @@ fn word_right_target(input: &str, cursor: usize, entities: &Entities) -> usize {
 mod tests {
     use super::super::entity_spans::Span;
     use super::super::pasted_blocks::{PastedBlock, format_placeholder};
-    use super::super::test_fixture::{replace_text, select, selected_text};
+    use super::super::test_fixture::{replace_text, select};
     use super::*;
 
     fn intent(kind: MoveKind) -> MoveIntent {
@@ -265,7 +265,7 @@ mod tests {
             extend_selection: true,
         };
         assert!(composer.move_cursor(extend));
-        assert_eq!(selected_text(&composer), Some(" beta"));
+        assert_eq!(composer.selected_text(), Some(" beta"));
     }
 
     #[test]

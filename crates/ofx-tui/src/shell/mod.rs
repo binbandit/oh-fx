@@ -2,12 +2,14 @@ mod app_input_runtime;
 mod app_worker_runtime;
 mod approval_runtime;
 mod event_loop;
+mod input_selection_runtime;
 mod input_submit_runtime;
 #[cfg(test)]
 mod test_shell;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use ofx_contract::{PermissionMode, TurnId, UiCommand};
@@ -16,12 +18,14 @@ use ofx_markdown::{Completions, MarkdownProcessor};
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
 
 use approval_runtime::ApprovalPrompt;
+use input_selection_runtime::ClipboardRuntime;
 
 use crate::composer::Composer;
 use crate::footer::input_presentation::ComposerView;
 use crate::footer::input_presentation::{
     HintState, compose_hint_row, composer_view, input_row_limit,
 };
+use crate::host::Clipboard;
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
 use crate::output::activity_status::{
@@ -120,6 +124,7 @@ pub(crate) struct Shell<'a> {
     approval: Option<ApprovalPrompt>,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
+    clipboard: ClipboardRuntime,
     signals: SignalPipe,
     clock: Instant,
     resize_due_ms: Option<i64>,
@@ -145,14 +150,16 @@ struct FrameCache {
 pub fn run_shell(
     options: ShellOptions,
     events: UiEventReceiver,
+    clipboard: impl Clipboard + 'static,
     send: impl FnMut(UiCommand),
 ) -> Result<(), TerminalError> {
-    let mut shell = Shell::bootstrap(options, events, Box::new(send))?;
+    let mut shell = Shell::bootstrap(options, events, Arc::new(clipboard), Box::new(send))?;
     let result = shell.run();
     let fatal = shell.shutdown(result.as_ref().ok().copied().flatten());
     if let Some(signal) = fatal {
         crate::terminal::signal_pipe::raise_default(signal);
     }
+    shell.clipboard.finish();
     result.map(drop)
 }
 
@@ -170,6 +177,7 @@ impl<'a> Shell<'a> {
     fn bootstrap(
         options: ShellOptions,
         events: UiEventReceiver,
+        clipboard: Arc<dyn Clipboard>,
         send: Box<dyn FnMut(UiCommand) + 'a>,
     ) -> Result<Self, TerminalError> {
         let (signals, mut terminal) = claim_terminal()?;
@@ -205,13 +213,14 @@ impl<'a> Shell<'a> {
             theme_pinned,
             launch_row: plan.launch_row,
         };
-        Ok(Self::assemble(setup, options, events, send))
+        Ok(Self::assemble(setup, options, events, clipboard, send))
     }
 
     fn assemble(
         setup: Setup,
         options: ShellOptions,
         events: UiEventReceiver,
+        clipboard: Arc<dyn Clipboard>,
         send: Box<dyn FnMut(UiCommand) + 'a>,
     ) -> Self {
         let capabilities = setup.terminal.capabilities();
@@ -253,6 +262,7 @@ impl<'a> Shell<'a> {
             approval: None,
             events,
             send,
+            clipboard: ClipboardRuntime::new(clipboard),
             signals: setup.signals,
             clock: Instant::now(),
             resize_due_ms: None,
@@ -656,19 +666,6 @@ mod tests {
         assert!(dark.contains("\x1b[0;1;38;5;255moh-fx"), "{dark:?}");
         test.draining(|shell| shell.apply_theme(false));
         assert!(test.written().is_empty());
-    }
-
-    #[test]
-    fn copy_and_cut_shortcuts_leave_the_draft_alone_until_the_clipboard_lands() {
-        let mut test = test_shell::TestShell::start();
-        test.type_bytes(b"keep me");
-        test.step();
-        test.type_bytes(b"\x1b[97;9u\x1b[120;9u\x1b[27;9;120~\x1b[99;9u");
-        test.step();
-        assert_eq!(test.shell.composer.text(), "keep me");
-        test.type_bytes(b"!");
-        test.step();
-        assert_eq!(test.shell.composer.text(), "!");
     }
 
     #[test]
