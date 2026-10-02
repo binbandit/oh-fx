@@ -90,8 +90,10 @@ impl TestShell {
         let shell = &mut self.shell;
         let (result, output) = std::thread::scope(|scope| {
             let reader = scope.spawn(|| drain(master, &done));
-            let result = action(shell);
-            done.store(true, Ordering::Release);
+            let result = {
+                let _finished = Finished(&done);
+                action(shell)
+            };
             (result, reader.join().unwrap())
         });
         self.output.extend_from_slice(&output);
@@ -161,6 +163,14 @@ fn winsize(rows: u16, cols: u16) -> Winsize {
     }
 }
 
+struct Finished<'a>(&'a AtomicBool);
+
+impl Drop for Finished<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 fn drain(master: &OwnedFd, done: &AtomicBool) -> Vec<u8> {
     let mut written = Vec::new();
     let mut buffer = [0_u8; 4096];
@@ -197,5 +207,28 @@ fn options() -> ShellOptions {
             spec("/model", &[]),
             spec("/quit", &["/exit"]),
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_action_still_stops_the_reader() {
+        if test_pty::in_child() {
+            let mut test = TestShell::start();
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                test.draining(|_| panic!("the action failed"));
+            }));
+            std::process::exit(i32::from(caught.is_ok()));
+        }
+        let pty = test_pty::open();
+        let child = test_pty::spawn_on(
+            &pty,
+            "shell::test_shell::tests::a_panicking_action_still_stops_the_reader",
+        );
+        let status = test_pty::exit_within(child, test_pty::WAIT);
+        assert!(status.is_some_and(|status| status.success()), "{status:?}");
     }
 }
