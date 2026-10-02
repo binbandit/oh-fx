@@ -29,7 +29,7 @@ struct Shown {
 
 impl ApprovalPrompt {
     fn new(request: ApprovalRequest, content: ApprovalContent) -> Self {
-        let choices = choices(content.remember.as_deref());
+        let choices = choices(content.remember.as_ref());
         Self {
             request,
             content,
@@ -330,15 +330,49 @@ mod tests {
     }
 
     #[test]
+    fn a_read_outside_the_workspace_names_its_resolved_file_and_the_tree_it_grants() {
+        let mut test = TestShell::start();
+        test.submit("read it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        let home = PathBuf::from(format!("/home{}", "/deep-directory-name".repeat(4)));
+        test.deliver(UiEvent::ApprovalRequested {
+            turn_id: TurnId::new(1),
+            request: ApprovalRequest {
+                id: RequestId::new(4),
+                tool_name: "read_file".to_owned(),
+                title: format!("Reading {}../secret.txt", "../workspace/".repeat(8)),
+                tool_arguments_preview: String::new(),
+                scope: ApprovalScope {
+                    target: Some(home.join("secret\u{202e}txt.hsab")),
+                    access: PathAccess::Within(home.clone()),
+                    always: Some(SessionGrant::ReadsUnder(home)),
+                },
+                command: None,
+                file: None,
+            },
+        });
+        let screen = test.screen();
+        for line in [
+            "read_file …name/deep-directory-name/deep-directory-name/secret\\u{202e}txt.hsab",
+            "2. Yes, and allow reads under …ory-name/deep-directory-name for this session",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
+        assert!(!screen.contains("../workspace"), "{screen}");
+    }
+
+    #[test]
     fn a_request_replaces_the_composer_until_a_number_decides() {
         let mut test = approving();
         let screen = test.screen();
         for line in [
             PANEL,
             "Would you like to allow this action?",
-            "Reading ../notes.txt",
+            "read_file /home/notes.txt",
             "❯ 1. Yes",
-            "2. Yes, and don't ask again for this request",
+            "2. Yes, and allow reads under /home for this session",
         ] {
             assert!(screen.contains(line), "{line}\n{screen}");
         }
