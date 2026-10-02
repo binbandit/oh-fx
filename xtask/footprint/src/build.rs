@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,12 +26,7 @@ impl Builds {
             .map_err(|error| format!("read the current directory: {error}"))?
             .join(target_dir);
         let staging = target_dir.join("footprint");
-        match fs::remove_dir_all(&staging) {
-            Err(error) if error.kind() != ErrorKind::NotFound => {
-                return Err(format!("clear {}: {error}", staging.display()));
-            }
-            _ => {}
-        }
+        remove_if_present(&staging)?;
         create_dir(&staging)?;
         Ok(Self {
             target_dir,
@@ -44,8 +40,9 @@ impl Builds {
     }
 
     pub(crate) fn base(&self, commit: &str) -> Result<PathBuf, String> {
-        let source = self.staging.join("base-source");
+        let source = base_source(&self.target_dir);
         let source_text = source.to_string_lossy().into_owned();
+        remove_if_present(&source)?;
         repository::git(&["worktree", "prune"])?;
         repository::git(&[
             "worktree",
@@ -107,6 +104,21 @@ fn cargo_build(source: &Path, target_dir: &Path) -> Result<(), String> {
     }
 }
 
+fn base_source(target_dir: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    target_dir.hash(&mut hasher);
+    env::temp_dir().join(format!("oh-fx-footprint-base-{:016x}", hasher.finish()))
+}
+
+fn remove_if_present(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            Err(format!("clear {}: {error}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn create_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| format!("create {}: {error}", path.display()))
 }
@@ -115,4 +127,22 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
     fs::copy(from, to)
         .map(drop)
         .map_err(|error| format!("copy {} to {}: {error}", from.display(), to.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_base_checkout_sits_outside_the_repository_that_holds_the_target_dir() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("the repository root");
+        let source = base_source(&repository.join("target"));
+        assert!(source.starts_with(env::temp_dir()), "{}", source.display());
+        assert!(!source.starts_with(&repository), "{}", source.display());
+        assert_eq!(source, base_source(&repository.join("target")));
+        assert_ne!(source, base_source(Path::new("/elsewhere/target")));
+    }
 }
