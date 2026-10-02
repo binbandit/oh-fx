@@ -25,12 +25,21 @@ const BACKUPS_DIRECTORY: &str = "backups";
 const BACKUP_KEEP_COUNT: usize = 5;
 const CORRUPT_KEEP_COUNT: usize = 3;
 const RETIRED_SETTINGS: [&str; 2] = ["input_appearance", "maxxing_mode"];
+const FAST_MODE: &str = "fast_mode";
 const FAST_MODE_MODEL_BOUND: &str = "fast_mode_model_bound";
 const LEGACY_CODEX_MODEL: &str = "codex_model";
 const PERMISSION_MODE: &str = "permission_mode";
 const YOLO_ACKNOWLEDGED: &str = "yolo_acknowledged";
-const PERMISSION_MODE_MIGRATION_SNAPSHOT: &str =
-    "settings.json.preference-migration.permission_mode.json";
+const PERMISSION_MODE_MIGRATION: Migration = Migration {
+    field: PERMISSION_MODE,
+    binding: None,
+    snapshot: "settings.json.preference-migration.permission_mode.json",
+};
+const FAST_MODE_MIGRATION: Migration = Migration {
+    field: FAST_MODE,
+    binding: Some(FAST_MODE_MODEL_BOUND),
+    snapshot: "settings.json.preference-migration.fast_mode.json",
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SettingsWriteError {
@@ -115,6 +124,11 @@ impl From<DurableError> for SettingsWriteFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Patch<'a> {
     CodexModel(&'a str),
+    ModelPreference {
+        provider: &'a ProviderId,
+        model: &'a str,
+        fast_mode: bool,
+    },
     PermissionMode(PermissionMode),
     YoloAcknowledged,
 }
@@ -124,11 +138,34 @@ struct Application {
     changed: bool,
     fields_removed: usize,
     workspaces_changed: usize,
-    permission_mode_migrated: bool,
+    migration_snapshot: Option<&'static str>,
+}
+
+struct Migration {
+    field: &'static str,
+    binding: Option<&'static str>,
+    snapshot: &'static str,
 }
 
 pub fn save_codex_model(paths: &ProfilePaths, model: &str) -> Result<(), SettingsWriteError> {
     commit(paths, Patch::CodexModel(model), &mut || {}).map_err(|failure| failure.error)
+}
+
+pub fn save_model_preference(
+    paths: &ProfilePaths,
+    provider: &ProviderId,
+    model: &str,
+    fast_mode: bool,
+) -> Result<(), SettingsWriteFailure> {
+    commit(
+        paths,
+        Patch::ModelPreference {
+            provider,
+            model,
+            fast_mode,
+        },
+        &mut || {},
+    )
 }
 
 pub fn save_permission_mode(
@@ -170,10 +207,11 @@ fn commit(
             return Err(SettingsWriteError::TooLarge.into());
         }
         validate_candidate(&candidate)?;
-        let recovery_paths = if application.permission_mode_migrated {
-            write_migration_snapshot(&directory, paths, existing.as_deref())?
-        } else {
-            Vec::new()
+        let recovery_paths = match application.migration_snapshot {
+            Some(snapshot) => {
+                write_migration_snapshot(&directory, paths, existing.as_deref(), snapshot)?
+            }
+            None => Vec::new(),
         };
         before_commit();
         if directory.read_owned(SETTINGS_FILE, MAX_SETTINGS_BYTES)? != existing {
@@ -206,18 +244,14 @@ fn write_migration_snapshot(
     directory: &PrivateDir,
     paths: &ProfilePaths,
     existing: Option<&[u8]>,
+    snapshot: &str,
 ) -> Result<Vec<PathBuf>, SettingsWriteError> {
     let bytes = existing.ok_or(SettingsWriteError::InvalidFormat)?;
     directory
         .open_or_create_child(BACKUPS_DIRECTORY)
-        .and_then(|backups| backups.replace(PERMISSION_MODE_MIGRATION_SNAPSHOT, bytes))
+        .and_then(|backups| backups.replace(snapshot, bytes))
         .map_err(|_| SettingsWriteError::MigrationSnapshotFailed)?;
-    Ok(vec![
-        paths
-            .config
-            .join(BACKUPS_DIRECTORY)
-            .join(PERMISSION_MODE_MIGRATION_SNAPSHOT),
-    ])
+    Ok(vec![paths.config.join(BACKUPS_DIRECTORY).join(snapshot)])
 }
 
 fn lock(directory: &PrivateDir) -> Result<AdvisoryLock, SettingsWriteError> {
@@ -324,23 +358,38 @@ fn apply(
     };
     match patch {
         Patch::CodexModel(model) => {
-            application.changed |= put_codex_model(root, model)?;
+            application.changed |= put_model(root, &ProviderId::Codex, model)?;
             application.changed |= put_string(root, "provider", ProviderId::Codex.label());
             if root.shift_remove(FAST_MODE_MODEL_BOUND).is_some() {
                 application.changed = true;
             }
             clear_workspace_fast_mode_bindings(root);
         }
+        Patch::ModelPreference {
+            provider,
+            model,
+            fast_mode,
+        } => {
+            application.changed |= put_model(root, provider, model)?;
+            application.changed |= put_string(root, "provider", provider.label());
+            application.changed |= put_bool(root, FAST_MODE, fast_mode);
+            application.changed |= put_bool(root, FAST_MODE_MODEL_BOUND, true);
+            migrate_workspace_preference(root, &FAST_MODE_MIGRATION, &mut application);
+        }
         Patch::PermissionMode(mode) => {
             application.changed |= put_string(root, PERMISSION_MODE, mode.label());
-            remove_workspace_permission_modes(root, &mut application);
+            migrate_workspace_preference(root, &PERMISSION_MODE_MIGRATION, &mut application);
         }
-        Patch::YoloAcknowledged => application.changed |= put_true(root, YOLO_ACKNOWLEDGED),
+        Patch::YoloAcknowledged => application.changed |= put_bool(root, YOLO_ACKNOWLEDGED, true),
     }
     Ok(application)
 }
 
-fn remove_workspace_permission_modes(root: &mut Map<String, Value>, application: &mut Application) {
+fn migrate_workspace_preference(
+    root: &mut Map<String, Value>,
+    migration: &Migration,
+    application: &mut Application,
+) {
     let Some(Value::Object(workspaces)) = root.get_mut("workspaces") else {
         return;
     };
@@ -348,22 +397,28 @@ fn remove_workspace_permission_modes(root: &mut Map<String, Value>, application:
         let Value::Object(workspace) = workspace else {
             return true;
         };
-        if workspace.shift_remove(PERMISSION_MODE).is_none() {
+        let field = workspace.shift_remove(migration.field).is_some();
+        let binding = migration
+            .binding
+            .is_some_and(|binding| workspace.shift_remove(binding).is_some());
+        if !field && !binding {
             return true;
         }
         application.changed = true;
-        application.fields_removed += 1;
+        application.fields_removed += usize::from(field) + usize::from(binding);
         application.workspaces_changed += 1;
-        application.permission_mode_migrated = true;
+        if field {
+            application.migration_snapshot = Some(migration.snapshot);
+        }
         !workspace.is_empty()
     });
 }
 
-fn put_true(object: &mut Map<String, Value>, key: &str) -> bool {
-    if object.get(key) == Some(&Value::Bool(true)) {
+fn put_bool(object: &mut Map<String, Value>, key: &str, value: bool) -> bool {
+    if object.get(key) == Some(&Value::Bool(value)) {
         return false;
     }
-    object.insert(key.to_owned(), Value::Bool(true));
+    object.insert(key.to_owned(), Value::Bool(value));
     true
 }
 
@@ -387,7 +442,11 @@ fn remove_keys(object: &mut Map<String, Value>, keys: &[&str]) -> bool {
     removed
 }
 
-fn put_codex_model(root: &mut Map<String, Value>, model: &str) -> Result<bool, SettingsWriteError> {
+fn put_model(
+    root: &mut Map<String, Value>,
+    provider: &ProviderId,
+    model: &str,
+) -> Result<bool, SettingsWriteError> {
     if !is_valid_model_id(model) {
         return Err(SettingsWriteError::InvalidField);
     }
@@ -399,8 +458,10 @@ fn put_codex_model(root: &mut Map<String, Value>, model: &str) -> Result<bool, S
     let Some(Value::Object(models)) = root.get_mut("models") else {
         return Err(SettingsWriteError::InvalidFormat);
     };
-    changed |= put_string(models, ProviderId::Codex.label(), model);
-    changed |= root.shift_remove(LEGACY_CODEX_MODEL).is_some();
+    changed |= put_string(models, provider.label(), model);
+    if *provider == ProviderId::Codex {
+        changed |= root.shift_remove(LEGACY_CODEX_MODEL).is_some();
+    }
     Ok(changed)
 }
 
