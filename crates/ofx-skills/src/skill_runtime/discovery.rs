@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use ofx_workspace::{
     FileIdentity, FileKind, PathError, dirname, entry_identity, open_child_directory,
-    open_directory,
+    open_directory, path_inside,
 };
 use rustix::fs::{CWD, Dir, FileType, Mode, OFlags, openat};
 
@@ -81,17 +81,19 @@ impl SkillDiscoveryContext {
         workspace_root: &Path,
         specs: &[RootSpec],
     ) {
-        let home = self.home.as_deref().map(Path::as_os_str);
-        let mut current = Some(workspace_root.as_os_str().as_bytes());
+        let home = self.home.as_deref();
+        let mut current = Some(workspace_root);
         while let Some(directory) = current {
-            let directory = OsStr::from_bytes(directory);
             if home == Some(directory) {
                 break;
             }
             for spec in specs {
-                push_spec_root(roots, Path::new(directory), spec);
+                push_spec_root(roots, directory, spec);
             }
-            current = dirname(directory.as_bytes());
+            current = home
+                .filter(|home| path_inside(home, directory))
+                .and_then(|_| dirname(directory.as_os_str().as_bytes()))
+                .map(|parent| Path::new(OsStr::from_bytes(parent)));
         }
     }
 }
