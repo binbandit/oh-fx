@@ -244,7 +244,9 @@ impl WritableSession {
         let mut proposed = self.metadata.clone();
         proposed.preferences = preferences;
         proposed.updated_at_ms = timestamp_ms;
-        self.write_metadata(proposed)
+        self.write_metadata(proposed)?;
+        self.started = false;
+        Ok(())
     }
 
     pub fn select_model(&mut self, model: &str, fast_mode: bool) -> Result<(), SessionError> {
