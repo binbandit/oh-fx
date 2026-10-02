@@ -113,6 +113,16 @@ mod tests {
     }
 
     #[test]
+    fn emoji_presentation_sequences_in_a_path_never_push_its_name_out_of_view() {
+        let raw = format!("/home/u/{}/secret_key", "\u{2764}\u{fe0f}".repeat(70));
+        let phrase = Phrase::with_path("read_file ", PathText::from_raw(raw.as_bytes()), "");
+        let (shown, complete) = phrase.fit(78);
+        assert!(complete);
+        assert!(visible_width(&shown) <= 78, "{shown}");
+        assert!(shown.ends_with("/secret_key"), "{shown}");
+    }
+
+    #[test]
     fn plain_phrases_are_complete_only_when_they_fit() {
         assert_eq!(Phrase::plain("3. No").fit(5), ("3. No".to_owned(), true));
         assert_eq!(Phrase::plain("3. No").fit(4), ("3. No".to_owned(), false));
