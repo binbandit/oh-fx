@@ -1,6 +1,9 @@
+mod io;
 mod skill_contract;
+mod skill_runtime;
 
 pub use skill_contract::{
-    InvalidMetadataCause, MAX_FRONTMATTER_BYTES, MAX_NAME_BYTES, MetadataStatus, ParsedSkillFile,
-    SkillMetadata, parse_skill_file, resolve_metadata,
+    InvalidMetadataCause, RootPolicy, Skill, SkillDiagnostic, SkillDiagnosticCause,
+    SkillDiagnosticScope, SkillSource,
 };
+pub use skill_runtime::{SkillDiscovery, SkillDiscoveryContext};
