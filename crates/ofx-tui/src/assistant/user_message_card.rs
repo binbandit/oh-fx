@@ -1,6 +1,6 @@
 use ofx_text::{display_unit_at, prefix_by_width};
 
-use crate::row_text::{Paint, Row};
+use crate::row_text::{Paint, Row, terminal_safe};
 use crate::theme::Theme;
 
 const USER_TURN_RAIL: &str = "┃";
@@ -66,7 +66,8 @@ pub(crate) fn user_prompt_card(text: &str, cols: usize, theme: &Theme) -> Vec<Ro
             rows.push(row_with_prefix(theme, ""));
             continue;
         }
-        let mut remaining = line;
+        let line = terminal_safe(line);
+        let mut remaining = line.as_ref();
         while !remaining.is_empty() {
             let cut = wrap_cut(remaining, window);
             rows.push(row_with_prefix(theme, &remaining[..cut.keep_bytes]));
@@ -98,6 +99,18 @@ mod tests {
             card[0].encode(),
             "\x1b[0;38;5;255m┃\x1b[0m \x1b[0;1mhello\x1b[0m"
         );
+    }
+
+    #[test]
+    fn prompts_wrap_at_the_width_of_the_escapes_their_rows_show() {
+        let rows = user_prompt_card("abc\u{202e}defghijkl\nnext", 16, &theme());
+        assert!(rows.iter().all(|row| row.width() <= 16), "{rows:?}");
+        let shown: Vec<String> = rows
+            .iter()
+            .map(|row| row.text().trim_start_matches("┃ ").to_owned())
+            .collect();
+        assert_eq!(shown.concat(), "abc\\u{202e}defghijklnext");
+        assert_eq!(shown.last().map(String::as_str), Some("next"));
     }
 
     #[test]

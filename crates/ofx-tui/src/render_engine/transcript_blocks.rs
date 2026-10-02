@@ -10,7 +10,7 @@ use super::display_units::{Unit, display_units};
 use crate::assistant::user_message_card::user_prompt_card;
 use crate::output::activity_status::{ProgressSuffix, TokenProgress, static_status_rows};
 use crate::render::welcome_rows;
-use crate::row_text::{Paint, Row};
+use crate::row_text::{Paint, Row, terminal_safe, terminal_safe_keeping_breaks};
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,27 +284,27 @@ fn notice_label(notice: &Notice) -> String {
 }
 
 fn notice_cells<'a>(
-    notice: &'a Notice,
+    notice: &Notice,
     label: &'a str,
-    link_target: Option<&'a str>,
+    body: &'a str,
+    link: Option<(&'a str, &'a str)>,
     theme: &Theme,
 ) -> Vec<Unit<'a>> {
     let label_paint = notice_label_style(theme, notice.tone);
     let body_paint = theme.system_notice_text;
     let mut cells: Vec<Unit<'a>> = display_units(label, label_paint, None).collect();
-    let body = notice.body.trim_end_matches(['\r', '\n']);
     if !body.is_empty() {
         if !notice.topic.is_empty() {
             cells.extend(display_units(" ", body_paint, None));
         }
         cells.extend(display_units(body, body_paint, None));
     }
-    if let Some(link) = &notice.link {
+    if let Some((link_label, link_target)) = link {
         cells.extend(display_units(" (", body_paint, None));
         cells.extend(display_units(
-            &link.label,
+            link_label,
             body_paint.with(crate::row_text::Attribute::Underline),
-            link_target,
+            Some(link_target),
         ));
         cells.extend(display_units(")", body_paint, None));
     }
@@ -391,9 +391,21 @@ fn notice_continuation_indent(cells: &[Unit<'_>], cursor: usize, cols: usize) ->
 }
 
 pub(crate) fn render_semantic_notice(notice: &Notice, cols: usize, theme: &Theme) -> Vec<Row> {
-    let label = notice_label(notice);
-    let link_target = notice.link.as_ref().map(|link| format!(";{}", link.url));
-    let cells = notice_cells(notice, &label, link_target.as_deref(), theme);
+    let label = terminal_safe(&notice_label(notice)).into_owned();
+    let body = terminal_safe_keeping_breaks(notice.body.trim_end_matches(['\r', '\n']));
+    let hyperlink = notice
+        .link
+        .as_ref()
+        .map(|link| (terminal_safe(&link.label), format!(";{}", link.url)));
+    let cells = notice_cells(
+        notice,
+        &label,
+        &body,
+        hyperlink
+            .as_ref()
+            .map(|(link_label, link_target)| (link_label.as_ref(), link_target.as_str())),
+        theme,
+    );
     let mut rows = Vec::new();
     let mut cursor = 0;
     while cursor < cells.len() {
@@ -529,6 +541,19 @@ mod tests {
             texts(&render_semantic_notice(&paths, 12, &theme())),
             ["* /very/", "  long/path/", "  name"]
         );
+    }
+
+    #[test]
+    fn notices_wrap_at_the_width_of_the_escapes_their_rows_show() {
+        let notice = Notice::new(NoticeTone::Neutral, "", "abc\u{202e}defghijkl");
+        let rows = render_semantic_notice(&notice, 16, &theme());
+        assert!(
+            rows.iter().all(|row| row.width() <= 16),
+            "{:?}",
+            texts(&rows)
+        );
+        let shown: String = texts(&rows).iter().map(|text| text.trim_start()).collect();
+        assert_eq!(shown, "* abc\\u{202e}defghijkl");
     }
 
     #[test]

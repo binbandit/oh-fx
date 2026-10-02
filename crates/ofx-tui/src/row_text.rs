@@ -330,13 +330,23 @@ pub(crate) fn escaped_in_rows(character: char) -> bool {
 }
 
 pub(crate) fn terminal_safe(text: &str) -> Cow<'_, str> {
-    if !text.contains(escaped_in_rows) {
+    escape_where(text, escaped_in_rows)
+}
+
+pub(crate) fn terminal_safe_keeping_breaks(text: &str) -> Cow<'_, str> {
+    escape_where(text, |character| {
+        escaped_in_rows(character) && !matches!(character, '\n' | '\r')
+    })
+}
+
+fn escape_where(text: &str, escaped: impl Fn(char) -> bool) -> Cow<'_, str> {
+    if !text.contains(&escaped) {
         return Cow::Borrowed(text);
     }
     let mut safe = String::with_capacity(text.len());
     let mut scalar = [0_u8; 4];
     for character in text.chars() {
-        if escaped_in_rows(character) {
+        if escaped(character) {
             let encoded = character.encode_utf8(&mut scalar);
             safe.push_str(&encode_terminal_safe(encoded.as_bytes(), usize::MAX).text);
         } else {
