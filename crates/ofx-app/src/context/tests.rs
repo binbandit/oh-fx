@@ -397,6 +397,15 @@ async fn host_runtime_context_runs_off_the_async_thread() {
     assert_eq!(messages[1], ASK_MODE_CONTEXT);
 }
 
+#[tokio::test]
+async fn host_runtime_context_names_the_mode_live_when_each_request_is_built() {
+    let live = LivePermissionMode::from(PermissionMode::Auto);
+    let context = HostRuntimeContext::new(PathBuf::from("/tmp"), live.clone(), true);
+    assert_eq!(context.runtime_context().await[1], AUTO_MODE_CONTEXT);
+    live.set(PermissionMode::Yolo);
+    assert_eq!(context.runtime_context().await[1], YOLO_MODE_CONTEXT);
+}
+
 fn assert_prompt_contains(needle: &str) {
     assert!(GATEWAY_SYSTEM_PROMPT.contains(needle), "missing {needle:?}");
 }

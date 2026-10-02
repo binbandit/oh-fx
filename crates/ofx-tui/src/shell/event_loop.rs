@@ -91,6 +91,7 @@ impl Shell<'_> {
         if self.gestures.expire(now_ms) {
             self.mark_dirty();
         }
+        self.expire_yolo_warning(now_ms);
         if let Some(query) = self.input.take_theme_query(now_ms) {
             let written = match query {
                 ThemeQuery::ResponseFence => self.terminal.request_theme_response_fence(),

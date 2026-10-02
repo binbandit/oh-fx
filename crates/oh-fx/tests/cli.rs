@@ -176,6 +176,89 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
     }
 }
 
+fn with_settings(settings: Option<&str>, args: &[&str]) -> Output {
+    with_settings_and_environment(settings, &[], args)
+}
+
+fn with_settings_and_environment(
+    settings: Option<&str>,
+    environment: &[(&str, &str)],
+    args: &[&str],
+) -> Output {
+    let home = tempfile::tempdir().expect("create a temporary home");
+    if let Some(settings) = settings {
+        let config = home.path().join(".config/oh-fx");
+        std::fs::create_dir_all(&config).expect("create the config directory");
+        std::fs::write(config.join("settings.json"), settings).expect("write settings.json");
+    }
+    spawn(
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(args)
+            .current_dir(home.path())
+            .env_clear()
+            .env("HOME", home.path())
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .envs(environment.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .expect("wait for oh-fx")
+}
+
+#[test]
+fn permissions_reports_the_saved_mode_with_upstreams_text_and_json() {
+    let text = |mode: &str| {
+        format!(
+            "[permissions] mode={mode}\n[permissions] configured rules: (none)\n[permissions] session grants: (none)\n"
+        )
+    };
+    let json = |mode: &str| {
+        format!(
+            "{{\"kind\":\"permissions\",\"mode\":\"{mode}\",\"grant_count\":0,\"grant_scope\":\"session\",\"runtime_grants_available\":false,\"rules_scope\":\"persistent_config\",\"rules\":[],\"grants\":[]}}\n"
+        )
+    };
+    for (settings, shown, label) in [
+        (None, "auto", "auto"),
+        (Some(r#"{"permission_mode":"ask"}"#), "ask", "ask"),
+        (
+            Some(r#"{"permission_mode":"full-access"}"#),
+            "full access",
+            "yolo",
+        ),
+    ] {
+        let output = with_settings(settings, &["permissions"]);
+        assert!(output.status.success(), "{settings:?}: {}", stderr(&output));
+        assert_eq!(stdout(&output), text(shown), "{settings:?}");
+        assert_eq!(stderr(&output), "", "{settings:?}");
+        let output = with_settings(settings, &["permissions", "--json"]);
+        assert!(output.status.success(), "{settings:?}: {}", stderr(&output));
+        assert_eq!(stdout(&output), json(label), "{settings:?}");
+    }
+    for (variable, shown, label) in [
+        ("yolo", "full access", "yolo"),
+        ("Full Access", "full access", "yolo"),
+        ("auto", "auto", "auto"),
+        ("sometimes", "ask", "ask"),
+    ] {
+        let settings = Some(r#"{"permission_mode":"ask"}"#);
+        let environment = [("OH_FX_PERMISSION_MODE", variable)];
+        let output = with_settings_and_environment(settings, &environment, &["permissions"]);
+        assert_eq!(stdout(&output), text(shown), "{variable}");
+        let output =
+            with_settings_and_environment(settings, &environment, &["permissions", "--json"]);
+        assert_eq!(stdout(&output), json(label), "{variable}");
+    }
+    let output = with_settings(Some("{"), &["permissions", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "oh-fx: InvalidProfileConfiguration\n");
+    let output = with_settings(None, &["permissions", "--all"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "usage: oh-fx permissions [--json]\n");
+}
+
 #[test]
 fn interactive_launches_that_select_v2_sessions_are_not_available_yet() {
     for value in ["1", "TRUE"] {
@@ -219,7 +302,6 @@ fn interactive_and_resume_launches_need_a_terminal() {
 fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelope() {
     for (args, kind) in [
         (&["status", "--json"][..], "status"),
-        (&["permissions", "--json"], "permissions"),
         (&["models", "--json"], "models"),
         (&["doctor", "--json"], "doctor"),
         (&["balance", "--json"], "credits"),
@@ -313,6 +395,7 @@ fn full_disk_writes_follow_each_upstream_path() {
         (&["--version"], "oh-fx: WriteFailed\n"),
         (&["status", "--help"], "oh-fx: WriteFailed\n"),
         (&["sessions", "--help"], "oh-fx: WriteFailed\n"),
+        (&["permissions"], "oh-fx: WriteFailed\n"),
         (&["status", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (&["sessions", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (
@@ -345,6 +428,7 @@ fn closed_pipes_follow_each_upstream_path() {
         &["sessions", "--help"],
         &["sessions", "--json", "--bogus"],
         &["replay", "--json"],
+        &["permissions", "--json"],
     ] {
         let output = into_closed_pipe(args);
         assert_eq!(output.status.signal(), Some(SIGPIPE), "{args:?}");

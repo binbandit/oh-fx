@@ -64,6 +64,12 @@ impl Clipboard for TestClipboard {
 
 impl TestShell {
     pub(super) fn start() -> Self {
+        Self::start_with(|_| {})
+    }
+
+    pub(super) fn start_with(configure: impl FnOnce(&mut ShellOptions)) -> Self {
+        let mut options = options();
+        configure(&mut options);
         let pty = PtyPair::open(ROWS, COLS).unwrap();
         let mut terminal = test_pty::terminal(&pty);
         terminal.enable_raw_mode().unwrap();
@@ -83,7 +89,7 @@ impl TestShell {
         };
         let shell = Shell::assemble(
             setup,
-            options(),
+            options,
             receiver,
             Arc::clone(&clipboard) as Arc<dyn Clipboard>,
             Box::new(move |command| sink.borrow_mut().push(command)),
@@ -122,11 +128,22 @@ impl TestShell {
     }
 
     pub(super) fn draining<T>(&mut self, action: impl FnOnce(&mut Shell<'static>) -> T) -> T {
+        self.draining_after(Duration::ZERO, action).0
+    }
+
+    pub(super) fn draining_after<T>(
+        &mut self,
+        delay: Duration,
+        action: impl FnOnce(&mut Shell<'static>) -> T,
+    ) -> (T, usize) {
         let done = AtomicBool::new(false);
         let master = &self.pty.master;
         let shell = &mut self.shell;
         let (result, output) = std::thread::scope(|scope| {
-            let reader = scope.spawn(|| drain(master, &done));
+            let reader = scope.spawn(|| {
+                std::thread::sleep(delay);
+                drain(master, &done)
+            });
             let result = {
                 let _finished = Finished(&done);
                 action(shell)
@@ -134,24 +151,7 @@ impl TestShell {
             (result, reader.join().unwrap())
         });
         self.output.extend_from_slice(&output);
-        result
-    }
-
-    pub(super) fn read_output_after(&self, delay: Duration) -> std::thread::JoinHandle<usize> {
-        let master = self.pty.master.try_clone().unwrap();
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            let mut buffer = [0_u8; 4096];
-            let mut total = 0;
-            loop {
-                let mut fds = [PollFd::new(&master, PollFlags::IN)];
-                let timeout = Timespec::try_from(Duration::from_millis(200)).unwrap();
-                if rustix::event::poll(&mut fds, Some(&timeout)).unwrap() == 0 {
-                    return total;
-                }
-                total += rustix::io::read(&master, &mut buffer).unwrap();
-            }
-        })
+        (result, output.len())
     }
 
     pub(super) fn written(&mut self) -> String {
@@ -170,7 +170,7 @@ impl TestShell {
     }
 
     pub(super) fn step(&mut self) {
-        assert!(self.shell.step().unwrap().is_none());
+        assert!(self.draining(|shell| shell.step().unwrap().is_none()));
     }
 
     pub(super) fn submit(&mut self, text: &str) {
@@ -240,6 +240,7 @@ fn options() -> ShellOptions {
         version: "0.1.0".to_owned(),
         model: "model-a".to_owned(),
         permission_mode: PermissionMode::Auto,
+        full_access_warning: false,
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
         commands: vec![

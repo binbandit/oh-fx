@@ -4,13 +4,17 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use ofx_agent::{Agent, AgentConfig, Approvals, RuntimeContext};
+use ofx_agent::{
+    Agent, AgentConfig, Approvals, DeliveryState, ProjectContext, ProjectContextProvider,
+    RuntimeContext,
+};
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalDecision, ApprovalRequest, ApprovalScope,
     AutoCompactPercent, BoxFuture, ChatMessage, CommandProfile, CommandRequest, Completion,
-    FileMutation, FinishReason, GatedAction, ModelProvider, ModelRequest, PathAccess,
-    PermissionGate, PermissionMode, ProviderError, SessionGrant, StreamSink, ToolCall, ToolCallId,
-    ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
+    FileMutation, FileMutationState, FinishReason, GatedAction, LivePermissionMode, ModelProvider,
+    ModelRequest, PathAccess, PermissionGate, PermissionMode, ProviderError, SessionGrant,
+    StreamSink, ToolCall, ToolCallId, ToolResultStatus, UiEvent, Usage,
+    tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
@@ -58,7 +62,7 @@ impl Fixture {
 
 #[derive(Default)]
 struct ScriptedProvider {
-    calls: Mutex<VecDeque<ToolCall>>,
+    batches: Mutex<VecDeque<Vec<ToolCall>>>,
 }
 
 impl ModelProvider for ScriptedProvider {
@@ -69,13 +73,13 @@ impl ModelProvider for ScriptedProvider {
         _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
         let answered = matches!(request.messages.last(), Some(ChatMessage::Tool { .. }));
-        let call = if answered {
+        let batch = if answered {
             None
         } else {
-            self.calls.lock().unwrap().pop_front()
+            self.batches.lock().unwrap().pop_front()
         };
-        let (content, tool_calls, finish_reason) = match call {
-            Some(call) => (None, vec![call], FinishReason::ToolCalls),
+        let (content, tool_calls, finish_reason) = match batch {
+            Some(calls) => (None, calls, FinishReason::ToolCalls),
             None => (Some("done".to_owned()), Vec::new(), FinishReason::Stop),
         };
         Box::pin(async move {
@@ -95,6 +99,14 @@ struct NoContext;
 impl RuntimeContext for NoContext {
     fn runtime_context(&self) -> BoxFuture<'_, Vec<String>> {
         Box::pin(async { Vec::new() })
+    }
+}
+
+struct NoScopedInstructions;
+
+impl ProjectContextProvider for NoScopedInstructions {
+    fn select(&self, _targets: &[ApplicableTarget], _delivery: &DeliveryState) -> ProjectContext {
+        ProjectContext::default()
     }
 }
 
@@ -120,12 +132,26 @@ impl Session {
     }
 
     fn with_gate(workspace: &Path, gate: Arc<dyn PermissionGate>) -> Self {
+        Self::build(workspace, gate, &PermissionMode::Ask.into(), false)
+    }
+
+    fn switchable(workspace: &Path, mode: &LivePermissionMode, scoped_instructions: bool) -> Self {
+        let policy = Arc::new(PermissionPolicy::new(mode.clone(), workspace));
+        Self::build(workspace, policy, mode, scoped_instructions)
+    }
+
+    fn build(
+        workspace: &Path,
+        gate: Arc<dyn PermissionGate>,
+        mode: &LivePermissionMode,
+        scoped_instructions: bool,
+    ) -> Self {
         let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
         let provider = Arc::new(ScriptedProvider::default());
         let approvals = Approvals::default();
         let agent = Agent::new(
             Arc::clone(&provider) as Arc<dyn ModelProvider>,
-            ask_tools(workspace, &executions, None, PermissionMode::Ask),
+            ask_tools(workspace, &executions, None, mode),
             Arc::new(NoContext),
             gate,
             AgentConfig {
@@ -139,11 +165,53 @@ impl Session {
             },
         )
         .with_approvals(approvals.clone());
+        let agent = if scoped_instructions {
+            agent.with_project_context(Arc::new(NoScopedInstructions), ProjectContext::default())
+        } else {
+            agent
+        };
         Self {
             provider,
             approvals,
             agent,
         }
+    }
+
+    async fn batch(
+        &mut self,
+        calls: &[(&str, &str)],
+        mut observe: impl FnMut(&UiEvent) + Send,
+    ) -> Vec<(ToolResultStatus, String)> {
+        let batch = calls
+            .iter()
+            .enumerate()
+            .map(|(index, (name, arguments))| ToolCall {
+                id: ToolCallId::new(format!("call-{}", index + 1)),
+                name: (*name).to_owned(),
+                arguments: (*arguments).to_owned(),
+            })
+            .collect();
+        self.provider.batches.lock().unwrap().push_back(batch);
+        let mut finished = Vec::new();
+        self.agent
+            .run_turn(
+                "go",
+                &mut |event| {
+                    observe(&event);
+                    match event {
+                        UiEvent::ApprovalRequested { request, .. } => {
+                            unasked(&request);
+                        }
+                        UiEvent::ToolFinished {
+                            status, content, ..
+                        } => finished.push((status, content)),
+                        _ => {}
+                    }
+                },
+                &CancellationToken::new(),
+            )
+            .await;
+        finished
     }
 
     async fn call(
@@ -152,11 +220,15 @@ impl Session {
         arguments: &str,
         mut decide: impl FnMut(&ApprovalRequest) -> ApprovalDecision + Send,
     ) -> Outcome {
-        self.provider.calls.lock().unwrap().push_back(ToolCall {
-            id: ToolCallId::new("call-1"),
-            name: name.to_owned(),
-            arguments: arguments.to_owned(),
-        });
+        self.provider
+            .batches
+            .lock()
+            .unwrap()
+            .push_back(vec![ToolCall {
+                id: ToolCallId::new("call-1"),
+                name: name.to_owned(),
+                arguments: arguments.to_owned(),
+            }]);
         let approvals = self.approvals.clone();
         let mut requests = Vec::new();
         let mut finished = None;
@@ -439,6 +511,70 @@ async fn always_on_an_external_file_change_grants_the_tree_it_showed_before_the_
         .call("read_file", r#"{"path":"../approved/data.txt"}"#, deny)
         .await
         .denied_request("read_file");
+}
+
+#[tokio::test]
+async fn a_switch_from_full_access_to_auto_mid_batch_lets_a_later_call_change_a_workspace_file() {
+    for scoped_instructions in [false, true] {
+        let fixture = Fixture::new();
+        let notes = fixture.workspace.join("notes.txt");
+        fs::write(&notes, "old\n").unwrap();
+        let mode = LivePermissionMode::from(PermissionMode::Yolo);
+        let mut session = Session::switchable(&fixture.workspace, &mode, scoped_instructions);
+        let finished = session
+            .batch(
+                &[
+                    ("read_file", r#"{"path":"notes.txt"}"#),
+                    ("write_file", &write("notes.txt")),
+                ],
+                |event| {
+                    if let UiEvent::ToolStarted { call_id, .. } = event
+                        && call_id.as_str() == "call-1"
+                    {
+                        mode.set(PermissionMode::Auto);
+                    }
+                },
+            )
+            .await;
+        assert_eq!(mode.get(), PermissionMode::Auto);
+        assert_eq!(
+            finished[1],
+            (
+                ToolResultStatus::Success,
+                "wrote notes.txt (8 bytes)".to_owned()
+            ),
+            "{scoped_instructions}"
+        );
+        assert_eq!(fs::read_to_string(&notes).unwrap(), "written\n");
+    }
+}
+
+#[tokio::test]
+async fn a_change_approved_after_a_switch_to_full_access_runs_only_as_it_was_shown() {
+    let fixture = Fixture::new();
+    let notes = fixture.workspace.join("notes.txt");
+    fs::write(&notes, "old\n").unwrap();
+    let mode = LivePermissionMode::from(PermissionMode::Ask);
+    let mut session = Session::switchable(&fixture.workspace, &mode, false);
+    let approved = session
+        .call("write_file", &write("notes.txt"), |request| {
+            assert_eq!(
+                request.file.as_ref().map(|file| file.state),
+                Some(FileMutationState::Changes)
+            );
+            mode.set(PermissionMode::Yolo);
+            fs::write(&notes, "edited elsewhere\n").unwrap();
+            ApprovalDecision::Once
+        })
+        .await;
+    assert_eq!(
+        (approved.status, approved.content.as_str()),
+        (
+            ToolResultStatus::Failure,
+            "file mutation rejected because the file changed after preview; make a new tool call for a fresh preview"
+        )
+    );
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "edited elsewhere\n");
 }
 
 #[tokio::test]

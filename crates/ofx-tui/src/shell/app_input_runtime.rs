@@ -1,4 +1,4 @@
-use ofx_contract::{Notice, NoticeTone};
+use ofx_contract::{Notice, NoticeTone, UiCommand};
 
 use super::{FreshScreen, Shell};
 use crate::composer::{
@@ -123,6 +123,10 @@ impl Shell<'_> {
         }
         self.gestures.disarm_escape_interrupt();
         self.gestures.disarm_escape_clear();
+        if decoded.action == Action::TogglePermissionMode {
+            self.send(UiCommand::TogglePermissionMode);
+            return;
+        }
         if let Some(action) = decoded.composer_shortcut {
             self.route_shortcut(action);
         }

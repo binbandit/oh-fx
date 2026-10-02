@@ -17,11 +17,13 @@ use ofx_app::{
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{
-    ConnectionError, ContextLimitName, ContextLimitOverride, SelectionError, Settings,
+    ConnectionError, ContextLimitName, ContextLimitOverride, ProfilePaths, SelectionError,
+    Settings, save_yolo_acknowledged,
 };
 use ofx_contract::{
-    ModelRecoveryAction, ModelRecoveryCause, PermissionMode, RouteRecoveryStatus, ToolActivity,
-    ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
+    RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
+    TurnOutcome, UiEvent, Usage,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
@@ -42,9 +44,9 @@ use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
 };
 
-const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
+const HOME_NOT_SET: &str = "HomeNotSet";
 const PERMISSION_REQUIRED_HEADLINE: &str =
     "permission required for tool execution in noninteractive mode";
 const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_unavailable";
@@ -402,11 +404,12 @@ async fn prepare_agent(
 ) -> Result<PreparedAsk, Failure> {
     let args = request.args;
     let mut profile = Profile::load().map_err(|error| Failure::code(error.to_string()))?;
-    let permission_mode = args
-        .permissions
-        .mode
-        .unwrap_or_else(|| profile.settings().permission_mode());
-    announce_settings(args, profile.settings(), permission_mode)?;
+    let permission_mode = args.permissions.mode.unwrap_or_else(|| {
+        profile
+            .settings()
+            .permission_mode(&|name| env::var(name).ok())
+    });
+    announce_settings(args, &profile, permission_mode)?;
     let resumed = match &args.session.resume {
         Some(target) => Some(Resumed::open(&mut profile, target)?),
         None => None,
@@ -458,22 +461,35 @@ async fn prepare_agent(
 
 fn announce_settings(
     args: &AskArgs,
-    settings: &Settings,
+    profile: &Profile,
     permission_mode: PermissionMode,
 ) -> Result<(), Failure> {
+    let settings = profile.settings();
     let mut stderr = io::stderr().lock();
     if permission_mode == PermissionMode::Yolo && !settings.yolo_acknowledged() {
         let warning = if !args.output.no_color && stderr.is_terminal() {
-            format!("\x1b[38;5;252m{YOLO_WARNING}\x1b[0m")
+            format!("\x1b[38;5;252m{FULL_ACCESS_WARNING}\x1b[0m")
         } else {
-            YOLO_WARNING.to_owned()
+            FULL_ACCESS_WARNING.to_owned()
         };
         writeln!(stderr, "{warning}").map_err(|error| Failure::written(&error))?;
+        if let Err(error) = acknowledge_full_access(profile.paths()) {
+            writeln!(
+                stderr,
+                "oh-fx ask: failed to save full access acknowledgment: {error}"
+            )
+            .map_err(|error| Failure::written(&error))?;
+        }
     }
     for diagnostic in settings.diagnostics() {
         writeln!(stderr, "oh-fx ask: {diagnostic}").map_err(|error| Failure::written(&error))?;
     }
     Ok(())
+}
+
+fn acknowledge_full_access(paths: Option<&ProfilePaths>) -> Result<(), String> {
+    let paths = paths.ok_or_else(|| HOME_NOT_SET.to_owned())?;
+    save_yolo_acknowledged(paths).map_err(|failure| failure.error.to_string())
 }
 
 fn requested_reasoning(
@@ -900,6 +916,7 @@ impl Presenter {
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }
+            | UiEvent::PermissionModeChanged { .. }
             | UiEvent::HelpRequested
             | UiEvent::ConversationCleared { .. }
             | UiEvent::ExitRequested => Ok(()),

@@ -5,6 +5,7 @@ mod command_echo;
 mod help;
 mod login_command;
 mod models_command;
+mod permissions_command;
 mod provider_activation;
 mod provider_command;
 mod shell_call_record;
@@ -28,7 +29,7 @@ const NOT_AVAILABLE_CODE: &str = "NotAvailableYet";
 const VERSION_LINE: [u8; ofx_upgrade::VERSION.len() + 1] = version_line();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WriteFailure {
+pub(crate) enum WriteFailure {
     Reported,
     ReportedUnlessPipeClosed,
     Unreported,
@@ -89,6 +90,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Login(provider) => login_command::login(provider.as_ref()),
             Command::Logout(provider) => login_command::logout(provider.as_ref()),
             Command::Models(format) => models_command::run(format),
+            Command::Permissions(format) => permissions_command::run(format),
             Command::Provider(target) => provider_command::run(target),
             other => unavailable_command(&other),
         },
@@ -148,7 +150,7 @@ pub(crate) fn write_unavailable(feature: &str) {
     let _ = writeln!(io::stderr(), "oh-fx: {feature} is not available yet");
 }
 
-fn command_write_failure(kind: TopLevelKind) -> WriteFailure {
+pub(crate) fn command_write_failure(kind: TopLevelKind) -> WriteFailure {
     if ignores_sigpipe(kind) {
         WriteFailure::Reported
     } else {
@@ -221,7 +223,7 @@ fn write_stdout_unbuffered(mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn print(bytes: &[u8], failure: WriteFailure) -> ExitCode {
+pub(crate) fn print(bytes: &[u8], failure: WriteFailure) -> ExitCode {
     written(write_stdout_unbuffered(bytes), failure, ExitCode::SUCCESS)
 }
 

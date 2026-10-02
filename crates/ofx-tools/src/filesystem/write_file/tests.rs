@@ -3,9 +3,11 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess,
-    TargetKind, ToolCallId, ToolContext, ToolEffect, ToolResultStatus,
+    Admission, ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState,
+    PathAccess, PermissionGate, PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect,
+    ToolResultStatus,
 };
+use ofx_permissions::PermissionPolicy;
 use ofx_workspace::MAX_PATH_BYTES;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -352,7 +354,9 @@ fn progress_titles_name_the_prepared_target() {
 #[test]
 fn full_access_writes_name_the_requested_path_and_read_the_target_when_they_run() {
     let workspace = Fixture::new();
-    let tool = workspace.tool().with_full_access(true);
+    let tool = workspace
+        .tool()
+        .with_permission_mode(PermissionMode::Yolo.into());
     fs::write(workspace.workspace.join("note.txt"), "old\n").unwrap();
     let mut prepared = tool.prepare(&arguments("./note.txt", "new\n")).unwrap();
     prepared.complete();
@@ -383,6 +387,74 @@ fn full_access_writes_name_the_requested_path_and_read_the_target_when_they_run(
         PathAccess::WorkspaceOrExternal,
     );
     assert_eq!(failed.description.title, "Writing file");
+}
+
+#[test]
+fn a_write_is_staged_in_the_mode_in_force_when_it_completes() {
+    let workspace = Fixture::new();
+    let target = workspace.workspace.join("note.txt");
+    fs::write(&target, "old\n").unwrap();
+    let mode = LivePermissionMode::from(PermissionMode::Yolo);
+    let tool = workspace.tool().with_permission_mode(mode.clone());
+    let policy = PermissionPolicy::new(mode.clone(), &workspace.workspace);
+    let cases = [
+        (
+            PermissionMode::Yolo,
+            PermissionMode::Auto,
+            FileMutationState::Changes,
+            Admission::Allowed(PathAccess::WorkspaceOnly),
+        ),
+        (
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+            FileMutationState::Unread,
+            Admission::Allowed(PathAccess::WorkspaceOrExternal),
+        ),
+    ];
+    for (prepared_in, completed_in, state, admission) in cases {
+        mode.set(prepared_in);
+        let mut prepared = tool.prepare(&arguments("./note.txt", "new\n")).unwrap();
+        mode.set(completed_in);
+        prepared.complete();
+        let mutation = prepared.file_mutation().cloned().unwrap();
+        assert_eq!(
+            mutation,
+            FileMutation {
+                target: target.clone(),
+                state,
+            },
+            "{completed_in:?}"
+        );
+        assert_eq!(
+            policy.admit_file_mutation(&mutation),
+            admission,
+            "{completed_in:?}"
+        );
+    }
+}
+
+#[test]
+fn a_completed_write_keeps_its_staging_when_the_mode_changes_before_it_runs() {
+    let workspace = Fixture::new();
+    let path = workspace.workspace.join("note.txt");
+    fs::write(&path, "old\n").unwrap();
+    let mode = LivePermissionMode::from(PermissionMode::Auto);
+    let tool = workspace.tool().with_permission_mode(mode.clone());
+    let changed = execute_after(&tool, &arguments("note.txt", "new\n"), || {
+        mode.set(PermissionMode::Yolo);
+        fs::write(&path, "edited elsewhere\n").unwrap();
+    });
+    assert_eq!(
+        changed.mutation.map(|mutation| mutation.state),
+        Some(FileMutationState::Changes)
+    );
+    assert_eq!(
+        changed.output,
+        ToolOutput::failure(
+            "file mutation rejected because the file changed after preview; make a new tool call for a fresh preview"
+        )
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited elsewhere\n");
 }
 
 #[test]

@@ -79,6 +79,10 @@ impl SessionGrants {
         self.lock().clear();
     }
 
+    pub(crate) fn snapshot(&self) -> Vec<SessionGrant> {
+        self.lock().clone()
+    }
+
     pub(crate) fn granted_root(
         &self,
         workspace_root: &Path,
