@@ -1,5 +1,6 @@
 mod escape_parser;
 pub(crate) mod gesture_state;
+mod ingress_queue;
 mod input_action;
 mod paste_framing;
 mod shortcuts;
@@ -8,12 +9,13 @@ mod text_scalar;
 
 use std::collections::VecDeque;
 
-use crate::terminal::{ForwardedBytes, ThemeMonitor, ThemeMonitorFeed, ThemeQuery, ThemeUpdate};
+use crate::terminal::{ThemeMonitor, ThemeMonitorFeed, ThemeQuery, ThemeUpdate};
 
 pub(crate) use input_action::{Action, DecodedTerminalAction, RawTerminalInput, ShortcutAction};
 pub(crate) use paste_framing::{PasteOutcome, PasteOwner};
 pub(crate) use text_scalar::{DroppedText, TextDropReason, TextOwner};
 
+use ingress_queue::IngressQueue;
 use input_action::{TerminalDecodeContext, TerminalInputEvent};
 use paste_framing::PasteFraming;
 use terminal_action_decoder::Decoder;
@@ -56,8 +58,8 @@ pub(crate) struct TerminalInput {
     decoder: Decoder,
     paste: PasteFraming,
     text: text_scalar::State,
-    fresh: VecDeque<u8>,
-    staged: VecDeque<(Entry, u8)>,
+    fresh: IngressQueue,
+    staged: IngressQueue,
     replay: Option<u8>,
     events: VecDeque<InputEvent>,
 }
@@ -68,7 +70,7 @@ impl TerminalInput {
     }
 
     pub(crate) fn push_bytes(&mut self, bytes: &[u8]) {
-        self.fresh.extend(bytes);
+        self.fresh.push(bytes);
     }
 
     pub(crate) fn next_event(&mut self, context: InputContext) -> Option<InputEvent> {
@@ -157,13 +159,13 @@ impl TerminalInput {
         if let Some(byte) = self.replay.take() {
             return Some((Entry::Decoder, byte));
         }
-        if let Some(staged) = self.staged.pop_front() {
-            return Some(staged);
+        if let Some(byte) = self.staged.pop() {
+            return Some((Entry::AfterThemeMonitor, byte));
         }
         if let Some(byte) = self.theme_monitor.take_deferred_byte() {
             return Some((Entry::AfterThemeMonitor, byte));
         }
-        self.fresh.pop_front().map(|byte| (Entry::Fresh, byte))
+        self.fresh.pop().map(|byte| (Entry::Fresh, byte))
     }
 
     fn dispatch(&mut self, entry: Entry, byte: u8, context: InputContext) {
@@ -193,7 +195,8 @@ impl TerminalInput {
 
     fn feed_theme_monitor(&mut self, byte: u8, context: InputContext) {
         if let ThemeMonitorFeed::Forward(bytes) = self.theme_monitor.feed(byte, context.now_ms) {
-            self.stage_front(Entry::AfterThemeMonitor, &bytes);
+            debug_assert!(self.staged.is_empty());
+            self.staged.push(bytes.as_slice());
         }
     }
 
@@ -249,12 +252,6 @@ impl TerminalInput {
             self.events.push_back(InputEvent::TextDropped(dropped));
         }
         self.text = text_scalar::State::default();
-    }
-
-    fn stage_front(&mut self, entry: Entry, bytes: &ForwardedBytes) {
-        for byte in bytes.as_slice().iter().rev() {
-            self.staged.push_front((entry, *byte));
-        }
     }
 }
 
@@ -523,6 +520,53 @@ mod tests {
         assert!(drain(&mut input, 76).is_empty());
         assert_eq!(input.settle_delivery_epoch(), Some(trailing_input()));
         assert!(!input.has_pending_input());
+    }
+
+    fn secret(event: Option<InputEvent>) -> String {
+        let Some(InputEvent::Paste(PasteOutcome::Secret { owner, text })) = event else {
+            panic!("expected a secret paste, got {event:?}");
+        };
+        assert_eq!(owner, PasteOwner::AuthCode);
+        text.expose().to_owned()
+    }
+
+    #[test]
+    fn authorization_code_bytes_are_zeroed_in_fresh_input_as_they_are_consumed() {
+        let mut input = TerminalInput::new();
+        input.push_bytes(b"\x1b[200~code-123\x1b[201~");
+        assert_eq!(
+            input.next_event(context(0)),
+            Some(action(Action::PasteStart))
+        );
+        assert_eq!(&input.fresh.storage()[..6], [0; 6]);
+        assert_eq!(&input.fresh.storage()[6..14], b"code-123");
+        input.begin_paste(PasteOwner::AuthCode, 64);
+        assert!(drain(&mut input, 0).is_empty());
+        assert_eq!(input.fresh.storage().len(), 20);
+        assert!(input.fresh.storage().iter().all(|byte| *byte == 0));
+        assert_eq!(secret(input.settle_delivery_epoch()), "code-123");
+    }
+
+    #[test]
+    fn authorization_code_bytes_forwarded_by_the_theme_monitor_are_zeroed_in_staged_input() {
+        let mut input = TerminalInput::new();
+        input.start_theme_monitor();
+        input.push_bytes(b"\x1b[?997;1n");
+        assert!(drain(&mut input, 0).is_empty());
+        assert_eq!(input.take_theme_query(0), Some(ThemeQuery::ResponseFence));
+        input.push_bytes(b"\x1b[200~");
+        assert_eq!(drain(&mut input, 1), vec![action(Action::PasteStart)]);
+        input.begin_paste(PasteOwner::AuthCode, 64);
+        for byte in b"code-123" {
+            input.push_bytes(&[*byte]);
+            assert!(drain(&mut input, 1).is_empty());
+            assert_eq!(input.fresh.storage(), [0]);
+            assert_eq!(input.staged.storage(), [0]);
+        }
+        input.push_bytes(b"\x1b[201~");
+        assert!(drain(&mut input, 1).is_empty());
+        assert!(input.staged.storage().iter().all(|byte| *byte == 0));
+        assert_eq!(secret(input.settle_delivery_epoch()), "code-123");
     }
 
     #[test]
