@@ -1,5 +1,5 @@
 use std::io::{self, PipeReader, PipeWriter};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -15,6 +15,7 @@ use rustix::termios::{self, Winsize};
 
 const CURSOR_POSITION_REPORT: u16 = 6;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+const READ_CHUNK_BYTES: usize = 4096;
 const SCROLLBACK_ROWS: usize = 1000;
 
 type Terminal = Arc<Mutex<vt100::Parser<CursorReplies>>>;
@@ -53,13 +54,15 @@ pub struct PtySession {
 impl PtySession {
     pub fn spawn(mut command: Command, rows: u16, cols: u16) -> io::Result<Self> {
         let PtyPair { master, slave } = PtyPair::open(rows, cols)?;
+        rustix::fs::fcntl_setfl(
+            &master,
+            rustix::fs::fcntl_getfl(&master)? | OFlags::NONBLOCK,
+        )?;
         command
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
         let (stop, reader_stop) = io::pipe()?;
-        let reader_master = master.try_clone()?;
-        let child = command.spawn()?;
         let terminal = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
@@ -67,12 +70,14 @@ impl PtySession {
             CursorReplies::default(),
         )));
         let output = Arc::new(Mutex::new(Vec::new()));
-        let reader = spawn_reader(
-            reader_master,
+        let reader = Reader {
+            master: master.try_clone()?,
             stop,
-            Arc::clone(&terminal),
-            Arc::clone(&output),
-        );
+            terminal: Arc::clone(&terminal),
+            output: Arc::clone(&output),
+            replies: Vec::new(),
+        };
+        let child = command.spawn()?;
         Ok(Self {
             master,
             child,
@@ -80,12 +85,22 @@ impl PtySession {
             terminal,
             output,
             reader_stop,
-            reader: Some(reader),
+            reader: Some(thread::spawn(move || reader.run())),
         })
     }
 
     pub fn send(&self, bytes: &[u8]) {
-        write_all(self.master.as_fd(), bytes);
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            match rustix::io::write(&self.master, remaining) {
+                Ok(written) => remaining = &remaining[written..],
+                Err(Errno::AGAIN) => {
+                    let _ = poll(&mut [PollFd::new(&self.master, PollFlags::OUT)], None);
+                }
+                Err(Errno::INTR) => {}
+                Err(_) => return,
+            }
+        }
     }
 
     pub fn screen(&self) -> String {
@@ -196,6 +211,74 @@ impl Drop for PtySession {
     }
 }
 
+struct Reader {
+    master: OwnedFd,
+    stop: PipeReader,
+    terminal: Terminal,
+    output: Arc<Mutex<Vec<u8>>>,
+    replies: Vec<u8>,
+}
+
+impl Reader {
+    fn run(mut self) {
+        let mut buffer = [0_u8; READ_CHUNK_BYTES];
+        while self.wait_for_master() && self.read(&mut buffer) {
+            self.flush_replies();
+        }
+    }
+
+    fn wait_for_master(&self) -> bool {
+        let events = if self.replies.is_empty() {
+            PollFlags::IN
+        } else {
+            PollFlags::IN | PollFlags::OUT
+        };
+        let mut fds = [
+            PollFd::new(&self.master, events),
+            PollFd::new(&self.stop, PollFlags::IN),
+        ];
+        loop {
+            match poll(&mut fds, None) {
+                Ok(_) => return fds[1].revents().is_empty(),
+                Err(Errno::INTR) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    fn read(&mut self, buffer: &mut [u8]) -> bool {
+        match rustix::io::read(&self.master, &mut *buffer) {
+            Ok(0) => false,
+            Ok(count) => {
+                self.record(&buffer[..count]);
+                true
+            }
+            Err(Errno::AGAIN | Errno::INTR) => true,
+            Err(_) => false,
+        }
+    }
+
+    fn record(&mut self, chunk: &[u8]) {
+        lock(&self.output).extend_from_slice(chunk);
+        let mut terminal = lock(&self.terminal);
+        terminal.process(chunk);
+        self.replies.append(&mut terminal.callbacks_mut().0);
+    }
+
+    fn flush_replies(&mut self) {
+        while !self.replies.is_empty() {
+            match rustix::io::write(&self.master, &self.replies) {
+                Ok(0) | Err(Errno::AGAIN) => return,
+                Ok(written) => {
+                    self.replies.drain(..written);
+                }
+                Err(Errno::INTR) => {}
+                Err(_) => self.replies.clear(),
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct CursorReplies(Vec<u8>);
 
@@ -229,56 +312,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn write_all(fd: BorrowedFd<'_>, bytes: &[u8]) {
-    let mut remaining = bytes;
-    while !remaining.is_empty() {
-        match rustix::io::write(fd, remaining) {
-            Ok(written) => remaining = &remaining[written..],
-            Err(Errno::INTR) => {}
-            Err(_) => return,
-        }
-    }
-}
-
-fn spawn_reader(
-    master: OwnedFd,
-    stop: PipeReader,
-    terminal: Terminal,
-    output: Arc<Mutex<Vec<u8>>>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        let mut buffer = [0_u8; 4096];
-        while readable_before_stop(&master, &stop) {
-            let count = match rustix::io::read(&master, &mut buffer) {
-                Ok(0) | Err(_) => return,
-                Ok(count) => count,
-            };
-            let chunk = &buffer[..count];
-            lock(&output).extend_from_slice(chunk);
-            let replies = {
-                let mut terminal = lock(&terminal);
-                terminal.process(chunk);
-                std::mem::take(&mut terminal.callbacks_mut().0)
-            };
-            write_all(master.as_fd(), &replies);
-        }
-    })
-}
-
-fn readable_before_stop(master: &OwnedFd, stop: &PipeReader) -> bool {
-    let mut fds = [
-        PollFd::new(master, PollFlags::IN),
-        PollFd::new(stop, PollFlags::IN),
-    ];
-    loop {
-        match poll(&mut fds, None) {
-            Ok(_) => return fds[1].revents().is_empty(),
-            Err(Errno::INTR) => {}
-            Err(_) => return false,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
@@ -291,6 +324,36 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]);
         PtySession::spawn(command, 5, 40).unwrap()
+    }
+
+    fn flood_of_cursor_queries(count: usize) -> String {
+        let queries = "\\033[6n".repeat(10);
+        format!(
+            "i=0; while [ \"$i\" -lt {} ]; do printf '{queries}'; i=$((i + 1)); done",
+            count / 10
+        )
+    }
+
+    fn ready_descendant(session: &PtySession) -> Pid {
+        session
+            .wait_for(WAIT, |screen| screen.contains("ready"))
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .and_then(|pid| pid.parse().ok())
+            .and_then(Pid::from_raw)
+            .unwrap()
+    }
+
+    fn drops_while_descendant_lives(session: PtySession, descendant: Pid) -> bool {
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            drop(session);
+            let _ = done.send(());
+        });
+        let dropped = finished.recv_timeout(Duration::from_secs(1)).is_ok();
+        let _ = rustix::process::kill_process(descendant, Signal::KILL);
+        dropped
     }
 
     #[test]
@@ -348,26 +411,47 @@ mod tests {
     #[test]
     fn dropping_a_session_does_not_wait_for_descendants_that_hold_the_terminal() {
         let session = shell("sleep 30 & printf 'descendant %s ready\\n' \"$!\"; wait");
-        let screen = session
-            .wait_for(WAIT, |screen| screen.contains("ready"))
-            .unwrap();
-        let descendant = screen
-            .split_whitespace()
-            .nth(1)
-            .and_then(|pid| pid.parse().ok())
-            .and_then(Pid::from_raw)
-            .unwrap();
-        let (done, finished) = mpsc::channel();
-        let dropping = thread::spawn(move || {
-            drop(session);
-            let _ = done.send(());
-        });
-        let outcome = finished.recv_timeout(Duration::from_secs(1));
-        let _ = rustix::process::kill_process(descendant, Signal::KILL);
-        dropping.join().unwrap();
+        let descendant = ready_descendant(&session);
         assert!(
-            outcome.is_ok(),
+            drops_while_descendant_lives(session, descendant),
             "dropping the session waited for a descendant that holds the terminal"
         );
+    }
+
+    #[test]
+    fn dropping_a_session_does_not_wait_for_replies_the_child_never_reads() {
+        let session = shell(&format!(
+            "stty raw -echo; sleep 30 & printf 'descendant %s ready\\r\\n' \"$!\"; {}; \
+             printf 'flooded\\r\\n'; wait",
+            flood_of_cursor_queries(50_000)
+        ));
+        let descendant = ready_descendant(&session);
+        let flooded = session
+            .wait_for(WAIT, |screen| screen.contains("flooded"))
+            .is_ok();
+        let dropped = drops_while_descendant_lives(session, descendant);
+        assert!(
+            dropped,
+            "dropping the session waited for replies that the child never reads"
+        );
+        assert!(
+            flooded,
+            "the reader stopped reading output while replies were held back"
+        );
+    }
+
+    #[test]
+    fn replies_held_back_by_a_full_input_queue_arrive_whole() {
+        let session = shell(&format!(
+            "stty raw -echo min 0 time 20; {}; \
+             count=$(dd bs=1 count=30000 2>/dev/null | tr '\\033' '\\n' | grep -c '^\\[1;1R$'); \
+             stty min 0 time 2; extra=$(dd bs=1 count=1 2>/dev/null | wc -c | tr -d ' '); \
+             printf 'replies %s extra %s end\\r\\n' \"$count\" \"$extra\"",
+            flood_of_cursor_queries(5_000)
+        ));
+        let screen = session
+            .wait_for(WAIT, |screen| screen.contains(" end"))
+            .unwrap();
+        assert!(screen.contains("replies 5000 extra 0 end"), "{screen}");
     }
 }
