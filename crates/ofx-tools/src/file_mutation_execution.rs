@@ -60,10 +60,8 @@ impl MutationRequest {
             tool_name: self.tool_name,
             workspace_root: self.workspace_root.clone(),
             requested_path,
-            full_access: self
-                .permission_mode
-                .as_ref()
-                .is_some_and(|mode| mode.get() == PermissionMode::Yolo),
+            full_access: in_full_access(self.permission_mode.as_ref()),
+            permission_mode: self.permission_mode.clone(),
             input,
             stage: Stage::Deferred(targets),
         })
@@ -140,6 +138,7 @@ struct Plan {
     workspace_root: PathBuf,
     requested_path: String,
     full_access: bool,
+    permission_mode: Option<LivePermissionMode>,
     input: MutationInput,
     stage: Stage,
 }
@@ -156,14 +155,22 @@ impl Plan {
             Err(failure) => return (None, Err(failure)),
         };
         let target = file_target(targets.target.path());
-        let stage = if targets.target.anchor_is_external || self.full_access {
+        let full_access = in_full_access(self.permission_mode.as_ref());
+        let stage = if targets.target.anchor_is_external || full_access {
             Ok(Stage::Deferred(targets))
         } else {
             PreparedMutation::prepare(targets, &self.requested_path, &self.input)
                 .map(Stage::Prepared)
                 .map_err(|failure| prepare_failure(self.tool_name, failure))
         };
-        (Some(target), stage.map(|stage| Self { stage, ..self }))
+        (
+            Some(target),
+            stage.map(|stage| Self {
+                stage,
+                full_access,
+                ..self
+            }),
+        )
     }
 
     fn label(&self) -> Option<String> {
@@ -246,6 +253,10 @@ impl Plan {
             Err(rejection) => ToolOutput::failure(rejection.message()),
         }
     }
+}
+
+fn in_full_access(mode: Option<&LivePermissionMode>) -> bool {
+    mode.is_some_and(|mode| mode.get() == PermissionMode::Yolo)
 }
 
 fn file_target(path: PathBuf) -> ApplicableTarget {
