@@ -8,6 +8,7 @@ use ofx_markdown::{highlight, resolve};
 use ofx_text::{prefix_by_width, visible_width};
 
 use super::tool_presentation::{ToolActivityRow, ToolOutcome};
+use crate::output::activity_status::omission_marker;
 use crate::render_engine::display_units::Unit;
 use crate::row_text::{Paint, Row};
 use crate::theme::Theme;
@@ -431,15 +432,6 @@ fn status_preview(line: &Row, cols: usize) -> Vec<Row> {
     second.push(marker, marker_paint);
     rows.push(second);
     rows
-}
-
-fn omission_marker(cols: usize) -> &'static str {
-    match cols {
-        0 => "",
-        1 => ".",
-        2 => "..",
-        _ => "...",
-    }
 }
 
 fn scan_status_line(units: &[Unit<'_>], start: usize, max_width: usize) -> StatusLine {
