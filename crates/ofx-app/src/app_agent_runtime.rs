@@ -89,6 +89,9 @@ impl ControllerState {
     }
 
     fn select_model(&mut self, model: String) {
+        if model != self.model {
+            self.fast_mode = false;
+        }
         self.model = model;
         self.emit(UiEvent::ModelSelected {
             model: self.model.clone(),
@@ -558,6 +561,7 @@ mod tests {
     }
 
     const CODEX_MODEL: &str = "gpt-6.1-sol";
+    const OTHER_CODEX_MODEL: &str = "gpt-6.1-luna";
 
     fn codex_home() -> tempfile::TempDir {
         let home = tempfile::tempdir().unwrap();
@@ -592,13 +596,16 @@ mod tests {
 
     fn codex_catalog(fast: bool, lookups: usize) -> FakeServer {
         let tiers: &[&str] = if fast { &["fast"] } else { &[] };
-        let listing = json!({"models": [{
-            "slug": CODEX_MODEL,
-            "visibility": "list",
-            "supported_in_api": true,
-            "supported_reasoning_levels": [{"effort": "low"}],
-            "additional_speed_tiers": tiers,
-        }]});
+        let model = |slug: &str| {
+            json!({
+                "slug": slug,
+                "visibility": "list",
+                "supported_in_api": true,
+                "supported_reasoning_levels": [{"effort": "low"}],
+                "additional_speed_tiers": tiers,
+            })
+        };
+        let listing = json!({"models": [model(CODEX_MODEL), model(OTHER_CODEX_MODEL)]});
         let mut replies = vec![Reply::status(
             200,
             json!({"version": "0.153.1"}).to_string(),
@@ -1353,6 +1360,25 @@ mod tests {
         let requests = codex.requests();
         assert_eq!(requests[0].json().get("service_tier"), None);
         assert_eq!(requests[1].json()["service_tier"], "priority");
+    }
+
+    #[tokio::test]
+    async fn another_model_starts_without_fast_mode_and_the_same_one_keeps_it() {
+        let codex = FakeServer::start([codex_text("same"), codex_text("other")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        harness.command(&format!("/model {CODEX_MODEL}"));
+        harness.submit("same");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.command(&format!("/model {OTHER_CODEX_MODEL}"));
+        harness.submit("other");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_eq!(requests[0].json()["service_tier"], "priority");
+        assert_eq!(requests[1].json()["model"], OTHER_CODEX_MODEL);
+        assert_eq!(requests[1].json().get("service_tier"), None);
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
     }
 
     #[tokio::test]
