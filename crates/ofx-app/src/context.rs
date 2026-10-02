@@ -29,6 +29,7 @@ const DIRTY_MARKERS: [&str; 5] = [
     "rebase-apply",
 ];
 const NONINTERACTIVE_CONTEXT: &str = "Runtime context: this is a noninteractive run without live question UI; when a user-owned decision remains after inspection, stop and surface a concrete blocker in freeform text with the available options. Do not recommend or label one option as preferred.";
+const VERIFICATION_CONTEXT: &str = "Runtime context: if this turn changes files, choose focused verification from the touched areas first. Use changed paths in tool calls and results to select checks; avoid generic or expensive verification unless those paths justify it or the user requested it. Tests under tests/evals can be deterministic; do not assume they require live models. Preserve exact verification evidence in the final summary.";
 const ASK_MODE_CONTEXT: &str = "Runtime context: permission mode is ask. Sensitive tool calls may require user approval unless configured rules or session grants already decide them. Tool admission remains authoritative.";
 const AUTO_MODE_CONTEXT: &str = "Runtime context: permission mode is auto. After configured rules, session grants, and deterministic safe-tool authority, oh-fx sends each unresolved action to a narrow safety reviewer. A clear result authorizes only that exact action. A caution or unavailable result holds only that action and returns advice without opening a permission screen, disabling tools, or ending the turn. Exact cautions are reused for this turn; choose a materially different safe action or explain why no safe path remains. Tool admission and exact live revalidation remain authoritative.";
 const YOLO_MODE_CONTEXT: &str = "Runtime context: permission mode is full access. oh-fx permission policy is disabled. Tool lookup, argument validation, execution authority, cancellation, limits, operating-system permissions, and remote authentication remain authoritative.";
@@ -37,13 +38,19 @@ const YOLO_MODE_CONTEXT: &str = "Runtime context: permission mode is full access
 pub(crate) struct HostRuntimeContext {
     workspace_root: PathBuf,
     permission_mode: PermissionMode,
+    interactive: bool,
 }
 
 impl HostRuntimeContext {
-    pub(crate) fn new(workspace_root: PathBuf, permission_mode: PermissionMode) -> Self {
+    pub(crate) fn new(
+        workspace_root: PathBuf,
+        permission_mode: PermissionMode,
+        interactive: bool,
+    ) -> Self {
         Self {
             workspace_root,
             permission_mode,
+            interactive,
         }
     }
 }
@@ -52,9 +59,10 @@ impl RuntimeContext for HostRuntimeContext {
     fn runtime_context(&self) -> BoxFuture<'_, Vec<String>> {
         let workspace_root = self.workspace_root.clone();
         let permission_mode = self.permission_mode;
+        let interactive = self.interactive;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                noninteractive_runtime_context(&workspace_root, permission_mode)
+                runtime_context(&workspace_root, permission_mode, interactive)
             })
             .await
             .unwrap_or_default()
@@ -82,14 +90,22 @@ impl ProjectContextProvider for HostProjectContext {
     }
 }
 
-fn noninteractive_runtime_context(
+fn runtime_context(
     workspace_root: &Path,
     permission_mode: PermissionMode,
+    interactive: bool,
 ) -> Vec<String> {
     let fragment = build_turn_context_fragment(workspace_root, GIT_READ_BUDGET);
+    if !interactive {
+        return vec![
+            format!("{fragment}\n{NONINTERACTIVE_CONTEXT}"),
+            permission_mode_context(permission_mode).to_owned(),
+        ];
+    }
     vec![
-        format!("{fragment}\n{NONINTERACTIVE_CONTEXT}"),
+        fragment,
         permission_mode_context(permission_mode).to_owned(),
+        VERIFICATION_CONTEXT.to_owned(),
     ]
 }
 

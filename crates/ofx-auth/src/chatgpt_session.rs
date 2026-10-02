@@ -15,7 +15,7 @@ const MAX_AUTH_FILE_BYTES: usize = 64 * 1024;
 const EXPIRY_SKEW_MS: i64 = 60 * 1000;
 pub(crate) const AUTH_FILE_NAME: &str = "chatgpt-auth.json";
 const MUTATION_LOCK_FILE_NAME: &str = "chatgpt-auth.lock";
-const MUTATION_LOCK_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const MUTATION_LOCK_WAIT: Duration = Duration::from_secs(2);
 const MUTATION_LOCK_RETRY: Duration = Duration::from_millis(10);
 
 pub(crate) fn refresh_deadline_ms(expires_at_ms: i64) -> i64 {

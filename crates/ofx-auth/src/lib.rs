@@ -13,7 +13,9 @@ mod url_opener;
 pub use auth_runtime::{
     PreparationError, login_failure_detail, prepare_chatgpt_credential, refresh_chatgpt_credential,
 };
-pub use chatgpt_oauth::{ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth, RefreshMode};
+pub use chatgpt_oauth::{
+    CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth, RefreshMode,
+};
 pub use chatgpt_session::DeleteOutcome;
 pub use credentials::{
     AuthMode, CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, HOST_MANAGED_AUTH_MESSAGE,

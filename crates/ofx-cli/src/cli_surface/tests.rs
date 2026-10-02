@@ -124,11 +124,11 @@ fn launch(args: &[&str]) -> CommandLaunch {
 }
 
 fn is_interactive(args: &[&str]) -> bool {
-    matches!(parse(args), Ok(Invocation::Interactive))
+    matches!(parse(args), Ok(Invocation::Interactive(_)))
 }
 
 fn resumes(args: &[&str]) -> bool {
-    matches!(parse(args), Ok(Invocation::Resume))
+    matches!(parse(args), Ok(Invocation::Resume(_)))
 }
 
 fn help(args: &[&str]) -> Option<TopLevelKind> {
@@ -389,7 +389,7 @@ fn joined_global_modifiers_accept_non_utf8_values() {
     }
     assert!(matches!(
         parse_args(raw_args(&[b"--model=m\xff"])),
-        Ok(Invocation::Interactive)
+        Ok(Invocation::Interactive(_))
     ));
     assert_eq!(
         raw_stderr(&[b"--add-dir=/tmp/\xff", b"status"]),
@@ -413,7 +413,7 @@ fn non_utf8_resume_targets_parse_and_fail_session_id_validation_later() {
         &[b"session", b"resume", b"\xff"],
     ] {
         assert!(
-            matches!(parse_args(raw_args(args)), Ok(Invocation::Resume)),
+            matches!(parse_args(raw_args(args)), Ok(Invocation::Resume(_))),
             "{args:?}"
         );
     }
