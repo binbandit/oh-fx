@@ -7,6 +7,7 @@ mod model_capabilities;
 mod permission_gate;
 mod skill_menu;
 mod stream_provider;
+mod subagent;
 mod tool_args;
 mod tool_dispatch;
 mod tool_presentation;
@@ -36,12 +37,21 @@ pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
     ProviderOptions, StreamEvent, StreamSink,
 };
+pub use subagent::{
+    ChildKind, ChildPhase, ChildSnapshot, STEERING_PENDING_RESULT, SteeringDelivery,
+    SubagentAction, SubagentOverride, SubagentPlan, SubagentProvider, SubagentRejectCode,
+    SubagentRequest, SubagentRequestError, SubagentRequestInput, SubagentResult, feedback_result,
+    valid_agent_name, valid_instructions,
+};
 pub use tool_args::{ToolArgValue, ToolArgs, ToolArgsError, parse_tool_args_object};
 pub use tool_dispatch::{
     CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity, ToolContext,
     ToolEffect, ToolOutput, ToolSpec,
 };
-pub use tool_presentation::{format_plain_action, format_unknown_action};
+pub use tool_presentation::{
+    SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
+    format_unknown_action, subagent_action, subagent_failure_label, subagent_status_line,
+};
 pub use tool_result_errors::{
     DetailValue, ExecutionFailure, ReviewHold, filesystem_access_denied_json,
     format_tool_execution_error_json, malformed_tool_arguments_json,
