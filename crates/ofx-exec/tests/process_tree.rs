@@ -510,42 +510,53 @@ impl Drop for Owner {
 
 fn stopping_during_fork_churn_removes_every_detached_daemon() {
     let scratch = Scratch::new();
-    let command = scratch.python(&churning_daemons());
+    let command = scratch.python(&churning_daemons(ESCAPE_ON_SIGTERM));
     let (stopped, _) = stop_once(&scratch, &command, "ready", false);
     assert!(
         matches!(stopped.state, SnapshotState::Stopped(Some(_))),
         "{stopped:?}"
     );
     let daemons = scratch.await_pids("daemons", 16);
+    let escaped = scratch.await_pids("escaped", 1);
     let late = scratch.pids("late");
     assert_gone(&daemons);
+    assert_gone(&escaped);
     assert_gone(&late);
 }
 
 fn a_deadline_during_fork_churn_removes_every_detached_daemon() {
     let scratch = Scratch::new();
-    let command = scratch.python(&churning_daemons());
+    let command = scratch.python(&churning_daemons(""));
     let snapshot = complete_before_deadline(&command);
     assert_eq!(snapshot.error_name, Some("TimeoutExpired"));
     let daemons = scratch.await_pids("daemons", 16);
-    let late = scratch.pids("late");
+    let late = scratch.await_pids("late", 1);
     assert_gone(&daemons);
     assert_gone(&late);
 }
 
-fn churning_daemons() -> String {
-    "for index in range(16):\n\
-     \x20   daemon('daemons', double_fork=index % 2 == 0)\n\
-     \x20   churn(4)\n\
-     publish('ready', 'R')\n\
-     rounds = 0\n\
-     while True:\n\
-     \x20   churn(8)\n\
-     \x20   rounds += 1\n\
-     \x20   if rounds % 16 == 0:\n\
-     \x20       daemon('late', double_fork=True, wait=False)\n\
-     \x20   time.sleep(0.001)"
-        .to_owned()
+const ESCAPE_ON_SIGTERM: &str = "command = os.getpid()\n\
+     def escape(signum, frame):\n\
+     \x20   if os.getpid() == command:\n\
+     \x20       daemon('escaped', double_fork=True, setup=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN))\n\
+     \x20   os._exit(0)\n\
+     signal.signal(signal.SIGTERM, escape)\n";
+
+fn churning_daemons(before_ready: &str) -> String {
+    format!(
+        "for index in range(16):\n\
+         \x20   daemon('daemons', double_fork=index % 2 == 0)\n\
+         \x20   churn(4)\n\
+         {before_ready}\
+         publish('ready', 'R')\n\
+         rounds = 0\n\
+         while True:\n\
+         \x20   if rounds % 16 == 0:\n\
+         \x20       daemon('late', double_fork=True, wait=False)\n\
+         \x20   churn(8)\n\
+         \x20   rounds += 1\n\
+         \x20   time.sleep(0.001)"
+    )
 }
 
 fn natural_command_completion_keeps_a_daemon_that_detached_after_setsid() {
