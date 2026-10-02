@@ -124,6 +124,10 @@ impl Parser {
             }
             return;
         }
+        self.handle_markup_tag(name, closing, attributes);
+    }
+
+    fn handle_markup_tag(&mut self, name: &[u8], closing: bool, attributes: &[u8]) {
         match name {
             b"p" | b"div" | b"section" | b"article" | b"main" | b"header" | b"footer"
             | b"blockquote" | b"ul" | b"ol" => self.block_break(),
@@ -135,13 +139,11 @@ impl Parser {
                 }
             }
             b"a" => {
-                if !closing {
-                    if self.active_link_href.is_none() {
-                        self.active_link_href = attribute_value(attributes, b"href");
-                        self.link_text.clear();
-                    }
-                } else {
+                if closing {
                     self.flush_link();
+                } else if self.active_link_href.is_none() {
+                    self.active_link_href = attribute_value(attributes, b"href");
+                    self.link_text.clear();
                 }
             }
             b"code" => {

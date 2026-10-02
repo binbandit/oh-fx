@@ -273,7 +273,7 @@ fn last_header(headers: &HeaderMap, name: &HeaderName) -> Option<String> {
     headers
         .get_all(name)
         .iter()
-        .last()
+        .next_back()
         .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
 }
 
