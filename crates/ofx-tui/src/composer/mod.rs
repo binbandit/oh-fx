@@ -21,7 +21,9 @@ mod visual_layout;
 use std::borrow::Cow;
 
 pub(crate) use editor_state::{InsertResult, SelectionRange};
-pub(crate) use visual_layout::VisualLayout;
+pub(crate) use visual_layout::{
+    LayoutEvent, UnitKind, VisualLayout, terminal_column, visible_window,
+};
 
 use edit_history::EditHistory;
 use editor_state::EditorState;

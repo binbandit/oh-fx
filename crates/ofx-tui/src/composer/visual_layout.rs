@@ -62,6 +62,12 @@ pub(crate) struct LayoutSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VisibleWindow {
+    pub(crate) first_row: usize,
+    pub(crate) row_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayoutEvent {
     Unit(LayoutUnit),
     RowEnd(LayoutRow),
@@ -704,6 +710,26 @@ fn next_row_available_cells(current_row_index: usize, terminal_cols: u16) -> usi
     usize::from(terminal_cols).saturating_sub(input_prefix(current_row_index + 1).cell_width)
 }
 
+pub(crate) fn visible_window(
+    cursor_row: usize,
+    total_rows: usize,
+    row_limit: usize,
+) -> VisibleWindow {
+    if total_rows == 0 {
+        return VisibleWindow {
+            first_row: 0,
+            row_count: 0,
+        };
+    }
+    let count = row_limit.max(1);
+    let clamped_cursor = cursor_row.min(total_rows - 1);
+    let first_row = (clamped_cursor + 1).saturating_sub(count);
+    VisibleWindow {
+        first_row,
+        row_count: count.min(total_rows - first_row),
+    }
+}
+
 pub(crate) fn input_prefix(row_index: usize) -> InputPrefix {
     if row_index == 0 {
         InputPrefix {
@@ -716,6 +742,17 @@ pub(crate) fn input_prefix(row_index: usize) -> InputPrefix {
             cell_width: 2,
         }
     }
+}
+
+pub(crate) fn terminal_column(point: CursorPoint, terminal_cols: u16) -> u16 {
+    if terminal_cols == 0 {
+        return 1;
+    }
+    let column = input_prefix(point.row_index)
+        .cell_width
+        .saturating_add(point.content_column)
+        .saturating_add(1);
+    u16::try_from(column.min(usize::from(terminal_cols))).unwrap_or(terminal_cols)
 }
 
 fn tab_advance(prefix_cell_width: usize, content_column: usize, terminal_cols: u16) -> usize {
@@ -770,6 +807,23 @@ mod tests {
 
     fn row_text(input: &str, row: LayoutRow) -> &str {
         &input[row.raw_start..row.raw_end]
+    }
+
+    #[test]
+    fn visual_layout_exposes_exact_input_prefixes_and_terminal_projection() {
+        let first = input_prefix(0);
+        let continuation = input_prefix(1);
+        assert_eq!(first.text, "❯ ");
+        assert_eq!(first.text.len(), 4);
+        assert_eq!(first.cell_width, 2);
+        assert_eq!(first.cell_width, visible_width(first.text));
+        assert_eq!(continuation.text, "  ");
+        assert_eq!(continuation.cell_width, visible_width(continuation.text));
+
+        assert_eq!(terminal_column(point(0, 0, 0), 80), 3);
+        assert_eq!(terminal_column(point(0, 1, 0), 80), 3);
+        assert_eq!(terminal_column(point(3, 0, 3), 80), 6);
+        assert_eq!(terminal_column(point(3, 0, 3), 0), 1);
     }
 
     #[test]
@@ -1022,6 +1076,45 @@ mod tests {
     }
 
     #[test]
+    fn visual_layout_visible_window_is_defensive_and_cursor_containing() {
+        assert_eq!(
+            visible_window(99, 0, 3),
+            VisibleWindow {
+                first_row: 0,
+                row_count: 0
+            }
+        );
+        assert_eq!(
+            visible_window(9, 10, 3),
+            VisibleWindow {
+                first_row: 7,
+                row_count: 3
+            }
+        );
+        assert_eq!(
+            visible_window(99, 10, 3),
+            VisibleWindow {
+                first_row: 7,
+                row_count: 3
+            }
+        );
+        assert_eq!(
+            visible_window(0, 5, 0),
+            VisibleWindow {
+                first_row: 0,
+                row_count: 1
+            }
+        );
+        assert_eq!(
+            visible_window(usize::MAX, usize::MAX, usize::MAX),
+            VisibleWindow {
+                first_row: 0,
+                row_count: usize::MAX
+            }
+        );
+    }
+
+    #[test]
     fn visual_layout_wraps_whole_words_at_the_soft_margin() {
         let input = "hello brave world";
         let source = layout(input, input.len(), 12);
@@ -1077,6 +1170,11 @@ mod tests {
         let longer_summary = layout(&longer, longer.len(), 80).summary(None);
         assert!(direct_summary.total_rows > 1);
         assert!(longer_summary.total_rows > direct_summary.total_rows);
+        visible_window(
+            longer_summary.cursor.row_index,
+            longer_summary.total_rows,
+            4,
+        );
         assert_eq!(
             layout(&direct, direct.len(), 80).count_rows(),
             direct_summary.total_rows
