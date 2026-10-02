@@ -187,9 +187,11 @@ async fn interrupted_and_failed_turns_are_logged_as_upstream_saves_them() {
         ),
         tool_reply(&[("call-1", "{}")]),
         Script::Fail(Vec::new(), refused()),
+        tool_reply(&[("call-2", "{}")]),
+        Script::Fail(partial(" \n"), refused()),
     ]);
     let (mut agent, entries) = logging_agent(&provider);
-    for prompt in ["stop", "empty", "partial", "worked"] {
+    for prompt in ["stop", "empty", "partial", "worked", "blank"] {
         run(&mut agent, prompt).await;
     }
     assert_eq!(
@@ -203,8 +205,17 @@ async fn interrupted_and_failed_turns_are_logged_as_upstream_saves_them() {
                 &[r#""" replay=false calls=["call-1"] results=["call-1=echo {}:Success"]"#],
                 r#"replied "" replay=false"#
             ),
+            logged_turn(
+                "blank",
+                &[r#""" replay=false calls=["call-2"] results=["call-2=echo {}:Success"]"#],
+                r#"replied "" replay=false"#
+            ),
         ]
     );
+    assert!(!agent.history.iter().any(|message| matches!(
+        message,
+        ChatMessage::Assistant { content: Some(text), .. } if text.trim().is_empty() && !text.is_empty()
+    )));
 }
 
 #[tokio::test]

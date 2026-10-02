@@ -306,7 +306,8 @@ impl Agent {
                 )
             }
             Err(Stop::Failed { failure, partial }) => {
-                let ending = if partial.trim_matches(TRIMMED).is_empty()
+                let spoke = !partial.trim_matches(TRIMMED).is_empty();
+                let ending = if !spoke
                     && !self.has_completed_tool_steps(turn.start)
                     && !turn.compaction.compacted_steps
                     && failure != TurnFailure::StepLimitReached
@@ -314,13 +315,12 @@ impl Agent {
                     self.history.truncate(turn.start);
                     self.turn_starts.pop();
                     Ending::Discarded
-                } else {
+                } else if spoke {
                     self.keep_partial_turn(turn.start, &partial);
-                    if partial.is_empty() {
-                        Ending::Replied
-                    } else {
-                        Ending::Stopped(TurnStop::Failed)
-                    }
+                    Ending::Stopped(TurnStop::Failed)
+                } else {
+                    self.keep_partial_turn(turn.start, "");
+                    Ending::Replied
                 };
                 (TurnOutcome::Failed, String::new(), Some(failure), ending)
             }
