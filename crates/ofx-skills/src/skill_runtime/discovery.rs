@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use ofx_workspace::{
     FileIdentity, FileKind, PathError, dirname, entry_identity, open_child_directory,
@@ -40,10 +40,10 @@ pub struct SkillDiscovery {
     pub diagnostics: Vec<SkillDiagnostic>,
 }
 
-struct SkillRoot {
+struct SkillRoot<'a> {
     path: PathBuf,
     source: SkillSource,
-    read_authority: Option<PathBuf>,
+    read_authority: Option<&'a Path>,
 }
 
 impl SkillDiscoveryContext {
@@ -59,7 +59,7 @@ impl SkillDiscoveryContext {
         scan.discovery
     }
 
-    fn roots(&self, policy: &RootPolicy) -> Vec<SkillRoot> {
+    fn roots(&self, policy: &RootPolicy) -> Vec<SkillRoot<'_>> {
         let mut roots = Vec::new();
         if let Some(workspace_root) = &self.workspace_root {
             self.append_workspace_roots(&mut roots, workspace_root, policy.workspace_roots);
@@ -75,10 +75,10 @@ impl SkillDiscoveryContext {
         roots
     }
 
-    fn append_workspace_roots(
-        &self,
-        roots: &mut Vec<SkillRoot>,
-        workspace_root: &Path,
+    fn append_workspace_roots<'a>(
+        &'a self,
+        roots: &mut Vec<SkillRoot<'a>>,
+        workspace_root: &'a Path,
         specs: &[RootSpec],
     ) {
         let home = self.home.as_deref();
@@ -98,20 +98,15 @@ impl SkillDiscoveryContext {
     }
 }
 
-fn push_spec_root(roots: &mut Vec<SkillRoot>, base: &Path, spec: &RootSpec) {
-    push_root(
-        roots,
-        base.join(spec.path),
-        spec.source,
-        Some(base.to_path_buf()),
-    );
+fn push_spec_root<'a>(roots: &mut Vec<SkillRoot<'a>>, base: &'a Path, spec: &RootSpec) {
+    push_root(roots, base.join(spec.path), spec.source, Some(base));
 }
 
-fn push_root(
-    roots: &mut Vec<SkillRoot>,
+fn push_root<'a>(
+    roots: &mut Vec<SkillRoot<'a>>,
     path: PathBuf,
     source: SkillSource,
-    read_authority: Option<PathBuf>,
+    read_authority: Option<&'a Path>,
 ) {
     if roots
         .iter()
@@ -153,7 +148,7 @@ impl DiscoveryScan<'_> {
         });
     }
 
-    fn diagnose_unreadable_root(&mut self, root: &SkillRoot) {
+    fn diagnose_unreadable_root(&mut self, root: &SkillRoot<'_>) {
         self.diagnose(
             root.path.clone(),
             root.source,
@@ -162,8 +157,11 @@ impl DiscoveryScan<'_> {
         );
     }
 
-    fn append_root(&mut self, root: &SkillRoot) {
-        let opened = match &root.read_authority {
+    fn append_root(&mut self, root: &SkillRoot<'_>) {
+        if root_path_is_missing(&root.path) {
+            return;
+        }
+        let opened = match root.read_authority {
             Some(authority) => open_contained_directory(&root.path, authority, self.authorities),
             None => open_directory(&root.path).map_err(DirectoryOpenError::Path),
         };
@@ -195,7 +193,7 @@ impl DiscoveryScan<'_> {
 
     fn open_candidate(
         &mut self,
-        root: &SkillRoot,
+        root: &SkillRoot<'_>,
         root_directory: &OwnedFd,
         name: &OsStr,
     ) -> Option<OwnedFd> {
@@ -213,8 +211,8 @@ impl DiscoveryScan<'_> {
         }
     }
 
-    fn open_linked_candidate(&mut self, root: &SkillRoot, name: &OsStr) -> Option<OwnedFd> {
-        let authority = root.read_authority.as_deref()?;
+    fn open_linked_candidate(&mut self, root: &SkillRoot<'_>, name: &OsStr) -> Option<OwnedFd> {
+        let authority = root.read_authority?;
         let path = root.path.join(name);
         let opened = open_contained_directory(&path, authority, self.authorities);
         if opened.is_err() {
@@ -223,12 +221,12 @@ impl DiscoveryScan<'_> {
         opened.ok()
     }
 
-    fn append_candidate(&mut self, root: &SkillRoot, candidate: &OwnedFd, name: &OsStr) {
+    fn append_candidate(&mut self, root: &SkillRoot<'_>, candidate: &OwnedFd, name: &OsStr) {
         let path = root.path.join(name);
         let candidate = SkillCandidate {
             directory: candidate,
             path: &path,
-            read_authority: root.read_authority.as_deref(),
+            read_authority: root.read_authority,
         };
         let file = match open_primary_skill_file(&candidate, self.authorities) {
             PrimarySkillFile::Opened(file) => file,
@@ -248,7 +246,7 @@ impl DiscoveryScan<'_> {
                     description: metadata.description,
                     path,
                     source: root.source,
-                    read_authority: root.read_authority.clone(),
+                    read_authority: root.read_authority.map(Path::to_path_buf),
                 });
                 return;
             }
@@ -259,7 +257,12 @@ impl DiscoveryScan<'_> {
         self.diagnose_candidate(root, path, cause);
     }
 
-    fn diagnose_candidate(&mut self, root: &SkillRoot, path: PathBuf, cause: SkillDiagnosticCause) {
+    fn diagnose_candidate(
+        &mut self,
+        root: &SkillRoot<'_>,
+        path: PathBuf,
+        cause: SkillDiagnosticCause,
+    ) {
         self.diagnose(path, root.source, SkillDiagnosticScope::Candidate, cause);
     }
 
@@ -301,19 +304,22 @@ fn candidate_entries(directory: &OwnedFd, allow_linked: bool) -> io::Result<Vec<
 }
 
 fn root_path_is_missing(path: &Path) -> bool {
-    let mut components = path.components().peekable();
-    if components.next() != Some(Component::RootDir) {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.first() != Some(&b'/') {
         return false;
     }
-    let mut current = PathBuf::from("/");
-    while let Some(component) = components.next() {
-        let Component::Normal(name) = component else {
-            return false;
-        };
-        current.push(name);
-        match entry_identity(CWD, current.as_os_str()).map(FileIdentity::kind) {
+    let mut end = 0;
+    for name in bytes.split(|&byte| byte == b'/') {
+        end += name.len() + 1;
+        match name {
+            b"" | b"." => continue,
+            b".." => return false,
+            _ => {}
+        }
+        let prefix = OsStr::from_bytes(&bytes[..end - 1]);
+        match entry_identity(CWD, prefix).map(FileIdentity::kind) {
             Err(error) => return error == PathError::FileNotFound,
-            Ok(FileKind::Directory) if components.peek().is_some() => {}
+            Ok(FileKind::Directory) => {}
             Ok(_) => return false,
         }
     }
