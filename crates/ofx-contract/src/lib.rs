@@ -15,7 +15,8 @@ pub use applicable_target::{ApplicableTarget, TargetKind};
 pub use ids::{ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use permission_gate::{
-    Admission, CommandRequest, FileMutation, FileMutationState, PathAccess, PermissionGate,
+    Admission, CommandRequest, FileMutation, FileMutationState, GatedAction, PathAccess,
+    PermissionGate,
 };
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,

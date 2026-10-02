@@ -1,5 +1,6 @@
 mod command_admission;
 mod permissions;
+mod session_permission_state;
 mod tool_admission;
 
 pub use permissions::{

@@ -42,6 +42,13 @@ pub enum CommandRequest {
     Stop,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatedAction<'a> {
+    Call(&'a ToolCall),
+    FileMutation(&'a FileMutation),
+    Command(&'a CommandRequest),
+}
+
 pub trait PermissionGate: Send + Sync {
     fn admit(&self, call: &ToolCall) -> Admission;
 
@@ -54,4 +61,6 @@ pub trait PermissionGate: Send + Sync {
     fn admit_command(&self, _request: &CommandRequest) -> Admission {
         Admission::ApprovalRequired
     }
+
+    fn remember_approval(&self, _action: GatedAction<'_>) {}
 }
