@@ -985,15 +985,29 @@ mod tests {
             &tool_permission_denied_json("shell"),
             None,
         );
-        let rendered = group(vec![read("2", "README.md"), denied]).render(100, &theme());
+        let held = settled(
+            started(
+                "3",
+                "shell",
+                ToolActivity::Command,
+                ("Running", "Ran", "zig build"),
+            ),
+            ToolResultStatus::Failure,
+            r#"{"error":{"type":"tool_review_held","reason":"review_caution","held":true}}"#,
+            None,
+        );
+        let rendered = group(vec![read("2", "README.md"), denied, held]).render(100, &theme());
         assert_eq!(
             texts(&rendered),
             [
-                "● 2 tool calls · 1 read · 1 command · 1 denied",
+                "● 3 tool calls · 2 commands · 1 read · 2 denied",
                 "├ Read README.md",
-                "└ Denied touch made.txt",
+                "├ Denied touch made.txt",
+                "└ Safety caution zig build",
             ]
         );
+        assert_eq!(painted(&rendered[3], "└ Safety caution "), Paint::fg(245));
+        assert_eq!(painted(&rendered[3], "zig"), Paint::fg(252));
     }
 
     #[test]

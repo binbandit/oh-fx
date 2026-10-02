@@ -15,7 +15,31 @@ const USER_DENIED_SUGGESTION: &str = "The tool did not run. Do not retry unchang
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolPermissionDenialReason {
     UserDenied,
+    AutoDenied,
+    ReviewCaution,
+    ReviewEvidenceIncomplete,
     ReviewUnavailable,
+    PolicyDenied,
+    PermissionRequired,
+}
+
+impl ToolPermissionDenialReason {
+    const ALL: [(Self, &'static str); 7] = [
+        (Self::UserDenied, "user_denied"),
+        (Self::AutoDenied, "auto_denied"),
+        (Self::ReviewCaution, "review_caution"),
+        (Self::ReviewEvidenceIncomplete, "review_evidence_incomplete"),
+        (Self::ReviewUnavailable, "review_unavailable"),
+        (Self::PolicyDenied, "policy_denied"),
+        (Self::PermissionRequired, "permission_required"),
+    ];
+
+    fn is_review_hold(self) -> bool {
+        matches!(
+            self,
+            Self::ReviewCaution | Self::ReviewEvidenceIncomplete | Self::ReviewUnavailable
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,12 +258,11 @@ pub fn tool_permission_denial_reason(output: &str) -> Option<ToolPermissionDenia
         "tool_permission_denied" => false,
         _ => return None,
     };
-    let reason = match error.get("reason")?.as_str()? {
-        "user_denied" => ToolPermissionDenialReason::UserDenied,
-        "review_unavailable" => ToolPermissionDenialReason::ReviewUnavailable,
-        _ => return None,
-    };
-    (held == (reason == ToolPermissionDenialReason::ReviewUnavailable)).then_some(reason)
+    let name = error.get("reason")?.as_str()?;
+    let (reason, _) = ToolPermissionDenialReason::ALL
+        .into_iter()
+        .find(|(_, candidate)| *candidate == name)?;
+    (held == reason.is_review_hold()).then_some(reason)
 }
 
 pub fn shell_request_invalid_field_count(output: &str) -> Option<usize> {
@@ -338,14 +361,29 @@ mod tests {
             )),
             Some(ToolPermissionDenialReason::ReviewUnavailable)
         );
+        for (reason, name) in ToolPermissionDenialReason::ALL {
+            let kind = if reason.is_review_hold() {
+                "tool_review_held"
+            } else {
+                "tool_permission_denied"
+            };
+            let output = format!(r#"{{"error":{{"type":"{kind}","reason":"{name}"}}}}"#);
+            assert_eq!(
+                tool_permission_denial_reason(&output),
+                Some(reason),
+                "{name}"
+            );
+        }
         for output in [
             "",
             "user_denied",
             "[]",
             r#"{"error":"user_denied"}"#,
             r#"{"error":{"type":"tool_review_held","reason":"user_denied"}}"#,
+            r#"{"error":{"type":"tool_review_held","reason":"auto_denied"}}"#,
             r#"{"error":{"type":"tool_permission_denied","reason":"review_unavailable"}}"#,
-            r#"{"error":{"type":"tool_permission_denied","reason":"auto_denied"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":"review_caution"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":"unknown"}}"#,
             r#"{"error":{"type":"tool_execution_failed","reason":"user_denied"}}"#,
             r#"{"error":{"type":"tool_permission_denied","reason":7}}"#,
         ] {

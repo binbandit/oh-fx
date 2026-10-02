@@ -136,11 +136,7 @@ impl ToolActivityRow {
             .then(|| tool_permission_denial_reason(finished.content))
             .flatten();
         self.status = if let Some(reason) = denial {
-            let label = match reason {
-                ToolPermissionDenialReason::UserDenied => "Denied",
-                ToolPermissionDenialReason::ReviewUnavailable => "Review unavailable",
-            };
-            self.settled(ToolOutcome::Denied, label, None, None)
+            self.settled(ToolOutcome::Denied, denial_label(reason), None, None)
         } else if let Some((outcome, label)) = self.process_outcome(finished.process) {
             self.settled(outcome, &label, None, finished.process)
         } else if finished.status == ToolResultStatus::Success {
@@ -306,6 +302,19 @@ impl ToolActivityRow {
             " · {count} invalid field{}",
             if count == 1 { "" } else { "s" }
         ))
+    }
+}
+
+fn denial_label(reason: ToolPermissionDenialReason) -> &'static str {
+    match reason {
+        ToolPermissionDenialReason::UserDenied | ToolPermissionDenialReason::PolicyDenied => {
+            "Denied"
+        }
+        ToolPermissionDenialReason::AutoDenied => "Denied by auto agent",
+        ToolPermissionDenialReason::ReviewCaution => "Safety caution",
+        ToolPermissionDenialReason::ReviewEvidenceIncomplete => "Review evidence incomplete",
+        ToolPermissionDenialReason::ReviewUnavailable => "Review unavailable",
+        ToolPermissionDenialReason::PermissionRequired => "Permission required",
     }
 }
 
@@ -559,6 +568,36 @@ mod tests {
             "Review unavailable file"
         );
         assert_eq!(write.status.label_len, "Review unavailable".len());
+        let held = |reason: &str| {
+            format!(r#"{{"error":{{"type":"tool_review_held","reason":"{reason}","held":true}}}}"#)
+        };
+        let denied = |reason: &str| {
+            format!(r#"{{"error":{{"type":"tool_permission_denied","reason":"{reason}"}}}}"#)
+        };
+        for (content, phrase) in [
+            (held("review_caution"), "Safety caution rm -rf build"),
+            (
+                held("review_evidence_incomplete"),
+                "Review evidence incomplete rm -rf build",
+            ),
+            (denied("auto_denied"), "Denied by auto agent rm -rf build"),
+            (denied("policy_denied"), "Denied rm -rf build"),
+            (
+                denied("permission_required"),
+                "Permission required rm -rf build",
+            ),
+        ] {
+            let mut shell = row(
+                "shell",
+                ToolActivity::Command,
+                ("Running", "Ran", "rm -rf build"),
+            );
+            assert_eq!(
+                finished(&mut shell, ToolResultStatus::Failure, &content),
+                phrase
+            );
+            assert_eq!(shell.status.outcome, Some(ToolOutcome::Denied));
+        }
     }
 
     #[test]
