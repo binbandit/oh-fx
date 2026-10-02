@@ -1,6 +1,6 @@
 use std::fmt;
 use std::io::{self, IsTerminal};
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -11,8 +11,9 @@ use ofx_auth::OAUTH_REQUEST_TIMEOUT;
 use ofx_cli::LaunchModifiers;
 use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
-use ofx_tui::{ShellOptions, TerminalError, UiEventSender, run_shell, ui_channel};
+use ofx_tui::{ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel};
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Controller;
@@ -186,42 +187,18 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         commands: slash_command_specs(),
     };
     let refreshes = session.setup.refreshes();
-    let (commands, worker_commands) = tokio::sync::mpsc::unbounded_channel();
-    let notices = sender.clone();
-    let panics = PanicCapture::install(WORKER_THREAD, move |notice| {
-        notices.send(UiEvent::Notice { notice });
-    });
-    let worker = spawn_worker(
-        session.setup,
-        session.executions,
-        sender,
-        worker_commands,
-        runtime,
-    )?;
-    let result = panics
-        .contain_shell(|| {
-            run_shell(options, receiver, move |command| {
-                let _ = commands.send(command);
-            })
-        })
-        .unwrap_or_else(|payload| panic::resume_unwind(payload));
-    worker.finish(refreshes.as_deref(), &panics)?;
-    Ok(result?)
+    let agent = agent_work(session.setup, session.executions, runtime);
+    host(options, sender, receiver, refreshes.as_deref(), agent)
 }
 
-fn spawn_worker(
+fn agent_work(
     setup: AgentSetup,
     executions: ManagedExecutions,
-    sender: UiEventSender,
-    commands: tokio::sync::mpsc::UnboundedReceiver<UiCommand>,
     runtime: Runtime,
-) -> io::Result<Worker> {
-    let emit = Arc::new(move |event: UiEvent| {
-        sender.send(event);
-    });
+) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
     let refreshes = setup.refreshes();
-    let controller = Controller::new(setup, emit);
-    Worker::spawn(move || {
+    move |events, commands| {
+        let controller = Controller::new(setup, Arc::new(move |event| events.send(event)));
         runtime.block_on(async {
             controller.run(commands).await;
             executions.shutdown().await;
@@ -230,7 +207,31 @@ fn spawn_worker(
             }
         });
         runtime.shutdown_timeout(Duration::from_millis(100));
-    })
+    }
+}
+
+fn host(
+    options: ShellOptions,
+    events: UiEventSender,
+    receiver: UiEventReceiver,
+    refreshes: Option<&DetachedRefreshes>,
+    work: impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static,
+) -> Result<(), SessionError> {
+    let (commands, worker_commands) = tokio::sync::mpsc::unbounded_channel();
+    let notices = events.clone();
+    let panics = PanicCapture::install(WORKER_THREAD, move |notice| {
+        notices.send(UiEvent::Notice { notice });
+    });
+    let worker = Worker::spawn(events.clone(), move || work(events, worker_commands))?;
+    let result = panics
+        .contain_shell(|| {
+            run_shell(options, receiver, move |command| {
+                let _ = commands.send(command);
+            })
+        })
+        .unwrap_or_else(|payload| panic::resume_unwind(payload));
+    worker.finish(refreshes, &panics)?;
+    Ok(result?)
 }
 
 struct Worker {
@@ -238,13 +239,17 @@ struct Worker {
 }
 
 impl Worker {
-    fn spawn(work: impl FnOnce() + Send + 'static) -> io::Result<Self> {
+    fn spawn(shell: UiEventSender, work: impl FnOnce() + Send + 'static) -> io::Result<Self> {
         let (done, finished) = mpsc::channel();
         thread::Builder::new()
             .name(WORKER_THREAD.to_owned())
             .spawn(move || {
-                work();
-                let _ = done.send(());
+                if panic::catch_unwind(AssertUnwindSafe(work)).is_ok() {
+                    let _ = done.send(());
+                } else {
+                    drop(done);
+                    shell.send(UiEvent::ExitRequested);
+                }
             })?;
         Ok(Self { finished })
     }

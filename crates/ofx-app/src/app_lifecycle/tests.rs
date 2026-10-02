@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::PoisonError;
 
@@ -18,6 +18,9 @@ const CHILD_HOME: &str = "OH_FX_LIFECYCLE_CHILD_HOME";
 const CHILD_AUTH: &str = "OH_FX_LIFECYCLE_CHILD_AUTH";
 const CHILD_CODEX: &str = "OH_FX_LIFECYCLE_CHILD_CODEX";
 const CHILD_CATALOG: &str = "OH_FX_LIFECYCLE_CHILD_CATALOG";
+const CHILD_PANIC: &str = "OH_FX_LIFECYCLE_CHILD_PANIC";
+const PANIC_TEST: &str =
+    "app_lifecycle::tests::a_worker_panic_ends_the_shell_and_a_contained_one_does_not";
 const REFRESH_TEST: &str = "app_lifecycle::tests::an_exit_during_a_codex_refresh_restores_the_terminal_then_saves_the_rotated_login";
 const FIRST_FRAME: &str = "Run /help for commands";
 const WAIT: Duration = Duration::from_secs(15);
@@ -49,9 +52,10 @@ fn terminal_refusals_read_as_upstream_prints_them() {
 fn worker_panics_are_reported_instead_of_printed_and_clean_exits_are_quiet() {
     let _serial = HOOK_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
     let panics = PanicCapture::install(WORKER_THREAD, drop);
-    let finished = Worker::spawn(|| {}).unwrap();
+    let (shell, _events) = ui_channel().unwrap();
+    let finished = Worker::spawn(shell.clone(), || {}).unwrap();
     assert!(finished.finish(None, &panics).is_ok());
-    let crashed = Worker::spawn(|| panic!("worker exploded")).unwrap();
+    let crashed = Worker::spawn(shell, || panic!("worker exploded")).unwrap();
     let message = crashed.finish(None, &panics).unwrap_err().to_string();
     assert!(
         message.starts_with("oh-fx: the agent stopped unexpectedly: panicked at "),
@@ -212,4 +216,68 @@ fn run_a_codex_session(home: &Path) -> ! {
         permission_mode: PermissionMode::Auto,
     };
     process::exit(i32::from(run(session, None, runtime).is_err()));
+}
+
+#[test]
+fn a_worker_panic_ends_the_shell_and_a_contained_one_does_not() {
+    if env::var_os(CHILD_PANIC).is_some() {
+        run_a_worker_that_panics();
+    }
+    let mut command = Command::new(env::current_exe().unwrap());
+    command
+        .args([PANIC_TEST, "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD_PANIC, "1")
+        .env("TERM", "xterm-256color");
+    let mut session = PtySession::spawn(command, 24, 80).unwrap();
+    session
+        .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
+        .unwrap_or_else(|screen| panic!("the shell never started:\n{screen}"));
+    session.send(b"one\r");
+    session
+        .wait_for(WAIT, |screen| {
+            screen.contains("✗ panic: thread 'oh-fx-agent' panicked at ")
+                && screen.contains("still serving")
+        })
+        .unwrap_or_else(|screen| panic!("the contained panic ended the shell:\n{screen}"));
+    assert!(session.wait_exit(Duration::ZERO).is_none());
+    assert!(!session.cooked().unwrap());
+    session.send(b"two\r");
+    let status = session
+        .wait_exit(WAIT)
+        .expect("a worker panic ends the shell");
+    assert_eq!(status.code(), Some(1));
+    assert!(session.cooked().unwrap());
+    assert!(session.drain_output(WAIT), "the terminal never closed");
+    let output = String::from_utf8_lossy(&session.output()).into_owned();
+    let report = output
+        .split("oh-fx: the agent stopped unexpectedly: panicked at ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no report after the terminal was restored: {output:?}"));
+    assert!(report.contains(": worker exploded"), "{output:?}");
+    assert!(!report.contains("tool exploded"), "{output:?}");
+}
+
+fn run_a_worker_that_panics() -> ! {
+    let (events, receiver) = ui_channel().unwrap();
+    let options = ShellOptions {
+        version: "0.1.0".to_owned(),
+        model: "model-a".to_owned(),
+        permission_mode: PermissionMode::Auto,
+        workspace_label: "workspace".to_owned(),
+        workspace_root: PathBuf::from("/workspace"),
+        commands: Vec::new(),
+    };
+    let outcome = host(options, events, receiver, None, |events, mut commands| {
+        let _ = commands.blocking_recv();
+        assert!(panic::catch_unwind(|| panic!("tool exploded")).is_err());
+        events.send(UiEvent::Notice {
+            notice: Notice::new(NoticeTone::Neutral, "", "still serving"),
+        });
+        let _ = commands.blocking_recv();
+        panic!("worker exploded");
+    });
+    if let Err(error) = &outcome {
+        eprintln!("{error}");
+    }
+    process::exit(i32::from(outcome.is_err()));
 }
