@@ -404,14 +404,11 @@ async fn prepare_agent(
 ) -> Result<PreparedAsk, Failure> {
     let args = request.args;
     let mut profile = Profile::load().map_err(|error| Failure::code(error.to_string()))?;
-    let permission_mode = args
-        .permissions
-        .mode
-        .unwrap_or_else(|| {
-            profile
-                .settings()
-                .permission_mode(&|name| env::var(name).ok())
-        });
+    let permission_mode = args.permissions.mode.unwrap_or_else(|| {
+        profile
+            .settings()
+            .permission_mode(&|name| env::var(name).ok())
+    });
     announce_settings(args, &profile, permission_mode)?;
     let resumed = match &args.session.resume {
         Some(target) => Some(Resumed::open(&mut profile, target)?),
