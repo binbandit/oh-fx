@@ -17,6 +17,7 @@ const CURSOR_POSITION_REPORT: u16 = 6;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const READ_CHUNK_BYTES: usize = 4096;
 const SCROLLBACK_ROWS: usize = 1000;
+const FULL_OUTPUT_ROUNDS: usize = 5;
 
 type Terminal = Arc<Mutex<vt100::Parser<CursorReplies>>>;
 
@@ -182,6 +183,36 @@ impl PtySession {
                 result => return result.is_ok() && fds[0].revents().contains(PollFlags::IN),
             }
         }
+    }
+
+    pub fn fill_stalled_output(&self) -> io::Result<usize> {
+        if self.held_slave.is_none() {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let name = rustix::pty::ptsname(&self.master, Vec::new())?;
+        let slave = rustix::fs::open(
+            name.as_c_str(),
+            OFlags::WRONLY | OFlags::NOCTTY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let filler = [b'#'; READ_CHUNK_BYTES];
+        let mut written = 0;
+        let mut full_rounds = 0;
+        while full_rounds < FULL_OUTPUT_ROUNDS {
+            match rustix::io::write(&slave, &filler) {
+                Ok(count) => {
+                    written += count;
+                    full_rounds = 0;
+                }
+                Err(Errno::INTR) => {}
+                Err(Errno::AGAIN) => {
+                    full_rounds += 1;
+                    thread::sleep(POLL_INTERVAL);
+                }
+                Err(errno) => return Err(errno.into()),
+            }
+        }
+        Ok(written)
     }
 
     pub fn drain_output(&mut self, timeout: Duration) -> bool {
@@ -565,6 +596,30 @@ mod tests {
         assert_eq!(session.output().len(), seen);
         assert!(session.drain_output(WAIT));
         assert!(session.output()[seen..].starts_with(b"go\r\n"));
+    }
+
+    #[test]
+    fn a_full_output_queue_holds_the_child_writes_until_drained() {
+        let mut session =
+            shell("read line; printf 'ready\\n'; read line; printf 'after\\n'; exec sleep 10");
+        assert_eq!(
+            session.fill_stalled_output().unwrap_err().kind(),
+            io::ErrorKind::NotConnected
+        );
+        session.stall_output_after(b"ready\r\n").unwrap();
+        session.send(b"start\n");
+        let deadline = Instant::now() + WAIT;
+        while !session.output().ends_with(b"ready\r\n") {
+            assert!(Instant::now() < deadline, "the child never got ready");
+            thread::sleep(POLL_INTERVAL);
+        }
+        assert!(session.fill_stalled_output().unwrap() > 0);
+        session.send(b"go\n");
+        thread::sleep(Duration::from_millis(200));
+        session.terminate().unwrap();
+        assert!(session.drain_output(WAIT));
+        let output = session.output();
+        assert!(output.windows(5).any(|window| window == b"#####"));
     }
 
     #[test]

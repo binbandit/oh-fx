@@ -149,11 +149,11 @@ pub fn run_shell(
 ) -> Result<(), TerminalError> {
     let mut shell = Shell::bootstrap(options, events, Box::new(send))?;
     let result = shell.run();
-    shell.shutdown();
-    if let Some(signal) = result? {
+    let fatal = shell.shutdown(result.as_ref().ok().copied().flatten());
+    if let Some(signal) = fatal {
         crate::terminal::signal_pipe::raise_default(signal);
     }
-    Ok(())
+    result.map(drop)
 }
 
 struct Setup {
@@ -434,12 +434,22 @@ impl<'a> Shell<'a> {
         }
     }
 
-    fn shutdown(&mut self) {
+    fn shutdown(&mut self, fatal: Option<i32>) -> Option<i32> {
+        let fatal = fatal.or_else(|| self.leave_normally());
         self.signals.uninstall();
+        fatal
+    }
+
+    fn leave_normally(&mut self) -> Option<i32> {
         let _ = self.flush_output();
         let _ = self.terminal.write_all(b"\x1b]2;\x07");
         let cleanup = self.exit_cleanup();
-        self.terminal.shutdown(&cleanup);
+        let _ = self.terminal.leave_interactive_mode();
+        if let Some(signal) = self.pending_fatal_signal() {
+            return Some(signal);
+        }
+        self.terminal.restore_cooked_mode(&cleanup);
+        self.pending_fatal_signal()
     }
 
     fn handle_resize_signal(&mut self, now_ms: i64) {
@@ -630,6 +640,20 @@ mod tests {
         test.type_bytes(b"!");
         test.step();
         assert_eq!(test.shell.composer.text(), "!");
+    }
+
+    #[test]
+    fn a_fatal_signal_skips_the_normal_exit_and_keeps_its_restore() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        assert_eq!(test.shell.shutdown(Some(15)), Some(15));
+        let written = test.written();
+        assert!(!written.contains("\x1b]2;\x07"), "{written:?}");
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        assert_eq!(test.shell.shutdown(None), None);
+        let written = test.written();
+        assert!(written.contains("\x1b]2;\x07\x1b[?2031l"), "{written:?}");
     }
 
     #[test]
