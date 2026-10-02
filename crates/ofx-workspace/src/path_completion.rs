@@ -91,17 +91,21 @@ pub fn complete(
         if position >= limit {
             continue;
         }
-        ranked.insert(
-            position,
-            (
-                score,
-                SearchResult {
-                    path,
-                    kind,
-                    matched_spans: Vec::new(),
-                },
-            ),
-        );
+        ranked.push((
+            score,
+            SearchResult {
+                path,
+                kind,
+                matched_spans: Vec::new(),
+            },
+        ));
+        let mut slot = ranked.len();
+        while slot > position + 1
+            && let Some([left, right]) = ranked.get_mut(slot - 2..slot)
+        {
+            std::mem::swap(left, right);
+            slot -= 1;
+        }
         ranked.truncate(limit);
     }
     let prefix_len = parsed.display_prefix.len();
