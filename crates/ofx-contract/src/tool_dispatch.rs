@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -18,7 +19,7 @@ use crate::types::{
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
-    pub input_schema: &'static str,
+    pub input_schema: Cow<'static, str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

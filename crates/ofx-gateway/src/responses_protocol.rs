@@ -429,7 +429,7 @@ fn write_function_tool(out: &mut String, tool: &ToolSpec) -> Result<()> {
         push_json_string(out, &capped_description(&tool.description));
     }
     out.push_str(",\"parameters\":");
-    out.push_str(tool.input_schema);
+    out.push_str(&tool.input_schema);
     out.push_str(",\"strict\":false}");
     Ok(())
 }

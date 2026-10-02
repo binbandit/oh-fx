@@ -244,7 +244,7 @@ fn function_spec() -> ToolSpec {
     ToolSpec {
         name: TOOL_NAME.to_owned(),
         description: TOOL_DESCRIPTION.to_owned(),
-        input_schema: TOOL_INPUT_SCHEMA,
+        input_schema: TOOL_INPUT_SCHEMA.into(),
     }
 }
 

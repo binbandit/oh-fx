@@ -493,7 +493,7 @@ fn echo_tool_with(cleaned_up: Arc<AtomicBool>) -> Arc<dyn Tool> {
         spec: ToolSpec {
             name: "echo".to_owned(),
             description: "Echo the arguments.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
         cleaned_up,
         meeting: Arc::new(tokio::sync::Barrier::new(2)),
@@ -713,7 +713,7 @@ fn provider_tool(name: &str, description: &str) -> Arc<dyn Tool> {
         spec: ToolSpec {
             name: name.to_owned(),
             description: description.to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
     })
 }

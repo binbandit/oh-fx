@@ -84,7 +84,7 @@ mod tests {
         for tool in tools {
             let spec = tool.spec();
             assert!(spec.description.len() <= 1024, "{}", spec.name);
-            let schema: Value = serde_json::from_str(spec.input_schema).unwrap();
+            let schema: Value = serde_json::from_str(&spec.input_schema).unwrap();
             assert!(schema.is_object(), "{}", spec.name);
             assert_eq!(schema.to_string(), spec.input_schema, "{}", spec.name);
         }
