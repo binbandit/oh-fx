@@ -11,9 +11,10 @@ use ofx_agent::{
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalDecision, ApprovalRequest, ApprovalScope,
     AutoCompactPercent, BoxFuture, ChatMessage, CommandProfile, CommandRequest, Completion,
-    FileMutation, FinishReason, GatedAction, LivePermissionMode, ModelProvider, ModelRequest,
-    PathAccess, PermissionGate, PermissionMode, ProviderError, SessionGrant, StreamSink, ToolCall,
-    ToolCallId, ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
+    FileMutation, FileMutationState, FinishReason, GatedAction, LivePermissionMode, ModelProvider,
+    ModelRequest, PathAccess, PermissionGate, PermissionMode, ProviderError, SessionGrant,
+    StreamSink, ToolCall, ToolCallId, ToolResultStatus, UiEvent, Usage,
+    tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
@@ -546,6 +547,34 @@ async fn a_batch_switched_from_full_access_to_auto_while_its_first_call_runs_cha
         );
         assert_eq!(fs::read_to_string(&notes).unwrap(), "written\n");
     }
+}
+
+#[tokio::test]
+async fn a_change_approved_after_a_switch_to_full_access_runs_only_as_it_was_shown() {
+    let fixture = Fixture::new();
+    let notes = fixture.workspace.join("notes.txt");
+    fs::write(&notes, "old\n").unwrap();
+    let mode = LivePermissionMode::from(PermissionMode::Ask);
+    let mut session = Session::switchable(&fixture.workspace, &mode, false);
+    let approved = session
+        .call("write_file", &write("notes.txt"), |request| {
+            assert_eq!(
+                request.file.as_ref().map(|file| file.state),
+                Some(FileMutationState::Changes)
+            );
+            mode.set(PermissionMode::Yolo);
+            fs::write(&notes, "edited elsewhere\n").unwrap();
+            ApprovalDecision::Once
+        })
+        .await;
+    assert_eq!(
+        (approved.status, approved.content.as_str()),
+        (
+            ToolResultStatus::Failure,
+            "file mutation rejected because the file changed after preview; make a new tool call for a fresh preview"
+        )
+    );
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "edited elsewhere\n");
 }
 
 #[tokio::test]
