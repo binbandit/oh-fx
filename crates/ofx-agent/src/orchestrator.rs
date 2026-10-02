@@ -649,13 +649,12 @@ impl Agent {
                 permissions: &*self.permissions,
                 approvals: self.approvals.as_ref(),
             };
-            let (current_request, earlier_requests) = self.root_requests();
             let mut reviewing = Reviewing {
                 model: &self.config.model,
-                current_request,
-                earlier_requests: &earlier_requests,
+                history: &self.history,
+                turn_starts: &self.turn_starts,
                 compacted_turns: self.compacted.as_ref().map(|payload| payload.turn_count),
-                messages: &self.history[turn.start..],
+                turn_start: turn.start,
                 batch: &calls,
                 reviews: &mut turn.reviews,
                 usage: &mut turn.usage,
@@ -749,20 +748,6 @@ impl Agent {
             provider_replay: completion.provider_replay,
         });
         (calls, malformed)
-    }
-
-    fn root_requests(&self) -> (&str, Vec<&str>) {
-        let user_request = |start: &usize| match self.history.get(*start) {
-            Some(ChatMessage::User { content }) => Some(content.as_str()),
-            _ => None,
-        };
-        let Some((current, earlier)) = self.turn_starts.split_last() else {
-            return ("", Vec::new());
-        };
-        (
-            user_request(current).unwrap_or_default(),
-            earlier.iter().filter_map(user_request).collect(),
-        )
     }
 
     fn stop_with_notice(
@@ -1100,10 +1085,10 @@ struct Gate<'a> {
 
 struct Reviewing<'a> {
     model: &'a str,
-    current_request: &'a str,
-    earlier_requests: &'a [&'a str],
+    history: &'a [ChatMessage],
+    turn_starts: &'a [usize],
     compacted_turns: Option<usize>,
-    messages: &'a [ChatMessage],
+    turn_start: usize,
     batch: &'a [ToolCall],
     reviews: &'a mut TurnReviews,
     usage: &'a mut Usage,
@@ -1149,15 +1134,15 @@ struct Judged<'a> {
     call: &'a ToolCall,
     action: GatedAction<'a>,
     description: &'a CallDescription,
-    file: Option<&'a FileChange>,
+    file: Option<&'a FileChange<'a>>,
 }
 
-fn admission(
+fn admission<'p>(
     gate: Gate<'_>,
     action: GatedAction<'_>,
     description: &CallDescription,
-    prepared: &dyn PreparedCall,
-) -> (Admission, Option<FileChange>) {
+    prepared: &'p dyn PreparedCall,
+) -> (Admission, Option<FileChange<'p>>) {
     let admission = admit(gate.permissions, action, description);
     let file = match (&admission, action) {
         (Admission::ReviewRequired, GatedAction::FileMutation(_)) => {
@@ -1220,12 +1205,14 @@ async fn review(
         return Some(verdict);
     }
     let attempt_available = reviewing.reviews.attempt_available(call);
+    let (current_request, earlier_requests) =
+        root_requests(reviewing.history, reviewing.turn_starts);
     let request = ReviewRequest {
         model: reviewing.model,
-        current_request: reviewing.current_request,
-        earlier_requests: reviewing.earlier_requests,
+        current_request,
+        earlier_requests: &earlier_requests,
         compacted_turns: reviewing.compacted_turns,
-        turn: reviewing.messages,
+        turn: &reviewing.history[reviewing.turn_start..],
         held: reviewing.reviews.held_results(),
         batch: reviewing.batch,
         call,
@@ -1246,6 +1233,20 @@ async fn review(
     reviewing.usage.accumulate(reviewed.usage);
     reviewing.reviews.remember(call, &reviewed.verdict);
     Some(reviewed.verdict)
+}
+
+fn root_requests<'h>(history: &'h [ChatMessage], turn_starts: &[usize]) -> (&'h str, Vec<&'h str>) {
+    let user_request = |start: &usize| match history.get(*start) {
+        Some(ChatMessage::User { content }) => Some(content.as_str()),
+        _ => None,
+    };
+    let Some((current, earlier)) = turn_starts.split_last() else {
+        return ("", Vec::new());
+    };
+    (
+        user_request(current).unwrap_or_default(),
+        earlier.iter().filter_map(user_request).collect(),
+    )
 }
 
 async fn ask_approval(

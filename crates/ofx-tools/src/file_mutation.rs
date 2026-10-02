@@ -202,14 +202,14 @@ impl PreparedMutation {
         &self.targets
     }
 
-    pub(crate) fn file_change(&self) -> FileChange {
+    pub(crate) fn file_change(&self) -> FileChange<'_> {
         FileChange {
-            display_path: self.display_path.clone(),
+            display_path: &self.display_path,
             before: match &self.preimage {
                 Preimage::Absent => None,
-                Preimage::Present { content, .. } => Some(content.clone()),
+                Preimage::Present { content, .. } => Some(content),
             },
-            after: self.after.clone(),
+            after: &self.after,
             parents: self.targets.review_parents(),
         }
     }

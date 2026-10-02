@@ -141,7 +141,7 @@ pub trait PreparedCall: Send {
         None
     }
 
-    fn file_change(&self) -> Option<FileChange> {
+    fn file_change(&self) -> Option<FileChange<'_>> {
         None
     }
 

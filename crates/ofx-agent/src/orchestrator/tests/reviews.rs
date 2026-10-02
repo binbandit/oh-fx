@@ -88,11 +88,11 @@ impl PermissionGate for ReviewingGate {
                 .map(|call| call.id.as_str().to_owned())
                 .collect(),
             command: matches!(request.action, GatedAction::Command(_)),
-            file: request.file.as_ref().map(|file| {
+            file: request.file.map(|file| {
                 (
-                    file.display_path.clone(),
-                    file.before.clone(),
-                    file.after.clone(),
+                    file.display_path.to_owned(),
+                    file.before.map(<[u8]>::to_vec),
+                    file.after.to_vec(),
                 )
             }),
             attempt_available: request.attempt_available,
@@ -508,11 +508,11 @@ async fn a_gate_that_returns_no_review_without_a_cancellation_holds_the_call() {
     );
 }
 
-pub(super) fn previewed_change(arguments: &str) -> Option<FileChange> {
+pub(super) fn previewed_change(arguments: &str) -> Option<FileChange<'static>> {
     arguments.contains("previewed").then(|| FileChange {
-        display_path: "note.txt".to_owned(),
-        before: Some(b"before\n".to_vec()),
-        after: b"after\n".to_vec(),
+        display_path: "note.txt",
+        before: Some(b"before\n"),
+        after: b"after\n",
         parents: Vec::new(),
     })
 }

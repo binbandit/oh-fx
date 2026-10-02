@@ -325,7 +325,7 @@ impl PreparedCall for EchoCall {
         self.mutation.as_ref()
     }
 
-    fn file_change(&self) -> Option<FileChange> {
+    fn file_change(&self) -> Option<FileChange<'_>> {
         reviews::previewed_change(&self.arguments)
     }
 

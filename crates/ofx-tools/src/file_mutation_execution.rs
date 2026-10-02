@@ -104,7 +104,7 @@ impl PreparedCall for MutationCall {
         self.mutation.as_ref()
     }
 
-    fn file_change(&self) -> Option<FileChange> {
+    fn file_change(&self) -> Option<FileChange<'_>> {
         match &self.plan {
             Ok(Plan {
                 stage: Stage::Prepared(prepared),

@@ -99,10 +99,10 @@ pub struct ApprovalScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileChange {
-    pub display_path: String,
-    pub before: Option<Vec<u8>>,
-    pub after: Vec<u8>,
+pub struct FileChange<'a> {
+    pub display_path: &'a str,
+    pub before: Option<&'a [u8]>,
+    pub after: &'a [u8],
     pub parents: Vec<PathBuf>,
 }
 
@@ -117,7 +117,7 @@ pub struct ReviewRequest<'a> {
     pub batch: &'a [ToolCall],
     pub call: &'a ToolCall,
     pub action: GatedAction<'a>,
-    pub file: Option<&'a FileChange>,
+    pub file: Option<&'a FileChange<'a>>,
     pub attempt_available: bool,
 }
 

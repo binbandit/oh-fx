@@ -671,9 +671,9 @@ fn prepared_workspace_changes_show_the_reviewer_their_exact_content_and_external
     assert_eq!(
         changed.file_change(),
         Some(FileChange {
-            display_path: ".git/config".to_owned(),
-            before: Some(b"[core]\n".to_vec()),
-            after: b"[core]\n\thooksPath = /tmp/x\n".to_vec(),
+            display_path: ".git/config",
+            before: Some(b"[core]\n"),
+            after: b"[core]\n\thooksPath = /tmp/x\n",
             parents: vec![workspace.workspace.join(".git")],
         })
     );
@@ -685,9 +685,9 @@ fn prepared_workspace_changes_show_the_reviewer_their_exact_content_and_external
     assert_eq!(
         created.file_change(),
         Some(FileChange {
-            display_path: "a/b/new.txt".to_owned(),
+            display_path: "a/b/new.txt",
             before: None,
-            after: b"new\n".to_vec(),
+            after: b"new\n",
             parents: vec![
                 workspace.workspace.join("a/b"),
                 workspace.workspace.join("a")
