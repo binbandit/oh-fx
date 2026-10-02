@@ -10,6 +10,7 @@ use ofx_workspace::{
 use rustix::fs::CWD;
 
 use super::SymlinkAuthorities;
+use crate::io::FileFreshness;
 use crate::skill_contract::{
     InvalidMetadataCause, MetadataPrefixError, SKILL_FILE_NAME, SkillMetadata, parse_skill_file,
     read_metadata_prefix, resolve_metadata,
@@ -111,7 +112,7 @@ impl<'a> LinkedSkillFile<'a> {
 }
 
 pub(crate) enum Inspection {
-    Valid(SkillMetadata),
+    Valid(SkillMetadata, FileFreshness),
     Invalid(InvalidMetadataCause),
     Unreadable,
     Oversized,
@@ -124,6 +125,7 @@ pub(crate) fn inspect_skill_file(file: &File, fallback_name: &[u8]) -> Inspectio
     if !metadata.is_file() {
         return Inspection::Unreadable;
     }
+    let freshness = FileFreshness::of(&metadata);
     let Ok(file_size) = usize::try_from(metadata.len()) else {
         return Inspection::Oversized;
     };
@@ -133,7 +135,7 @@ pub(crate) fn inspect_skill_file(file: &File, fallback_name: &[u8]) -> Inspectio
         Err(MetadataPrefixError::Unreadable) => return Inspection::Unreadable,
     };
     match resolve_metadata(&parse_skill_file(&content), fallback_name) {
-        Ok(metadata) => Inspection::Valid(metadata),
+        Ok(metadata) => Inspection::Valid(metadata, freshness),
         Err(cause) => Inspection::Invalid(cause),
     }
 }

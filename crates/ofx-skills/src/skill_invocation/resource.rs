@@ -1,17 +1,20 @@
 use std::fs::{File, Metadata};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::ffi::OsStrExt;
 
 use ofx_config::{ContextLimit, line_safe_prefix_length};
 use ofx_text::{InvalidUtf8, Utf8Validator};
-use ofx_workspace::PathError;
+use ofx_workspace::{PathError, basename};
 use tokio_util::sync::CancellationToken;
 
 use super::SkillError;
-use crate::io::read_positional_all;
+use crate::io::{FileFreshness, read_positional_all};
+use crate::skill_contract::{MAX_FRONTMATTER_BYTES, Skill, parse_skill_file, resolve_metadata};
+use crate::skill_runtime::OpenedSkillCandidate;
 
 const VALIDATION_CHUNK_BYTES: usize = 16 * 1024;
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 const UTF8_LOOKAHEAD_BYTES: usize = 3;
+const IDENTITY_WINDOW_BYTES: usize = MAX_FRONTMATTER_BYTES + 1;
 
 #[derive(Debug)]
 pub(crate) struct SkillResourceRead {
@@ -29,11 +32,12 @@ pub(crate) fn check_cancelled(cancellation: Option<&CancellationToken>) -> Resul
 
 pub(crate) fn read_skill_file(
     file: &File,
+    expected: FileFreshness,
     limit: ContextLimit,
     safety_ceiling: usize,
     cancellation: Option<&CancellationToken>,
 ) -> Result<SkillResourceRead, SkillError> {
-    let before = metadata(file)?;
+    let before = unchanged_metadata(file, expected)?;
     if !before.is_file() {
         return Err(SkillError::InvalidSkillResource);
     }
@@ -63,9 +67,7 @@ pub(crate) fn read_skill_file(
         }
         bytes_read += count;
     }
-    if changed(&before, &metadata(file)?) {
-        return Err(SkillError::SkillResourceChanged);
-    }
+    unchanged_metadata(file, expected)?;
     if bytes_read != read_len {
         return Err(SkillError::UnexpectedEndOfFile);
     }
@@ -113,53 +115,56 @@ fn binary(_: InvalidUtf8) -> SkillError {
     SkillError::BinarySkillResource
 }
 
-fn metadata(file: &File) -> Result<Metadata, SkillError> {
-    file.metadata()
-        .map_err(|error| SkillError::Path(PathError::from(error)))
+pub(crate) fn verify_read_identity(
+    candidate: &OpenedSkillCandidate,
+    skill: &Skill,
+    read: &SkillResourceRead,
+) -> Result<(), SkillError> {
+    if read.text.len() >= read.observed_bytes.min(IDENTITY_WINDOW_BYTES) {
+        verify_identity(read.text.as_bytes(), skill)
+    } else {
+        revalidate_primary_identity(candidate, skill)
+    }
+}
+
+fn revalidate_primary_identity(
+    candidate: &OpenedSkillCandidate,
+    skill: &Skill,
+) -> Result<(), SkillError> {
+    let file = candidate.skill_file();
+    let before = unchanged_metadata(file, candidate.freshness())?;
+    let length = usize::try_from(before.len())
+        .unwrap_or(usize::MAX)
+        .min(IDENTITY_WINDOW_BYTES);
+    let mut bytes = vec![0; length];
+    if read_at(file, &mut bytes, 0)? != length {
+        return Err(SkillError::SkillResourceChanged);
+    }
+    unchanged_metadata(file, candidate.freshness())?;
+    verify_identity(&bytes, skill)
+}
+
+fn verify_identity(content: &[u8], skill: &Skill) -> Result<(), SkillError> {
+    let fallback_name = basename(skill.path.as_os_str().as_bytes());
+    match resolve_metadata(&parse_skill_file(content), fallback_name) {
+        Ok(metadata) if metadata.name == skill.name => Ok(()),
+        _ => Err(SkillError::SkillResourceChanged),
+    }
+}
+
+fn unchanged_metadata(file: &File, expected: FileFreshness) -> Result<Metadata, SkillError> {
+    let current = file
+        .metadata()
+        .map_err(|error| SkillError::Path(PathError::from(error)))?;
+    if FileFreshness::of(&current) == expected {
+        Ok(current)
+    } else {
+        Err(SkillError::SkillResourceChanged)
+    }
 }
 
 fn read_at(file: &File, buffer: &mut [u8], offset: usize) -> Result<usize, SkillError> {
     let offset = u64::try_from(offset).map_err(|_| SkillError::SkillFileLimitExceeded)?;
     read_positional_all(file, buffer, offset)
         .map_err(|error| SkillError::Path(PathError::from(error)))
-}
-
-fn changed(before: &Metadata, after: &Metadata) -> bool {
-    before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs::{self, OpenOptions};
-    use std::time::{Duration, SystemTime};
-
-    use super::*;
-    use crate::test_fixture::Fixture;
-
-    #[test]
-    fn skill_file_reads_notice_a_size_or_timestamp_change() {
-        let fixture = Fixture::new();
-        fixture.write("SKILL.md", "one\n");
-        let path = fixture.path("SKILL.md");
-        let file = OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_modified(SystemTime::UNIX_EPOCH).unwrap();
-        let before = metadata(&file).unwrap();
-        assert!(!changed(&before, &metadata(&file).unwrap()));
-
-        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_nanos(1))
-            .unwrap();
-        let touched = metadata(&file).unwrap();
-        assert!(changed(&before, &touched));
-
-        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
-            .unwrap();
-        assert!(changed(&touched, &metadata(&file).unwrap()));
-
-        let resized = metadata(&file).unwrap();
-        fs::write(&path, "one\ntwo\n").unwrap();
-        file.set_modified(resized.modified().unwrap()).unwrap();
-        assert!(changed(&resized, &metadata(&file).unwrap()));
-    }
 }

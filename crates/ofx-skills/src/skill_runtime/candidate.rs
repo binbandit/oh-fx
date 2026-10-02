@@ -10,11 +10,13 @@ use super::skill_file::{
     DirectoryOpenError, Inspection, PrimarySkillFile, SkillCandidate, inspect_skill_file,
     open_contained_directory, open_primary_skill_file,
 };
+use crate::io::FileFreshness;
 use crate::skill_contract::{Skill, SkillDiagnosticCause};
 
 #[derive(Debug)]
 pub(crate) struct OpenedSkillCandidate {
     skill_file: File,
+    freshness: FileFreshness,
 }
 
 #[derive(Debug)]
@@ -28,6 +30,10 @@ pub(crate) enum CandidateOpen {
 impl OpenedSkillCandidate {
     pub(crate) fn skill_file(&self) -> &File {
         &self.skill_file
+    }
+
+    pub(crate) fn freshness(&self) -> FileFreshness {
+        self.freshness
     }
 }
 
@@ -67,10 +73,13 @@ pub(crate) fn open_validated_skill_candidate(
         }
     };
     match inspect_skill_file(&skill_file, candidate_name) {
-        Inspection::Valid(metadata) if metadata.name == skill.name => {
-            CandidateOpen::Current(OpenedSkillCandidate { skill_file })
+        Inspection::Valid(metadata, freshness) if metadata.name == skill.name => {
+            CandidateOpen::Current(OpenedSkillCandidate {
+                skill_file,
+                freshness,
+            })
         }
-        Inspection::Valid(_) => CandidateOpen::NameMismatch,
+        Inspection::Valid(..) => CandidateOpen::NameMismatch,
         Inspection::Invalid(cause) => {
             CandidateOpen::Skipped(SkillDiagnosticCause::InvalidMetadata(cause))
         }

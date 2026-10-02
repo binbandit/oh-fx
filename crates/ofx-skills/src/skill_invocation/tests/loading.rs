@@ -1,11 +1,13 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 
 use ofx_config::{ContextLimit, ContextLimitSource, ContextLimitValue, ContextLimits};
 use tokio_util::sync::CancellationToken;
 
-use crate::skill_contract::ExecuteOutput;
+use crate::skill_contract::{ExecuteOutput, Skill};
 use crate::skill_invocation::failures::{skill_chunk_notice, skill_file_blocked_notice};
-use crate::skill_invocation::resource::read_skill_file;
+use crate::skill_invocation::resource::{SkillResourceRead, read_skill_file, verify_read_identity};
 use crate::skill_invocation::{ExecuteResult, Selected, SkillError, SkillInventory, SkillLoader};
 use crate::skill_runtime::{
     CandidateOpen, SkillDiscovery, SymlinkAuthorities, open_validated_skill_candidate,
@@ -154,6 +156,87 @@ fn skill_invocation_reads_validated_candidate_resources_after_path_replacement()
 }
 
 #[test]
+fn skill_invocation_rejects_validated_candidates_rewritten_in_place() {
+    let original =
+        "---\nname: workflow\ndescription: workflow helper\n---\n\nORIGINAL SKILL BODY\n";
+    let rewrites = [
+        "---\nname: renamed\ndescription: renamed helper\n---\n\nRENAMED BODY\n",
+        "---\nname: workflow\ndescription: workflow helper\n---\n\nREWRITTEN BODY\n",
+        "---\nname: rewrites\ndescription: workflow helper\n---\n\nRENAMED  SKILL BODY\n",
+    ];
+    assert_eq!(rewrites[2].len(), original.len());
+    for (rewrite, file_limit) in rewrites
+        .into_iter()
+        .flat_map(|rewrite| [(rewrite, None), (rewrite, Some(command_line(4)))])
+    {
+        let (fixture, discovery) = workflow_fixture("ORIGINAL SKILL BODY\n");
+        let skill_file = fixture.path("skills/workflow/SKILL.md");
+        let validated = fs::metadata(&skill_file).unwrap();
+        let authorities = SymlinkAuthorities::default();
+        let mut loader = loader(&discovery, &authorities);
+        if let Some(limit) = file_limit {
+            loader.limits.file = limit;
+        }
+        let Selected::Ready(selection) = loader
+            .select("workflow", Some(&discovery.skills[0].path))
+            .unwrap()
+        else {
+            panic!("expected the current skill");
+        };
+
+        let mut file = OpenOptions::new().write(true).open(&skill_file).unwrap();
+        file.write_all(rewrite.as_bytes()).unwrap();
+        file.set_len(u64::try_from(rewrite.len()).unwrap()).unwrap();
+        file.set_modified(validated.modified().unwrap()).unwrap();
+        let rewritten = fs::metadata(&skill_file).unwrap();
+        assert_eq!(rewritten.ino(), validated.ino());
+        assert_eq!(rewritten.modified().unwrap(), validated.modified().unwrap());
+
+        assert_eq!(
+            loader.load_chunk(selection, 0),
+            Err(SkillError::SkillResourceChanged),
+            "{rewrite} {file_limit:?}"
+        );
+    }
+}
+
+#[test]
+fn skill_reads_check_the_selected_name_in_delivered_or_bounded_frontmatter() {
+    let (_fixture, discovery) = workflow_fixture("BODY\n");
+    let workflow = &discovery.skills[0];
+    let renamed = Skill {
+        name: "renamed".to_owned(),
+        ..workflow.clone()
+    };
+    let authorities = SymlinkAuthorities::default();
+    let CandidateOpen::Current(candidate) = open_validated_skill_candidate(workflow, &authorities)
+    else {
+        panic!("expected the current skill");
+    };
+    let read = |text: &str, observed_bytes: usize| SkillResourceRead {
+        text: text.to_owned(),
+        observed_bytes,
+    };
+    let delivered = "---\nname: renamed\n---\n";
+    let whole = read(delivered, delivered.len());
+    assert_eq!(
+        verify_read_identity(&candidate, workflow, &whole),
+        Err(SkillError::SkillResourceChanged)
+    );
+    assert_eq!(verify_read_identity(&candidate, &renamed, &whole), Ok(()));
+
+    let cut_before_frontmatter_ends = read("---\n", 64);
+    assert_eq!(
+        verify_read_identity(&candidate, workflow, &cut_before_frontmatter_ends),
+        Ok(())
+    );
+    assert_eq!(
+        verify_read_identity(&candidate, &renamed, &cut_before_frontmatter_ends),
+        Err(SkillError::SkillResourceChanged)
+    );
+}
+
+#[test]
 fn skill_loads_stop_when_cancelled_before_or_after_selection() {
     let (_fixture, discovery) = workflow_fixture("body\n");
     let authorities = SymlinkAuthorities::default();
@@ -190,7 +273,13 @@ fn skill_file_validation_completes_utf_8_across_the_safety_ceiling() {
             panic!("expected the current skill");
         };
         let ceiling = header.len() + 1;
-        read_skill_file(candidate.skill_file(), command_line(ceiling), ceiling, None)
+        read_skill_file(
+            candidate.skill_file(),
+            candidate.freshness(),
+            command_line(ceiling),
+            ceiling,
+            None,
+        )
     };
 
     assert_eq!(

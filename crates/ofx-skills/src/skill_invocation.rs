@@ -13,7 +13,7 @@ use ofx_config::{
     ContextLimit, ContextLimitName, ContextLimits, EMERGENCY_CEILING_BYTES, line_safe_prefix_length,
 };
 use ofx_workspace::PathError;
-use resource::{SkillResourceRead, check_cancelled, read_skill_file};
+use resource::{SkillResourceRead, check_cancelled, read_skill_file, verify_read_identity};
 use tokio_util::sync::CancellationToken;
 
 use crate::encoded_scalar::encoded_scalar;
@@ -254,13 +254,16 @@ impl<'a> SkillLoader<'a> {
     }
 
     fn read(&self, selection: &Selection<'_>) -> Result<SkillResourceRead, SkillError> {
+        let candidate = &selection.candidate;
         let read = read_skill_file(
-            selection.candidate.skill_file(),
+            candidate.skill_file(),
+            candidate.freshness(),
             self.limits.file,
             self.ceiling,
             self.cancellation,
         )?;
         check_cancelled(self.cancellation)?;
+        verify_read_identity(candidate, selection.skill, &read)?;
         Ok(read)
     }
 
