@@ -24,12 +24,19 @@ pub(crate) fn resolve_skill<'a>(
             }
         });
     }
-    let mut matches = skills.iter().filter(|skill| skill.name == name);
+    let mut matches = skills_named(skills, name);
     match (matches.next(), matches.next()) {
         (Some(skill), None) => SkillResolution::Found(skill),
         (Some(_), Some(_)) => SkillResolution::AmbiguousName,
         (None, _) => SkillResolution::NotFound,
     }
+}
+
+pub(crate) fn skills_named<'s>(
+    skills: &'s [Skill],
+    name: &str,
+) -> impl Iterator<Item = &'s Skill> + Clone {
+    skills.iter().filter(move |skill| skill.name == name)
 }
 
 pub(crate) fn find_skill_at<'a>(skills: &'a [Skill], location: &Path) -> Option<&'a Skill> {

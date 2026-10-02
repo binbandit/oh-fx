@@ -37,12 +37,12 @@ const INVOCATION_VERBS: [&str; 5] = ["use", "apply", "activate", "invoke", "run"
 const SKILL_MARKER: &[u8] = b" skill";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExplicitSelection<'a> {
+pub(crate) enum ExplicitSelection<'a> {
     Skill(usize),
     Ambiguous(&'a str),
 }
 
-pub fn collect_explicit_skill_selections<'a>(
+pub(crate) fn collect_explicit_skill_selections<'a>(
     prompt: &str,
     skills: &'a [Skill],
 ) -> Vec<ExplicitSelection<'a>> {
@@ -76,6 +76,15 @@ pub fn collect_explicit_skill_selections<'a>(
         selections.push(selection);
     }
     selections.ordered
+}
+
+pub(crate) fn explicit_name_candidates<'s>(
+    skills: &'s [Skill],
+    name: &str,
+) -> impl Iterator<Item = &'s Skill> + Clone {
+    skills
+        .iter()
+        .filter(move |skill| skill.name.eq_ignore_ascii_case(name))
 }
 
 #[derive(Default)]

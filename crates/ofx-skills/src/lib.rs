@@ -14,9 +14,9 @@ pub use skill_contract::{
     SkillSource,
 };
 pub use skill_invocation::{
-    ExecuteResult, SkillError, SkillInventory, SkillLoader, prepare_identity,
+    ExecuteResult, ExplicitBinding, ExplicitPromptSection, LoadNotice, NoticeTone, SkillError,
+    SkillInventory, SkillLoader, prepare_identity,
 };
 pub use skill_runtime::{
-    ExplicitSelection, SkillCatalog, SkillDiscovery, SkillDiscoveryContext, SymlinkAuthorities,
-    build_skill_prompt, collect_explicit_skill_selections,
+    SkillCatalog, SkillDiscovery, SkillDiscoveryContext, SymlinkAuthorities, build_skill_prompt,
 };
