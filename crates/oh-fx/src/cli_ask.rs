@@ -28,6 +28,7 @@ use ofx_contract::{
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
+use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
 use ofx_session::{
     SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, sessions_v2_variable_is_on,
 };
@@ -187,6 +188,7 @@ impl From<ConnectError> for Failure {
             }
             ConnectError::Codex(error) => error.into(),
             ConnectError::InvalidModel(model) => Self::invalid_model(model),
+            ConnectError::Mcp(error) => Self::code(error.to_string()),
         }
     }
 }
@@ -227,6 +229,7 @@ struct AskRequest<'a> {
 
 struct PreparedAsk {
     agent: Agent,
+    mcp: Option<Arc<McpRuntime>>,
     model: String,
     permission_mode: PermissionMode,
     source: CredentialSource,
@@ -374,6 +377,7 @@ async fn answer(
     let prepared = received.unless_signalled(prepare_agent(request, endpoints, cancel).await)?;
     let PreparedAsk {
         mut agent,
+        mcp,
         model,
         permission_mode,
         source,
@@ -409,6 +413,9 @@ async fn answer(
         let _ = titling.await;
     }
     drop(agent);
+    if let Some(mcp) = &mcp {
+        mcp.shutdown(ShutdownMode::Immediate).await;
+    }
     let report = received.unless_signalled(report)?;
     Ok(presenter.finish(&report, &model, saved))
 }
@@ -452,6 +459,9 @@ async fn prepare_agent(
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
     };
     let setup = profile.connect(launch, cancel).await?;
+    if let Some(mcp) = setup.mcp() {
+        start_mcp(mcp, cancel).await?;
+    }
     let store = match &resumed {
         Some(_) => None,
         None if args.session.no_save => None,
@@ -480,6 +490,7 @@ async fn prepare_agent(
         .and_then(|saved| saved.title_generation(&setup, request.prompt, &agent));
     Ok(PreparedAsk {
         agent,
+        mcp: setup.mcp().cloned(),
         model: setup.model().to_owned(),
         permission_mode,
         source: setup.source(),
@@ -487,6 +498,35 @@ async fn prepare_agent(
         saved,
         title,
     })
+}
+
+async fn start_mcp(mcp: &McpRuntime, cancel: &CancellationToken) -> Result<(), Failure> {
+    let mut lines = String::new();
+    for diagnostic in mcp.workspace_diagnostics() {
+        lines.push_str("oh-fx ask: ");
+        lines.push_str(&render_workspace_diagnostic(diagnostic));
+        lines.push('\n');
+    }
+    let pending = mcp.pending_workspace_names();
+    if !pending.is_empty() {
+        let names: Vec<String> = pending
+            .iter()
+            .map(|name| encode_terminal_safe(name.as_bytes(), usize::MAX).text)
+            .collect();
+        lines.push_str("oh-fx ask: skipped unapproved project MCP servers: ");
+        lines.push_str(&names.join(", "));
+        lines.push_str(". Approve with oh-fx mcp trust approve <name> before retrying.\n");
+    }
+    write_stderr(&lines).map_err(|error| Failure::written(&error))?;
+    tokio::select! {
+        () = cancel.cancelled() => {}
+        () = mcp.connect(StartupPhase::All) => {}
+    }
+    let Some(failure) = mcp.required_startup_failure() else {
+        return Ok(());
+    };
+    mcp.shutdown(ShutdownMode::Immediate).await;
+    Err(Failure::notice("McpRequiredServerUnavailable", failure))
 }
 
 fn announce_settings(

@@ -13,8 +13,9 @@ use ofx_agent::{
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
-    ConfigDiagnostic, ConnectionError, ContextLimitOverride, ContextLimits, ProfilePaths,
-    ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
+    ConfigDiagnostic, ConnectionError, ContextLimitName, ContextLimitOverride, ContextLimits,
+    ProfilePaths, ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError,
+    request_output_tokens,
 };
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
@@ -26,6 +27,10 @@ use ofx_gateway::{
     CodexReviewTransport,
 };
 use ofx_http::ClientError;
+use ofx_mcp::{
+    ConnectOptions, McpRuntime, ProfileStoreError, ProjectMcpChoices, SchemaLimits,
+    load_native_configs, profile_config_path,
+};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_tools::{SubagentTool, WebFetchProgress};
 use ofx_workspace::ChangeTracker;
@@ -77,6 +82,8 @@ pub enum ConnectError {
     Codex(#[from] CodexUnavailable),
     #[error("InvalidModel")]
     InvalidModel(Vec<u8>),
+    #[error("{0}")]
+    Mcp(#[from] ProfileStoreError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +142,7 @@ pub struct AgentSetup {
     source: CredentialSource,
     tools: Vec<Arc<dyn Tool>>,
     subagent: Arc<dyn Tool>,
+    mcp: Option<Arc<McpRuntime>>,
     context: Arc<dyn RuntimeContext>,
     permission_mode: LivePermissionMode,
     workspace_root: PathBuf,
@@ -304,6 +312,7 @@ impl Profile {
             permission_mode: permission_mode.clone(),
             config: config.clone(),
         };
+        let mcp = self.mcp_runtime(&tools, &limits)?;
         Ok(AgentSetup {
             provider: route.provider,
             title_model: route.title_model,
@@ -316,6 +325,7 @@ impl Profile {
             subagent: Arc::new(SubagentTool::new(Arc::new(SubagentHost::new(Arc::new(
                 children,
             ))))),
+            mcp,
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
                 permission_mode.clone(),
@@ -445,6 +455,38 @@ impl Profile {
         })
     }
 
+    fn mcp_runtime(
+        &self,
+        tools: &[Arc<dyn Tool>],
+        limits: &ContextLimits,
+    ) -> Result<Option<Arc<McpRuntime>>, ProfileStoreError> {
+        let profile = self.paths.as_ref().map(profile_config_path);
+        let choices =
+            ProjectMcpChoices::parse(self.settings.workspace_entry(), &mut Vec::new()).ok();
+        let lookup = |name: &str| env::var(name).ok();
+        let load = load_native_configs(
+            profile.as_deref(),
+            &self.workspace_root,
+            choices.as_ref(),
+            &lookup,
+        )?;
+        if load.configs.is_empty() && load.workspace_diagnostics.is_empty() {
+            return Ok(None);
+        }
+        let options = ConnectOptions {
+            client_version: ofx_upgrade::VERSION.to_owned(),
+            user_agent: user_agent(),
+        };
+        let reserved = tools.iter().map(|tool| tool.spec().name.clone()).collect();
+        let limits = SchemaLimits {
+            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
+            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
+        };
+        Ok(Some(Arc::new(McpRuntime::new(
+            load, &options, reserved, limits,
+        ))))
+    }
+
     fn project_context(
         &self,
         limits: &ContextLimits,
@@ -538,6 +580,10 @@ impl AgentSetup {
 
     pub fn context_notices(&self) -> &[String] {
         &self.context_notices
+    }
+
+    pub fn mcp(&self) -> Option<&Arc<McpRuntime>> {
+        self.mcp.as_ref()
     }
 
     pub(crate) fn models(&self) -> &[String] {
@@ -663,6 +709,9 @@ impl AgentSetup {
         .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>);
         if let Some(capabilities) = &self.capabilities {
             agent = agent.with_capability_resolver(Arc::clone(capabilities));
+        }
+        if let Some(mcp) = &self.mcp {
+            agent = agent.with_dynamic_tools(Arc::clone(mcp) as _);
         }
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.clone());
