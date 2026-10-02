@@ -21,21 +21,21 @@ use crate::skill_runtime::{
 };
 use crate::test_fixture::Fixture;
 
-fn command_line(bytes: usize) -> ContextLimit {
+pub(super) fn command_line(bytes: usize) -> ContextLimit {
     ContextLimit {
         value: ContextLimitValue::Bytes(bytes),
         source: ContextLimitSource::CommandLine,
     }
 }
 
-fn off() -> ContextLimit {
+pub(super) fn off() -> ContextLimit {
     ContextLimit {
         value: ContextLimitValue::Off,
         source: ContextLimitSource::CommandLine,
     }
 }
 
-fn loader<'a>(
+pub(super) fn loader<'a>(
     discovery: &'a SkillDiscovery,
     authorities: &'a SymlinkAuthorities,
 ) -> SkillLoader<'a> {
@@ -50,21 +50,21 @@ fn loader<'a>(
     .with_max_tool_result_bytes(64 * 1024)
 }
 
-fn loaded(result: Result<ExecuteResult, SkillError>) -> String {
+pub(super) fn loaded(result: Result<ExecuteResult, SkillError>) -> String {
     match result.unwrap() {
         ExecuteResult::Loaded(output) => output.model_output,
         ExecuteResult::Failure(output) => panic!("expected a loaded skill: {output:?}"),
     }
 }
 
-fn failed(result: Result<ExecuteResult, SkillError>) -> ExecuteOutput {
+pub(super) fn failed(result: Result<ExecuteResult, SkillError>) -> ExecuteOutput {
     match result.unwrap() {
         ExecuteResult::Failure(output) => output,
         ExecuteResult::Loaded(output) => panic!("expected a failure: {output:?}"),
     }
 }
 
-fn workflow_fixture(body: &str) -> (Fixture, SkillDiscovery) {
+pub(super) fn workflow_fixture(body: &str) -> (Fixture, SkillDiscovery) {
     let fixture = Fixture::new();
     fixture.write(
         "skills/workflow/SKILL.md",
@@ -179,25 +179,45 @@ fn skill_invocation_reads_validated_candidate_resources_after_path_replacement()
     }
 }
 
+pub(super) const IN_PLACE_REWRITES: [&str; 3] = [
+    "---\nname: renamed\ndescription: renamed helper\n---\n\nRENAMED BODY\n",
+    "---\nname: workflow\ndescription: workflow helper\n---\n\nREWRITTEN BODY\n",
+    "---\nname: rewrites\ndescription: workflow helper\n---\n\nRENAMED  SKILL BODY\n",
+];
+
+pub(super) fn in_place_rewrite_cases() -> impl Iterator<Item = (&'static str, Option<ContextLimit>)>
+{
+    IN_PLACE_REWRITES
+        .into_iter()
+        .flat_map(|rewrite| [(rewrite, None), (rewrite, Some(command_line(4)))])
+}
+
+pub(super) fn in_place_rewrite_fixture() -> (Fixture, SkillDiscovery) {
+    let (fixture, discovery) = workflow_fixture("ORIGINAL SKILL BODY\n");
+    fixture.write("skills/workflow/reference.md", "REFERENCE BODY\n");
+    (fixture, discovery)
+}
+
+pub(super) fn rewrite_in_place(fixture: &Fixture, content: &str) {
+    let path = fixture.path("skills/workflow/SKILL.md");
+    let validated = fs::metadata(&path).unwrap();
+    let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+    file.write_all(content.as_bytes()).unwrap();
+    file.set_len(u64::try_from(content.len()).unwrap()).unwrap();
+    file.set_modified(validated.modified().unwrap()).unwrap();
+    let rewritten = fs::metadata(&path).unwrap();
+    assert_eq!(rewritten.ino(), validated.ino());
+    assert_eq!(rewritten.modified().unwrap(), validated.modified().unwrap());
+}
+
 #[test]
 fn skill_invocation_rejects_validated_candidates_rewritten_in_place() {
     let original =
         "---\nname: workflow\ndescription: workflow helper\n---\n\nORIGINAL SKILL BODY\n";
-    let rewrites = [
-        "---\nname: renamed\ndescription: renamed helper\n---\n\nRENAMED BODY\n",
-        "---\nname: workflow\ndescription: workflow helper\n---\n\nREWRITTEN BODY\n",
-        "---\nname: rewrites\ndescription: workflow helper\n---\n\nRENAMED  SKILL BODY\n",
-    ];
-    assert_eq!(rewrites[2].len(), original.len());
-    for (rewrite, file_limit) in rewrites
-        .into_iter()
-        .flat_map(|rewrite| [(rewrite, None), (rewrite, Some(command_line(4)))])
-    {
+    assert_eq!(IN_PLACE_REWRITES[2].len(), original.len());
+    for (rewrite, file_limit) in in_place_rewrite_cases() {
         for resource in ["SKILL.md", "reference.md"] {
-            let (fixture, discovery) = workflow_fixture("ORIGINAL SKILL BODY\n");
-            fixture.write("skills/workflow/reference.md", "REFERENCE BODY\n");
-            let skill_file = fixture.path("skills/workflow/SKILL.md");
-            let validated = fs::metadata(&skill_file).unwrap();
+            let (fixture, discovery) = in_place_rewrite_fixture();
             let authorities = SymlinkAuthorities::default();
             let mut loader = loader(&discovery, &authorities);
             if let Some(limit) = file_limit {
@@ -209,15 +229,7 @@ fn skill_invocation_rejects_validated_candidates_rewritten_in_place() {
             else {
                 panic!("expected the current skill");
             };
-
-            let mut file = OpenOptions::new().write(true).open(&skill_file).unwrap();
-            file.write_all(rewrite.as_bytes()).unwrap();
-            file.set_len(u64::try_from(rewrite.len()).unwrap()).unwrap();
-            file.set_modified(validated.modified().unwrap()).unwrap();
-            let rewritten = fs::metadata(&skill_file).unwrap();
-            assert_eq!(rewritten.ino(), validated.ino());
-            assert_eq!(rewritten.modified().unwrap(), validated.modified().unwrap());
-
+            rewrite_in_place(&fixture, rewrite);
             assert_eq!(
                 loader.load_chunk(selection, resource, 0),
                 Err(SkillError::SkillResourceChanged),
