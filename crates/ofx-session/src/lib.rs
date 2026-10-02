@@ -1,5 +1,6 @@
 mod fixed_field;
 mod json_fields;
+mod prompt_history_store;
 mod result_store;
 mod session_adapter;
 mod session_codec;
@@ -15,6 +16,7 @@ mod session_store;
 mod session_store_paths;
 mod session_summary_codec;
 
+pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 pub use session_codec::{SavedProvider, SessionMetadata, SessionPreferences};
 pub use session_commands::resolve_model_query_from_ids;
