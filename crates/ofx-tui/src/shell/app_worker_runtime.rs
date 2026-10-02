@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-use ofx_contract::{TurnId, TurnOutcome, UiCommand, UiEvent};
+use ofx_contract::{Notice, NoticeTone, TurnId, TurnOutcome, UiCommand, UiEvent};
 
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
 use crate::output::activity_status::TurnPhase;
@@ -132,6 +132,7 @@ impl Shell<'_> {
                 full_access_warning,
             } => self.permission_mode_changed(mode, full_access_warning),
             UiEvent::HelpRequested => self.help_requested(),
+            UiEvent::StatsRequested => self.stats_requested(),
             UiEvent::ConversationCleared { first_kept_prompt } => {
                 self.conversation_cleared(first_kept_prompt);
             }
@@ -153,6 +154,19 @@ impl Shell<'_> {
             categories: self.options.command_categories.clone(),
             commands,
         });
+    }
+
+    fn stats_requested(&mut self) {
+        let metrics = self.metrics;
+        let body = format!(
+            "ansi_bytes={}, redraws={}, debounced_resizes={}, footer_updates=0, stream_chunks=0",
+            metrics.ansi_bytes, metrics.full_redraws, metrics.debounced_resizes
+        );
+        self.push_entry(Entry::Notice(Notice::new(
+            NoticeTone::Neutral,
+            "stats",
+            body,
+        )));
     }
 
     fn conversation_cleared(&mut self, first_kept_prompt: u64) {
@@ -384,6 +398,34 @@ mod tests {
             screen.contains(
                 "Commands 4  [All]  General  Model\n\n  /help     \n  /clear    \n  /quit     \n  /model"
             ),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn stats_report_the_bytes_redraws_and_resizes_the_renderer_counted() {
+        let mut test = TestShell::start();
+        let mut frames = String::new();
+        frames += &test.written();
+        test.submit("/stats");
+        assert_eq!(
+            test.sent(),
+            [UiCommand::RunCommand {
+                text: "/stats".to_owned()
+            }]
+        );
+        test.resize(24, 120);
+        frames += &test.written();
+        test.resize(24, 120);
+        frames += &test.written();
+        test.deliver(UiEvent::StatsRequested);
+        let translated_line_feeds = frames.matches('\n').count();
+        let ansi_bytes = frames.len() - translated_line_feeds;
+        let screen = test.screen();
+        assert!(
+            screen.contains(&format!(
+                "* stats: ansi_bytes={ansi_bytes}, redraws=1, debounced_resizes=2, footer_updates=0, stream_chunks=0"
+            )),
             "{screen}"
         );
     }

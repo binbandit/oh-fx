@@ -599,6 +599,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stats_ask_the_shell_for_its_renderer_counts_even_during_a_turn() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/stats");
+        let idle = harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        assert_eq!(idle, [UiEvent::StatsRequested]);
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.command("/stats");
+        harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+    }
+
+    #[tokio::test]
     async fn version_reports_the_running_build() {
         let server = FakeServer::start([]);
         let mut harness = Harness::start(&server).await;

@@ -5,6 +5,7 @@ pub enum SlashKind {
     Help,
     ClearScreen,
     ResetSession,
+    Stats,
     Model,
     Permissions,
     Version,
@@ -190,7 +191,16 @@ mod tests {
             .collect();
         assert_eq!(
             commands,
-            ["/help", "/clear", "/reset", "/model", "/permissions", "/version", "/quit"]
+            [
+                "/help",
+                "/clear",
+                "/reset",
+                "/stats",
+                "/model",
+                "/permissions",
+                "/version",
+                "/quit"
+            ]
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
         assert_eq!(
@@ -209,6 +219,10 @@ mod tests {
             spec(SlashKind::Version).completion_description,
             "show the oh-fx version"
         );
+        assert_eq!(
+            spec(SlashKind::Stats).completion_description,
+            "show token and turn statistics"
+        );
     }
 
     #[test]
@@ -224,6 +238,7 @@ mod tests {
                 ("/help", "General"),
                 ("/clear", "General"),
                 ("/reset", "Session"),
+                ("/stats", "Account"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
                 ("/version", "General"),

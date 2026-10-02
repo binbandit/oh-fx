@@ -78,9 +78,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_takes_reset_and_version_without_a_payload() {
+    fn parse_takes_the_ported_commands_without_a_payload() {
         for (input, kind) in [
             ("/reset", SlashKind::ResetSession),
+            ("/stats", SlashKind::Stats),
             ("/version", SlashKind::Version),
         ] {
             assert_eq!(parse(input), Some((kind, "")), "{input}");

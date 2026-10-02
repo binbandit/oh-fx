@@ -138,6 +138,14 @@ pub(crate) struct Shell<'a> {
     footer_row: usize,
     should_exit: bool,
     frame: FrameCache,
+    metrics: Metrics,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Metrics {
+    ansi_bytes: usize,
+    full_redraws: usize,
+    debounced_resizes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +289,7 @@ impl<'a> Shell<'a> {
                 stale: true,
                 ..FrameCache::default()
             },
+            metrics: Metrics::default(),
         }
     }
 
@@ -306,6 +315,7 @@ impl<'a> Shell<'a> {
     }
 
     fn replay(&mut self) {
+        self.metrics.full_redraws += 1;
         self.forget_approval_review();
         self.renderer.resize(self.layout.rows, self.layout.cols);
         self.renderer.reset_screen(&mut self.output);
@@ -453,7 +463,9 @@ impl<'a> Shell<'a> {
             return Ok(());
         }
         let bytes = std::mem::take(&mut self.output);
-        self.terminal.write_all(bytes.as_bytes())
+        self.terminal.write_all(bytes.as_bytes())?;
+        self.metrics.ansi_bytes += bytes.len();
+        Ok(())
     }
 
     fn exit_cleanup(&self) -> ExitCleanup {
@@ -507,6 +519,7 @@ impl<'a> Shell<'a> {
             self.lose_dimensions();
             return;
         };
+        self.metrics.debounced_resizes += 1;
         if self.dimensions_invalid
             || layout.rows != self.layout.rows
             || layout.cols != self.layout.cols

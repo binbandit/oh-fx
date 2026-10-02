@@ -508,6 +508,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Stats,
+        "/stats",
+        "show token and turn statistics",
+        SlashPresentationCategory::Account,
+    ),
+    SlashSpec::new(
         SlashKind::Model,
         "/model",
         "choose what model and reasoning effort to use",

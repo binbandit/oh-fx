@@ -149,6 +149,7 @@ pub enum UiEvent {
         full_access_warning: bool,
     },
     HelpRequested,
+    StatsRequested,
     ConversationCleared {
         first_kept_prompt: u64,
     },

@@ -918,6 +918,7 @@ impl Presenter {
             | UiEvent::ModelSelected { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::HelpRequested
+            | UiEvent::StatsRequested
             | UiEvent::ConversationCleared { .. }
             | UiEvent::ExitRequested => Ok(()),
         };
