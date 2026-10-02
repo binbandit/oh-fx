@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, CommandRequest, Concurrency, FileMutation,
+    ApplicableTarget, CallDescription, CommandProfile, CommandRequest, Concurrency, FileMutation,
     FileMutationState, ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource, StreamSink,
     ToolActivity, ToolCallId, ToolEffect,
 };
@@ -240,6 +240,7 @@ impl Tool for EchoTool {
             .map(|(_, command)| CommandRequest::Run {
                 command: command.to_owned(),
                 cwd: PathBuf::from("/workspace"),
+                profile: CommandProfile::User,
                 terminal: false,
             })
             .or_else(|| arguments.contains("stop").then_some(CommandRequest::Stop));

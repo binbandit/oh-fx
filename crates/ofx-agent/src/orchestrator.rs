@@ -1004,13 +1004,12 @@ async fn judge(
                 () = cancel.cancelled() => return Verdict::Interrupted,
                 decision = pending.decision() => decision,
             };
+            if let (ApprovalDecision::Always, Some(grant)) = (decision, &scope.always) {
+                gate.permissions.remember_approval(grant);
+            }
             match decision {
                 ApprovalDecision::Deny => Verdict::Denied,
-                ApprovalDecision::Once => Verdict::Run(scope.access),
-                ApprovalDecision::Always => {
-                    gate.permissions.remember_approval(action, &scope.access);
-                    Verdict::Run(scope.access)
-                }
+                ApprovalDecision::Once | ApprovalDecision::Always => Verdict::Run(scope.access),
             }
         }
     }

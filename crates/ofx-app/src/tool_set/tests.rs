@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use ofx_agent::{Agent, AgentConfig, Approvals, RuntimeContext};
 use ofx_contract::{
-    ApprovalDecision, ApprovalRequest, ApprovalScope, BoxFuture, ChatMessage, CommandRequest,
-    Completion, FinishReason, ModelProvider, ModelRequest, PathAccess, PermissionMode,
-    ProviderError, StreamSink, ToolCall, ToolCallId, ToolResultStatus, UiEvent, Usage,
-    tool_permission_denied_json,
+    Admission, ApplicableTarget, ApprovalDecision, ApprovalRequest, ApprovalScope, BoxFuture,
+    ChatMessage, CommandProfile, CommandRequest, Completion, FileMutation, FinishReason,
+    GatedAction, ModelProvider, ModelRequest, PathAccess, PermissionGate, PermissionMode,
+    ProviderError, SessionGrant, StreamSink, ToolCall, ToolCallId, ToolResultStatus, UiEvent,
+    Usage, tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
@@ -112,6 +113,13 @@ struct Outcome {
 
 impl Session {
     fn new(workspace: &Path) -> Self {
+        Self::with_gate(
+            workspace,
+            Arc::new(PermissionPolicy::new(PermissionMode::Ask, workspace)),
+        )
+    }
+
+    fn with_gate(workspace: &Path, gate: Arc<dyn PermissionGate>) -> Self {
         let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
         let provider = Arc::new(ScriptedProvider::default());
         let approvals = Approvals::default();
@@ -119,7 +127,7 @@ impl Session {
             Arc::clone(&provider) as Arc<dyn ModelProvider>,
             ask_tools(workspace, &executions, None, PermissionMode::Ask),
             Arc::new(NoContext),
-            Arc::new(PermissionPolicy::new(PermissionMode::Ask, workspace)),
+            gate,
             AgentConfig {
                 model: "test-model".to_owned(),
                 system_prompt: String::new(),
@@ -277,8 +285,17 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
     assert_eq!(
         run.command,
         Some(CommandRequest::Run {
-            command,
+            command: command.clone(),
             cwd: fixture.root.join("approved"),
+            profile: CommandProfile::User,
+            terminal: false,
+        })
+    );
+    assert_eq!(
+        run.scope.always,
+        Some(SessionGrant::Command {
+            command,
+            profile: CommandProfile::User,
             terminal: false,
         })
     );
@@ -298,6 +315,7 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
             input: "yes\n".to_owned()
         })
     );
+    assert_eq!(input.scope.always, None);
 }
 
 #[tokio::test]
@@ -313,11 +331,17 @@ async fn searches_of_different_external_roots_ask_with_roots_a_host_can_tell_apa
                 .await
                 .denied_request(name);
             let root = fixture.root.join(tree);
+            let offered = if name == "glob_files" {
+                SessionGrant::GlobsUnder(root.clone())
+            } else {
+                SessionGrant::GrepsUnder(root.clone())
+            };
             assert_eq!(
                 request.scope,
                 ApprovalScope {
                     target: Some(root.clone()),
                     access: PathAccess::Within(root),
+                    always: Some(offered),
                 },
                 "{name}"
             );
@@ -326,4 +350,209 @@ async fn searches_of_different_external_roots_ask_with_roots_a_host_can_tell_apa
         }
         assert_eq!(titles[0], titles[1], "{name}");
     }
+}
+
+fn always(_: &ApprovalRequest) -> ApprovalDecision {
+    ApprovalDecision::Always
+}
+
+fn write(path: &str) -> String {
+    serde_json::json!({"path": path, "content": "written\n"}).to_string()
+}
+
+fn run(mut request: serde_json::Value) -> String {
+    request["action"] = "run".into();
+    request["command"] = "echo granted".into();
+    serde_json::json!({ "request": request }).to_string()
+}
+
+#[tokio::test]
+async fn always_on_a_workspace_file_change_offers_and_grants_workspace_file_access_only() {
+    let fixture = Fixture::new();
+    let mut session = Session::new(&fixture.workspace);
+    let first = session
+        .call("write_file", &write("notes.txt"), always)
+        .await;
+    let [request] = <[ApprovalRequest; 1]>::try_from(first.requests).unwrap();
+    assert_eq!(
+        request.scope,
+        ApprovalScope {
+            target: None,
+            access: PathAccess::WorkspaceOrExternal,
+            always: Some(SessionGrant::WorkspaceFiles),
+        }
+    );
+    assert_eq!(first.status, ToolResultStatus::Success);
+
+    let nested = session
+        .call("write_file", &write("src/deeper/lib.rs"), unasked)
+        .await;
+    assert_eq!(nested.status, ToolResultStatus::Success, "{nested:?}");
+    session
+        .call("write_file", &write("../approved/new.txt"), deny)
+        .await
+        .denied_request("write_file");
+    session
+        .call("read_file", r#"{"path":"../approved/data.txt"}"#, deny)
+        .await
+        .denied_request("read_file");
+}
+
+#[tokio::test]
+async fn always_on_an_external_file_change_grants_the_tree_it_showed_before_the_prompt() {
+    let fixture = Fixture::new();
+    let mut session = Session::new(&fixture.workspace);
+    let missing_parents = session
+        .call("write_file", &write("../approved/a/b/new.txt"), deny)
+        .await
+        .denied_request("write_file");
+    let approved = || SessionGrant::FileChangesUnder(fixture.root.join("approved"));
+    assert_eq!(missing_parents.scope.always, Some(approved()));
+
+    let target = fixture.root.join("approved/new.txt");
+    let first = session
+        .call("write_file", &write("../link/new.txt"), |_| {
+            fs::create_dir(&target).unwrap();
+            fixture.point_link_at_unapproved();
+            ApprovalDecision::Always
+        })
+        .await;
+    let [request] = <[ApprovalRequest; 1]>::try_from(first.requests).unwrap();
+    assert_eq!(request.scope.always, Some(approved()));
+
+    let sibling = session
+        .call(
+            "write_file",
+            &write("../approved/deeper/sibling.txt"),
+            unasked,
+        )
+        .await;
+    assert_eq!(sibling.status, ToolResultStatus::Success, "{sibling:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("approved/deeper/sibling.txt")).unwrap(),
+        "written\n"
+    );
+    for outside in ["../link/new.txt", "../unapproved/new.txt", "notes.txt"] {
+        session
+            .call("write_file", &write(outside), deny)
+            .await
+            .denied_request("write_file");
+    }
+    session
+        .call("read_file", r#"{"path":"../approved/data.txt"}"#, deny)
+        .await
+        .denied_request("read_file");
+}
+
+#[tokio::test]
+async fn a_remembered_command_asks_again_under_another_profile_or_terminal_mode() {
+    let fixture = Fixture::new();
+    let mut session = Session::new(&fixture.workspace);
+    let clean = run(serde_json::json!({"profile": "clean"}));
+    let first = session.call("shell", &clean, always).await;
+    let [request] = <[ApprovalRequest; 1]>::try_from(first.requests).unwrap();
+    let identity = |profile, terminal| {
+        (
+            Some(CommandRequest::Run {
+                command: "echo granted".to_owned(),
+                cwd: fixture.workspace.clone(),
+                profile,
+                terminal,
+            }),
+            Some(SessionGrant::Command {
+                command: "echo granted".to_owned(),
+                profile,
+                terminal,
+            }),
+        )
+    };
+    assert_eq!(
+        (request.command, request.scope.always),
+        identity(CommandProfile::Clean, false)
+    );
+    let again = session.call("shell", &clean, unasked).await;
+    assert!(again.requests.is_empty(), "{again:?}");
+    for (changed, profile, terminal) in [
+        (
+            serde_json::json!({"profile": "user"}),
+            CommandProfile::User,
+            false,
+        ),
+        (serde_json::json!({}), CommandProfile::User, false),
+        (
+            serde_json::json!({"profile": "clean", "tty": true}),
+            CommandProfile::Clean,
+            true,
+        ),
+    ] {
+        let asked = session
+            .call("shell", &run(changed), deny)
+            .await
+            .denied_request("shell");
+        assert_eq!(
+            (asked.command, asked.scope.always),
+            identity(profile, terminal)
+        );
+    }
+}
+
+struct VanishingTarget {
+    policy: PermissionPolicy,
+    target: PathBuf,
+}
+
+impl PermissionGate for VanishingTarget {
+    fn admit(&self, call: &ToolCall) -> Admission {
+        self.policy.admit(call)
+    }
+
+    fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget> {
+        self.policy.applicable_target(call)
+    }
+
+    fn admit_file_mutation(&self, mutation: &FileMutation) -> Admission {
+        self.policy.admit_file_mutation(mutation)
+    }
+
+    fn admit_command(&self, request: &CommandRequest) -> Admission {
+        self.policy.admit_command(request)
+    }
+
+    fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
+        fs::remove_file(&self.target).unwrap();
+        self.policy.approval_scope(action)
+    }
+
+    fn remember_approval(&self, grant: &SessionGrant) {
+        self.policy.remember_approval(grant);
+    }
+}
+
+#[tokio::test]
+async fn a_target_that_vanishes_before_the_prompt_confines_the_approved_call_to_the_workspace() {
+    let fixture = Fixture::new();
+    let target = fixture.root.join("approved/data.txt");
+    let mut session = Session::with_gate(
+        &fixture.workspace,
+        Arc::new(VanishingTarget {
+            policy: PermissionPolicy::new(PermissionMode::Ask, &fixture.workspace),
+            target: target.clone(),
+        }),
+    );
+    let read = session
+        .call("read_file", r#"{"path":"../approved/data.txt"}"#, |_| {
+            fs::write(&target, "approved data\n").unwrap();
+            ApprovalDecision::Once
+        })
+        .await;
+    assert_eq!(
+        read.requests[0].scope,
+        ApprovalScope {
+            target: None,
+            access: PathAccess::WorkspaceOnly,
+            always: None,
+        }
+    );
+    assert_eq!(read.status, ToolResultStatus::Failure, "{read:?}");
+    assert!(read.content.contains("PathOutsideWorkspace"), "{read:?}");
 }

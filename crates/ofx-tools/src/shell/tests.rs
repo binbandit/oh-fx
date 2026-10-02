@@ -81,21 +81,38 @@ fn shell_calls_describe_the_decoded_request_the_gate_decides() {
             .command_request()
             .cloned()
     };
-    let run = |command: &str, terminal| {
+    let run = |profile, terminal| {
         Some(CommandRequest::Run {
-            command: command.to_owned(),
+            command: "git status".to_owned(),
             cwd: std::env::temp_dir(),
+            profile,
             terminal,
         })
     };
-    assert_eq!(
-        request(r#"{"request":{"action":"run","command":"git status","cwd":"."}}"#),
-        run("git status", false)
-    );
-    assert_eq!(
-        request(r#"{"action":"run","command":"git status","tty":true}"#),
-        run("git status", true)
-    );
+    for (arguments, expected) in [
+        (
+            r#"{"request":{"action":"run","command":"git status","cwd":"."}}"#,
+            run(CommandProfile::User, false),
+        ),
+        (
+            r#"{"action":"run","command":"git status","profile":"user"}"#,
+            run(CommandProfile::User, false),
+        ),
+        (
+            r#"{"action":"run","command":"git status","profile":"clean"}"#,
+            run(CommandProfile::Clean, false),
+        ),
+        (
+            r#"{"action":"run","command":"git status","tty":true}"#,
+            run(CommandProfile::User, true),
+        ),
+        (
+            r#"{"action":"run","command":"git status","tty":true,"profile":"clean"}"#,
+            run(CommandProfile::Clean, true),
+        ),
+    ] {
+        assert_eq!(request(arguments), expected, "{arguments}");
+    }
     assert_eq!(
         request(r#"{"request":{"action":"interact","session_id":"shell-1"}}"#),
         Some(CommandRequest::Observe)
@@ -202,6 +219,7 @@ fn unresolved_working_directories_outside_the_workspace_reach_the_gate_and_fail_
         Some(&CommandRequest::Run {
             command: "ls".to_owned(),
             cwd: PathBuf::from(missing),
+            profile: CommandProfile::User,
             terminal: false,
         })
     );

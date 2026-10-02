@@ -1,4 +1,6 @@
-use ofx_contract::{ApprovalDecision, ApprovalRequest, ApprovalScope, GatedAction, RequestId};
+use ofx_contract::{
+    ApprovalDecision, ApprovalRequest, ApprovalScope, GatedAction, RequestId, SessionGrant,
+};
 
 use super::*;
 
@@ -9,9 +11,11 @@ struct RememberingGate {
 }
 
 fn approved_tree(scope: usize) -> ApprovalScope {
+    let tree = PathBuf::from(format!("/approved/{scope}"));
     ApprovalScope {
-        target: Some(PathBuf::from(format!("/approved/{scope}/target"))),
-        access: PathAccess::Within(PathBuf::from(format!("/approved/{scope}"))),
+        target: Some(tree.join("target")),
+        access: PathAccess::Within(tree.clone()),
+        always: Some(SessionGrant::ReadsUnder(tree)),
     }
 }
 
@@ -32,19 +36,21 @@ impl PermissionGate for RememberingGate {
         ArgumentGate.applicable_target(call)
     }
 
-    fn approval_scope(&self, _action: GatedAction<'_>) -> ApprovalScope {
-        approved_tree(self.scopes.fetch_add(1, Ordering::SeqCst) + 1)
+    fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
+        let tree = approved_tree(self.scopes.fetch_add(1, Ordering::SeqCst) + 1);
+        let always = match action {
+            GatedAction::Call(_) => return tree,
+            GatedAction::FileMutation(mutation) => mutation
+                .target
+                .parent()
+                .map(|parent| SessionGrant::FileChangesUnder(parent.to_path_buf())),
+            GatedAction::Command(_) => None,
+        };
+        ApprovalScope { always, ..tree }
     }
 
-    fn remember_approval(&self, action: GatedAction<'_>, access: &PathAccess) {
-        let remembered = match action {
-            GatedAction::Call(call) => format!("call {} {access:?}", call.id.as_str()),
-            GatedAction::FileMutation(mutation) => {
-                format!("file {}", mutation.target.display())
-            }
-            GatedAction::Command(request) => format!("command {request:?}"),
-        };
-        self.remembered.lock().unwrap().push(remembered);
+    fn remember_approval(&self, grant: &SessionGrant) {
+        self.remembered.lock().unwrap().push(format!("{grant:?}"));
     }
 }
 
@@ -112,7 +118,7 @@ async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remem
         (ApprovalDecision::Once, Vec::<String>::new()),
         (
             ApprovalDecision::Always,
-            vec![r#"call call-2 Within("/approved/1")"#.to_owned()],
+            vec![r#"ReadsUnder("/approved/1")"#.to_owned()],
         ),
     ] {
         let provider = FakeProvider::new(vec![
@@ -181,7 +187,7 @@ async fn denied_calls_report_the_denial_to_the_model_and_the_turn_continues() {
 }
 
 #[tokio::test]
-async fn file_changes_and_commands_ask_with_their_target_and_remember_their_action() {
+async fn file_changes_and_commands_ask_with_their_target_and_always_remembers_only_the_offer() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[
             ("call-1", r#"{"changes":1,"serial":true}"#),
@@ -200,11 +206,22 @@ async fn file_changes_and_commands_ask_with_their_target_and_remember_their_acti
     })
     .await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    let shown: Vec<(String, Option<CommandRequest>, Option<FileMutation>)> =
-        approval_requests(&events)
-            .into_iter()
-            .map(|request| (request.title, request.command, request.file))
-            .collect();
+    let requests = approval_requests(&events);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.scope.always.clone())
+            .collect::<Vec<_>>(),
+        [
+            Some(SessionGrant::FileChangesUnder(PathBuf::from("/workspace"))),
+            None,
+            Some(SessionGrant::FileChangesUnder(PathBuf::from("/workspace"))),
+        ]
+    );
+    let shown: Vec<(String, Option<CommandRequest>, Option<FileMutation>)> = requests
+        .into_iter()
+        .map(|request| (request.title, request.command, request.file))
+        .collect();
     let note = || {
         Some(FileMutation {
             target: PathBuf::from("/workspace/note.txt"),
@@ -241,7 +258,7 @@ async fn file_changes_and_commands_ask_with_their_target_and_remember_their_acti
     );
     assert_eq!(
         *gate.remembered.lock().unwrap(),
-        ["file /workspace/note.txt", "command Stop"]
+        [r#"FileChangesUnder("/workspace")"#]
     );
     assert_eq!(
         finished(&events),

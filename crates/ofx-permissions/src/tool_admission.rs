@@ -3,15 +3,13 @@ use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalScope, CommandRequest, FileMutation, FileMutationState,
-    GatedAction, PathAccess, PermissionGate, PermissionMode, ToolCall,
+    GatedAction, PathAccess, PermissionGate, PermissionMode, SessionGrant, ToolCall,
 };
 use ofx_workspace::path_inside;
 
 use crate::command_admission::{command_admission, undescribed_shell_call_admission};
 use crate::permissions::{applicable_target, external_path_target};
-use crate::session_permission_state::{
-    EDIT_PERMISSION, SessionGrants, external_grant_root, permission_name,
-};
+use crate::session_permission_state::{SessionGrants, TreePermission, command_grant};
 
 const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
     &[".git"],
@@ -71,9 +69,11 @@ impl PermissionGate for PermissionPolicy {
             Some(target) if path_inside(&self.workspace_root, &target) => {
                 Admission::Allowed(PathAccess::WorkspaceOnly)
             }
-            Some(target) => self
-                .session_grants
-                .granted_root(permission_name(&call.name), &target)
+            Some(target) => TreePermission::of_tool(&call.name)
+                .and_then(|permission| {
+                    self.session_grants
+                        .granted_root(&self.workspace_root, permission, &target)
+                })
                 .map_or(Admission::ApprovalRequired, |root| {
                     Admission::Allowed(PathAccess::Within(root))
                 }),
@@ -89,23 +89,23 @@ impl PermissionGate for PermissionPolicy {
     }
 
     fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
-        let target = match action {
-            GatedAction::Call(call) => external_path_target(&self.workspace_root, call),
-            GatedAction::FileMutation(_) | GatedAction::Command(_) => None,
-        };
-        let access = match &target {
-            None => PathAccess::WorkspaceOrExternal,
-            Some(target) if path_inside(&self.workspace_root, target) => PathAccess::WorkspaceOnly,
-            Some(target) => external_grant_root(target).map_or(PathAccess::WorkspaceOnly, |root| {
-                PathAccess::Within(root.to_path_buf())
-            }),
-        };
-        ApprovalScope { target, access }
+        match action {
+            GatedAction::Call(call) => self.call_approval_scope(call),
+            GatedAction::FileMutation(mutation) => ApprovalScope {
+                target: None,
+                access: PathAccess::WorkspaceOrExternal,
+                always: self.file_change_grant(&mutation.target),
+            },
+            GatedAction::Command(request) => ApprovalScope {
+                target: None,
+                access: PathAccess::WorkspaceOrExternal,
+                always: command_grant(request),
+            },
+        }
     }
 
-    fn remember_approval(&self, action: GatedAction<'_>, access: &PathAccess) {
-        self.session_grants
-            .remember(&self.workspace_root, action, access);
+    fn remember_approval(&self, grant: &SessionGrant) {
+        self.session_grants.remember(grant);
     }
 
     fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget> {
@@ -125,7 +125,7 @@ impl PermissionGate for PermissionPolicy {
         let reversible = inside || mutation.state == FileMutationState::Creates;
         if self
             .session_grants
-            .granted_root(EDIT_PERMISSION, &mutation.target)
+            .granted_root(&self.workspace_root, TreePermission::Edit, &mutation.target)
             .is_some()
         {
             return Admission::Allowed(access);
@@ -140,6 +140,44 @@ impl PermissionGate for PermissionPolicy {
             }
             _ => Admission::ReviewUnavailable,
         }
+    }
+}
+
+impl PermissionPolicy {
+    fn call_approval_scope(&self, call: &ToolCall) -> ApprovalScope {
+        let target = external_path_target(&self.workspace_root, call);
+        let tree = target
+            .as_deref()
+            .filter(|target| !path_inside(&self.workspace_root, target))
+            .and_then(external_grant_root)
+            .map(Path::to_path_buf);
+        ApprovalScope {
+            always: tree
+                .clone()
+                .zip(TreePermission::of_tool(&call.name))
+                .map(|(tree, permission)| permission.grant_under(tree)),
+            access: tree.map_or(PathAccess::WorkspaceOnly, PathAccess::Within),
+            target,
+        }
+    }
+
+    fn file_change_grant(&self, target: &Path) -> Option<SessionGrant> {
+        if path_inside(&self.workspace_root, target) {
+            return Some(SessionGrant::WorkspaceFiles);
+        }
+        target
+            .ancestors()
+            .skip(1)
+            .find(|ancestor| ancestor.is_dir())
+            .map(|root| TreePermission::Edit.grant_under(root.to_path_buf()))
+    }
+}
+
+fn external_grant_root(target: &Path) -> Option<&Path> {
+    if target.is_dir() {
+        Some(target)
+    } else {
+        target.parent()
     }
 }
 
@@ -204,7 +242,7 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::Path;
 
-    use ofx_contract::ToolCallId;
+    use ofx_contract::{CommandProfile, ToolCallId};
 
     use super::*;
 
@@ -217,8 +255,9 @@ mod tests {
     }
 
     fn approve_always(policy: &PermissionPolicy, action: GatedAction<'_>) {
-        let scope = policy.approval_scope(action);
-        policy.remember_approval(action, &scope.access);
+        if let Some(grant) = policy.approval_scope(action).always {
+            policy.remember_approval(&grant);
+        }
     }
 
     fn admissions(mode: PermissionMode, workspace: &Path, paths: &[&str]) -> Vec<Admission> {
@@ -514,17 +553,18 @@ mod tests {
         fs::write(root.join("notes/a.txt"), "text\n").unwrap();
         let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
         let scope = |call: &ToolCall| policy.approval_scope(GatedAction::Call(call));
-        let within = |target: &str, tree: &str| ApprovalScope {
+        let within = |target: &str, tree: &str, grant: fn(PathBuf) -> SessionGrant| ApprovalScope {
             target: Some(root.join(target)),
             access: PathAccess::Within(root.join(tree)),
+            always: Some(grant(root.join(tree))),
         };
         assert_eq!(
             scope(&read("../notes/a.txt")),
-            within("notes/a.txt", "notes")
+            within("notes/a.txt", "notes", SessionGrant::ReadsUnder)
         );
         assert_eq!(
             scope(&read("../notes/deep")),
-            within("notes/deep", "notes/deep")
+            within("notes/deep", "notes/deep", SessionGrant::ReadsUnder)
         );
         let search = |name: &str, path: &str| ToolCall {
             name: name.to_owned(),
@@ -533,34 +573,91 @@ mod tests {
         };
         assert_eq!(
             scope(&search("grep_files", "../notes/deep")),
-            within("notes/deep", "notes/deep")
+            within("notes/deep", "notes/deep", SessionGrant::GrepsUnder)
+        );
+        assert_eq!(
+            scope(&search("glob_files", "../notes")),
+            within("notes", "notes", SessionGrant::GlobsUnder)
         );
         assert_eq!(
             scope(&search("glob_files", "src")),
             ApprovalScope {
                 target: Some(workspace.join("src")),
                 access: PathAccess::WorkspaceOnly,
+                always: None,
             }
         );
-        let unconfined = ApprovalScope {
-            target: None,
-            access: PathAccess::WorkspaceOrExternal,
-        };
-        assert_eq!(
-            policy.approval_scope(GatedAction::FileMutation(&mutation(
-                "/elsewhere/notes/a.txt",
-                FileMutationState::Changes
-            ))),
-            unconfined
-        );
+        for vanished in [read("../notes/gone.txt"), search("grep_files", "../gone")] {
+            assert_eq!(
+                scope(&vanished),
+                ApprovalScope {
+                    target: None,
+                    access: PathAccess::WorkspaceOnly,
+                    always: None,
+                }
+            );
+        }
         assert_eq!(
             policy.approval_scope(GatedAction::Command(&CommandRequest::Run {
                 command: "cargo test".to_owned(),
                 cwd: workspace.clone(),
-                terminal: false,
+                profile: CommandProfile::Clean,
+                terminal: true,
             })),
-            unconfined
+            ApprovalScope {
+                target: None,
+                access: PathAccess::WorkspaceOrExternal,
+                always: Some(SessionGrant::Command {
+                    command: "cargo test".to_owned(),
+                    profile: CommandProfile::Clean,
+                    terminal: true,
+                }),
+            }
         );
+    }
+
+    #[test]
+    fn file_changes_offer_the_workspace_or_the_nearest_existing_tree_outside_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::write(root.join("notes/a.txt"), "text\n").unwrap();
+        let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        let offered = |target: PathBuf| {
+            let scope = policy.approval_scope(GatedAction::FileMutation(&FileMutation {
+                target,
+                state: FileMutationState::Changes,
+            }));
+            assert_eq!(
+                (scope.target, scope.access),
+                (None, PathAccess::WorkspaceOrExternal)
+            );
+            scope.always
+        };
+        for inside in ["src/new.rs", ".git/hooks/pre-commit"] {
+            assert_eq!(
+                offered(workspace.join(inside)),
+                Some(SessionGrant::WorkspaceFiles),
+                "{inside}"
+            );
+        }
+        let under = |tree: &Path| Some(SessionGrant::FileChangesUnder(tree.to_path_buf()));
+        for (target, tree) in [
+            ("notes/a.txt", "notes"),
+            ("notes/new.txt", "notes"),
+            ("notes/a/b/new.txt", "notes"),
+            ("missing/new.txt", ""),
+        ] {
+            assert_eq!(
+                offered(root.join(target)),
+                under(&root.join(tree).components().collect::<PathBuf>()),
+                "{target}"
+            );
+        }
+        assert_eq!(offered(PathBuf::from("/new.txt")), under(Path::new("/")));
+        assert_eq!(offered(PathBuf::from("/")), None);
     }
 
     #[test]
@@ -579,7 +676,7 @@ mod tests {
         let scope = policy.approval_scope(GatedAction::Call(&call));
         fs::remove_file(root.join("link")).unwrap();
         symlink(root.join("unapproved"), root.join("link")).unwrap();
-        policy.remember_approval(GatedAction::Call(&call), &scope.access);
+        policy.remember_approval(&scope.always.unwrap());
         assert_eq!(
             policy.admit(&read("../unapproved/b.txt")),
             Admission::ApprovalRequired
@@ -593,13 +690,23 @@ mod tests {
 
     #[test]
     fn remembered_file_changes_admit_later_changes_in_their_tree() {
-        let policy = PermissionPolicy::new(PermissionMode::Ask, "/workspace");
-        let inside = mutation("/workspace/src/main.rs", FileMutationState::Changes);
-        let elsewhere = mutation("/elsewhere/notes/a.txt", FileMutationState::Changes);
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(root.join("elsewhere/notes")).unwrap();
+        fs::write(root.join("elsewhere/notes/a.txt"), "text\n").unwrap();
+        let change = |target: PathBuf, state| FileMutation { target, state };
+        let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        let inside = change(workspace.join("src/main.rs"), FileMutationState::Changes);
+        let elsewhere = change(
+            root.join("elsewhere/notes/a.txt"),
+            FileMutationState::Changes,
+        );
         approve_always(
             &policy,
-            GatedAction::FileMutation(&mutation(
-                "/workspace/README.md",
+            GatedAction::FileMutation(&change(
+                workspace.join("README.md"),
                 FileMutationState::Changes,
             )),
         );
@@ -613,8 +720,8 @@ mod tests {
         );
         approve_always(
             &policy,
-            GatedAction::FileMutation(&mutation(
-                "/elsewhere/notes/b.txt",
+            GatedAction::FileMutation(&change(
+                root.join("elsewhere/notes/b.txt"),
                 FileMutationState::Creates,
             )),
         );
@@ -623,31 +730,59 @@ mod tests {
             Admission::Allowed(PathAccess::WorkspaceOrExternal)
         );
         assert_eq!(
-            policy.admit_file_mutation(&mutation(
-                "/elsewhere/other.txt",
+            policy.admit_file_mutation(&change(
+                root.join("elsewhere/other.txt"),
                 FileMutationState::Changes
             )),
+            Admission::ApprovalRequired
+        );
+        assert_eq!(
+            policy.admit(&read("../elsewhere/notes/a.txt")),
             Admission::ApprovalRequired
         );
     }
 
     #[test]
-    fn remembered_commands_run_again_only_with_the_same_text() {
-        let run = |command: &str| CommandRequest::Run {
+    fn remembered_commands_run_again_only_with_the_same_text_profile_and_terminal_mode() {
+        let run = |command: &str, cwd: &str, profile, terminal| CommandRequest::Run {
             command: command.to_owned(),
-            cwd: PathBuf::from("/workspace"),
-            terminal: false,
+            cwd: PathBuf::from(cwd),
+            profile,
+            terminal,
         };
         let policy = PermissionPolicy::new(PermissionMode::Ask, "/workspace");
-        approve_always(&policy, GatedAction::Command(&run("cargo test")));
-        assert_eq!(
-            policy.admit_command(&run("cargo test")),
-            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        approve_always(
+            &policy,
+            GatedAction::Command(&run(
+                "cargo test",
+                "/workspace",
+                CommandProfile::Clean,
+                false,
+            )),
         );
-        assert_eq!(
-            policy.admit_command(&run("cargo test --release")),
-            Admission::ApprovalRequired
-        );
+        for cwd in ["/workspace", "/workspace/sub", "/elsewhere"] {
+            assert_eq!(
+                policy.admit_command(&run("cargo test", cwd, CommandProfile::Clean, false)),
+                Admission::Allowed(PathAccess::WorkspaceOrExternal),
+                "{cwd}"
+            );
+        }
+        for different in [
+            run(
+                "cargo test --release",
+                "/workspace",
+                CommandProfile::Clean,
+                false,
+            ),
+            run("cargo test", "/workspace", CommandProfile::User, false),
+            run("cargo test", "/workspace", CommandProfile::Clean, true),
+        ] {
+            assert_eq!(
+                policy.admit_command(&different),
+                Admission::ApprovalRequired,
+                "{different:?}"
+            );
+        }
     }
 
     #[test]

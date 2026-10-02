@@ -41,11 +41,18 @@ pub struct FileMutation {
     pub state: FileMutationState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommandProfile {
+    Clean,
+    User,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CommandRequest {
     Run {
         command: String,
         cwd: PathBuf,
+        profile: CommandProfile,
         terminal: bool,
     },
     Observe,
@@ -63,9 +70,24 @@ pub enum GatedAction<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SessionGrant {
+    WorkspaceFiles,
+    FileChangesUnder(PathBuf),
+    ReadsUnder(PathBuf),
+    GlobsUnder(PathBuf),
+    GrepsUnder(PathBuf),
+    Command {
+        command: String,
+        profile: CommandProfile,
+        terminal: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ApprovalScope {
     pub target: Option<PathBuf>,
     pub access: PathAccess,
+    pub always: Option<SessionGrant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,8 +114,9 @@ pub trait PermissionGate: Send + Sync {
         ApprovalScope {
             target: None,
             access: PathAccess::WorkspaceOrExternal,
+            always: None,
         }
     }
 
-    fn remember_approval(&self, _action: GatedAction<'_>, _access: &PathAccess) {}
+    fn remember_approval(&self, _grant: &SessionGrant) {}
 }

@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    ApplicableTarget, BoxFuture, CallDescription, CommandRequest, Concurrency, PathAccess,
-    PreparedCall, TargetKind, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
+    ApplicableTarget, BoxFuture, CallDescription, CommandProfile, CommandRequest, Concurrency,
+    PathAccess, PreparedCall, TargetKind, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput,
+    ToolSpec,
 };
 use ofx_exec::{
-    Environment, ManagedExecutions, Snapshot, StartCaptured, configured_login_shell, environment,
+    Environment, ManagedExecutions, Profile, Snapshot, StartCaptured, configured_login_shell,
+    environment,
 };
 use ofx_workspace::{PathError, path_inside, resolve_workspace_or_external_path};
 use tokio_util::sync::CancellationToken;
@@ -119,13 +121,12 @@ enum Validated {
 impl Validated {
     fn command_request(&self) -> CommandRequest {
         match self {
-            Self::Run { request, cwd, .. } | Self::UnresolvedCwd { request, cwd, .. } => {
-                CommandRequest::Run {
-                    command: request.command.clone().unwrap_or_default(),
-                    cwd: cwd.clone(),
-                    terminal: request.tty,
-                }
-            }
+            Self::Run {
+                request,
+                cwd,
+                environment,
+            } => run_request(request, cwd, environment.as_ref()),
+            Self::UnresolvedCwd { request, cwd, .. } => run_request(request, cwd, None),
             Self::Interact(request) if request.has_input() => CommandRequest::SendInput {
                 input: request.chars.clone().unwrap_or_default(),
             },
@@ -141,6 +142,25 @@ impl Validated {
                 ToolEffect::Mutating
             }
         }
+    }
+}
+
+fn run_request(
+    request: &ShellRequest,
+    cwd: &Path,
+    environment: Option<&Environment>,
+) -> CommandRequest {
+    let profile = match (environment, request.profile) {
+        (Some(Environment::Clean(_)), _) | (None, Some(Profile::Clean)) => CommandProfile::Clean,
+        (Some(Environment::User(_)), _) | (None, Some(Profile::User) | None) => {
+            CommandProfile::User
+        }
+    };
+    CommandRequest::Run {
+        command: request.command.clone().unwrap_or_default(),
+        cwd: cwd.to_path_buf(),
+        profile,
+        terminal: request.tty,
     }
 }
 
