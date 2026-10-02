@@ -8,7 +8,9 @@ publish.workspace = true
 
 [dependencies]
 ofx-workspace.workspace = true
+percent-encoding.workspace = true
 rustix = { workspace = true, features = ["fs"] }
+thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

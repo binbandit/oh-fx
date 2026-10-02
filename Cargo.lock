@@ -831,8 +831,10 @@ name = "ofx-skills"
 version = "0.1.0"
 dependencies = [
  "ofx-workspace",
+ "percent-encoding",
  "rustix",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
