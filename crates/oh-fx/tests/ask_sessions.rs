@@ -1,8 +1,11 @@
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events};
 use serde_json::{Value, json};
@@ -434,6 +437,179 @@ fn no_save_runs_neither_create_nor_resume_sessions() {
     assert!(!home.root.join("data").exists());
     let output = home.ask(&["ask", "--no-save", "--resume", "last", "hello"], &[]);
     assert_eq!(output.status.code(), Some(1));
+}
+
+fn chunk(delta: &Value, finish: &Value) -> String {
+    json!({
+        "id": "chatcmpl-sessions",
+        "object": "chat.completion.chunk",
+        "model": "sessions-model",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    })
+    .to_string()
+}
+
+fn spoken_read_events(content: &str, call_id: &str, path: &str) -> Vec<String> {
+    let call = json!([{
+        "index": 0,
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "read_file", "arguments": json!({"path": path}).to_string()},
+    }]);
+    vec![
+        chunk(
+            &json!({"role": "assistant", "content": content}),
+            &Value::Null,
+        ),
+        chunk(&json!({"tool_calls": call}), &Value::Null),
+        chunk(&json!({}), &json!("tool_calls")),
+        "[DONE]".to_owned(),
+    ]
+}
+
+fn unmetered_text_events(text: &str) -> Vec<String> {
+    vec![
+        chunk(&json!({"role": "assistant", "content": text}), &Value::Null),
+        chunk(&json!({}), &json!("stop")),
+        "[DONE]".to_owned(),
+    ]
+}
+
+fn kinds(frames: &[Value]) -> Vec<String> {
+    frames
+        .iter()
+        .map(|frame| {
+            frame["event"]
+                .as_object()
+                .and_then(|event| event.keys().next())
+                .expect("an event kind")
+                .clone()
+        })
+        .collect()
+}
+
+fn small_window_home(server: &FakeServer) -> Home {
+    let metadata = json!({"@openai/gpt-4o": {"context_window": 45000, "max_output_tokens": 64}});
+    let home = Home::with_settings(&settings(&server.base_url(), Some(metadata)));
+    fs::write(home.root.join("workspace/small.txt"), "alpha\n").expect("write small.txt");
+    let notes = (0..2000).fold(String::new(), |mut notes, line| {
+        let _ = writeln!(notes, "w{line:07}");
+        notes
+    });
+    fs::write(home.root.join("workspace/notes.txt"), notes).expect("write notes.txt");
+    home
+}
+
+const NOTES_REPLY: &str = "Turn in progress\nIn between: Read the notes.\nT1: read small.txt";
+
+#[test]
+fn a_compaction_inside_a_turn_resumes_with_the_requests_the_model_saw() {
+    let big = format!("STEP_SENTINEL {}", "h".repeat(120_000));
+    let server = FakeServer::start([
+        Reply::sse(&spoken_read_events(&big, "call_1", "small.txt")),
+        Reply::sse(&spoken_read_events("second", "call_2", "notes.txt")),
+        Reply::sse(&unmetered_text_events(NOTES_REPLY)),
+        Reply::sse(&spoken_read_events("third", "call_3", "small.txt")),
+        Reply::sse(&unmetered_text_events("done")),
+        Reply::sse(&unmetered_text_events("again")),
+    ]);
+    let home = small_window_home(&server);
+    let first = home.ask_json(&["read the notes"], &[]);
+    let id = session_id(&first);
+    assert!(
+        kinds(&home.frames(&id)).contains(&"context_checkpoint".to_owned()),
+        "{first}"
+    );
+    home.ask_json(&["--resume", "last", "next"], &[]);
+    let requests = server.requests();
+    let live = conversation(&requests[requests.len() - 2]);
+    let resumed = conversation(&requests[requests.len() - 1]);
+    assert!(
+        live[0]["content"]
+            .as_str()
+            .expect("checkpoint text")
+            .starts_with("<compacted_conversation>\n")
+    );
+    assert_eq!(resumed[..live.len()], live[..]);
+    assert_eq!(
+        texts(&resumed[live.len()..]),
+        [
+            format!(
+                "assistant: {}",
+                first["final_output"].as_str().expect("a reply")
+            ),
+            "user: next".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn a_crash_after_a_compaction_inside_a_turn_resumes_with_the_turn_closed() {
+    let big = format!("STEP_SENTINEL {}", "h".repeat(150_000));
+    let server = FakeServer::start([
+        Reply::sse(&spoken_read_events(&big, "call_1", "small.txt")),
+        Reply::sse(&unmetered_text_events(NOTES_REPLY)),
+        Reply::held_sse(&[chunk(
+            &json!({"role": "assistant", "content": "partial"}),
+            &Value::Null,
+        )]),
+        Reply::sse(&unmetered_text_events("again")),
+    ]);
+    let home = small_window_home(&server);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        .args(["ask", "--json", "read the notes"])
+        .current_dir(home.root.join("workspace"))
+        .env_clear()
+        .env("HOME", &home.root)
+        .env("XDG_CONFIG_HOME", home.root.join("config"))
+        .env("XDG_STATE_HOME", home.root.join("state"))
+        .env("XDG_DATA_HOME", home.root.join("data"))
+        .env("XDG_CACHE_HOME", home.root.join("cache"))
+        .env("SHELL", "/bin/sh")
+        .env("OH_FX_AUTO_UPGRADE", "0")
+        .envs(KEY)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start oh-fx");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while server.requests().len() < 3 {
+        assert!(Instant::now() < deadline, "{:?}", server.requests().len());
+        thread::sleep(Duration::from_millis(20));
+    }
+    child.kill().expect("kill oh-fx");
+    child.wait().expect("reap oh-fx");
+    let id = home.session_ids().pop().expect("a session");
+    assert_eq!(
+        kinds(&home.frames(&id)),
+        [
+            "user",
+            "assistant",
+            "tool_call",
+            "tool_result",
+            "context_checkpoint"
+        ]
+    );
+    let resumed = home.ask_json(&["--resume", "last", "next"], &[]);
+    assert_eq!(resumed["final_output"], "again", "{resumed}");
+    assert_eq!(
+        kinds(&home.frames(&id))[5..],
+        ["interrupted", "user", "assistant", "turn_completed"]
+    );
+    let requests = server.requests();
+    let live = conversation(&requests[2]);
+    let resumed = conversation(&requests[3]);
+    assert_eq!(texts(&live)[1..], ["user: read the notes"]);
+    assert_eq!(resumed[..live.len()], live[..]);
+    assert_eq!(
+        texts(&resumed[live.len()..]),
+        [
+            "assistant: The previous response ended before completion.",
+            "user: <turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>",
+            "user: next",
+        ]
+    );
 }
 
 #[test]
