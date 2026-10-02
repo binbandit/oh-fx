@@ -283,8 +283,9 @@ impl Controller {
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => {
-                toggle_fast(&mut self.state).await;
-                self.save_preferences();
+                if toggle_fast(&mut self.state).await {
+                    self.save_preferences();
+                }
                 self.reconfigure();
             }
             CommandEffect::Compact => return self.compact(commands).await,
@@ -518,8 +519,10 @@ async fn run_deferred_command(
             return;
         }
         CommandEffect::ToggleFast => {
-            toggle_fast(state).await;
             state.config_pending = true;
+            if !toggle_fast(state).await {
+                return;
+            }
         }
     }
     if let Some(notice) = save_session_preferences(state, persistence) {

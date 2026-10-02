@@ -272,7 +272,13 @@ fn a_shell_saves_its_turns_and_continue_reopens_them_in_the_scrollback() {
 fn a_shell_left_without_a_prompt_saves_nothing_and_continue_explains_why() {
     let server = FakeServer::start([]);
     let home = Home::new(&server.base_url());
-    exit(home.shell(&[], WELCOME));
+    let session = home.shell(&[], WELCOME);
+    session.send(b"/fast\r");
+    wait(
+        &session,
+        "* fast: This model does not come with a fast mode.",
+    );
+    exit(session);
     assert!(home.session_ids().is_empty());
     assert_eq!(home.remembered(), None);
     fails_with(

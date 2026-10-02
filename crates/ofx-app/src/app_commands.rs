@@ -126,20 +126,21 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
     }
 }
 
-pub(crate) async fn toggle_fast(state: &mut ControllerState) {
+pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
     if state.fast_mode() {
         state.set_fast_mode(false);
         state.save_model_preference(FAST_TOPIC);
         state.notice(NoticeTone::Neutral, FAST_TOPIC, "off");
-        return;
+        return true;
     }
     if !state.supports_fast_mode().await {
         state.notice(NoticeTone::Neutral, FAST_TOPIC, NO_FAST_MODE);
-        return;
+        return false;
     }
     state.set_fast_mode(true);
     state.save_model_preference(FAST_TOPIC);
     state.notice(NoticeTone::Neutral, FAST_TOPIC, "on");
+    true
 }
 
 fn copy_last_reply(state: &ControllerState) {
