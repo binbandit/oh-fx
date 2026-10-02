@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode, Stdio};
@@ -14,15 +14,22 @@ use ofx_exec::{
     Snapshot, SnapshotState, StartCaptured, is_foreground_session_invocation,
     run_foreground_session,
 };
+use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use tokio_util::sync::CancellationToken;
 
 const OWNER_CHILD_VARIABLE: &str = "OH_FX_TEST_OWNER_DIRECTORY";
 const BASH: &str = "/bin/bash";
 const LONG: Duration = Duration::from_secs(20);
+const POLL: Duration = Duration::from_millis(10);
+const SUPERVISOR_TOKEN: &str = "__oh_fx_foreground_session__";
+const SUPERVISOR_RELEASE: &[u8] = b"0123456789abcdef0123456789abcdef\x06";
+const NO_SUPERVISOR_DEADLINE: &str = "none";
+const SUPERVISOR_DEADLINE_MILLISECONDS: &str = "3000";
+const ESCAPED_PID: &str = "escaped.pid";
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 17] = [
+const TESTS: [(&str, Test); 20] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -82,6 +89,18 @@ const TESTS: [(&str, Test); 17] = [
     (
         "losing_the_owner_kills_the_command_group",
         losing_the_owner_kills_the_command_group,
+    ),
+    (
+        "a_forced_stop_kills_a_direct_command_that_left_the_session",
+        a_forced_stop_kills_a_direct_command_that_left_the_session,
+    ),
+    (
+        "losing_the_owner_kills_a_direct_command_that_left_the_session",
+        losing_the_owner_kills_a_direct_command_that_left_the_session,
+    ),
+    (
+        "a_passed_deadline_kills_a_direct_command_that_left_the_session",
+        a_passed_deadline_kills_a_direct_command_that_left_the_session,
     ),
     (
         "abandoned_starts_release_their_slot_once_they_settle",
@@ -669,6 +688,149 @@ fn losing_the_owner_kills_the_command_group() {
         Some(""),
         "the command group outlived its owner"
     );
+}
+
+fn a_forced_stop_kills_a_direct_command_that_left_the_session() {
+    let escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE);
+    let pid = escaped.await_pid();
+    kill_process(escaped.supervisor(), Signal::USR1).expect("the test step succeeds");
+    assert_killed(pid, "a forced stop");
+}
+
+fn losing_the_owner_kills_a_direct_command_that_left_the_session() {
+    let mut escaped = EscapedCommand::start(NO_SUPERVISOR_DEADLINE);
+    let pid = escaped.await_pid();
+    drop(escaped.owner.take());
+    assert_killed(pid, "the loss of its owner");
+}
+
+fn a_passed_deadline_kills_a_direct_command_that_left_the_session() {
+    let escaped = EscapedCommand::start(SUPERVISOR_DEADLINE_MILLISECONDS);
+    let pid = escaped.await_pid();
+    assert_killed(pid, "its deadline");
+}
+
+struct EscapedCommand {
+    directory: tempfile::TempDir,
+    supervisor: process::Child,
+    owner: Option<process::ChildStdin>,
+}
+
+impl EscapedCommand {
+    fn start(deadline: &str) -> Self {
+        let directory = tempfile::tempdir().expect("the test step succeeds");
+        let script = directory.path().join("escape.py");
+        fs::write(
+            &script,
+            format!(
+                "import os, time\n\
+                 os.setsid()\n\
+                 with open({pid:?} + '.tmp', 'w') as f: f.write(str(os.getpid()))\n\
+                 os.rename({pid:?} + '.tmp', {pid:?})\n\
+                 time.sleep(60)\n",
+                pid = directory.path().join(ESCAPED_PID).display().to_string(),
+            ),
+        )
+        .expect("the test step succeeds");
+        let mut supervisor =
+            process::Command::new(env::current_exe().expect("the test step succeeds"))
+                .args([SUPERVISOR_TOKEN, deadline, "python3"])
+                .arg(&script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the test step succeeds");
+        let owner = supervisor.stdin.take();
+        let mut escaped = Self {
+            directory,
+            supervisor,
+            owner,
+        };
+        escaped
+            .owner
+            .as_mut()
+            .expect("the test step succeeds")
+            .write_all(SUPERVISOR_RELEASE)
+            .expect("the test step succeeds");
+        escaped
+    }
+
+    fn supervisor(&self) -> Pid {
+        Pid::from_child(&self.supervisor)
+    }
+
+    fn recorded_pid(&self) -> Option<Pid> {
+        fs::read_to_string(self.directory.path().join(ESCAPED_PID))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+            .and_then(Pid::from_raw)
+    }
+
+    fn await_pid(&self) -> Pid {
+        let begun = Instant::now();
+        loop {
+            if let Some(pid) = self.recorded_pid() {
+                return pid;
+            }
+            assert!(begun.elapsed() < LONG, "the command never recorded its pid");
+            thread::sleep(POLL);
+        }
+    }
+}
+
+impl Drop for EscapedCommand {
+    fn drop(&mut self) {
+        let marker = self.directory.path().display().to_string();
+        if let Some(pid) = self.recorded_pid()
+            && command_line(pid).contains(&marker)
+        {
+            let _ = kill_process(pid, Signal::KILL);
+        }
+        let _ = kill_process_group(self.supervisor(), Signal::KILL);
+        let _ = self.supervisor.kill();
+        let _ = self.supervisor.wait();
+    }
+}
+
+fn assert_killed(pid: Pid, stop: &str) {
+    let begun = Instant::now();
+    while alive(pid) {
+        assert!(
+            begun.elapsed() < LONG,
+            "the command that left the session outlived {stop}"
+        );
+        thread::sleep(POLL);
+    }
+}
+
+fn alive(pid: Pid) -> bool {
+    if cfg!(target_os = "linux") {
+        return fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, fields)| !fields.trim_start().starts_with('Z'))
+        });
+    }
+    let state = ps(pid, "stat=");
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+fn command_line(pid: Pid) -> String {
+    if cfg!(target_os = "linux") {
+        return fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|line| String::from_utf8_lossy(&line).into_owned())
+            .unwrap_or_default();
+    }
+    ps(pid, "args=")
+}
+
+fn ps(pid: Pid, field: &str) -> String {
+    process::Command::new("ps")
+        .args(["-o", field, "-p", &pid.to_string()])
+        .stderr(Stdio::null())
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_default()
 }
 
 fn abandoned_starts_release_their_slot_once_they_settle() {
