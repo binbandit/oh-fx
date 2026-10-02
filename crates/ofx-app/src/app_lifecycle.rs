@@ -9,9 +9,11 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_cli::{LaunchModifiers, RequestedResume};
-use ofx_contract::{HistoryEntry, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
+use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
-use ofx_tui::{ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel};
+use ofx_tui::{
+    Opening, ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel,
+};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
@@ -43,8 +45,7 @@ struct Session {
     executions: ManagedExecutions,
     permission_mode: PermissionMode,
     persistence: Option<Persistence>,
-    history: Option<Vec<HistoryEntry>>,
-    pick_at_start: bool,
+    opening: Opening,
 }
 
 pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedResume>) -> ExitCode {
@@ -133,13 +134,16 @@ async fn bootstrap(
         )
         .await
         .map_err(|error| vec![failure_line(&error)])?;
-    let pick_at_start = resume == Some(&RequestedResume::Pick);
-    let history = resumed
-        .as_ref()
-        .map(|resumed| resumed.session.transcript())
-        .transpose()
-        .map_err(|error| vec![failure_line(&error)])?
-        .or_else(|| pick_at_start.then(Vec::new));
+    let opening = match &resumed {
+        Some(resumed) => Opening::Transcript(
+            resumed
+                .session
+                .transcript()
+                .map_err(|error| vec![failure_line(&error)])?,
+        ),
+        None if resume == Some(&RequestedResume::Pick) => Opening::SessionPicker,
+        None => Opening::Welcome,
+    };
     let persistence = match (store, running_provider(&setup)) {
         (Ok(store), Ok(provider)) => {
             let preferences = configured_preferences(&profile, &setup, provider.clone());
@@ -165,8 +169,7 @@ async fn bootstrap(
         executions,
         permission_mode,
         persistence,
-        history,
-        pick_at_start,
+        opening,
     })
 }
 
@@ -257,12 +260,13 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.workspace_root(),
             session.profile.cache_dir(),
         ))),
-        history: session.history,
+        opening: session.opening,
     };
+    let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();
     let agent = agent_work(
         session.setup,
-        (session.persistence, session.pick_at_start),
+        (session.persistence, picking),
         session.executions,
         runtime,
     );

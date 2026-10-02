@@ -529,6 +529,7 @@ mod tests {
         TurnOutcome, UiCommand, UiEvent,
     };
 
+    use super::super::Opening;
     use super::super::SlashCommandSpec;
     use super::super::test_shell::TestShell;
     use crate::input::{PasteOutcome, PasteOwner};
@@ -568,7 +569,8 @@ mod tests {
             HistoryEntry::Assistant(String::new()),
             HistoryEntry::Cancelled,
         ];
-        let mut test = TestShell::start_with(|options| options.history = Some(history));
+        let mut test =
+            TestShell::start_with(|options| options.opening = Opening::Transcript(history));
         let screen = test.screen();
         assert!(!screen.contains("Run /help"), "{screen}");
         assert!(

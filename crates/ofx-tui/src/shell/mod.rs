@@ -18,11 +18,12 @@ mod skills_menu_runtime;
 mod test_shell;
 
 use std::collections::VecDeque;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ofx_contract::{HistoryEntry, PermissionMode, TurnId, UiCommand};
+use ofx_contract::{HistoryEntry, PermissionMode, SessionScope, TurnId, UiCommand};
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
@@ -95,7 +96,14 @@ pub struct ShellOptions {
     pub command_categories: Vec<String>,
     pub prompt_history: PromptHistory,
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
-    pub history: Option<Vec<HistoryEntry>>,
+    pub opening: Opening,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opening {
+    Welcome,
+    Transcript(Vec<HistoryEntry>),
+    SessionPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,17 +297,24 @@ impl<'a> Shell<'a> {
         renderer.start_at(usize::from(setup.launch_row.max(1)));
         let mut transcript = Transcript::default();
         transcript.restart(usize::from(layout.cols));
-        match options.history.take() {
-            Some(history) => replayed_entries(history).for_each(|entry| transcript.push(entry)),
-            None => transcript.push(Entry::Welcome {
-                version: options.version.clone(),
-            }),
-        }
+        let picking = match mem::replace(&mut options.opening, Opening::Welcome) {
+            Opening::Welcome => {
+                transcript.push(Entry::Welcome {
+                    version: options.version.clone(),
+                });
+                false
+            }
+            Opening::Transcript(history) => {
+                replayed_entries(history).for_each(|entry| transcript.push(entry));
+                false
+            }
+            Opening::SessionPicker => true,
+        };
         let yolo_warning = YoloWarning::new(options.full_access_warning);
         let mut composer = Composer::new();
         let history = HistoryRecorder::install(options.prompt_history.take(), &mut composer);
         let file_picker = FilePicker::new(options.file_mentions.take());
-        Self {
+        let mut shell = Self {
             terminal: setup.terminal,
             input: setup.input,
             composer,
@@ -336,7 +351,11 @@ impl<'a> Shell<'a> {
                 ..FrameCache::default()
             },
             metrics: Metrics::default(),
+        };
+        if picking {
+            shell.session_picker_opened(SessionScope::CurrentWorkspace);
         }
+        shell
     }
 
     fn now_ms(&self) -> i64 {
@@ -580,7 +599,7 @@ impl<'a> Shell<'a> {
         if self.output.is_empty() {
             return Ok(());
         }
-        let bytes = std::mem::take(&mut self.output);
+        let bytes = mem::take(&mut self.output);
         self.terminal.write_all(bytes.as_bytes())?;
         self.metrics.ansi_bytes += bytes.len();
         Ok(())
@@ -893,7 +912,7 @@ mod tests {
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
-            history: None,
+            opening: Opening::Welcome,
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
     }

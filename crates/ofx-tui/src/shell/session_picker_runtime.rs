@@ -281,6 +281,7 @@ mod tests {
         UiCommand, UiEvent,
     };
 
+    use super::super::Opening;
     use super::super::test_shell::TestShell;
 
     fn row(id: &str, title: &str, updated_at_ms: i64) -> SessionRow {
@@ -318,6 +319,18 @@ mod tests {
     fn keys(test: &mut TestShell, bytes: &[u8]) {
         test.type_bytes(bytes);
         test.step();
+    }
+
+    #[test]
+    fn a_shell_opened_to_pick_owns_the_keys_before_the_first_one_is_read() {
+        let mut test = TestShell::start_with(|options| options.opening = Opening::SessionPicker);
+        assert_eq!(test.sent(), [list(SessionScope::CurrentWorkspace, None)]);
+        let screen = test.screen();
+        assert!(screen.contains("Loading sessions…"), "{screen}");
+        assert!(!screen.contains("Run /help"), "{screen}");
+        keys(&mut test, b"early\r");
+        assert_eq!(test.sent(), [list(SessionScope::CurrentWorkspace, None)]);
+        assert!(test.screen().contains("┃ early"));
     }
 
     #[test]

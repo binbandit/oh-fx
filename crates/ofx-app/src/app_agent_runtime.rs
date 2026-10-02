@@ -258,9 +258,7 @@ impl Controller {
 
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
         self.show_startup_notices();
-        if self.pick_at_start {
-            self.open_picker();
-        } else {
+        if !self.pick_at_start {
             let opened = self
                 .persistence
                 .as_mut()

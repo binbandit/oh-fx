@@ -12,8 +12,8 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::termios::Winsize;
 
 use super::{
-    FOOTER_ROWS, PromptHistory, Setup, Shell, ShellOptions, SlashCommandSpec, UiEventSender,
-    ui_channel,
+    FOOTER_ROWS, Opening, PromptHistory, Setup, Shell, ShellOptions, SlashCommandSpec,
+    UiEventSender, ui_channel,
 };
 use crate::host::Clipboard;
 use crate::input::{COMPOSER_INPUT_LIMIT_BYTES, TerminalInput};
@@ -257,7 +257,7 @@ fn options() -> ShellOptions {
         command_categories: vec!["General".to_owned(), "Model".to_owned()],
         prompt_history: PromptHistory::enabled(Vec::new(), |_| Ok(())),
         file_mentions: None,
-        history: None,
+        opening: Opening::Welcome,
     }
 }
 
