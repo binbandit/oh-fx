@@ -112,7 +112,7 @@ impl Terminal {
         if !termios::isatty(stdin) || !termios::isatty(stdout) {
             return Err(TerminalError::NotATerminal);
         }
-        let output = nonblocking_output(stdout)?;
+        let output = terminal_output(stdout)?;
         Self::from_fds(
             rustix::io::fcntl_dupfd_cloexec(stdin, 0)?,
             output,
@@ -282,15 +282,12 @@ impl Terminal {
     }
 
     pub(crate) fn write_abnormal_restore(&self) {
-        let deadline = Instant::now() + ABNORMAL_RESTORE_WAIT;
+        let output = self.output.as_fd();
+        let deadline = Some(Instant::now() + ABNORMAL_RESTORE_WAIT);
         let _ = app_lifecycle::abnormal_exit_restore_sequences(self.capabilities.tmux)
             .try_for_each(|sequence| {
-                write_fully(
-                    self.output.as_fd(),
-                    sequence.as_bytes(),
-                    None,
-                    Some(deadline),
-                )
+                wait_until_writable(output, None, deadline)?;
+                write_fully(output, sequence.as_bytes(), None, deadline)
             });
     }
 
@@ -351,18 +348,18 @@ fn poll_retrying_interrupts(
     }
 }
 
-fn nonblocking_output(stdout: BorrowedFd<'_>) -> Result<OwnedFd, TerminalError> {
+fn terminal_output(stdout: BorrowedFd<'_>) -> rustix::io::Result<OwnedFd> {
     let flags = OFlags::WRONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-    termios::ttyname(stdout, Vec::new())
-        .and_then(|path| rustix::fs::open(path.as_c_str(), flags, Mode::empty()))
-        .or_else(|error| {
-            if controls_this_session(stdout) {
-                rustix::fs::open(CONTROLLING_TERMINAL, flags, Mode::empty()).map_err(|_| error)
-            } else {
-                Err(error)
-            }
-        })
-        .map_err(|error| TerminalError::OutputUnavailable(error.into()))
+    let reopen = |path: &CStr| rustix::fs::open(path, flags, Mode::empty());
+    if let Ok(output) = termios::ttyname(stdout, Vec::new()).and_then(|path| reopen(&path)) {
+        return Ok(output);
+    }
+    if controls_this_session(stdout)
+        && let Ok(output) = reopen(CONTROLLING_TERMINAL)
+    {
+        return Ok(output);
+    }
+    rustix::io::fcntl_dupfd_cloexec(stdout, 0)
 }
 
 fn controls_this_session(terminal: BorrowedFd<'_>) -> bool {
@@ -974,6 +971,43 @@ mod tests {
         );
     }
 
+    fn stall_blocking_output() {
+        std::thread::spawn(|| {
+            let chunk = [b'x'; 4096];
+            while rustix::io::write(rustix::stdio::stdout(), &chunk).is_ok() {}
+        });
+        let stdout = rustix::stdio::stdout();
+        let mut fds = [PollFd::new(&stdout, PollFlags::OUT)];
+        let settle = Timespec::try_from(Duration::from_millis(50)).unwrap();
+        while rustix::event::poll(&mut fds, Some(&settle)).unwrap() > 0 {}
+    }
+
+    #[test]
+    fn unwinding_on_blocking_output_gives_up_on_a_stalled_terminal() {
+        if test_pty::in_child() {
+            forbid_reopening_by_path();
+            let mut terminal = Terminal::open().unwrap();
+            stall_blocking_output();
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                terminal.enable_raw_mode().unwrap();
+                let _owner = terminal;
+                panic!("unwinding with stalled blocking output");
+            }));
+            std::process::exit(i32::from(unwound.is_ok()));
+        }
+        let pty = test_pty::open();
+        let child = spawn_on(
+            &pty,
+            "terminal::shell_runtime::tests::unwinding_on_blocking_output_gives_up_on_a_stalled_terminal",
+        );
+        let status = exit_within(child, test_pty::WAIT);
+        let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
+        assert!(
+            status.is_some_and(|status| status.success()) && cooked(modes),
+            "{status:?} {modes:?}"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn sigterm_ends_a_stalled_write_when_the_terminal_path_cannot_be_reopened() {
@@ -1030,22 +1064,34 @@ mod tests {
     }
 
     #[test]
-    fn opening_fails_when_no_independent_output_can_be_opened() {
+    fn opening_falls_back_to_blocking_output_when_the_terminal_cannot_be_reopened() {
         if test_pty::in_child() {
             forbid_reopening_by_path();
-            match Terminal::open() {
-                Ok(_) => println!("opened"),
-                Err(error) => println!("refused: {error}"),
-            }
+            let mut terminal = Terminal::open().unwrap();
+            let flags = rustix::fs::fcntl_getfl(&terminal.output).unwrap();
+            let output = rustix::fs::fstat(&terminal.output).unwrap().st_rdev;
+            let stdout = rustix::fs::fstat(rustix::stdio::stdout()).unwrap().st_rdev;
+            terminal.enable_raw_mode().unwrap();
+            let line = format!(
+                "fallback blocking={} same={}\r\n",
+                !flags.contains(OFlags::NONBLOCK),
+                output == stdout
+            );
+            terminal.write_all(line.as_bytes()).unwrap();
+            drop(terminal);
             return;
         }
         let mut session = test_pty::child_session(
-            "terminal::shell_runtime::tests::opening_fails_when_no_independent_output_can_be_opened",
+            "terminal::shell_runtime::tests::opening_falls_back_to_blocking_output_when_the_terminal_cannot_be_reopened",
             &[],
         );
-        test_pty::wait_output(
-            &session,
-            b"refused: oh-fx cannot reopen its terminal for nonblocking output: Permission denied",
+        let restore = abnormal_restore().replace('\n', "\r\n");
+        let output = test_pty::wait_output(&session, restore.as_bytes());
+        let reported = b"fallback blocking=true same=true";
+        assert!(
+            output
+                .windows(reported.len())
+                .any(|window| window == reported)
         );
         assert!(session.wait_exit(test_pty::WAIT).unwrap().success());
     }
