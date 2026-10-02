@@ -4,7 +4,7 @@ use std::os::unix::fs::MetadataExt;
 
 pub(crate) const DIRECTORY_CHANGED: &str = "CommandAuthorityContextMismatch";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectoryIdentity {
     device: u64,
     inode: u64,

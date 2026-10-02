@@ -264,12 +264,12 @@ impl ShellContext {
         {
             return ToolOutput::failure(runtime_failure(PATH_OUTSIDE_WORKSPACE));
         }
+        let (Some(environment), Some(command)) = (environment, request.command) else {
+            return ToolOutput::failure(runtime_failure(UNAVAILABLE));
+        };
         let cwd_identity = match cwd.still_pinned() {
             Ok(identity) => identity,
             Err(code) => return ToolOutput::failure(runtime_failure(&code)),
-        };
-        let (Some(environment), Some(command)) = (environment, request.command) else {
-            return ToolOutput::failure(runtime_failure(UNAVAILABLE));
         };
         let input = StartCaptured {
             command,
