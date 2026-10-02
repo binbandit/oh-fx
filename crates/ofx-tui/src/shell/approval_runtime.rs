@@ -19,6 +19,7 @@ pub(super) struct ApprovalPrompt {
     choice: usize,
     shown: Option<Shown>,
     typed_ms: Option<i64>,
+    held_ms: Option<i64>,
     scroll: usize,
     page: usize,
     seen: Vec<bool>,
@@ -42,6 +43,7 @@ impl ApprovalPrompt {
             choice: 0,
             shown: None,
             typed_ms: None,
+            held_ms: None,
             scroll: 0,
             page: 1,
             seen: Vec::new(),
@@ -125,6 +127,7 @@ impl ApprovalPrompt {
         self.shown.is_some_and(|shown| {
             shown.rows == layout.rows && shown.cols == layout.cols && settled(shown.since_ms)
         }) && self.typed_ms.is_none_or(settled)
+            && self.held_ms.is_none_or(settled)
     }
 
     fn typing(&self, now_ms: i64) -> bool {
@@ -181,7 +184,10 @@ impl Shell<'_> {
                 _ => {}
             },
             InputEvent::Text(character) => self.keep_typed_text(*character),
-            InputEvent::Paste(outcome) => self.handle_paste(outcome.clone()),
+            InputEvent::Paste(outcome) => {
+                self.hold_yes();
+                self.handle_paste(outcome.clone());
+            }
             InputEvent::TextDropped(_) => {}
         }
         Ok(())
@@ -216,6 +222,8 @@ impl Shell<'_> {
         if affirmative && !self.affirmative_armed(now_ms) {
             if prompt.typing(now_ms) {
                 self.keep_typed_text(char::from(key));
+            } else {
+                self.hold_yes();
             }
             return;
         }
@@ -231,6 +239,13 @@ impl Shell<'_> {
             prompt.typed_ms = Some(now_ms);
         }
         self.insert(character.encode_utf8(&mut [0; 4]));
+    }
+
+    fn hold_yes(&mut self) {
+        let now_ms = self.now_ms();
+        if let Some(prompt) = &mut self.approval {
+            prompt.held_ms = Some(now_ms);
+        }
     }
 
     fn affirmative_armed(&self, now_ms: i64) -> bool {
@@ -269,6 +284,8 @@ impl Shell<'_> {
         };
         if decision == ApprovalDecision::Deny || self.affirmative_armed(now_ms) {
             self.decide(decision);
+        } else {
+            self.hold_yes();
         }
     }
 
@@ -755,10 +772,37 @@ mod tests {
         assert!(!approved(&test));
         assert!(test.shell.composer.is_empty());
         press(&mut test, b"1");
+        press(&mut test, b"\r");
+        assert!(!approved(&test));
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
         assert_eq!(
             test.sent().last(),
             Some(&decision(4, ApprovalDecision::Once))
         );
+        assert!(test.shell.composer.is_empty());
+    }
+
+    #[test]
+    fn a_held_yes_key_never_approves_until_it_is_released() {
+        for key in [&b"\r"[..], b"1", b"2"] {
+            let mut test = TestShell::start();
+            test.submit("read the notes");
+            test.deliver(UiEvent::TurnStarted {
+                turn_id: TurnId::new(1),
+            });
+            test.deliver(request(1, 4));
+            test.screen();
+            for _ in 0..20 {
+                press(&mut test, key);
+                test.advance(100);
+            }
+            assert!(!approved(&test), "{key:?}");
+            assert!(test.shell.composer.is_empty(), "{key:?}");
+            test.advance(ARMED_MS);
+            press(&mut test, key);
+            assert!(approved(&test), "{key:?}");
+        }
     }
 
     fn command_prompt_with_theme_monitor() -> TestShell {
