@@ -6,6 +6,7 @@ use crate::session_event::{
     ConversationEvent, ConversationState, decode_conversation_frame, encode_conversation_frame,
 };
 use crate::session_log::conversation_history::ReplayScan;
+use crate::session_log::conversation_progress::{ConversationProgress, ProgressPoint};
 use crate::session_replay::{LineRead, LineReader};
 
 pub(crate) struct ConversationWriter {
@@ -142,6 +143,41 @@ impl ConversationWriter {
 
     pub(crate) fn turn_open(&self) -> bool {
         self.state.turn_open()
+    }
+
+    pub(crate) fn context_progress(
+        &self,
+        cut: Option<ProgressPoint>,
+    ) -> Result<ConversationProgress, SessionError> {
+        let coverage = self.state.latest_checkpoint_coverage();
+        let mut progress = ConversationProgress::from_coverage(coverage);
+        let mut reader = LineReader::new(&self.file, 0, self.committed_bytes)?;
+        while let LineRead::Line(line) = reader.next_line()? {
+            let envelope = decode_conversation_frame(&line)?;
+            if envelope.seq > coverage {
+                progress.observe(envelope.seq, &envelope.event, cut)?;
+            }
+        }
+        Ok(progress)
+    }
+
+    pub(crate) fn context_coverage(
+        &self,
+        cut: ProgressPoint,
+        upcoming: &[ConversationEvent],
+    ) -> Result<u64, SessionError> {
+        let mut progress = self.context_progress(Some(cut))?;
+        let mut seq = self.last_seq();
+        for event in upcoming {
+            seq = seq
+                .checked_add(1)
+                .ok_or(SessionError::ConversationSequenceOverflow)?;
+            progress.observe(seq, event, Some(cut))?;
+        }
+        if !progress.reached && cut != ProgressPoint::default() {
+            return Err(SessionError::InvalidContextHistoryStart);
+        }
+        Ok(progress.coverage)
     }
 
     pub(crate) fn failure(&self) -> Option<SessionError> {

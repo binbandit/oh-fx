@@ -1,7 +1,6 @@
-use std::fmt::Write as _;
-
 use ofx_config::ProviderId;
 use ofx_contract::ReasoningEffort;
+use ofx_text::lowercase_hex;
 use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -47,10 +46,7 @@ impl Serialize for SavedProvider {
         let Some(binding) = self.binding else {
             return serializer.serialize_str(self.id.label());
         };
-        let mut encoded = String::with_capacity(BINDING_BYTES * 2);
-        for byte in binding {
-            let _ = write!(encoded, "{byte:02x}");
-        }
+        let encoded = lowercase_hex(&binding);
         let mut map = serializer.serialize_map(Some(2))?;
         map.serialize_entry("name", self.id.label())?;
         map.serialize_entry("binding", &encoded)?;

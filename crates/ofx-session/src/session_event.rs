@@ -303,6 +303,10 @@ impl ConversationState {
         self.turn_open
     }
 
+    pub(crate) fn latest_checkpoint_coverage(&self) -> u64 {
+        self.latest_checkpoint_coverage
+    }
+
     pub(crate) fn has_pending_tool_calls(&self) -> bool {
         !self.pending_tool_calls.is_empty()
     }
