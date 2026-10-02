@@ -1,13 +1,57 @@
 use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use signal_hook::SigId;
 use signal_hook::consts::signal::{SIGCONT, SIGHUP, SIGTERM, SIGWINCH};
 
 const FATAL_SIGNALS: [i32; 2] = [SIGTERM, SIGHUP];
+
+static FATAL_FALLBACK: LazyLock<Mutex<FatalFallback>> = LazyLock::new(|| {
+    Mutex::new(FatalFallback {
+        armed: Arc::new(AtomicBool::new(true)),
+        registered: false,
+        live_pipes: 0,
+    })
+});
+
+struct FatalFallback {
+    armed: Arc<AtomicBool>,
+    registered: bool,
+    live_pipes: usize,
+}
+
+impl FatalFallback {
+    fn suspend() -> io::Result<()> {
+        let mut fallback = FATAL_FALLBACK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !fallback.registered {
+            for signal in FATAL_SIGNALS {
+                signal_hook::flag::register_conditional_default(
+                    signal,
+                    Arc::clone(&fallback.armed),
+                )?;
+            }
+            fallback.registered = true;
+        }
+        fallback.live_pipes += 1;
+        fallback.armed.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn resume() {
+        let mut fallback = FATAL_FALLBACK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        fallback.live_pipes -= 1;
+        if fallback.live_pipes == 0 {
+            fallback.armed.store(true, Ordering::SeqCst);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Signals {
@@ -22,7 +66,7 @@ pub(crate) struct SignalPipe {
     resized: Arc<AtomicBool>,
     continued: Arc<AtomicBool>,
     fatal: Arc<AtomicUsize>,
-    default_disposition: Arc<AtomicBool>,
+    suspends_fallback: bool,
     ids: Vec<SigId>,
 }
 
@@ -37,7 +81,7 @@ impl SignalPipe {
             resized: Arc::new(AtomicBool::new(false)),
             continued: Arc::new(AtomicBool::new(false)),
             fatal: Arc::new(AtomicUsize::new(0)),
-            default_disposition: Arc::new(AtomicBool::new(false)),
+            suspends_fallback: false,
             ids: Vec::new(),
         };
         pipe.ids.push(signal_hook::flag::register(
@@ -49,10 +93,6 @@ impl SignalPipe {
             Arc::clone(&pipe.continued),
         )?);
         for signal in FATAL_SIGNALS {
-            signal_hook::flag::register_conditional_default(
-                signal,
-                Arc::clone(&pipe.default_disposition),
-            )?;
             pipe.ids.push(signal_hook::flag::register_usize(
                 signal,
                 Arc::clone(&pipe.fatal),
@@ -69,6 +109,8 @@ impl SignalPipe {
                 writer.try_clone()?,
             )?);
         }
+        FatalFallback::suspend()?;
+        pipe.suspends_fallback = true;
         Ok(pipe)
     }
 
@@ -92,10 +134,12 @@ impl SignalPipe {
     }
 
     pub(crate) fn uninstall(&mut self) {
+        if std::mem::take(&mut self.suspends_fallback) {
+            FatalFallback::resume();
+        }
         for id in self.ids.drain(..) {
             signal_hook::low_level::unregister(id);
         }
-        self.default_disposition.store(true, Ordering::SeqCst);
     }
 }
 
@@ -116,13 +160,34 @@ mod tests {
     const CHILD: &str = "OH_FX_SIGNAL_PIPE_CHILD";
 
     fn run_in_child(test: &str) -> std::process::ExitStatus {
+        run_in_child_raising(test, 0)
+    }
+
+    fn run_in_child_raising(test: &str, signal: i32) -> std::process::ExitStatus {
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test, "--test-threads=1", "--nocapture"])
-            .env(CHILD, "1")
+            .env(CHILD, signal.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .unwrap()
+    }
+
+    fn signal_for_child() -> Option<i32> {
+        std::env::var(CHILD).ok()?.parse().ok()
+    }
+
+    fn exit_with_interception(pipe: &SignalPipe, signal: i32) -> ! {
+        signal_hook::low_level::raise(signal).unwrap();
+        std::process::exit(i32::from(pipe.take().fatal != Some(signal)));
+    }
+
+    fn assert_children_intercept_each_fatal_signal(test: &str) {
+        let statuses = FATAL_SIGNALS.map(|signal| (signal, run_in_child_raising(test, signal)));
+        assert!(
+            statuses.iter().all(|(_, status)| status.code() == Some(0)),
+            "{statuses:?}"
+        );
     }
 
     fn readable(fd: BorrowedFd<'_>, timeout_ms: u64) -> bool {
@@ -189,6 +254,66 @@ mod tests {
             "terminal::signal_pipe::tests::fatal_signals_wake_the_write_abort_descriptor",
         );
         assert_eq!(status.code(), Some(0));
+    }
+
+    #[test]
+    fn reinstalled_pipes_intercept_fatal_signals_after_an_uninstall() {
+        if let Some(signal) = signal_for_child() {
+            let mut first = SignalPipe::install().unwrap();
+            first.uninstall();
+            let second = SignalPipe::install().unwrap();
+            exit_with_interception(&second, signal);
+        }
+        assert_children_intercept_each_fatal_signal(
+            "terminal::signal_pipe::tests::reinstalled_pipes_intercept_fatal_signals_after_an_uninstall",
+        );
+    }
+
+    #[test]
+    fn reinstalled_pipes_intercept_fatal_signals_after_a_drop() {
+        if let Some(signal) = signal_for_child() {
+            drop(SignalPipe::install().unwrap());
+            let second = SignalPipe::install().unwrap();
+            exit_with_interception(&second, signal);
+        }
+        assert_children_intercept_each_fatal_signal(
+            "terminal::signal_pipe::tests::reinstalled_pipes_intercept_fatal_signals_after_a_drop",
+        );
+    }
+
+    #[test]
+    fn overlapping_pipes_intercept_fatal_signals_until_the_last_one_goes() {
+        if let Some(signal) = signal_for_child() {
+            let first = SignalPipe::install().unwrap();
+            let second = SignalPipe::install().unwrap();
+            drop(first);
+            exit_with_interception(&second, signal);
+        }
+        assert_children_intercept_each_fatal_signal(
+            "terminal::signal_pipe::tests::overlapping_pipes_intercept_fatal_signals_until_the_last_one_goes",
+        );
+    }
+
+    #[test]
+    fn reinstalled_pipes_restore_the_default_termination_once_torn_down() {
+        if let Some(signal) = signal_for_child() {
+            drop(SignalPipe::install().unwrap());
+            let mut second = SignalPipe::install().unwrap();
+            second.uninstall();
+            signal_hook::low_level::raise(signal).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            std::process::exit(0);
+        }
+        for signal in FATAL_SIGNALS {
+            let status = run_in_child_raising(
+                "terminal::signal_pipe::tests::reinstalled_pipes_restore_the_default_termination_once_torn_down",
+                signal,
+            );
+            assert_eq!(
+                std::os::unix::process::ExitStatusExt::signal(&status),
+                Some(signal)
+            );
+        }
     }
 
     #[test]
