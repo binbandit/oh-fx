@@ -1,6 +1,6 @@
-use std::mem;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ofx_auth::{
     ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, MISSING_CHATGPT_CREDENTIAL_MESSAGE,
@@ -13,8 +13,7 @@ use ofx_gateway::{
     CodexModelCatalog, CodexModelsEndpoints, CodexProvider, CodexRefresh,
 };
 use ofx_http::ClientError;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default)]
@@ -77,20 +76,37 @@ impl CapabilityResolver for CatalogCapabilities {
 
 #[derive(Debug, Default)]
 pub(crate) struct DetachedRefreshes {
-    running: Mutex<Vec<JoinHandle<()>>>,
+    running: AtomicUsize,
+    settled: Notify,
 }
 
 impl DetachedRefreshes {
-    fn track(&self, refresh: JoinHandle<()>) {
-        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-        running.retain(|running| !running.is_finished());
-        running.push(refresh);
+    fn start(self: &Arc<Self>) -> RunningRefresh {
+        self.running.fetch_add(1, Ordering::SeqCst);
+        RunningRefresh(Arc::clone(self))
+    }
+
+    pub(crate) fn pending(&self) -> bool {
+        self.running.load(Ordering::SeqCst) > 0
     }
 
     pub(crate) async fn settle(&self) {
-        let running = mem::take(&mut *self.running.lock().unwrap_or_else(PoisonError::into_inner));
-        for refresh in running {
-            let _ = refresh.await;
+        loop {
+            let settled = self.settled.notified();
+            if !self.pending() {
+                return;
+            }
+            settled.await;
+        }
+    }
+}
+
+struct RunningRefresh(Arc<DetachedRefreshes>);
+
+impl Drop for RunningRefresh {
+    fn drop(&mut self) {
+        if self.0.running.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.0.settled.notify_waiters();
         }
     }
 }
@@ -122,11 +138,13 @@ impl CodexCredentials for SubscriptionCredentials {
             let (finished, refreshed) = oneshot::channel();
             let oauth = Arc::clone(&self.oauth);
             let account_id = account_id.to_owned();
-            detached.track(tokio::spawn(async move {
+            let running = detached.start();
+            tokio::spawn(async move {
                 let never = CancellationToken::new();
                 let access = refresh_chatgpt_credential(&oauth, mode, &account_id, &never).await;
+                drop(running);
                 let _ = finished.send(access.ok().flatten());
-            }));
+            });
             tokio::select! {
                 biased;
                 refreshed = refreshed => refreshed.ok().flatten().map(codex_access),

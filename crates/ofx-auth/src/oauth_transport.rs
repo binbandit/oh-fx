@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use zeroize::Zeroizing;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -473,7 +473,9 @@ async fn an_interactive_turn_cancelled_during_a_refresh_stops_while_the_refresh_
     assert!(cancelled.elapsed() < Duration::from_secs(1));
     assert_eq!(report.outcome, TurnOutcome::Interrupted, "{report:?}");
     assert_eq!(fixture.saved()["refresh_token"], REFRESH_TOKEN);
+    assert!(refreshes.pending());
     refreshes.settle().await;
+    assert!(!refreshes.pending());
     assert_eq!(auth.requests().len(), 1);
     assert_eq!(fixture.saved()["access_token"], FRESH_TOKEN);
     assert_eq!(fixture.saved()["refresh_token"], ROTATED_REFRESH_TOKEN);

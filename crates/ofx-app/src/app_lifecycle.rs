@@ -5,8 +5,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use ofx_auth::OAUTH_REQUEST_TIMEOUT;
 use ofx_cli::LaunchModifiers;
 use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
@@ -19,7 +20,7 @@ use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
 use crate::app_commands::slash_command_specs;
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_upgrade_runtime;
-use crate::codex_provider::SubscriptionEndpoints;
+use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const WORKER_THREAD: &str = "oh-fx-agent";
@@ -184,6 +185,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         workspace_root: session.profile.workspace_root().to_owned(),
         commands: slash_command_specs(),
     };
+    let refreshes = session.setup.refreshes();
     let (commands, worker_commands) = tokio::sync::mpsc::unbounded_channel();
     let notices = sender.clone();
     let panics = PanicCapture::install(WORKER_THREAD, move |notice| {
@@ -203,7 +205,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             })
         })
         .unwrap_or_else(|payload| panic::resume_unwind(payload));
-    worker.finish(WORKER_SHUTDOWN_GRACE, &panics)?;
+    worker.finish(refreshes.as_deref(), &panics)?;
     Ok(result?)
 }
 
@@ -247,56 +249,32 @@ impl Worker {
         Ok(Self { finished })
     }
 
-    fn finish(self, grace: Duration, panics: &PanicCapture) -> Result<(), SessionError> {
-        match self.finished.recv_timeout(grace) {
-            Ok(()) | Err(RecvTimeoutError::Timeout) => Ok(()),
-            Err(RecvTimeoutError::Disconnected) => {
-                Err(SessionError::AgentStopped(panics.take_worker_report()))
+    fn finish(
+        self,
+        refreshes: Option<&DetachedRefreshes>,
+        panics: &PanicCapture,
+    ) -> Result<(), SessionError> {
+        let exiting = Instant::now();
+        let mut limit = WORKER_SHUTDOWN_GRACE;
+        loop {
+            match self
+                .finished
+                .recv_timeout(limit.saturating_sub(exiting.elapsed()))
+            {
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(SessionError::AgentStopped(panics.take_worker_report()));
+                }
+                Err(RecvTimeoutError::Timeout)
+                    if limit < OAUTH_REQUEST_TIMEOUT
+                        && refreshes.is_some_and(DetachedRefreshes::pending) =>
+                {
+                    limit = OAUTH_REQUEST_TIMEOUT;
+                }
+                Ok(()) | Err(RecvTimeoutError::Timeout) => return Ok(()),
             }
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::PoisonError;
-
-    use super::*;
-    use crate::app_panic_runtime::HOOK_TESTS;
-
-    #[test]
-    fn terminal_refusals_read_as_upstream_prints_them() {
-        let message = |error| SessionError::Terminal(error).to_string();
-        assert_eq!(
-            message(TerminalError::TerminalTooSmall),
-            "oh-fx needs at least 5 terminal rows."
-        );
-        assert_eq!(
-            message(TerminalError::NotATerminal),
-            "oh-fx requires an interactive terminal (TTY)."
-        );
-        assert_eq!(
-            message(TerminalError::UnableToReadTerminalSize),
-            "oh-fx: unable to read the terminal size"
-        );
-    }
-
-    #[test]
-    fn worker_panics_are_reported_instead_of_printed_and_clean_exits_are_quiet() {
-        let _serial = HOOK_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
-        let panics = PanicCapture::install(WORKER_THREAD, drop);
-        let finished = Worker::spawn(|| {}).unwrap();
-        assert!(finished.finish(Duration::from_secs(10), &panics).is_ok());
-        let crashed = Worker::spawn(|| panic!("worker exploded")).unwrap();
-        let message = crashed
-            .finish(Duration::from_secs(10), &panics)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.starts_with("oh-fx: the agent stopped unexpectedly: panicked at "),
-            "{message}"
-        );
-        assert!(message.ends_with(": worker exploded"), "{message}");
-        assert_eq!(panics.take_worker_report(), None);
-    }
-}
+mod tests;
