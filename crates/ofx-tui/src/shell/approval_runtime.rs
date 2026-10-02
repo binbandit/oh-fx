@@ -166,7 +166,7 @@ impl Shell<'_> {
                 Action::RemappedByte(byte) => self.input.replay_byte(byte),
                 Action::PasteStart => self
                     .input
-                    .begin_paste(PasteOwner::Composer, COMPOSER_INPUT_LIMIT_BYTES),
+                    .begin_paste(PasteOwner::DecisionPrompt, COMPOSER_INPUT_LIMIT_BYTES),
                 Action::Escape => self.approval_escape(),
                 Action::CursorUp => self.move_choice(-1),
                 Action::CursorDown => self.move_choice(1),
@@ -175,7 +175,8 @@ impl Shell<'_> {
                 _ => {}
             },
             InputEvent::Text(character) => self.keep_typed_text(*character),
-            InputEvent::Paste(_) | InputEvent::TextDropped(_) => {}
+            InputEvent::Paste(outcome) => self.handle_paste(outcome.clone()),
+            InputEvent::TextDropped(_) => {}
         }
         Ok(())
     }
@@ -698,6 +699,34 @@ mod tests {
             .filter(|command| matches!(command, UiCommand::Approval { .. }))
             .collect();
         assert_eq!(answered.len(), 2);
+    }
+
+    #[test]
+    fn a_paste_that_began_before_the_prompt_still_reaches_the_draft() {
+        let mut test = TestShell::start();
+        test.submit("read the notes");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        press(&mut test, b"\x1b[200~pasted draft");
+        test.deliver(request(1, 4));
+        press(&mut test, b" text\x1b[201~");
+        assert_eq!(test.shell.composer.text(), "pasted draft text");
+        assert!(!approved(&test));
+        assert!(test.screen().contains(PANEL));
+    }
+
+    #[test]
+    fn a_paste_during_the_prompt_neither_decides_nor_enters_the_draft() {
+        let mut test = approving();
+        press(&mut test, b"\x1b[200~1\r2\n\x1b[201~");
+        assert!(!approved(&test));
+        assert!(test.shell.composer.is_empty());
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
     }
 
     #[test]
