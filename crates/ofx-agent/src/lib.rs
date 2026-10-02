@@ -14,6 +14,6 @@ pub use approvals::Approvals;
 pub use assistant_stream::{normalize_assistant_text_for_display, text_for_completed_presentation};
 pub use compactor::CompactionError;
 pub use orchestrator::{
-    Agent, AgentConfig, BlockedCall, Compaction, EventSink, RuntimeContext, TurnFailure, TurnReport,
+    Agent, AgentConfig, BlockedCall, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };
 pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider};

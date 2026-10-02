@@ -34,7 +34,8 @@ use crate::prompt_context::Calibration;
 mod compaction;
 mod project_gate;
 
-pub use compaction::Compaction;
+#[cfg(test)]
+use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
 #[cfg(test)]
@@ -178,6 +179,7 @@ pub struct Agent {
     turn_starts: Vec<usize>,
     compacted: Option<Payload>,
     calibration: Option<Calibration>,
+    #[cfg(test)]
     request_fixed_tokens: Option<usize>,
     turns: u64,
 }
@@ -206,6 +208,7 @@ impl Agent {
             turn_starts: Vec::new(),
             compacted: None,
             calibration: None,
+            #[cfg(test)]
             request_fixed_tokens: None,
             turns: 0,
         }

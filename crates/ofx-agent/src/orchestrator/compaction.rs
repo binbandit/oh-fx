@@ -19,8 +19,9 @@ const OVERFLOW_DETAILS: [&str; 8] = [
     "too many input tokens",
 ];
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Compaction {
+pub(crate) enum Compaction {
     Compacted,
     Unchanged,
 }
@@ -47,7 +48,8 @@ pub(super) struct Measured {
 }
 
 impl Agent {
-    pub async fn compact(
+    #[cfg(test)]
+    pub(crate) async fn compact(
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Compaction, CompactionError> {
@@ -185,7 +187,10 @@ impl Agent {
         let Some(measured) = measured else {
             return;
         };
-        self.request_fixed_tokens = measured.fixed_tokens;
+        #[cfg(test)]
+        {
+            self.request_fixed_tokens = measured.fixed_tokens;
+        }
         if let Some(exact) = input_tokens {
             self.calibration = Some(Calibration {
                 model: self.config.model.clone(),
