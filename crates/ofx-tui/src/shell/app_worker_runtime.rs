@@ -407,8 +407,8 @@ impl Shell<'_> {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        CallDescription, CompactionActivity, CompactionEnd, Concurrency, Notice, NoticeTone,
-        ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
+        CallDescription, CompactionActivity, CompactionEnd, Concurrency, HistoryEntry, Notice,
+        NoticeTone, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
     };
 
     use super::super::SlashCommandSpec;
@@ -433,6 +433,32 @@ mod tests {
             turn_id: TurnId::new(turn),
             outcome,
         }
+    }
+
+    #[test]
+    fn a_resumed_session_opens_on_its_saved_transcript_instead_of_the_welcome() {
+        let history = vec![
+            HistoryEntry::Notice(Notice::new(
+                NoticeTone::Neutral,
+                "session resumed",
+                "fix the build",
+            )),
+            HistoryEntry::User("fix the build".to_owned()),
+            HistoryEntry::Assistant("Looking.".to_owned()),
+            HistoryEntry::Assistant("Fixed **it**.".to_owned()),
+            HistoryEntry::User("again".to_owned()),
+            HistoryEntry::Assistant(String::new()),
+            HistoryEntry::Cancelled,
+        ];
+        let mut test = TestShell::start_with(|options| options.history = Some(history));
+        let screen = test.screen();
+        assert!(!screen.contains("Run /help"), "{screen}");
+        assert!(
+            screen.contains(
+                "* session resumed: fix the build\n\n┃ fix the build\n\n  Looking.\n\n  Fixed it.\n\n┃ again\n\n■ Cancelled · What can oh-fx do differently?"
+            ),
+            "{screen}"
+        );
     }
 
     #[test]

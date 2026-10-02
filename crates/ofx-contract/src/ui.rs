@@ -81,6 +81,14 @@ pub enum CompactionActivity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryEntry {
+    User(String),
+    Assistant(String),
+    Cancelled,
+    Notice(Notice),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub id: RequestId,
     pub tool_name: String,

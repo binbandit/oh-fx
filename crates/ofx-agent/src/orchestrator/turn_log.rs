@@ -15,16 +15,14 @@ pub(super) enum Ending {
 }
 
 impl Agent {
-    #[must_use]
-    pub fn with_conversation_log(mut self, log: Box<dyn ConversationLog>) -> Self {
+    pub fn attach_session(&mut self, session_id: String, log: Box<dyn ConversationLog>) {
+        self.session_id = Some(session_id);
         self.log = Some(log);
-        self
     }
 
-    #[must_use]
-    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
-        self
+    pub fn detach_session(&mut self) {
+        self.session_id = None;
+        self.log = None;
     }
 
     pub fn restore(&mut self, restored: RestoredHistory) {
@@ -45,6 +43,12 @@ impl Agent {
         self.history = messages;
         self.turn_starts = turn_starts;
         self.calibration = None;
+    }
+
+    pub(super) fn require_writable(&self) -> Result<(), LogFailure> {
+        self.log
+            .as_ref()
+            .map_or(Ok(()), |log| log.require_writable())
     }
 
     pub(super) fn record_turn(

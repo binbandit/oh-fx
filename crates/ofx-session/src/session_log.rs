@@ -17,6 +17,7 @@ use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
 };
+use crate::session_display_metadata::{DisplayTitle, derive_display_title};
 use crate::session_error::SessionError;
 use crate::session_event::{
     ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent,
@@ -24,7 +25,7 @@ use crate::session_event::{
 use crate::session_layout::is_valid_session_id;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
-use conversation_history::{ReplayScan, replay_history};
+use conversation_history::{ReplayScan, replay_history, visit_turns};
 use conversation_progress::ProgressPoint;
 use conversation_writer::{ConversationWriter, scan_log};
 use managed_file::{
@@ -112,6 +113,28 @@ impl WritableSession {
         self.writer.turn_open()
     }
 
+    pub fn last_seq(&self) -> u64 {
+        self.writer.last_seq()
+    }
+
+    pub fn require_writable(&self) -> Result<(), SessionError> {
+        self.writer.failure().map_or(Ok(()), Err)
+    }
+
+    pub fn visit_transcript(&self, visit: impl FnMut(SavedTurn)) -> Result<(), SessionError> {
+        visit_turns(self.writer.file(), self.writer.committed_bytes(), visit)
+    }
+
+    pub fn display_title(&self) -> DisplayTitle {
+        match &self.metadata.title {
+            Some(title) => DisplayTitle {
+                title: title.clone(),
+                present: true,
+            },
+            None => derive_display_title(&self.history),
+        }
+    }
+
     pub fn take_history(&mut self) -> SavedHistory {
         mem::take(&mut self.history)
     }
@@ -139,7 +162,11 @@ impl WritableSession {
         let written = self.written_steps()?;
         let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
         let unwritten = &events[usize::from(open)..];
-        self.append(timestamp_ms, unwritten)
+        let saved = self.append(timestamp_ms, unwritten);
+        if saved.is_err() && self.writer.turn_open() {
+            self.writer.block_open_turn();
+        }
+        saved
     }
 
     pub fn record_compaction(
@@ -218,6 +245,13 @@ impl WritableSession {
         proposed.preferences = preferences;
         proposed.updated_at_ms = timestamp_ms;
         self.write_metadata(proposed)
+    }
+
+    pub fn select_model(&mut self, model: &str, fast_mode: bool) -> Result<(), SessionError> {
+        let mut preferences = self.metadata.preferences.clone();
+        model.clone_into(&mut preferences.model);
+        preferences.fast_mode = fast_mode;
+        self.set_preferences(preferences, now_ms())
     }
 
     pub(crate) fn rebind_workspace(&mut self, workspace_root: &str) -> Result<(), SessionError> {

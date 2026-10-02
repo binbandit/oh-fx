@@ -103,14 +103,12 @@ fn wait(session: &PtySession, needle: &str) -> String {
 }
 
 #[test]
-fn resume_aliases_and_launch_models_open_the_shell() {
+fn the_picker_alias_and_launch_models_open_the_shell() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Chosen."]))]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    for args in [&["-c"][..], &["-r"], &["resume", "last"]] {
-        let mut session = home.shell_with(args, 24, 80, "auto · model-a");
-        session.send(b"\x04");
-        assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
-    }
+    let mut session = home.shell_with(&["-r"], 24, 80, "auto · model-a");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
     let mut session = home.shell_with(
         &["--model", "vendor/model-b", "--fast"],
         24,

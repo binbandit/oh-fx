@@ -128,7 +128,7 @@ fn is_interactive(args: &[&str]) -> bool {
 }
 
 fn resumes(args: &[&str]) -> bool {
-    matches!(parse(args), Ok(Invocation::Resume(_)))
+    matches!(parse(args), Ok(Invocation::Resume(..)))
 }
 
 fn help(args: &[&str]) -> Option<TopLevelKind> {
@@ -413,7 +413,7 @@ fn non_utf8_resume_targets_parse_and_fail_session_id_validation_later() {
         &[b"session", b"resume", b"\xff"],
     ] {
         assert!(
-            matches!(parse_args(raw_args(args)), Ok(Invocation::Resume(_))),
+            matches!(parse_args(raw_args(args)), Ok(Invocation::Resume(..))),
             "{args:?}"
         );
     }

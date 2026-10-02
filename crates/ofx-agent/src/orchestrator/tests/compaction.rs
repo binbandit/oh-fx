@@ -683,7 +683,7 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
     ]);
     let (agent, _) = windowed(&provider, 45_000, 64);
     let (log, entries) = turn_log::MemoryLog::shared();
-    let mut agent = agent.with_conversation_log(log);
+    let mut agent = turn_log::logged(agent, log);
     let (report, _) = run(&mut agent, "read the notes").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     let entries = entries.lock().unwrap().clone();
@@ -730,8 +730,7 @@ async fn a_checkpoint_that_cannot_be_saved_fails_the_turn_and_is_not_installed()
         )),
     ]);
     let (agent, _) = windowed(&provider, 45_000, 64);
-    let mut agent =
-        agent.with_conversation_log(Box::new(turn_log::MemoryLog::failing("SessionBusy")));
+    let mut agent = turn_log::logged(agent, Box::new(turn_log::MemoryLog::failing("SessionBusy")));
     let (report, _) = run(&mut agent, "read the notes").await;
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(report.failure.unwrap().code(), "SessionBusy");

@@ -188,6 +188,11 @@ impl ConversationWriter {
         self.failure = Some(SessionError::SessionPersistenceUncertain);
     }
 
+    pub(crate) fn block_open_turn(&mut self) {
+        self.failure
+            .get_or_insert(SessionError::SessionCommitFailed);
+    }
+
     pub(crate) fn append(
         &mut self,
         timestamp_ms: i64,

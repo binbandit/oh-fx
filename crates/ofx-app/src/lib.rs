@@ -4,6 +4,7 @@ mod app_commands;
 mod app_lifecycle;
 mod app_panic_runtime;
 mod app_permission_runtime;
+mod app_session_runtime;
 mod app_upgrade_runtime;
 mod codex_provider;
 mod context;
@@ -20,5 +21,9 @@ pub use app_bootstrap_runtime::{
     AgentSetup, ConnectError, CredentialSource, Launch, Profile, ProfileError, user_agent,
 };
 pub use app_lifecycle::run_interactive;
+pub use app_session_runtime::{
+    LiveSession, ResumeFailure, ResumedSession, configured_preferences, open_store,
+    running_provider,
+};
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 pub use ofx_tools::WebFetchProgress;

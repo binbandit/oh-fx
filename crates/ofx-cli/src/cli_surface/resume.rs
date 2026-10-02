@@ -9,69 +9,95 @@ use crate::command_specs::TopLevelKind;
 pub(crate) const UPGRADE_RELAUNCH_ARG: &str = "--upgrade-relaunch";
 pub(crate) const RESUME_ID_ALIAS_PREFIX: &str = "--resume-";
 
+const RESUME_PICKER_ALIAS: &str = "-r";
+const LAST_TARGET: &str = "last";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestedResume {
+    Remembered,
+    Pick,
+    Last,
+    Id(String),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InvalidResumeArgs;
 
-pub(crate) fn validate_resume_alias(
+pub(crate) fn resume_alias_target(
     alias: &OsStr,
     rest: &[OsString],
-) -> Result<(), InvalidResumeArgs> {
+) -> Result<RequestedResume, InvalidResumeArgs> {
     if alias == "--resume" {
         return match rest {
-            [] => Ok(()),
-            [operand] => validate_id(operand),
+            [] => Ok(RequestedResume::Last),
+            [operand] => operand_target(operand, false),
             _ => Err(InvalidResumeArgs),
         };
     }
     if !rest.is_empty() {
         return Err(InvalidResumeArgs);
     }
+    if alias == RESUME_PICKER_ALIAS {
+        return Ok(RequestedResume::Pick);
+    }
+    if alias == "-c" || alias == "--continue" {
+        return Ok(RequestedResume::Remembered);
+    }
     if alias
         .to_str()
         .is_some_and(|alias| TopLevelKind::Resume.spec().matches(alias))
     {
-        return Ok(());
+        return Ok(RequestedResume::Last);
     }
     match alias
         .as_bytes()
         .strip_prefix(RESUME_ID_ALIAS_PREFIX.as_bytes())
     {
-        Some(id) if !id.is_empty() => Ok(()),
+        Some(id) if !id.is_empty() => Ok(RequestedResume::Id(
+            String::from_utf8_lossy(id).into_owned(),
+        )),
         _ => Err(InvalidResumeArgs),
     }
 }
 
-pub(crate) fn validate_resume_subcommand(args: &[OsString]) -> Result<(), InvalidResumeArgs> {
+pub(crate) fn resume_subcommand_target(
+    args: &[OsString],
+) -> Result<RequestedResume, InvalidResumeArgs> {
     if args.get(1).is_none_or(|arg| arg != UPGRADE_RELAUNCH_ARG) {
-        return validate_subcommand_target(args);
+        return subcommand_target(args);
     }
     match &args[2..] {
         [] => {}
         [revision] if revision.to_str().is_some_and(is_valid_revision) => {}
         _ => return Err(InvalidResumeArgs),
     }
-    validate_subcommand_target(&args[..1])
+    subcommand_target(&args[..1])
 }
 
-fn validate_subcommand_target(args: &[OsString]) -> Result<(), InvalidResumeArgs> {
+fn subcommand_target(args: &[OsString]) -> Result<RequestedResume, InvalidResumeArgs> {
     let Some(first) = args.first() else {
-        return Ok(());
+        return Ok(RequestedResume::Last);
     };
     if first == "--resume" {
         return match &args[1..] {
-            [last] if last == "--last" => Ok(()),
+            [last] if last == "--last" => Ok(RequestedResume::Last),
             _ => Err(InvalidResumeArgs),
         };
     }
-    let operands = if first == "--id" { &args[1..] } else { args };
+    let exact = first == "--id";
+    let operands = if exact { &args[1..] } else { args };
     let [operand] = operands else {
         return Err(InvalidResumeArgs);
     };
-    validate_id(operand)
+    operand_target(operand, exact)
 }
 
-fn validate_id(raw: &OsStr) -> Result<(), InvalidResumeArgs> {
-    non_blank(raw).map(drop).ok_or(InvalidResumeArgs)
+fn operand_target(raw: &OsStr, exact: bool) -> Result<RequestedResume, InvalidResumeArgs> {
+    let id = non_blank(raw).ok_or(InvalidResumeArgs)?;
+    if !exact && id == LAST_TARGET {
+        return Ok(RequestedResume::Last);
+    }
+    Ok(RequestedResume::Id(id.to_string_lossy().into_owned()))
 }
 
 #[cfg(test)]
@@ -85,12 +111,25 @@ mod tests {
     }
 
     fn subcommand(args: &[&str]) -> bool {
-        validate_resume_subcommand(&os(args)).is_ok()
+        resume_subcommand_target(&os(args)).is_ok()
     }
 
     fn alias(args: &[&str]) -> bool {
         let args = os(args);
-        validate_resume_alias(&args[0], &args[1..]).is_ok()
+        resume_alias_target(&args[0], &args[1..]).is_ok()
+    }
+
+    fn subcommand_target_of(args: &[&str]) -> RequestedResume {
+        resume_subcommand_target(&os(args)).unwrap()
+    }
+
+    fn alias_target_of(args: &[&str]) -> RequestedResume {
+        let args = os(args);
+        resume_alias_target(&args[0], &args[1..]).unwrap()
+    }
+
+    fn id(value: &str) -> RequestedResume {
+        RequestedResume::Id(value.to_owned())
     }
 
     #[test]
@@ -168,9 +207,55 @@ mod tests {
     #[test]
     fn non_utf8_resume_targets_are_accepted_as_ids() {
         let raw = OsString::from_vec(b"\xff".to_vec());
-        assert!(validate_resume_alias(OsStr::new("--resume"), std::slice::from_ref(&raw)).is_ok());
-        assert!(validate_resume_alias(&OsString::from_vec(b"--resume-\xff".to_vec()), &[]).is_ok());
-        assert!(validate_resume_subcommand(std::slice::from_ref(&raw)).is_ok());
-        assert!(validate_resume_subcommand(&[OsString::from("--id"), raw]).is_ok());
+        let replaced = id("\u{fffd}");
+        assert_eq!(
+            resume_alias_target(OsStr::new("--resume"), std::slice::from_ref(&raw)).unwrap(),
+            replaced
+        );
+        assert_eq!(
+            resume_alias_target(&OsString::from_vec(b"--resume-\xff".to_vec()), &[]).unwrap(),
+            replaced
+        );
+        assert_eq!(
+            resume_subcommand_target(std::slice::from_ref(&raw)).unwrap(),
+            replaced
+        );
+        assert_eq!(
+            resume_subcommand_target(&[OsString::from("--id"), raw]).unwrap(),
+            replaced
+        );
+    }
+
+    #[test]
+    fn each_spelling_names_the_session_upstream_resumes() {
+        assert_eq!(subcommand_target_of(&[]), RequestedResume::Last);
+        assert_eq!(subcommand_target_of(&[" last "]), RequestedResume::Last);
+        assert_eq!(subcommand_target_of(&[" session-123 "]), id("session-123"));
+        assert_eq!(subcommand_target_of(&["--id", "last"]), id("last"));
+        assert_eq!(subcommand_target_of(&["--id", " a "]), id("a"));
+        assert_eq!(
+            subcommand_target_of(&["--resume", "--last"]),
+            RequestedResume::Last
+        );
+        assert_eq!(
+            subcommand_target_of(&["abc", UPGRADE_RELAUNCH_ARG]),
+            id("abc")
+        );
+        assert_eq!(alias_target_of(&["-r"]), RequestedResume::Pick);
+        assert_eq!(alias_target_of(&["-c"]), RequestedResume::Remembered);
+        assert_eq!(
+            alias_target_of(&["--continue"]),
+            RequestedResume::Remembered
+        );
+        assert_eq!(alias_target_of(&["-c "]), RequestedResume::Last);
+        assert_eq!(alias_target_of(&["--resume-last"]), RequestedResume::Last);
+        assert_eq!(alias_target_of(&["--resume"]), RequestedResume::Last);
+        assert_eq!(
+            alias_target_of(&["--resume", "last"]),
+            RequestedResume::Last
+        );
+        assert_eq!(alias_target_of(&["--resume", " id-1 "]), id("id-1"));
+        assert_eq!(alias_target_of(&["--resume-abc"]), id("abc"));
+        assert_eq!(alias_target_of(&["--resume- abc"]), id(" abc"));
     }
 }

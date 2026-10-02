@@ -1,11 +1,11 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure};
+use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure, TurnReport};
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, SkillBinding, UiCommand,
-    UiEvent,
+    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, SkillBinding,
+    TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_tui::Clipboard;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
+use crate::app_session_runtime::Persistence;
 use crate::native::NativeClipboard;
 use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
@@ -187,10 +188,11 @@ fn context_notice(text: &str) -> Notice {
 pub(crate) struct Controller {
     agent: Agent,
     state: ControllerState,
+    persistence: Option<Persistence>,
 }
 
 impl Controller {
-    pub(crate) fn new(setup: AgentSetup, emit: Emit) -> Self {
+    pub(crate) fn new(setup: AgentSetup, emit: Emit, persistence: Option<Persistence>) -> Self {
         let notices = ContextNotices {
             startup: setup.context_notices().to_vec(),
             claimed: HashSet::new(),
@@ -214,6 +216,7 @@ impl Controller {
         Self {
             agent: state.setup.agent(),
             state,
+            persistence,
         }
     }
 
@@ -225,9 +228,22 @@ impl Controller {
 
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
         self.show_startup_notices();
+        let opened = self
+            .persistence
+            .as_mut()
+            .and_then(|persistence| persistence.open(&mut self.agent));
+        self.session_notice(opened);
+        self.remember_agent_facts();
+        self.serve(&mut commands).await;
+        if let Some(persistence) = &mut self.persistence {
+            persistence.close(&mut self.agent);
+        }
+    }
+
+    async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
             if let Some(prompt) = self.state.queue.pop_front() {
-                if !self.run_turn(&prompt, &mut commands).await {
+                if !self.run_turn(&prompt, commands).await {
                     return;
                 }
                 continue;
@@ -238,7 +254,7 @@ impl Controller {
             match command {
                 UiCommand::Submit { prompt, skills } => self.state.receive_prompt(prompt, skills),
                 UiCommand::RunCommand { text } => {
-                    if !self.run_idle_command(&text, &mut commands).await {
+                    if !self.run_idle_command(&text, commands).await {
                         return;
                     }
                 }
@@ -262,11 +278,13 @@ impl Controller {
             CommandEffect::None => {}
             CommandEffect::SwitchModel(model) => {
                 self.state.select_model(model);
+                self.save_preferences();
                 self.reconfigure();
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => {
                 toggle_fast(&mut self.state).await;
+                self.save_preferences();
                 self.reconfigure();
             }
             CommandEffect::Compact => return self.compact(commands).await,
@@ -279,6 +297,7 @@ impl Controller {
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
         let state = &mut self.state;
+        let persistence = &mut self.persistence;
         let mut open = true;
         let result = {
             let mut summarizing = move || {
@@ -306,7 +325,14 @@ impl Controller {
                         }
                         Some(UiCommand::Cancel { .. } | UiCommand::Approval { .. }) => {}
                         Some(UiCommand::RunCommand { text }) => {
-                            run_deferred_command(state, &text, Work::Compaction, &cancel).await;
+                            run_deferred_command(
+                                state,
+                                persistence,
+                                &text,
+                                Work::Compaction,
+                                &cancel,
+                            )
+                            .await;
                         }
                     },
                 }
@@ -329,12 +355,36 @@ impl Controller {
         self.state.context_to_compact = self.agent.has_context_to_compact();
     }
 
+    fn save_preferences(&mut self) {
+        let saved = save_session_preferences(&self.state, &mut self.persistence);
+        self.session_notice(saved);
+    }
+
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
+        let started = self
+            .persistence
+            .as_mut()
+            .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
         self.remember_agent_facts();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
         self.show_startup_notices();
+        self.session_notice(started);
+    }
+
+    fn session_notice(&self, notice: Option<Notice>) {
+        if let Some(notice) = notice {
+            self.state.emit(UiEvent::Notice { notice });
+        }
+    }
+
+    fn finish_turn(&mut self, report: &TurnReport) {
+        let finished = self
+            .persistence
+            .as_mut()
+            .and_then(|persistence| persistence.finish_turn(report));
+        self.session_notice(finished);
     }
 
     fn show_startup_notices(&mut self) {
@@ -357,6 +407,7 @@ impl Controller {
         let running_turn = || *running.lock().unwrap_or_else(PoisonError::into_inner);
         let notices = Arc::clone(&self.state.context_notices);
         let state = &mut self.state;
+        let persistence = &mut self.persistence;
         let mut open = true;
         let report = {
             let mut sink = move |event: UiEvent| match event {
@@ -407,7 +458,8 @@ impl Controller {
                             state.permissions.full_access_warning_shown();
                         }
                         Some(UiCommand::RunCommand { text }) => {
-                            run_deferred_command(state, &text, Work::Turn, &cancel).await;
+                            run_deferred_command(state, persistence, &text, Work::Turn, &cancel)
+                                .await;
                         }
                         Some(UiCommand::CancelCompaction) => {}
                     },
@@ -416,10 +468,12 @@ impl Controller {
         };
         if let Some(turn_id) = running_turn() {
             let source = self.state.setup.source();
-            let status = report
-                .failure
-                .as_ref()
-                .and_then(|failure| failure_status(failure, source));
+            let status = match &report.failure {
+                Some(TurnFailure::Persistence(_)) if report.outcome != TurnOutcome::Failed => None,
+                failure => failure
+                    .as_ref()
+                    .and_then(|failure| failure_status(failure, source)),
+            };
             if let Some(text) = status {
                 self.state.emit(UiEvent::ApiStatus { turn_id, text });
             }
@@ -428,6 +482,7 @@ impl Controller {
                 outcome: report.outcome,
             });
         }
+        self.finish_turn(&report);
         self.settle_deferred_commands();
         open
     }
@@ -445,12 +500,13 @@ impl Controller {
 
 async fn run_deferred_command(
     state: &mut ControllerState,
+    persistence: &mut Option<Persistence>,
     text: &str,
     work: Work,
     cancel: &CancellationToken,
 ) {
     match handle_command(state, text, work) {
-        CommandEffect::None | CommandEffect::Compact => {}
+        CommandEffect::None | CommandEffect::Compact => return,
         CommandEffect::SwitchModel(model) => {
             state.config_pending = true;
             state.select_model(model);
@@ -459,12 +515,25 @@ async fn run_deferred_command(
             state.pending_clear = Some(state.received_prompts);
             state.queue.clear();
             cancel.cancel();
+            return;
         }
         CommandEffect::ToggleFast => {
             toggle_fast(state).await;
             state.config_pending = true;
         }
     }
+    if let Some(notice) = save_session_preferences(state, persistence) {
+        state.emit(UiEvent::Notice { notice });
+    }
+}
+
+fn save_session_preferences(
+    state: &ControllerState,
+    persistence: &mut Option<Persistence>,
+) -> Option<Notice> {
+    persistence
+        .as_mut()
+        .and_then(|persistence| persistence.select_model(&state.model, state.fast_mode))
 }
 
 fn compaction_activity(result: Result<Compaction, CompactionError>) -> CompactionActivity {
@@ -703,7 +772,7 @@ mod tests {
             let clipboard = Arc::new(TestClipboard::default());
             let shared: Arc<dyn Clipboard> = clipboard.clone();
             tokio::spawn(
-                Controller::new(setup, emit)
+                Controller::new(setup, emit, None)
                     .with_clipboard(shared)
                     .run(receiver),
             );

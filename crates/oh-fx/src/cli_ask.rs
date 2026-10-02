@@ -12,8 +12,8 @@ use ofx_agent::{
     text_for_completed_presentation,
 };
 use ofx_app::{
-    CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, SubscriptionEndpoints,
-    WebFetchProgress,
+    CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
+    ResumedSession, SubscriptionEndpoints, WebFetchProgress, open_store,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -39,7 +39,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
-use crate::ask_session::{ResumeFailure, Resumed, SavedAsk, open_store};
+use crate::ask_session::SavedAsk;
 use crate::command_echo::CommandEcho;
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
@@ -417,13 +417,17 @@ async fn prepare_agent(
     });
     announce_settings(args, &profile, permission_mode)?;
     let resumed = match &args.session.resume {
-        Some(target) => Some(Resumed::open(&mut profile, target)?),
+        Some(target) => {
+            let store = open_store(&profile)?;
+            let resumed = ResumedSession::open(&store, &mut profile, target)?;
+            Some((store, resumed))
+        }
         None => None,
     };
     let (reasoning_effort, fast_mode) = requested_reasoning(
         args,
         profile.settings(),
-        resumed.as_ref().map(Resumed::preferences),
+        resumed.as_ref().map(|(_, resumed)| resumed.preferences()),
     );
     let launch = Launch {
         model: args.model.as_deref(),
@@ -440,10 +444,10 @@ async fn prepare_agent(
     let setup = profile.connect(launch, cancel).await?;
     let mut agent = setup.agent();
     let saved = match resumed {
-        Some(resumed) => Some(SavedAsk::resume(resumed, &setup, &mut agent)?),
+        Some((store, resumed)) => Some(SavedAsk::resume(store, resumed, &setup, &mut agent)?),
         None if args.session.no_save => None,
         None => match open_store(&profile) {
-            Ok(store) => Some(SavedAsk::start(store, &profile, &setup)?),
+            Ok(store) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
             Err(error) => {
                 write_stderr(&format!(
                     "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
@@ -453,9 +457,6 @@ async fn prepare_agent(
             }
         },
     };
-    if let Some(saved) = &saved {
-        agent = saved.attach(agent);
-    }
     Ok(PreparedAsk {
         agent,
         model: setup.model().to_owned(),

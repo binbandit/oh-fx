@@ -143,7 +143,7 @@ pub(crate) fn replay_history(
         },
         None => None,
     };
-    let mut current = match window.active_user_offset {
+    let current = match window.active_user_offset {
         Some(offset) => match read_event_at(file, offset, end)? {
             user @ ConversationEvent::User(_) => Some(vec![user]),
             _ => return Err(SessionError::InvalidConversationFrame),
@@ -151,7 +151,24 @@ pub(crate) fn replay_history(
         None => None,
     };
     let mut turns = Vec::new();
-    let mut reader = LineReader::new(file, window.offset, end)?;
+    let reader = LineReader::new(file, window.offset, end)?;
+    group_turns(reader, current, |turn| turns.push(turn))?;
+    Ok(SavedHistory { compacted, turns })
+}
+
+pub(crate) fn visit_turns(
+    file: &File,
+    end: u64,
+    visit: impl FnMut(SavedTurn),
+) -> Result<(), SessionError> {
+    group_turns(LineReader::new(file, 0, end)?, None, visit)
+}
+
+fn group_turns(
+    mut reader: LineReader<'_>,
+    mut current: Option<Vec<ConversationEvent>>,
+    mut visit: impl FnMut(SavedTurn),
+) -> Result<(), SessionError> {
     while let LineRead::Line(line) = reader.next_line()? {
         let event = decode_conversation_frame(&line)?.event;
         match event {
@@ -165,7 +182,7 @@ pub(crate) fn replay_history(
                     .take()
                     .ok_or(SessionError::InvalidConversationFrame)?;
                 events.push(event);
-                turns.push(SavedTurn { events });
+                visit(SavedTurn { events });
             }
             ConversationEvent::ContextCheckpoint(_) => {
                 if let Some(events) = current.as_mut() {
@@ -187,7 +204,7 @@ pub(crate) fn replay_history(
                 .push(event),
         }
     }
-    Ok(SavedHistory { compacted, turns })
+    Ok(())
 }
 
 fn answers_a_replayed_call(events: &[ConversationEvent], result: &ToolResultEvent) -> bool {

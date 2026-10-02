@@ -502,6 +502,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::General,
     ),
     SlashSpec::new(
+        SlashKind::NewSession,
+        "/new",
+        "start a fresh session",
+        SlashPresentationCategory::Session,
+    ),
+    SlashSpec::new(
         SlashKind::ResetSession,
         "/reset",
         "reset the current session context",

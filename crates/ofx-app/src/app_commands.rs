@@ -69,7 +69,9 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             state.emit(UiEvent::HelpRequested);
             CommandEffect::None
         }
-        SlashKind::ClearScreen | SlashKind::ResetSession => CommandEffect::Clear,
+        SlashKind::ClearScreen | SlashKind::NewSession | SlashKind::ResetSession => {
+            CommandEffect::Clear
+        }
         SlashKind::Status => {
             state.notice(NoticeTone::Neutral, "status", &state.status_body());
             CommandEffect::None
@@ -179,6 +181,7 @@ mod tests {
             [
                 "/help",
                 "/clear",
+                "/new",
                 "/reset",
                 "/stats",
                 "/status",
@@ -198,9 +201,10 @@ mod tests {
             .map(|spec| spec.command.as_str())
             .collect();
         assert_eq!(compacting, ["/compact"]);
-        assert_eq!(specs[7].description, "browse and manage skills");
-        assert_eq!(specs[12].aliases, ["/exit"]);
-        assert_eq!(specs[12].description, "exit the interactive shell");
+        assert_eq!(specs[2].description, "start a fresh session");
+        assert_eq!(specs[8].description, "browse and manage skills");
+        assert_eq!(specs[13].aliases, ["/exit"]);
+        assert_eq!(specs[13].description, "exit the interactive shell");
     }
 
     #[test]
@@ -216,6 +220,7 @@ mod tests {
             [
                 ("/help", "General"),
                 ("/clear", "General"),
+                ("/new", "Session"),
                 ("/reset", "Session"),
                 ("/stats", "Account"),
                 ("/status", "General"),

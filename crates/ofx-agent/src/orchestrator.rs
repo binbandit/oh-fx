@@ -314,6 +314,18 @@ impl Agent {
         self.turns += 1;
         let id = TurnId::new(self.turns);
         events(UiEvent::TurnStarted { turn_id: id });
+        if let Err(failure) = self.require_writable() {
+            events(UiEvent::TurnFinished {
+                turn_id: id,
+                outcome: TurnOutcome::Failed,
+            });
+            return TurnReport {
+                outcome: TurnOutcome::Failed,
+                final_text: String::new(),
+                usage: Usage::default(),
+                failure: Some(TurnFailure::Persistence(failure)),
+            };
+        }
         let mut turn = Turn {
             id,
             start: self.history.len(),
@@ -331,7 +343,7 @@ impl Agent {
         self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
-        let (mut outcome, final_text, mut failure, ending) = match result {
+        let (outcome, final_text, mut failure, ending) = match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
             Err(Stop::Interrupted { partial }) => {
                 self.keep_partial_turn(turn.start, &partial);
@@ -365,7 +377,6 @@ impl Agent {
         if let Err(error) = self.record_turn(prompt, &turn, ending)
             && failure.is_none()
         {
-            outcome = TurnOutcome::Failed;
             failure = Some(TurnFailure::Persistence(error));
         }
         events(UiEvent::TurnFinished {

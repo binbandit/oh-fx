@@ -756,3 +756,52 @@ fn malformed_saved_turns_are_refused() {
         );
     }
 }
+
+#[test]
+fn a_turn_left_open_by_a_failed_save_blocks_every_later_save() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("first", "one"), &gateway())
+        .unwrap();
+    let cut = HistoryCut {
+        turns: 1,
+        tool_steps: 0,
+    };
+    session
+        .record_compaction("S", cut, &simple_turn("second", ""), &gateway())
+        .unwrap();
+    assert_eq!(session.require_writable(), Ok(()));
+    session.writer.fail_next_syncs(1);
+    assert_eq!(
+        session.record_turn(&simple_turn("second", "two"), &gateway()),
+        Err(SessionError::Io(std::io::ErrorKind::Other))
+    );
+    assert!(session.turn_open());
+    assert_eq!(
+        session.require_writable(),
+        Err(SessionError::SessionCommitFailed)
+    );
+    assert_eq!(
+        session.record_turn(&simple_turn("third", "three"), &gateway()),
+        Err(SessionError::SessionCommitFailed)
+    );
+}
+
+#[test]
+fn a_failed_save_of_a_closed_log_leaves_later_saves_allowed() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session.writer.fail_next_syncs(1);
+    assert!(
+        session
+            .record_turn(&simple_turn("first", "one"), &gateway())
+            .is_err()
+    );
+    assert_eq!(session.require_writable(), Ok(()));
+    assert_eq!(session.last_seq(), 0);
+    session
+        .record_turn(&simple_turn("second", "two"), &gateway())
+        .unwrap();
+    assert_eq!(session.last_seq(), 3);
+}
