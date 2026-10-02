@@ -542,6 +542,12 @@ fn slash_commands_switch_models_show_help_and_exit() {
         &session,
         "* fast: This model does not come with a fast mode.",
     );
+    session.send(b"/status\r");
+    let screen = wait(&session, "* status: model=vendor/model-b");
+    assert!(screen.contains("permission_mode=auto"), "{screen}");
+    assert!(screen.contains("history_turns=0"), "{screen}");
+    session.send(b"/compact\r");
+    wait(&session, "No context to compact.");
     session.send(b"go\r");
     wait(&session, "Switched reply.");
     assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
