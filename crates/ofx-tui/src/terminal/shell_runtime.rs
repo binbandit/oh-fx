@@ -102,6 +102,7 @@ pub(crate) struct Terminal {
     raw_enabled: bool,
     capabilities: Capabilities,
     write_abort: Option<OwnedFd>,
+    restore_wait: Duration,
     typeahead: Vec<u8>,
 }
 
@@ -137,6 +138,7 @@ impl Terminal {
             raw_enabled: false,
             capabilities,
             write_abort: None,
+            restore_wait: ABNORMAL_RESTORE_WAIT,
             typeahead: Vec::new(),
         })
     }
@@ -283,7 +285,7 @@ impl Terminal {
 
     pub(crate) fn write_abnormal_restore(&self) {
         let output = self.output.as_fd();
-        let deadline = Some(Instant::now() + ABNORMAL_RESTORE_WAIT);
+        let deadline = Some(Instant::now() + self.restore_wait);
         let _ = app_lifecycle::abnormal_exit_restore_sequences(self.capabilities.tmux)
             .try_for_each(|sequence| {
                 wait_until_writable(output, None, deadline)?;
@@ -691,6 +693,10 @@ mod tests {
         rustix::io::write(&wake, &[1]).unwrap();
         terminal.enable_raw_mode().unwrap();
         fill_output_queue(&terminal);
+        let started = Instant::now();
+        terminal.restore_after_signal();
+        assert!(started.elapsed() >= ABNORMAL_RESTORE_WAIT);
+        terminal.restore_wait = test_pty::WAIT;
         let restore = abnormal_restore().replace('\n', "\r\n");
         let master = pty.master.try_clone().unwrap();
         let needle = restore.clone().into_bytes();
