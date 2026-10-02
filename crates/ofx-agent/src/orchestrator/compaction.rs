@@ -3,7 +3,7 @@ use std::mem;
 use ofx_contract::{ChatMessage, ModelRequest, ProviderError, ProviderErrorKind, ProviderOptions};
 use tokio_util::sync::CancellationToken;
 
-use super::{Agent, Stop, Turn, TurnFailure};
+use super::{Agent, LastReply, Stop, Turn, TurnFailure};
 use crate::compactor::{self, Compacted, CompactionError, Correction, Size, Summarizer};
 use crate::execution_memory::{history_turns, retain};
 use crate::prompt_context::{Calibration, RequestCost};
@@ -271,6 +271,12 @@ impl Agent {
     }
 
     fn install_compaction(&mut self, compacted: Compacted) {
+        self.last_reply = self.last_reply.take().and_then(|reply| {
+            reply
+                .turn
+                .checked_sub(compacted.cut.turns)
+                .map(|turn| LastReply { turn, ..reply })
+        });
         retain(
             &mut self.history,
             &mut self.turn_starts,

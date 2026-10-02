@@ -1049,6 +1049,35 @@ async fn cancellation_interrupts_the_turn_and_keeps_the_prompt() {
     assert_eq!(agent.history, [ChatMessage::user("go")]);
 }
 
+#[tokio::test]
+async fn the_last_completed_reply_outlives_failed_and_interrupted_turns_until_a_clear() {
+    let provider = FakeProvider::new(vec![
+        text_reply("first answer"),
+        Script::Fail(
+            vec![StreamEvent::TextDelta {
+                text: "partial".to_owned(),
+            }],
+            failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
+        ),
+        text_reply("second answer"),
+    ]);
+    let mut agent = new_agent(provider, Vec::new());
+    assert_eq!(agent.last_assistant_reply(), None);
+    run(&mut agent, "one").await;
+    assert_eq!(agent.last_assistant_reply(), Some("first answer"));
+    let (failed, _) = run(&mut agent, "two").await;
+    assert_eq!(failed.outcome, TurnOutcome::Failed);
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let interrupted = agent.run_turn("three", &mut |_| {}, &cancel).await;
+    assert_eq!(interrupted.outcome, TurnOutcome::Interrupted);
+    assert_eq!(agent.last_assistant_reply(), Some("first answer"));
+    run(&mut agent, "four").await;
+    assert_eq!(agent.last_assistant_reply(), Some("second answer"));
+    agent.clear_history();
+    assert_eq!(agent.last_assistant_reply(), None);
+}
+
 async fn run_cancelled_at(agent: &mut Agent, cancel_at: &str) -> (TurnReport, Vec<UiEvent>) {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();

@@ -170,6 +170,11 @@ struct KnownCapabilities {
     catalog_unavailable: bool,
 }
 
+struct LastReply {
+    turn: usize,
+    text: String,
+}
+
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
@@ -190,6 +195,7 @@ pub struct Agent {
     #[cfg(test)]
     request_fixed_tokens: Option<usize>,
     turns: u64,
+    last_reply: Option<LastReply>,
 }
 
 impl Agent {
@@ -221,6 +227,7 @@ impl Agent {
             #[cfg(test)]
             request_fixed_tokens: None,
             turns: 0,
+            last_reply: None,
         }
     }
 
@@ -265,6 +272,7 @@ impl Agent {
         self.turn_starts.clear();
         self.compacted = None;
         self.calibration = None;
+        self.last_reply = None;
         self.permissions.forget_approvals();
         if let Some(project) = &mut self.project {
             project.deltas.clear();
@@ -338,12 +346,22 @@ impl Agent {
             turn_id: id,
             outcome,
         });
+        if outcome == TurnOutcome::Completed {
+            self.last_reply = Some(LastReply {
+                turn: self.turn_starts.len().saturating_sub(1),
+                text: final_text.clone(),
+            });
+        }
         TurnReport {
             outcome,
             final_text,
             usage: turn.usage,
             failure,
         }
+    }
+
+    pub fn last_assistant_reply(&self) -> Option<&str> {
+        self.last_reply.as_ref().map(|reply| reply.text.as_str())
     }
 
     async fn drive(
