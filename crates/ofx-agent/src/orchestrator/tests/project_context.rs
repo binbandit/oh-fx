@@ -429,6 +429,36 @@ async fn the_snapshot_and_later_rules_follow_the_system_prompt_across_turns() {
 }
 
 #[tokio::test]
+async fn clearing_history_forgets_scoped_rules_and_keeps_the_snapshot() {
+    let mut harness = harness(
+        vec![
+            scoped_reply(&[("call-1", r#"{"read":"/w/a"}"#)]),
+            text_reply("ok"),
+            scoped_reply(&[("call-2", r#"{"read":"/w/a"}"#)]),
+            text_reply("again"),
+        ],
+        snapshot(),
+    );
+    run(&mut harness.agent, "hi").await;
+    harness.agent.clear_history();
+    run(&mut harness.agent, "fresh").await;
+    let requests = harness.provider.requests();
+    assert_eq!(
+        requests[2].instructions,
+        [
+            SYSTEM_PROMPT,
+            "SNAPSHOT",
+            TURN_CONTEXT,
+            RESPONSE_LANGUAGE_CONTROL
+        ]
+    );
+    assert_eq!(requests[2].messages, [ChatMessage::user("fresh")]);
+    let selections = harness.project.selections.lock().unwrap();
+    assert_eq!(selections.len(), 2);
+    assert_eq!(selections[1].1, snapshot_delivery());
+}
+
+#[tokio::test]
 async fn read_targets_add_scoped_rules_before_the_reads_run_and_report_notices() {
     let mut harness = harness(
         vec![

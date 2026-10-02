@@ -1,22 +1,24 @@
-use std::sync::atomic::AtomicUsize;
-
 use super::*;
 
 struct FakeResolver {
     lookups: Mutex<VecDeque<CapabilityLookup>>,
-    calls: AtomicUsize,
+    models: Mutex<Vec<String>>,
 }
 
 impl FakeResolver {
     fn new(lookups: Vec<CapabilityLookup>) -> Arc<Self> {
         Arc::new(Self {
             lookups: Mutex::new(lookups.into()),
-            calls: AtomicUsize::new(0),
+            models: Mutex::new(Vec::new()),
         })
     }
 
     fn calls(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
+        self.models.lock().unwrap().len()
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.models.lock().unwrap().clone()
     }
 }
 
@@ -26,8 +28,7 @@ impl CapabilityResolver for FakeResolver {
         model: &'a str,
         _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, CapabilityLookup> {
-        assert_eq!(model, "test-model");
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.models.lock().unwrap().push(model.to_owned());
         let lookup = self.lookups.lock().unwrap().pop_front().unwrap();
         Box::pin(async move { lookup })
     }
@@ -104,6 +105,34 @@ async fn supported_effort_and_fast_mode_reach_every_request() {
     assert_eq!(sent_options(&provider), [high.clone(), high.clone(), high]);
     assert_eq!(resolver.calls(), 1);
     assert!(operational(&events).is_empty());
+}
+
+#[tokio::test]
+async fn a_switched_model_resolves_its_own_capabilities() {
+    let provider = FakeProvider::new(vec![
+        text_reply("one"),
+        text_reply("two"),
+        text_reply("three"),
+    ]);
+    let resolver = FakeResolver::new(vec![
+        supporting(&["high"], false),
+        supporting(&["low"], false),
+    ]);
+    let mut agent = agent_with(&provider, Some(&resolver), requesting(Some("high"), false));
+    run(&mut agent, "one").await;
+    agent.set_config(requesting(Some("high"), false));
+    run(&mut agent, "two").await;
+    agent.set_config(AgentConfig {
+        model: "next-model".to_owned(),
+        ..requesting(Some("low"), false)
+    });
+    run(&mut agent, "three").await;
+    assert_eq!(resolver.models(), ["test-model", "next-model"]);
+    let high = (Some("high".to_owned()), false);
+    assert_eq!(
+        sent_options(&provider),
+        [high.clone(), high, (Some("low".to_owned()), false)]
+    );
 }
 
 #[tokio::test]
