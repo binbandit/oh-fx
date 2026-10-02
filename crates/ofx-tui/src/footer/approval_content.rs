@@ -313,66 +313,160 @@ impl Destination {
     }
 }
 
-fn first_url_destination(text: &str) -> Option<Destination> {
-    let lower = text.to_ascii_lowercase();
-    let mut quote = None;
-    let mut chars = text.char_indices().peekable();
-    let mut word_start = true;
-    while let Some((index, character)) = chars.next() {
-        if quote.is_none() && character == '#' && word_start {
-            while chars.next_if(|&(_, next)| next != '\n').is_some() {}
-            continue;
-        }
-        if quote != Some('\'') && character == '\\' {
-            chars.next();
-            word_start = false;
-            continue;
-        }
-        match (quote, character) {
-            (None, '\'' | '"') => quote = Some(character),
-            (Some(open), _) if character == open => quote = None,
-            _ => {
-                if let Some(scheme) = URL_SCHEMES
-                    .iter()
-                    .find(|scheme| lower[index..].starts_with(*scheme))
-                    && let Some(destination) =
-                        authority_destination(&text[index + scheme.len()..], quote)
-                {
-                    return Some(destination);
+#[derive(Debug, Clone, Copy)]
+struct ShellChar {
+    character: char,
+    escaped: bool,
+    quoted: bool,
+    segment: usize,
+    after_ansi_c: bool,
+}
+
+impl ShellChar {
+    fn separates_words(self) -> bool {
+        !self.quoted
+            && !self.escaped
+            && (self.character.is_whitespace() || SHELL_METACHARACTERS.contains(&self.character))
+    }
+
+    fn ends_authority(self) -> bool {
+        self.separates_words()
+            || AUTHORITY_ENDS.contains(&self.character)
+            || self.character.is_whitespace()
+    }
+}
+
+struct ShellWords {
+    literals: Vec<ShellChar>,
+    segment: usize,
+    after_ansi_c: bool,
+}
+
+impl ShellWords {
+    fn push(&mut self, character: char, escaped: bool, quoted: bool) {
+        self.literals.push(ShellChar {
+            character,
+            escaped,
+            quoted,
+            segment: self.segment,
+            after_ansi_c: self.after_ansi_c,
+        });
+    }
+
+    fn at_word_start(&self) -> bool {
+        self.literals.last().is_none_or(|last| {
+            last.segment == self.segment && last.character.is_whitespace() && last.separates_words()
+        })
+    }
+
+    fn parse(text: &str) -> Vec<ShellChar> {
+        let mut words = Self {
+            literals: Vec::new(),
+            segment: 0,
+            after_ansi_c: false,
+        };
+        let mut quote = None;
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            match (quote, character) {
+                (Some('\''), '\'') | (Some('"'), '"') => {
+                    quote = None;
+                    words.segment += 1;
                 }
+                (Some('\''), _) => words.push(character, false, true),
+                (Some(_), '\\') => match chars.next_if(|next| "$`\"\\\n".contains(*next)) {
+                    Some(next) => words.push(next, true, true),
+                    None => words.push(character, false, true),
+                },
+                (Some(_), _) => words.push(character, false, true),
+                (None, '#') if words.at_word_start() => {
+                    while chars.next_if(|next| *next != '\n').is_some() {}
+                }
+                (None, '\\') => {
+                    if let Some(next) = chars.next() {
+                        words.push(next, true, false);
+                    }
+                }
+                (None, '$') if chars.next_if_eq(&'\'').is_some() => {
+                    words.after_ansi_c = true;
+                    words.segment += 1;
+                    while let Some(next) = chars.next() {
+                        if next == '\'' {
+                            break;
+                        }
+                        words.push(next, true, true);
+                        if next == '\\' {
+                            chars.next();
+                        }
+                    }
+                    words.segment += 1;
+                }
+                (None, '\'' | '"') => {
+                    quote = Some(character);
+                    words.segment += 1;
+                }
+                (None, _) => words.push(character, false, false),
             }
         }
-        word_start = quote.is_none() && character.is_whitespace();
+        words.literals
+    }
+}
+
+fn first_url_destination(text: &str) -> Option<Destination> {
+    let literals = ShellWords::parse(text);
+    for start in 0..literals.len() {
+        let Some(scheme) = URL_SCHEMES.iter().find(|scheme| {
+            scheme.chars().enumerate().all(|(offset, expected)| {
+                literals
+                    .get(start + offset)
+                    .is_some_and(|literal| literal.character.to_ascii_lowercase() == expected)
+            })
+        }) else {
+            continue;
+        };
+        if let Some(destination) = url_destination(&literals, start, scheme.len()) {
+            return Some(destination);
+        }
     }
     None
 }
 
-fn authority_destination(rest: &str, quote: Option<char>) -> Option<Destination> {
-    let mut authority = String::new();
-    let mut chars = rest.trim_start_matches('/').chars().peekable();
-    while let Some(character) = chars.next() {
-        if AUTHORITY_ENDS.contains(&character) || character.is_whitespace() {
-            break;
-        }
-        if UNRESOLVED_AUTHORITY.contains(&character) {
+fn url_destination(literals: &[ShellChar], start: usize, scheme_len: usize) -> Option<Destination> {
+    let first = literals[start];
+    let segment = first.segment;
+    let unclear = |literal: &ShellChar| literal.escaped || literal.segment != segment;
+    let joined_before = start.checked_sub(1).is_some_and(|previous| {
+        let previous = literals[previous];
+        !previous.separates_words() && (unclear(&previous) || previous.character == '\\')
+    });
+    if first.after_ansi_c
+        || joined_before
+        || literals[start..start + scheme_len].iter().any(unclear)
+    {
+        return Some(Destination::Undetermined);
+    }
+    let mut index = start + scheme_len;
+    while let Some(literal) = literals
+        .get(index)
+        .filter(|literal| literal.character == '/')
+    {
+        if unclear(literal) {
             return Some(Destination::Undetermined);
         }
-        match quote {
-            None if SHELL_METACHARACTERS.contains(&character) => break,
-            None if matches!(character, '\'' | '"') => return Some(Destination::Undetermined),
-            Some(open) if character == open => match chars.peek() {
-                None => break,
-                Some(next)
-                    if next.is_whitespace()
-                        || AUTHORITY_ENDS.contains(next)
-                        || SHELL_METACHARACTERS.contains(next) =>
-                {
-                    break;
-                }
-                Some(_) => return Some(Destination::Undetermined),
-            },
-            _ => authority.push(character),
+        index += 1;
+    }
+    let mut authority = String::new();
+    for literal in literals[index..]
+        .iter()
+        .take_while(|literal| !literal.ends_authority())
+    {
+        if unclear(literal)
+            || UNRESOLVED_AUTHORITY.contains(&literal.character)
+            || (!literal.quoted && matches!(literal.character, '\'' | '"'))
+        {
+            return Some(Destination::Undetermined);
         }
+        authority.push(literal.character);
     }
     let host = authority.rsplit('@').next().unwrap_or_default();
     let host = match host.find(']') {
@@ -569,6 +663,26 @@ mod tests {
                 "{command}"
             );
         }
+        for command in [
+            "curl \\https://evil.example/ https://good.example/",
+            "curl \\h\\t\\t\\p\\s://evil.example https://good.example/",
+            "curl \"\\https://evil\" https://good.example/",
+            "curl '\\https://evil' https://good.example/",
+            "curl ht'tp's://evil.example https://good.example/",
+            "curl $'\\x68ttps://evil.example' https://good.example/",
+        ] {
+            assert_eq!(
+                reason(command).as_deref(),
+                Some(
+                    "This command may make a network request to a host that cannot be determined."
+                ),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            reason("curl \"https://evil.example\" 'https://good.example/'").as_deref(),
+            Some("This command may make a network request to evil.example.")
+        );
         assert_eq!(
             reason("curl https://\u{430}pple.com/").as_deref(),
             Some(
