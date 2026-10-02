@@ -20,11 +20,11 @@ impl Decoder {
     }
 
     pub(crate) fn has_pending(&self) -> bool {
-        !self.parser.is_idle() && !self.parser.is_control_string()
+        !self.parser.is_idle() && !self.parser.is_swallowing()
     }
 
-    pub(crate) fn in_control_string(&self) -> bool {
-        self.parser.is_control_string()
+    pub(crate) fn holds_sequence(&self) -> bool {
+        !self.parser.is_idle() && !self.parser.is_bare_escape()
     }
 
     pub(crate) fn feed(
@@ -81,6 +81,7 @@ impl Decoder {
         let prior_plain_bare_escape = self.parser.is_plain_bare_escape();
         let prior_x10_payload = self.parser.is_legacy_x10_payload();
         let prior_control_string = self.parser.is_control_string();
+        let prior_swallowing = self.parser.is_swallowing();
         let action = self.parser.consume(byte);
 
         if byte == 0x1b && !prior_x10_payload {
@@ -93,7 +94,11 @@ impl Decoder {
             self.started_ms = context.now_ms;
         }
 
-        if prior_control_string && self.parser.is_idle() && byte < 0x20 && byte != BELL {
+        if prior_swallowing
+            && self.parser.is_idle()
+            && byte < 0x20
+            && !(prior_control_string && byte == BELL)
+        {
             let was_cancel_pending = self.take_cancel_pending();
             append_action(ingress, Action::Ignore, was_cancel_pending);
             ingress.replay_byte_after_routing = Some(byte);
@@ -130,7 +135,7 @@ impl Decoder {
         paste_active: bool,
     ) -> TerminalInputIngress {
         let mut ingress = TerminalInputIngress::default();
-        if self.parser.is_idle() || self.parser.is_control_string() {
+        if self.parser.is_idle() || self.parser.is_swallowing() {
             return ingress;
         }
 
@@ -143,10 +148,7 @@ impl Decoder {
             return ingress;
         }
 
-        if paste_active
-            || self.parser.is_control_sequence_discard()
-            || self.parser.is_mouse_report_discard()
-        {
+        if paste_active || self.parser.is_mouse_report_discard() {
             self.reset();
             return ingress;
         }
@@ -154,6 +156,11 @@ impl Decoder {
         if self.parser.begin_mouse_report_discard() {
             self.cancel_pending = false;
             self.started_ms = if self.parser.is_idle() { 0 } else { now_ms };
+            return ingress;
+        }
+
+        if self.parser.begin_control_sequence_tail() {
+            self.cancel_pending = false;
             return ingress;
         }
 
@@ -323,7 +330,7 @@ mod tests {
         for byte in *b"[>0" {
             let ingress = decoder.feed(byte, context(1, true));
             assert_eq!(ingress.event, None);
-            assert!(decoder.has_pending());
+            assert!(decoder.holds_sequence());
         }
         let action = decoded(decoder.feed(b'q', context(1, true)));
         assert_eq!(action.action, Action::Ignore);
@@ -332,13 +339,20 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_csi_expires_without_producing_escape() {
+    fn an_incomplete_csi_swallows_its_tail_after_the_timeout_without_producing_escape() {
         let mut decoder = Decoder::default();
         decoder.feed(0x1b, context(1, true));
         decoder.feed(b'[', context(1, true));
         let ingress = decoder.flush(31, 30, false);
         assert_eq!(ingress.event, None);
         assert!(!decoder.has_pending());
+        assert!(decoder.holds_sequence());
+        assert_eq!(decoder.feed(b'1', context(500, false)).event, None);
+        assert_eq!(
+            decoded(decoder.feed(b'n', context(500, false))).action,
+            Action::Ignore
+        );
+        assert!(!decoder.holds_sequence());
     }
 
     #[test]

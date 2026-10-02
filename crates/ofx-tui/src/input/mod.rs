@@ -126,7 +126,7 @@ impl TerminalInput {
     }
 
     pub(crate) fn awaiting_terminal_reply(&self) -> bool {
-        self.theme_monitor.owns_input() || self.decoder.in_control_string()
+        self.theme_monitor.owns_input() || self.decoder.holds_sequence()
     }
 
     pub(crate) fn start_theme_monitor(&mut self) {
@@ -644,12 +644,20 @@ mod tests {
         assert!(!input.has_pending_input());
     }
 
-    const TERMINAL_STRINGS: [&[u8]; 5] = [
+    const TERMINAL_STRINGS: [&[u8]; 13] = [
         b"\x1b]11;rgb:2828/2c2c/3434\x1b\\",
         b"\x1b]11;rgba:2828/2c2c/3434/ffff\x1b\\",
         b"\x1b]11;rgb:1111/2222/3333\x07",
         b"\x1b]10;rgb:1/2/3\x07",
         b"\x1bP1+r544e=787465726d\x1b\\",
+        b"\x1b_Gi=1;OK 12\x1b\\",
+        b"\x1b^privacy 12\x1b\\",
+        b"\x1bXstart of string 3\x1b\\",
+        b"\x1b[?997;1n",
+        b"\x1b[?62;22c",
+        b"\x1b[?64;1;2;6;9;15;16;17;18;21;22;28c",
+        b"\x1b[24;80R",
+        b"\x1b[?2026;2$y",
     ];
 
     fn only_ignored(events: &[InputEvent]) -> bool {
@@ -694,6 +702,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_control_byte_ends_a_timed_out_control_sequence_and_still_counts() {
+        let mut input = TerminalInput::new();
+        input.push_bytes(b"\x1b[?99");
+        assert!(drain(&mut input, 0).is_empty());
+        assert_eq!(input.flush_escape(10_000), None);
+        assert!(input.awaiting_terminal_reply());
+        input.push_bytes(b"\x03x");
+        assert_eq!(
+            drain(&mut input, 10_000),
+            vec![action(Action::Ignore), raw(3), raw(b'x')]
+        );
+        assert!(!input.awaiting_terminal_reply());
     }
 
     #[test]

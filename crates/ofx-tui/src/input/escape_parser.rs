@@ -3,7 +3,7 @@ use super::input_action::{
 };
 
 const SGR_MOUSE_MAX_BYTES: u8 = 18;
-const CONTROL_SEQUENCE_DISCARD_MAX_BYTES: u16 = 32;
+const CONTROL_SEQUENCE_DISCARD_MAX_BYTES: u16 = 256;
 const CONTROL_STRING_MAX_BYTES: u16 = 4096;
 const STRING_TERMINATOR_FINAL: u8 = b'\\';
 const KITTY_UP_KEY: u16 = 57352;
@@ -135,6 +135,29 @@ impl EscapeParser {
         )
     }
 
+    pub(crate) fn is_swallowing(&self) -> bool {
+        self.is_control_string() || self.is_control_sequence_discard()
+    }
+
+    pub(crate) fn begin_control_sequence_tail(&mut self) -> bool {
+        if !matches!(
+            self.stage,
+            Stage::CsiEntry
+                | Stage::CsiFirstParam
+                | Stage::CsiSecondParam
+                | Stage::CsiThirdParam
+                | Stage::KittyEventType
+        ) {
+            return false;
+        }
+        *self = Self {
+            stage: Stage::ControlSequenceDiscard,
+            param: 1,
+            ..Self::default()
+        };
+        true
+    }
+
     pub(crate) fn begin_mouse_report_discard(&mut self) -> bool {
         let remaining = match self.stage {
             Stage::SgrMouseButton | Stage::SgrMouseColumn | Stage::SgrMouseRow => {
@@ -247,7 +270,7 @@ impl EscapeParser {
                 self.param2 = 0;
                 None
             }
-            b']' | b'P' => {
+            b']' | b'P' | b'X' | b'^' | b'_' => {
                 self.stage = Stage::ControlString;
                 self.param = 0;
                 self.param2 = 0;

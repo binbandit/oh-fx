@@ -210,6 +210,7 @@ impl Shell<'_> {
             return;
         };
         if self.input.awaiting_terminal_reply() && (b'1'..=b'3').contains(&key) {
+            self.hold_yes();
             return;
         }
         let Some(index) = prompt.choices().iter().position(|choice| choice.key == key) else {
@@ -272,6 +273,7 @@ impl Shell<'_> {
 
     fn decide_selected(&mut self) {
         if self.input.awaiting_terminal_reply() {
+            self.hold_yes();
             return;
         }
         let now_ms = self.now_ms();
@@ -839,6 +841,51 @@ mod tests {
             assert!(!approved(&test), "{first:?} {rest:?}");
             assert!(test.shell.composer.is_empty(), "{first:?} {rest:?}");
         }
+    }
+
+    #[test]
+    fn a_status_reply_split_after_its_timeout_never_answers_the_prompt() {
+        for (first, rest, gap) in [
+            (&b"\x1b[?997;"[..], &b"1n"[..], 150),
+            (b"\x1b[?997;", b"2n", 150),
+            (b"\x1b[?6", b"2;22c", 300),
+            (b"\x1b[24;", b"1R", 150),
+            (b"\x1b_Gi=", b"1;OK\x1b\\", 150),
+        ] {
+            let mut test = command_prompt_with_theme_monitor();
+            press(&mut test, first);
+            test.advance(gap);
+            test.step();
+            test.step();
+            press(&mut test, rest);
+            test.advance(100);
+            test.step();
+            assert!(!approved(&test), "{first:?} {rest:?}");
+            assert!(test.shell.composer.is_empty(), "{first:?} {rest:?}");
+            test.advance(ARMED_MS);
+            press(&mut test, b"1");
+            assert!(approved(&test), "{first:?} {rest:?}");
+        }
+    }
+
+    #[test]
+    fn a_yes_dropped_while_a_reply_is_expected_restarts_the_wait() {
+        let mut test = command_prompt_with_theme_monitor();
+        press(&mut test, b"\x1b[?997;1n");
+        test.step();
+        assert!(test.shell.input.awaiting_terminal_reply());
+        press(&mut test, b"1");
+        test.advance(300);
+        let now_ms = test.shell.now_ms();
+        test.shell.input.poll_theme_monitor(now_ms);
+        assert!(!test.shell.input.awaiting_terminal_reply());
+        assert!(!approve_now(&mut test));
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
     }
 
     #[test]
