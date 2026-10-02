@@ -4,7 +4,7 @@ use ofx_contract::ApprovalDecision;
 use ofx_text::visible_width;
 
 use super::approval_content::{ActionBlock, ApprovalContent};
-use super::command_text::{command_segments, prefix_terminal_safe_by_width};
+use super::command_text::command_segments;
 use super::phrase::Phrase;
 use crate::row_text::{Paint, Row};
 use crate::theme::Theme;
@@ -30,7 +30,6 @@ const INLINE_FIXED_ROWS: usize = 4;
 const ARGUMENTS_SEPARATOR: &str = " · ";
 const ARGUMENTS_LABEL: &str = "Arguments for this request: ";
 const ARGUMENTS_MIN_ROOM: usize = 16;
-const TRAILING_ELLIPSIS: &str = "…";
 const SCREEN_SPACED_FIXED_ROWS: usize = 7;
 const SCREEN_SPACED_MIN_WINDOW: usize = 2;
 const INSET: usize = 2;
@@ -315,14 +314,7 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bo
             } else {
                 format!("{target}{ARGUMENTS_SEPARATOR}{ARGUMENTS_LABEL}{preview}")
             };
-            let complete = INSET + visible_width(target) <= cols;
-            (
-                vec![inset(
-                    &ellipsized(&text, cols.saturating_sub(INSET)),
-                    Paint::PLAIN,
-                )],
-                complete,
-            )
+            wrapped_rows("", &text, Paint::PLAIN, cols)
         }
         ActionBlock::Header { lead, text } => wrapped_rows(lead, text, theme.dim, cols),
         ActionBlock::Wrapped { lead, text } => wrapped_rows(lead, text, theme.tag, cols),
@@ -349,15 +341,6 @@ fn wrapped_rows(lead: &str, text: &str, paint: Paint, cols: usize) -> (Vec<Row>,
         .collect();
     complete &= rows.iter().all(|row| row.width() <= cols);
     (rows, complete)
-}
-
-fn ellipsized(text: &str, width: usize) -> String {
-    if visible_width(text) <= width {
-        return text.to_owned();
-    }
-    let kept =
-        prefix_terminal_safe_by_width(text, width.saturating_sub(visible_width(TRAILING_ELLIPSIS)));
-    format!("{kept}{TRAILING_ELLIPSIS}")
 }
 
 fn choice_row(theme: &Theme, label: &str, selected: bool, blocked: Option<&str>) -> Row {
@@ -814,7 +797,7 @@ mod tests {
         }
     }
 
-    fn arguments(cols: usize) -> String {
+    fn arguments(cols: usize) -> Vec<String> {
         let content = ApprovalContent {
             action: vec![ActionBlock::Arguments {
                 target: "mcp_fixture_echo".to_owned(),
@@ -822,19 +805,53 @@ mod tests {
             }],
             ..titled("unused")
         };
-        let rows = approval_panel_rows(&theme(), &content, &choices(None), 0, frame(cols, 34)).rows;
-        rows[4].text()
+        let view = approval_panel_rows(&theme(), &content, &choices(None), 0, frame(cols, 34));
+        assert!(view.review.complete);
+        let start = view.review.required_rows.start;
+        texts(&view.rows[start..start + view.review.action_rows])
     }
 
     #[test]
-    fn approval_panel_shows_bounded_terminal_safe_tool_arguments_with_ellipsis() {
+    fn arguments_too_long_for_one_row_are_never_cut_from_a_yes() {
+        let preview = format!(
+            r#"{{"to":"boss@corp","body":"{}","bcc":"attacker@evil"}}"#,
+            "hello ".repeat(20)
+        );
+        let content = ApprovalContent {
+            action: vec![ActionBlock::Arguments {
+                target: "Calling mcp_send".to_owned(),
+                preview: preview.clone(),
+            }],
+            ..titled("unused")
+        };
+        for cols in [24, 40, 80, 120] {
+            let view = approval_panel_rows(&theme(), &content, &choices(None), 0, frame(cols, 34));
+            assert!(view.review.complete, "{cols}");
+            assert!(view.rows.iter().all(|row| row.width() <= cols), "{cols}");
+            let start = view.review.required_rows.start;
+            let shown = texts(&view.rows[start..start + view.review.action_rows]).concat();
+            assert!(
+                shown.replace(' ', "").ends_with(&preview.replace(' ', "")),
+                "{cols} {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn approval_panel_shows_terminal_safe_tool_arguments_over_as_many_rows_as_they_need() {
         assert_eq!(
             arguments(120),
-            r#"  mcp_fixture_echo · Arguments for this request: {"text":"\x1b\x0a\xff sentinel"}"#
+            [
+                r#"  mcp_fixture_echo · Arguments for this request: {"text":"\x1b\x0a\xff sentinel"}"#
+            ]
         );
-        let narrow = arguments(24);
-        assert_eq!(visible_width(&narrow), 24);
-        assert!(narrow.ends_with('…'), "{narrow}");
-        assert!(narrow.starts_with("  mcp_fixture_echo · {"), "{narrow}");
+        assert_eq!(
+            arguments(24),
+            [
+                "  mcp_fixture_echo ·",
+                r#"  {"text":"\x1b\x0a\xff"#,
+                r#"  sentinel"}"#
+            ]
+        );
     }
 }
