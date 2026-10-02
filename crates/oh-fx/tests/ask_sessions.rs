@@ -308,6 +308,38 @@ fn other_failures_keep_the_session_they_started() {
 }
 
 #[test]
+fn a_saved_run_that_retries_and_then_fails_before_any_work_reports_recovery_as_not_durable() {
+    let server = FakeServer::start([
+        Reply::status(429, r#"{"error":{"message":"slow down"}}"#),
+        Reply::status(400, r#"{"error":{"message":"bad"}}"#),
+        Reply::sse(&chat_text_events(&["fresh"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let result = home.ask_json(&["lost"], &[]);
+    let id = session_id(&result);
+    assert_eq!(result["exit_code"], 1);
+    assert_eq!(
+        result["recovery"],
+        json!({"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"⚠ Rate limited · HTTP 429 · slow down · retrying request"})
+    );
+    assert_eq!(home.session_ids(), std::slice::from_ref(&id));
+    assert!(home.frames(&id).is_empty());
+    let output = home.ask(&["ask", "--resume-id", &id, "--continue-recovery"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "oh-fx: ask --continue-recovery is not available yet\n"
+    );
+    let resumed = home.ask_json(&["--resume-id", &id, "next"], &[]);
+    assert_eq!(session_id(&resumed), id);
+    assert_eq!(resumed["final_output"], "fresh");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(texts(&conversation(&requests[1])), ["user: lost"]);
+    assert_eq!(texts(&conversation(&requests[2])), ["user: next"]);
+}
+
+#[test]
 fn resuming_fails_before_any_request_when_the_session_cannot_be_opened() {
     let server = FakeServer::start([]);
     let home = Home::new(&server.base_url());

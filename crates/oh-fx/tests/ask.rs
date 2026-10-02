@@ -436,7 +436,7 @@ fn transient_failures_retry_with_upstream_notices_and_recovery_json() {
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         result["recovery"],
-        json!({"state":"recovered","kind":"auto_recovered","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":true,"message":"✓ recovered · succeeded on attempt 2"})
+        json!({"state":"recovered","kind":"auto_recovered","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"✓ recovered · succeeded on attempt 2"})
     );
     assert_eq!(server.requests().len(), 4);
 }

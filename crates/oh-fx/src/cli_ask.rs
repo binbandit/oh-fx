@@ -659,7 +659,7 @@ struct RecoveryRecord {
 }
 
 impl RecoveryRecord {
-    fn new(status: &RouteRecoveryStatus, durable: bool) -> Self {
+    fn new(status: &RouteRecoveryStatus) -> Self {
         Self {
             state: if status.is_recovered() {
                 "recovered"
@@ -672,7 +672,7 @@ impl RecoveryRecord {
             attempt: status.reported_attempt(),
             attempt_limit: status.attempt_limit,
             delay_seconds: status.delay_seconds,
-            durable,
+            durable: false,
             message: status.label(),
         }
     }
@@ -1129,7 +1129,6 @@ impl Presenter {
         if self.mode == OutputMode::Terminal {
             let _ = self.end_line();
         }
-        let durable = saved.is_some();
         if let (None, Some(failure @ TurnFailure::PermissionRequired(blocked))) =
             (self.write_error, &report.failure)
         {
@@ -1185,10 +1184,7 @@ impl Presenter {
                 reason: "http_unauthorized",
                 http_status: 401,
             }),
-            recovery: self
-                .recovery
-                .as_ref()
-                .map(|status| RecoveryRecord::new(status, durable)),
+            recovery: self.recovery.as_ref().map(RecoveryRecord::new),
         })
     }
 
@@ -1571,7 +1567,7 @@ mod tests {
         let result = RunResult {
             tool_calls: &records,
             error: None,
-            recovery: Some(RecoveryRecord::new(&recovered, false)),
+            recovery: Some(RecoveryRecord::new(&recovered)),
             ..RunResult::error("")
         };
         assert_eq!(
@@ -1589,8 +1585,8 @@ mod tests {
             diagnostic: Some(ModelFailureDiagnostic::new("HTTP 429 · slow")),
         };
         assert_eq!(
-            serde_json::to_string(&RecoveryRecord::new(&retrying, true)).unwrap(),
-            r#"{"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":2,"durable":true,"message":"⚠ Rate limited · HTTP 429 · slow · retrying request in 2s"}"#
+            serde_json::to_string(&RecoveryRecord::new(&retrying)).unwrap(),
+            r#"{"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":2,"durable":false,"message":"⚠ Rate limited · HTTP 429 · slow · retrying request in 2s"}"#
         );
     }
 
