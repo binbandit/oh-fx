@@ -49,6 +49,11 @@ impl EditorState {
         })
     }
 
+    pub(crate) fn selected_text(&self) -> Option<&str> {
+        let selection = self.selection_range()?;
+        self.input.get(selection.start..selection.end)
+    }
+
     pub(crate) fn discard_selection(&mut self) {
         self.selection_anchor = None;
     }

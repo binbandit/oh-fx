@@ -202,6 +202,7 @@ mod tests {
     use rustix::fs::Mode;
 
     use super::*;
+    use crate::native::NativeClipboard;
 
     const CHILD: &str = "OH_FX_PANIC_CAPTURE_CHILD";
     const CHILD_TEST: &str =
@@ -318,7 +319,7 @@ mod tests {
             commands: Vec::new(),
         };
         let outcome = panics.contain_shell(|| {
-            run_shell(options, events, |command| {
+            run_shell(options, events, NativeClipboard, |command| {
                 assert!(
                     !matches!(command, UiCommand::Submit { .. }),
                     "shell exploded"

@@ -6,6 +6,7 @@ mod app_panic_runtime;
 mod app_upgrade_runtime;
 mod codex_provider;
 mod context;
+mod native;
 mod tool_set;
 
 pub use app_bootstrap_runtime::{

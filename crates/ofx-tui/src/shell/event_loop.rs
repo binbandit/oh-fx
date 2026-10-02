@@ -87,6 +87,7 @@ impl Shell<'_> {
         }
         self.apply_pending_resize(now_ms);
         self.drain_ui_events();
+        self.settle_clipboard();
         if self.gestures.expire(now_ms) {
             self.mark_dirty();
         }
@@ -107,12 +108,19 @@ impl Shell<'_> {
 
     fn poll(&self, timeout: Option<Duration>) -> Result<Readiness, TerminalError> {
         let timeout = timeout.and_then(|timeout| Timespec::try_from(timeout).ok());
+        let clipboard = self.clipboard.fd();
         let mut fds = [
             PollFd::from_borrowed_fd(self.terminal.input_fd(), PollFlags::IN),
             PollFd::from_borrowed_fd(self.events.fd(), PollFlags::IN),
             PollFd::from_borrowed_fd(self.signals.fd(), PollFlags::IN),
+            PollFd::from_borrowed_fd(clipboard.unwrap_or(self.signals.fd()), PollFlags::IN),
         ];
-        match rustix::event::poll(&mut fds, timeout.as_ref()) {
+        let watched = if clipboard.is_some() {
+            fds.len()
+        } else {
+            fds.len() - 1
+        };
+        match rustix::event::poll(&mut fds[..watched], timeout.as_ref()) {
             Ok(_) => {}
             Err(Errno::INTR) => return Ok(Readiness::default()),
             Err(errno) => return Err(errno.into()),

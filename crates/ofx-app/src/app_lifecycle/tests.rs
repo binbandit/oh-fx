@@ -20,6 +20,9 @@ const CHILD_AUTH: &str = "OH_FX_LIFECYCLE_CHILD_AUTH";
 const CHILD_CODEX: &str = "OH_FX_LIFECYCLE_CHILD_CODEX";
 const CHILD_CATALOG: &str = "OH_FX_LIFECYCLE_CHILD_CATALOG";
 const CHILD_PANIC: &str = "OH_FX_LIFECYCLE_CHILD_PANIC";
+const CHILD_CLIPBOARD: &str = "OH_FX_LIFECYCLE_CHILD_CLIPBOARD";
+const CLIPBOARD_TEST: &str =
+    "app_lifecycle::tests::leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight";
 const PANIC_TEST: &str =
     "app_lifecycle::tests::a_worker_panic_ends_the_shell_and_a_contained_one_does_not";
 const REFRESH_TEST: &str = "app_lifecycle::tests::an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rotated_login";
@@ -296,5 +299,68 @@ fn run_a_worker_that_panics() -> ! {
     if let Err(error) = &outcome {
         eprintln!("{error}");
     }
+    process::exit(i32::from(outcome.is_err()));
+}
+
+#[test]
+fn leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight() {
+    if let Some(directory) = env::var_os(CHILD_CLIPBOARD) {
+        run_a_shell_that_copies(Path::new(&directory));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let tools = directory.path().join("tools");
+    fs::create_dir(&tools).unwrap();
+    let copied = directory.path().join("copied");
+    let stopped = directory.path().join("stopped");
+    let finished = directory.path().join("finished");
+    let script = format!(
+        "#!/bin/sh\ncat > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\ntouch '{}'\n",
+        copied.display(),
+        stopped.display(),
+        finished.display()
+    );
+    for name in ["pbcopy", "xclip"] {
+        fs::write(tools.join(name), &script).unwrap();
+        fs::set_permissions(tools.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut command = Command::new(env::current_exe().unwrap());
+    command
+        .args([CLIPBOARD_TEST, "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD_CLIPBOARD, directory.path())
+        .env("PATH", format!("{}:/usr/bin:/bin", tools.display()))
+        .env("TERM", "xterm-256color");
+    let mut session = PtySession::spawn(command, 24, 80).unwrap();
+    session
+        .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
+        .unwrap_or_else(|screen| panic!("the shell never started:\n{screen}"));
+    session.send(b"keep me\x1b[97;9u\x1b[99;9u");
+    wait_until(|| fs::read_to_string(&copied).is_ok_and(|text| text == "keep me"));
+    session.send(b"\x03\x04");
+    let status = session
+        .wait_exit(WAIT)
+        .expect("the shell exits once the copy finishes");
+    assert!(status.success(), "{status:?}");
+    assert!(stopped.exists());
+    assert!(
+        finished.exists(),
+        "the agent kept running until the copy was given up"
+    );
+}
+
+fn run_a_shell_that_copies(directory: &Path) -> ! {
+    let (events, receiver) = ui_channel().unwrap();
+    let options = ShellOptions {
+        version: "0.1.0".to_owned(),
+        model: "model-a".to_owned(),
+        permission_mode: PermissionMode::Auto,
+        workspace_label: "workspace".to_owned(),
+        workspace_root: PathBuf::from("/workspace"),
+        commands: Vec::new(),
+    };
+    let stopped = directory.join("stopped");
+    let outcome = host(options, events, receiver, None, move |_, mut commands| {
+        while commands.blocking_recv().is_some() {}
+        fs::write(stopped, "").unwrap();
+    });
     process::exit(i32::from(outcome.is_err()));
 }

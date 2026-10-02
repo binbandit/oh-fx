@@ -156,6 +156,7 @@ impl Shell<'_> {
         }
         self.turn = None;
         self.dismiss_approval();
+        self.composer.reset_for_session();
         self.start_fresh_transcript(FreshScreen::KeepScrollback);
         self.promote_next();
     }
@@ -336,6 +337,7 @@ mod tests {
     };
 
     use super::super::test_shell::TestShell;
+    use crate::input::{PasteOutcome, PasteOwner};
 
     fn text(turn: u64, text: &str) -> UiEvent {
         UiEvent::AssistantText {
@@ -461,6 +463,58 @@ mod tests {
                     prompt: "two".to_owned()
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn clearing_the_conversation_empties_the_composer_kill_ring() {
+        let mut test = TestShell::start();
+        let press = |test: &mut TestShell, keys: &[u8]| {
+            test.type_bytes(keys);
+            test.draining(|shell| shell.step().unwrap());
+        };
+        press(&mut test, b"before clear\x15");
+        test.submit("/clear");
+        press(&mut test, b"\x19");
+        assert_eq!(test.shell.composer.text(), "before clear");
+        press(&mut test, b"\x15");
+        assert_eq!(test.shell.composer.kill_ring_text(), "before clear");
+        test.deliver(UiEvent::ConversationCleared {
+            first_kept_prompt: 0,
+        });
+        assert_eq!(test.shell.composer.kill_ring_text(), "");
+        press(&mut test, b"\x19");
+        assert_eq!(test.shell.composer.text(), "");
+        press(&mut test, b"after\x15\x19\x19");
+        assert_eq!(test.shell.composer.text(), "afterafter");
+    }
+
+    #[test]
+    fn clearing_the_conversation_numbers_pastes_from_one_again() {
+        let mut test = TestShell::start();
+        let paste = |test: &mut TestShell| {
+            test.shell.handle_paste(PasteOutcome::Text {
+                owner: PasteOwner::Composer,
+                text: "pasted\n".repeat(200),
+            });
+            test.shell.composer.text().to_owned()
+        };
+        assert_eq!(paste(&mut test), "[Pasted text #1, 200 lines]");
+        test.shell.submit();
+        test.submit("/clear");
+        test.deliver(UiEvent::ConversationCleared {
+            first_kept_prompt: 1,
+        });
+        assert_eq!(paste(&mut test), "[Pasted text #1, 200 lines]");
+        test.shell.submit();
+        test.submit("/clear");
+        assert_eq!(paste(&mut test), "[Pasted text #2, 200 lines]");
+        test.deliver(UiEvent::ConversationCleared {
+            first_kept_prompt: 2,
+        });
+        assert_eq!(
+            paste(&mut test),
+            "[Pasted text #2, 200 lines][Pasted text #3, 200 lines]"
         );
     }
 

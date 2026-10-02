@@ -3,6 +3,7 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use ofx_contract::{PermissionMode, UiCommand, UiEvent};
@@ -11,6 +12,7 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::termios::Winsize;
 
 use super::{FOOTER_ROWS, Setup, Shell, ShellOptions, SlashCommandSpec, UiEventSender, ui_channel};
+use crate::host::Clipboard;
 use crate::input::{COMPOSER_INPUT_LIMIT_BYTES, TerminalInput};
 use crate::terminal::signal_pipe::SignalPipe;
 use crate::terminal::test_pty;
@@ -25,7 +27,39 @@ pub(super) struct TestShell {
     output: Vec<u8>,
     events: UiEventSender,
     commands: Rc<RefCell<Vec<UiCommand>>>,
+    pub(super) clipboard: Arc<TestClipboard>,
     pub(super) shell: Shell<'static>,
+}
+
+#[derive(Default)]
+pub(super) struct TestClipboard {
+    copied: Mutex<Vec<String>>,
+    pub(super) fails: AtomicBool,
+    held: Mutex<bool>,
+    released: Condvar,
+}
+
+impl TestClipboard {
+    pub(super) fn hold(&self) {
+        *self.held.lock().unwrap() = true;
+    }
+
+    pub(super) fn release(&self) {
+        *self.held.lock().unwrap() = false;
+        self.released.notify_all();
+    }
+}
+
+impl Clipboard for TestClipboard {
+    fn copy(&self, text: &str) -> bool {
+        drop(
+            self.released
+                .wait_while(self.held.lock().unwrap(), |held| *held)
+                .unwrap(),
+        );
+        self.copied.lock().unwrap().push(text.to_owned());
+        !self.fails.load(Ordering::Acquire)
+    }
 }
 
 impl TestShell {
@@ -37,6 +71,7 @@ impl TestShell {
         let (events, receiver) = ui_channel().unwrap();
         let commands = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&commands);
+        let clipboard = Arc::new(TestClipboard::default());
         let setup = Setup {
             terminal,
             signals: SignalPipe::install().unwrap(),
@@ -50,6 +85,7 @@ impl TestShell {
             setup,
             options(),
             receiver,
+            Arc::clone(&clipboard) as Arc<dyn Clipboard>,
             Box::new(move |command| sink.borrow_mut().push(command)),
         );
         Self {
@@ -58,6 +94,7 @@ impl TestShell {
             output: Vec::new(),
             events,
             commands,
+            clipboard,
             shell,
         }
     }
@@ -146,6 +183,10 @@ impl TestShell {
 
     pub(super) fn sent(&self) -> Vec<UiCommand> {
         self.commands.borrow().clone()
+    }
+
+    pub(super) fn copied(&self) -> Vec<String> {
+        self.clipboard.copied.lock().unwrap().clone()
     }
 
     pub(super) fn screen(&mut self) -> String {

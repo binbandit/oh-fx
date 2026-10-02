@@ -25,8 +25,3 @@ pub(super) fn select_in(state: &mut EditorState, anchor: usize, cursor: usize) {
     state.selection_anchor = Some(anchor);
     state.cursor = cursor;
 }
-
-pub(super) fn selected_text(composer: &Composer) -> Option<&str> {
-    let range = composer.selection()?;
-    composer.text().get(range.start..range.end)
-}
