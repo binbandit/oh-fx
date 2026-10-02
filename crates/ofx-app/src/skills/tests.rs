@@ -78,7 +78,7 @@ fn names(skills: &HostSkills) -> Vec<(String, SkillSource)> {
 fn prepare(skills: &HostSkills, prompt: &str) -> SkillContext {
     skills
         .shared
-        .prepare(prompt, None, &CancellationToken::new())
+        .prepare(prompt, &[], None, &CancellationToken::new())
         .unwrap()
 }
 

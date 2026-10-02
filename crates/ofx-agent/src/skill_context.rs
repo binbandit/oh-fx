@@ -1,4 +1,4 @@
-use ofx_contract::{BoxFuture, Notice};
+use ofx_contract::{BoxFuture, Notice, SkillBinding};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,6 +24,7 @@ pub trait SkillContextProvider: Send + Sync {
     fn prepare<'a>(
         &'a self,
         prompt: &'a str,
+        bindings: &'a [SkillBinding],
         context_window: Option<u32>,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<SkillContext, SkillContextFailure>>;
