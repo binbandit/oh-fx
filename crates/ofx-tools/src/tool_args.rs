@@ -14,11 +14,18 @@ pub(crate) fn required_string(
     arguments: &ToolArgs,
     key: &str,
 ) -> Result<String, ToolOutput> {
+    optional_string(tool_name, arguments, key)?
+        .ok_or_else(|| ToolOutput::failure(format!("{tool_name} requires string field \"{key}\"")))
+}
+
+pub(crate) fn optional_string(
+    tool_name: &str,
+    arguments: &ToolArgs,
+    key: &str,
+) -> Result<Option<String>, ToolOutput> {
     match arguments.get(key) {
-        None => Err(ToolOutput::failure(format!(
-            "{tool_name} requires string field \"{key}\""
-        ))),
-        Some(ToolArgValue::String(text)) => Ok(text.clone()),
+        None => Ok(None),
+        Some(ToolArgValue::String(text)) => Ok(Some(text.clone())),
         Some(_) => Err(ToolOutput::failure(format!(
             "{tool_name} field \"{key}\" must be a string"
         ))),

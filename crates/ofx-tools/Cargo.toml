@@ -9,9 +9,11 @@ publish.workspace = true
 [dependencies]
 getrandom.workspace = true
 memchr.workspace = true
+ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-exec.workspace = true
 ofx-permissions.workspace = true
+ofx-skills.workspace = true
 ofx-text.workspace = true
 ofx-workspace.workspace = true
 rustix = { workspace = true, features = ["fs"] }
