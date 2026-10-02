@@ -13,7 +13,10 @@ use ofx_config::{
     ConnectionError, ContextLimitOverride, ProfilePaths, ProviderDefinition, SelectionError,
     Settings, SettingsError, request_output_tokens,
 };
-use ofx_contract::{CapabilityResolver, ModelProvider, PermissionMode, Tool};
+use ofx_contract::{
+    BoxFuture, CapabilityLookup, CapabilityResolver, ModelCapabilities, ModelProvider,
+    PermissionMode, Tool,
+};
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::ChatCompletionsProvider;
 use ofx_http::ClientError;
@@ -212,7 +215,7 @@ impl Profile {
             .map_err(ConnectError::InvalidConnection)?;
         Ok(Route {
             provider: Arc::new(provider),
-            capabilities: None,
+            capabilities: Some(Arc::new(ConnectionCapabilities(connection.clone()))),
             connection: Some(connection.clone()),
             model: model.map_err(ConnectError::InvalidModel)?,
             source: CredentialSource::Configured,
@@ -267,6 +270,24 @@ impl Profile {
             Arc::new(HostProjectContext::new(self.workspace_root.clone(), limits)),
             snapshot,
         ))
+    }
+}
+
+struct ConnectionCapabilities(ProviderDefinition);
+
+impl CapabilityResolver for ConnectionCapabilities {
+    fn resolve<'a>(
+        &'a self,
+        model: &'a str,
+        _cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, CapabilityLookup> {
+        let context_window = self.0.capabilities(model).context_window;
+        Box::pin(async move {
+            CapabilityLookup::Resolved(ModelCapabilities {
+                context_window,
+                ..ModelCapabilities::default()
+            })
+        })
     }
 }
 
@@ -401,6 +422,29 @@ mod tests {
         );
         assert!(auth.requests().is_empty());
         assert_eq!(fs::read_to_string(session).unwrap(), EXPIRED_SESSION);
+    }
+
+    #[tokio::test]
+    async fn configured_connections_resolve_the_context_window_of_their_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = profile(
+            directory.path(),
+            r#"{"provider":"local","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:9/v1","auth":{"type":"none"},"model_metadata":{"sized":{"context_window":128000,"max_output_tokens":16000}}}}}"#,
+        );
+        let connection = profile.settings().selected_connection(&|_| None).unwrap();
+        let resolver = ConnectionCapabilities(connection.clone());
+        let cancel = CancellationToken::new();
+        assert_eq!(
+            resolver.resolve("sized", &cancel).await,
+            CapabilityLookup::Resolved(ModelCapabilities {
+                context_window: Some(128_000),
+                ..ModelCapabilities::default()
+            })
+        );
+        assert_eq!(
+            resolver.resolve("unlisted", &cancel).await,
+            CapabilityLookup::Resolved(ModelCapabilities::default())
+        );
     }
 
     #[test]
