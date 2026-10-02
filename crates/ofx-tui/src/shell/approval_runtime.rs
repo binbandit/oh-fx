@@ -353,6 +353,7 @@ mod tests {
                     access: PathAccess::WorkspaceOnly,
                     always: Some(SessionGrant::Command {
                         command: command.to_owned(),
+                        cwd: PathBuf::from("/workspace"),
                         profile: CommandProfile::User,
                         shell: None,
                         terminal: false,
@@ -387,7 +388,7 @@ mod tests {
             "Would you like to run the following command?",
             "$ echo building-the-project-please-wait",
             "touch ../PWNED_BY_HIDDEN_TAIL",
-            "2. Yes, and don't ask again for this exact command",
+            "2. Yes, and don't ask again for this exact command in /workspace",
         ] {
             assert!(screen.contains(line), "{line}\n{screen}");
         }

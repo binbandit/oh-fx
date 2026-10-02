@@ -47,12 +47,13 @@ pub(crate) fn command_grant(request: &CommandRequest) -> Option<SessionGrant> {
     match request {
         CommandRequest::Run {
             command,
+            cwd,
             profile,
             shell,
             terminal,
-            ..
         } => Some(SessionGrant::Command {
             command: command.clone(),
+            cwd: cwd.clone(),
             profile: *profile,
             shell: shell.clone(),
             terminal: *terminal,
