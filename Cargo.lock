@@ -830,9 +830,12 @@ version = "0.1.0"
 name = "ofx-skills"
 version = "0.1.0"
 dependencies = [
+ "ofx-config",
+ "ofx-text",
  "ofx-workspace",
  "percent-encoding",
  "rustix",
+ "sha2",
  "tempfile",
  "thiserror",
 ]
