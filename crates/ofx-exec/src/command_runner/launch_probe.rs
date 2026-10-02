@@ -1,3 +1,5 @@
+use crate::held_directory::DIRECTORY_CHANGED;
+
 const MAX_NAME_BYTES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +77,7 @@ impl LaunchProbe {
     }
 }
 
-const LAUNCH_ERROR_NAMES: [&str; 15] = [
+const LAUNCH_ERROR_NAMES: [&str; 16] = [
     "SystemResources",
     "AccessDenied",
     "PermissionDenied",
@@ -91,6 +93,7 @@ const LAUNCH_ERROR_NAMES: [&str; 15] = [
     "NameTooLong",
     "BrokenPipe",
     "Unexpected",
+    DIRECTORY_CHANGED,
 ];
 
 #[cfg(test)]

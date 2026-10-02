@@ -1,4 +1,5 @@
 mod assistant_presentation;
+mod diff;
 mod presentation;
 mod styled;
 #[cfg(test)]
@@ -8,6 +9,7 @@ pub use assistant_presentation::{
     Completions, Event, MarkdownProcessor, parse_table_payload, render_code_block_payload,
     render_table_payload,
 };
+pub use diff::{FileReview, ReviewLine, ReviewOp};
 pub use presentation::block_render::table_header_cell;
 pub use presentation::code_highlight::{DiffMarkers, highlight, highlight_diff};
 pub use presentation::code_highlight_languages::{Profile, infer, resolve};

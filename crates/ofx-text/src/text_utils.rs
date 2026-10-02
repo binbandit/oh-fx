@@ -17,7 +17,18 @@ pub fn is_model_safe_text(text: &[u8]) -> bool {
     !text.contains(&0) && std::str::from_utf8(text).is_ok()
 }
 
-pub fn write_head_tail_bounded(text: &[u8], max_content_bytes: usize, marker: &str) -> Vec<u8> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadRounding {
+    Down,
+    Up,
+}
+
+pub fn write_head_tail_bounded(
+    text: &[u8],
+    max_content_bytes: usize,
+    marker: &str,
+    head_rounding: HeadRounding,
+) -> Vec<u8> {
     if text.len() <= max_content_bytes {
         return text.to_vec();
     }
@@ -26,7 +37,10 @@ pub fn write_head_tail_bounded(text: &[u8], max_content_bytes: usize, marker: &s
         return marker[..max_content_bytes].to_vec();
     }
     let retained_bytes = max_content_bytes - marker.len();
-    let head_bytes = retained_bytes.div_ceil(2);
+    let head_bytes = match head_rounding {
+        HeadRounding::Down => retained_bytes / 2,
+        HeadRounding::Up => retained_bytes.div_ceil(2),
+    };
     let tail_bytes = retained_bytes - head_bytes;
     let head_end = utf8_backward_boundary(text, head_bytes);
     let tail_start = utf8_forward_boundary(text, text.len() - tail_bytes);
@@ -122,6 +136,18 @@ pub fn encode_terminal_safe(raw: &[u8], max_encoded_bytes: usize) -> EncodedText
         text.push_str(&marker[..marker_len]);
     }
     EncodedText { text, truncated }
+}
+
+pub fn is_terminal_safe(raw: &[u8]) -> bool {
+    let mut index = 0;
+    while index < raw.len() {
+        let (source_len, token) = terminal_safe_token(raw, index);
+        if !matches!(token, SafeToken::Literal(_)) {
+            return false;
+        }
+        index += source_len;
+    }
+    true
 }
 
 pub fn encode_terminal_safe_path_tail(raw: &[u8], max_encoded_bytes: usize) -> Option<String> {
@@ -1683,13 +1709,37 @@ mod tests {
 
     #[test]
     fn head_tail_bounds_keep_both_ends_around_the_marker() {
-        assert_eq!(write_head_tail_bounded(b"short", 5, "|"), b"short");
-        assert_eq!(write_head_tail_bounded(b"abcdefghij", 6, "|"), b"abc|ij");
-        assert_eq!(write_head_tail_bounded(b"abcdefghij", 7, "|"), b"abc|hij");
-        assert_eq!(write_head_tail_bounded(b"abcdefghij", 2, "<->"), b"<-");
-        assert_eq!(write_head_tail_bounded(b"abcdefghij", 3, "<->"), b"<->");
+        let up = |text: &[u8], max: usize, marker: &str| {
+            write_head_tail_bounded(text, max, marker, HeadRounding::Up)
+        };
+        assert_eq!(up(b"short", 5, "|"), b"short");
+        assert_eq!(up(b"abcdefghij", 6, "|"), b"abc|ij");
+        assert_eq!(up(b"abcdefghij", 7, "|"), b"abc|hij");
+        assert_eq!(up(b"abcdefghij", 2, "<->"), b"<-");
+        assert_eq!(up(b"abcdefghij", 3, "<->"), b"<->");
         let text = "\u{e9}".repeat(10);
-        let bounded = write_head_tail_bounded(text.as_bytes(), 8, "|");
-        assert_eq!(bounded, "\u{e9}\u{e9}|\u{e9}".as_bytes());
+        assert_eq!(
+            up(text.as_bytes(), 8, "|"),
+            "\u{e9}\u{e9}|\u{e9}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn head_tail_bounds_round_an_odd_budget_toward_the_requested_end() {
+        let down =
+            |text: &[u8], max: usize| write_head_tail_bounded(text, max, "|", HeadRounding::Down);
+        assert_eq!(down(b"abcdefghij", 6), b"ab|hij");
+        assert_eq!(down(b"abcdefghij", 7), b"abc|hij");
+        assert_eq!(down(b"short", 9), b"short");
+    }
+
+    #[test]
+    fn terminal_safe_text_is_text_its_encoding_leaves_unchanged() {
+        for safe in ["", "current_request: inspect", "caf\u{e9} \\x1b"] {
+            assert!(is_terminal_safe(safe.as_bytes()), "{safe:?}");
+        }
+        for unsafe_text in [&b"line\n"[..], b"\x1b[31m", b"\xff", "\u{202e}".as_bytes()] {
+            assert!(!is_terminal_safe(unsafe_text), "{unsafe_text:?}");
+        }
     }
 }

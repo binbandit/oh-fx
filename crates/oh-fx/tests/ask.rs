@@ -1949,7 +1949,7 @@ fn auto_mode_writes_workspace_files_and_holds_existing_external_files() {
         tool_messages(&requests[2])[1],
         json!({
             "role": "tool",
-            "content": "{\"error\":{\"type\":\"tool_review_held\",\"tool_name\":\"write_file\",\"message\":\"Safety reviewer unavailable; action held\",\"reason\":\"review_unavailable\",\"review_cause\":\"reviewer_unconfigured\",\"held\":true,\"suggestion\":\"The action did not run because safety review was unavailable. Continue with a different safe action or retry later.\"}}",
+            "content": "{\"error\":{\"type\":\"tool_review_held\",\"tool_name\":\"write_file\",\"message\":\"Safety review evidence incomplete; action held\",\"reason\":\"review_evidence_incomplete\",\"held\":true,\"suggestion\":\"The action did not run because safety review could not inspect the complete exact action. Do not retry unchanged; reduce the action or supporting evidence to fit the review limits, or choose a materially different fully inspectable action.\"}}",
             "tool_call_id": "call_2",
         })
     );
@@ -2408,6 +2408,11 @@ fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands(
             "call_3",
             &json!({"action": "run", "command": "touch marker"}),
         ),
+        Reply::sse(&chat_tool_call_events(
+            "review_1",
+            "permission_decision",
+            r#"{"decision":"caution","rationale":"Nothing asked for a marker."}"#,
+        )),
         Reply::sse(&chat_text_events(&["Held."])),
     ]);
     let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
@@ -2418,7 +2423,11 @@ fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands(
     );
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        requests[3].json()["tools"][0]["function"]["name"],
+        "permission_decision"
+    );
     let which: Value = serde_json::from_str(&shell_results(&requests[1])[0]).unwrap();
     assert_eq!(which["exit_code"], 0);
     let found = which["output_delta"].as_str().unwrap();
@@ -2449,14 +2458,14 @@ fn auto_mode_runs_reversible_commands_and_observations_and_holds_other_commands(
             }),
         ]
     );
-    let messages = tool_messages(&requests[3]);
+    let messages = tool_messages(&requests[4]);
     assert_eq!(
         messages[1]["content"],
         r#"{"error":{"tool":"shell","code":"ExecutionNotFound","retryable":false}}"#
     );
     assert_eq!(
         messages[2]["content"],
-        r#"{"error":{"type":"tool_review_held","tool_name":"shell","message":"Safety reviewer unavailable; action held","reason":"review_unavailable","review_cause":"reviewer_unconfigured","held":true,"suggestion":"The action did not run because safety review was unavailable. Continue with a different safe action or retry later."}}"#
+        r#"{"error":{"type":"tool_review_held","tool_name":"shell","message":"Action held after safety review","reason":"review_caution","held":true,"advice":"Nothing asked for a marker.","suggestion":"The action did not run. Use the review advice to choose a materially different safe action, or explain why no safe path remains."}}"#
     );
     assert!(!home.workspace.join("marker").exists());
 }
@@ -2470,6 +2479,7 @@ fn auto_mode_holds_reversible_commands_that_run_outside_the_workspace() {
             "call_1",
             &json!({"action": "run", "command": "git status", "cwd": cwd, "profile": "clean"}),
         ),
+        Reply::status(500, r#"{"error":{"message":"reviewer down"}}"#),
         Reply::sse(&chat_text_events(&["Held."])),
     ]);
     let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
@@ -2478,9 +2488,11 @@ fn auto_mode_holds_reversible_commands_that_run_outside_the_workspace() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stderr(&output), "Running git status\n");
     assert_eq!(stdout(&output), "Held.");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
     assert_eq!(
-        tool_messages(&server.requests()[1])[0]["content"],
-        r#"{"error":{"type":"tool_review_held","tool_name":"shell","message":"Safety reviewer unavailable; action held","reason":"review_unavailable","review_cause":"reviewer_unconfigured","held":true,"suggestion":"The action did not run because safety review was unavailable. Continue with a different safe action or retry later."}}"#
+        tool_messages(&requests[2])[0]["content"],
+        r#"{"error":{"type":"tool_review_held","tool_name":"shell","message":"Safety reviewer unavailable; action held","reason":"review_unavailable","review_cause":"transport_permanent","held":true,"suggestion":"The action did not run because safety review was unavailable. Continue with a different safe action or retry later."}}"#
     );
 }
 

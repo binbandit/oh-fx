@@ -8,16 +8,16 @@ use std::time::Duration;
 use ofx_contract::{
     Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent, BoxFuture,
     CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion,
-    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileMutation,
-    FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
+    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange,
+    FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, RouteRecoveryKind,
-    RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection,
-    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
-    format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
-    prepare_model_output, review_unavailable_json, tool_execution_failure_json,
-    tool_permission_denied_json,
+    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
+    ReviewRequest, ReviewVerdict, Reviewed, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent,
+    Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice,
+    ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId,
+    TurnOutcome, TurnStop, UiEvent, Usage, format_unknown_action, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
+    tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -31,6 +31,7 @@ use crate::model_response_recovery::{
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
+use crate::turn_reviews::TurnReviews;
 
 mod compaction;
 mod project_gate;
@@ -154,6 +155,7 @@ struct Turn {
     fast_notice_shown: bool,
     compaction: TurnCompaction,
     raw_outputs: Vec<(ToolCallId, usize)>,
+    reviews: TurnReviews,
 }
 
 struct ProjectInstructions {
@@ -303,6 +305,7 @@ impl Agent {
             fast_notice_shown: false,
             compaction: TurnCompaction::default(),
             raw_outputs: Vec::new(),
+            reviews: TurnReviews::default(),
         };
         self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
@@ -646,33 +649,18 @@ impl Agent {
                 permissions: &*self.permissions,
                 approvals: self.approvals.as_ref(),
             };
-            let settled = run_group(turn.id, group, gate, events, cancel).await;
-            for Settled {
-                call,
-                output,
-                escalates,
-            } in settled.outcomes
-            {
-                let Some(output) = output else {
-                    continue;
-                };
-                let status = output.status;
-                turn.raw_outputs
-                    .push((call.id.clone(), output.content.len()));
-                let model_output =
-                    prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
-                let content = if escalates {
-                    escalate_repeated_failure(turn, call, status, model_output)
-                } else {
-                    model_output
-                };
-                self.history.push(ChatMessage::Tool {
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    content,
-                    status,
-                });
-            }
+            let mut reviewing = Reviewing {
+                model: &self.config.model,
+                history: &self.history,
+                turn_starts: &self.turn_starts,
+                compacted_turns: self.compacted.as_ref().map(|payload| payload.turn_count),
+                turn_start: turn.start,
+                batch: &calls,
+                reviews: &mut turn.reviews,
+                usage: &mut turn.usage,
+            };
+            let settled = run_group(turn.id, group, gate, &mut reviewing, events, cancel).await;
+            self.record_settled(turn, settled.outcomes);
             if let Some(blocked) = settled.blocked {
                 return Err(Stop::failed(TurnFailure::PermissionRequired(blocked)));
             }
@@ -694,6 +682,39 @@ impl Agent {
             ));
         }
         Ok(())
+    }
+
+    fn record_settled(&mut self, turn: &mut Turn, outcomes: Vec<Settled<'_>>) {
+        for Settled {
+            call,
+            output,
+            escalates,
+            review_hold,
+        } in outcomes
+        {
+            let Some(output) = output else {
+                continue;
+            };
+            let status = output.status;
+            turn.raw_outputs
+                .push((call.id.clone(), output.content.len()));
+            let model_output =
+                prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
+            let content = if escalates {
+                escalate_repeated_failure(turn, call, status, model_output)
+            } else {
+                model_output
+            };
+            if review_hold {
+                turn.reviews.record_held_result(&call.id, &content);
+            }
+            self.history.push(ChatMessage::Tool {
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                content,
+                status,
+            });
+        }
     }
 
     fn record_tool_step(
@@ -1044,7 +1065,7 @@ impl Prepared {
 
 enum Dispatched {
     Rejected(ToolOutput, ToolRejection),
-    Held(ToolOutput),
+    Held(ToolOutput, bool),
     Running(JoinHandle<ToolOutput>),
 }
 
@@ -1052,6 +1073,7 @@ struct Settled<'c> {
     call: &'c ToolCall,
     output: Option<ToolOutput>,
     escalates: bool,
+    review_hold: bool,
 }
 
 struct SettledGroup<'c> {
@@ -1065,10 +1087,21 @@ struct Gate<'a> {
     approvals: Option<&'a Approvals>,
 }
 
+struct Reviewing<'a> {
+    model: &'a str,
+    history: &'a [ChatMessage],
+    turn_starts: &'a [usize],
+    compacted_turns: Option<usize>,
+    turn_start: usize,
+    batch: &'a [ToolCall],
+    reviews: &'a mut TurnReviews,
+    usage: &'a mut Usage,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Verdict {
     Run(PathAccess),
-    Held,
+    Held(String),
     Denied,
     Blocked,
     Interrupted,
@@ -1101,50 +1134,159 @@ fn admit(
     }
 }
 
-async fn judge(
+struct Judged<'a> {
+    call: &'a ToolCall,
+    action: GatedAction<'a>,
+    description: &'a CallDescription,
+    file: Option<&'a FileChange<'a>>,
+}
+
+fn admission<'p>(
     gate: Gate<'_>,
-    turn_id: TurnId,
-    call: &ToolCall,
     action: GatedAction<'_>,
     description: &CallDescription,
+    prepared: &'p dyn PreparedCall,
+) -> (Admission, Option<FileChange<'p>>) {
+    let admission = admit(gate.permissions, action, description);
+    let file = match (&admission, action) {
+        (Admission::ReviewRequired, GatedAction::FileMutation(_)) => {
+            contained(|| prepared.file_change()).flatten()
+        }
+        _ => None,
+    };
+    (admission, file)
+}
+
+async fn judge(
+    gate: Gate<'_>,
+    reviewing: &mut Reviewing<'_>,
+    turn_id: TurnId,
+    admission: Admission,
+    judged: Judged<'_>,
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> Verdict {
-    match admit(gate.permissions, action, description) {
+    match admission {
         Admission::Allowed(path_access) => Verdict::Run(path_access),
-        Admission::ReviewUnavailable => Verdict::Held,
-        Admission::ApprovalRequired => {
-            let Some(approvals) = gate.approvals else {
-                return Verdict::Blocked;
+        Admission::ApprovalRequired => ask_approval(gate, turn_id, &judged, events, cancel).await,
+        Admission::ReviewRequired => {
+            let Some(verdict) = review(gate, reviewing, &judged, cancel).await else {
+                return Verdict::Interrupted;
             };
-            let scope = gate.permissions.approval_scope(action);
-            let mut pending = approvals.open();
-            events(UiEvent::ApprovalRequested {
-                turn_id,
-                request: Box::new(approval_request(
-                    pending.id(),
-                    call,
-                    action,
-                    description,
-                    &scope,
-                )),
-            });
-            let answer = tokio::select! {
-                biased;
-                () = cancel.cancelled() => pending.withdraw(),
-                decision = pending.decision() => Some(decision),
-            };
-            if let (Some(ApprovalDecision::Always), Some(grant)) = (answer, &scope.always) {
-                gate.permissions.remember_approval(grant);
-            }
-            match answer {
-                _ if cancel.is_cancelled() => Verdict::Interrupted,
-                None | Some(ApprovalDecision::Deny) => Verdict::Denied,
-                Some(ApprovalDecision::Once | ApprovalDecision::Always) => {
-                    Verdict::Run(scope.access)
+            let call = judged.call;
+            match verdict {
+                ReviewVerdict::Clear => {
+                    Verdict::Run(gate.permissions.approval_scope(judged.action).access)
                 }
+                ReviewVerdict::Caution(advice) => Verdict::Held(tool_review_held_json(
+                    &call.name,
+                    ReviewHold::Caution(&advice),
+                )),
+                _ if gate.approvals.is_some() => {
+                    ask_approval(gate, turn_id, &judged, events, cancel).await
+                }
+                ReviewVerdict::EvidenceIncomplete => Verdict::Held(tool_review_held_json(
+                    &call.name,
+                    ReviewHold::EvidenceIncomplete,
+                )),
+                ReviewVerdict::Unavailable(failure) => Verdict::Held(tool_review_held_json(
+                    &call.name,
+                    ReviewHold::Unavailable(failure),
+                )),
             }
         }
+    }
+}
+
+async fn review(
+    gate: Gate<'_>,
+    reviewing: &mut Reviewing<'_>,
+    judged: &Judged<'_>,
+    cancel: &CancellationToken,
+) -> Option<ReviewVerdict> {
+    let call = judged.call;
+    if let Some(verdict) = reviewing.reviews.cached(call) {
+        return Some(verdict);
+    }
+    let attempt_available = reviewing.reviews.attempt_available(call);
+    let (current_request, earlier_requests) =
+        root_requests(reviewing.history, reviewing.turn_starts);
+    let request = ReviewRequest {
+        model: reviewing.model,
+        current_request,
+        earlier_requests: &earlier_requests,
+        compacted_turns: reviewing.compacted_turns,
+        turn: &reviewing.history[reviewing.turn_start..],
+        held: reviewing.reviews.held_results(),
+        batch: reviewing.batch,
+        call,
+        action: judged.action,
+        file: judged.file,
+        attempt_available,
+    };
+    let reviewed = tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        reviewed = gate.permissions.review(request, cancel) => reviewed,
+    };
+    if cancel.is_cancelled() {
+        return None;
+    }
+    let reviewed =
+        reviewed.unwrap_or_else(|| Reviewed::unavailable(ReviewFailure::TransportTransient));
+    reviewing.usage.accumulate(reviewed.usage);
+    reviewing.reviews.remember(call, &reviewed.verdict);
+    Some(reviewed.verdict)
+}
+
+fn root_requests<'h>(history: &'h [ChatMessage], turn_starts: &[usize]) -> (&'h str, Vec<&'h str>) {
+    let user_request = |start: &usize| match history.get(*start) {
+        Some(ChatMessage::User { content }) => Some(content.as_str()),
+        _ => None,
+    };
+    let Some((current, earlier)) = turn_starts.split_last() else {
+        return ("", Vec::new());
+    };
+    (
+        user_request(current).unwrap_or_default(),
+        earlier.iter().filter_map(user_request).collect(),
+    )
+}
+
+async fn ask_approval(
+    gate: Gate<'_>,
+    turn_id: TurnId,
+    judged: &Judged<'_>,
+    events: EventSink<'_>,
+    cancel: &CancellationToken,
+) -> Verdict {
+    let Some(approvals) = gate.approvals else {
+        return Verdict::Blocked;
+    };
+    let scope = gate.permissions.approval_scope(judged.action);
+    let mut pending = approvals.open();
+    events(UiEvent::ApprovalRequested {
+        turn_id,
+        request: Box::new(approval_request(
+            pending.id(),
+            judged.call,
+            judged.action,
+            judged.description,
+            &scope,
+        )),
+    });
+    let answer = tokio::select! {
+        biased;
+        () = cancel.cancelled() => pending.withdraw(),
+        decision = pending.decision() => Some(decision),
+    };
+    if let (Some(ApprovalDecision::Always), Some(grant)) = (answer, &scope.always) {
+        gate.permissions.remember_approval(grant);
+    }
+    match answer {
+        _ if cancel.is_cancelled() => Verdict::Interrupted,
+        None | Some(ApprovalDecision::Deny) => Verdict::Denied,
+        Some(ApprovalDecision::Once | ApprovalDecision::Always) => Verdict::Run(scope.access),
     }
 }
 
@@ -1177,6 +1319,7 @@ async fn run_group<'c>(
     turn_id: TurnId,
     group: Vec<(&'c ToolCall, Prepared)>,
     gate: Gate<'_>,
+    reviewing: &mut Reviewing<'_>,
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> SettledGroup<'c> {
@@ -1206,12 +1349,24 @@ async fn run_group<'c>(
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref());
-                let verdict = judge(
-                    gate,
-                    turn_id,
+                let (admission, file) = admission(gate, action, &description, &*prepared);
+                let shown_while_reviewed =
+                    admission == Admission::ReviewRequired && mutation.is_none();
+                if shown_while_reviewed {
+                    events(tool_started(turn_id, call, description.clone()));
+                }
+                let judged = Judged {
                     call,
                     action,
-                    &description,
+                    description: &description,
+                    file: file.as_ref(),
+                };
+                let verdict = judge(
+                    gate,
+                    reviewing,
+                    turn_id,
+                    admission,
+                    judged,
                     &mut *events,
                     cancel,
                 )
@@ -1229,17 +1384,13 @@ async fn run_group<'c>(
                         title: description.title.clone(),
                     });
                 }
-                let silent = verdict == Verdict::Interrupted
+                let silent = shown_while_reviewed
+                    || verdict == Verdict::Interrupted
                     || (mutation.is_some() && verdict == Verdict::Blocked);
                 if !silent {
-                    events(UiEvent::ToolStarted {
-                        turn_id,
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        description,
-                    });
+                    events(tool_started(turn_id, call, description));
                 }
-                let held = match verdict {
+                let (held, review_hold) = match verdict {
                     Verdict::Run(path_access) => {
                         let context =
                             ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
@@ -1247,15 +1398,21 @@ async fn run_group<'c>(
                         dispatched.push((call, Dispatched::Running(task)));
                         continue;
                     }
-                    Verdict::Held => review_unavailable_json(&call.name),
-                    Verdict::Denied => tool_permission_denied_json(&call.name),
+                    Verdict::Held(output) => (output, true),
+                    Verdict::Denied => (tool_permission_denied_json(&call.name), false),
                     Verdict::Blocked | Verdict::Interrupted => {
+                        if shown_while_reviewed {
+                            events(tool_finished(turn_id, call, None));
+                        }
                         discard(prepared);
                         break;
                     }
                 };
                 discard(prepared);
-                dispatched.push((call, Dispatched::Held(ToolOutput::failure(held))));
+                dispatched.push((
+                    call,
+                    Dispatched::Held(ToolOutput::failure(held), review_hold),
+                ));
             }
         }
     }
@@ -1275,27 +1432,39 @@ async fn settle_group<'c>(
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched) in dispatched {
-        let (output, escalates) = match dispatched {
-            Dispatched::Rejected(output, reason) => {
-                (Some(output), reason != ToolRejection::MalformedArguments)
-            }
-            Dispatched::Held(output) => {
+        let (output, escalates, review_hold) = match dispatched {
+            Dispatched::Rejected(output, reason) => (
+                Some(output),
+                reason != ToolRejection::MalformedArguments,
+                false,
+            ),
+            Dispatched::Held(output, review_hold) => {
                 events(tool_finished(turn_id, call, Some(&output)));
-                (Some(output), true)
+                (Some(output), true, review_hold)
             }
             Dispatched::Running(mut task) => {
                 let output = settle(call, &mut task, cancel, &mut grace_deadline).await;
                 events(tool_finished(turn_id, call, output.as_ref()));
-                (output, true)
+                (output, true, false)
             }
         };
         outcomes.push(Settled {
             call,
             output,
             escalates,
+            review_hold,
         });
     }
     outcomes
+}
+
+fn tool_started(turn_id: TurnId, call: &ToolCall, description: CallDescription) -> UiEvent {
+    UiEvent::ToolStarted {
+        turn_id,
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        description,
+    }
 }
 
 fn tool_finished(turn_id: TurnId, call: &ToolCall, output: Option<&ToolOutput>) -> UiEvent {

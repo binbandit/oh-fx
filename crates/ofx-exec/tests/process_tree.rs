@@ -8,8 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_exec::{
-    CommandStatus, Environment, ManagedExecutions, SessionSupervisor, Snapshot, SnapshotState,
-    StartCaptured, is_foreground_session_invocation, run_foreground_session,
+    CommandStatus, Environment, HeldDirectory, ManagedExecutions, SessionSupervisor, Snapshot,
+    SnapshotState, StartCaptured, is_foreground_session_invocation, run_foreground_session,
 };
 use rustix::process::{Pid, Signal, kill_process};
 use tokio_util::sync::CancellationToken;
@@ -281,6 +281,11 @@ fn run(command: &str, yield_time: Duration) -> StartCaptured {
     StartCaptured {
         command: command.to_owned(),
         cwd: env::temp_dir(),
+        cwd_directory: HeldDirectory::new(
+            fs::File::open(env::temp_dir())
+                .expect("the temporary directory")
+                .into(),
+        ),
         environment: Environment::Clean(BASH.into()),
         max_output_bytes: 64 * 1024,
         timeout: None,

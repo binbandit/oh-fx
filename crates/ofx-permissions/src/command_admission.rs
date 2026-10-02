@@ -17,7 +17,7 @@ pub(crate) fn command_admission(
         PermissionMode::Auto if runs_without_review(workspace_root, request) => {
             Admission::Allowed(PathAccess::WorkspaceOnly)
         }
-        PermissionMode::Auto => Admission::ReviewUnavailable,
+        PermissionMode::Auto => Admission::ReviewRequired,
     }
 }
 
@@ -28,7 +28,7 @@ pub(crate) fn undescribed_shell_call_admission(
     (call.name == SHELL_TOOL).then_some(match mode {
         PermissionMode::Yolo => Admission::Allowed(PathAccess::WorkspaceOrExternal),
         PermissionMode::Ask => Admission::ApprovalRequired,
-        PermissionMode::Auto => Admission::ReviewUnavailable,
+        PermissionMode::Auto => Admission::ReviewRequired,
     })
 }
 
@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_mode_holds_everything_else_for_the_unavailable_reviewer() {
+    fn auto_mode_sends_everything_else_to_the_reviewer() {
         for request in [
             run("rm -rf .", WORKSPACE, false),
             run("pwd", WORKSPACE, false),
@@ -141,7 +141,7 @@ mod tests {
         ] {
             assert_eq!(
                 admit(PermissionMode::Auto, &request),
-                Admission::ReviewUnavailable,
+                Admission::ReviewRequired,
                 "{request:?}"
             );
         }
@@ -156,7 +156,7 @@ mod tests {
         };
         assert_eq!(
             undescribed_shell_call_admission(PermissionMode::Auto, &call("shell")),
-            Some(Admission::ReviewUnavailable)
+            Some(Admission::ReviewRequired)
         );
         assert_eq!(
             undescribed_shell_call_admission(PermissionMode::Ask, &call("shell")),

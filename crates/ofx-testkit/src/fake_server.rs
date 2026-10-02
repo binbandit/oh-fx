@@ -40,9 +40,46 @@ pub enum Reply {
         body: String,
     },
     Disconnect,
+    Gated {
+        gate: Gate,
+        reply: Box<Reply>,
+    },
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct Gate(Arc<watch::Sender<bool>>);
+
+impl Gate {
+    pub fn open(&self) {
+        self.0.send_replace(true);
+    }
+
+    async fn passed(&self, signal: &mut watch::Receiver<bool>) -> bool {
+        let mut opened = self.0.subscribe();
+        tokio::select! {
+            _ = signal.changed() => false,
+            passed = opened.wait_for(|open| *open) => passed.is_ok(),
+        }
+    }
+}
+
+impl PartialEq for Gate {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Gate {}
+
 impl Reply {
+    #[must_use]
+    pub fn after(self, gate: &Gate) -> Self {
+        Self::Gated {
+            gate: gate.clone(),
+            reply: Box::new(self),
+        }
+    }
+
     pub fn sse<S: AsRef<str>>(events: &[S]) -> Self {
         Self::Stream {
             chunks: sse_chunks(events),
@@ -312,7 +349,13 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
         state.requests.push(request);
         state.replies.pop_front()
     };
-    let reply = reply.unwrap_or_else(|| Reply::status(500, "no scripted reply"));
+    let mut reply = reply.unwrap_or_else(|| Reply::status(500, "no scripted reply"));
+    while let Reply::Gated { gate, reply: held } = reply {
+        if !gate.passed(&mut signal).await {
+            return;
+        }
+        reply = *held;
+    }
     match reply {
         Reply::Status {
             status,
@@ -361,7 +404,7 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
             let _ = stream.write_all(head.as_bytes()).await;
             let _ = stream.write_all(body.as_bytes()).await;
         }
-        Reply::Disconnect => {}
+        Reply::Disconnect | Reply::Gated { .. } => {}
         Reply::Stream { chunks, hold_open } => {
             let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
             if stream.write_all(head.as_bytes()).await.is_err() {

@@ -1,21 +1,83 @@
+use std::fs;
+use std::os::unix::fs::symlink;
+
 use ofx_contract::{Tool, ToolActivity, ToolCallId, ToolEffect, ToolResultStatus};
 use ofx_exec::SessionSupervisor;
+use tempfile::TempDir;
 
 use super::*;
 
+const LAUNCHED: &str = r#""state":"lost""#;
+
 fn block_on<F: Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .unwrap()
         .block_on(future)
 }
 
 fn shell() -> Shell {
+    shell_in(std::env::temp_dir())
+}
+
+fn shell_in(workspace_root: impl Into<PathBuf>) -> Shell {
     Shell::new(
-        std::env::temp_dir(),
+        workspace_root,
         ManagedExecutions::new(SessionSupervisor::new("/nonexistent")),
         None,
     )
+}
+
+fn execute(prepared: Box<dyn PreparedCall>, path_access: PathAccess) -> ToolOutput {
+    block_on(prepared.execute(ToolContext::new(
+        ToolCallId::new("call-1"),
+        CancellationToken::new(),
+        path_access,
+    )))
+}
+
+struct Directories {
+    _temp: TempDir,
+    workspace: PathBuf,
+    build: PathBuf,
+    outside: PathBuf,
+}
+
+impl Directories {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let directories = Self {
+            _temp: temp,
+            workspace: root.join("workspace"),
+            build: root.join("external/build"),
+            outside: root.join("outside"),
+        };
+        for directory in [
+            &directories.workspace,
+            &directories.build,
+            &directories.outside,
+        ] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        directories
+    }
+
+    fn run_in_build(&self) -> Box<dyn PreparedCall> {
+        let mut prepared = shell_in(&self.workspace)
+            .prepare(
+                &serde_json::json!({"action": "run", "command": "rm -f marker", "cwd": self.build})
+                    .to_string(),
+            )
+            .unwrap();
+        prepared.complete();
+        prepared
+    }
+
+    fn move_build_away(&self) {
+        fs::rename(&self.build, self.build.with_file_name("reviewed")).unwrap();
+    }
 }
 
 fn description(arguments: &str) -> CallDescription {
@@ -247,11 +309,7 @@ fn unresolved_working_directories_outside_the_workspace_reach_the_gate_and_fail_
             terminal: false,
         })
     );
-    let output = block_on(prepared.execute(ToolContext::new(
-        ToolCallId::new("call-1"),
-        CancellationToken::new(),
-        PathAccess::WorkspaceOrExternal,
-    )));
+    let output = execute(prepared, PathAccess::WorkspaceOrExternal);
     assert_eq!(output.status, ToolResultStatus::Failure);
     assert!(
         output.content.starts_with("shell run cwd is invalid: "),
@@ -268,37 +326,99 @@ fn unresolved_working_directories_outside_the_workspace_reach_the_gate_and_fail_
 
 #[test]
 fn workspace_only_runs_fail_once_their_working_directory_leaves_the_workspace() {
-    let workspace = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(workspace.path()).unwrap();
-    std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
-    let shell = Shell::new(
-        &root,
-        ManagedExecutions::new(SessionSupervisor::new("/nonexistent")),
-        None,
-    );
-    let request = request::decode(r#"{"action":"run","command":"ls","cwd":"link"}"#).unwrap();
-    let output = block_on(shell.context.run(
-        request,
-        root.clone(),
-        None,
-        PathAccess::WorkspaceOnly,
-        &CancellationToken::new(),
-    ));
+    let directories = Directories::new();
+    let sub = directories.workspace.join("sub");
+    fs::create_dir(&sub).unwrap();
+    let mut prepared = shell_in(&directories.workspace)
+        .prepare(r#"{"action":"run","command":"ls","cwd":"sub"}"#)
+        .unwrap();
+    prepared.complete();
+    fs::rename(&sub, directories.workspace.join("moved")).unwrap();
+    symlink(&directories.outside, &sub).unwrap();
+    let output = execute(prepared, PathAccess::WorkspaceOnly);
     assert_eq!(output.status, ToolResultStatus::Failure);
     assert_eq!(output.content, runtime_failure(PATH_OUTSIDE_WORKSPACE));
 }
 
 #[test]
+fn approved_runs_fail_once_their_working_directory_is_replaced() {
+    let replacements: [fn(&Directories); 4] = [
+        |directories| {
+            directories.move_build_away();
+            symlink(&directories.outside, &directories.build).unwrap();
+        },
+        |directories| {
+            directories.move_build_away();
+            fs::create_dir(&directories.build).unwrap();
+        },
+        |directories| {
+            let external = directories.build.parent().unwrap();
+            fs::rename(external, external.with_file_name("moved")).unwrap();
+            symlink(&directories.outside, external).unwrap();
+            fs::create_dir(directories.outside.join("build")).unwrap();
+        },
+        |directories| {
+            for _ in 0..20 {
+                fs::remove_dir(&directories.build).unwrap();
+                fs::create_dir(&directories.build).unwrap();
+            }
+        },
+    ];
+    for (index, replace) in replacements.into_iter().enumerate() {
+        let directories = Directories::new();
+        let prepared = directories.run_in_build();
+        replace(&directories);
+        let output = execute(prepared, PathAccess::WorkspaceOrExternal);
+        assert_eq!(output.status, ToolResultStatus::Failure, "{index}");
+        assert_eq!(
+            output.content,
+            runtime_failure(DIRECTORY_CHANGED),
+            "{index}"
+        );
+    }
+    let directories = Directories::new();
+    let output = execute(directories.run_in_build(), PathAccess::WorkspaceOrExternal);
+    assert!(output.content.contains(LAUNCHED), "{}", output.content);
+}
+
+#[test]
+fn working_directories_are_held_from_completion_until_launch() {
+    let directories = Directories::new();
+    let arguments =
+        serde_json::json!({"action": "run", "command": "ls", "cwd": directories.build}).to_string();
+    let shell = shell_in(&directories.workspace);
+    let uncompleted = shell.prepare(&arguments).unwrap();
+    let mut completed = shell.prepare(&arguments).unwrap();
+    directories.move_build_away();
+    fs::create_dir(&directories.build).unwrap();
+    completed.complete();
+    assert_eq!(
+        execute(uncompleted, PathAccess::WorkspaceOrExternal).content,
+        runtime_failure(DIRECTORY_CHANGED)
+    );
+    let output = execute(completed, PathAccess::WorkspaceOrExternal);
+    assert!(output.content.contains(LAUNCHED), "{}", output.content);
+}
+
+#[test]
+fn working_directories_that_are_not_directories_fail_before_launch() {
+    let directories = Directories::new();
+    let file = directories.workspace.join("file");
+    fs::write(&file, "").unwrap();
+    let mut prepared = shell_in(&directories.workspace)
+        .prepare(r#"{"action":"run","command":"ls","cwd":"file"}"#)
+        .unwrap();
+    prepared.complete();
+    let output = execute(prepared, PathAccess::WorkspaceOnly);
+    assert_eq!(output.content, runtime_failure("NotDir"));
+}
+
+#[test]
 fn only_resolved_run_directories_are_applicable_targets_and_they_resolve_again() {
     let workspace = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(workspace.path()).unwrap();
-    std::fs::create_dir(root.join("sub")).unwrap();
-    let shell = Shell::new(
-        &root,
-        ManagedExecutions::new(SessionSupervisor::new("/nonexistent")),
-        None,
-    );
+    let root = fs::canonicalize(workspace.path()).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    let shell = shell_in(&root);
     let target = |arguments: &str| shell.prepare(arguments).unwrap().applicable_target();
     let directory = |path: PathBuf| {
         Some(ApplicableTarget {
@@ -326,6 +446,6 @@ fn only_resolved_run_directories_are_applicable_targets_and_they_resolve_again()
     let prepared = shell
         .prepare(r#"{"action":"run","command":"ls","cwd":"sub"}"#)
         .unwrap();
-    std::fs::remove_dir(root.join("sub")).unwrap();
+    fs::remove_dir(root.join("sub")).unwrap();
     assert_eq!(prepared.applicable_target(), None);
 }

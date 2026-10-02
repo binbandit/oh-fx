@@ -1,6 +1,7 @@
 use ofx_exec::{CommandStatus, Snapshot, SnapshotState, StatusProjection};
 use ofx_text::{
-    contains_ignore_case, encode_terminal_safe, is_model_safe_text, write_head_tail_bounded,
+    HeadRounding, contains_ignore_case, encode_terminal_safe, is_model_safe_text,
+    write_head_tail_bounded,
 };
 use serde_json::{Map, Value, json};
 
@@ -40,6 +41,7 @@ pub(super) fn format_snapshot(snapshot: &Snapshot, max_tool_result_bytes: usize)
             &snapshot.output_delta,
             content_budget,
             OMITTED_OUTPUT_MARKER,
+            HeadRounding::Up,
         );
         match format_model_safe(snapshot, &projected, true, inline_max_bytes) {
             Some(candidate) if candidate.len() <= inline_max_bytes => {

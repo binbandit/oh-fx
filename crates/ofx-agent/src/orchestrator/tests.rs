@@ -181,7 +181,7 @@ impl PermissionGate for ArgumentGate {
 
     fn admit_file_mutation(&self, mutation: &FileMutation) -> Admission {
         match mutation.state {
-            FileMutationState::Unread => Admission::ReviewUnavailable,
+            FileMutationState::Unread => Admission::ReviewRequired,
             FileMutationState::Changes => Admission::ApprovalRequired,
             FileMutationState::Creates | FileMutationState::Unchanged => {
                 Admission::Allowed(PathAccess::WorkspaceOrExternal)
@@ -195,7 +195,7 @@ impl PermissionGate for ArgumentGate {
                 Admission::Allowed(PathAccess::WorkspaceOrExternal)
             }
             CommandRequest::Stop => Admission::ApprovalRequired,
-            _ => Admission::ReviewUnavailable,
+            _ => Admission::ReviewRequired,
         }
     }
 
@@ -323,6 +323,10 @@ impl PreparedCall for EchoCall {
             "file mutation panicked"
         );
         self.mutation.as_ref()
+    }
+
+    fn file_change(&self) -> Option<FileChange<'_>> {
+        reviews::previewed_change(&self.arguments)
     }
 
     fn command_request(&self) -> Option<&CommandRequest> {
@@ -1407,7 +1411,7 @@ async fn file_mutations_are_admitted_by_their_prepared_target_instead_of_their_a
             tool_message("call-1", "WorkspaceOrExternal", ToolResultStatus::Success),
             tool_message(
                 "call-2",
-                &review_unavailable_json("echo"),
+                &unconfigured_hold("echo"),
                 ToolResultStatus::Failure
             ),
             tool_message(
@@ -1443,7 +1447,7 @@ async fn commands_are_admitted_by_their_prepared_request_instead_of_their_argume
             tool_message("call-1", "WorkspaceOrExternal", ToolResultStatus::Success),
             tool_message(
                 "call-2",
-                &review_unavailable_json("echo"),
+                &unconfigured_hold("echo"),
                 ToolResultStatus::Failure
             ),
         ]
@@ -1734,7 +1738,7 @@ async fn held_calls_are_dropped_without_letting_a_panic_escape() {
         [
             tool_message(
                 "call-1",
-                &review_unavailable_json("echo"),
+                &unconfigured_hold("echo"),
                 ToolResultStatus::Failure
             ),
             tool_message(
@@ -2312,4 +2316,12 @@ mod capabilities;
 mod compaction;
 mod malformed_arguments;
 mod project_context;
+mod reviews;
 mod turn_log;
+
+fn unconfigured_hold(tool_name: &str) -> String {
+    tool_review_held_json(
+        tool_name,
+        ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured),
+    )
+}
