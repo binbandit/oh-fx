@@ -5,6 +5,7 @@ use std::path::Path;
 use ofx_contract::{
     ApprovalRequest, CommandProfile, CommandRequest, FileMutation, FileMutationState, SessionGrant,
 };
+use ofx_text::shell_word;
 
 use super::command_text::{approval_text, project_command_text, unambiguous};
 use super::phrase::{PathText, Phrase};
@@ -217,16 +218,7 @@ impl RunSettings<'_> {
 }
 
 fn quoted(path: &Path) -> String {
-    let text = safe_text(path.as_os_str().as_bytes());
-    let bare = !text.is_empty()
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+,:@%".contains(&byte));
-    if bare {
-        text
-    } else {
-        format!("'{}'", text.replace('\'', r"'\''"))
-    }
+    shell_word(&safe_text(path.as_os_str().as_bytes())).into_owned()
 }
 
 fn run_header(settings: &RunSettings<'_>) -> String {

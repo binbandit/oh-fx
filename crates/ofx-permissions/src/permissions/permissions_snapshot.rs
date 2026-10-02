@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::path::{Component, Path};
 
 use ofx_contract::{CommandProfile, PermissionMode, SessionGrant};
-use ofx_text::escape_terminal_controls;
+use ofx_text::{escape_terminal_controls, shell_word};
 
 const WORKSPACE_FILE_PERMISSIONS: [&str; 4] = ["edit", "read", "glob", "grep"];
 
@@ -66,16 +66,7 @@ fn grant_lines(workspace_root: &Path, grant: &SessionGrant) -> Vec<String> {
 }
 
 fn displayed(path: &Path) -> String {
-    let text = escape_terminal_controls(&path.to_string_lossy()).into_owned();
-    let bare = !text.is_empty()
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+,:@%".contains(&byte));
-    if bare {
-        text
-    } else {
-        format!("'{}'", text.replace('\'', r"'\''"))
-    }
+    shell_word(&escape_terminal_controls(&path.to_string_lossy())).into_owned()
 }
 
 fn tree_pattern(workspace_root: &Path, root: &Path) -> String {

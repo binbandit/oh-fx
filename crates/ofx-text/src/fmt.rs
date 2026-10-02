@@ -1,4 +1,7 @@
+use std::borrow::Cow;
+
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+const PLAIN_WORD_PUNCTUATION: &[u8] = b"/._-+,:@%";
 
 pub fn lowercase_hex(bytes: &[u8]) -> String {
     bytes
@@ -11,6 +14,18 @@ pub fn lowercase_hex(bytes: &[u8]) -> String {
         })
         .map(char::from)
         .collect()
+}
+
+pub fn shell_word(text: &str) -> Cow<'_, str> {
+    let plain = !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || PLAIN_WORD_PUNCTUATION.contains(&byte));
+    if plain {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(format!("'{}'", text.replace('\'', r"'\''")))
+    }
 }
 
 pub fn parse_unsigned<T: TryFrom<u64>>(text: &str) -> Option<T> {
@@ -35,6 +50,18 @@ mod tests {
     fn lowercase_hex_writes_two_digits_per_byte() {
         assert_eq!(lowercase_hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
         assert_eq!(lowercase_hex(&[]), "");
+    }
+
+    #[test]
+    fn shell_word_quotes_everything_but_plain_path_characters() {
+        assert_eq!(
+            shell_word("/ws/v1.2_a-b+c,d:e@f%g"),
+            "/ws/v1.2_a-b+c,d:e@f%g"
+        );
+        assert_eq!(shell_word("/ws/x, profile=clean"), "'/ws/x, profile=clean'");
+        assert_eq!(shell_word("it's"), r"'it'\''s'");
+        assert_eq!(shell_word("caf\u{e9}"), "'caf\u{e9}'");
+        assert_eq!(shell_word(""), "''");
     }
 
     #[test]
