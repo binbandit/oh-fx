@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::symlink;
+use std::process::Command;
 
 use tempfile::TempDir;
 
@@ -692,14 +693,13 @@ fn linked_metadata_outside_authority_is_rejected_before_descriptor_open() {
 fn linked_metadata_fifo_is_rejected_before_descriptor_open() {
     let fixture = Fixture::new();
     fixture.mkdir("home/workspace");
-    rustix::fs::mknodat(
-        CWD,
-        fixture.path("home/workspace/metadata.fifo"),
-        FileType::Fifo,
-        Mode::from_raw_mode(0o600),
-        0,
-    )
-    .unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .arg(fixture.path("home/workspace/metadata.fifo"))
+            .status()
+            .unwrap()
+            .success()
+    );
     fixture.symlink(
         "../../../metadata.fifo",
         "home/workspace/.codex/skills/fifo/SKILL.md",
