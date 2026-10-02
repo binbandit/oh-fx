@@ -23,11 +23,11 @@ use ofx_config::{
 };
 use ofx_contract::{
     CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    ProviderError, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection,
-    ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
+    TurnOutcome, UiEvent, Usage,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
-use ofx_gateway::ChatCompletionsProvider;
+use ofx_gateway::{ChatCompletionsProvider, HttpFailure};
 use ofx_permissions::PermissionPolicy;
 use ofx_session::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 use ofx_text::encode_terminal_safe;
@@ -1184,11 +1184,11 @@ impl Presenter {
 
     fn describe_failure(&mut self, failure: &TurnFailure) -> FailureSummary {
         let summary = match failure {
-            TurnFailure::Provider(error) if error.status.is_some() => {
-                self.describe_http_failure(error)
-            }
             TurnFailure::Provider(error) => {
-                self.describe_error(&error.code, error.detail.as_deref())
+                match ofx_gateway::http_failure(error, self.source.label()) {
+                    Some(failure) => self.describe_http_failure(&failure),
+                    None => self.describe_error(&error.code, error.detail.as_deref()),
+                }
             }
             TurnFailure::InvalidCompletion
             | TurnFailure::PermissionRequired(_)
@@ -1219,30 +1219,21 @@ impl Presenter {
         })
     }
 
-    fn describe_http_failure(&mut self, error: &ProviderError) -> io::Result<FailureSummary> {
-        let status = error.status.unwrap_or_default();
-        let bare = format!("HTTP {status}");
-        let detail = error.detail.as_deref().unwrap_or(&bare);
-        let auth_failure = status == 401;
-        let message = if auth_failure {
-            format!("{} authentication failed · HTTP 401", self.source.label())
-        } else {
-            detail.to_owned()
-        };
-        write_stderr(&format!("oh-fx ask: {message}\n"))?;
-        if auth_failure && detail != bare {
-            write_stderr(&format!("oh-fx ask: {detail}\n"))?;
+    fn describe_http_failure(&mut self, failure: &HttpFailure<'_>) -> io::Result<FailureSummary> {
+        write_stderr(&format!("oh-fx ask: {}\n", failure.message))?;
+        if let Some(explanation) = failure.explanation {
+            write_stderr(&format!("oh-fx ask: {explanation}\n"))?;
         }
-        if let Some(guidance) = self.source.relogin().filter(|_| auth_failure) {
+        if let Some(guidance) = self.source.relogin().filter(|_| failure.unauthorized) {
             write_stderr(&format!("oh-fx ask: {guidance}\n"))?;
         }
         if self.mode == OutputMode::Json {
-            self.output.push_str(&message);
+            self.output.push_str(&failure.message);
             self.output.push('\n');
         }
         Ok(FailureSummary {
             error: None,
-            auth_failure,
+            auth_failure: failure.unauthorized,
         })
     }
 
@@ -1339,8 +1330,8 @@ mod tests {
     use ofx_auth::{ChatGptEndpoints, PreparationError};
     use ofx_cli::{CommandLaunch, Invocation};
     use ofx_contract::{
-        CallDescription, Concurrency, ModelFailureDiagnostic, ProviderErrorKind, RouteRecoveryKind,
-        ToolActivity, TurnId,
+        CallDescription, Concurrency, ModelFailureDiagnostic, ProviderError, ProviderErrorKind,
+        RouteRecoveryKind, ToolActivity, TurnId,
     };
     use ofx_gateway::CodexEndpoints;
     use ofx_testkit::{FakeServer, Reply};
