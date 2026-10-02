@@ -1,5 +1,6 @@
-#[cfg(not(target_os = "linux"))]
 mod group_tree;
+#[cfg(target_os = "linux")]
+mod linux_tree;
 mod supervision;
 #[cfg(target_os = "linux")]
 mod tracked_tree;
@@ -15,10 +16,10 @@ use rustix::process::{Pid, Signal, kill_process_group, setsid};
 use super::{error_name, launch_failure_prefix, status_prefix};
 #[cfg(not(target_os = "linux"))]
 use group_tree::GroupTree;
+#[cfg(target_os = "linux")]
+use linux_tree::LinuxTree;
 pub(super) use supervision::FORCE_SIGNAL;
 use supervision::{Requests, Supervision};
-#[cfg(target_os = "linux")]
-use tracked_tree::TrackedTree;
 
 pub(super) const TOKEN: &str = "__oh_fx_foreground_session__";
 pub(super) const READY_BYTE: u8 = 0x1e;
@@ -84,7 +85,7 @@ fn supervise(args: &[OsString]) -> Result<ExitStatus, Failure> {
         .map_err(|error| launch(error_name(&error)))?;
     let target = Pid::from_child(&target);
     #[cfg(target_os = "linux")]
-    let tree = TrackedTree::new(target, session).map_err(|name| {
+    let tree = LinuxTree::new(target, session).map_err(|name| {
         let _ = rustix::process::kill_process(target, Signal::KILL);
         launch(name)
     })?;

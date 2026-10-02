@@ -46,10 +46,58 @@ if os.fork() == 0:
     ctypes.CDLL(None).pthread_exit(None)
 while True: time.sleep(1)
 ";
+const FOREIGN_PROC: &str = r#"import os, signal, subprocess, sys, time
+def state(pid):
+    try:
+        return open('/proc/%s/stat' % pid).read().rsplit(')', 1)[1].split()[0]
+    except (OSError, IndexError):
+        return 'gone'
+if sys.argv[1] == 'outer':
+    ready_r, ready_w = os.pipe()
+    decoy = os.fork()
+    if decoy == 0:
+        for _ in range(8):
+            if os.fork() == 0:
+                os.setsid()
+                time.sleep(60)
+                os._exit(0)
+        os.write(ready_w, b'R')
+        time.sleep(60)
+        os._exit(0)
+    os.read(ready_r, 1)
+    children = open('/proc/%d/task/%d/children' % (decoy, decoy)).read().split()
+    command = ['unshare', '--pid', '--fork', '--kill-child', sys.executable, sys.argv[0], 'inner']
+    sys.exit(subprocess.run(command + [sys.argv[2], ','.join(children)]).returncode)
+recorded = os.path.join(os.path.dirname(sys.argv[0]), 'target')
+target = "import os, sys, time\nopen(sys.argv[1], 'w').write(os.readlink('/proc/self'))\ntime.sleep(60)"
+supervisor = subprocess.Popen(
+    [sys.argv[2], '__oh_fx_foreground_session__', 'none', sys.executable, '-c', target, recorded],
+    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+if supervisor.stderr.read(1) != b'\x1e':
+    sys.exit(1)
+supervisor.stdin.write(b'0123456789abcdef0123456789abcdef\x06')
+supervisor.stdin.flush()
+victims = [subprocess.Popen(['sleep', '60'], start_new_session=True) for _ in range(6)]
+decoys = set(int(pid) for pid in sys.argv[3].split(','))
+print('arranged=' + ('yes' if any(victim.pid in decoys for victim in victims) else 'no'))
+while not (os.path.exists(recorded) and open(recorded).read()):
+    time.sleep(0.01)
+outer_pid = open(recorded).read()
+os.kill(supervisor.pid, signal.SIGUSR1)
+supervisor.wait()
+waited = time.time() + 10
+while state(outer_pid) not in ('Z', 'gone') and time.time() < waited:
+    time.sleep(0.01)
+print('target=' + state(outer_pid))
+time.sleep(0.2)
+print('killed=%s' % [victim.pid for victim in victims if victim.poll() is not None])
+for victim in victims:
+    victim.kill()
+"#;
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 24] = [
+const TESTS: [(&str, Test); 25] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -145,6 +193,10 @@ const TESTS: [(&str, Test); 24] = [
     (
         "losing_the_owner_kills_a_descendant_whose_main_thread_exited",
         losing_the_owner_kills_a_descendant_whose_main_thread_exited,
+    ),
+    (
+        "a_forced_stop_through_another_namespaces_proc_spares_unrelated_processes",
+        a_forced_stop_through_another_namespaces_proc_spares_unrelated_processes,
     ),
 ];
 
@@ -774,6 +826,42 @@ fn losing_the_owner_kills_a_descendant_whose_main_thread_exited() {
     let pid = escaped.await_pid();
     drop(escaped.owner.take());
     assert_killed(pid, "the loss of its owner");
+}
+
+fn a_forced_stop_through_another_namespaces_proc_spares_unrelated_processes() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("the test step succeeds");
+    let helper = directory.path().join("foreign_proc.py");
+    fs::write(&helper, FOREIGN_PROC).expect("the test step succeeds");
+    let report = process::Command::new("unshare")
+        .args([
+            "--user",
+            "--map-root-user",
+            "--pid",
+            "--fork",
+            "--mount-proc",
+        ])
+        .args(["--kill-child", "python3"])
+        .arg(&helper)
+        .arg("outer")
+        .arg(env::current_exe().expect("the test step succeeds"))
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    let Some(killed) = report.lines().find_map(|line| line.strip_prefix("killed=")) else {
+        println!("note: no user and pid namespaces here, so a foreign /proc went untested");
+        return;
+    };
+    assert!(report.contains("arranged=yes"), "{report}");
+    assert!(
+        report.contains("target=Z") || report.contains("target=gone"),
+        "{report}"
+    );
+    assert_eq!(killed, "[]", "a forced stop killed unrelated processes");
 }
 
 struct EscapedCommand {

@@ -20,6 +20,10 @@ impl InspectionError {
     }
 }
 
+pub(crate) fn proc_shows_own_pid_namespace() -> bool {
+    proc_fs::shows_own_pid_namespace()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Identity {
     start_ticks: u64,

@@ -3,7 +3,7 @@ use std::io::{self, Read};
 use std::str::FromStr;
 
 use rustix::io::Errno;
-use rustix::process::Pid;
+use rustix::process::{Pid, getpid};
 
 use super::{Identity, InspectionError, ProcessSnapshot};
 use crate::command_runner::error_name;
@@ -30,6 +30,10 @@ pub(super) fn capture_snapshot(pid: Pid) -> Result<ProcessSnapshot, InspectionEr
         }
     };
     parse_stat(&buffer[..length]).ok_or(IDENTITY_UNAVAILABLE)
+}
+
+pub(super) fn shows_own_pid_namespace() -> bool {
+    fs::read_to_string("/proc/self/status").is_ok_and(|status| lists_only(&status, getpid()))
 }
 
 pub(super) fn tasks(pid: Pid) -> Result<Vec<Pid>, InspectionError> {
@@ -62,6 +66,16 @@ pub(super) fn task_children(pid: Pid, task: Pid) -> Result<Option<Vec<Pid>>, Ins
         Err(error) if vanished(&error) => Ok(None),
         Err(_) => Err(INSPECTION_FAILED),
     }
+}
+
+fn lists_only(status: &str, pid: Pid) -> bool {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("NSpid:"))
+        .is_some_and(|ids| {
+            let mut ids = ids.split_ascii_whitespace().map(parse_pid);
+            ids.next() == Some(Some(pid)) && ids.next().is_none()
+        })
 }
 
 fn parse_stat(stat: &[u8]) -> Option<ProcessSnapshot> {
@@ -120,7 +134,7 @@ fn errno(error: &io::Error) -> Option<Errno> {
 
 #[cfg(test)]
 mod tests {
-    use super::{open_directory, open_file, parse_stat};
+    use super::{lists_only, open_directory, open_file, parse_stat};
     use crate::process_tree::{Identity, ProcessSnapshot};
 
     #[test]
@@ -133,6 +147,17 @@ mod tests {
             open_file("/proc/self/oh-fx-process-tree-missing"),
             Ok(None)
         ));
+    }
+
+    #[test]
+    fn only_a_proc_that_numbers_the_caller_once_belongs_to_its_pid_namespace() {
+        let pid = rustix::process::Pid::from_raw(42).expect("a positive pid");
+        let status = |ids: &str| format!("Name:\tsh\nPid:\t42\nNSpid:{ids}\nNSpgid:\t42\n");
+        assert!(lists_only(&status("\t42"), pid));
+        assert!(!lists_only(&status("\t17183\t42"), pid));
+        assert!(!lists_only(&status("\t43"), pid));
+        assert!(!lists_only(&status(""), pid));
+        assert!(!lists_only("Name:\tsh\nPid:\t42\n", pid));
     }
 
     #[test]
