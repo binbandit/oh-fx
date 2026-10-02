@@ -13,7 +13,10 @@ pub struct Questions {
 }
 
 #[derive(Debug)]
-pub struct QuestionRequests(mpsc::UnboundedReceiver<QuestionRequest>);
+pub struct QuestionRequests {
+    receiver: mpsc::UnboundedReceiver<QuestionRequest>,
+    state: Arc<Mutex<State>>,
+}
 
 #[derive(Debug, Default)]
 struct State {
@@ -29,12 +32,13 @@ struct Pending {
 impl Questions {
     pub fn new() -> (Self, QuestionRequests) {
         let (requests, receiver) = mpsc::unbounded_channel();
+        let state: Arc<Mutex<State>> = Arc::default();
         (
             Self {
-                state: Arc::default(),
+                state: Arc::clone(&state),
                 requests,
             },
-            QuestionRequests(receiver),
+            QuestionRequests { receiver, state },
         )
     }
 
@@ -69,7 +73,12 @@ impl QuestionAsker for Questions {
 
 impl QuestionRequests {
     pub async fn next(&mut self) -> Option<QuestionRequest> {
-        self.0.recv().await
+        loop {
+            let request = self.receiver.recv().await?;
+            if lock(&self.state).pending.contains_key(&request.id) {
+                return Some(request);
+            }
+        }
     }
 }
 
@@ -119,6 +128,17 @@ mod tests {
         assert!(questions.resolve(next.id, None));
         assert_eq!(first.await, Some(vec!["Yes".to_owned()]));
         assert_eq!(second.await, None);
+    }
+
+    #[tokio::test]
+    async fn a_question_abandoned_before_it_was_announced_is_never_announced() {
+        let (questions, mut requests) = Questions::new();
+        drop(questions.ask(entries("Gone?")));
+        let kept = questions.ask(entries("Kept?"));
+        let announced = requests.next().await.unwrap();
+        assert_eq!(announced.entries, entries("Kept?"));
+        assert!(questions.resolve(announced.id, None));
+        assert_eq!(kept.await, None);
     }
 
     #[tokio::test]
