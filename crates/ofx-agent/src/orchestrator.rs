@@ -8,15 +8,15 @@ use std::time::Duration;
 use ofx_contract::{
     Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent, BoxFuture,
     CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion,
-    Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileMutation, FinishReason,
-    GatedAction, ModelCapabilities, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause,
-    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ProviderOptions, RequestId, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool,
-    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolContext, ToolEffect,
-    ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
-    format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
-    prepare_model_output, review_unavailable_json, tool_execution_failure_json,
-    tool_permission_denied_json,
+    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileMutation,
+    FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
+    ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
+    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, RouteRecoveryKind,
+    RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity,
+    ToolCall, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
+    ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage, format_unknown_action,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
+    review_unavailable_json, tool_execution_failure_json, tool_permission_denied_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -33,6 +33,7 @@ use crate::prompt_context::Calibration;
 
 mod compaction;
 mod project_gate;
+mod turn_log;
 
 #[cfg(test)]
 use compaction::Compaction;
@@ -40,6 +41,7 @@ use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
 #[cfg(test)]
 use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
+use turn_log::Ending;
 
 const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
@@ -89,6 +91,7 @@ pub enum TurnFailure {
     PermissionRequired(BlockedCall),
     ProjectContext,
     Compaction(CompactionError),
+    Persistence(LogFailure),
 }
 
 impl TurnFailure {
@@ -101,6 +104,7 @@ impl TurnFailure {
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
             Self::ProjectContext => "ProjectContextFailed",
             Self::Compaction(error) => error.code(),
+            Self::Persistence(failure) => &failure.code,
         }
     }
 }
@@ -179,6 +183,8 @@ pub struct Agent {
     turn_starts: Vec<usize>,
     compacted: Option<Payload>,
     calibration: Option<Calibration>,
+    session_id: Option<String>,
+    log: Option<Box<dyn ConversationLog>>,
     #[cfg(test)]
     request_fixed_tokens: Option<usize>,
     turns: u64,
@@ -208,6 +214,8 @@ impl Agent {
             turn_starts: Vec::new(),
             compacted: None,
             calibration: None,
+            session_id: None,
+            log: None,
             #[cfg(test)]
             request_fixed_tokens: None,
             turns: 0,
@@ -286,26 +294,43 @@ impl Agent {
         self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
         let result = self.drive(&mut turn, events, cancel).await;
-        let (outcome, final_text, failure) = match result {
-            Ok(text) => (TurnOutcome::Completed, text, None),
+        let (mut outcome, final_text, mut failure, ending) = match result {
+            Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
             Err(Stop::Interrupted { partial }) => {
                 self.keep_partial_turn(turn.start, &partial);
-                (TurnOutcome::Interrupted, String::new(), None)
+                (
+                    TurnOutcome::Interrupted,
+                    String::new(),
+                    None,
+                    Ending::Stopped(TurnStop::Cancelled),
+                )
             }
             Err(Stop::Failed { failure, partial }) => {
-                if partial.trim_matches(TRIMMED).is_empty()
+                let ending = if partial.trim_matches(TRIMMED).is_empty()
                     && !self.has_completed_tool_steps(turn.start)
                     && !turn.compaction.compacted_steps
                     && failure != TurnFailure::StepLimitReached
                 {
                     self.history.truncate(turn.start);
                     self.turn_starts.pop();
+                    Ending::Discarded
                 } else {
                     self.keep_partial_turn(turn.start, &partial);
-                }
-                (TurnOutcome::Failed, String::new(), Some(failure))
+                    if partial.is_empty() {
+                        Ending::Replied
+                    } else {
+                        Ending::Stopped(TurnStop::Failed)
+                    }
+                };
+                (TurnOutcome::Failed, String::new(), Some(failure), ending)
             }
         };
+        if let Err(error) = self.record_turn(prompt, turn.start, ending)
+            && failure.is_none()
+        {
+            outcome = TurnOutcome::Failed;
+            failure = Some(TurnFailure::Persistence(error));
+        }
         events(UiEvent::TurnFinished {
             turn_id: id,
             outcome,
@@ -366,6 +391,7 @@ impl Agent {
                 tool_choice: ToolChoice::Auto,
                 max_output_tokens: self.config.max_output_tokens,
                 provider_options: self.provider_options(turn, events),
+                session_id: self.session_id.as_deref(),
             };
             let (measured, body) = self.measure(turn, &request).unzip();
             match self
@@ -375,7 +401,7 @@ impl Agent {
                 Ok(None) => {}
                 Ok(Some(compacted)) => {
                     self.settle_measurement(measured, None);
-                    self.install_turn_compaction(turn, compacted);
+                    self.install_turn_compaction(turn, compacted)?;
                     continue;
                 }
                 Err(error) => return Err(compaction_stop(error, cancel)),

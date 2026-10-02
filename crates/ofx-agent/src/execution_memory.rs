@@ -1,6 +1,8 @@
 use std::mem;
 
-use ofx_contract::{ChatMessage, ProviderReplay, ToolCall, ToolResultStatus};
+use ofx_contract::{
+    ChatMessage, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolResultStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolResult<'a> {
@@ -50,7 +52,7 @@ pub(crate) fn history_turns<'a>(
         .collect()
 }
 
-fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTurn<'_> {
+pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTurn<'_> {
     let user = match &history[start] {
         ChatMessage::User { content } => content.as_str(),
         _ => "",
@@ -132,6 +134,31 @@ fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTur
         reply_replay,
         start,
     }
+}
+
+pub(crate) fn logged_steps<'a>(steps: &[ToolStep<'a>]) -> Vec<HistoryStep<'a>> {
+    steps
+        .iter()
+        .map(|step| HistoryStep {
+            assistant: step.assistant,
+            provider_replay: step.replay,
+            tool_calls: step.calls,
+            tool_results: step
+                .results
+                .iter()
+                .map(|result| StepResult {
+                    call_id: result.call_id,
+                    tool_name: result.tool_name,
+                    output: result.output,
+                    status: if result.failed {
+                        ToolResultStatus::Failure
+                    } else {
+                        ToolResultStatus::Success
+                    },
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 pub(crate) fn retain(

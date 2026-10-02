@@ -155,7 +155,13 @@ impl Agent {
         Ok(None)
     }
 
-    pub(super) fn install_turn_compaction(&mut self, turn: &mut Turn, compacted: Compacted) {
+    pub(super) fn install_turn_compaction(
+        &mut self,
+        turn: &mut Turn,
+        compacted: Compacted,
+    ) -> Result<(), Stop> {
+        self.record_compaction(turn.start, &compacted)
+            .map_err(|failure| Stop::failed(TurnFailure::Persistence(failure)))?;
         let active = self.turn_starts.len().saturating_sub(1);
         turn.compaction.compacted_steps |=
             compacted.cut.turns == active && compacted.cut.tool_steps > 0;
@@ -166,6 +172,7 @@ impl Agent {
         if turn.compaction.overflow == Overflow::Pending {
             turn.compaction.overflow = Overflow::Used;
         }
+        Ok(())
     }
 
     pub(super) fn recovers_overflow(
@@ -249,6 +256,7 @@ impl Agent {
             options,
             reasoning_efforts,
             conversation,
+            session_id: self.session_id.as_deref(),
             cancel,
         };
         let request = compactor::Request {

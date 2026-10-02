@@ -23,6 +23,7 @@ fn summarizer<'a>(
         },
         reasoning_efforts,
         conversation,
+        session_id: None,
         cancel,
     }
 }
@@ -94,6 +95,7 @@ async fn a_request_after_the_conversation_sends_it_unchanged_then_the_request() 
             reasoning_effort: Some("high"),
             fast: false,
         },
+        session_id: None,
     };
     let mut model = summarizer(&provider, &levels, Some(conversation), &cancel);
     let reply = model

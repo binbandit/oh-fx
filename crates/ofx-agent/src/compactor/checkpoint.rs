@@ -1,8 +1,12 @@
+mod saved;
+
 use std::fmt::Write;
 
 pub(crate) const ENTRY_KINDS: [u8; 5] = *b"RFDSO";
 pub(crate) const CHECK_MARK: &str = " [check: ";
 pub(crate) const REPLACED_MARK: &str = " (replaced by ";
+
+pub(crate) use saved::{encode_checkpoint, restore_checkpoint};
 
 pub(crate) type Highest = [usize; ENTRY_KINDS.len()];
 

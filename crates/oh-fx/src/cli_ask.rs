@@ -1025,7 +1025,8 @@ impl Presenter {
             TurnFailure::InvalidCompletion
             | TurnFailure::PermissionRequired(_)
             | TurnFailure::ProjectContext
-            | TurnFailure::Compaction(_) => self.describe_error(failure.code(), None),
+            | TurnFailure::Compaction(_)
+            | TurnFailure::Persistence(_) => self.describe_error(failure.code(), None),
             TurnFailure::StepLimitReached | TurnFailure::RepeatedMalformedArguments => {
                 Ok(FailureSummary {
                     error: None,
