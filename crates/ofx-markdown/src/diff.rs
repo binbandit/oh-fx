@@ -1,5 +1,3 @@
-use std::iter;
-
 const REVIEW_CONTEXT_LINES: usize = 5;
 const CANONICAL_MAX_INDEXED_LINES: usize = 16_384;
 const CANONICAL_MAX_MATRIX_CELLS: usize = 1_000_000;
@@ -111,31 +109,38 @@ impl<'a> FileReview<'a> {
         self.deletions
     }
 
-    pub fn row_count(&self) -> usize {
+    pub fn rows(&self) -> impl Iterator<Item = ReviewLine<'a>> + '_ {
         if self.additions + self.deletions == 0 {
-            return 1;
-        }
-        match &self.mode {
-            Mode::Computed(source) => computed_rows(source).len(),
-            Mode::Fallback(source) => {
-                equal_run_row_count(source.prefix_count)
-                    + self.deletions
-                    + self.additions
-                    + equal_run_row_count(source.suffix_count)
-            }
-        }
-    }
-
-    pub fn rows(&self) -> Box<dyn Iterator<Item = ReviewLine<'a>> + '_> {
-        if self.additions + self.deletions == 0 {
-            return Box::new(iter::once(ReviewLine {
+            return Rows::Notice(Some(ReviewLine {
                 op: ReviewOp::Notice,
                 text: NO_CONTENT_CHANGES,
             }));
         }
         match &self.mode {
-            Mode::Computed(source) => Box::new(computed_rows(source).into_iter()),
-            Mode::Fallback(source) => Box::new(source.rows()),
+            Mode::Computed(source) => Rows::Computed(computed_rows(source).into_iter()),
+            Mode::Fallback(source) => Rows::Fallback(source.rows()),
+        }
+    }
+}
+
+enum Rows<'a, C, F> {
+    Notice(Option<ReviewLine<'a>>),
+    Computed(C),
+    Fallback(F),
+}
+
+impl<'a, C, F> Iterator for Rows<'a, C, F>
+where
+    C: Iterator<Item = ReviewLine<'a>>,
+    F: Iterator<Item = ReviewLine<'a>>,
+{
+    type Item = ReviewLine<'a>;
+
+    fn next(&mut self) -> Option<ReviewLine<'a>> {
+        match self {
+            Self::Notice(line) => line.take(),
+            Self::Computed(rows) => rows.next(),
+            Self::Fallback(rows) => rows.next(),
         }
     }
 }
@@ -213,10 +218,6 @@ impl<'a> Fallback<'a> {
             )
             .chain(elision(suffix_elision))
     }
-}
-
-fn equal_run_row_count(count: usize) -> usize {
-    count.min(REVIEW_CONTEXT_LINES) + usize::from(count > REVIEW_CONTEXT_LINES)
 }
 
 fn computed_rows<'a>(source: &[DiffLine<'a>]) -> Vec<ReviewLine<'a>> {

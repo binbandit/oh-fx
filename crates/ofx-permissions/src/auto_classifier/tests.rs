@@ -1089,3 +1089,32 @@ fn command_evidence_above_sixteen_kib_is_still_complete() {
     let subject = command_subject(&batch, ROOT, &oversized);
     assert!(!evidence::serialize(&subject).action_complete);
 }
+
+#[test]
+fn automatic_review_fails_closed_when_prepared_file_evidence_exceeds_its_byte_budget() {
+    let mut content = String::new();
+    for index in 0..96 {
+        content.push_str(&"x".repeat(800));
+        let _ = writeln!(content, "-{index}");
+    }
+    let batch = [call("large_write", "write_file", "{}")];
+    let mut subject = tool_subject(&batch, 0);
+    subject.action = Action::FileMutation {
+        tool_name: "write_file",
+        display_path: "report.md",
+        preimage_present: false,
+        review: ofx_markdown::FileReview::new(b"", content.as_bytes()),
+    };
+    let evidence = evidence::serialize(&subject);
+    assert!(!evidence.action_complete);
+    assert!(evidence.text.contains(&format!(
+        "{}-79\nreview_omitted_rows: 16\n",
+        "x".repeat(800)
+    )));
+    assert!(!evidence.text.contains("-80\n"));
+    assert!(
+        evidence
+            .text
+            .ends_with("action_evidence_incomplete: true\n")
+    );
+}

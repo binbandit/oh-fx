@@ -212,16 +212,16 @@ pub(super) fn serialize(subject: &ReviewSubject<'_>) -> Evidence {
 
 fn write_review_rows(out: &mut String, review: &FileReview<'_>, complete: &mut bool) {
     let review_start = out.len();
-    let total_rows = review.row_count();
-    for (index, line) in review.rows().enumerate() {
+    let mut rows = review.rows();
+    let overflowed = rows.by_ref().any(|line| {
         let _ = write!(out, "review[{}]: ", line.op.as_str());
         write_bounded_value(out, line.text, MAX_REVIEW_EVIDENCE_BYTES, complete);
         out.push('\n');
-        if out.len() - review_start > MAX_REVIEW_EVIDENCE_BYTES {
-            *complete = false;
-            let _ = writeln!(out, "review_omitted_rows: {}", total_rows - (index + 1));
-            return;
-        }
+        out.len() - review_start > MAX_REVIEW_EVIDENCE_BYTES
+    });
+    if overflowed {
+        *complete = false;
+        let _ = writeln!(out, "review_omitted_rows: {}", rows.count());
     }
 }
 

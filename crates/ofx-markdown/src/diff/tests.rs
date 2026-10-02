@@ -75,7 +75,6 @@ fn compute_matches_upstream_line_operations() {
 fn file_review_exposes_every_changed_line_beyond_the_bounded_preview_cap() {
     let after = numbered("line ", 1..31);
     let review = FileReview::new(b"", after.as_bytes());
-    assert_eq!(review.row_count(), 30);
     let rows = rows(&review);
     assert_eq!(rows.len(), 30);
     assert_eq!(rows[24], (ReviewOp::Addition, "line 0025".to_owned()));
@@ -88,7 +87,6 @@ fn fallback_file_review_seeks_to_replacement_boundaries() {
     let after = numbered("new-", 1..2049);
     let review = FileReview::new(before.as_bytes(), after.as_bytes());
     assert!(matches!(review.mode, Mode::Fallback(_)));
-    assert_eq!(review.row_count(), 4096);
     let rows = rows(&review);
     assert_eq!(rows.len(), 4096);
     assert_eq!(rows[2047], (ReviewOp::Deletion, "old-2048".to_owned()));
@@ -105,7 +103,6 @@ fn file_review_projects_five_context_lines_and_exact_computed_elisions() {
     let before = format!("{lead}old-one\n{middle}old-two\n{tail}");
     let after = format!("{lead}new-one\n{middle}new-two\n{tail}");
     let review = FileReview::new(before.as_bytes(), after.as_bytes());
-    assert_eq!(review.row_count(), 27);
     let rows = rows(&review);
     assert_eq!(rows.len(), 27);
     assert_eq!(rows[0], (ReviewOp::Elision, String::new()));
@@ -136,7 +133,6 @@ fn file_review_projects_only_proven_fallback_context_with_exact_elisions() {
     );
     let review = FileReview::new(before.as_bytes(), after.as_bytes());
     assert!(matches!(review.mode, Mode::Fallback(_)));
-    assert_eq!(review.row_count(), 14);
     let rows = rows(&review);
     assert_eq!(rows.len(), 14);
     assert_eq!(rows[0].0, ReviewOp::Elision);
@@ -179,7 +175,6 @@ fn file_review_preserves_replacements_and_trailing_newline_markers() {
 #[test]
 fn unchanged_content_reviews_as_a_single_notice() {
     let review = FileReview::new(b"same\n", b"same\n");
-    assert_eq!(review.row_count(), 1);
     assert_eq!(
         rows(&review),
         [(ReviewOp::Notice, "No content changes".to_owned())]
