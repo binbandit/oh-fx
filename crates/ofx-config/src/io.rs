@@ -152,7 +152,11 @@ impl PrivateDir {
         {
             return Err(DurableError::InsecureFile);
         }
-        let mut bytes = Zeroizing::new(Vec::with_capacity(max_bytes + 1));
+        let size = usize::try_from(stat.st_size).map_err(|_| DurableError::TooLarge)?;
+        if size > max_bytes {
+            return Err(DurableError::TooLarge);
+        }
+        let mut bytes = Zeroizing::new(Vec::with_capacity(size + 1));
         let limit = u64::try_from(max_bytes + 1).map_err(|_| DurableError::TooLarge)?;
         File::from(fd)
             .take(limit)
@@ -579,6 +583,12 @@ mod tests {
             directory.read_private("auth.json", 3),
             Err(DurableError::TooLarge)
         );
+        let read = directory
+            .read_private("auth.json", 64 * 1024 * 1024)
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.as_slice(), b"second");
+        assert!(read.capacity() < 4096, "{}", read.capacity());
     }
 
     #[test]
