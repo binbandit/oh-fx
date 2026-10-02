@@ -42,7 +42,7 @@ fn runs_without_review(workspace_root: &Path, request: &CommandRequest) -> bool 
             !terminal && path_inside(workspace_root, cwd) && known_reversible_auto_command(command)
         }
         CommandRequest::Observe => true,
-        CommandRequest::SendInput | CommandRequest::Stop => false,
+        CommandRequest::SendInput { .. } | CommandRequest::Stop => false,
     }
 }
 
@@ -74,7 +74,9 @@ mod tests {
             run("git status", WORKSPACE, false),
             run("rm -rf .", WORKSPACE, false),
             CommandRequest::Observe,
-            CommandRequest::SendInput,
+            CommandRequest::SendInput {
+                input: "y\n".to_owned(),
+            },
             CommandRequest::Stop,
         ]
     }
@@ -129,7 +131,9 @@ mod tests {
                 WORKSPACE,
                 false,
             ),
-            CommandRequest::SendInput,
+            CommandRequest::SendInput {
+                input: "y\n".to_owned(),
+            },
             CommandRequest::Stop,
         ] {
             assert_eq!(

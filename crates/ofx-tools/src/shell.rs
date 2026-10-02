@@ -126,7 +126,9 @@ impl Validated {
                     terminal: request.tty,
                 }
             }
-            Self::Interact(request) if request.has_input() => CommandRequest::SendInput,
+            Self::Interact(request) if request.has_input() => CommandRequest::SendInput {
+                input: request.chars.clone().unwrap_or_default(),
+            },
             Self::Interact(_) => CommandRequest::Observe,
             Self::Stop(_) => CommandRequest::Stop,
         }

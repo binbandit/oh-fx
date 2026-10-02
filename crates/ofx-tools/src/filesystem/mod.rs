@@ -139,7 +139,8 @@ pub(crate) mod tests {
             };
             let policy = PermissionPolicy::new(PermissionMode::Ask, &self.workspace);
             assert_eq!(policy.admit(&call), Admission::ApprovalRequired);
-            policy.remember_approval(GatedAction::Call(&call));
+            let approved = policy.approval_scope(GatedAction::Call(&call));
+            policy.remember_approval(GatedAction::Call(&call), &approved.access);
             let admitted = || match policy.admit(&call) {
                 Admission::Allowed(path_access) => path_access,
                 other => panic!("the remembered approval admits the call: {other:?}"),
