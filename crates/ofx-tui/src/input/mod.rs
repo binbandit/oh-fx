@@ -526,6 +526,19 @@ mod tests {
     }
 
     #[test]
+    fn dropping_input_mid_authorization_code_capture_does_not_reenter_drop() {
+        let mut input = TerminalInput::new();
+        input.push_bytes(b"\x1b[200~");
+        assert_eq!(drain(&mut input, 0), vec![action(Action::PasteStart)]);
+        input.begin_paste(PasteOwner::AuthCode, 64);
+        input.push_bytes(b"half-entered-code");
+        assert!(drain(&mut input, 0).is_empty());
+        assert_eq!(input.settle_delivery_epoch(), None);
+        assert!(input.paste.active());
+        drop(input);
+    }
+
+    #[test]
     fn theme_replies_are_filtered_out_of_input() {
         let mut input = TerminalInput::new();
         input.start_theme_monitor();

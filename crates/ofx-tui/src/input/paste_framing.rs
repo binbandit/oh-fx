@@ -1,6 +1,7 @@
 use std::fmt;
 
 use ofx_text::{is_model_safe_text, normalize_line_endings_in_place};
+use zeroize::Zeroize;
 
 const PASTE_END_MARKER: &[u8] = b"\x1b[201~";
 const AUTH_CODE_RESERVED_BYTES: usize = 4096;
@@ -36,8 +37,7 @@ impl Drop for SecretText {
 
 fn wipe(bytes: &mut Vec<u8>) {
     bytes.resize(bytes.capacity(), 0);
-    bytes.fill(0);
-    std::hint::black_box(bytes.as_slice());
+    bytes.as_mut_slice().zeroize();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,16 +166,23 @@ impl PasteFraming {
     }
 
     pub(crate) fn reset(&mut self) {
-        let mut buffer = std::mem::take(&mut self.buffer);
+        self.wipe_secret();
+        self.owner = None;
+        self.boundary = Boundary::Capturing;
+        self.unsafe_suffix_bytes = 0;
+        self.end_match_len = 0;
+        self.end_candidate_buffer_len = 0;
+        self.end_candidate_overflow_bytes = 0;
+        self.overflow_bytes = 0;
+        self.buffer_limit = usize::MAX;
+        self.decision_bytes = 0;
+        self.buffer.clear();
+    }
+
+    fn wipe_secret(&mut self) {
         if self.owner == Some(PasteOwner::AuthCode) {
-            wipe(&mut buffer);
+            wipe(&mut self.buffer);
         }
-        buffer.clear();
-        *self = Self {
-            buffer_limit: usize::MAX,
-            buffer,
-            ..Self::default()
-        };
     }
 
     fn capture_byte(&mut self, owner: PasteOwner, byte: u8) {
@@ -283,6 +290,12 @@ impl PasteFraming {
         }
         self.end_match_len += 1;
         self.end_match_len == PASTE_END_MARKER.len()
+    }
+}
+
+impl Drop for PasteFraming {
+    fn drop(&mut self) {
+        self.wipe_secret();
     }
 }
 
@@ -494,6 +507,22 @@ mod tests {
         wipe(&mut retained);
         assert_eq!(retained.len(), retained.capacity());
         assert!(retained.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn an_unfinished_authorization_code_capture_is_wiped_in_place_before_it_is_freed() {
+        let mut state = framing(PasteOwner::AuthCode, 64);
+        feed(&mut state, b"half-entered-code");
+        state.wipe_secret();
+        assert!(state.buffer.capacity() >= 64);
+        assert_eq!(state.buffer.len(), state.buffer.capacity());
+        assert!(state.buffer.iter().all(|byte| *byte == 0));
+        assert!(state.active());
+
+        let mut composer = framing(PasteOwner::Composer, 64);
+        feed(&mut composer, b"draft");
+        composer.wipe_secret();
+        assert_eq!(composer.buffer, b"draft");
     }
 
     #[test]

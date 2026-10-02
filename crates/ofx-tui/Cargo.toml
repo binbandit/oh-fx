@@ -11,6 +11,7 @@ ofx-text.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "termios"] }
 signal-hook.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 ofx-testkit.workspace = true
