@@ -7,13 +7,13 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::cargo_env::{config_variables, set_by_head};
 use crate::repository::{self, GIT_REPOSITORY_VARIABLES};
 
 pub(crate) const TARGET: &str = "x86_64-unknown-linux-musl";
 pub(crate) const BINARY: &str = "oh-fx";
 pub(crate) const ARCHIVE_FILES: [&str; 3] = [BINARY, "LICENSE", "NOTICE"];
 const RELEASE_VERSION: &str = "0.1.0-dev.1";
-const CONFIG_FILES: [&str; 2] = [".cargo/config.toml", ".cargo/config"];
 
 pub(crate) struct Builds {
     repository: PathBuf,
@@ -119,59 +119,6 @@ fn cargo_command(source: &Path, target_dir: &Path, hidden: &[String]) -> Command
     command
 }
 
-fn config_variables(repository: &Path) -> Result<Vec<(String, OsString)>, String> {
-    let mut variables = Vec::new();
-    for file in CONFIG_FILES {
-        let path = repository.join(file);
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("read {}: {error}", path.display())),
-        };
-        variables.extend(
-            env_table(&text, repository)
-                .map_err(|error| format!("parse {}: {error}", path.display()))?,
-        );
-    }
-    Ok(variables)
-}
-
-fn env_table(config: &str, root: &Path) -> Result<Vec<(String, OsString)>, toml::de::Error> {
-    let config: toml::Table = config.parse()?;
-    let Some(toml::Value::Table(variables)) = config.get("env") else {
-        return Ok(Vec::new());
-    };
-    Ok(variables
-        .iter()
-        .filter_map(|(name, entry)| {
-            let value = match entry {
-                toml::Value::String(value) => OsString::from(value),
-                toml::Value::Table(entry) => {
-                    let value = entry.get("value")?.as_str()?;
-                    if entry.get("relative").and_then(toml::Value::as_bool) == Some(true) {
-                        root.join(value).into_os_string()
-                    } else {
-                        OsString::from(value)
-                    }
-                }
-                _ => return None,
-            };
-            Some((name.clone(), value))
-        })
-        .collect())
-}
-
-fn set_by_head(
-    variables: &[(String, OsString)],
-    current: impl Fn(&str) -> Option<OsString>,
-) -> Vec<String> {
-    variables
-        .iter()
-        .filter(|(name, value)| current(name).as_ref() == Some(value))
-        .map(|(name, _)| name.clone())
-        .collect()
-}
-
 fn temp_dir() -> Result<PathBuf, String> {
     let temp_dir = env::temp_dir();
     fs::canonicalize(&temp_dir).map_err(|error| {
@@ -254,67 +201,6 @@ mod tests {
                 temp_dir.display()
             );
         }
-    }
-
-    #[test]
-    fn reads_the_value_cargo_exports_for_each_head_variable() {
-        let config = "[env]\nPLAIN = \"one\"\nFORCED = { value = \"two\", force = true }\nRELATIVE = { value = \"tools/bin\", relative = true }\n[target.x86_64-unknown-linux-musl]\nrustflags = [\"-C\", \"opt-level=3\"]\n";
-        let mut variables = env_table(config, Path::new("/work/oh-fx")).expect("a valid config");
-        variables.sort();
-        assert_eq!(
-            variables,
-            [
-                ("FORCED".to_owned(), OsString::from("two")),
-                ("PLAIN".to_owned(), OsString::from("one")),
-                (
-                    "RELATIVE".to_owned(),
-                    OsString::from("/work/oh-fx/tools/bin")
-                ),
-            ]
-        );
-        assert_eq!(
-            env_table("env.DOTTED = \"v\"\n", Path::new("/r")),
-            Ok(vec![("DOTTED".to_owned(), OsString::from("v"))])
-        );
-        assert_eq!(
-            env_table("[alias]\nb = \"build\"\n", Path::new("/r")),
-            Ok(Vec::new())
-        );
-        assert!(env_table("[env\n", Path::new("/r")).is_err());
-    }
-
-    #[test]
-    fn collects_the_env_tables_of_both_config_file_names() {
-        let repository = tempfile::tempdir().expect("a scratch repository");
-        assert_eq!(config_variables(repository.path()), Ok(Vec::new()));
-        let cargo = repository.path().join(".cargo");
-        create_dir(&cargo).expect("a .cargo directory");
-        fs::write(cargo.join("config.toml"), "[env]\nFROM_TOML = \"1\"\n").expect("config.toml");
-        fs::write(cargo.join("config"), "[env]\nFROM_LEGACY = \"2\"\n").expect("config");
-        assert_eq!(
-            config_variables(repository.path()),
-            Ok(vec![
-                ("FROM_TOML".to_owned(), OsString::from("1")),
-                ("FROM_LEGACY".to_owned(), OsString::from("2")),
-            ])
-        );
-        fs::write(cargo.join("config"), "[env\n").expect("a broken config");
-        assert!(config_variables(repository.path()).is_err());
-    }
-
-    #[test]
-    fn hides_only_the_variables_whose_value_the_head_config_supplied() {
-        let variables = [
-            ("EXPORTED".to_owned(), OsString::from("head")),
-            ("USER_SET".to_owned(), OsString::from("head")),
-            ("UNSET".to_owned(), OsString::from("head")),
-        ];
-        let current = |name: &str| match name {
-            "EXPORTED" => Some(OsString::from("head")),
-            "USER_SET" => Some(OsString::from("mine")),
-            _ => None,
-        };
-        assert_eq!(set_by_head(&variables, current), ["EXPORTED"]);
     }
 
     #[test]
