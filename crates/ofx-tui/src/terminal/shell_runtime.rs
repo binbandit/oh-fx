@@ -183,12 +183,13 @@ impl Terminal {
         }
     }
 
-    pub(crate) fn release_raw_mode(&mut self) {
+    pub(crate) fn restore_abnormally(&mut self) {
         if self.raw_enabled {
             let _ = termios::tcsetattr(&self.input, OptionalActions::Now, &self.original);
-            let _ = termios::tcflush(&self.input, QueueSelector::IFlush);
             self.raw_enabled = false;
         }
+        self.write_abnormal_restore();
+        let _ = termios::tcflush(&self.input, QueueSelector::IFlush);
     }
 
     pub(crate) fn query_layout(&self, footer_rows: u16) -> Result<Layout, TerminalError> {
@@ -283,7 +284,7 @@ impl Terminal {
         write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
     }
 
-    pub(crate) fn write_abnormal_restore(&self) {
+    fn write_abnormal_restore(&self) {
         let output = self.output.as_fd();
         let deadline = Some(Instant::now() + self.restore_wait);
         let _ = app_lifecycle::abnormal_exit_restore_sequences(self.capabilities.tmux)
@@ -328,8 +329,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.raw_enabled {
-            self.release_raw_mode();
-            self.write_abnormal_restore();
+            self.restore_abnormally();
         }
     }
 }
@@ -694,7 +694,7 @@ mod tests {
         terminal.enable_raw_mode().unwrap();
         fill_output_queue(&terminal);
         let started = Instant::now();
-        terminal.restore_after_signal();
+        terminal.restore_abnormally();
         assert!(started.elapsed() >= ABNORMAL_RESTORE_WAIT);
         terminal.restore_wait = test_pty::WAIT;
         let restore = abnormal_restore().replace('\n', "\r\n");
@@ -704,13 +704,47 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
             drain_until(&master, &needle)
         });
-        terminal.restore_after_signal();
+        terminal.restore_abnormally();
         let written = reader.join().unwrap();
         assert!(
             written.ends_with(restore.as_bytes()),
             "{:?}",
             String::from_utf8_lossy(&written[written.len().saturating_sub(200)..])
         );
+    }
+
+    #[test]
+    fn the_signal_restore_discards_input_typed_while_it_waits_for_the_terminal() {
+        let pty = test_pty::open();
+        let mut quiet = termios::tcgetattr(&pty.slave).unwrap();
+        quiet.local_modes.remove(LocalModes::ECHO);
+        termios::tcsetattr(&pty.slave, OptionalActions::Now, &quiet).unwrap();
+        let mut terminal = nonblocking_terminal(&pty);
+        terminal.restore_wait = test_pty::WAIT;
+        terminal.enable_raw_mode().unwrap();
+        fill_output_queue(&terminal);
+        let master = pty.master.try_clone().unwrap();
+        let slave = pty.slave.try_clone().unwrap();
+        let restore = abnormal_restore().replace('\n', "\r\n").into_bytes();
+        let needle = restore.clone();
+        let typist = std::thread::spawn(move || {
+            while !termios::tcgetattr(&slave)
+                .unwrap()
+                .local_modes
+                .contains(LocalModes::ICANON)
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            rustix::io::write(&master, b"git push --force\r").unwrap();
+            let mut fds = [PollFd::new(&slave, PollFlags::IN)];
+            let wait = Timespec::try_from(test_pty::WAIT).unwrap();
+            assert_eq!(rustix::event::poll(&mut fds, Some(&wait)).unwrap(), 1);
+            drain_until(&master, &needle)
+        });
+        terminal.restore_abnormally();
+        assert!(typist.join().unwrap().ends_with(&restore));
+        assert_eq!(test_pty::unread_input(&pty), 0);
     }
 
     #[test]
@@ -1037,7 +1071,7 @@ mod tests {
             terminal.enable_raw_mode().unwrap();
             assert!(terminal.write_all(&vec![b'x'; 1 << 22]).is_err());
             let signal = signals.take().fatal.unwrap();
-            terminal.restore_after_signal();
+            terminal.restore_abnormally();
             drop(terminal);
             signals.uninstall();
             raise_default(signal);

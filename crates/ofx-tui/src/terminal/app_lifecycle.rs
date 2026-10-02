@@ -152,11 +152,6 @@ impl Terminal {
         self.restore_cooked_mode(cleanup);
     }
 
-    pub(crate) fn restore_after_signal(&mut self) {
-        self.release_raw_mode();
-        self.write_abnormal_restore();
-    }
-
     pub(crate) fn suspend_to_job_control(
         &mut self,
         cleanup: &ExitCleanup,
@@ -468,7 +463,7 @@ mod tests {
         terminal.enable_raw_mode().unwrap();
         terminal.enter_interactive_mode().unwrap();
         drain(&pty);
-        terminal.restore_after_signal();
+        terminal.restore_abnormally();
         let written = String::from_utf8(drain(&pty)).unwrap();
         assert_eq!(written.replace("\r\n", "\n"), abnormal_restore(false));
         let restored = rustix::termios::tcgetattr(&pty.slave).unwrap();
@@ -487,7 +482,7 @@ mod tests {
         let mut terminal = test_pty::terminal(&pty);
         terminal.enable_raw_mode().unwrap();
         test_pty::type_ahead(&pty, &terminal);
-        terminal.restore_after_signal();
+        terminal.restore_abnormally();
         assert_eq!(test_pty::unread_input(&pty), 0);
     }
 
