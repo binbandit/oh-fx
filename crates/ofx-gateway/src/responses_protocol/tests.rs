@@ -1439,17 +1439,19 @@ fn responses_tools_serialize_typed_static_and_dynamic_functions_once() {
         ToolSpec {
             name: "read_file".to_owned(),
             description: "Read a file.".to_owned(),
-            input_schema: r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
+            input_schema:
+                r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+                    .into(),
         },
         ToolSpec {
             name: "mcp_search".to_owned(),
             description: "Search.".to_owned(),
-            input_schema: r#"{"type":"object","properties":{"query":{"type":"string"}}}"#,
+            input_schema: r#"{"type":"object","properties":{"query":{"type":"string"}}}"#.into(),
         },
         ToolSpec {
             name: "read_file".to_owned(),
             description: String::new(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
     ];
     let mut out = String::new();
@@ -1464,7 +1466,7 @@ fn responses_tools_serialize_typed_static_and_dynamic_functions_once() {
     let invalid = ToolSpec {
         name: String::new(),
         description: String::new(),
-        input_schema: r#"{"type":"object"}"#,
+        input_schema: r#"{"type":"object"}"#.into(),
     };
     assert_eq!(
         write_tools(&mut String::new(), &[invalid]),

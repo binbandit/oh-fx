@@ -48,7 +48,7 @@ fn tool(name: &str, description: &str, schema: &'static str) -> ToolSpec {
     ToolSpec {
         name: name.to_owned(),
         description: description.to_owned(),
-        input_schema: schema,
+        input_schema: schema.into(),
     }
 }
 

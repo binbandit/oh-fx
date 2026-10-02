@@ -201,7 +201,7 @@ impl ChildAgents for Agents {
                 spec: ToolSpec {
                     name: "probe".to_owned(),
                     description: "Probe the workspace.".to_owned(),
-                    input_schema: "{}",
+                    input_schema: "{}".into(),
                 },
             })],
             Arc::new(NoContext),
@@ -872,7 +872,7 @@ fn spec(name: &str) -> ToolSpec {
     ToolSpec {
         name: name.to_owned(),
         description: String::new(),
-        input_schema: "{}",
+        input_schema: "{}".into(),
     }
 }
 

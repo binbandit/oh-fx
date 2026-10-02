@@ -92,7 +92,7 @@ impl ReviewTransport for Scripted {
                 "tools": request.tools.iter().map(|tool| json!({
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": serde_json::from_str::<Value>(tool.input_schema).unwrap(),
+                    "parameters": serde_json::from_str::<Value>(&tool.input_schema).unwrap(),
                 })).collect::<Vec<_>>(),
                 "messages": messages,
             })
@@ -239,7 +239,7 @@ fn automatic_review_schema_requires_only_the_authoritative_decision() {
         spec.description,
         "Return bounded safety advice for one exact fx action."
     );
-    let schema: Value = serde_json::from_str(spec.input_schema).unwrap();
+    let schema: Value = serde_json::from_str(&spec.input_schema).unwrap();
     assert_eq!(
         schema,
         json!({
