@@ -1,4 +1,5 @@
 use super::{MAX_FRONTMATTER_BYTES, MAX_NAME_BYTES};
+use crate::byte_trim::{trim, trim_start};
 
 const BLANK: &[u8] = b" \t";
 
@@ -467,26 +468,6 @@ fn invalid_skill_name_cause(name: &[u8]) -> Option<InvalidMetadataCause> {
 
 fn is_path_shaped(name: &[u8]) -> bool {
     name == b"." || name == b".." || name.contains(&b'/') || name.contains(&b'\\')
-}
-
-fn trim<'a>(bytes: &'a [u8], set: &[u8]) -> &'a [u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !set.contains(byte))
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !set.contains(byte))
-        .map_or(start, |index| index + 1);
-    &bytes[start..end]
-}
-
-fn trim_start<'a>(bytes: &'a [u8], set: &[u8]) -> &'a [u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !set.contains(byte))
-        .unwrap_or(bytes.len());
-    &bytes[start..]
 }
 
 #[cfg(test)]
