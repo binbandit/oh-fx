@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Instant;
 
 use ofx_auth::{
@@ -8,9 +8,9 @@ use ofx_auth::{
     refresh_chatgpt_credential,
 };
 use ofx_config::ProfilePaths;
-use ofx_contract::{BoxFuture, CapabilityLookup, CapabilityResolver};
+use ofx_contract::{BoxFuture, CapabilityLookup, CapabilityResolver, ModelCapabilities};
 use ofx_gateway::{
-    CatalogCredential, CatalogFailure, CodexAccess, CodexCredentials, CodexEndpoints,
+    CatalogCredential, CatalogFailure, CodexAccess, CodexCredentials, CodexEndpoints, CodexModel,
     CodexModelCatalog, CodexModelsEndpoints, CodexProvider, CodexRefresh,
 };
 use ofx_http::ClientError;
@@ -44,6 +44,7 @@ pub(crate) struct CatalogCapabilities {
     endpoints: CodexModelsEndpoints,
     cache_directory: PathBuf,
     credential: CatalogCredential,
+    listed: OnceLock<Vec<CodexModel>>,
 }
 
 impl CapabilityResolver for CatalogCapabilities {
@@ -53,6 +54,9 @@ impl CapabilityResolver for CatalogCapabilities {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, CapabilityLookup> {
         Box::pin(async move {
+            if let Some(listed) = self.listed.get() {
+                return CapabilityLookup::Resolved(listed_capabilities(listed, model));
+            }
             let Ok(catalog) = CodexModelCatalog::new(
                 &self.user_agent,
                 self.endpoints.clone(),
@@ -61,18 +65,23 @@ impl CapabilityResolver for CatalogCapabilities {
                 return CapabilityLookup::CatalogUnavailable;
             };
             match catalog.fetch(Some(&self.credential), cancel).await {
-                Ok(models) => CapabilityLookup::Resolved(
-                    models
-                        .into_iter()
-                        .find(|listed| listed.id == model)
-                        .map(|listed| listed.capabilities)
-                        .unwrap_or_default(),
-                ),
+                Ok(models) => CapabilityLookup::Resolved(listed_capabilities(
+                    self.listed.get_or_init(|| models),
+                    model,
+                )),
                 Err(CatalogFailure::Cancellation) => CapabilityLookup::Cancelled,
                 Err(_) => CapabilityLookup::CatalogUnavailable,
             }
         })
     }
+}
+
+fn listed_capabilities(listed: &[CodexModel], model: &str) -> ModelCapabilities {
+    listed
+        .iter()
+        .find(|listed| listed.id == model)
+        .map(|listed| listed.capabilities.clone())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Default)]
@@ -229,6 +238,7 @@ pub(crate) async fn codex_subscription(
         endpoints: endpoints.models,
         cache_directory: paths.cache.clone(),
         credential: CatalogCredential::new(token.clone(), account_id.clone()),
+        listed: OnceLock::new(),
     };
     let access = CodexAccess::new(token, account_id, refresh_after_ms);
     let credentials = Arc::new(SubscriptionCredentials {

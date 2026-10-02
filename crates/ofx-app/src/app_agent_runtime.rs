@@ -1344,6 +1344,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_codex_catalog_is_fetched_once_for_every_later_fast_check() {
+        let codex = FakeServer::start([codex_text("fast")]);
+        let catalog = codex_catalog(true, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        for expected in ["fast|on", "fast|off", "fast|on"] {
+            assert_eq!(fast_notice(&mut harness).await, expected);
+        }
+        harness.command(&format!("/model {OTHER_CODEX_MODEL}"));
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        harness.submit("hurry");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(codex.requests()[0].json()["service_tier"], "priority");
+        assert_eq!(catalog.requests().len(), 2);
+    }
+
+    #[tokio::test]
     async fn fast_mode_stays_off_for_a_codex_model_without_a_fast_tier() {
         let codex = FakeServer::start([codex_text("standard")]);
         let catalog = codex_catalog(false, 8);
