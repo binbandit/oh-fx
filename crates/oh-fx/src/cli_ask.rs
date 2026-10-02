@@ -835,6 +835,7 @@ impl Presenter {
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
             | UiEvent::TurnFinished { .. }
+            | UiEvent::ApprovalRequested { .. }
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }
