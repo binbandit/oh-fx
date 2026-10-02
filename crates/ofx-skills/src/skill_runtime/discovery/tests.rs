@@ -7,6 +7,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::skill_contract::InvalidMetadataCause;
 use crate::skill_runtime::skill_file::LinkedSkillFile;
+use crate::skill_runtime::{SkillResolution, resolve_skill};
 
 const TEST_WORKSPACE_ROOTS: [RootSpec; 3] = [
     RootSpec {
@@ -337,6 +338,18 @@ fn load_visible_skills_deduplicates_symlinked_workspace_and_global_roots_while_p
         home_root.join(".claude/skills/global")
     );
     assert!(discovery.diagnostics.is_empty());
+    assert_eq!(
+        resolve_skill(&discovery.skills, "review", None),
+        SkillResolution::AmbiguousName
+    );
+    assert_eq!(
+        resolve_skill(
+            &discovery.skills,
+            "review",
+            Some(&workspace_root.join(".claude/skills/beta"))
+        ),
+        SkillResolution::Found(&discovery.skills[1])
+    );
 }
 
 #[test]
@@ -517,7 +530,8 @@ fn load_visible_skills_discovers_a_skill_whose_body_exceeds_the_old_discovery_ca
 }
 
 #[test]
-fn load_visible_skills_orders_valid_candidates_and_diagnoses_invalid_metadata() {
+fn load_visible_skills_orders_valid_candidates_diagnoses_invalid_metadata_and_resolves_exact_identity()
+ {
     let fixture = Fixture::new();
     fixture.write("root/zeta/SKILL.md", "zeta body without frontmatter\n");
     fixture.write(
@@ -544,6 +558,32 @@ fn load_visible_skills_orders_valid_candidates_and_diagnoses_invalid_metadata() 
     assert_eq!(
         diagnostic.cause,
         SkillDiagnosticCause::InvalidMetadata(InvalidMetadataCause::MissingName)
+    );
+
+    let beta = root.join("beta");
+    assert_eq!(
+        resolve_skill(&discovery.skills, "duplicate", None),
+        SkillResolution::AmbiguousName
+    );
+    assert_eq!(
+        resolve_skill(&discovery.skills, "duplicate", Some(&beta)),
+        SkillResolution::Found(&discovery.skills[1])
+    );
+    assert_eq!(
+        resolve_skill(&discovery.skills, "other", Some(&beta)),
+        SkillResolution::NameLocationMismatch
+    );
+    assert_eq!(
+        resolve_skill(
+            &discovery.skills,
+            "duplicate",
+            Some(Path::new("/outside/root"))
+        ),
+        SkillResolution::NotFound
+    );
+    assert_eq!(
+        resolve_skill(&discovery.skills, "zeta", None),
+        SkillResolution::Found(&discovery.skills[2])
     );
 }
 
