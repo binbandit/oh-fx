@@ -478,8 +478,38 @@ async fn cancelling_a_review_interrupts_the_turn_without_running_the_call() {
     )
     .await;
     assert_eq!(report.outcome, TurnOutcome::Interrupted);
-    assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
+    assert_eq!(
+        dispatch_order(&events),
+        [
+            "start call-1",
+            "finish call-1",
+            "start call-2",
+            "finish call-2"
+        ]
+    );
     assert_eq!(approvals_requested(&events), 0);
+}
+
+#[tokio::test]
+async fn a_command_is_shown_while_it_is_reviewed_and_a_file_change_only_once_decided() {
+    for (arguments, order) in [
+        (REVIEWED, ["start call-1", "finish call-1"].as_slice()),
+        (r#"{"unread":1,"previewed":1}"#, [].as_slice()),
+    ] {
+        let provider = FakeProvider::new(vec![
+            tool_reply(&[("call-1", arguments)]),
+            text_reply("done"),
+        ]);
+        let (report, events) = run_reviewed(
+            Arc::clone(&provider),
+            ReviewingGate::new([Answer::Cancel]),
+            None,
+            &["go"],
+        )
+        .await;
+        assert_eq!(report.outcome, TurnOutcome::Interrupted, "{arguments}");
+        assert_eq!(dispatch_order(&events), order, "{arguments}");
+    }
 }
 
 #[tokio::test]

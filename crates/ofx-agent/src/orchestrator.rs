@@ -1350,6 +1350,11 @@ async fn run_group<'c>(
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref());
                 let (admission, file) = admission(gate, action, &description, &*prepared);
+                let shown_while_reviewed =
+                    admission == Admission::ReviewRequired && mutation.is_none();
+                if shown_while_reviewed {
+                    events(tool_started(turn_id, call, description.clone()));
+                }
                 let judged = Judged {
                     call,
                     action,
@@ -1379,15 +1384,11 @@ async fn run_group<'c>(
                         title: description.title.clone(),
                     });
                 }
-                let silent = verdict == Verdict::Interrupted
+                let silent = shown_while_reviewed
+                    || verdict == Verdict::Interrupted
                     || (mutation.is_some() && verdict == Verdict::Blocked);
                 if !silent {
-                    events(UiEvent::ToolStarted {
-                        turn_id,
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        description,
-                    });
+                    events(tool_started(turn_id, call, description));
                 }
                 let (held, review_hold) = match verdict {
                     Verdict::Run(path_access) => {
@@ -1400,6 +1401,9 @@ async fn run_group<'c>(
                     Verdict::Held(output) => (output, true),
                     Verdict::Denied => (tool_permission_denied_json(&call.name), false),
                     Verdict::Blocked | Verdict::Interrupted => {
+                        if shown_while_reviewed {
+                            events(tool_finished(turn_id, call, None));
+                        }
                         discard(prepared);
                         break;
                     }
@@ -1452,6 +1456,15 @@ async fn settle_group<'c>(
         });
     }
     outcomes
+}
+
+fn tool_started(turn_id: TurnId, call: &ToolCall, description: CallDescription) -> UiEvent {
+    UiEvent::ToolStarted {
+        turn_id,
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        description,
+    }
 }
 
 fn tool_finished(turn_id: TurnId, call: &ToolCall, output: Option<&ToolOutput>) -> UiEvent {

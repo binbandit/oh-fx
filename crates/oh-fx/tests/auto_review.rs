@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -512,14 +514,7 @@ fn a_cleared_command_never_runs_in_a_directory_replaced_while_its_review_was_pen
         fs::write(outside.join("marker"), "unreviewed").expect("write the outside marker");
 
         let running = home.start("remove the build marker");
-        let started = Instant::now();
-        while server.requests().len() < 2 {
-            assert!(
-                started.elapsed() < Duration::from_secs(15),
-                "the review never started"
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
+        wait_until(|| server.requests().len() == 2, "the review never started");
         replace(&home, &build);
         gate.open();
         let output = running.wait_with_output().expect("wait for oh-fx");
@@ -559,4 +554,64 @@ fn recreate_reusing_the_inode(directory: &Path) {
         }
     }
     fs::write(directory.join("marker"), "unreviewed").expect("write the replacement marker");
+}
+
+fn wait_until(condition: impl Fn() -> bool, failure: &str) {
+    let started = Instant::now();
+    while !condition() {
+        assert!(started.elapsed() < Duration::from_secs(15), "{failure}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_command_is_shown_while_its_review_is_pending() {
+    for (verdict, runs) in [
+        (r#"{"decision":"clear"}"#, true),
+        (
+            r#"{"decision":"caution","rationale":"Nothing asked for it."}"#,
+            false,
+        ),
+    ] {
+        let gate = Gate::default();
+        let server = FakeServer::start([
+            run("touch marker"),
+            decision(verdict).after(&gate),
+            Reply::sse(&chat_text_events(&["Done."])),
+        ]);
+        let home = Home::new(&settings(&server.base_url(), None));
+
+        let mut running = home.start("create the marker file");
+        let progress = Arc::new(Mutex::new(Vec::new()));
+        let mut stderr = running.stderr.take().expect("the progress stream");
+        let reader = thread::spawn({
+            let progress = Arc::clone(&progress);
+            move || {
+                let mut chunk = [0; 256];
+                while let Ok(read @ 1..) = stderr.read(&mut chunk) {
+                    progress
+                        .lock()
+                        .expect("the progress buffer")
+                        .extend_from_slice(&chunk[..read]);
+                }
+            }
+        });
+        let shown = || {
+            progress.lock().expect("the progress buffer").as_slice() == b"Running touch marker\n"
+        };
+        wait_until(|| server.requests().len() == 2, "the review never started");
+        wait_until(
+            shown,
+            "the command was not shown while its review was pending",
+        );
+        assert!(!home.workspace.join("marker").exists());
+        gate.open();
+        let output = running.wait_with_output().expect("wait for oh-fx");
+        reader.join().expect("read the progress stream");
+
+        assert!(output.status.success(), "{verdict}");
+        assert!(shown(), "{verdict}");
+        assert_eq!(home.workspace.join("marker").exists(), runs, "{verdict}");
+        assert_eq!(server.requests().len(), 3);
+    }
 }

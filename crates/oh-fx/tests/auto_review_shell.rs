@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_testkit::{
-    FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+    FakeServer, Gate, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
 };
 use serde_json::{Value, json};
 
@@ -136,6 +136,30 @@ fn a_cleared_review_runs_the_command_without_asking() {
         requests[1].json()["messages"][1]["content"],
         "review_context_kind: contextual\ntrusted_root_context:\ncurrent_request: create the marker\n"
     );
+    exit(session);
+}
+
+#[test]
+fn a_command_is_shown_running_while_its_review_is_pending() {
+    let gate = Gate::default();
+    let server = FakeServer::start([
+        run_marker(),
+        decision(r#"{"decision":"clear"}"#).after(&gate),
+        Reply::sse(&chat_text_events(&["Made the marker."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell();
+    session.send(b"create the marker\r");
+    let started = Instant::now();
+    while server.requests().len() < 2 {
+        assert!(started.elapsed() < WAIT, "the review never started");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let screen = wait(&session, "• Running (");
+    assert!(!home.marker(), "{screen}");
+    gate.open();
+    wait(&session, "Made the marker.");
+    assert!(home.marker());
     exit(session);
 }
 
