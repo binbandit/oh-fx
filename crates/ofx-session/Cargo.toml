@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 base64.workspace = true
 getrandom.workspace = true
+memchr.workspace = true
 ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-text.workspace = true

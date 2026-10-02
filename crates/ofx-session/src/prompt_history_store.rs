@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io;
@@ -6,11 +7,14 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use memchr::memmem::Finder;
+use memchr::{memchr, memrchr, memrchr_iter};
 use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
 use rustix::fs::{self, FileType, Mode, OFlags};
 use rustix::io::Errno;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use crate::json_fields::{Fields, parse_json};
 use crate::session_log::managed_file::{file_type, permissions, private_file_mode};
 use crate::session_store_paths::MAX_PATH_BYTES;
 
@@ -86,13 +90,10 @@ struct RecordWire<'a> {
     text: &'a str,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ParsedRecord {
-    schema_version: i64,
+struct ParsedRecord<'a> {
     timestamp_ms: i64,
-    workspace_root: String,
-    text: String,
+    workspace_root: Cow<'a, str>,
+    text: Cow<'a, str>,
 }
 
 enum CompactionFailure {
@@ -308,6 +309,7 @@ impl PromptHistoryStore {
         }
         let mut scan = ReverseScan {
             workspace_root,
+            literal_root: Finder::new(&literal_root(workspace_root)).into_owned(),
             limit,
             entries: Vec::new(),
             pending: Vec::new(),
@@ -337,6 +339,7 @@ impl PromptHistoryStore {
 
 struct ReverseScan<'a> {
     workspace_root: &'a str,
+    literal_root: Finder<'static>,
     limit: usize,
     entries: Vec<String>,
     pending: Vec<u8>,
@@ -351,16 +354,14 @@ impl ReverseScan<'_> {
 
     fn block(&mut self, block: &[u8]) {
         let mut segment_end = block.len();
-        let mut index = block.len();
-        while index > 0 && !self.full() {
-            index -= 1;
-            if block[index] != b'\n' {
-                continue;
+        for index in memrchr_iter(b'\n', block) {
+            if self.full() {
+                break;
             }
             if self.ignore_incomplete_tail {
                 self.ignore_incomplete_tail = false;
             } else {
-                self.reverse_line(&block[index + 1..segment_end]);
+                self.reverse_line(block.get(index + 1..segment_end).unwrap_or_default());
             }
             self.pending.clear();
             self.pending_oversized = false;
@@ -371,9 +372,8 @@ impl ReverseScan<'_> {
                 self.pending.clear();
                 self.pending_oversized = true;
             } else {
-                let mut joined = block[..segment_end].to_vec();
-                joined.extend_from_slice(&self.pending);
-                self.pending = joined;
+                let head = block.get(..segment_end).unwrap_or_default();
+                self.pending.splice(..0, head.iter().copied());
             }
         }
     }
@@ -409,13 +409,15 @@ impl ReverseScan<'_> {
     }
 
     fn complete_line(&mut self, line: &[u8]) {
-        if line.len() + 1 > MAX_RECORD_BYTES {
+        if line.len() + 1 > MAX_RECORD_BYTES
+            || (memchr(b'\\', line).is_none() && self.literal_root.find(line).is_none())
+        {
             return;
         }
         if let Some(record) = parse_record(line)
             && record.workspace_root == self.workspace_root
         {
-            self.entries.push(record.text);
+            self.entries.push(record.text.into_owned());
         }
     }
 }
@@ -446,11 +448,27 @@ fn serialize_record(
     Ok(line)
 }
 
-fn parse_record(line: &[u8]) -> Option<ParsedRecord> {
-    let record: ParsedRecord = serde_json::from_slice(line).ok()?;
-    (record.schema_version == SCHEMA_VERSION
-        && validate_workspace_root(&record.workspace_root).is_ok())
-    .then_some(record)
+fn literal_root(workspace_root: &str) -> Vec<u8> {
+    let mut literal = Vec::with_capacity(workspace_root.len() + 2);
+    literal.push(b'"');
+    literal.extend_from_slice(workspace_root.as_bytes());
+    literal.push(b'"');
+    literal
+}
+
+fn parse_record(line: &[u8]) -> Option<ParsedRecord<'_>> {
+    let mut fields = Fields::new(parse_json(line).ok()?)?;
+    let schema_version = fields.signed("schema_version")?;
+    let timestamp_ms = fields.signed("timestamp_ms")?;
+    let workspace_root = fields.text("workspace_root")?;
+    let text = fields.text("text")?;
+    let record = fields.finish(ParsedRecord {
+        timestamp_ms,
+        workspace_root,
+        text,
+    })?;
+    (schema_version == SCHEMA_VERSION && validate_workspace_root(&record.workspace_root).is_ok())
+        .then_some(record)
 }
 
 fn repair_incomplete_tail(file: &File) -> Result<(), PromptHistoryError> {
@@ -464,7 +482,7 @@ fn repair_incomplete_tail(file: &File) -> Result<(), PromptHistoryError> {
         let start = cursor - cursor.min(LINE_CHUNK_BYTES as u64);
         let chunk = &mut buffer[..usize::try_from(cursor - start).unwrap_or(0)];
         read_exact_at(file, chunk, start)?;
-        if let Some(newline) = chunk.iter().rposition(|byte| *byte == b'\n') {
+        if let Some(newline) = memrchr(b'\n', chunk) {
             file.set_len(start + newline as u64 + 1)?;
             file.sync_all()?;
             return Ok(());
@@ -525,12 +543,13 @@ impl LineReader<'_> {
             if count == 0 {
                 return Ok(None);
             }
-            if let Some(newline) = chunk[..count].iter().position(|byte| *byte == b'\n') {
-                line.extend_from_slice(&chunk[..=newline]);
+            let read = chunk.get(..count).unwrap_or_default();
+            if let Some(newline) = memchr(b'\n', read) {
+                line.extend_from_slice(read.get(..=newline).unwrap_or_default());
                 self.offset += newline as u64 + 1;
                 return Ok(Some(line));
             }
-            line.extend_from_slice(&chunk[..count]);
+            line.extend_from_slice(read);
             self.offset += count as u64;
             if line.len() > MAX_RECORD_BYTES {
                 self.skip_past_newline(&mut chunk)?;
@@ -547,7 +566,7 @@ impl LineReader<'_> {
                 self.offset = self.end;
                 return Ok(());
             }
-            if let Some(newline) = chunk[..count].iter().position(|byte| *byte == b'\n') {
+            if let Some(newline) = memchr(b'\n', chunk.get(..count).unwrap_or_default()) {
                 self.offset += newline as u64 + 1;
                 return Ok(());
             }
@@ -557,10 +576,12 @@ impl LineReader<'_> {
     }
 
     fn read_chunk(&self, chunk: &mut [u8]) -> Result<usize, PromptHistoryError> {
-        let wanted = usize::try_from(self.end - self.offset)
-            .unwrap_or(usize::MAX)
-            .min(chunk.len());
-        Ok(self.file.read_at(&mut chunk[..wanted], self.offset)?)
+        let wanted = usize::try_from(self.end - self.offset).unwrap_or(usize::MAX);
+        let buffer = match chunk.get_mut(..wanted) {
+            Some(buffer) => buffer,
+            None => chunk,
+        };
+        Ok(self.file.read_at(buffer, self.offset)?)
     }
 }
 

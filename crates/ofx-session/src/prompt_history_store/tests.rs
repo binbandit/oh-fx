@@ -133,6 +133,25 @@ fn reverse_load_joins_records_across_blocks_and_skips_corrupt_lines_and_the_open
 }
 
 #[test]
+fn reverse_load_reads_records_however_their_json_spells_the_workspace() {
+    let fixture = Fixture::new();
+    let bytes = [
+        line(1, "/tmp/workspace", "plain"),
+        "{\"workspace_root\" : \"/tmp/workspace\", \"text\":\"reordered\",\"timestamp_ms\":2,\"schema_version\":1}\n".to_owned(),
+        "{\"schema_version\":1,\"timestamp_ms\":3,\"workspace_root\":\"\\/tmp\\/work\\u0073pace\",\"text\":\"escaped\"}\n".to_owned(),
+        line(4, "/tmp/workspace-b", "other"),
+        line(5, "/tmp/workspace/nested", "nested"),
+        "{\"schema_version\":1,\"timestamp_ms\":6,\"workspace_root\":\"/tmp/elsewhere\",\"text\":\"\\\"/tmp/workspace\\\"\"}\n".to_owned(),
+    ]
+    .concat();
+    fixture.write(bytes.as_bytes());
+    assert_eq!(
+        fixture.store().load_recent("/tmp/workspace", 100).unwrap(),
+        ["plain", "reordered", "escaped"]
+    );
+}
+
+#[test]
 fn reverse_load_skips_records_longer_than_the_record_cap() {
     let fixture = Fixture::new();
     let oversized = line(1, "/tmp/workspace", &"x".repeat(MAX_RECORD_BYTES));
