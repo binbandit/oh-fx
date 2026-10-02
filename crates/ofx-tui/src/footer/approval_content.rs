@@ -1,7 +1,9 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use ofx_contract::{ApprovalRequest, CommandProfile, CommandRequest, SessionGrant};
+use ofx_contract::{
+    ApprovalRequest, CommandProfile, CommandRequest, FileMutation, FileMutationState, SessionGrant,
+};
 use ofx_text::encode_terminal_safe;
 
 use super::command_text::project_command_text;
@@ -12,6 +14,8 @@ const COMMAND_KIND: &str = "Command";
 const GENERIC_QUESTION: &str = "Would you like to allow this action?";
 const COMMAND_QUESTION: &str = "Would you like to run the following command?";
 const GENERIC_REASON: &str = "This action needs approval before oh-fx can continue.";
+const WORKSPACE_CHANGE_REASON: &str = "This action changes files in your workspace.";
+const EXTERNAL_CHANGE_REASON: &str = "This action changes a file outside your workspace.";
 const COMMAND_LEAD: &str = "$ ";
 const INPUT_LEAD: &str = "> ";
 const RUN_HEADER: &str = "# shell.run";
@@ -30,6 +34,7 @@ pub(crate) struct ApprovalContent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActionBlock {
     Line(Phrase),
+    Note(&'static str),
     Wrapped { lead: &'static str, text: String },
 }
 
@@ -74,17 +79,55 @@ impl ApprovalContent {
             Some(CommandRequest::Observe | CommandRequest::Stop) => {
                 Self::generic(vec![title_line(request)], remember)
             }
-            None => match &request.scope.target {
-                Some(target) => Self::generic(
-                    vec![ActionBlock::Line(Phrase::with_path(
-                        format!("{} ", safe_text(request.tool_name.as_bytes())),
-                        PathText::from_raw(target.as_os_str().as_bytes()),
-                        "",
-                    ))],
-                    remember,
-                ),
-                None => Self::generic(vec![title_line(request)], remember),
+            None => match (&request.file, &request.scope.target) {
+                (Some(file), _) => Self::file_change(request, file, workspace_root, remember),
+                (None, Some(target)) => {
+                    Self::generic(vec![labelled_path(request, target)], remember)
+                }
+                (None, None) => Self::generic(vec![title_line(request)], remember),
             },
+        }
+    }
+
+    fn file_change(
+        request: &ApprovalRequest,
+        file: &FileMutation,
+        workspace_root: &Path,
+        remember: Option<Phrase>,
+    ) -> Self {
+        let (kind, question) = match request.tool_name.as_str() {
+            "write_file" => (
+                "Write file",
+                "Would you like to create or update this file?",
+            ),
+            "edit_file" => ("Edit file", "Would you like to edit this file?"),
+            _ => (GENERIC_KIND, GENERIC_QUESTION),
+        };
+        let reason = if file.target.starts_with(workspace_root) {
+            WORKSPACE_CHANGE_REASON
+        } else {
+            EXTERNAL_CHANGE_REASON
+        };
+        Self {
+            kind,
+            question,
+            reason: Some(reason.to_owned()),
+            action: vec![
+                labelled_path(request, &file.target),
+                ActionBlock::Note(match file.state {
+                    FileMutationState::Creates => {
+                        "Creates this file. Its content is not previewed here."
+                    }
+                    FileMutationState::Changes => {
+                        "Changes this file. The change is not previewed here."
+                    }
+                    FileMutationState::Unchanged => "Leaves this file unchanged.",
+                    FileMutationState::Unread => {
+                        "Writes this file without having read it. The change is not previewed here."
+                    }
+                }),
+            ],
+            remember,
         }
     }
 
@@ -97,6 +140,14 @@ impl ApprovalContent {
             remember,
         }
     }
+}
+
+fn labelled_path(request: &ApprovalRequest, path: &Path) -> ActionBlock {
+    ActionBlock::Line(Phrase::with_path(
+        format!("{} ", safe_text(request.tool_name.as_bytes())),
+        PathText::from_raw(path.as_os_str().as_bytes()),
+        "",
+    ))
 }
 
 fn title_line(request: &ApprovalRequest) -> ActionBlock {
@@ -352,6 +403,58 @@ mod tests {
                 ))
             );
         }
+    }
+
+    #[test]
+    fn file_changes_name_their_target_and_what_the_change_does() {
+        let change = |tool: &str, target: &str, state| ApprovalRequest {
+            id: RequestId::new(1),
+            tool_name: tool.to_owned(),
+            title: "Writing notes.md".to_owned(),
+            tool_arguments_preview: String::new(),
+            scope: ApprovalScope {
+                target: None,
+                access: PathAccess::WorkspaceOnly,
+                always: None,
+            },
+            command: None,
+            file: Some(FileMutation {
+                target: PathBuf::from(target),
+                state,
+            }),
+        };
+        let shown = ApprovalContent::from_request(
+            &change("write_file", "/ws/notes.md", FileMutationState::Creates),
+            Path::new("/ws"),
+        );
+        assert_eq!(shown.kind, "Write file");
+        assert_eq!(
+            shown.question,
+            "Would you like to create or update this file?"
+        );
+        assert_eq!(shown.reason.as_deref(), Some(WORKSPACE_CHANGE_REASON));
+        assert_eq!(
+            shown.action,
+            [
+                ActionBlock::Line(Phrase::with_path(
+                    "write_file ",
+                    PathText::from_raw(b"/ws/notes.md"),
+                    ""
+                )),
+                ActionBlock::Note("Creates this file. Its content is not previewed here.")
+            ]
+        );
+        let shown = ApprovalContent::from_request(
+            &change("edit_file", "/etc/hosts", FileMutationState::Changes),
+            Path::new("/ws"),
+        );
+        assert_eq!(shown.kind, "Edit file");
+        assert_eq!(shown.question, "Would you like to edit this file?");
+        assert_eq!(shown.reason.as_deref(), Some(EXTERNAL_CHANGE_REASON));
+        assert_eq!(
+            shown.action[1],
+            ActionBlock::Note("Changes this file. The change is not previewed here.")
+        );
     }
 
     #[test]
