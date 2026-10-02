@@ -6,6 +6,7 @@
     )
 )]
 
+mod input;
 mod terminal;
 
 pub use terminal::TerminalError;
