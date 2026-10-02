@@ -1,3 +1,5 @@
+use zeroize::Zeroize;
+
 use super::forwarded_bytes::ForwardedBytes;
 use super::theme_protocol::{Rgb, parse_osc11_response};
 
@@ -50,17 +52,44 @@ enum ResponseStatus {
     Complete,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Monitor {
     pub(crate) enabled: bool,
-    candidate: Vec<u8>,
+    candidate: [u8; MAX_CANDIDATE_BYTES],
+    candidate_len: usize,
     candidate_deadline_ms: i64,
-    deferred: Vec<u8>,
+    deferred: [u8; MAX_CANDIDATE_BYTES],
     deferred_start: usize,
+    deferred_len: usize,
     query_state: QueryState,
     theme_dirty: bool,
     notification_light: Option<bool>,
     settled_update: Option<ThemeUpdate>,
+}
+
+impl Default for Monitor {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            candidate: [0; MAX_CANDIDATE_BYTES],
+            candidate_len: 0,
+            candidate_deadline_ms: 0,
+            deferred: [0; MAX_CANDIDATE_BYTES],
+            deferred_start: 0,
+            deferred_len: 0,
+            query_state: QueryState::Idle,
+            theme_dirty: false,
+            notification_light: None,
+            settled_update: None,
+        }
+    }
+}
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        self.candidate.zeroize();
+        self.deferred.zeroize();
+    }
 }
 
 impl Monitor {
@@ -69,41 +98,53 @@ impl Monitor {
     }
 
     pub(crate) fn has_pending_input(&self) -> bool {
-        !self.candidate.is_empty() || self.deferred_start < self.deferred.len()
+        self.candidate_len > 0 || self.has_deferred_bytes()
+    }
+
+    pub(crate) fn owns_input(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.has_pending_input()
+            || matches!(
+                self.query_state,
+                QueryState::AwaitingResponseFence { .. } | QueryState::AwaitingBackground { .. }
+            )
     }
 
     pub(crate) fn feed(&mut self, byte: u8, now_ms: i64) -> FeedResult {
-        if !self.enabled || (self.candidate.is_empty() && byte != 0x1b) {
+        if !self.enabled || (self.candidate_len == 0 && byte != 0x1b) {
             return FeedResult::Forward(ForwardedBytes::single(byte));
         }
-        if self.candidate.len() == 1 && byte == 0x1b {
+        if self.candidate_len == 1 && byte == 0x1b {
             self.candidate_deadline_ms = add_millis(now_ms, RESPONSE_IDLE_TIMEOUT_MS);
             return FeedResult::Forward(ForwardedBytes::single(byte));
         }
-        if self.candidate.len() == MAX_CANDIDATE_BYTES {
+        if self.candidate_len == MAX_CANDIDATE_BYTES {
             let mut forwarded = self.take_candidate();
             forwarded.push(byte);
             return FeedResult::Forward(forwarded);
         }
 
-        self.candidate.push(byte);
+        self.candidate[self.candidate_len] = byte;
+        self.candidate_len += 1;
         self.candidate_deadline_ms = add_millis(now_ms, RESPONSE_IDLE_TIMEOUT_MS);
 
-        if self.candidate == DARK_RESPONSE || self.candidate == LIGHT_RESPONSE {
-            let light = self.candidate == LIGHT_RESPONSE;
-            self.candidate.clear();
+        let candidate = self.candidate();
+        if candidate == DARK_RESPONSE || candidate == LIGHT_RESPONSE {
+            let light = candidate == LIGHT_RESPONSE;
+            self.discard_candidate();
             self.queue_refresh(light);
             return FeedResult::Consumed;
         }
-        if DARK_RESPONSE.starts_with(&self.candidate) || LIGHT_RESPONSE.starts_with(&self.candidate)
-        {
+        if DARK_RESPONSE.starts_with(candidate) || LIGHT_RESPONSE.starts_with(candidate) {
             return FeedResult::Pending;
         }
 
-        match classify_primary_device_attributes(&self.candidate) {
+        match classify_primary_device_attributes(candidate) {
             ResponseStatus::Pending => return FeedResult::Pending,
             ResponseStatus::Complete => {
-                self.candidate.clear();
+                self.discard_candidate();
                 self.candidate_deadline_ms = 0;
                 self.finish_response_fence();
                 return FeedResult::Consumed;
@@ -111,15 +152,15 @@ impl Monitor {
             ResponseStatus::Invalid => {}
         }
 
-        if OSC11_PREFIX.starts_with(&self.candidate) {
+        if OSC11_PREFIX.starts_with(candidate) {
             return FeedResult::Pending;
         }
-        if self.candidate.starts_with(OSC11_PREFIX) {
-            if !self.candidate.ends_with(b"\x07") && !self.candidate.ends_with(b"\x1b\\") {
+        if candidate.starts_with(OSC11_PREFIX) {
+            if !candidate.ends_with(b"\x07") && !candidate.ends_with(b"\x1b\\") {
                 return FeedResult::Pending;
             }
-            if let Some(background) = parse_osc11_response(&self.candidate) {
-                self.candidate.clear();
+            if let Some(background) = parse_osc11_response(candidate) {
+                self.discard_candidate();
                 self.candidate_deadline_ms = 0;
                 if let QueryState::AwaitingBackground {
                     background: sample, ..
@@ -137,9 +178,9 @@ impl Monitor {
     }
 
     pub(crate) fn poll(&mut self, now_ms: i64) {
-        if !self.candidate.is_empty() && now_ms >= self.candidate_deadline_ms {
-            if self.candidate.starts_with(OSC11_PREFIX) {
-                self.candidate.clear();
+        if self.candidate_len > 0 && now_ms >= self.candidate_deadline_ms {
+            if self.candidate().starts_with(OSC11_PREFIX) {
+                self.discard_candidate();
                 self.candidate_deadline_ms = 0;
             } else {
                 self.defer_candidate();
@@ -191,12 +232,19 @@ impl Monitor {
         self.settled_update.take()
     }
 
+    pub(crate) fn has_deferred_bytes(&self) -> bool {
+        self.deferred_start < self.deferred_len
+    }
+
     pub(crate) fn take_deferred_byte(&mut self) -> Option<u8> {
-        let byte = *self.deferred.get(self.deferred_start)?;
+        if !self.has_deferred_bytes() {
+            return None;
+        }
+        let byte = std::mem::take(&mut self.deferred[self.deferred_start]);
         self.deferred_start += 1;
-        if self.deferred_start == self.deferred.len() {
-            self.deferred.clear();
+        if self.deferred_start == self.deferred_len {
             self.deferred_start = 0;
+            self.deferred_len = 0;
         }
         Some(byte)
     }
@@ -236,21 +284,32 @@ impl Monitor {
     }
 
     fn defer_candidate(&mut self) {
-        if self.candidate.is_empty() {
+        if self.candidate_len == 0 {
             return;
         }
-        debug_assert_eq!(self.deferred_start, self.deferred.len());
-        std::mem::swap(&mut self.deferred, &mut self.candidate);
-        self.candidate.clear();
+        debug_assert_eq!(self.deferred_start, self.deferred_len);
+        let len = self.candidate_len;
+        self.deferred[..len].copy_from_slice(&self.candidate[..len]);
         self.deferred_start = 0;
+        self.deferred_len = len;
+        self.discard_candidate();
         self.candidate_deadline_ms = 0;
     }
 
     fn take_candidate(&mut self) -> ForwardedBytes {
         self.candidate_deadline_ms = 0;
-        let forwarded = ForwardedBytes::from_slice(&self.candidate);
-        self.candidate.clear();
+        let forwarded = ForwardedBytes::from_slice(self.candidate());
+        self.discard_candidate();
         forwarded
+    }
+
+    fn candidate(&self) -> &[u8] {
+        &self.candidate[..self.candidate_len]
+    }
+
+    fn discard_candidate(&mut self) {
+        self.candidate[..self.candidate_len].fill(0);
+        self.candidate_len = 0;
     }
 }
 
@@ -452,22 +511,18 @@ mod tests {
     }
 
     #[test]
-    fn theme_monitor_reuses_its_buffers_across_timed_out_candidates() {
+    fn theme_monitor_wipes_timed_out_candidates_as_their_bytes_are_taken() {
         let mut monitor = started();
         for cycle in 0..3 {
             let now_ms = cycle * RESPONSE_IDLE_TIMEOUT_MS * 2;
             feed_all(&mut monitor, b"\x1b[", now_ms);
             monitor.poll(now_ms + RESPONSE_IDLE_TIMEOUT_MS);
-            if cycle > 0 {
-                assert!(monitor.candidate.is_empty());
-                assert!(monitor.candidate.capacity() >= 2, "cycle {cycle}");
-            }
-            let mut forwarded = Vec::new();
-            while let Some(byte) = monitor.take_deferred_byte() {
-                forwarded.push(byte);
-            }
-            assert_eq!(forwarded, b"\x1b[");
-            assert!(monitor.deferred.capacity() >= 2, "cycle {cycle}");
+            assert_eq!(monitor.candidate, [0; MAX_CANDIDATE_BYTES], "cycle {cycle}");
+            assert_eq!(monitor.take_deferred_byte(), Some(0x1b));
+            assert_eq!(&monitor.deferred[..2], b"\0[", "cycle {cycle}");
+            assert_eq!(monitor.take_deferred_byte(), Some(b'['));
+            assert_eq!(monitor.deferred, [0; MAX_CANDIDATE_BYTES], "cycle {cycle}");
+            assert_eq!(monitor.take_deferred_byte(), None);
             assert!(!monitor.has_pending_input());
         }
     }
@@ -571,19 +626,30 @@ mod tests {
     }
 
     #[test]
-    fn theme_monitor_forwards_inline_and_keeps_its_candidate_buffer() {
+    fn theme_monitor_wipes_candidates_it_forwards_consumes_or_discards() {
         let mut monitor = started();
         assert_eq!(
             monitor.feed(b'a', 0),
             FeedResult::Forward(ForwardedBytes::single(b'a'))
         );
-        assert_eq!(monitor.feed(0x1b, 0), FeedResult::Pending);
-        assert_eq!(monitor.feed(b'[', 0), FeedResult::Pending);
+        feed_all(&mut monitor, b"\x1b[?12345", 0);
+        assert_eq!(&monitor.candidate[..8], b"\x1b[?12345");
         let FeedResult::Forward(forwarded) = monitor.feed(b'x', 0) else {
             panic!("expected the invalid reply to be forwarded");
         };
-        assert_eq!(forwarded.as_slice(), b"\x1b[x");
-        assert!(monitor.candidate.is_empty());
-        assert!(monitor.candidate.capacity() >= 3);
+        assert_eq!(forwarded.as_slice(), b"\x1b[?12345x");
+        assert_eq!(monitor.candidate, [0; MAX_CANDIDATE_BYTES]);
+
+        feed_all(&mut monitor, DARK_RESPONSE, 1);
+        assert_eq!(monitor.candidate, [0; MAX_CANDIDATE_BYTES]);
+        feed_all(&mut monitor, b"\x1b]11;rgb:ffff/ffff/ffff\x07", 1);
+        assert_eq!(monitor.candidate, [0; MAX_CANDIDATE_BYTES]);
+        feed_all(&mut monitor, RESPONSE_FENCE, 1);
+        assert_eq!(monitor.candidate, [0; MAX_CANDIDATE_BYTES]);
+
+        feed_all(&mut monitor, b"\x1b]11;rgb:ffff", 2);
+        monitor.poll(2 + RESPONSE_IDLE_TIMEOUT_MS);
+        assert!(!monitor.has_pending_input());
+        assert_eq!(monitor.candidate, [0; MAX_CANDIDATE_BYTES]);
     }
 }
