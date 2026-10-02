@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
@@ -43,6 +43,7 @@ const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth envir
 
 pub struct Profile {
     workspace_root: PathBuf,
+    home: Option<OsString>,
     paths: Option<ProfilePaths>,
     settings: Settings,
 }
@@ -158,11 +159,12 @@ impl Profile {
             Some(paths) => Settings::load(paths, &workspace_root)?,
             None => Settings::default(),
         };
-        Self::new(workspace_root, paths, settings)
+        Self::new(workspace_root, env::var_os("HOME"), paths, settings)
     }
 
     pub(crate) fn new(
         workspace_root: PathBuf,
+        home: Option<OsString>,
         paths: Option<ProfilePaths>,
         settings: Settings,
     ) -> Result<Self, ProfileError> {
@@ -171,6 +173,7 @@ impl Profile {
         }
         Ok(Self {
             workspace_root,
+            home,
             paths,
             settings,
         })
@@ -236,7 +239,7 @@ impl Profile {
         limits.apply_command_line(launch.context_limits);
         let skills = Arc::new(HostSkills::load(
             &self.workspace_root,
-            env::var_os("HOME").as_deref(),
+            self.home.as_deref(),
             self.paths.as_ref(),
             &self.settings,
             limits,
@@ -386,11 +389,10 @@ impl Profile {
             return None;
         }
         let limits = InstructionLimits::from_limits(limits);
-        let home = env::var_os("HOME");
         let snapshot = gather_project_context(
             &self.workspace_root,
             ProfileLocation {
-                home: home.as_deref(),
+                home: self.home.as_deref(),
                 config_directory: self.paths.as_ref().map(|paths| paths.config.as_path()),
             },
             limits,
@@ -593,7 +595,7 @@ mod tests {
         }
         fs::write(paths.config.join("settings.json"), settings).unwrap();
         let settings = Settings::load(&paths, &workspace).unwrap();
-        Profile::new(workspace, Some(paths), settings).unwrap()
+        Profile::new(workspace, Some(directory.into()), Some(paths), settings).unwrap()
     }
 
     #[tokio::test]
