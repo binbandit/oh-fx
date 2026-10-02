@@ -3,11 +3,12 @@ use std::io::Read;
 use std::process::{Child, Command, Stdio};
 
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal};
+use rustix::process::{Pid, Signal, getpid};
 
 use super::{
-    Effects, Identity, InspectionError, ProcessSnapshot, TrackedProcess, Tracker,
-    should_signal_process, should_traverse_parent, snapshot_belongs_to_parent, snapshot_is_alive,
+    CompletionStanding, Effects, Identity, InspectionError, ProcessSnapshot, TrackedProcess,
+    Tracker, completion_standing, proc_fs, should_signal_process, should_traverse_parent,
+    snapshot_belongs_to_parent, snapshot_is_alive,
 };
 
 type Capture = fn(i32) -> Result<ProcessSnapshot, InspectionError>;
@@ -69,12 +70,23 @@ fn snapshot(start_ticks: u64) -> ProcessSnapshot {
         identity: identity(start_ticks),
         parent_pid: Some(pid(1)),
         process_group: Some(pid(1)),
+        session: Some(pid(1)),
         zombie: false,
     }
 }
 
 fn own_snapshot(raw: i32) -> ProcessSnapshot {
-    grouped(raw, Some(raw))
+    ProcessSnapshot {
+        session: Some(pid(raw)),
+        ..grouped(raw, Some(raw))
+    }
+}
+
+fn in_session(raw: i32, session: Option<i32>) -> ProcessSnapshot {
+    ProcessSnapshot {
+        session: session.map(pid),
+        ..own_snapshot(raw)
+    }
 }
 
 fn grouped(raw: i32, process_group: Option<i32>) -> ProcessSnapshot {
@@ -154,6 +166,7 @@ fn child_admission_binds_the_observed_process_to_its_expected_parent() {
         identity: identity(42),
         parent_pid: Some(pid(17)),
         process_group: Some(pid(17)),
+        session: Some(pid(17)),
         zombie: false,
     };
     assert!(snapshot_belongs_to_parent(observed, pid(17)));
@@ -249,6 +262,79 @@ fn a_walk_still_fails_on_errors_other_than_denied_access() {
 }
 
 #[test]
+fn natural_completion_detaches_only_processes_that_left_the_command_session() {
+    let command_session = pid(500);
+    assert_eq!(
+        completion_standing(command_session, Some(command_session)),
+        CompletionStanding::Attached
+    );
+    assert_eq!(
+        completion_standing(command_session, Some(pid(700))),
+        CompletionStanding::Detached
+    );
+    assert_eq!(
+        completion_standing(command_session, None),
+        CompletionStanding::Attached
+    );
+}
+
+#[test]
+fn natural_completion_stops_attached_processes_and_keeps_detached_daemons() {
+    let effects = FakeEffects::new(|raw| match raw {
+        30 | 32 => Ok(in_session(raw, Some(500))),
+        34 => Err(InspectionError::ProcessNotFound),
+        35 => Ok(snapshot(999)),
+        36 => Ok(ProcessSnapshot {
+            zombie: true,
+            ..in_session(36, Some(500))
+        }),
+        37 => Ok(in_session(37, None)),
+        _ => Ok(own_snapshot(raw)),
+    });
+    let tracker = tracking(30..38);
+    let delivered = tracker.signal_attached_with(Signal::KILL, pid(500), &effects);
+    assert_eq!(effects.sent(), [37, 32, 30]);
+    assert_eq!(delivered, 3);
+    assert!(tracker.any_attached_alive_with(pid(500), &effects));
+
+    let daemons_only = tracking([31, 33]);
+    assert!(!daemons_only.any_attached_alive_with(pid(500), &effects));
+}
+
+#[test]
+fn natural_completion_keeps_an_unreadable_process_attached_and_reports_it() {
+    let effects = FakeEffects::new(|raw| match raw {
+        40 => Err(InspectionError::Failed("ProcessIdentityUnavailable")),
+        _ => Err(InspectionError::Denied("PermissionDenied")),
+    });
+    let tracker = tracking([40, 41]);
+    let delivered = tracker.signal_attached_with(Signal::KILL, pid(500), &effects);
+    assert!(effects.sent().is_empty());
+    assert_eq!(delivered, 0);
+    assert!(tracker.any_attached_alive_with(pid(500), &effects));
+}
+
+#[test]
+fn session_inspection_separates_the_callers_session_from_a_new_one() {
+    let own_session = proc_fs::capture_snapshot(getpid())
+        .expect("the caller's stat")
+        .session
+        .expect("the caller's session");
+    let mut detached = spawn_ready(
+        "import os,sys,time; os.setsid(); sys.stdout.write('R'); sys.stdout.flush(); time.sleep(5)",
+    );
+    let detached_pid = Pid::from_child(&detached);
+    let inspected = proc_fs::capture_snapshot(detached_pid).map(|snapshot| snapshot.session);
+    let _ = detached.kill();
+    let _ = detached.wait();
+    assert_eq!(inspected, Ok(Some(detached_pid)));
+    assert_eq!(
+        completion_standing(own_session, Some(detached_pid)),
+        CompletionStanding::Detached
+    );
+}
+
+#[test]
 fn tracked_identity_distinguishes_process_instances() {
     assert_eq!(identity(42), identity(42));
     assert_ne!(identity(42), identity(43));
@@ -270,7 +356,7 @@ fn a_tracked_pid_with_another_identity_is_never_signalled() {
     let mut live =
         spawn_ready("import sys,time; sys.stdout.write('R'); sys.stdout.flush(); time.sleep(30)");
     let live_pid = Pid::from_child(&live);
-    let actual = super::proc_fs::capture_snapshot(live_pid).expect("the live process");
+    let actual = proc_fs::capture_snapshot(live_pid).expect("the live process");
     let reused = Tracker {
         root: Some(TrackedProcess {
             pid: live_pid,

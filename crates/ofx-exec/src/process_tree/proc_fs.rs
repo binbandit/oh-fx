@@ -9,7 +9,7 @@ use super::{Identity, InspectionError, ProcessSnapshot};
 use crate::command_runner::error_name;
 
 const STAT_BYTES: usize = 4096;
-const THREADS_AFTER_PROCESS_GROUP: usize = 14;
+const THREADS_AFTER_SESSION: usize = 13;
 const START_TICKS_AFTER_THREADS: usize = 1;
 const IDENTITY_UNAVAILABLE: InspectionError = InspectionError::Failed("ProcessIdentityUnavailable");
 const INSPECTION_FAILED: InspectionError = InspectionError::Failed("ProcessTreeInspectionFailed");
@@ -86,12 +86,14 @@ fn parse_stat(stat: &[u8]) -> Option<ProcessSnapshot> {
     let state = fields.next()?;
     let parent_pid = parse_field::<i32>(fields.next()?)?;
     let process_group = parse_field::<i32>(fields.next()?)?;
-    let threads = parse_field::<u32>(fields.nth(THREADS_AFTER_PROCESS_GROUP)?)?;
+    let session = parse_field::<i32>(fields.next()?)?;
+    let threads = parse_field::<u32>(fields.nth(THREADS_AFTER_SESSION)?)?;
     let start_ticks = parse_field::<u64>(fields.nth(START_TICKS_AFTER_THREADS)?)?;
     Some(ProcessSnapshot {
         identity: Identity { start_ticks },
         parent_pid: positive_pid(parent_pid),
         process_group: positive_pid(process_group),
+        session: positive_pid(session),
         zombie: state == b"Z" && threads <= 1,
     })
 }
@@ -176,6 +178,7 @@ mod tests {
                 identity: Identity { start_ticks: 98765 },
                 parent_pid: rustix::process::Pid::from_raw(7),
                 process_group: rustix::process::Pid::from_raw(42),
+                session: rustix::process::Pid::from_raw(42),
                 zombie: true,
             })
         );
@@ -192,6 +195,7 @@ mod tests {
                 identity: Identity { start_ticks: 98765 },
                 parent_pid: None,
                 process_group: None,
+                session: None,
                 zombie: false,
             })
         );

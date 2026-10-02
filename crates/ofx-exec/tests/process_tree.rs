@@ -88,8 +88,11 @@ macro_rules! tests {
 }
 
 const PORTABLE: &[(&str, Test)] = tests![
+    natural_command_completion_terminates_background_child_inheriting_pipes,
     natural_command_completion_keeps_a_daemon_that_detached_after_setsid,
     natural_command_completion_keeps_a_double_forked_daemon_and_its_children,
+    natural_command_completion_keeps_a_detached_daemon_that_hides_its_descriptors,
+    natural_completion_after_fork_churn_keeps_only_detached_daemons,
 ];
 
 const TRACKING: &[(&str, Test)] = tests![
@@ -102,6 +105,8 @@ const TRACKING: &[(&str, Test)] = tests![
     losing_the_owner_stops_a_double_forked_daemon,
     stopping_during_fork_churn_removes_every_detached_daemon,
     a_deadline_during_fork_churn_removes_every_detached_daemon,
+    natural_command_completion_stops_a_same_session_process_that_left_the_process_group,
+    natural_command_completion_stops_an_attached_process_whose_main_thread_exited,
     orphans_are_reaped_without_taking_the_command_status,
 ];
 
@@ -559,6 +564,22 @@ fn churning_daemons(before_ready: &str) -> String {
     )
 }
 
+fn natural_command_completion_terminates_background_child_inheriting_pipes() {
+    let scratch = Scratch::new();
+    let pid_path = scratch.path("child");
+    let snapshot = complete(&format!(
+        "(exec -a {} sleep 30) & printf '%s' $! > {}",
+        scratch.path("sleeper").display(),
+        pid_path.display()
+    ));
+    assert_eq!(
+        snapshot.state,
+        SnapshotState::Completed(CommandStatus::ExitCode(0))
+    );
+    let child = scratch.await_pids("child", 1);
+    assert_gone(&child);
+}
+
 fn natural_command_completion_keeps_a_daemon_that_detached_after_setsid() {
     let scratch = Scratch::new();
     let snapshot = complete(&scratch.python("daemon('daemon')"));
@@ -580,6 +601,113 @@ fn natural_command_completion_keeps_a_double_forked_daemon_and_its_children() {
     );
     assert!(String::from_utf8_lossy(&snapshot.output_delta).contains("DAEMON-STARTED"));
     assert_alive(&scratch.await_pids("daemon", 2));
+}
+
+fn natural_command_completion_keeps_a_detached_daemon_that_hides_its_descriptors() {
+    let scratch = Scratch::new();
+    let command = scratch.python(
+        "import ctypes\n\
+         def hide():\n\
+         \x20   if sys.platform.startswith('linux'):\n\
+         \x20       ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n\
+         ready_r, ready_w = os.pipe()\n\
+         if os.fork() == 0:\n\
+         \x20   os.close(ready_r)\n\
+         \x20   os.setsid()\n\
+         \x20   hide()\n\
+         \x20   record('daemon')\n\
+         \x20   os.write(ready_w, b'R')\n\
+         \x20   os.closerange(0, 65536)\n\
+         \x20   time.sleep(60)\n\
+         \x20   os._exit(0)\n\
+         os.close(ready_w)\n\
+         if os.read(ready_r, 1) != b'R': sys.exit(1)\n\
+         time.sleep(0.1)",
+    );
+    let snapshot = complete(&command);
+    assert_eq!(
+        snapshot.state,
+        SnapshotState::Completed(CommandStatus::ExitCode(0))
+    );
+    assert_alive(&scratch.await_pids("daemon", 1));
+}
+
+fn natural_command_completion_stops_a_same_session_process_that_left_the_process_group() {
+    let scratch = Scratch::new();
+    let command = scratch.python(
+        "ready_r, ready_w = os.pipe()\n\
+         if os.fork() == 0:\n\
+         \x20   os.close(ready_r)\n\
+         \x20   os.setpgid(0, 0)\n\
+         \x20   silence()\n\
+         \x20   record('moved')\n\
+         \x20   os.write(ready_w, b'R')\n\
+         \x20   time.sleep(60)\n\
+         \x20   os._exit(0)\n\
+         os.close(ready_w)\n\
+         if os.read(ready_r, 1) != b'R': sys.exit(1)",
+    );
+    let snapshot = complete(&command);
+    assert_eq!(
+        snapshot.state,
+        SnapshotState::Completed(CommandStatus::ExitCode(0))
+    );
+    let moved = scratch.await_pids("moved", 1);
+    assert_gone(&moved);
+}
+
+fn natural_command_completion_stops_an_attached_process_whose_main_thread_exited() {
+    let scratch = Scratch::new();
+    let command = scratch.python(
+        "import ctypes, threading\n\
+         def state():\n\
+         \x20   return open('/proc/%d/stat' % os.getpid()).read().rsplit(')', 1)[1].split()[0]\n\
+         def work():\n\
+         \x20   while state() != 'Z': time.sleep(0.001)\n\
+         \x20   os.write(ready_w, b'R')\n\
+         \x20   while True: time.sleep(1)\n\
+         ready_r, ready_w = os.pipe()\n\
+         if os.fork() == 0:\n\
+         \x20   os.close(ready_r)\n\
+         \x20   os.setpgid(0, 0)\n\
+         \x20   silence()\n\
+         \x20   record('worker')\n\
+         \x20   threading.Thread(target=work).start()\n\
+         \x20   ctypes.CDLL(None).pthread_exit(None)\n\
+         os.close(ready_w)\n\
+         if os.read(ready_r, 1) != b'R': sys.exit(1)",
+    );
+    let snapshot = complete(&command);
+    assert_eq!(
+        snapshot.state,
+        SnapshotState::Completed(CommandStatus::ExitCode(0))
+    );
+    assert_gone(&scratch.await_pids("worker", 1));
+}
+
+fn natural_completion_after_fork_churn_keeps_only_detached_daemons() {
+    let scratch = Scratch::new();
+    let command = scratch.python(
+        "for index in range(8):\n\
+         \x20   daemon('daemons', double_fork=index % 2 == 0)\n\
+         \x20   if os.fork() == 0:\n\
+         \x20       silence()\n\
+         \x20       record('attached')\n\
+         \x20       time.sleep(60)\n\
+         \x20       os._exit(0)\n\
+         \x20   churn(16)\n\
+         while len(open(path('attached')).read().split()) < 8:\n\
+         \x20   time.sleep(0.01)",
+    );
+    let snapshot = complete(&command);
+    assert_eq!(
+        snapshot.state,
+        SnapshotState::Completed(CommandStatus::ExitCode(0))
+    );
+    let daemons = scratch.await_pids("daemons", 8);
+    let attached = scratch.await_pids("attached", 8);
+    assert_gone(&attached);
+    assert_alive(&daemons);
 }
 
 fn orphans_are_reaped_without_taking_the_command_status() {
