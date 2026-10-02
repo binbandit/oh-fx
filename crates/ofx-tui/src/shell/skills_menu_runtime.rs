@@ -21,6 +21,7 @@ impl Shell<'_> {
             }
         }
         self.skills_menu = Some(menu);
+        self.invalidate();
     }
 
     pub(super) fn skills_menu_budget(&self) -> usize {
@@ -236,6 +237,7 @@ mod tests {
         press(&mut test, b"\r");
         assert_eq!(test.shell.composer.text(), "$deploy ");
         let mut test = TestShell::start();
+        press(&mut test, b"draft");
         open(&mut test, SkillMenuFocus::Query("review".to_owned()));
         assert_eq!(test.shell.composer.text(), "review");
         let screen = test.screen();
