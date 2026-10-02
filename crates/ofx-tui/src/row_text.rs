@@ -193,6 +193,12 @@ impl Row {
         }
     }
 
+    pub(crate) fn push_spaces(&mut self, count: usize) {
+        if count > 0 {
+            self.push(&" ".repeat(count), Paint::PLAIN);
+        }
+    }
+
     pub(crate) fn indent(&mut self, spaces: usize) {
         if spaces == 0 {
             return;
