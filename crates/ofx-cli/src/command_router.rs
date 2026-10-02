@@ -82,6 +82,7 @@ mod tests {
         for (input, kind) in [
             ("/reset", SlashKind::ResetSession),
             ("/stats", SlashKind::Stats),
+            ("/copy", SlashKind::Copy),
             ("/version", SlashKind::Version),
         ] {
             assert_eq!(parse(input), Some((kind, "")), "{input}");

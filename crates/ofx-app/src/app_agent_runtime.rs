@@ -3,12 +3,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_agent::{Agent, TurnFailure};
 use ofx_contract::{Notice, NoticeTone, ProviderError, UiCommand, UiEvent};
+use ofx_tui::Clipboard;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{CommandEffect, handle_command};
 use crate::app_permission_runtime::PermissionRuntime;
+use crate::native::NativeClipboard;
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
@@ -25,6 +27,8 @@ pub(crate) struct ControllerState {
     queue: VecDeque<String>,
     permissions: PermissionRuntime,
     emit: Emit,
+    clipboard: Arc<dyn Clipboard>,
+    last_reply: Option<String>,
 }
 
 impl ControllerState {
@@ -38,6 +42,14 @@ impl ControllerState {
 
     pub(crate) fn permissions(&self) -> &PermissionRuntime {
         &self.permissions
+    }
+
+    pub(crate) fn last_reply(&self) -> Option<&str> {
+        self.last_reply.as_deref()
+    }
+
+    pub(crate) fn clipboard(&self) -> &dyn Clipboard {
+        &*self.clipboard
     }
 
     pub(crate) fn emit(&self, event: UiEvent) {
@@ -121,12 +133,20 @@ impl Controller {
             received_prompts: 0,
             queue: VecDeque::new(),
             emit,
+            clipboard: Arc::new(NativeClipboard),
+            last_reply: None,
         };
         Self {
             agent: state.setup.agent(),
             state,
             notices,
         }
+    }
+
+    #[cfg(test)]
+    fn with_clipboard(mut self, clipboard: Arc<dyn Clipboard>) -> Self {
+        self.state.clipboard = clipboard;
+        self
     }
 
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
@@ -169,8 +189,13 @@ impl Controller {
             .set_config(self.state.setup.config(&self.state.model));
     }
 
+    fn remember_agent_facts(&mut self) {
+        self.state.last_reply = self.agent.last_assistant_reply().map(str::to_owned);
+    }
+
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
+        self.remember_agent_facts();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
         self.show_startup_notices();
@@ -267,6 +292,7 @@ impl Controller {
                 outcome: report.outcome,
             });
         }
+        self.remember_agent_facts();
         if std::mem::take(&mut self.state.model_pending) {
             self.reconfigure();
         }
@@ -302,6 +328,7 @@ fn provider_status(error: &ProviderError, source: CredentialSource) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use ofx_config::{ProfilePaths, Settings};
@@ -323,6 +350,26 @@ mod tests {
         commands: UnboundedSender<UiCommand>,
         events: UnboundedReceiver<UiEvent>,
         seen: Vec<UiEvent>,
+        clipboard: Arc<TestClipboard>,
+    }
+
+    #[derive(Default)]
+    struct TestClipboard {
+        copied: Mutex<Vec<String>>,
+        fails: AtomicBool,
+    }
+
+    impl TestClipboard {
+        fn copied(&self) -> Vec<String> {
+            self.copied.lock().unwrap().clone()
+        }
+    }
+
+    impl Clipboard for TestClipboard {
+        fn copy(&self, text: &str) -> bool {
+            self.copied.lock().unwrap().push(text.to_owned());
+            !self.fails.load(Ordering::SeqCst)
+        }
     }
 
     async fn agent_setup(home: &tempfile::TempDir, server: &FakeServer) -> AgentSetup {
@@ -379,12 +426,19 @@ mod tests {
                 let _ = events_sender.send(event);
             });
             let (commands, receiver) = unbounded_channel();
-            tokio::spawn(Controller::new(setup, emit).run(receiver));
+            let clipboard = Arc::new(TestClipboard::default());
+            let shared: Arc<dyn Clipboard> = clipboard.clone();
+            tokio::spawn(
+                Controller::new(setup, emit)
+                    .with_clipboard(shared)
+                    .run(receiver),
+            );
             Self {
                 home,
                 commands,
                 events,
                 seen: Vec::new(),
+                clipboard,
             }
         }
 
@@ -619,6 +673,88 @@ mod tests {
         let turn_id = harness.running_turn();
         harness.send(UiCommand::Cancel { turn_id });
         harness.until(finished(TurnOutcome::Interrupted)).await;
+    }
+
+    async fn copy_notice(harness: &mut Harness) -> Notice {
+        harness.command("/copy");
+        let shown = harness
+            .until(
+                |event| matches!(event, UiEvent::Notice { notice } if notice.topic == "clipboard"),
+            )
+            .await;
+        let Some(UiEvent::Notice { notice }) = shown.last() else {
+            unreachable!()
+        };
+        notice.clone()
+    }
+
+    #[tokio::test]
+    async fn copy_puts_the_last_completed_reply_on_the_clipboard() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["First ", "answer."])),
+            Reply::sse(&chat_text_events(&["Second answer."])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        let empty = copy_notice(&mut harness).await;
+        assert_eq!(
+            (empty.tone, empty.body.as_str()),
+            (NoticeTone::Neutral, "No assistant reply to copy.")
+        );
+        assert!(harness.clipboard.copied().is_empty());
+        harness.submit("first");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let copied = copy_notice(&mut harness).await;
+        assert_eq!(
+            (copied.tone, copied.body.as_str()),
+            (NoticeTone::Neutral, "Copied to clipboard.")
+        );
+        harness.submit("second");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        copy_notice(&mut harness).await;
+        assert_eq!(
+            harness.clipboard.copied(),
+            ["First answer.", "Second answer."]
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_reports_a_clipboard_that_refuses_the_text() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["answer"]))]);
+        let mut harness = Harness::start(&server).await;
+        harness.clipboard.fails.store(true, Ordering::SeqCst);
+        harness.submit("go");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let failed = copy_notice(&mut harness).await;
+        assert_eq!(
+            (failed.tone, failed.body.as_str()),
+            (NoticeTone::Error, "Failed to copy to clipboard.")
+        );
+        assert_eq!(harness.clipboard.copied(), ["answer"]);
+    }
+
+    #[tokio::test]
+    async fn copy_during_a_turn_takes_the_previous_reply_and_clear_forgets_it() {
+        let held = Reply::held_sse(&chat_text_events(&["streaming\n"])[..2]);
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["Done before."])), held]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("first");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        copy_notice(&mut harness).await;
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        copy_notice(&mut harness).await;
+        assert_eq!(harness.clipboard.copied(), ["Done before.", "Done before."]);
+        harness.command("/clear");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let cleared = copy_notice(&mut harness).await;
+        assert_eq!(cleared.body, "No assistant reply to copy.");
     }
 
     #[tokio::test]

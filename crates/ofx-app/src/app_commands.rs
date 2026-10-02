@@ -6,6 +6,10 @@ use ofx_tui::SlashCommandSpec;
 use crate::app_agent_runtime::ControllerState;
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
+const CLIPBOARD_TOPIC: &str = "clipboard";
+const NO_REPLY_TO_COPY: &str = "No assistant reply to copy.";
+const COPIED: &str = "Copied to clipboard.";
+const COPY_FAILED: &str = "Failed to copy to clipboard.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
@@ -61,6 +65,10 @@ pub(crate) fn handle_command(
             state.emit(UiEvent::StatsRequested);
             CommandEffect::None
         }
+        SlashKind::Copy => {
+            copy_last_reply(state);
+            CommandEffect::None
+        }
         SlashKind::Version => {
             state.notice(NoticeTone::Neutral, "version", ofx_upgrade::VERSION);
             CommandEffect::None
@@ -83,6 +91,18 @@ pub(crate) fn handle_command(
             state.notice(NoticeTone::Neutral, "", &format!("{prefix}{resolved}"));
             CommandEffect::SwitchModel(resolved)
         }
+    }
+}
+
+fn copy_last_reply(state: &ControllerState) {
+    let Some(reply) = state.last_reply() else {
+        state.notice(NoticeTone::Neutral, CLIPBOARD_TOPIC, NO_REPLY_TO_COPY);
+        return;
+    };
+    if state.clipboard().copy(reply) {
+        state.notice(NoticeTone::Neutral, CLIPBOARD_TOPIC, COPIED);
+    } else {
+        state.notice(NoticeTone::Error, CLIPBOARD_TOPIC, COPY_FAILED);
     }
 }
 
@@ -121,8 +141,8 @@ mod tests {
                 "/quit"
             ]
         );
-        assert_eq!(specs[7].aliases, ["/exit"]);
-        assert_eq!(specs[7].description, "exit the interactive shell");
+        assert_eq!(specs[8].aliases, ["/exit"]);
+        assert_eq!(specs[8].description, "exit the interactive shell");
     }
 
     #[test]
@@ -142,6 +162,7 @@ mod tests {
                 ("/stats", "Account"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/copy", "Session"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]

@@ -8,6 +8,7 @@ pub enum SlashKind {
     Stats,
     Model,
     Permissions,
+    Copy,
     Version,
     Quit,
 }
@@ -223,6 +224,10 @@ mod tests {
             spec(SlashKind::Stats).completion_description,
             "show token and turn statistics"
         );
+        assert_eq!(
+            spec(SlashKind::Copy).completion_description,
+            "copy the last assistant response"
+        );
     }
 
     #[test]
@@ -241,6 +246,7 @@ mod tests {
                 ("/stats", "Account"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/copy", "Session"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]
