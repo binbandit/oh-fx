@@ -72,6 +72,10 @@ impl SessionGrants {
         }
     }
 
+    pub(crate) fn forget(&self) {
+        self.lock().clear();
+    }
+
     pub(crate) fn granted_root(
         &self,
         workspace_root: &Path,

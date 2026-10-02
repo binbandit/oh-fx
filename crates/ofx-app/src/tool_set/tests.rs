@@ -556,3 +556,17 @@ async fn a_target_that_vanishes_before_the_prompt_confines_the_approved_call_to_
     assert_eq!(read.status, ToolResultStatus::Failure, "{read:?}");
     assert!(read.content.contains("PathOutsideWorkspace"), "{read:?}");
 }
+
+#[tokio::test]
+async fn clearing_the_conversation_forgets_the_approvals_remembered_in_it() {
+    let fixture = Fixture::new();
+    let mut session = Session::new(&fixture.workspace);
+    let read = r#"{"path":"../approved/data.txt"}"#;
+    session.call("read_file", read, always).await;
+    session.call("read_file", read, unasked).await;
+    session.agent.clear_history();
+    session
+        .call("read_file", read, deny)
+        .await
+        .denied_request("read_file");
+}

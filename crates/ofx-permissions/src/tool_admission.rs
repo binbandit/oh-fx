@@ -108,6 +108,10 @@ impl PermissionGate for PermissionPolicy {
         self.session_grants.remember(grant);
     }
 
+    fn forget_approvals(&self) {
+        self.session_grants.forget();
+    }
+
     fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget> {
         applicable_target(&self.workspace_root, call)
     }
@@ -783,6 +787,37 @@ mod tests {
                 "{different:?}"
             );
         }
+    }
+
+    #[test]
+    fn forgetting_approvals_drops_every_remembered_grant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(root.join("a.txt"), "text\n").unwrap();
+        let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        let command = CommandRequest::Run {
+            command: "cargo test".to_owned(),
+            cwd: workspace.clone(),
+            profile: CommandProfile::User,
+            terminal: false,
+        };
+        let change = FileMutation {
+            target: workspace.join("a.txt"),
+            state: FileMutationState::Changes,
+        };
+        approve_always(&policy, GatedAction::Call(&read("../a.txt")));
+        approve_always(&policy, GatedAction::Command(&command));
+        approve_always(&policy, GatedAction::FileMutation(&change));
+        assert_ne!(policy.admit(&read("../a.txt")), Admission::ApprovalRequired);
+        policy.forget_approvals();
+        assert_eq!(policy.admit(&read("../a.txt")), Admission::ApprovalRequired);
+        assert_eq!(policy.admit_command(&command), Admission::ApprovalRequired);
+        assert_eq!(
+            policy.admit_file_mutation(&change),
+            Admission::ApprovalRequired
+        );
     }
 
     #[test]

@@ -119,4 +119,6 @@ pub trait PermissionGate: Send + Sync {
     }
 
     fn remember_approval(&self, _grant: &SessionGrant) {}
+
+    fn forget_approvals(&self) {}
 }

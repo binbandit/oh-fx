@@ -230,6 +230,7 @@ impl Agent {
 
     pub fn clear_history(&mut self) {
         self.history.clear();
+        self.permissions.forget_approvals();
         if let Some(project) = &mut self.project {
             project.deltas.clear();
             project.delivery = project.initial.clone();
