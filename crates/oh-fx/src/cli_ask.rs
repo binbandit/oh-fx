@@ -45,6 +45,7 @@ use crate::shell_call_record::{
 };
 
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
+const WEB_FETCH_TOOL: &str = "web_fetch";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
 const HOME_NOT_SET: &str = "HomeNotSet";
 const PERMISSION_REQUIRED_HEADLINE: &str =
@@ -433,6 +434,7 @@ async fn prepare_agent(
         command_timeout: args.timeout_ms.map(Duration::from_millis),
         executions: request.executions,
         endpoints,
+        web_fetch_progress: web_fetch_progress(output_mode(args.output)),
     };
     let setup = profile.connect(launch, cancel).await?;
     let mut agent = setup.agent();
@@ -560,6 +562,15 @@ fn without_leading_blank_lines(text: &str) -> &str {
     text[..blank]
         .rfind('\n')
         .map_or(text, |end| &text[end + 1..])
+}
+
+fn web_fetch_progress(mode: OutputMode) -> Option<Arc<dyn Fn(&str) + Send + Sync>> {
+    if mode == OutputMode::Terminal {
+        return None;
+    }
+    Some(Arc::new(|line: &str| {
+        let _ = write_stderr(&format!("{line}\n"));
+    }))
 }
 
 fn write_stderr(text: &str) -> io::Result<()> {
@@ -848,12 +859,16 @@ impl Presenter {
             }
             UiEvent::ToolStarted {
                 call_id,
+                tool_name,
                 description,
                 ..
             } => {
                 self.start_step();
                 if description.activity == ToolActivity::Command {
                     self.command_calls.push(call_id.clone());
+                }
+                if self.mode != OutputMode::Terminal && tool_name == WEB_FETCH_TOOL {
+                    return true;
                 }
                 let line = self.progress_line(&description.title);
                 if description.effect == ToolEffect::None {

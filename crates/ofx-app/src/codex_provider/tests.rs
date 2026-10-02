@@ -160,6 +160,7 @@ fn ask_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
         None,
         &PermissionMode::Auto.into(),
         crate::skills::rootless_skill_tool(),
+        None,
     )
 }
 

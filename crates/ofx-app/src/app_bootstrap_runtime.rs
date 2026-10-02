@@ -23,6 +23,7 @@ use ofx_exec::ManagedExecutions;
 use ofx_gateway::{ChatCompletionsProvider, ChatCompletionsReviewTransport, CodexReviewTransport};
 use ofx_http::ClientError;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
+use ofx_tools::WebFetchProgress;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
@@ -115,6 +116,7 @@ pub struct Launch<'a> {
     pub command_timeout: Option<Duration>,
     pub executions: &'a ManagedExecutions,
     pub endpoints: SubscriptionEndpoints,
+    pub web_fetch_progress: Option<WebFetchProgress>,
 }
 
 pub struct AgentSetup {
@@ -280,6 +282,7 @@ impl Profile {
                 launch.command_timeout,
                 &permission_mode,
                 skills.tool(),
+                launch.web_fetch_progress,
             ),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
@@ -621,6 +624,7 @@ mod tests {
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
+                    web_fetch_progress: None,
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
