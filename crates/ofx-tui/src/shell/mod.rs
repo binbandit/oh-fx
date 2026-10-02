@@ -59,6 +59,7 @@ pub struct SlashCommandSpec {
     pub aliases: Vec<String>,
     pub description: String,
     pub category: usize,
+    pub compacts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -177,7 +177,7 @@ impl Shell<'_> {
         let now_ms = self.now_ms();
         match activity {
             CompactionActivity::Preparing => {
-                self.compaction = Some(CompactionStatus::preparing(now_ms));
+                self.compaction = Some(CompactionStatus::preparing(self.compaction, now_ms));
             }
             CompactionActivity::Summarizing => {
                 if let Some(status) = &mut self.compaction {
@@ -410,6 +410,7 @@ mod tests {
         ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
     };
 
+    use super::super::SlashCommandSpec;
     use super::super::test_shell::TestShell;
     use crate::input::{PasteOutcome, PasteOwner};
 
@@ -563,6 +564,75 @@ mod tests {
             let screen = test.screen();
             assert!(!screen.contains(label), "{screen}");
         }
+    }
+
+    fn with_compact() -> TestShell {
+        TestShell::start_with(|options| {
+            options.commands.push(SlashCommandSpec {
+                command: "/compact".to_owned(),
+                aliases: Vec::new(),
+                description: String::new(),
+                category: 0,
+                compacts: true,
+            });
+        })
+    }
+
+    #[test]
+    fn a_prompt_sent_before_compaction_starts_waits_and_an_interrupt_stops_the_compaction() {
+        for keys in [&b"\x03"[..], b"\x1b[27u\x1b[27u"] {
+            let mut test = with_compact();
+            test.submit("/compact");
+            test.submit("after");
+            let screen = test.screen();
+            assert!(screen.contains("┋ after"), "{screen}");
+            assert!(!screen.contains("┃ after"), "{screen}");
+            test.deliver(compaction(CompactionActivity::Preparing));
+            test.deliver(compaction(CompactionActivity::Summarizing));
+            test.type_bytes(keys);
+            test.step();
+            assert_eq!(
+                test.sent(),
+                [
+                    UiCommand::RunCommand {
+                        text: "/compact".to_owned()
+                    },
+                    UiCommand::Submit {
+                        prompt: "after".to_owned()
+                    },
+                    UiCommand::CancelCompaction,
+                ],
+                "{keys:?}"
+            );
+            let screen = test.screen();
+            assert!(screen.contains("• Stopping compaction"), "{screen}");
+            assert!(screen.contains("┋ after"), "{screen}");
+            test.deliver(compaction(CompactionActivity::Ended(
+                CompactionEnd::Cancelled,
+            )));
+            let screen = test.screen();
+            assert!(screen.contains("┃ after"), "{screen}");
+            assert!(screen.contains("Compaction cancelled."), "{screen}");
+        }
+    }
+
+    #[test]
+    fn a_compaction_with_nothing_to_compact_releases_the_prompts_held_for_it() {
+        let mut test = with_compact();
+        test.submit("/compact");
+        test.submit("held");
+        assert!(test.screen().contains("┋ held"));
+        test.deliver(compaction(CompactionActivity::Ended(
+            CompactionEnd::NothingToCompact,
+        )));
+        let screen = test.screen();
+        assert!(screen.contains("┃ held"), "{screen}");
+        assert!(screen.contains("No context to compact."), "{screen}");
+        let mut unknown = with_compact();
+        unknown.submit("/compact now");
+        unknown.submit("runs");
+        let screen = unknown.screen();
+        assert!(screen.contains("┃ runs"), "{screen}");
     }
 
     #[test]

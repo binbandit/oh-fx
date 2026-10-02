@@ -42,6 +42,7 @@ pub(crate) fn slash_command_specs() -> Vec<SlashCommandSpec> {
                 .collect(),
             description: spec.completion_description.to_owned(),
             category: spec.presentation_category as usize,
+            compacts: spec.kind == SlashKind::Compact,
         })
         .collect()
 }
@@ -186,6 +187,12 @@ mod tests {
                 "/quit",
             ]
         );
+        let compacting: Vec<&str> = specs
+            .iter()
+            .filter(|spec| spec.compacts)
+            .map(|spec| spec.command.as_str())
+            .collect();
+        assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[11].aliases, ["/exit"]);
         assert_eq!(specs[11].description, "exit the interactive shell");
     }

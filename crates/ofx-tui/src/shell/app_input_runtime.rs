@@ -209,10 +209,10 @@ impl Shell<'_> {
     }
 
     fn interrupt(&mut self) {
-        if self.turn.is_some() {
-            self.cancel_visible_turn();
-        } else {
+        if self.compaction_running() {
             self.cancel_compaction();
+        } else {
+            self.cancel_visible_turn();
         }
     }
 

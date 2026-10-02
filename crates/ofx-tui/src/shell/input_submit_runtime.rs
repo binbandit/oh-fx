@@ -1,6 +1,7 @@
 use ofx_contract::UiCommand;
 
 use super::{MAX_PROMPT_HISTORY, Shell, SlashCommandSpec, Submission, SubmissionState};
+use crate::output::compaction_activity::CompactionStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Submit {
@@ -42,6 +43,10 @@ fn best_match<'a>(spec: &'a SlashCommandSpec, prefix: &str) -> Option<(usize, &'
         }
     }
     best
+}
+
+fn compacts(commands: &[SlashCommandSpec], command: &str) -> bool {
+    lookup(commands, command.trim_end_matches([' ', '\t'])).is_some_and(|spec| spec.compacts)
 }
 
 pub(crate) fn slash_completions<'a>(
@@ -100,7 +105,12 @@ impl Shell<'_> {
             Submit::Command(command) => {
                 self.composer.record_history(MAX_PROMPT_HISTORY);
                 self.composer.clear();
+                let requests_compaction =
+                    !self.working() && compacts(&self.options.commands, &command);
                 self.send(UiCommand::RunCommand { text: command });
+                if requests_compaction {
+                    self.compaction = Some(CompactionStatus::requested(self.now_ms()));
+                }
             }
             Submit::Prompt(prompt) => {
                 self.composer.record_history(MAX_PROMPT_HISTORY);
@@ -146,8 +156,24 @@ mod tests {
                 .collect(),
             description: String::new(),
             category: 0,
+            compacts: command == "/compact",
         })
         .collect()
+    }
+
+    #[test]
+    fn only_the_exact_compact_command_requests_compaction() {
+        let commands = commands();
+        for (text, expected) in [
+            ("/compact", true),
+            ("/compact\t ", true),
+            ("/compact now", false),
+            ("/compact\n", false),
+            ("/clear", false),
+            ("/bogus", false),
+        ] {
+            assert_eq!(compacts(&commands, text), expected, "{text:?}");
+        }
     }
 
     #[test]

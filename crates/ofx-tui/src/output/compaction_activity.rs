@@ -8,6 +8,7 @@ const TRANSIENT_FEEDBACK_MS: i64 = 1500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    Requested,
     Preparing,
     Summarizing,
     Stopping,
@@ -29,11 +30,22 @@ pub(crate) struct CompactionStatus {
 }
 
 impl CompactionStatus {
-    pub(crate) fn preparing(now_ms: i64) -> Self {
+    pub(crate) fn requested(now_ms: i64) -> Self {
         Self {
-            phase: Phase::Preparing,
+            phase: Phase::Requested,
             started_ms: now_ms,
             expires_ms: None,
+        }
+    }
+
+    pub(crate) fn preparing(previous: Option<Self>, now_ms: i64) -> Self {
+        match previous {
+            Some(status) if status.phase == Phase::Stopping => status,
+            _ => Self {
+                phase: Phase::Preparing,
+                started_ms: now_ms,
+                expires_ms: None,
+            },
         }
     }
 
@@ -63,7 +75,7 @@ impl CompactionStatus {
     }
 
     pub(crate) fn clock_ms(&self) -> Option<i64> {
-        self.running().then_some(self.started_ms)
+        (self.running() && self.phase != Phase::Requested).then_some(self.started_ms)
     }
 
     pub(crate) fn expires_ms(&self) -> Option<i64> {
@@ -76,6 +88,7 @@ impl CompactionStatus {
 
     pub(crate) fn rows(&self, theme: &Theme, now_ms: i64, cols: usize) -> Vec<Row> {
         let label = match self.phase {
+            Phase::Requested => return Vec::new(),
             Phase::Preparing => "Preparing compaction",
             Phase::Summarizing => "Compacting",
             Phase::Stopping => "Stopping compaction",

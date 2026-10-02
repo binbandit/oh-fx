@@ -236,6 +236,7 @@ fn options() -> ShellOptions {
         aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
         description: String::new(),
         category,
+        compacts: false,
     };
     ShellOptions {
         version: "0.1.0".to_owned(),

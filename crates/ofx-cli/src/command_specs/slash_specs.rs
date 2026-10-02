@@ -72,7 +72,7 @@ pub(crate) enum SlashArguments {
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlashSpec {
-    pub(crate) kind: SlashKind,
+    pub kind: SlashKind,
     pub command: &'static str,
     pub aliases: &'static [&'static str],
     pub completion_description: &'static str,
