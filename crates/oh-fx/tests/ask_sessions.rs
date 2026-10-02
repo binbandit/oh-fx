@@ -1,7 +1,9 @@
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -79,8 +81,9 @@ impl Home {
         .expect("session metadata")
     }
 
-    fn ask<S: AsRef<OsStr>>(&self, args: &[S], environment: &[(&str, &str)]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+    fn command<S: AsRef<OsStr>>(&self, args: &[S]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
             .args(args)
             .current_dir(self.root.join("workspace"))
             .env_clear()
@@ -92,8 +95,13 @@ impl Home {
             .env("SHELL", "/bin/sh")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .envs(KEY)
+            .stdin(Stdio::null());
+        command
+    }
+
+    fn ask<S: AsRef<OsStr>>(&self, args: &[S], environment: &[(&str, &str)]) -> Output {
+        self.command(args)
             .envs(environment.iter().copied())
-            .stdin(Stdio::null())
             .output()
             .expect("run oh-fx")
     }
@@ -556,19 +564,8 @@ fn a_crash_after_a_compaction_inside_a_turn_resumes_with_the_turn_closed() {
         Reply::sse(&unmetered_text_events("again")),
     ]);
     let home = small_window_home(&server);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args(["ask", "--json", "read the notes"])
-        .current_dir(home.root.join("workspace"))
-        .env_clear()
-        .env("HOME", &home.root)
-        .env("XDG_CONFIG_HOME", home.root.join("config"))
-        .env("XDG_STATE_HOME", home.root.join("state"))
-        .env("XDG_DATA_HOME", home.root.join("data"))
-        .env("XDG_CACHE_HOME", home.root.join("cache"))
-        .env("SHELL", "/bin/sh")
-        .env("OH_FX_AUTO_UPGRADE", "0")
-        .envs(KEY)
-        .stdin(Stdio::null())
+    let mut child = home
+        .command(&["ask", "--json", "read the notes"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -653,4 +650,62 @@ fn a_session_the_open_store_cannot_start_fails_the_run_before_any_request() {
     assert_eq!(result["session_id"], "");
     assert!(home.session_ids().is_empty());
     assert!(server.requests().is_empty());
+}
+
+#[test]
+fn an_interrupted_turn_is_saved_and_resumes_with_its_partial_reply_closed() {
+    let server = FakeServer::start([
+        Reply::sse(&spoken_read_events("", "call_1", "small.txt")),
+        Reply::held_sse(&[chunk(
+            &json!({"role": "assistant", "content": "half"}),
+            &Value::Null,
+        )]),
+        Reply::sse(&unmetered_text_events("again")),
+    ]);
+    let home = Home::new(&server.base_url());
+    fs::write(home.root.join("workspace/small.txt"), "alpha\n").expect("write small.txt");
+    let mut child = home
+        .command(&["ask", "read it"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start oh-fx");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut seen = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !seen.ends_with(b"half") {
+        stdout
+            .read_exact(&mut byte)
+            .expect("read the partial reply");
+        seen.push(byte[0]);
+    }
+    let killed = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+    assert!(killed.success());
+    assert_eq!(child.wait().expect("reap oh-fx").signal(), Some(2));
+    let id = home.session_ids().pop().expect("a session");
+    let frames = home.frames(&id);
+    assert_eq!(
+        kinds(&frames),
+        ["user", "tool_call", "tool_result", "interrupted"]
+    );
+    let interrupted = &frames[3]["event"]["interrupted"];
+    assert_eq!(interrupted["reason"], "cancelled");
+    assert_eq!(interrupted["partial_text"], "half");
+    let resumed = home.ask_json(&["--resume", "last", "next"], &[]);
+    assert_eq!(resumed["final_output"], "again", "{resumed}");
+    let requests = server.requests();
+    let live = conversation(&requests[1]);
+    let resumed = conversation(&requests[2]);
+    assert_eq!(resumed[..live.len()], live[..]);
+    assert_eq!(
+        texts(&resumed[live.len()..]),
+        [
+            "assistant: half\n\nThe previous response ended before completion.",
+            "user: <turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>",
+            "user: next",
+        ]
+    );
 }
