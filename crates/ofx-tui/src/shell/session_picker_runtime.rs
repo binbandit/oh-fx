@@ -1,7 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
-    HistoryEntry, ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope, UiCommand,
+    HistoryEntry, Notice, NoticeTone, ResumeRefusal, SessionCursor, SessionPage, SessionRow,
+    SessionScope, UiCommand,
 };
 use ofx_text::contains_ignore_case;
 
@@ -9,6 +10,7 @@ use super::{FreshScreen, Shell};
 use crate::footer::resume_menu_presentation::{
     FALLBACK_TITLE, LoadState, MAX_INLINE_ROWS, SessionMenuView, menu_frame,
 };
+use crate::render_engine::transcript_blocks::Entry;
 use crate::row_text::Row;
 use crate::terminal::Layout;
 use crate::theme::Theme;
@@ -17,6 +19,7 @@ use crate::transcript::history_replay::replayed_entries;
 const DEFAULT_PAGE_LIMIT: usize = 10;
 const PAGE_CHROME_ROWS: usize = 7;
 const QUERY_TRIM: &[char] = &[' ', '\t', '\r', '\n'];
+const DRAFT_BLOCKS_SWITCH: &str = "submit or clear the draft before switching sessions";
 
 pub(super) struct SessionPicker {
     scope: SessionScope,
@@ -202,6 +205,20 @@ impl Shell<'_> {
         self.restart_transcript(FreshScreen::Erase, replayed_entries(history));
     }
 
+    pub(super) fn open_all_sessions(&mut self) {
+        if self.composer.is_empty() {
+            self.send(UiCommand::OpenSessions {
+                scope: SessionScope::AllWorkspaces,
+            });
+            return;
+        }
+        self.push_entry(Entry::Notice(Notice::new(
+            NoticeTone::Neutral,
+            "session",
+            DRAFT_BLOCKS_SWITCH,
+        )));
+    }
+
     pub(super) fn picker_active(&self) -> bool {
         self.picker.is_some()
     }
@@ -331,6 +348,25 @@ mod tests {
         keys(&mut test, b"early\r");
         assert_eq!(test.sent(), [list(SessionScope::CurrentWorkspace, None)]);
         assert!(test.screen().contains("┃ early"));
+    }
+
+    #[test]
+    fn super_r_asks_for_every_workspace_once_the_draft_is_clear() {
+        let mut test = TestShell::start();
+        keys(&mut test, b"draft\x1b[114;9u");
+        assert!(test.sent().is_empty());
+        let screen = test.screen();
+        assert!(
+            screen.contains("* session: submit or clear the draft before switching sessions"),
+            "{screen}"
+        );
+        keys(&mut test, b"\x7f\x7f\x7f\x7f\x7f\x1b[114;9u");
+        assert_eq!(
+            test.sent(),
+            [UiCommand::OpenSessions {
+                scope: SessionScope::AllWorkspaces
+            }]
+        );
     }
 
     #[test]

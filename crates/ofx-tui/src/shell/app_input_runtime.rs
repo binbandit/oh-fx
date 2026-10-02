@@ -134,6 +134,10 @@ impl Shell<'_> {
                 return;
             }
             Action::PasteEnd | Action::Ignore => return,
+            Action::OpenAllSessions => {
+                self.open_all_sessions();
+                return;
+            }
             _ => {}
         }
         self.gestures.disarm_ctrl_c_exit();

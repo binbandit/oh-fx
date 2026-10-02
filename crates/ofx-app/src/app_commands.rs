@@ -21,6 +21,7 @@ const FAST_TOPIC: &str = "fast";
 const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
 const NOTHING_TO_UNDO: &str = "Nothing to undo.";
+const RESUME_DURING_TURN: &str = "resume is unavailable until the response finishes";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
@@ -37,6 +38,10 @@ pub(crate) enum Work {
     Idle,
     Turn,
     Compaction,
+}
+
+pub(crate) fn refuse_resume_during_turn(state: &ControllerState) {
+    state.notice(NoticeTone::Neutral, "session", RESUME_DURING_TURN);
 }
 
 pub(crate) fn slash_command_specs() -> Vec<SlashCommandSpec> {
@@ -82,11 +87,7 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             CommandEffect::Clear
         }
         SlashKind::ResumeSession if work != Work::Idle => {
-            state.notice(
-                NoticeTone::Neutral,
-                "session",
-                "resume is unavailable until the response finishes",
-            );
+            refuse_resume_during_turn(state);
             CommandEffect::None
         }
         SlashKind::ResumeSession => CommandEffect::OpenSessions,

@@ -15,7 +15,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
-use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
+use crate::app_commands::{
+    CommandEffect, Work, handle_command, refuse_resume_during_turn, toggle_fast,
+};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences};
 use crate::native::NativeClipboard;
@@ -299,6 +301,7 @@ impl Controller {
                     after,
                     limit,
                 } => self.list_sessions(scope, after, limit),
+                UiCommand::OpenSessions { scope } => self.open_picker(scope),
                 UiCommand::ResumeSession { id } => self.resume_session(&id),
                 UiCommand::CloseSessionPicker => self.close_picker(),
                 UiCommand::Cancel { .. }
@@ -329,7 +332,7 @@ impl Controller {
                 self.reconfigure();
             }
             CommandEffect::Compact => return self.compact(commands).await,
-            CommandEffect::OpenSessions => self.open_picker(),
+            CommandEffect::OpenSessions => self.open_picker(SessionScope::CurrentWorkspace),
         }
         true
     }
@@ -371,7 +374,8 @@ impl Controller {
                             | UiCommand::QuestionAnswered { .. },
                         ) => {}
                         Some(
-                            command @ (UiCommand::ListSessions { .. }
+                            command @ (UiCommand::OpenSessions { .. }
+                            | UiCommand::ListSessions { .. }
                             | UiCommand::ResumeSession { .. }
                             | UiCommand::CloseSessionPicker),
                         ) => refuse_session_command(state, command),
@@ -394,10 +398,8 @@ impl Controller {
         open
     }
 
-    fn open_picker(&self) {
-        self.state.emit(UiEvent::SessionPickerOpened {
-            scope: SessionScope::CurrentWorkspace,
-        });
+    fn open_picker(&self, scope: SessionScope) {
+        self.state.emit(UiEvent::SessionPickerOpened { scope });
     }
 
     fn list_sessions(&self, scope: SessionScope, after: Option<SessionCursor>, limit: usize) {
@@ -599,7 +601,8 @@ impl Controller {
                                 .await;
                         }
                         Some(
-                            command @ (UiCommand::ListSessions { .. }
+                            command @ (UiCommand::OpenSessions { .. }
+                            | UiCommand::ListSessions { .. }
                             | UiCommand::ResumeSession { .. }
                             | UiCommand::CloseSessionPicker),
                         ) => refuse_session_command(state, command),
@@ -699,6 +702,7 @@ fn refuse_session_command(state: &ControllerState, command: UiCommand) {
             id,
             refusal: ResumeRefusal::Unavailable,
         }),
+        UiCommand::OpenSessions { .. } => refuse_resume_during_turn(state),
         _ => {}
     }
 }

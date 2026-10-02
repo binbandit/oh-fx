@@ -1176,6 +1176,12 @@ fn the_picker_filters_by_typed_text_and_reaches_sessions_of_other_workspaces() {
         screen.contains("Sessions 1  Current workspace  [All workspaces]"),
         "{screen}"
     );
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| !screen.contains("[All workspaces]"))
+        .unwrap_or_else(|screen| panic!("the picker stays open:\n{screen}"));
+    session.send(b"\x1b[114;9u");
+    wait(&session, "Sessions 1  Current workspace  [All workspaces]");
     session.send(b"zzz");
     wait(&session, "Sessions 0  Current workspace  [All workspaces]");
     session.send(b"\x7f\x7f\x7fALP");
@@ -1249,6 +1255,15 @@ fn resume_waits_for_a_running_response() {
         "session: resume is unavailable until the response finishes",
     );
     assert!(!screen.contains("[Current workspace]"), "{screen}");
+    session.send(b"\x1b[114;9u");
+    session
+        .wait_for(WAIT, |screen| {
+            screen
+                .matches("resume is unavailable until the response finishes")
+                .count()
+                == 2
+        })
+        .unwrap_or_else(|screen| panic!("Super+R was not refused:\n{screen}"));
     session.send(b"\x03");
     wait(&session, CANCELLATION);
     exit(session);

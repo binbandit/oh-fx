@@ -264,6 +264,9 @@ pub enum UiCommand {
     TogglePermissionMode,
     FullAccessWarningShown,
     CancelCompaction,
+    OpenSessions {
+        scope: SessionScope,
+    },
     ListSessions {
         scope: SessionScope,
         after: Option<SessionCursor>,
