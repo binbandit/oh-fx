@@ -18,6 +18,7 @@ pub struct ModelRequest<'a> {
     pub tool_choice: ToolChoice,
     pub max_output_tokens: Option<u32>,
     pub provider_options: ProviderOptions<'a>,
+    pub session_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -185,6 +186,7 @@ mod tests {
             tool_choice: ToolChoice::Auto,
             max_output_tokens: None,
             provider_options: ProviderOptions::default(),
+            session_id: None,
         };
         assert_eq!(Silent.request_body(&request), None);
     }

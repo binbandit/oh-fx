@@ -14,6 +14,7 @@ fn request(messages: &[ChatMessage]) -> ModelRequest<'_> {
         tool_choice: ToolChoice::None,
         max_output_tokens: None,
         provider_options: ProviderOptions::default(),
+        session_id: None,
     }
 }
 

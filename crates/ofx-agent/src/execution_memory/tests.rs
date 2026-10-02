@@ -257,3 +257,72 @@ fn a_later_compaction_replaces_the_earlier_checkpoint() {
     );
     assert_eq!(starts, [1]);
 }
+
+#[test]
+fn logged_results_carry_the_raw_length_their_tool_returned() {
+    let history = vec![
+        ChatMessage::user("go"),
+        assistant("", &["a", "b"]),
+        result("a", ToolResultStatus::Success),
+        result("b", ToolResultStatus::Failure),
+        assistant("", &["a"]),
+        result("a", ToolResultStatus::Success),
+    ];
+    let turn = history_turn(&history, 0, history.len());
+    let lengths = |raw: &[(ToolCallId, usize)]| -> Vec<(String, usize, usize)> {
+        logged_steps(&turn.steps, raw)
+            .iter()
+            .flat_map(|step| step.tool_results.clone())
+            .map(|result| {
+                (
+                    result.call_id.to_owned(),
+                    result.output.len(),
+                    result.output_bytes,
+                )
+            })
+            .collect()
+    };
+    let recorded = [
+        (ToolCallId::new("dropped"), 1),
+        (ToolCallId::new("a"), 70_000),
+        (ToolCallId::new("b"), 11),
+        (ToolCallId::new("a"), 90_000),
+    ];
+    assert_eq!(
+        lengths(&recorded),
+        [
+            ("a".to_owned(), 11, 70_000),
+            ("b".to_owned(), 11, 11),
+            ("a".to_owned(), 11, 90_000),
+        ]
+    );
+    assert_eq!(
+        lengths(&recorded[2..]),
+        [
+            ("a".to_owned(), 11, 11),
+            ("b".to_owned(), 11, 11),
+            ("a".to_owned(), 11, 11),
+        ]
+    );
+    let swapped = [
+        recorded[2].clone(),
+        recorded[1].clone(),
+        recorded[3].clone(),
+    ];
+    assert_eq!(
+        lengths(&swapped),
+        [
+            ("a".to_owned(), 11, 11),
+            ("b".to_owned(), 11, 11),
+            ("a".to_owned(), 11, 90_000),
+        ]
+    );
+    assert_eq!(
+        lengths(&[(ToolCallId::new("other"), 5)]),
+        [
+            ("a".to_owned(), 11, 11),
+            ("b".to_owned(), 11, 11),
+            ("a".to_owned(), 11, 11),
+        ]
+    );
+}

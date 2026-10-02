@@ -28,6 +28,7 @@ impl OwnedRequest {
             tool_choice: self.tool_choice,
             max_output_tokens: self.max_output_tokens,
             provider_options: ProviderOptions::default(),
+            session_id: None,
         }
     }
 }

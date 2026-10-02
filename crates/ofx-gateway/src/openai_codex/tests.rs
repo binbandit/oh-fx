@@ -28,6 +28,7 @@ fn request<'a>(
         tool_choice: ToolChoice::Auto,
         max_output_tokens: Some(1024),
         provider_options: ProviderOptions::default(),
+        session_id: None,
     }
 }
 
@@ -555,7 +556,7 @@ async fn errors_mask_the_token_their_request_sent_after_another_request_rotates_
         .unwrap();
         let cancel = CancellationToken::new();
         let mut sent = Vec::new();
-        let response = codex.post("{}", &mut sent, &cancel).await.unwrap();
+        let response = codex.post("{}", None, &mut sent, &cancel).await.unwrap();
         assert!(codex.replace_access(CodexRefresh::Force, &cancel).await);
         assert_eq!(*codex.secrets(&sent), [SENT, ROTATED]);
         let mut sink = |_: StreamEvent| {};

@@ -1,6 +1,8 @@
 use std::mem;
 
-use ofx_contract::{ChatMessage, ProviderReplay, ToolCall, ToolResultStatus};
+use ofx_contract::{
+    ChatMessage, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolCallId, ToolResultStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolResult<'a> {
@@ -50,7 +52,7 @@ pub(crate) fn history_turns<'a>(
         .collect()
 }
 
-fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTurn<'_> {
+pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTurn<'_> {
     let user = match &history[start] {
         ChatMessage::User { content } => content.as_str(),
         _ => "",
@@ -132,6 +134,46 @@ fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTur
         reply_replay,
         start,
     }
+}
+
+pub(crate) fn logged_steps<'a>(
+    steps: &[ToolStep<'a>],
+    raw_outputs: &[(ToolCallId, usize)],
+) -> Vec<HistoryStep<'a>> {
+    let kept = steps.iter().map(|step| step.results.len()).sum::<usize>();
+    let mut recorded = raw_outputs
+        .len()
+        .checked_sub(kept)
+        .map_or(&[][..], |first| &raw_outputs[first..])
+        .iter();
+    steps
+        .iter()
+        .map(|step| HistoryStep {
+            assistant: step.assistant,
+            provider_replay: step.replay,
+            tool_calls: step.calls,
+            tool_results: step
+                .results
+                .iter()
+                .map(|result| {
+                    let raw = recorded
+                        .next()
+                        .filter(|(call_id, _)| call_id.as_str() == result.call_id);
+                    StepResult {
+                        call_id: result.call_id,
+                        tool_name: result.tool_name,
+                        output: result.output,
+                        output_bytes: raw.map_or(result.output.len(), |(_, bytes)| *bytes),
+                        status: if result.failed {
+                            ToolResultStatus::Failure
+                        } else {
+                            ToolResultStatus::Success
+                        },
+                    }
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 pub(crate) fn retain(

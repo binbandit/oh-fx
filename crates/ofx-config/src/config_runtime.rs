@@ -175,6 +175,8 @@ pub enum SelectionError {
     InvalidProviderValue,
     #[error("UnknownConfiguredProvider")]
     UnknownConfiguredProvider,
+    #[error("ConfiguredProviderChanged")]
+    ConfiguredProviderChanged,
     #[error(
         "the {0} provider is not available in oh-fx yet; add a connection under \"providers\" in ~/.config/oh-fx/settings.json and select it with \"provider\" or OH_FX_PROVIDER"
     )]
@@ -190,6 +192,7 @@ impl SelectionError {
         match self {
             Self::InvalidProviderValue => "InvalidProviderValue",
             Self::UnknownConfiguredProvider => "UnknownConfiguredProvider",
+            Self::ConfiguredProviderChanged => "ConfiguredProviderChanged",
             Self::ProviderUnavailable(_) => "ProviderUnavailable",
             Self::ModelNotSelected => "ConfiguredModelNotSelected",
             Self::CodexModelNotSelected => "CodexModelNotSelected",
@@ -228,6 +231,7 @@ pub struct Settings {
     providers: ProviderRegistry,
     global: Layer,
     workspace: Layer,
+    resumed: Layer,
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
     diagnostics: Vec<ConfigDiagnostic>,
@@ -323,12 +327,39 @@ impl Settings {
         limits
     }
 
+    pub fn resume_selection(
+        &mut self,
+        provider: &ProviderId,
+        binding: Option<[u8; 32]>,
+        model: &str,
+        lookup: EnvironmentLookup<'_>,
+    ) -> Result<(), SelectionError> {
+        if environment_provider(lookup).is_some() {
+            return Ok(());
+        }
+        if let ProviderId::Configured(id) = provider {
+            let definition = self
+                .providers
+                .get(id)
+                .ok_or(SelectionError::UnknownConfiguredProvider)?;
+            if binding.is_some_and(|binding| binding != definition.binding_identity()) {
+                return Err(SelectionError::ConfiguredProviderChanged);
+            }
+        }
+        self.resumed = Layer {
+            provider: Some(provider.label().to_owned()),
+            models: vec![(provider.clone(), model.to_owned())],
+            ..Layer::default()
+        };
+        Ok(())
+    }
+
     pub(crate) fn selected_provider(
         &self,
         lookup: EnvironmentLookup<'_>,
     ) -> Result<ProviderId, SelectionError> {
-        let from_environment = lookup(PROVIDER_VARIABLE).filter(|value| !value.trim().is_empty());
-        let raw = from_environment
+        let raw = environment_provider(lookup)
+            .or_else(|| self.resumed.provider.clone())
             .or_else(|| self.workspace.provider.clone())
             .or_else(|| self.global.provider.clone());
         let Some(raw) = raw else {
@@ -355,6 +386,7 @@ impl Settings {
         run_model
             .map(str::to_owned)
             .or_else(|| environment_model(lookup))
+            .or_else(|| self.resumed.codex_model().map(str::to_owned))
             .or_else(|| self.saved_codex_model().map(str::to_owned))
             .ok_or(SelectionError::CodexModelNotSelected)
     }
@@ -398,6 +430,7 @@ impl Settings {
         run_model
             .map(str::to_owned)
             .or_else(|| environment_model(lookup))
+            .or_else(|| saved(&self.resumed))
             .or_else(|| saved(&self.workspace))
             .or_else(|| saved(&self.global))
             .or_else(|| connection.models.first().cloned())
@@ -528,6 +561,10 @@ pub fn is_valid_provider_order_list(raw: &str) -> bool {
         slugs.push(slug);
     }
     !slugs.is_empty()
+}
+
+fn environment_provider(lookup: EnvironmentLookup<'_>) -> Option<String> {
+    lookup(PROVIDER_VARIABLE).filter(|value| !value.trim().is_empty())
 }
 
 fn environment_model(lookup: EnvironmentLookup<'_>) -> Option<String> {
@@ -822,6 +859,63 @@ mod tests {
         assert_eq!(
             settings.selected_provider(&blank),
             Ok(ProviderId::Configured("portkey".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_resumed_selection_wins_over_settings_but_not_over_the_environment() {
+        let json = r#"{"provider":"one","models":{"one":"saved-one","two":"saved-two"},"providers":{"one":{"protocol":"openai-chat-completions","base_url":"http://localhost:1/v1","auth":{"type":"none"}},"two":{"protocol":"openai-chat-completions","base_url":"http://localhost:2/v1","auth":{"type":"bearer","env":"TWO_KEY"}}}}"#;
+        let original = fixture_settings(json);
+        let two = ProviderId::Configured("two".to_owned());
+        let binding = original.providers.get("two").unwrap().binding_identity();
+        let mut settings = original.clone();
+        settings
+            .resume_selection(&two, Some(binding), "resumed-model", &no_environment)
+            .unwrap();
+        let connection = settings.selected_connection(&no_environment).unwrap();
+        assert_eq!(connection.id, "two");
+        assert_eq!(
+            settings.selected_model(connection, None, &no_environment),
+            Ok("resumed-model".to_owned())
+        );
+        let model = |name: &str| (name == MODEL_VARIABLE).then(|| "env-model".to_owned());
+        assert_eq!(
+            settings.selected_model(connection, None, &model),
+            Ok("env-model".to_owned())
+        );
+        assert_eq!(
+            settings.selected_model(connection, Some("flag"), &no_environment),
+            Ok("flag".to_owned())
+        );
+        let provider = |name: &str| (name == PROVIDER_VARIABLE).then(|| "one".to_owned());
+        let mut overridden = original.clone();
+        overridden
+            .resume_selection(&two, Some(binding), "resumed-model", &provider)
+            .unwrap();
+        assert_eq!(overridden, original);
+        let mut changed = original.clone();
+        assert_eq!(
+            changed.resume_selection(&two, Some([0; 32]), "m", &no_environment),
+            Err(SelectionError::ConfiguredProviderChanged)
+        );
+        assert_eq!(
+            changed.resume_selection(
+                &ProviderId::Configured("gone".to_owned()),
+                Some(binding),
+                "m",
+                &no_environment
+            ),
+            Err(SelectionError::UnknownConfiguredProvider)
+        );
+        assert_eq!(changed, original);
+        let mut codex = original.clone();
+        codex
+            .resume_selection(&ProviderId::Codex, None, "gpt-5.4", &no_environment)
+            .unwrap();
+        assert_eq!(codex.codex_selected(&no_environment), Ok(true));
+        assert_eq!(
+            codex.selected_codex_model(None, &no_environment),
+            Ok("gpt-5.4".to_owned())
         );
     }
 

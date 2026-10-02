@@ -38,6 +38,7 @@ struct FakeProvider {
     requests: Mutex<Vec<SeenRequest>>,
     projections: Mutex<Vec<(String, bool, bool)>>,
     bodies: Mutex<Vec<String>>,
+    sessions: Mutex<Vec<Option<String>>>,
 }
 
 impl FakeProvider {
@@ -47,6 +48,7 @@ impl FakeProvider {
             requests: Mutex::new(Vec::new()),
             projections: Mutex::new(Vec::new()),
             bodies: Mutex::new(Vec::new()),
+            sessions: Mutex::new(Vec::new()),
         })
     }
 
@@ -60,6 +62,10 @@ impl FakeProvider {
 
     fn projections(&self) -> Vec<(String, bool, bool)> {
         self.projections.lock().unwrap().clone()
+    }
+
+    fn sessions(&self) -> Vec<Option<String>> {
+        self.sessions.lock().unwrap().clone()
     }
 }
 
@@ -83,6 +89,10 @@ impl ModelProvider for FakeProvider {
             reasoning_effort: request.provider_options.reasoning_effort.map(str::to_owned),
             fast: request.provider_options.fast,
         });
+        self.sessions
+            .lock()
+            .unwrap()
+            .push(request.session_id.map(str::to_owned));
         let script = self.scripts.lock().unwrap().pop_front();
         Box::pin(async move {
             match script {
@@ -2264,3 +2274,4 @@ mod capabilities;
 mod compaction;
 mod malformed_arguments;
 mod project_context;
+mod turn_log;

@@ -1,3 +1,5 @@
+use ofx_contract::HistoryCut;
+
 use super::*;
 use crate::compactor::CompactionError;
 
@@ -638,4 +640,74 @@ async fn other_provider_failures_are_not_overflows() {
         assert_eq!(report.outcome, TurnOutcome::Failed);
         assert_eq!(provider.requests().len(), 3);
     }
+}
+
+#[tokio::test]
+async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
+    let big_step = format!("STEP_SENTINEL {}", "h".repeat(150_000));
+    let provider = FakeProvider::new(vec![
+        spoken_tool_reply(&big_step, "call-1", r#"{"value":"notes.md"}"#),
+        unmetered(text_reply(
+            "Turn in progress\nIn between: Read the notes.\nT1: echoed notes.md",
+        )),
+        unmetered(text_reply("done")),
+    ]);
+    let (agent, _) = windowed(&provider, 45_000, 64);
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = agent.with_conversation_log(log);
+    let (report, _) = run(&mut agent, "read the notes").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 2);
+    let turn_log::Logged::Compaction {
+        checkpoint,
+        cut,
+        user,
+        steps,
+    } = &entries[0]
+    else {
+        panic!("{entries:?}");
+    };
+    assert_eq!(
+        *cut,
+        HistoryCut {
+            turns: 0,
+            tool_steps: 1
+        }
+    );
+    assert_eq!(user, "read the notes");
+    assert_eq!(steps.len(), 1);
+    assert!(steps[0].starts_with("\"STEP_SENTINEL"));
+    let (text, payload) = crate::compactor::restore_checkpoint(checkpoint);
+    assert!(payload.is_some());
+    assert_eq!(text, user_text(&agent.history[0]));
+    assert_eq!(
+        entries[1],
+        turn_log::Logged::Turn {
+            user: "read the notes".to_owned(),
+            steps: Vec::new(),
+            end: r#"replied "done" replay=false"#.to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_checkpoint_that_cannot_be_saved_fails_the_turn_and_is_not_installed() {
+    let big_step = format!("STEP_SENTINEL {}", "h".repeat(150_000));
+    let provider = FakeProvider::new(vec![
+        spoken_tool_reply(&big_step, "call-1", r#"{"value":"notes.md"}"#),
+        unmetered(text_reply(
+            "Turn in progress\nIn between: Read the notes.\nT1: echoed notes.md",
+        )),
+    ]);
+    let (agent, _) = windowed(&provider, 45_000, 64);
+    let mut agent =
+        agent.with_conversation_log(Box::new(turn_log::MemoryLog::failing("SessionBusy")));
+    let (report, _) = run(&mut agent, "read the notes").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(report.failure.unwrap().code(), "SessionBusy");
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(user_text(&agent.history[0]), "read the notes");
+    assert!(agent.compacted.is_none());
+    assert_eq!(agent.history.len(), 3);
 }

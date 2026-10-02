@@ -308,13 +308,24 @@ fn parse_options_rejects_model_unsafe_prompt_text_from_arguments_and_stdin() {
 #[test]
 fn parse_options_preserves_exact_resume_id_operands() {
     let options = parsed(&["--resume-id", "last", "continue"]);
-    assert_eq!(options.session.resume_flag, Some("--resume-id"));
+    assert_eq!(
+        options.session.resume,
+        Some(ResumeTarget::Id("last".to_owned()))
+    );
     assert_eq!(prompt(&options), "continue");
     assert_eq!(
-        parsed(&["--resume", " last ", "continue"])
+        parsed(&["--resume", " last ", "continue"]).session.resume,
+        Some(ResumeTarget::Last)
+    );
+    assert_eq!(
+        parsed(&["--resume", " abc_DEF-123 ", "continue"])
             .session
-            .resume_flag,
-        Some("--resume")
+            .resume,
+        Some(ResumeTarget::Id("abc_DEF-123".to_owned()))
+    );
+    assert_eq!(
+        parsed(&["--resume", "Last", "continue"]).session.resume,
+        Some(ResumeTarget::Id("Last".to_owned()))
     );
     for args in [
         &["--resume"][..],

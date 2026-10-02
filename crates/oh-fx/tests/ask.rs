@@ -97,6 +97,18 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn with_saved_session(output: &Output) -> String {
+    let text = stdout(output);
+    let result: Value = serde_json::from_str(&text).expect("a JSON result");
+    let id = result["session_id"].as_str().expect("a session id");
+    assert_eq!(id.len(), 12, "{text}");
+    text.replacen(
+        &format!("\"session_id\":\"{id}\""),
+        "\"session_id\":\"\"",
+        1,
+    )
+}
+
 fn canonical(path: &Path) -> String {
     fs::canonicalize(path)
         .expect("canonicalize the workspace")
@@ -179,7 +191,7 @@ fn ask_json_reports_the_upstream_result_shape() {
     );
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
-        stdout(&output),
+        with_saved_session(&output),
         "{\"output\":\"Hi there\",\"final_output\":\"Hi there\",\"exit_code\":0,\"model\":\"@anthropic/claude\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}\n"
     );
     assert_eq!(server.requests()[0].json()["model"], "@anthropic/claude");
@@ -392,7 +404,7 @@ fn chat_calls_with_malformed_or_non_object_arguments_fail_before_any_tool_runs()
         let output = home.ask(&["ask", "--json", "go"], &KEY);
         assert_eq!(output.status.code(), Some(1), "{arguments}");
         assert_eq!(
-            stdout(&output),
+            with_saved_session(&output),
             "{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":\"@openai/gpt-4o\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{\"input_tokens\":null,\"output_tokens\":null},\"error\":\"InvalidToolArguments\"}\n",
             "{arguments}"
         );
@@ -875,11 +887,6 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
             &["ask", "--prompt-permissions", "hi"],
             "ask --prompt-permissions",
         ),
-        (&["ask", "--resume", "last", "hi"], "ask --resume"),
-        (
-            &["ask", "--resume-id", "session.v3", "hi"],
-            "ask --resume-id",
-        ),
         (
             &["ask", "--resume", "last", "--continue-recovery"],
             "ask --continue-recovery",
@@ -1154,7 +1161,7 @@ fn ask_runs_read_file_and_sends_its_result_to_the_model() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stderr(&output), "Reading notes.txt\nReading missing.txt\n");
     assert_eq!(
-        stdout(&output),
+        with_saved_session(&output),
         "{\"output\":\"The second line is beta.\",\"final_output\":\"The second line is beta.\",\"exit_code\":0,\"model\":\"@openai/gpt-4o\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":2,\"tool_calls\":[{\"name\":\"read_file\",\"status\":\"success\"},{\"name\":\"read_file\",\"status\":\"error\"}],\"usage\":{\"input_tokens\":36,\"output_tokens\":9}}\n"
     );
     let requests = server.requests();

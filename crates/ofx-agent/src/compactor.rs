@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::execution_memory::{Cut, HistoryTurn, ToolStep};
 
-pub(crate) use checkpoint::Payload;
+pub(crate) use checkpoint::{Payload, encode_checkpoint, restore_checkpoint};
 pub(crate) use model::Summarizer;
 pub(crate) use summarize::SummaryModel;
 pub(crate) use window::{Correction, Size};

@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 use super::*;
 
 fn metadata(id: &str) -> SessionMetadata {
@@ -227,6 +229,214 @@ fn durable_session_ids_accept_safe_opaque_basenames() {
             encode_session_metadata(&metadata(id)),
             Err(SessionError::InvalidDurableField),
             "{id:?}"
+        );
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SerdeRecord {
+    schema_version: u8,
+    id: String,
+    origin_workspace_root: String,
+    workspace_root: String,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+    conversation_language: String,
+    provider: SavedProvider,
+    model: String,
+    effort: String,
+    fast_mode: bool,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default, rename = "subagent_child")]
+    _subagent_child: False,
+}
+
+#[derive(serde::Deserialize)]
+struct SerdeSchemaProbe {
+    schema_version: Option<Value>,
+}
+
+fn serde_decode_session_metadata(bytes: &[u8]) -> Result<SessionMetadata, SessionError> {
+    if bytes.is_empty() || bytes.len() > MAX_SESSION_METADATA_BYTES {
+        return Err(SessionError::SessionMetadataTooLarge);
+    }
+    let record: SerdeRecord = serde_json::from_slice(bytes).map_err(|_| {
+        match serde_json::from_slice::<SerdeSchemaProbe>(bytes) {
+            Ok(SerdeSchemaProbe {
+                schema_version: Some(version),
+            }) if version.as_u64() == Some(u64::from(SESSION_METADATA_SCHEMA_VERSION)) => {
+                SessionError::InvalidSessionMetadata
+            }
+            Ok(SerdeSchemaProbe {
+                schema_version: Some(_),
+            }) => SessionError::UnsupportedSessionSchema,
+            Ok(SerdeSchemaProbe {
+                schema_version: None,
+            })
+            | Err(_) => SessionError::InvalidSessionFormat,
+        }
+    })?;
+    if record.schema_version != SESSION_METADATA_SCHEMA_VERSION {
+        return Err(SessionError::UnsupportedSessionSchema);
+    }
+    let effort =
+        ReasoningEffort::parse(&record.effort).ok_or(SessionError::InvalidSessionMetadata)?;
+    let metadata = SessionMetadata {
+        id: record.id,
+        origin_workspace_root: record.origin_workspace_root,
+        workspace_root: record.workspace_root,
+        created_at_ms: record.created_at_ms,
+        updated_at_ms: record.updated_at_ms,
+        conversation_language: record.conversation_language,
+        preferences: SessionPreferences {
+            provider: record.provider,
+            model: record.model,
+            effort,
+            fast_mode: record.fast_mode,
+        },
+        title: record.title,
+    };
+    validate_session_metadata(&metadata).map_err(|_| SessionError::InvalidSessionMetadata)?;
+    Ok(metadata)
+}
+
+fn metadata_samples() -> Vec<Value> {
+    [
+        "null",
+        "true",
+        "false",
+        "0",
+        "-0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "-1",
+        "255",
+        "256",
+        "4.0",
+        "1.5",
+        "1e2",
+        "9223372036854775807",
+        "9223372036854775808",
+        "18446744073709551616",
+        "-9223372036854775809",
+        "\"\"",
+        "\"4\"",
+        "\"good\"",
+        "\"/tmp/a\"",
+        "\"en\"",
+        "\"gateway\"",
+        "\"codex\"",
+        "\"router\"",
+        "\"m\"",
+        "\"auto\"",
+        "\"high\"",
+        "\"not valid\"",
+        "\"0707070707070707070707070707070707070707070707070707070707070707\"",
+        "[]",
+        "[4]",
+        "{}",
+        "{\"a\":1}",
+        "{\"name\":\"router\",\"binding\":\"0707070707070707070707070707070707070707070707070707070707070707\"}",
+        "{\"name\":\"gateway\",\"binding\":\"0707070707070707070707070707070707070707070707070707070707070707\"}",
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap())
+    .collect()
+}
+
+fn render_with(fields: &[(String, Value)]) -> String {
+    let entries: Vec<String> = fields
+        .iter()
+        .map(|(key, value)| format!("{}:{value}", Value::from(key.as_str())))
+        .collect();
+    format!("{{{}}}", entries.join(","))
+}
+
+fn assert_same_metadata(text: &str, stricter: bool) -> usize {
+    let serde = serde_decode_session_metadata(text.as_bytes());
+    let hand = decode_session_metadata(text.as_bytes());
+    if stricter && hand.is_err() && serde != hand {
+        return 1;
+    }
+    assert_eq!(hand, serde, "{text}");
+    0
+}
+
+#[test]
+fn the_hand_metadata_decoder_matches_the_serde_decoder() {
+    let mut configured = metadata("session");
+    configured.preferences.provider =
+        SavedProvider::new(ProviderId::Configured("router".to_owned()), Some([7; 32])).unwrap();
+    configured.preferences.effort = ReasoningEffort::Named("high".to_owned());
+    configured.title = Some("Title".to_owned());
+    let samples = metadata_samples();
+    let mut stricter = 0;
+    let mut compared = 0;
+    for value in [metadata("session"), configured] {
+        let encoded = encode_session_metadata(&value).unwrap();
+        assert_eq!(decode_session_metadata(&encoded).unwrap(), value);
+        let Value::Object(document) = serde_json::from_slice::<Value>(&encoded).unwrap() else {
+            panic!("metadata is an object");
+        };
+        let fields: Vec<(String, Value)> = document.into_iter().collect();
+        assert_same_metadata(&render_with(&fields), false);
+        for index in 0..fields.len() {
+            let key = &fields[index].0;
+            let mut removed = fields.clone();
+            removed.remove(index);
+            stricter += assert_same_metadata(&render_with(&removed), false);
+            for sample in &samples {
+                let mut replaced = fields.clone();
+                replaced[index].1 = sample.clone();
+                stricter += assert_same_metadata(&render_with(&replaced), false);
+                let mut repeated = fields.clone();
+                repeated.push((key.clone(), sample.clone()));
+                stricter += assert_same_metadata(&render_with(&repeated), key == "schema_version");
+                compared += 2;
+            }
+            let mut extended = fields.clone();
+            extended.insert(index, ("unexpected".to_owned(), Value::Null));
+            stricter += assert_same_metadata(&render_with(&extended), false);
+            compared += 2;
+        }
+    }
+    for sample in metadata_samples() {
+        assert_same_metadata(&sample.to_string(), sample.is_array());
+    }
+    for broken in ["", "{", "{\"schema_version\":4", "{} []", "\u{feff}{}"] {
+        assert_same_metadata(broken, false);
+    }
+    assert!(compared > 1_000, "{compared}");
+    assert!(stricter > 0);
+}
+
+#[test]
+fn the_hand_metadata_decoder_is_stricter_only_on_shapes_the_writer_never_writes() {
+    let as_array =
+        "[4,\"good\",\"/tmp/a\",\"/tmp/a\",1,1,\"en\",\"gateway\",\"m\",\"auto\",false,null,false]"
+            .to_owned();
+    let repeated_schema = document("").replace(
+        "\"schema_version\":4",
+        "\"schema_version\":4,\"schema_version\":4",
+    );
+    for (text, error) in [
+        (as_array, SessionError::InvalidSessionFormat),
+        (repeated_schema, SessionError::InvalidSessionMetadata),
+    ] {
+        assert_ne!(
+            serde_decode_session_metadata(text.as_bytes()),
+            Err(error),
+            "{text}"
+        );
+        assert_eq!(
+            decode_session_metadata(text.as_bytes()),
+            Err(error),
+            "{text}"
         );
     }
 }

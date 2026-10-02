@@ -32,7 +32,7 @@ pub struct ResumablePage {
 }
 
 pub(crate) fn sort_summaries_newest_first(summaries: &mut [SessionSummary]) {
-    summaries.sort_by(|a, b| {
+    summaries.sort_unstable_by(|a, b| {
         b.updated_at_ms
             .cmp(&a.updated_at_ms)
             .then_with(|| b.id.cmp(&a.id))
