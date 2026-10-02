@@ -1337,10 +1337,12 @@ fn gated_action<'a>(
     call: &'a ToolCall,
     mutation: Option<&'a FileMutation>,
     command: Option<&'a CommandRequest>,
+    mcp_tool: bool,
 ) -> GatedAction<'a> {
     match (mutation, command) {
         (Some(mutation), _) => GatedAction::FileMutation(mutation),
         (None, Some(command)) => GatedAction::Command(command),
+        (None, None) if mcp_tool => GatedAction::McpTool(call),
         (None, None) => GatedAction::Call(call),
     }
 }
@@ -1353,6 +1355,7 @@ fn admit(
     match action {
         GatedAction::FileMutation(mutation) => permissions.admit_file_mutation(mutation),
         GatedAction::Command(command) => permissions.admit_command(command),
+        GatedAction::McpTool(call) => permissions.admit_mcp_tool(call),
         GatedAction::Call(_) if description.effect == ToolEffect::None => {
             Admission::Allowed(PathAccess::WorkspaceOnly)
         }
@@ -1564,7 +1567,7 @@ fn approval_request(
     scope: &ApprovalScope,
 ) -> ApprovalRequest {
     let (command, file) = match action {
-        GatedAction::Call(_) => (None, None),
+        GatedAction::Call(_) | GatedAction::McpTool(_) => (None, None),
         GatedAction::FileMutation(mutation) => (None, Some(mutation.clone())),
         GatedAction::Command(command) => (Some(command.clone()), None),
     };
@@ -1608,7 +1611,8 @@ async fn run_group<'c>(
                 dispatched.push((call, Dispatched::Rejected(output, reason)));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
-                let action = gated_action(call, mutation.as_ref(), command.as_ref());
+                let mcp_tool = contained(|| prepared.mcp_tool()) == Some(true);
+                let action = gated_action(call, mutation.as_ref(), command.as_ref(), mcp_tool);
                 let delegates = description.activity == ToolActivity::Subagent;
                 let (admission, file) = admission(gate, action, &description, &*prepared);
                 let shown_while_reviewed =

@@ -62,6 +62,10 @@ fn grant_lines(workspace_root: &Path, grant: &SessionGrant) -> Vec<String> {
             line.push(')');
             vec![line]
         }
+        SessionGrant::McpTool(name) => {
+            let name = escape_terminal_controls(name);
+            vec![format!(" - {name} -> {name}")]
+        }
     }
 }
 

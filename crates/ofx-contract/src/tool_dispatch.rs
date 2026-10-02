@@ -241,6 +241,10 @@ pub trait PreparedCall: Send {
         None
     }
 
+    fn mcp_tool(&self) -> bool {
+        false
+    }
+
     fn refusal(&self) -> Option<&ToolOutput> {
         None
     }
