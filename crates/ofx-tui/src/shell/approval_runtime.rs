@@ -141,7 +141,12 @@ impl Shell<'_> {
             return;
         }
         let content = ApprovalContent::from_request(&request, &self.options.workspace_root);
-        self.approval = Some(ApprovalPrompt::new(request, content));
+        if let Some(displaced) = self.approval.replace(ApprovalPrompt::new(request, content)) {
+            self.send(UiCommand::Approval {
+                request_id: displaced.request.id,
+                decision: ApprovalDecision::Deny,
+            });
+        }
         self.invalidate();
     }
 
@@ -670,6 +675,29 @@ mod tests {
             test.sent().last(),
             Some(&decision(4, ApprovalDecision::Deny))
         );
+    }
+
+    #[test]
+    fn a_newer_request_denies_the_one_it_displaces() {
+        let mut test = approving();
+        test.deliver(request(1, 5));
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Deny))
+        );
+        test.screen();
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(5, ApprovalDecision::Once))
+        );
+        let answered: Vec<_> = test
+            .sent()
+            .into_iter()
+            .filter(|command| matches!(command, UiCommand::Approval { .. }))
+            .collect();
+        assert_eq!(answered.len(), 2);
     }
 
     #[test]
