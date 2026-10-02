@@ -20,7 +20,7 @@ const LONGEST_POLL_MILLISECONDS: u32 = i32::MAX.unsigned_abs();
 
 pub(super) trait CommandTree {
     fn stop_gracefully(&mut self) -> Result<(), &'static str>;
-    fn force(&mut self) -> Result<(), &'static str>;
+    fn force(&mut self, unreaped_target: Option<Pid>) -> Result<(), &'static str>;
     fn settle_termination(
         &mut self,
         started: Instant,
@@ -202,9 +202,13 @@ impl<T: CommandTree> Supervision<T> {
     }
 
     pub(super) fn kill_target(&self) {
-        if self.status.is_none() {
-            let _ = kill_process(self.target, Signal::KILL);
+        if let Some(target) = self.unreaped_target() {
+            let _ = kill_process(target, Signal::KILL);
         }
+    }
+
+    fn unreaped_target(&self) -> Option<Pid> {
+        self.status.is_none().then_some(self.target)
     }
 
     fn reap(&mut self) {
@@ -225,8 +229,9 @@ impl<T: CommandTree> Supervision<T> {
             TerminationAction::Force => {
                 self.termination_started.get_or_insert(now);
                 self.forced = true;
+                let forced = self.tree.force(self.unreaped_target());
                 self.kill_target();
-                self.tree.force()
+                forced
             }
         }
     }
@@ -305,7 +310,7 @@ mod tests {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::ExitStatusExt;
-    use std::process::Command;
+    use std::process::{Child, Command};
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
     use std::thread;
@@ -328,7 +333,7 @@ mod tests {
             Ok(())
         }
 
-        fn force(&mut self) -> Result<(), &'static str> {
+        fn force(&mut self, _: Option<Pid>) -> Result<(), &'static str> {
             Ok(())
         }
 
@@ -343,6 +348,64 @@ mod tests {
         fn settle_completion(&mut self, _: &mut dyn Escalation) -> Result<(), &'static str> {
             Ok(())
         }
+    }
+
+    struct RecordingTree {
+        command: Child,
+        handed: Option<Pid>,
+        running_when_forced: Option<bool>,
+    }
+
+    impl CommandTree for RecordingTree {
+        fn stop_gracefully(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+
+        fn force(&mut self, unreaped_target: Option<Pid>) -> Result<(), &'static str> {
+            self.handed = unreaped_target;
+            self.running_when_forced =
+                Some(self.command.try_wait().is_ok_and(|status| status.is_none()));
+            Ok(())
+        }
+
+        fn settle_termination(
+            &mut self,
+            _: Instant,
+            _: &mut dyn Escalation,
+        ) -> Result<(), &'static str> {
+            Ok(())
+        }
+
+        fn settle_completion(&mut self, _: &mut dyn Escalation) -> Result<(), &'static str> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_forced_stop_hands_the_tree_a_running_command_before_killing_it() {
+        let command = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("the command starts");
+        let target = Pid::from_child(&command);
+        let (wake, _alarm) = UnixStream::pair().expect("the wake pipe opens");
+        let requests = Requests {
+            graceful: Arc::default(),
+            force: Arc::default(),
+            wake,
+        };
+        let tree = RecordingTree {
+            command,
+            handed: None,
+            running_when_forced: None,
+        };
+        let mut supervision = Supervision::new(target, None, requests, tree);
+        let forced = supervision.advance(TerminationRequest::Force, Instant::now());
+        let status = supervision.tree.command.wait().expect("the command ends");
+        assert_eq!(forced, Ok(()));
+        assert_eq!(supervision.tree.handed, Some(target));
+        assert_eq!(supervision.tree.running_when_forced, Some(true));
+        assert_eq!(status.signal(), Some(Signal::KILL.as_raw()));
     }
 
     #[test]
