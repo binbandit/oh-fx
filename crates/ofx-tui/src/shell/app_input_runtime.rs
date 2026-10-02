@@ -141,7 +141,7 @@ impl Shell<'_> {
             }
             PasteOutcome::LimitExceeded { .. } => self.report_limit(),
             PasteOutcome::UnsupportedBytes { .. } => self.input_notice(PASTE_UNSUPPORTED_BYTES),
-            PasteOutcome::Secret { .. } => {}
+            PasteOutcome::Secret { .. } | PasteOutcome::Discarded => {}
             PasteOutcome::TrailingInput { .. } => self.input_notice(PASTE_TRAILING_INPUT),
         }
     }
