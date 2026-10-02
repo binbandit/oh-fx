@@ -113,7 +113,7 @@ impl DetachedRefreshes {
         Some(RunningRefresh(Arc::clone(self)))
     }
 
-    fn pending(&self) -> bool {
+    pub(crate) fn pending(&self) -> bool {
         self.state().running > 0
     }
 
