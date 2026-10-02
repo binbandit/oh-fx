@@ -847,6 +847,19 @@ fn preference_changes_rewrite_metadata_durably() {
 }
 
 #[test]
+fn a_model_choice_saves_its_fast_mode_and_keeps_the_other_preferences() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("chosen");
+    session.select_model("openai/gpt-5-mini", true).unwrap();
+    drop(session);
+    let loaded = load_session(&fixture.sessions, "chosen").unwrap();
+    let mut expected = metadata("chosen").preferences;
+    expected.model = "openai/gpt-5-mini".to_owned();
+    expected.fast_mode = true;
+    assert_eq!(loaded.metadata.preferences, expected);
+}
+
+#[test]
 fn a_batch_cut_anywhere_by_a_crash_is_removed_as_a_whole() {
     let fixture = Fixture::new();
     let mut session = fixture.start("atomic");
