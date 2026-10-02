@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ofx_contract::{AutoCompactPercent, PermissionMode, ReasoningEffort};
 use serde_json::{Map, Value};
@@ -61,6 +61,7 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
 ];
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
 const CONTEXT_LIMITS_REPAIR: &str = "; context_limits keys must be documented limit names with a non-negative integer or \"off\" value";
+const MAX_SKILL_SYMLINK_AUTHORITIES: usize = 32;
 const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL";
 
 type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -78,7 +79,9 @@ enum DiagnosticCause {
     DurablePathUnsafe,
     InvalidModelId,
     IgnoredProjectUserOnlySetting,
+    RetiredSkillMatchFuzzy,
     InvalidContextLimits,
+    InvalidSkillSymlinkAuthorities,
 }
 
 impl DiagnosticCause {
@@ -89,7 +92,9 @@ impl DiagnosticCause {
             Self::DurablePathUnsafe => "durable_path_unsafe",
             Self::InvalidModelId => "invalid_model_id",
             Self::IgnoredProjectUserOnlySetting => "ignored_project_user_only_setting",
+            Self::RetiredSkillMatchFuzzy => "retired_skill_match_fuzzy",
             Self::InvalidContextLimits => "invalid_context_limits",
+            Self::InvalidSkillSymlinkAuthorities => "invalid_skill_symlink_authorities",
         }
     }
 }
@@ -111,8 +116,16 @@ impl fmt::Display for ConfigDiagnostic {
         if let Some(key) = &self.key {
             write!(formatter, "; key={key}")?;
         }
-        if self.cause == DiagnosticCause::InvalidContextLimits {
-            formatter.write_str(CONTEXT_LIMITS_REPAIR)?;
+        match self.cause {
+            DiagnosticCause::RetiredSkillMatchFuzzy => formatter.write_str(
+                "; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool",
+            )?,
+            DiagnosticCause::InvalidContextLimits => formatter.write_str(CONTEXT_LIMITS_REPAIR)?,
+            DiagnosticCause::InvalidSkillSymlinkAuthorities => write!(
+                formatter,
+                "; skill_symlink_authorities must be an array of at most {MAX_SKILL_SYMLINK_AUTHORITIES} absolute directory paths without .. components"
+            )?,
+            _ => {}
         }
         Ok(())
     }
@@ -168,6 +181,10 @@ pub enum LayerError {
     ContextLimits(ContextLimitError),
     #[error("InvalidContextType")]
     InvalidContextType,
+    #[error("InvalidSkillSymlinkAuthorities")]
+    InvalidSkillSymlinkAuthorities,
+    #[error("RetiredSkillMatchFuzzy")]
+    RetiredSkillMatchFuzzy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -216,6 +233,7 @@ struct Layer {
     fast_mode_model_bound: Option<bool>,
     context_limits: ContextLimitOverrides,
     context: Option<bool>,
+    skill_symlink_authorities: Option<Vec<PathBuf>>,
 }
 
 impl Layer {
@@ -262,6 +280,8 @@ impl From<LayerError> for DiagnosticCause {
         match error {
             LayerError::InvalidModelValue => Self::InvalidModelId,
             LayerError::ContextLimits(_) => Self::InvalidContextLimits,
+            LayerError::InvalidSkillSymlinkAuthorities => Self::InvalidSkillSymlinkAuthorities,
+            LayerError::RetiredSkillMatchFuzzy => Self::RetiredSkillMatchFuzzy,
             _ => Self::MalformedSettings,
         }
     }
@@ -333,6 +353,14 @@ impl Settings {
             .or(self.global.context)
             .or(self.project_context)
             .unwrap_or(true)
+    }
+
+    pub fn skill_symlink_authorities(&self) -> &[PathBuf] {
+        self.workspace
+            .skill_symlink_authorities
+            .as_deref()
+            .or(self.global.skill_symlink_authorities.as_deref())
+            .unwrap_or_default()
     }
 
     pub fn context_limits(&self) -> ContextLimits {
@@ -529,7 +557,12 @@ impl Settings {
 
     fn parse_profile_layer(&mut self, object: &Map<String, Value>) -> Result<Layer, SettingsError> {
         match parse_layer(object) {
-            Ok(layer) => Ok(layer),
+            Ok(ParsedLayer { layer, rejected }) => {
+                for error in rejected {
+                    self.diagnose(ConfigLayer::User, error.into(), None);
+                }
+                Ok(layer)
+            }
             Err(error) => {
                 self.diagnose(ConfigLayer::User, error.into(), None);
                 parse_routing(object).map_err(|_| SettingsError::Layer(error))
@@ -610,10 +643,17 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, DiagnosticCause> {
 }
 
 pub(crate) fn is_valid_profile_layer(object: &Map<String, Value>) -> bool {
-    parse_layer(object).is_ok()
+    parse_layer(object).is_ok_and(|parsed| parsed.rejected.is_empty())
 }
 
-fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedLayer {
+    layer: Layer,
+    rejected: Vec<LayerError>,
+}
+
+fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
+    let mut rejected = Vec::new();
     let model = object.get("model").map(parse_model).transpose()?;
     let mut layer = parse_routing(object)?;
     layer.model = model;
@@ -631,12 +671,14 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         "yolo_acknowledged",
         LayerError::InvalidYoloAcknowledgedType,
     )?;
-    layer.context_limits = object
+    match object
         .get("context_limits")
         .map(ContextLimitOverrides::parse_json)
         .transpose()
-        .map_err(LayerError::ContextLimits)?
-        .unwrap_or_default();
+    {
+        Ok(limits) => layer.context_limits = limits.unwrap_or_default(),
+        Err(error) => rejected.push(LayerError::ContextLimits(error)),
+    }
     layer.max_agent_steps = parse_steps(object)?;
     layer.auto_compact_percent = object
         .get("auto_compact_percent")
@@ -650,7 +692,38 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         LayerError::InvalidFastModeBindingType,
     )?;
     layer.context = parse_switch(object, "context", LayerError::InvalidContextType)?;
-    Ok(layer)
+    if object.contains_key("skill_match_fuzzy") {
+        rejected.push(LayerError::RetiredSkillMatchFuzzy);
+    }
+    match object
+        .get("skill_symlink_authorities")
+        .map(parse_skill_symlink_authorities)
+        .transpose()
+    {
+        Ok(authorities) => layer.skill_symlink_authorities = authorities,
+        Err(error) => rejected.push(error),
+    }
+    Ok(ParsedLayer { layer, rejected })
+}
+
+fn parse_skill_symlink_authorities(value: &Value) -> Result<Vec<PathBuf>, LayerError> {
+    let Value::Array(items) = value else {
+        return Err(LayerError::InvalidSkillSymlinkAuthorities);
+    };
+    if items.len() > MAX_SKILL_SYMLINK_AUTHORITIES {
+        return Err(LayerError::InvalidSkillSymlinkAuthorities);
+    }
+    items
+        .iter()
+        .map(|item| match item {
+            Value::String(path)
+                if path.starts_with('/') && !path.split('/').any(|part| part == "..") =>
+            {
+                Ok(PathBuf::from(path))
+            }
+            _ => Err(LayerError::InvalidSkillSymlinkAuthorities),
+        })
+        .collect()
 }
 
 fn parse_switch(
@@ -1363,6 +1436,144 @@ mod tests {
     }
 
     #[test]
+    fn skill_symlink_authorities_parse_and_a_workspace_list_replaces_the_global_one() {
+        assert!(
+            fixture_settings("{}")
+                .skill_symlink_authorities()
+                .is_empty()
+        );
+        let global = fixture_settings(
+            r#"{"skill_symlink_authorities":["/Applications/Codiff.app/Contents/Resources/app/codex/skills","/nix/store"]}"#,
+        );
+        assert!(global.diagnostics().is_empty());
+        assert_eq!(
+            global.skill_symlink_authorities(),
+            [
+                PathBuf::from("/Applications/Codiff.app/Contents/Resources/app/codex/skills"),
+                PathBuf::from("/nix/store"),
+            ]
+        );
+        let fixture = fixture(
+            Some("{}"),
+            Some(r#"{"skill_symlink_authorities":["/opt/project-skills"]}"#),
+        );
+        let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+        let json = format!(
+            r#"{{"skill_symlink_authorities":["/opt/global-skills"],"workspaces":{{{workspace}:{{"skill_symlink_authorities":[]}}}}}}"#
+        );
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+        let settings = load(&fixture).unwrap();
+        assert!(settings.skill_symlink_authorities().is_empty());
+        assert_eq!(
+            settings.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=skill_symlink_authorities"
+        );
+    }
+
+    #[test]
+    fn the_retired_skill_match_fuzzy_setting_keeps_the_rest_of_its_layer_with_a_migration_hint() {
+        let settings = fixture_settings(r#"{"permission_mode":"ask","skill_match_fuzzy":true}"#);
+        assert_eq!(
+            settings.diagnostics()[0].to_string(),
+            "config user: retired_skill_match_fuzzy; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool"
+        );
+        assert!(!settings.profile_is_unusable());
+        assert_eq!(
+            settings.permission_mode(&no_environment),
+            PermissionMode::Ask
+        );
+        let project = load(&fixture(None, Some(r#"{"skill_match_fuzzy":false}"#))).unwrap();
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=skill_match_fuzzy"
+        );
+    }
+
+    #[test]
+    fn invalid_skill_symlink_authorities_keep_the_rest_of_the_layer_with_a_repair_hint() {
+        for json in [
+            r#"{"permission_mode":"ask","skill_symlink_authorities":"/nix/store"}"#,
+            r#"{"permission_mode":"ask","skill_symlink_authorities":[7]}"#,
+            r#"{"permission_mode":"ask","skill_symlink_authorities":["relative/skills"]}"#,
+            r#"{"permission_mode":"ask","skill_symlink_authorities":["/opt/../etc"]}"#,
+        ] {
+            let settings = fixture_settings(json);
+            assert_eq!(
+                settings.diagnostics()[0].to_string(),
+                "config user: invalid_skill_symlink_authorities; skill_symlink_authorities must be an array of at most 32 absolute directory paths without .. components",
+                "{json}"
+            );
+            assert!(!settings.profile_is_unusable(), "{json}");
+            assert_eq!(
+                settings.permission_mode(&no_environment),
+                PermissionMode::Ask,
+                "{json}"
+            );
+            assert!(settings.skill_symlink_authorities().is_empty(), "{json}");
+        }
+        let entries: Vec<String> = (0..33).map(|index| format!("\"/opt/{index}\"")).collect();
+        let too_many = fixture_settings(&format!(
+            r#"{{"skill_symlink_authorities":[{}]}}"#,
+            entries.join(",")
+        ));
+        assert_eq!(
+            too_many.diagnostics()[0].cause,
+            DiagnosticCause::InvalidSkillSymlinkAuthorities
+        );
+        let at_limit = fixture_settings(&format!(
+            r#"{{"skill_symlink_authorities":[{}]}}"#,
+            entries[..32].join(",")
+        ));
+        assert_eq!(at_limit.skill_symlink_authorities().len(), 32);
+    }
+
+    #[test]
+    fn a_skill_or_context_limit_diagnostic_keeps_a_saved_ask_mode_in_either_layer() {
+        for (field, cause) in [
+            (
+                r#""skill_match_fuzzy":true"#,
+                DiagnosticCause::RetiredSkillMatchFuzzy,
+            ),
+            (
+                r#""skill_symlink_authorities":"/nix/store""#,
+                DiagnosticCause::InvalidSkillSymlinkAuthorities,
+            ),
+            (
+                r#""context_limits":{"unknown_limit":10}"#,
+                DiagnosticCause::InvalidContextLimits,
+            ),
+        ] {
+            let global = fixture_settings(&format!(r#"{{"permission_mode":"ask",{field}}}"#));
+            assert_eq!(global.diagnostics().len(), 1, "{field}");
+            assert_eq!(global.diagnostics()[0].cause, cause, "{field}");
+            assert_eq!(
+                global.permission_mode(&no_environment),
+                PermissionMode::Ask,
+                "{field}"
+            );
+            let fixture = fixture(Some("{}"), None);
+            let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+            let json = format!(
+                r#"{{"permission_mode":"auto","workspaces":{{{workspace}:{{"permission_mode":"ask",{field}}}}}}}"#
+            );
+            fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+            let scoped = load(&fixture).unwrap();
+            assert_eq!(scoped.diagnostics().len(), 1, "{field}");
+            assert_eq!(scoped.diagnostics()[0].cause, cause, "{field}");
+            assert!(!scoped.profile_is_unusable(), "{field}");
+            assert_eq!(
+                scoped.permission_mode(&no_environment),
+                PermissionMode::Ask,
+                "{field}"
+            );
+        }
+        let fatal =
+            fixture_settings(r#"{"permission_mode":"ask","skill_match_fuzzy":true,"effort":7}"#);
+        assert!(fatal.profile_is_unusable());
+        assert_eq!(fatal.permission_mode(&no_environment), PermissionMode::Auto);
+    }
+
+    #[test]
     fn invalid_context_limits_are_diagnosed_without_blocking_the_profile() {
         for json in [
             r#"{"provider":"local","context_limits":{"unknown_limit":10},"permission_mode":"ask","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"}}}}"#,
@@ -1378,7 +1589,7 @@ mod tests {
             assert!(!settings.profile_is_unusable(), "{json}");
             assert_eq!(
                 settings.permission_mode(&no_environment),
-                PermissionMode::Auto,
+                PermissionMode::Ask,
                 "{json}"
             );
             assert_eq!(

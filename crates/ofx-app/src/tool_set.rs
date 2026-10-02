@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use ofx_contract::{LivePermissionMode, Tool};
 use ofx_exec::ManagedExecutions;
-use ofx_tools::{EditFile, GlobFiles, GrepFiles, ReadFile, Shell, WriteFile};
+use ofx_tools::{EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool, WriteFile};
 
 pub(crate) fn ask_tools(
     workspace_root: &Path,
     executions: &ManagedExecutions,
     command_timeout: Option<Duration>,
     permission_mode: &LivePermissionMode,
+    skill: Arc<SkillTool>,
 ) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(ReadFile::new(workspace_root)),
@@ -23,6 +24,7 @@ pub(crate) fn ask_tools(
             executions.clone(),
             command_timeout,
         )),
+        skill,
     ]
 }
 

@@ -194,7 +194,7 @@ fn run_a_codex_session(home: &Path) -> ! {
     let paths = profile_paths(home);
     let workspace = fs::canonicalize(home.join("workspace")).unwrap();
     let settings = Settings::load(&paths, &workspace).unwrap();
-    let profile = Profile::new(workspace, Some(paths), settings).unwrap();
+    let profile = Profile::new(workspace, Some(home.into()), Some(paths), settings).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

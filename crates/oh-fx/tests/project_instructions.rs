@@ -330,7 +330,12 @@ fn limits_that_ask_cannot_apply_still_fail_as_not_available() {
     let server = FakeServer::start([]);
     let home = Home::new(&server.base_url(), &json!({}));
     for args in [
-        &["--context-limit", "skill_chunk_bytes=1", "ask", "hi"][..],
+        &[
+            "--context-limit",
+            "image_adapter_output_bytes=1",
+            "ask",
+            "hi",
+        ][..],
         &[
             "--context-limit",
             "project_instruction_file_bytes=1",

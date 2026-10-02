@@ -151,7 +151,13 @@ impl Session {
         let approvals = Approvals::default();
         let agent = Agent::new(
             Arc::clone(&provider) as Arc<dyn ModelProvider>,
-            ask_tools(workspace, &executions, None, mode),
+            ask_tools(
+                workspace,
+                &executions,
+                None,
+                mode,
+                crate::skills::rootless_skill_tool(),
+            ),
             Arc::new(NoContext),
             gate,
             AgentConfig {
