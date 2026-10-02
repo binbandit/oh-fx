@@ -666,6 +666,7 @@ dependencies = [
  "ofx-text",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-util",
 ]

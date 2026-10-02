@@ -28,7 +28,7 @@ pub(super) fn review_subject<'a>(
             Vec::new(),
         ),
         GatedAction::FileMutation(mutation) => {
-            let file = request.file.as_ref()?;
+            let file = request.file?;
             (file_action(&call.name, file), file_targets(mutation, file))
         }
         GatedAction::Command(CommandRequest::Observe | CommandRequest::Stop)
@@ -66,16 +66,16 @@ fn command_target(cwd: &Path, command: &str) -> Target {
     }
 }
 
-fn file_action<'a>(tool_name: &'a str, file: &'a FileChange<'a>) -> Action<'a> {
+fn file_action<'a>(tool_name: &'a str, file: &'a FileChange) -> Action<'a> {
     Action::FileMutation {
         tool_name,
         display_path: &file.display_path,
         preimage_present: file.before.is_some(),
-        review: FileReview::new(file.before.unwrap_or_default(), file.after),
+        review: FileReview::new(file.before.as_deref().unwrap_or_default(), &file.after),
     }
 }
 
-fn file_targets(mutation: &FileMutation, file: &FileChange<'_>) -> Vec<Target> {
+fn file_targets(mutation: &FileMutation, file: &FileChange) -> Vec<Target> {
     let target = Target {
         role: TARGET_ROLE,
         path: mutation.target.as_os_str().as_bytes().to_vec(),

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use tokio_util::sync::CancellationToken;
@@ -100,10 +99,10 @@ pub struct ApprovalScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileChange<'a> {
-    pub display_path: Cow<'a, str>,
-    pub before: Option<&'a [u8]>,
-    pub after: &'a [u8],
+pub struct FileChange {
+    pub display_path: String,
+    pub before: Option<Vec<u8>>,
+    pub after: Vec<u8>,
     pub parents: Vec<PathBuf>,
 }
 
@@ -114,11 +113,11 @@ pub struct ReviewRequest<'a> {
     pub earlier_requests: &'a [&'a str],
     pub compacted_turns: Option<usize>,
     pub turn: &'a [ChatMessage],
-    pub held: &'a [ToolCallId],
+    pub held: &'a [(ToolCallId, String)],
     pub batch: &'a [ToolCall],
     pub call: &'a ToolCall,
     pub action: GatedAction<'a>,
-    pub file: Option<FileChange<'a>>,
+    pub file: Option<&'a FileChange>,
     pub attempt_available: bool,
 }
 

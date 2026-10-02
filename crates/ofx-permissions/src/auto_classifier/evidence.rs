@@ -64,7 +64,7 @@ pub(super) struct Evidence {
 pub(crate) fn select_prior_tool_results<'a>(
     turn: &'a [ChatMessage],
     target: &ToolCallId,
-    held: &[ToolCallId],
+    held: &[(ToolCallId, String)],
 ) -> PriorToolResults<'a> {
     let pending = |message: &ChatMessage| {
         matches!(message, ChatMessage::Assistant { tool_calls, .. }
@@ -88,7 +88,10 @@ pub(crate) fn select_prior_tool_results<'a>(
         else {
             continue;
         };
-        if held.contains(call_id) {
+        if held
+            .iter()
+            .any(|(held_id, held_content)| held_id == call_id && held_content == content)
+        {
             continue;
         }
         if selected.entries.len() == MAX_PRIOR_TOOL_RESULT_ENTRIES {

@@ -325,6 +325,10 @@ impl PreparedCall for EchoCall {
         self.mutation.as_ref()
     }
 
+    fn file_change(&self) -> Option<FileChange> {
+        reviews::previewed_change(&self.arguments)
+    }
+
     fn command_request(&self) -> Option<&CommandRequest> {
         assert!(
             !self.arguments.contains("command_panic"),
@@ -2312,11 +2316,12 @@ mod capabilities;
 mod compaction;
 mod malformed_arguments;
 mod project_context;
+mod reviews;
 mod turn_log;
 
 fn unconfigured_hold(tool_name: &str) -> String {
     tool_review_held_json(
         tool_name,
-        ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured),
+        ReviewHold::Unavailable(ofx_contract::ReviewFailure::ReviewerUnconfigured),
     )
 }
