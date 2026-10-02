@@ -43,7 +43,9 @@ pub use subagent::{
     SubagentRequest, SubagentRequestError, SubagentRequestInput, SubagentResult, feedback_result,
     valid_agent_name, valid_instructions,
 };
-pub use tool_args::{ToolArgValue, ToolArgs, ToolArgsError, parse_tool_args_object};
+pub use tool_args::{
+    ToolArgValue, ToolArgs, ToolArgsError, parse_json_value, parse_tool_args_object,
+};
 pub use tool_dispatch::{
     ActionLabel, CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity,
     ToolContext, ToolEffect, ToolOutput, ToolSpec,

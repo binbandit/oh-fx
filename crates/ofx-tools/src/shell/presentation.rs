@@ -1,7 +1,7 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use ofx_contract::{ActionLabel, parse_tool_args_object};
+use ofx_contract::{ActionLabel, parse_json_value, parse_tool_args_object};
 use ofx_exec::ManagedExecutions;
 use ofx_text::encode_terminal_safe;
 use serde_json::{Map, Value};
@@ -23,9 +23,9 @@ pub(super) fn presentation(
     workspace_root: &Path,
     executions: &ManagedExecutions,
 ) -> ShellPresentation {
-    let (Ok(_), Ok(Value::Object(fields))) = (
+    let (Ok(_), Some(Value::Object(fields))) = (
         parse_tool_args_object(arguments),
-        serde_json::from_str::<Value>(arguments),
+        parse_json_value(arguments),
     ) else {
         return ShellPresentation {
             title: "Working: shell".to_owned(),

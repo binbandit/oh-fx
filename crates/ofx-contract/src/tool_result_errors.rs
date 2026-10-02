@@ -2,6 +2,7 @@ use ofx_text::mask_secrets;
 use serde_json::{Map, Value};
 
 use crate::auto_classifier::ReviewFailure;
+use crate::tool_args::parse_json_value;
 use crate::types::{ToolArgumentDiagnostic, ToolArgumentFailure};
 
 #[cfg(target_os = "macos")]
@@ -249,7 +250,7 @@ pub fn tool_permission_denied_json(tool_name: &str) -> String {
 }
 
 pub fn tool_permission_denial_reason(output: &str) -> Option<ToolPermissionDenialReason> {
-    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(output) else {
+    let Some(Value::Object(root)) = parse_json_value(output) else {
         return None;
     };
     let error = root.get("error")?.as_object()?;
@@ -266,7 +267,7 @@ pub fn tool_permission_denial_reason(output: &str) -> Option<ToolPermissionDenia
 }
 
 pub fn shell_request_invalid_field_count(output: &str) -> Option<usize> {
-    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(output) else {
+    let Some(Value::Object(root)) = parse_json_value(output) else {
         return None;
     };
     let error = root.get("error")?.as_object()?;
