@@ -159,7 +159,7 @@ pub fn run_shell(
     if let Some(signal) = fatal {
         crate::terminal::signal_pipe::raise_default(signal);
     }
-    shell.clipboard.finish();
+    shell.into_clipboard().finish();
     result.map(drop)
 }
 
@@ -452,6 +452,10 @@ impl<'a> Shell<'a> {
             rows: self.layout.rows,
             sync_updates: self.terminal.capabilities().sync_updates,
         }
+    }
+
+    fn into_clipboard(self) -> ClipboardRuntime {
+        self.clipboard
     }
 
     fn shutdown(&mut self, fatal: Option<i32>) -> Option<i32> {
