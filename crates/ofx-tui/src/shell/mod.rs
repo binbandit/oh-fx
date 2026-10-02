@@ -57,6 +57,7 @@ pub struct SlashCommandSpec {
     pub command: String,
     pub aliases: Vec<String>,
     pub description: String,
+    pub category: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,7 @@ pub struct ShellOptions {
     pub workspace_label: String,
     pub workspace_root: PathBuf,
     pub commands: Vec<SlashCommandSpec>,
+    pub command_categories: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -744,6 +746,7 @@ mod tests {
             workspace_label: "proj\x07".to_owned(),
             workspace_root: PathBuf::from("/proj"),
             commands: Vec::new(),
+            command_categories: Vec::new(),
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
     }

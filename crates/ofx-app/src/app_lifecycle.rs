@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Controller;
 use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
-use crate::app_commands::slash_command_specs;
+use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
@@ -188,6 +188,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             .unwrap_or_default(),
         workspace_root: session.profile.workspace_root().to_owned(),
         commands: slash_command_specs(),
+        command_categories: slash_command_categories(),
     };
     let refreshes = session.setup.refreshes();
     let agent = agent_work(session.setup, session.executions, runtime);

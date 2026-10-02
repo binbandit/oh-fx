@@ -137,6 +137,7 @@ mod tests {
                 .map(|alias: &&str| (*alias).to_owned())
                 .collect(),
             description: String::new(),
+            category: 0,
         })
         .collect()
     }

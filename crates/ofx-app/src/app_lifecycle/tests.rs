@@ -287,6 +287,7 @@ fn run_a_worker_that_panics() -> ! {
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
         commands: Vec::new(),
+        command_categories: Vec::new(),
     };
     let outcome = host(options, events, receiver, None, |events, mut commands| {
         let _ = commands.blocking_recv();
@@ -358,6 +359,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
         commands: Vec::new(),
+        command_categories: Vec::new(),
     };
     let stopped = directory.join("stopped");
     let outcome = host(options, events, receiver, None, move |_, mut commands| {

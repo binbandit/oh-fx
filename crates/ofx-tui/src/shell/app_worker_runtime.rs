@@ -131,23 +131,28 @@ impl Shell<'_> {
                 mode,
                 full_access_warning,
             } => self.permission_mode_changed(mode, full_access_warning),
-            UiEvent::HelpRequested => {
-                let commands = self
-                    .options
-                    .commands
-                    .iter()
-                    .map(|spec| HelpEntry {
-                        command: spec.command.clone(),
-                        description: spec.description.clone(),
-                    })
-                    .collect();
-                self.push_entry(Entry::HelpCatalog { commands });
-            }
+            UiEvent::HelpRequested => self.help_requested(),
             UiEvent::ConversationCleared { first_kept_prompt } => {
                 self.conversation_cleared(first_kept_prompt);
             }
             UiEvent::ExitRequested => self.should_exit = true,
         }
+    }
+
+    fn help_requested(&mut self) {
+        let mut specs: Vec<_> = self.options.commands.iter().collect();
+        specs.sort_by_key(|spec| spec.category);
+        let commands = specs
+            .into_iter()
+            .map(|spec| HelpEntry {
+                command: spec.command.clone(),
+                description: spec.description.clone(),
+            })
+            .collect();
+        self.push_entry(Entry::HelpCatalog {
+            categories: self.options.command_categories.clone(),
+            commands,
+        });
     }
 
     fn conversation_cleared(&mut self, first_kept_prompt: u64) {
@@ -361,6 +366,26 @@ mod tests {
             turn_id: TurnId::new(turn),
             outcome,
         }
+    }
+
+    #[test]
+    fn help_lists_commands_grouped_by_category_under_the_category_tabs() {
+        let mut test = TestShell::start();
+        test.submit("/help");
+        assert_eq!(
+            test.sent(),
+            [UiCommand::RunCommand {
+                text: "/help".to_owned()
+            }]
+        );
+        test.deliver(UiEvent::HelpRequested);
+        let screen = test.screen();
+        assert!(
+            screen.contains(
+                "Commands 4  [All]  General  Model\n\n  /help     \n  /clear    \n  /quit     \n  /model"
+            ),
+            "{screen}"
+        );
     }
 
     #[test]

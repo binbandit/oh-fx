@@ -1,4 +1,4 @@
-use ofx_cli::{SLASH_REGISTRY, SlashKind};
+use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
 use ofx_contract::{NoticeTone, UiEvent};
 use ofx_session::resolve_model_query_from_ids;
 use ofx_tui::SlashCommandSpec;
@@ -26,7 +26,15 @@ pub(crate) fn slash_command_specs() -> Vec<SlashCommandSpec> {
                 .map(|alias| (*alias).to_owned())
                 .collect(),
             description: spec.completion_description.to_owned(),
+            category: spec.presentation_category as usize,
         })
+        .collect()
+}
+
+pub(crate) fn slash_command_categories() -> Vec<String> {
+    SlashPresentationCategory::ALL
+        .iter()
+        .map(|category| category.label().to_owned())
         .collect()
 }
 
@@ -98,6 +106,29 @@ mod tests {
         );
         assert_eq!(specs[4].aliases, ["/exit"]);
         assert_eq!(specs[4].description, "exit the interactive shell");
+    }
+
+    #[test]
+    fn the_shell_groups_commands_by_upstreams_presentation_categories() {
+        let categories = slash_command_categories();
+        let specs = slash_command_specs();
+        let grouped: Vec<(&str, &str)> = specs
+            .iter()
+            .map(|spec| (spec.command.as_str(), categories[spec.category].as_str()))
+            .collect();
+        assert_eq!(
+            grouped,
+            [
+                ("/help", "General"),
+                ("/clear", "General"),
+                ("/model", "Model"),
+                ("/permissions", "Security"),
+                ("/quit", "General"),
+            ]
+        );
+        assert_eq!(categories.len(), 11);
+        assert_eq!(categories[0], "General");
+        assert_eq!(categories[10], "Product");
     }
 
     #[test]
