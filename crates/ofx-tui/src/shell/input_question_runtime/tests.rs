@@ -353,3 +353,21 @@ fn the_full_access_warning_gives_way_to_the_question_hint() {
     assert!(screen.contains(HINT), "{screen}");
     assert!(!screen.contains("Full access enabled"), "{screen}");
 }
+
+#[test]
+fn the_question_hint_outranks_an_armed_ctrl_c_exit() {
+    let mut test = TestShell::start();
+    test.submit("pick for me");
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(1),
+    });
+    let now_ms = test.shell.now_ms();
+    test.shell.gestures.press_ctrl_c_exit(now_ms);
+    test.deliver(requested(1, 4, proceed()));
+    let screen = test.screen();
+    assert!(screen.contains(HINT), "{screen}");
+    assert!(!screen.contains("press ctrl+c again to exit"), "{screen}");
+    press(&mut test, b"\x03");
+    assert_eq!(answers(&test), [answered(4, None)]);
+    assert!(!test.shell.should_exit);
+}

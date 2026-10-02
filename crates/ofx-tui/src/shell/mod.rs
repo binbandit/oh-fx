@@ -523,7 +523,7 @@ impl<'a> Shell<'a> {
 
     fn hint_row(&self, skills_menu_open: bool) -> (Row, bool) {
         let hint_state = HintState {
-            ctrl_c_pending: self.gestures.ctrl_c_exit_armed(),
+            ctrl_c_pending: self.gestures.ctrl_c_exit_armed() && self.question.is_none(),
             esc_clear_armed: self.gestures.escape_clear_armed(),
             esc_interrupt_armed: self.gestures.escape_interrupt_armed(),
             danger: if self.yolo_warning.active()
