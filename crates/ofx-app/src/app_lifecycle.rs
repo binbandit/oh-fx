@@ -1,3 +1,4 @@
+use std::env;
 use std::fmt;
 use std::io::{self, IsTerminal};
 use std::panic::{self, AssertUnwindSafe};
@@ -82,7 +83,7 @@ async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> 
         .map_err(|_| vec![failure_line(&SELF_EXE_NOT_FOUND)])?;
     let executions = ManagedExecutions::new(supervisor);
     let settings = profile.settings();
-    let permission_mode = settings.permission_mode();
+    let permission_mode = settings.permission_mode(&|name| env::var(name).ok());
     let setup = profile
         .connect_interactive(
             Launch {

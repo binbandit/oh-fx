@@ -1,3 +1,4 @@
+use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -22,7 +23,11 @@ pub(crate) fn run(format: OutputFormat) -> ExitCode {
     }
     drop(stderr);
     crate::print(
-        render(settings.permission_mode(), format).as_bytes(),
+        render(
+            settings.permission_mode(&|name| env::var(name).ok()),
+            format,
+        )
+        .as_bytes(),
         crate::command_write_failure(TopLevelKind::Permissions),
     )
 }

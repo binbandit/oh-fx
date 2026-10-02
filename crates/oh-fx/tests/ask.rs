@@ -792,6 +792,41 @@ fn permission_flags_override_the_configured_mode_for_one_request() {
 }
 
 #[test]
+fn the_permission_mode_variable_replaces_the_saved_mode_and_flags_replace_both() {
+    let replies: Vec<Reply> = (0..3)
+        .map(|_| Reply::sse(&chat_text_events(&["ok"])))
+        .collect();
+    let server = FakeServer::start(replies);
+    let mut settings = portkey_settings(&server.base_url());
+    settings["permission_mode"] = json!("ask");
+    settings["yolo_acknowledged"] = json!(true);
+    let home = Home::with_settings(&settings);
+    for (variable, flags) in [
+        ("full access", &[][..]),
+        ("yolo", &["--auto"]),
+        ("never", &[]),
+    ] {
+        let args = [&["ask"], flags, &["hi"]].concat();
+        let environment = [KEY[0], ("OH_FX_PERMISSION_MODE", variable)];
+        let output = home.ask(&args, &environment);
+        assert!(output.status.success(), "{variable}: {}", stderr(&output));
+        assert_eq!(stdout(&output), "ok", "{variable}");
+    }
+    let modes: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|request| system_texts(&messages(request))[2].clone())
+        .collect();
+    assert_eq!(modes.len(), 3);
+    for (mode, expected) in modes.iter().zip(["full access", "auto", "ask"]) {
+        assert!(
+            mode.starts_with(&format!("Runtime context: permission mode is {expected}.")),
+            "{mode}"
+        );
+    }
+}
+
+#[test]
 fn a_full_access_acknowledgment_that_cannot_be_saved_is_reported_after_the_warning() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["ok"])),

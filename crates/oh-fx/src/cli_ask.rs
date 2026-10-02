@@ -407,7 +407,11 @@ async fn prepare_agent(
     let permission_mode = args
         .permissions
         .mode
-        .unwrap_or_else(|| profile.settings().permission_mode());
+        .unwrap_or_else(|| {
+            profile
+                .settings()
+                .permission_mode(&|name| env::var(name).ok())
+        });
     announce_settings(args, &profile, permission_mode)?;
     let resumed = match &args.session.resume {
         Some(target) => Some(Resumed::open(&mut profile, target)?),

@@ -24,6 +24,7 @@ const MAX_MODEL_PREFERENCES: usize = 35;
 const PROVIDER_VARIABLE: &str = "OH_FX_PROVIDER";
 const MODEL_VARIABLE: &str = "OH_FX_MODEL";
 const MAX_AGENT_STEPS_VARIABLE: &str = "OH_FX_MAX_AGENT_STEPS";
+const PERMISSION_MODE_VARIABLE: &str = "OH_FX_PERMISSION_MODE";
 const AUTO_COMPACT_PERCENT_VARIABLE: &str = "OH_FX_AUTO_COMPACT_PERCENT";
 pub(crate) const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
@@ -276,9 +277,10 @@ impl Settings {
         })
     }
 
-    pub fn permission_mode(&self) -> PermissionMode {
-        self.workspace
-            .permission_mode
+    pub fn permission_mode(&self, lookup: EnvironmentLookup<'_>) -> PermissionMode {
+        lookup(PERMISSION_MODE_VARIABLE)
+            .and_then(|value| PermissionMode::parse(&value))
+            .or(self.workspace.permission_mode)
             .or(self.global.permission_mode)
             .unwrap_or(PermissionMode::Auto)
     }
@@ -1122,12 +1124,15 @@ mod tests {
     #[test]
     fn permission_mode_and_acknowledgement_follow_workspace_overrides() {
         assert_eq!(
-            fixture_settings("{}").permission_mode(),
+            fixture_settings("{}").permission_mode(&no_environment),
             PermissionMode::Auto
         );
         let settings =
             fixture_settings(r#"{"permission_mode":"Full Access","yolo_acknowledged":true}"#);
-        assert_eq!(settings.permission_mode(), PermissionMode::Yolo);
+        assert_eq!(
+            settings.permission_mode(&no_environment),
+            PermissionMode::Yolo
+        );
         assert!(settings.yolo_acknowledged());
         let fixture = fixture(None, None);
         let json = format!(
@@ -1136,8 +1141,44 @@ mod tests {
         );
         fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
         let settings = load(&fixture).unwrap();
-        assert_eq!(settings.permission_mode(), PermissionMode::Yolo);
+        assert_eq!(
+            settings.permission_mode(&no_environment),
+            PermissionMode::Yolo
+        );
         assert!(!settings.yolo_acknowledged());
+    }
+
+    #[test]
+    fn the_permission_mode_variable_overrides_saved_modes_when_it_names_one() {
+        let environment = |value: &'static str| {
+            move |name: &str| (name == PERMISSION_MODE_VARIABLE).then(|| value.to_owned())
+        };
+        let saved = fixture_settings(r#"{"permission_mode":"ask"}"#);
+        let defaulted = fixture_settings("{}");
+        for (value, mode) in [
+            ("yolo", PermissionMode::Yolo),
+            ("Full Access", PermissionMode::Yolo),
+            ("FULL-ACCESS", PermissionMode::Yolo),
+            ("auto", PermissionMode::Auto),
+        ] {
+            assert_eq!(saved.permission_mode(&environment(value)), mode, "{value}");
+        }
+        assert_eq!(
+            defaulted.permission_mode(&environment("ask")),
+            PermissionMode::Ask
+        );
+        for ignored in ["", " ask", "danger", "full_access"] {
+            assert_eq!(
+                saved.permission_mode(&environment(ignored)),
+                PermissionMode::Ask,
+                "{ignored:?}"
+            );
+            assert_eq!(
+                defaulted.permission_mode(&environment(ignored)),
+                PermissionMode::Auto,
+                "{ignored:?}"
+            );
+        }
     }
 
     #[test]
@@ -1264,7 +1305,11 @@ mod tests {
                 "{json}"
             );
             assert!(!settings.profile_is_unusable(), "{json}");
-            assert_eq!(settings.permission_mode(), PermissionMode::Auto, "{json}");
+            assert_eq!(
+                settings.permission_mode(&no_environment),
+                PermissionMode::Auto,
+                "{json}"
+            );
             assert_eq!(
                 settings.selected_provider(&no_environment),
                 Ok(ProviderId::Configured("local".to_owned())),

@@ -270,6 +270,25 @@ fn shift_tab_cycles_the_permission_mode_and_the_next_tool_call_follows_it() {
 }
 
 #[test]
+fn the_permission_mode_variable_picks_the_starting_mode_and_shift_tab_cycles_on_from_it() {
+    let mut settings = settings("http://127.0.0.1:9");
+    settings["permission_mode"] = json!("auto");
+    let home = Home::with_settings(&settings);
+    let mut command = home.command();
+    command.env("OH_FX_PERMISSION_MODE", "full-access");
+    let mut session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    let screen = wait(&session, FULL_ACCESS_WARNING);
+    assert!(screen.contains("full access · model-a"), "{screen}");
+    wait_saved(&home, "yolo_acknowledged", &json!(true));
+    assert_eq!(saved_settings(&home)["permission_mode"], "auto");
+    session.send(SHIFT_TAB);
+    wait(&session, "ask · model-a");
+    wait_saved(&home, "permission_mode", &json!("ask"));
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
 fn a_mode_that_cannot_be_saved_still_applies_and_says_so() {
     let home = Home::with_settings(&settings("http://127.0.0.1:9"));
     let unsaveable = fs::read_to_string(settings_file(&home))

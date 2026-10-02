@@ -177,6 +177,14 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
 }
 
 fn with_settings(settings: Option<&str>, args: &[&str]) -> Output {
+    with_settings_and_environment(settings, &[], args)
+}
+
+fn with_settings_and_environment(
+    settings: Option<&str>,
+    environment: &[(&str, &str)],
+    args: &[&str],
+) -> Output {
     let home = tempfile::tempdir().expect("create a temporary home");
     if let Some(settings) = settings {
         let config = home.path().join(".config/oh-fx");
@@ -190,6 +198,7 @@ fn with_settings(settings: Option<&str>, args: &[&str]) -> Output {
             .env_clear()
             .env("HOME", home.path())
             .env("OH_FX_AUTO_UPGRADE", "0")
+            .envs(environment.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
@@ -226,6 +235,20 @@ fn permissions_reports_the_saved_mode_with_upstreams_text_and_json() {
         let output = with_settings(settings, &["permissions", "--json"]);
         assert!(output.status.success(), "{settings:?}: {}", stderr(&output));
         assert_eq!(stdout(&output), json(label), "{settings:?}");
+    }
+    for (variable, shown, label) in [
+        ("yolo", "full access", "yolo"),
+        ("Full Access", "full access", "yolo"),
+        ("auto", "auto", "auto"),
+        ("sometimes", "ask", "ask"),
+    ] {
+        let settings = Some(r#"{"permission_mode":"ask"}"#);
+        let environment = [("OH_FX_PERMISSION_MODE", variable)];
+        let output = with_settings_and_environment(settings, &environment, &["permissions"]);
+        assert_eq!(stdout(&output), text(shown), "{variable}");
+        let output =
+            with_settings_and_environment(settings, &environment, &["permissions", "--json"]);
+        assert_eq!(stdout(&output), json(label), "{variable}");
     }
     let output = with_settings(Some("{"), &["permissions", "--json"]);
     assert_eq!(output.status.code(), Some(1));

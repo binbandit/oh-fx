@@ -525,7 +525,7 @@ fn a_permission_mode_patch_snapshots_and_removes_legacy_workspace_copies() {
     assert_eq!(fs::read_to_string(&snapshot).unwrap(), original);
     assert_eq!(mode(&snapshot), 0o600);
     let settings = Settings::load(&fixture.paths, Path::new("/workspace/b")).unwrap();
-    assert_eq!(settings.permission_mode(), PermissionMode::Auto);
+    assert_eq!(settings.permission_mode(&|_| None), PermissionMode::Auto);
 }
 
 #[test]
