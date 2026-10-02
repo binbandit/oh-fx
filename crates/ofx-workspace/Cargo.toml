@@ -8,8 +8,12 @@ publish.workspace = true
 
 [dependencies]
 memchr.workspace = true
+ofx-config.workspace = true
 ofx-text.workspace = true
 rustix = { workspace = true, features = ["fs"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

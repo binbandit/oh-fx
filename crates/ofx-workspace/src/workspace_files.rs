@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::{CStr, OsStr};
 use std::fs;
 use std::iter;
@@ -26,6 +27,15 @@ const TRACKED_AND_OTHER_FILES_ARGS: &[&str] = &[
     "--exclude-standard",
 ];
 const OTHER_FILES_ARGS: &[&str] = &["ls-files", "-z", "--others", "--exclude-standard"];
+const IGNORED_DIRECTORIES_ARGS: &[&str] = &[
+    "ls-files",
+    "-z",
+    "--others",
+    "--ignored",
+    "--directory",
+    "--exclude-standard",
+];
+const GIT_METADATA_NAME: &str = ".git";
 const WORK_TREE_ARGS: &[&str] = &["rev-parse", "--show-toplevel"];
 const GIT_PRELUDE: &[&str] = &[
     "--no-pager",
@@ -252,6 +262,73 @@ fn is_hidden_name(name: &[u8]) -> bool {
     name.len() > 1 && name[0] == b'.'
 }
 
+pub(crate) fn discover_listing_files(
+    workspace_root: &Path,
+    options: &DiscoveryOptions<'_>,
+) -> Option<Discovery> {
+    let git = trusted_git_executable().filter(|git| work_tree_contains(git, workspace_root));
+    match git {
+        Some(git) => {
+            git_raw_list(workspace_root, options, git).map(|raw| parse_raw_list(raw, options))
+        }
+        None => Some(walk_workspace(workspace_root, options)),
+    }
+}
+
+pub(crate) fn discover_listing_directories(
+    workspace_root: &Path,
+    options: &DiscoveryOptions<'_>,
+) -> Option<Discovery> {
+    let git = trusted_git_executable().filter(|git| work_tree_contains(git, workspace_root));
+    let Some(git) = git else {
+        return Some(walk_workspace_paths(
+            workspace_root,
+            options,
+            WalkTarget::Directories,
+            None,
+        ));
+    };
+    let output = run_bounded(
+        git_command_at(git, workspace_root).args(IGNORED_DIRECTORIES_ARGS),
+        GIT_STDOUT_LIMIT,
+    )?;
+    if !output.status.success() {
+        return None;
+    }
+    let ignored = parse_ignored_directories(&output.stdout);
+    let git_options = DiscoveryOptions {
+        ignored_names: &[GIT_METADATA_NAME],
+        ..*options
+    };
+    Some(walk_workspace_paths(
+        workspace_root,
+        &git_options,
+        WalkTarget::Directories,
+        Some(&ignored),
+    ))
+}
+
+fn parse_ignored_directories(raw: &[u8]) -> HashSet<Vec<u8>> {
+    let separator = if memchr(0, raw).is_some() { 0 } else { b'\n' };
+    raw.split(|byte| *byte == separator)
+        .filter_map(|entry| {
+            let entry = if separator == b'\n' {
+                trim_trailing_carriage_returns(entry)
+            } else {
+                entry
+            };
+            if entry.last() != Some(&b'/') {
+                return None;
+            }
+            let end = entry
+                .iter()
+                .rposition(|byte| *byte != b'/')
+                .map(|index| index + 1)?;
+            Some(entry[..end].to_vec())
+        })
+        .collect()
+}
+
 fn discover_with_git(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
@@ -389,7 +466,22 @@ fn walk_entry_type(parent: &Dir, entry: &DirEntry) -> Option<FileType> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalkTarget {
+    Files,
+    Directories,
+}
+
 fn walk_workspace(workspace_root: &Path, options: &DiscoveryOptions<'_>) -> Discovery {
+    walk_workspace_paths(workspace_root, options, WalkTarget::Files, None)
+}
+
+fn walk_workspace_paths(
+    workspace_root: &Path,
+    options: &DiscoveryOptions<'_>,
+    target: WalkTarget,
+    ignored_paths: Option<&HashSet<Vec<u8>>>,
+) -> Discovery {
     let mut files = CandidatePaths::default();
     let mut stats = CandidateStats::default();
     let Some(entries) = open_walk_root(workspace_root) else {
@@ -414,7 +506,7 @@ fn walk_workspace(workspace_root: &Path, options: &DiscoveryOptions<'_>) -> Disc
         };
 
         if matches!(file_type, FileType::RegularFile | FileType::Symlink) {
-            if is_ignored_name(options.ignored_names, name) {
+            if target != WalkTarget::Files || is_ignored_name(options.ignored_names, name) {
                 continue;
             }
             if files.len() >= options.candidate_cap {
@@ -433,13 +525,27 @@ fn walk_workspace(workspace_root: &Path, options: &DiscoveryOptions<'_>) -> Disc
             if is_ignored_name(options.ignored_names, name) {
                 continue;
             }
-            let Some(entries) = open_walk_child(&top.entries, entry.file_name()) else {
-                continue;
-            };
             let prefix = if top.prefix.is_empty() {
                 name.to_vec()
             } else {
                 [&top.prefix[..], b"/", name].concat()
+            };
+            if ignored_paths.is_some_and(|ignored| ignored.contains(&prefix)) {
+                continue;
+            }
+            if target == WalkTarget::Directories {
+                if files.len() >= options.candidate_cap {
+                    stats.incomplete = true;
+                    break;
+                }
+                if prefix.len() > MAX_RELATIVE_PATH_BYTES {
+                    stats.skipped_overlong += 1;
+                    continue;
+                }
+                files.push(&prefix);
+            }
+            let Some(entries) = open_walk_child(&top.entries, entry.file_name()) else {
+                continue;
             };
             stack.push(WalkFrame { entries, prefix });
         }

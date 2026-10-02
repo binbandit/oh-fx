@@ -953,8 +953,12 @@ name = "ofx-workspace"
 version = "0.1.0"
 dependencies = [
  "memchr",
+ "ofx-config",
  "ofx-text",
  "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
 ]

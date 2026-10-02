@@ -1,15 +1,23 @@
 mod bounded_process;
 mod current_branch;
+mod file_index;
+mod file_index_cache;
 mod fs_path;
 mod glob_pattern;
 mod grep_search;
 mod ignored_dirs;
+mod path_completion;
 mod path_error;
 mod pathing;
 mod regular_file;
+mod unicode_simple_fold;
 mod workspace_files;
 
 pub use current_branch::current_branch;
+pub use file_index::{
+    CandidateKind, FileIndex, IndexState, InvalidIndexData, MAX_PATH_LEN, ReadableRevision,
+    SearchResult,
+};
 pub use fs_path::{basename, dirname};
 pub use glob_pattern::{CompileError, MAX_PATTERN_BYTES, Pattern};
 pub use grep_search::{
@@ -18,6 +26,10 @@ pub use grep_search::{
     count_regular_file_root, read_model_safe,
 };
 pub use ignored_dirs::IGNORED_DIRECTORY_NAMES;
+pub use path_completion::{
+    PathCompletionError, QueryMode, complete as complete_path,
+    is_current_candidate_kind as is_current_path_kind, query_mode,
+};
 pub use path_error::PathError;
 pub use pathing::{
     FileIdentity, FileKind, FileMutationTarget, MAX_PATH_BYTES, PATH_ENTRY_WHITESPACE, TargetMode,
