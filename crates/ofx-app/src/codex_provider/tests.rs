@@ -629,3 +629,4 @@ async fn missing_expired_and_unsafe_logins_never_build_a_provider() {
 }
 
 mod capabilities;
+mod reviews;
