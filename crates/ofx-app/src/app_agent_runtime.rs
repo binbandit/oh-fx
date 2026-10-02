@@ -2417,4 +2417,99 @@ mod tests {
             assert_eq!(failure_status(&silent, CredentialSource::Configured), None);
         }
     }
+
+    const QUESTION_ARGUMENTS: &str = r#"{"questions":[{"question":"Proceed?","options":[{"label":"Yes","description":"Go ahead"},{"label":"No"}]}]}"#;
+
+    async fn asked(harness: &mut Harness) -> (TurnId, QuestionRequest) {
+        let Some(UiEvent::QuestionRequested { turn_id, request }) = harness
+            .until(|event| matches!(event, UiEvent::QuestionRequested { .. }))
+            .await
+            .last()
+            .cloned()
+        else {
+            unreachable!()
+        };
+        (turn_id, request)
+    }
+
+    fn tool_results(body: &Value) -> Vec<String> {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .map(|message| message["content"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn questions_reach_the_shell_for_the_running_turn_and_answers_reach_the_model() {
+        let ask = chat_tool_call_events("call-1", "ask_user_question", QUESTION_ARGUMENTS);
+        let server = FakeServer::start([
+            Reply::sse(&ask),
+            Reply::sse(&chat_text_events(&["Stopping."])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("pick for me");
+        let (turn_id, request) = asked(&mut harness).await;
+        assert_eq!(turn_id, harness.running_turn());
+        assert_eq!(request.entries.len(), 1);
+        assert_eq!(request.entries[0].question, "Proceed?");
+        assert_eq!(request.entries[0].options.len(), 2);
+        assert_eq!(
+            request.entries[0].options[0].description.as_deref(),
+            Some("Go ahead")
+        );
+        let offered: Vec<String> = server.requests()[0].json()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            offered.iter().any(|name| name == "ask_user_question"),
+            "{offered:?}"
+        );
+        harness.send(UiCommand::QuestionAnswered {
+            request_id: request.id,
+            answers: Some(vec!["No".to_owned()]),
+        });
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            tool_results(&server.requests()[1].json()),
+            [r#"[{"question":"Proceed?","answer":"No"}]"#]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_stops_waiting_and_tells_the_model_the_question_was_cancelled() {
+        let ask = chat_tool_call_events("call-1", "ask_user_question", QUESTION_ARGUMENTS);
+        let server = FakeServer::start([
+            Reply::sse(&ask),
+            Reply::sse(&chat_text_events(&["Asking in text instead."])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("pick for me");
+        let (turn_id, request) = asked(&mut harness).await;
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.send(UiCommand::QuestionAnswered {
+            request_id: request.id,
+            answers: None,
+        });
+        let events = harness.until(finished(TurnOutcome::Interrupted)).await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::ToolFinished { content, .. } if content == "(user cancelled the question)"
+        )));
+        harness.send(UiCommand::QuestionAnswered {
+            request_id: request.id,
+            answers: Some(vec!["Yes".to_owned()]),
+        });
+        harness.submit("go on");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            tool_results(&server.requests()[1].json()),
+            ["(user cancelled the question)"]
+        );
+    }
 }
