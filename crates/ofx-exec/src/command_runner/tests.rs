@@ -5,7 +5,12 @@ use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::{oneshot, watch};
 use tokio::time::{Instant, timeout};
 
-use super::{Collection, OutputStream, StopIntent, child_pid, watch_exit};
+use rustix::process::Signal;
+
+use super::{
+    Collection, FORCE_SIGNAL, OutputStream, SignalScope, StopIntent, child_pid, termination_signal,
+    watch_exit,
+};
 use crate::command_contract::CommandStatus;
 
 const NONCE: &str = "0123456789abcdef0123456789abcdef";
@@ -86,4 +91,17 @@ fn a_slow_consumer_still_receives_every_leftover_byte_after_exit() {
         assert_eq!(outcome.status, CommandStatus::ExitCode(0));
         assert!(!outcome.output_incomplete);
     });
+}
+
+#[test]
+fn foreground_force_cleanup_preserves_the_supervisor() {
+    assert_eq!(FORCE_SIGNAL, Signal::USR1);
+    assert_eq!(
+        termination_signal(StopIntent::Force),
+        (SignalScope::Supervisor, FORCE_SIGNAL)
+    );
+    assert_eq!(
+        termination_signal(StopIntent::Graceful),
+        (SignalScope::ProcessGroup, Signal::TERM)
+    );
 }

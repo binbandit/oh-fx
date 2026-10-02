@@ -1,18 +1,18 @@
+mod group_tree;
+mod supervision;
+
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
 
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::io::Errno;
-use rustix::process::{Signal, kill_process_group, setsid};
-use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2};
+use rustix::process::{Pid, Signal, kill_process_group, setsid};
 
 use super::{error_name, launch_failure_prefix, status_prefix};
+use group_tree::GroupTree;
+pub(super) use supervision::FORCE_SIGNAL;
+use supervision::{Requests, Supervision};
 
 pub(super) const TOKEN: &str = "__oh_fx_foreground_session__";
 pub(super) const READY_BYTE: u8 = 0x1e;
@@ -26,8 +26,6 @@ pub(super) const SIGNAL_STATUS: &str = "signal:";
 pub(super) const NO_DEADLINE: &str = "none";
 const SETUP_FAILURE_EXIT_CODE: i32 = 1;
 const UNKNOWN_TERMINATION_EXIT_CODE: i32 = 127;
-const OWNER_READ_BYTES: usize = 64;
-const SURVIVED_SIGNALS: [i32; 5] = [SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2];
 
 enum Failure {
     Setup,
@@ -61,37 +59,33 @@ fn supervise(args: &[OsString]) -> Result<ExitStatus, Failure> {
         return Err(Failure::Setup);
     }
     let deadline = parse_deadline(deadline)?;
-    let group = setsid().map_err(|_| Failure::Setup)?;
-    let terminated = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(SIGTERM, Arc::clone(&terminated)).map_err(|_| Failure::Setup)?;
-    for signal in SURVIVED_SIGNALS {
-        signal_hook::flag::register(signal, Arc::default()).map_err(|_| Failure::Setup)?;
-    }
+    let session = setsid().map_err(|_| Failure::Setup)?;
+    let requests = Requests::register().map_err(|_| Failure::Setup)?;
     io::stderr()
         .write_all(&[READY_BYTE])
         .map_err(|_| Failure::Setup)?;
     let nonce = read_release()?;
-    let launch = |error: &io::Error| Failure::Launch {
+    let launch = |name: &'static str| Failure::Launch {
         nonce: nonce.clone(),
-        name: error_name(error),
+        name,
     };
-    thread::Builder::new()
-        .spawn(move || {
-            watch_owner(deadline);
-            let _ = kill_process_group(group, Signal::KILL);
-        })
-        .map_err(|error| launch(&error))?;
-    let mut target = Command::new(program)
+    let target = Command::new(program)
         .args(arguments)
         .stdin(Stdio::null())
         .spawn()
-        .map_err(|error| launch(&error))?;
-    if terminated.load(Ordering::SeqCst) {
-        let _ = kill_process_group(group, Signal::TERM);
+        .map_err(|error| launch(error_name(&error)))?;
+    let target = Pid::from_child(&target);
+    if requests.graceful_requested() {
+        let _ = kill_process_group(session, Signal::TERM);
     }
-    let status = target.wait().map_err(|error| launch(&error))?;
+    let mut supervision = Supervision::new(target, deadline, requests, GroupTree::new(session));
+    let status = supervision.wait_for_target().map_err(|name| {
+        supervision.kill_target();
+        launch(name)
+    })?;
     report_status(&nonce, status);
-    let _ = kill_process_group(group, Signal::KILL);
+    supervision.settle().map_err(launch)?;
+    let _ = kill_process_group(session, Signal::KILL);
     Ok(status)
 }
 
@@ -127,27 +121,6 @@ fn read_release() -> Result<String, Failure> {
         return Err(Failure::Setup);
     }
     String::from_utf8(nonce.to_vec()).map_err(|_| Failure::Setup)
-}
-
-fn watch_owner(deadline: Option<Instant>) {
-    let stdin = io::stdin();
-    let mut buffer = [0; OWNER_READ_BYTES];
-    loop {
-        let remaining = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-        if remaining == Some(Duration::ZERO) {
-            return;
-        }
-        let timeout = remaining.and_then(|remaining| Timespec::try_from(remaining).ok());
-        let mut descriptors = [PollFd::new(&stdin, PollFlags::IN)];
-        match poll(&mut descriptors, timeout.as_ref()) {
-            Ok(0) | Err(Errno::INTR) => {}
-            Ok(_) => match rustix::io::read(&stdin, &mut buffer) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
-            },
-            Err(_) => return,
-        }
-    }
 }
 
 fn exit_code(status: ExitStatus) -> i32 {
