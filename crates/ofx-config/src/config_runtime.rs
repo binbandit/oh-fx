@@ -79,6 +79,7 @@ enum DiagnosticCause {
     DurablePathUnsafe,
     InvalidModelId,
     IgnoredProjectUserOnlySetting,
+    RetiredSkillMatchFuzzy,
     InvalidContextLimits,
     InvalidSkillSymlinkAuthorities,
 }
@@ -91,6 +92,7 @@ impl DiagnosticCause {
             Self::DurablePathUnsafe => "durable_path_unsafe",
             Self::InvalidModelId => "invalid_model_id",
             Self::IgnoredProjectUserOnlySetting => "ignored_project_user_only_setting",
+            Self::RetiredSkillMatchFuzzy => "retired_skill_match_fuzzy",
             Self::InvalidContextLimits => "invalid_context_limits",
             Self::InvalidSkillSymlinkAuthorities => "invalid_skill_symlink_authorities",
         }
@@ -115,6 +117,9 @@ impl fmt::Display for ConfigDiagnostic {
             write!(formatter, "; key={key}")?;
         }
         match self.cause {
+            DiagnosticCause::RetiredSkillMatchFuzzy => formatter.write_str(
+                "; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool",
+            )?,
             DiagnosticCause::InvalidContextLimits => formatter.write_str(CONTEXT_LIMITS_REPAIR)?,
             DiagnosticCause::InvalidSkillSymlinkAuthorities => write!(
                 formatter,
@@ -178,6 +183,8 @@ pub enum LayerError {
     InvalidContextType,
     #[error("InvalidSkillSymlinkAuthorities")]
     InvalidSkillSymlinkAuthorities,
+    #[error("RetiredSkillMatchFuzzy")]
+    RetiredSkillMatchFuzzy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -274,6 +281,7 @@ impl From<LayerError> for DiagnosticCause {
             LayerError::InvalidModelValue => Self::InvalidModelId,
             LayerError::ContextLimits(_) => Self::InvalidContextLimits,
             LayerError::InvalidSkillSymlinkAuthorities => Self::InvalidSkillSymlinkAuthorities,
+            LayerError::RetiredSkillMatchFuzzy => Self::RetiredSkillMatchFuzzy,
             _ => Self::MalformedSettings,
         }
     }
@@ -670,6 +678,9 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         LayerError::InvalidFastModeBindingType,
     )?;
     layer.context = parse_switch(object, "context", LayerError::InvalidContextType)?;
+    if object.contains_key("skill_match_fuzzy") {
+        return Err(LayerError::RetiredSkillMatchFuzzy);
+    }
     layer.skill_symlink_authorities = object
         .get("skill_symlink_authorities")
         .map(parse_skill_symlink_authorities)
@@ -1438,6 +1449,22 @@ mod tests {
         assert_eq!(
             settings.diagnostics()[0].to_string(),
             "config project: ignored_project_user_only_setting; key=skill_symlink_authorities"
+        );
+    }
+
+    #[test]
+    fn the_retired_skill_match_fuzzy_setting_discards_its_layer_with_a_migration_hint() {
+        let settings = fixture_settings(r#"{"permission_mode":"ask","skill_match_fuzzy":true}"#);
+        assert_eq!(
+            settings.diagnostics()[0].to_string(),
+            "config user: retired_skill_match_fuzzy; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool"
+        );
+        assert!(!settings.profile_is_unusable());
+        assert_eq!(settings.permission_mode(), PermissionMode::Auto);
+        let project = load(&fixture(None, Some(r#"{"skill_match_fuzzy":false}"#))).unwrap();
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=skill_match_fuzzy"
         );
     }
 
