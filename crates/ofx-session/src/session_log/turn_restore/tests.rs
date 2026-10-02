@@ -106,6 +106,7 @@ fn result<'a>(call: &'a ToolCall, output: &'a str, status: ToolResultStatus) -> 
         call_id: call.id.as_str(),
         tool_name: &call.name,
         output,
+        output_bytes: output.len(),
         status,
     }
 }
@@ -177,7 +178,10 @@ fn recorded_turns_restore_the_messages_the_model_saw() {
             step(
                 "",
                 &shell,
-                vec![result(&shell[0], &large, ToolResultStatus::Failure)],
+                vec![StepResult {
+                    output_bytes: 70_000,
+                    ..result(&shell[0], &large, ToolResultStatus::Failure)
+                }],
             ),
         ],
         end: TurnEnd::Replied {
@@ -214,7 +218,8 @@ fn recorded_turns_restore_the_messages_the_model_saw() {
     let handle = large_result["artifact_ref"].as_str().unwrap();
     assert!(handle.starts_with("result-shell-"), "{handle}");
     assert_eq!(large_result["stored_bytes"], 10 * 1024);
-    assert_eq!(large_result["output_bytes"], 10 * 1024);
+    assert_eq!(large_result["output_bytes"], 70_000);
+    assert_eq!(frames[3]["event"]["tool_result"]["output_bytes"], 8);
     assert_eq!(large_result["completeness"], "complete");
     assert_eq!(large_result["status"], "failure");
     assert_eq!(

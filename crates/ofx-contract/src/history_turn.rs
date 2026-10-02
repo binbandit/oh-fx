@@ -7,6 +7,7 @@ pub struct StepResult<'a> {
     pub call_id: &'a str,
     pub tool_name: &'a str,
     pub output: &'a str,
+    pub output_bytes: usize,
     pub status: ToolResultStatus,
 }
 

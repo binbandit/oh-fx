@@ -1,7 +1,7 @@
 use std::mem;
 
 use ofx_contract::{
-    ChatMessage, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolResultStatus,
+    ChatMessage, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolCallId, ToolResultStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +136,16 @@ pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) ->
     }
 }
 
-pub(crate) fn logged_steps<'a>(steps: &[ToolStep<'a>]) -> Vec<HistoryStep<'a>> {
+pub(crate) fn logged_steps<'a>(
+    steps: &[ToolStep<'a>],
+    raw_outputs: &[(ToolCallId, usize)],
+) -> Vec<HistoryStep<'a>> {
+    let kept = steps.iter().map(|step| step.results.len()).sum::<usize>();
+    let mut recorded = raw_outputs
+        .len()
+        .checked_sub(kept)
+        .map_or(&[][..], |first| &raw_outputs[first..])
+        .iter();
     steps
         .iter()
         .map(|step| HistoryStep {
@@ -146,15 +155,21 @@ pub(crate) fn logged_steps<'a>(steps: &[ToolStep<'a>]) -> Vec<HistoryStep<'a>> {
             tool_results: step
                 .results
                 .iter()
-                .map(|result| StepResult {
-                    call_id: result.call_id,
-                    tool_name: result.tool_name,
-                    output: result.output,
-                    status: if result.failed {
-                        ToolResultStatus::Failure
-                    } else {
-                        ToolResultStatus::Success
-                    },
+                .map(|result| {
+                    let raw = recorded
+                        .next()
+                        .filter(|(call_id, _)| call_id.as_str() == result.call_id);
+                    StepResult {
+                        call_id: result.call_id,
+                        tool_name: result.tool_name,
+                        output: result.output,
+                        output_bytes: raw.map_or(result.output.len(), |(_, bytes)| *bytes),
+                        status: if result.failed {
+                            ToolResultStatus::Failure
+                        } else {
+                            ToolResultStatus::Success
+                        },
+                    }
                 })
                 .collect(),
         })

@@ -13,10 +13,11 @@ use ofx_contract::{
     ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
     ProviderError, ProviderErrorKind, ProviderOptions, RequestId, RouteRecoveryKind,
     RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
-    ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage, format_unknown_action,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
-    review_unavailable_json, tool_execution_failure_json, tool_permission_denied_json,
+    ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection,
+    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
+    prepare_model_output, review_unavailable_json, tool_execution_failure_json,
+    tool_permission_denied_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -153,6 +154,7 @@ struct Turn {
     fast_mode: bool,
     fast_notice_shown: bool,
     compaction: TurnCompaction,
+    raw_outputs: Vec<(ToolCallId, usize)>,
 }
 
 struct ProjectInstructions {
@@ -290,6 +292,7 @@ impl Agent {
             fast_mode: self.config.fast_mode,
             fast_notice_shown: false,
             compaction: TurnCompaction::default(),
+            raw_outputs: Vec::new(),
         };
         self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
@@ -325,7 +328,7 @@ impl Agent {
                 (TurnOutcome::Failed, String::new(), Some(failure), ending)
             }
         };
-        if let Err(error) = self.record_turn(prompt, turn.start, ending)
+        if let Err(error) = self.record_turn(prompt, &turn, ending)
             && failure.is_none()
         {
             outcome = TurnOutcome::Failed;
@@ -603,6 +606,8 @@ impl Agent {
                 Some(gate) => match self.gated_group(gate, &calls, next) {
                     GatedGroup::Run(group) => group,
                     GatedGroup::Unexecuted(description, output) => {
+                        turn.raw_outputs
+                            .push((calls[next].id.clone(), output.len()));
                         self.settle_unexecuted(turn.id, &calls[next], description, output, events);
                         next += 1;
                         continue;
@@ -626,6 +631,8 @@ impl Agent {
                     continue;
                 };
                 let status = output.status;
+                turn.raw_outputs
+                    .push((call.id.clone(), output.content.len()));
                 let model_output =
                     prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
                 let content = if escalates {

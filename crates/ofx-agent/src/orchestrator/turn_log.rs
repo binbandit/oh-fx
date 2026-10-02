@@ -3,7 +3,7 @@ use ofx_contract::{
     TurnStop,
 };
 
-use super::Agent;
+use super::{Agent, Turn};
 use crate::compactor::{Compacted, encode_checkpoint, restore_checkpoint};
 use crate::execution_memory::{history_turn, logged_steps};
 
@@ -50,18 +50,19 @@ impl Agent {
     pub(super) fn record_turn(
         &mut self,
         prompt: &str,
-        start: usize,
+        turn: &Turn,
         ending: Ending,
     ) -> Result<(), LogFailure> {
+        let start = turn.start;
         let Some(log) = self.log.as_mut() else {
             return Ok(());
         };
         let parsed = (ending != Ending::Discarded && start < self.history.len())
             .then(|| history_turn(&self.history, start, self.history.len()));
-        let turn = match (parsed, ending) {
+        let logged = match (parsed, ending) {
             (Some(parsed), Ending::Replied) => HistoryTurn {
                 user: parsed.user,
-                steps: logged_steps(&parsed.steps),
+                steps: logged_steps(&parsed.steps, &turn.raw_outputs),
                 end: TurnEnd::Replied {
                     text: parsed.reply,
                     provider_replay: parsed.reply_replay,
@@ -69,7 +70,7 @@ impl Agent {
             },
             (Some(parsed), Ending::Stopped(reason)) => HistoryTurn {
                 user: parsed.user,
-                steps: logged_steps(&parsed.steps),
+                steps: logged_steps(&parsed.steps, &turn.raw_outputs),
                 end: TurnEnd::Stopped {
                     reason,
                     partial: parsed.reply,
@@ -84,21 +85,21 @@ impl Agent {
                 },
             },
         };
-        log.record_turn(&turn)
+        log.record_turn(&logged)
     }
 
     pub(super) fn record_compaction(
         &mut self,
-        start: usize,
+        turn: &Turn,
         compacted: &Compacted,
     ) -> Result<(), LogFailure> {
         let Some(log) = self.log.as_mut() else {
             return Ok(());
         };
-        let parsed = history_turn(&self.history, start, self.history.len());
+        let parsed = history_turn(&self.history, turn.start, self.history.len());
         let active = HistoryTurn {
             user: parsed.user,
-            steps: logged_steps(&parsed.steps),
+            steps: logged_steps(&parsed.steps, &turn.raw_outputs),
             end: TurnEnd::Replied {
                 text: "",
                 provider_replay: None,

@@ -89,17 +89,19 @@ fn step_events(
     for result in &step.tool_results {
         let handle = make_handle(result.call_id, result.tool_name, result.output);
         store_result(artifacts.dir, &handle, result.output)?;
-        let bytes = u64::try_from(result.output.len())
+        let stored_bytes = u64::try_from(result.output.len())
+            .map_err(|_| SessionError::InvalidConversationEvent)?;
+        let output_bytes = u64::try_from(result.output_bytes)
             .map_err(|_| SessionError::InvalidConversationEvent)?;
         let mut event = ToolResultEvent::new(
             result.call_id,
             result.tool_name,
             result.status,
             handle,
-            bytes,
+            stored_bytes,
             ArtifactCompleteness::Complete,
         );
-        event.output_bytes = Some(bytes);
+        event.output_bytes = Some(output_bytes);
         event.preview = Some(preview(result.output).to_owned());
         event.created_at_ms = artifacts.timestamp_ms;
         events.push(ConversationEvent::ToolResult(event));

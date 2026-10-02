@@ -160,7 +160,7 @@ impl Agent {
         turn: &mut Turn,
         compacted: Compacted,
     ) -> Result<(), Stop> {
-        self.record_compaction(turn.start, &compacted)
+        self.record_compaction(turn, &compacted)
             .map_err(|failure| Stop::failed(TurnFailure::Persistence(failure)))?;
         let active = self.turn_starts.len().saturating_sub(1);
         turn.compaction.compacted_steps |=

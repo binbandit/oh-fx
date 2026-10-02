@@ -59,7 +59,17 @@ fn described_steps(turn: &HistoryTurn<'_>) -> Vec<String> {
             let results: Vec<String> = step
                 .tool_results
                 .iter()
-                .map(|result| format!("{}={}:{:?}", result.call_id, result.output, result.status))
+                .map(|result| {
+                    let raw = if result.output_bytes == result.output.len() {
+                        String::new()
+                    } else {
+                        format!(" raw={}", result.output_bytes)
+                    };
+                    format!(
+                        "{}={}:{:?}{raw}",
+                        result.call_id, result.output, result.status
+                    )
+                })
                 .collect();
             format!(
                 "{:?} replay={} calls={calls:?} results={results:?}",
@@ -320,4 +330,29 @@ async fn restored_history_is_sent_ahead_of_the_next_prompt() {
     agent.restore(RestoredHistory::default());
     assert!(agent.history.is_empty());
     assert_eq!(agent.compacted, None);
+}
+
+#[tokio::test]
+async fn results_cut_for_the_model_are_logged_with_the_length_the_tool_returned() {
+    let arguments = format!(r#"{{"value":"{}"}}"#, "x".repeat(70_000));
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", &arguments), ("call-2", "{}")]),
+        text_reply("done"),
+    ]);
+    let (mut agent, entries) = logging_agent(&provider);
+    let (report, _) = run(&mut agent, "big").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let entries = entries.lock().unwrap().clone();
+    let Logged::Turn { steps, .. } = &entries[0] else {
+        panic!("{entries:?}");
+    };
+    let raw = format!("echo {arguments}").len();
+    assert!(raw > DEFAULT_MAX_TOOL_RESULT_BYTES);
+    assert!(
+        steps[0].contains(&format!(
+            ":Success raw={raw}\", \"call-2=echo {{}}:Success\"]"
+        )),
+        "{}",
+        &steps[0][steps[0].len() - 200..]
+    );
 }
