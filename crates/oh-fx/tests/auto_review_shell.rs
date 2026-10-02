@@ -3,7 +3,7 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ofx_testkit::{
     FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 const WAIT: Duration = Duration::from_secs(15);
 const APPROVAL_ARMING: Duration = Duration::from_millis(700);
 const PERMISSION_NEEDED: &str = "Permission needed · Choose one";
+const CANCELLATION: &str = "■ Cancelled · What can oh-fx do differently?";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -199,5 +200,38 @@ fn a_failing_reviewer_asks_the_user_and_a_denial_reaches_the_model() {
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert!(last_tool_result(&requests[2]).contains("tool_permission_denied"));
+    exit(session);
+}
+
+#[test]
+fn ctrl_c_during_a_review_cancels_the_turn_without_running_the_command() {
+    let stalled = Reply::held_sse(&[
+        r#"{"id":"x","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+    ]);
+    let server = FakeServer::start([
+        run_marker(),
+        stalled,
+        Reply::sse(&chat_text_events(&["Fresh."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell();
+    session.send(b"create the marker\r");
+    let started = Instant::now();
+    while server.requests().len() < 2 {
+        assert!(started.elapsed() < WAIT, "the review never started");
+        thread::sleep(Duration::from_millis(20));
+    }
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
+    assert!(!home.marker());
+    session.send(b"\x1b");
+    wait(&session, "auto · model-a");
+    session.send(b"again\r");
+    wait(&session, "Fresh.");
+    assert!(!home.marker());
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(is_review(&requests[1]));
+    assert!(!is_review(&requests[2]));
     exit(session);
 }
