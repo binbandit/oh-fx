@@ -1,6 +1,8 @@
 mod json_document;
+mod words;
 
 use json_document::is_json_document;
+use words::Words;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeywordCase {
@@ -40,20 +42,20 @@ enum ProfileFlag {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Profile {
     pub label: &'static str,
-    aliases: &'static [&'static str],
+    aliases: &'static Words,
     pub(crate) line_comments: &'static [&'static str],
     pub(crate) block_comment: Option<BlockComment>,
     pub(crate) quotes: &'static [u8],
     pub(crate) operators: &'static [u8],
     flags: &'static [ProfileFlag],
-    pub(crate) keywords: &'static [&'static str],
-    pub(crate) literals: &'static [&'static str],
+    pub(crate) keywords: &'static Words,
+    pub(crate) literals: &'static Words,
     pub(crate) keyword_case: KeywordCase,
     detection: Detection,
 }
 
 impl Profile {
-    const fn new(label: &'static str, aliases: &'static [&'static str]) -> Self {
+    const fn new(label: &'static str, aliases: &'static Words) -> Self {
         Self {
             label,
             aliases,
@@ -62,8 +64,8 @@ impl Profile {
             quotes: &[],
             operators: &[],
             flags: &[],
-            keywords: &[],
-            literals: &[],
+            keywords: NO_WORDS,
+            literals: NO_WORDS,
             keyword_case: KeywordCase::Sensitive,
             detection: Detection::None,
         }
@@ -107,61 +109,37 @@ const MARKUP_BLOCK_COMMENT: Option<BlockComment> = Some(BlockComment {
     start: "<!--",
     end: "-->",
 });
-const TRUE_FALSE_NULL: &[&str] = &["true", "false", "null"];
-const TRUE_FALSE_NIL: &[&str] = &["true", "false", "nil"];
+const NO_WORDS: &Words = &Words::new(b"");
+const TRUE_FALSE_NULL: &Words = &Words::new(b"true false null");
+const TRUE_FALSE_NIL: &Words = &Words::new(b"true false nil");
 
 static PROFILES: [Profile; 40] = [
     Profile {
         line_comments: SLASH_COMMENTS,
         quotes: DOUBLE_QUOTE,
-        keywords: &[
-            "const", "var", "fn", "pub", "return", "if", "else", "while", "for", "struct", "enum",
-            "union", "try", "catch", "comptime", "defer", "errdefer", "async", "await", "anytype",
-            "void",
-        ],
-        ..Profile::new("zig", &["zig"])
+        keywords: &Words::new(
+            b"const var fn pub return if else while for struct enum union try catch comptime defer \
+              errdefer async await anytype void",
+        ),
+        ..Profile::new("zig", &Words::new(b"zig"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: SHELL_QUOTES,
-        keywords: &[
-            "const",
-            "let",
-            "var",
-            "function",
-            "class",
-            "interface",
-            "type",
-            "export",
-            "import",
-            "from",
-            "return",
-            "if",
-            "else",
-            "for",
-            "while",
-            "async",
-            "await",
-            "new",
-            "extends",
-            "implements",
-            "public",
-            "private",
-            "readonly",
-        ],
-        literals: &["true", "false", "null", "undefined"],
+        keywords: &Words::new(
+            b"const let var function class interface type export import from return if else for \
+              while async await new extends implements public private readonly",
+        ),
+        literals: &Words::new(b"true false null undefined"),
         detection: Detection::TypescriptAssertion,
-        ..Profile::new(
-            "ts",
-            &["js", "jsx", "javascript", "ts", "tsx", "typescript"],
-        )
+        ..Profile::new("ts", &Words::new(b"js jsx javascript ts tsx typescript"))
     },
     Profile {
         quotes: DOUBLE_QUOTE,
         literals: TRUE_FALSE_NULL,
         detection: Detection::Json,
-        ..Profile::new("json", &["json"])
+        ..Profile::new("json", &Words::new(b"json"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
@@ -174,345 +152,168 @@ static PROFILES: [Profile; 40] = [
             ProfileFlag::PlainBareNumbers,
         ],
         detection: Detection::ShellShebang,
-        ..Profile::new("sh", &["sh", "bash", "zsh", "shell", "shellscript"])
+        ..Profile::new("sh", &Words::new(b"sh bash zsh shell shellscript"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "def", "class", "return", "if", "elif", "else", "for", "while", "in", "import", "from",
-            "as", "try", "except", "with", "lambda", "async", "await", "pass", "raise", "yield",
-            "match", "case",
-        ],
-        literals: &["True", "False", "None"],
+        keywords: &Words::new(
+            b"def class return if elif else for while in import from as try except with lambda \
+              async await pass raise yield match case",
+        ),
+        literals: &Words::new(b"True False None"),
         detection: Detection::PythonHeader,
-        ..Profile::new("python", &["python", "py"])
+        ..Profile::new("python", &Words::new(b"python py"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
-        literals: &["true", "false", "null", "yes", "no", "on", "off"],
-        ..Profile::new("yaml", &["yaml", "yml"])
+        literals: &Words::new(b"true false null yes no on off"),
+        ..Profile::new("yaml", &Words::new(b"yaml yml"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
-        literals: &["true", "false"],
-        ..Profile::new("toml", &["toml"])
+        literals: &Words::new(b"true false"),
+        ..Profile::new("toml", &Words::new(b"toml"))
     },
     Profile {
         line_comments: &["--"],
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "select", "from", "where", "join", "left", "right", "inner", "outer", "on", "insert",
-            "into", "values", "update", "set", "delete", "create", "alter", "drop", "table",
-            "index", "group", "by", "order", "having", "limit", "as", "and", "or", "not",
-            "distinct", "union",
-        ],
+        keywords: &Words::new(
+            b"select from where join left right inner outer on insert into values update set \
+              delete create alter drop table index group by order having limit as and or not \
+              distinct union",
+        ),
         literals: TRUE_FALSE_NULL,
         keyword_case: KeywordCase::AsciiInsensitive,
         detection: Detection::SqlSelect,
-        ..Profile::new("sql", &["sql"])
+        ..Profile::new("sql", &Words::new(b"sql"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "from",
-            "run",
-            "cmd",
-            "entrypoint",
-            "copy",
-            "add",
-            "workdir",
-            "env",
-            "arg",
-            "expose",
-            "volume",
-            "user",
-            "label",
-            "onbuild",
-            "stopsignal",
-            "healthcheck",
-            "shell",
-            "maintainer",
-        ],
+        keywords: &Words::new(
+            b"from run cmd entrypoint copy add workdir env arg expose volume user label onbuild \
+              stopsignal healthcheck shell maintainer",
+        ),
         keyword_case: KeywordCase::AsciiInsensitive,
         detection: Detection::DockerfileFrom,
-        ..Profile::new("dockerfile", &["dockerfile", "docker"])
+        ..Profile::new("dockerfile", &Words::new(b"dockerfile docker"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "fn", "let", "mut", "pub", "struct", "enum", "impl", "trait", "use", "mod", "crate",
-            "return", "if", "else", "match", "for", "while", "loop", "async", "await", "move",
-            "where", "self", "super",
-        ],
-        literals: &["true", "false", "None", "Some"],
+        keywords: &Words::new(
+            b"fn let mut pub struct enum impl trait use mod crate return if else match for while \
+              loop async await move where self super",
+        ),
+        literals: &Words::new(b"true false None Some"),
         detection: Detection::RustFunction,
-        ..Profile::new("rust", &["rust", "rs"])
+        ..Profile::new("rust", &Words::new(b"rust rs"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: b"\"`",
-        keywords: &[
-            "package",
-            "import",
-            "func",
-            "var",
-            "const",
-            "type",
-            "struct",
-            "interface",
-            "return",
-            "if",
-            "else",
-            "for",
-            "range",
-            "switch",
-            "case",
-            "go",
-            "defer",
-            "select",
-            "chan",
-            "map",
-        ],
+        keywords: &Words::new(
+            b"package import func var const type struct interface return if else for range switch \
+              case go defer select chan map",
+        ),
         literals: TRUE_FALSE_NIL,
         detection: Detection::GoPackage,
-        ..Profile::new("go", &["go"])
+        ..Profile::new("go", &Words::new(b"go"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
-            "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "return",
-            "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
-            "unsigned", "void", "volatile", "while",
-        ],
-        literals: &["true", "false", "NULL"],
-        ..Profile::new("c", &["c", "h", "m", "mm"])
+        keywords: &Words::new(
+            b"auto break case char const continue default do double else enum extern float for \
+              goto if int long return short signed sizeof static struct switch typedef union \
+              unsigned void volatile while",
+        ),
+        literals: &Words::new(b"true false NULL"),
+        ..Profile::new("c", &Words::new(b"c h m mm"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "auto",
-            "bool",
-            "class",
-            "const",
-            "constexpr",
-            "decltype",
-            "delete",
-            "enum",
-            "explicit",
-            "friend",
-            "inline",
-            "namespace",
-            "new",
-            "nullptr",
-            "private",
-            "protected",
-            "public",
-            "template",
-            "this",
-            "typename",
-            "using",
-            "virtual",
-            "void",
-        ],
-        literals: &["true", "false", "nullptr", "NULL"],
-        ..Profile::new("cpp", &["cpp", "c++", "cc", "cxx", "hpp"])
+        keywords: &Words::new(
+            b"auto bool class const constexpr decltype delete enum explicit friend inline \
+              namespace new nullptr private protected public template this typename using virtual \
+              void",
+        ),
+        literals: &Words::new(b"true false nullptr NULL"),
+        ..Profile::new("cpp", &Words::new(b"cpp c++ cc cxx hpp"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "class",
-            "namespace",
-            "using",
-            "public",
-            "private",
-            "protected",
-            "internal",
-            "static",
-            "void",
-            "string",
-            "int",
-            "var",
-            "new",
-            "return",
-            "if",
-            "else",
-            "for",
-            "foreach",
-            "while",
-            "async",
-            "await",
-            "interface",
-            "record",
-            "get",
-            "set",
-        ],
+        keywords: &Words::new(
+            b"class namespace using public private protected internal static void string int var \
+              new return if else for foreach while async await interface record get set",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("csharp", &["csharp", "cs"])
+        ..Profile::new("csharp", &Words::new(b"csharp cs"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "class",
-            "interface",
-            "package",
-            "import",
-            "public",
-            "private",
-            "protected",
-            "static",
-            "final",
-            "void",
-            "new",
-            "return",
-            "if",
-            "else",
-            "for",
-            "while",
-            "try",
-            "catch",
-            "throws",
-            "extends",
-            "implements",
-            "record",
-            "var",
-        ],
+        keywords: &Words::new(
+            b"class interface package import public private protected static final void new return \
+              if else for while try catch throws extends implements record var",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("java", &["java"])
+        ..Profile::new("java", &Words::new(b"java"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "fun",
-            "val",
-            "var",
-            "class",
-            "object",
-            "interface",
-            "package",
-            "import",
-            "public",
-            "private",
-            "return",
-            "if",
-            "else",
-            "when",
-            "for",
-            "while",
-            "try",
-            "catch",
-            "data",
-            "sealed",
-            "suspend",
-        ],
+        keywords: &Words::new(
+            b"fun val var class object interface package import public private return if else when \
+              for while try catch data sealed suspend",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("kotlin", &["kotlin", "kt", "kts"])
+        ..Profile::new("kotlin", &Words::new(b"kotlin kt kts"))
     },
     Profile {
         line_comments: &["//", "#"],
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "function",
-            "class",
-            "public",
-            "private",
-            "protected",
-            "namespace",
-            "use",
-            "return",
-            "if",
-            "else",
-            "foreach",
-            "for",
-            "while",
-            "try",
-            "catch",
-            "new",
-            "static",
-            "const",
-            "echo",
-            "yield",
-        ],
+        keywords: &Words::new(
+            b"function class public private protected namespace use return if else foreach for \
+              while try catch new static const echo yield",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("php", &["php"])
+        ..Profile::new("php", &Words::new(b"php"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "def",
-            "class",
-            "module",
-            "end",
-            "return",
-            "if",
-            "elsif",
-            "else",
-            "unless",
-            "case",
-            "when",
-            "do",
-            "while",
-            "for",
-            "in",
-            "begin",
-            "rescue",
-            "require",
-            "attr_reader",
-        ],
+        keywords: &Words::new(
+            b"def class module end return if elsif else unless case when do while for in begin \
+              rescue require attr_reader",
+        ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("ruby", &["ruby", "rb"])
+        ..Profile::new("ruby", &Words::new(b"ruby rb"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "func",
-            "let",
-            "var",
-            "class",
-            "struct",
-            "enum",
-            "protocol",
-            "extension",
-            "import",
-            "public",
-            "private",
-            "return",
-            "if",
-            "else",
-            "guard",
-            "for",
-            "while",
-            "switch",
-            "case",
-            "async",
-            "await",
-            "throws",
-            "try",
-        ],
+        keywords: &Words::new(
+            b"func let var class struct enum protocol extension import public private return if \
+              else guard for while switch case async await throws try",
+        ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("swift", &["swift"])
+        ..Profile::new("swift", &Words::new(b"swift"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
@@ -521,14 +322,13 @@ static PROFILES: [Profile; 40] = [
             end: "#>",
         }),
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "function", "param", "if", "else", "elseif", "foreach", "for", "while", "switch",
-            "return", "throw", "try", "catch", "finally", "begin", "process", "end", "filter",
-            "class", "enum",
-        ],
+        keywords: &Words::new(
+            b"function param if else elseif foreach for while switch return throw try catch \
+              finally begin process end filter class enum",
+        ),
         literals: TRUE_FALSE_NULL,
         keyword_case: KeywordCase::AsciiInsensitive,
-        ..Profile::new("powershell", &["powershell", "ps1", "pwsh", "ps"])
+        ..Profile::new("powershell", &Words::new(b"powershell ps1 pwsh ps"))
     },
     Profile {
         line_comments: &["--"],
@@ -537,183 +337,102 @@ static PROFILES: [Profile; 40] = [
             end: "]]",
         }),
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto",
-            "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until",
-            "while",
-        ],
+        keywords: &Words::new(
+            b"and break do else elseif end false for function goto if in local nil not or repeat \
+              return then true until while",
+        ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("lua", &["lua"])
+        ..Profile::new("lua", &Words::new(b"lua"))
     },
     Profile {
         block_comment: MARKUP_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "html", "head", "body", "main", "header", "footer", "section", "article", "div",
-            "span", "a", "p", "script", "style", "link", "meta", "title", "button", "input",
-            "form", "img", "ul", "li",
-        ],
-        ..Profile::new("html", &["html", "htm", "vue", "svelte"])
+        keywords: &Words::new(
+            b"html head body main header footer section article div span a p script style link \
+              meta title button input form img ul li",
+        ),
+        ..Profile::new("html", &Words::new(b"html htm vue svelte"))
     },
     Profile {
         block_comment: MARKUP_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &["xml", "version", "encoding", "DOCTYPE", "CDATA"],
-        ..Profile::new("xml", &["xml"])
+        keywords: &Words::new(b"xml version encoding DOCTYPE CDATA"),
+        ..Profile::new("xml", &Words::new(b"xml"))
     },
     Profile {
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "color",
-            "background",
-            "display",
-            "position",
-            "margin",
-            "padding",
-            "border",
-            "font",
-            "width",
-            "height",
-            "flex",
-            "grid",
-            "align",
-            "justify",
-            "transition",
-            "transform",
-            "animation",
-            "media",
-        ],
-        ..Profile::new("css", &["css"])
+        keywords: &Words::new(
+            b"color background display position margin padding border font width height flex grid \
+              align justify transition transform animation media",
+        ),
+        ..Profile::new("css", &Words::new(b"css"))
     },
     Profile {
         line_comments: &["#", "//"],
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "resource",
-            "module",
-            "variable",
-            "output",
-            "provider",
-            "terraform",
-            "locals",
-            "data",
-            "dynamic",
-            "for_each",
-            "count",
-        ],
+        keywords: &Words::new(
+            b"resource module variable output provider terraform locals data dynamic for_each \
+              count",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("hcl", &["hcl", "terraform", "tf"])
+        ..Profile::new("hcl", &Words::new(b"hcl terraform tf"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         flags: &[ProfileFlag::DollarVars],
-        ..Profile::new("make", &["make", "makefile", "mk"])
+        ..Profile::new("make", &Words::new(b"make makefile mk"))
     },
     Profile {
         line_comments: &["#", ";"],
-        ..Profile::new("ini", &["ini", "conf", "cfg", "editorconfig"])
+        ..Profile::new("ini", &Words::new(b"ini conf cfg editorconfig"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
-        ..Profile::new("dotenv", &["dotenv", "env"])
+        ..Profile::new("dotenv", &Words::new(b"dotenv env"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_QUOTE,
-        keywords: &[
-            "query",
-            "mutation",
-            "subscription",
-            "fragment",
-            "on",
-            "type",
-            "input",
-            "interface",
-            "enum",
-            "union",
-            "scalar",
-            "schema",
-            "extend",
-            "implements",
-            "directive",
-        ],
+        keywords: &Words::new(
+            b"query mutation subscription fragment on type input interface enum union scalar \
+              schema extend implements directive",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("graphql", &["graphql", "gql"])
+        ..Profile::new("graphql", &Words::new(b"graphql gql"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "const",
-            "final",
-            "var",
-            "class",
-            "extends",
-            "with",
-            "implements",
-            "mixin",
-            "enum",
-            "if",
-            "else",
-            "for",
-            "while",
-            "return",
-            "async",
-            "await",
-            "new",
-            "static",
-            "import",
-            "export",
-            "void",
-        ],
+        keywords: &Words::new(
+            b"const final var class extends with implements mixin enum if else for while return \
+              async await new static import export void",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("dart", &["dart"])
+        ..Profile::new("dart", &Words::new(b"dart"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_QUOTE,
-        keywords: &[
-            "val", "var", "def", "class", "object", "trait", "extends", "with", "package",
-            "import", "if", "else", "for", "while", "yield", "match", "case", "return", "new",
-            "type", "given", "override",
-        ],
+        keywords: &Words::new(
+            b"val var def class object trait extends with package import if else for while yield \
+              match case return new type given override",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("scala", &["scala", "sc"])
+        ..Profile::new("scala", &Words::new(b"scala sc"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_QUOTE,
-        keywords: &[
-            "def",
-            "defmodule",
-            "defp",
-            "defmacro",
-            "defguard",
-            "do",
-            "end",
-            "fn",
-            "if",
-            "else",
-            "unless",
-            "case",
-            "cond",
-            "when",
-            "with",
-            "for",
-            "try",
-            "rescue",
-            "after",
-            "alias",
-            "import",
-            "require",
-            "use",
-        ],
+        keywords: &Words::new(
+            b"def defmodule defp defmacro defguard do end fn if else unless case cond when with \
+              for try rescue after alias import require use",
+        ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("elixir", &["elixir", "ex", "exs"])
+        ..Profile::new("elixir", &Words::new(b"elixir ex exs"))
     },
     Profile {
         line_comments: &["--"],
@@ -722,102 +441,66 @@ static PROFILES: [Profile; 40] = [
             end: "-}",
         }),
         quotes: DOUBLE_QUOTE,
-        keywords: &[
-            "module", "where", "import", "data", "type", "newtype", "class", "instance",
-            "deriving", "if", "then", "else", "case", "of", "do", "let", "in", "infix", "infixl",
-            "infixr",
-        ],
-        literals: &["True", "False"],
-        ..Profile::new("haskell", &["haskell", "hs"])
+        keywords: &Words::new(
+            b"module where import data type newtype class instance deriving if then else case of \
+              do let in infix infixl infixr",
+        ),
+        literals: &Words::new(b"True False"),
+        ..Profile::new("haskell", &Words::new(b"haskell hs"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: SHELL_QUOTES,
         flags: &[ProfileFlag::DollarVars],
-        keywords: &[
-            "my", "our", "sub", "use", "package", "if", "else", "elsif", "unless", "while", "for",
-            "foreach", "return", "local", "state", "say", "print", "die", "warn", "eval", "do",
-            "require",
-        ],
-        literals: &["undef"],
-        ..Profile::new("perl", &["perl", "pl", "pm"])
+        keywords: &Words::new(
+            b"my our sub use package if else elsif unless while for foreach return local state say \
+              print die warn eval do require",
+        ),
+        literals: &Words::new(b"undef"),
+        ..Profile::new("perl", &Words::new(b"perl pl pm"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "function", "if", "else", "for", "while", "repeat", "break", "next", "return", "in",
-            "library", "require",
-        ],
-        literals: &["TRUE", "FALSE", "NULL", "NA"],
-        ..Profile::new("r", &["r"])
+        keywords: &Words::new(
+            b"function if else for while repeat break next return in library require",
+        ),
+        literals: &Words::new(b"TRUE FALSE NULL NA"),
+        ..Profile::new("r", &Words::new(b"r"))
     },
     Profile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
-        keywords: &[
-            "def",
-            "class",
-            "interface",
-            "enum",
-            "if",
-            "else",
-            "for",
-            "while",
-            "return",
-            "new",
-            "try",
-            "catch",
-            "finally",
-            "throw",
-            "package",
-            "import",
-            "extends",
-            "implements",
-            "static",
-            "final",
-            "void",
-        ],
+        keywords: &Words::new(
+            b"def class interface enum if else for while return new try catch finally throw \
+              package import extends implements static final void",
+        ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("groovy", &["groovy", "gradle"])
+        ..Profile::new("groovy", &Words::new(b"groovy gradle"))
     },
     Profile {
         line_comments: HASH_COMMENTS,
-        keywords: &[
-            "server",
-            "location",
-            "listen",
-            "root",
-            "proxy_pass",
-            "set",
-            "return",
-            "rewrite",
-            "if",
-            "error_page",
-            "access_log",
-            "include",
-            "upstream",
-            "worker_processes",
-            "events",
-            "http",
-        ],
-        ..Profile::new("nginx", &["nginx"])
+        keywords: &Words::new(
+            b"server location listen root proxy_pass set return rewrite if error_page access_log \
+              include upstream worker_processes events http",
+        ),
+        ..Profile::new("nginx", &Words::new(b"nginx"))
     },
     Profile {
         block_comment: MARKUP_BLOCK_COMMENT,
         quotes: b"`",
         flags: &[ProfileFlag::PlainBareNumbers],
-        ..Profile::new("markdown", &["md", "markdown", "mdx"])
+        ..Profile::new("markdown", &Words::new(b"md markdown mdx"))
     },
     Profile {
         flags: &[ProfileFlag::PlainBareNumbers],
-        ..Profile::new("text", &["text", "txt", "plain", "plaintext"])
+        ..Profile::new("text", &Words::new(b"text txt plain plaintext"))
     },
     Profile {
         flags: &[ProfileFlag::DiffLines],
         detection: Detection::DiffPatch,
-        ..Profile::new("diff", &["diff", "patch"])
+        ..Profile::new("diff", &Words::new(b"diff patch"))
     },
 ];
 
@@ -825,8 +508,7 @@ pub fn resolve(label: &str) -> Option<&'static Profile> {
     PROFILES.iter().find(|profile| {
         profile
             .aliases
-            .iter()
-            .any(|alias| alias.eq_ignore_ascii_case(label))
+            .contains(label, KeywordCase::AsciiInsensitive)
     })
 }
 
@@ -1061,7 +743,7 @@ mod tests {
     #[test]
     fn aliases_do_not_collide_across_profiles() {
         for (index, profile) in PROFILES.iter().enumerate() {
-            for alias in profile.aliases {
+            for alias in profile.aliases.iter() {
                 for other in &PROFILES[index + 1..] {
                     assert!(
                         other

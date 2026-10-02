@@ -1,6 +1,6 @@
 use memchr::memchr;
 
-use crate::presentation::code_highlight_languages::{BlockComment, KeywordCase, Profile};
+use crate::presentation::code_highlight_languages::{BlockComment, Profile};
 use crate::styled::{Hang, Line, Slot, SpanWriter};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,9 +228,9 @@ fn word_slot(
     if after_separator {
         return None;
     }
-    if in_list(token, profile.keywords, profile.keyword_case) {
+    if profile.keywords.contains(token, profile.keyword_case) {
         Some(Slot::SyntaxKeyword)
-    } else if in_list(token, profile.literals, profile.keyword_case) {
+    } else if profile.literals.contains(token, profile.keyword_case) {
         Some(Slot::SyntaxNumber)
     } else {
         None
@@ -483,13 +483,6 @@ fn flag_end(bytes: &[u8], start: usize, operators: &[u8]) -> Option<usize> {
             .take_while(|&&candidate| candidate.is_ascii_alphanumeric() || candidate == b'-')
             .count(),
     )
-}
-
-fn in_list(token: &str, options: &[&str], keyword_case: KeywordCase) -> bool {
-    options.iter().any(|option| match keyword_case {
-        KeywordCase::Sensitive => token == *option,
-        KeywordCase::AsciiInsensitive => token.eq_ignore_ascii_case(option),
-    })
 }
 
 fn is_ascii_whitespace(byte: u8) -> bool {
