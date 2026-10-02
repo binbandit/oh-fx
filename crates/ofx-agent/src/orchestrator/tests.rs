@@ -2492,3 +2492,53 @@ fn unconfigured_hold(tool_name: &str) -> String {
         ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured),
     )
 }
+
+struct SwitchedTools {
+    generation: AtomicUsize,
+    tools: Mutex<Vec<Arc<dyn Tool>>>,
+}
+
+impl DynamicTools for SwitchedTools {
+    fn generation(&self) -> u64 {
+        u64::try_from(self.generation.load(Ordering::SeqCst)).unwrap()
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.lock().unwrap().clone()
+    }
+}
+
+#[tokio::test]
+async fn dynamic_tools_are_advertised_from_the_step_after_they_change() {
+    let provider = FakeProvider::new(vec![
+        text_reply("none yet"),
+        tool_reply(&[("call-1", r#"{"text":"a"}"#)]),
+        text_reply("done"),
+    ]);
+    let source = Arc::new(SwitchedTools {
+        generation: AtomicUsize::new(0),
+        tools: Mutex::new(Vec::new()),
+    });
+    let mut agent =
+        new_agent(Arc::clone(&provider), Vec::new()).with_dynamic_tools(Arc::clone(&source) as _);
+    run(&mut agent, "first").await;
+    source.tools.lock().unwrap().push(echo_tool());
+    source.generation.store(1, Ordering::SeqCst);
+    let (report, events) = run(&mut agent, "second").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert!(requests[0].tools.is_empty());
+    let names: Vec<_> = requests[1]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    assert_eq!(names, ["echo"]);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        UiEvent::ToolFinished {
+            status: ToolResultStatus::Success,
+            ..
+        }
+    )));
+}

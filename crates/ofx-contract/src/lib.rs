@@ -48,8 +48,8 @@ pub use tool_args::{
     ToolArgValue, ToolArgs, ToolArgsError, parse_json_value, parse_tool_args_object,
 };
 pub use tool_dispatch::{
-    ActionLabel, CallDescription, CallPresentation, Concurrency, PreparedCall, QuestionAsker, Tool,
-    ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
+    ActionLabel, CallDescription, CallPresentation, Concurrency, DynamicTools, PreparedCall,
+    QuestionAsker, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
 };
 pub use tool_presentation::{
     SubagentActionState, format_plain_action, format_subagent_plain_action, format_unknown_action,
