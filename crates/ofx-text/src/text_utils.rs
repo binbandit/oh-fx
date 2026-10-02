@@ -9,7 +9,7 @@ pub fn contains_ignore_case(haystack: impl AsRef<[u8]>, needle: impl AsRef<[u8]>
             .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
-pub(crate) fn is_posix_space(byte: u8) -> bool {
+pub fn is_posix_space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c')
 }
 

@@ -33,7 +33,14 @@ A pull request that lands in more than one place has one row per status.
 | #1101 | `7330832` | (same) | `defer:mcp-oauth` | future MCP OAuth | `authentication_error_message` gains `McpAuthorizationDenied` ("Authorization was declined. Run the connection command again to retry") and `McpAuthorizationCallbackTimedOut`. Both apply to every MCP server. |
 | #1111 | `3c89455` | Share sessions v2 history replay | `defer:sessions-v2` | future session replay | `session_adapter.zig` shares one history replay between resume, ACP load, and `fx session`. |
 | #1110 | `dcf9287` | Load all Grok subscription models | `defer:grok` | future Grok model catalog | `xai_grok_models.zig`: modality metadata only adds image support; it no longer filters the list or fails it. A failed fetch, a non-200 answer, or invalid JSON is traced and ignored, and models without metadata stay with vision off. |
-| #1062 | `34f1ed1` | Replace context compaction with a turn-by-turn ledger | `defer:compactor` | `ofx-agent`, `ofx-config`, `ofx-text`, `read_tool_result` | See [Compactor](#compactor). |
+| #1062 | `34f1ed1` | Replace context compaction with a turn-by-turn ledger | `ported` | `ofx-agent`, `ofx-config`, `ofx-contract`, `ofx-gateway`, `ofx-text` | The compactor, `text_completion.zig`, the `auto_compact_percent` setting, and each model's context window. `Agent::compact` is the manual compaction that `/compact` will call. See [Compactor](#compactor). |
+| #1062 | `34f1ed1` | (same) | `defer:compactor` | `ofx-agent` | Automatic and provider-overflow compaction in the turn loop. |
+| #1062 | `34f1ed1` | (same) | `defer:sessions` | future session store, `read_tool_result` | Saved `M<n>`, `T<n>`, and `L<n>` records, `read_tool_result` search, folding earlier compactions, and the checkpoint encoding. |
+| #1062 | `34f1ed1` | (same) | `defer:interactive` | future interactive shell | `/compact` and the compaction activity lines. |
+| #1062 | `34f1ed1` | (same) | `defer:acp` | future ACP | ACP applies the auto compaction percent. |
+| #1062 | `34f1ed1` | (same) | `defer:ai-gateway` | future Vercel AI Gateway transport | The fallback model for a failed or empty summary. |
+| #1062 | `34f1ed1` | (same) | `defer:trace` | future trace log | Compaction trace lines and the `/trace` ring. |
+| #1062 | `34f1ed1` | (same) | `omitted` | none | The credential check behind `ContextCompactionUnavailable`: the summary request uses the turn's own provider connection and credential. |
 | #1062 | `34f1ed1` | (same) | `n/a` | none | `scripts/check-compactor-boundary.sh` and its CI steps, AGENTS.md and CONTRIBUTING.md process text, the SDK compaction test. |
 
 The `slack` command (`slack install`, `slack status`, and `slack refresh`) predates this range and is omitted for the same reason as the Slack MCP preset. `oh-fx slack` fails as any unknown command does.
@@ -70,17 +77,14 @@ Upstream lets a prompt typed while a turn runs steer that turn. oh-fx has no int
 
 ### Compactor
 
-#1062 replaces upstream's compactor with `src/core/compactor/*`:
+#1062 replaces upstream's compactor with `src/core/compactor/*`. oh-fx ports `compactor`, `window`, `summarize`, `ledger`, `lint`, `checkpoint`, `model`, and `settings` into `ofx-agent::compactor` and `ofx-contract::AutoCompactPercent`, with `text_completion.zig` and the turn reading of `execution_memory.zig` beside them. The Codex catalog and configured `model_metadata` give each model its context window. Still to port:
 
-- **Modules:** `compactor`, `checkpoint`, `ledger`, `lint`, `model`, `records`, `settings`, `summarize`, `trace`, and `window`. They replace `compaction_policy.zig`, `context_compaction*.zig`, and the compaction half of `prompt_context.zig`. Also port `text_completion.zig` and the orchestrator's `compactContext` and `compactionSize`.
-- **Saved records:** compacted turns are saved as `M<n>`, tool calls as `T<n>`, and earlier compactions as `L<n>`. `read_tool_result` opens them by handle and finds them with a new `request.search` alternative (one to three phrases). Its descriptions change accordingly.
-- **Setting:** `auto_compact_percent` is a profile-only integer from 10 to 80, default 80.
-  - A non-integer fails the profile layer with `InvalidAutoCompactPercentType`, and a value out of range with `InvalidAutoCompactPercentValue`.
-  - A project file ignores it without a diagnostic.
-  - A valid `OH_FX_AUTO_COMPACT_PERCENT` overrides it, and an invalid one is ignored.
-  - The setting lands with the compactor because oh-fx's settings parser only validates keys it consumes.
-- **Token estimate:** `token_estimate.textTokens` estimates one whole text.
+- **Turn loop:** automatic compaction once a request reaches `auto_compact_percent` of the usable input, and recovery from a provider overflow.
+- **Sessions:** compacted turns are saved as `M<n>`, tool calls as `T<n>`, and earlier compactions as `L<n>` (`records.zig`). `read_tool_result` opens them by handle and finds them with a new `request.search` alternative (one to three phrases), and its descriptions change accordingly. With a store, `summarize` folds the earlier checkpoint into an `Earlier:` summary, the notes request names the saved records, and the checkpoint is saved behind the `fx-compactor-v1` marker; `<context_handoff>` checkpoints from older sessions are read.
+- **Interactive:** `/compact` calls `Agent::compact`, and the footer shows compaction activity and failures (`activity_status.zig`).
 - **ACP:** ACP applies the auto compaction percent.
+- **Vercel AI Gateway:** `model.zig` sends a failed or empty summary once more to another model family.
+- **Trace:** `trace.zig`'s ring and the compaction trace lines.
 
 ### MCP OAuth
 

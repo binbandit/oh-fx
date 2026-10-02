@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ofx_contract::{ModelRecoveryAction, ModelRecoveryCause};
+use ofx_contract::{ModelRecoveryAction, ModelRecoveryCause, ProviderErrorKind};
 
 pub(crate) const DEFAULT_MAX_PROVIDER_ATTEMPTS: usize = 10;
 const MAX_RETRY_AFTER_SECONDS: u64 = 30;
@@ -69,6 +69,21 @@ pub(crate) fn decide(
         action: ModelRecoveryAction::RetryingRequest,
         delay,
         next_pacing,
+    }
+}
+
+pub(crate) fn recovery_cause(kind: ProviderErrorKind) -> Option<ModelRecoveryCause> {
+    match kind {
+        ProviderErrorKind::RateLimited => Some(ModelRecoveryCause::RateLimited),
+        ProviderErrorKind::ServerError
+        | ProviderErrorKind::BadGateway
+        | ProviderErrorKind::Unavailable
+        | ProviderErrorKind::GatewayTimeout => Some(ModelRecoveryCause::ProviderUnavailable),
+        ProviderErrorKind::ConnectivityLost => Some(ModelRecoveryCause::ConnectivityLost),
+        ProviderErrorKind::TransportInterrupted | ProviderErrorKind::Timeout => {
+            Some(ModelRecoveryCause::NetworkInterrupted)
+        }
+        _ => None,
     }
 }
 

@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use ofx_agent::{Agent, AgentConfig, Approvals, RuntimeContext};
 use ofx_contract::{
-    Admission, ApplicableTarget, ApprovalDecision, ApprovalRequest, ApprovalScope, BoxFuture,
-    ChatMessage, CommandProfile, CommandRequest, Completion, FileMutation, FinishReason,
-    GatedAction, ModelProvider, ModelRequest, PathAccess, PermissionGate, PermissionMode,
-    ProviderError, SessionGrant, StreamSink, ToolCall, ToolCallId, ToolResultStatus, UiEvent,
-    Usage, tool_permission_denied_json,
+    Admission, ApplicableTarget, ApprovalDecision, ApprovalRequest, ApprovalScope,
+    AutoCompactPercent, BoxFuture, ChatMessage, CommandProfile, CommandRequest, Completion,
+    FileMutation, FinishReason, GatedAction, ModelProvider, ModelRequest, PathAccess,
+    PermissionGate, PermissionMode, ProviderError, SessionGrant, StreamSink, ToolCall, ToolCallId,
+    ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
@@ -135,6 +135,7 @@ impl Session {
                 step_limit: 0,
                 reasoning_effort: None,
                 fast_mode: false,
+                auto_compact_percent: AutoCompactPercent::resolve(None, None),
             },
         )
         .with_approvals(approvals.clone());

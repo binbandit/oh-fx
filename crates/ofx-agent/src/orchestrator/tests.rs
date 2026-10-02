@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, CommandProfile, CommandRequest, Concurrency, FileMutation,
-    FileMutationState, ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource, StreamSink,
-    ToolActivity, ToolCallId, ToolEffect,
+    ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile, CommandRequest,
+    Concurrency, FileMutation, FileMutationState, ModelRecoveryAction, PreparedCall,
+    ProviderReplay, ReplaySource, StreamSink, ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -508,6 +508,7 @@ fn config() -> AgentConfig {
         step_limit: 0,
         reasoning_effort: None,
         fast_mode: false,
+        auto_compact_percent: AutoCompactPercent::new(80).unwrap(),
     }
 }
 
@@ -2236,5 +2237,6 @@ async fn an_interrupted_summary_keeps_the_replay_only_answer() {
 
 mod approvals;
 mod capabilities;
+mod compaction;
 mod malformed_arguments;
 mod project_context;

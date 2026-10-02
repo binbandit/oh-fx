@@ -6,14 +6,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, BoxFuture, CallDescription,
-    CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion, Concurrency,
-    DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileMutation, FinishReason, GatedAction,
-    ModelCapabilities, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
-    PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
-    RequestId, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
+    Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent, BoxFuture,
+    CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion,
+    Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileMutation, FinishReason,
+    GatedAction, ModelCapabilities, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause,
+    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
+    ProviderOptions, RequestId, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool,
+    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolContext, ToolEffect,
+    ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
     format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
     prepare_model_output, review_unavailable_json, tool_execution_failure_json,
     tool_permission_denied_json,
@@ -24,11 +24,16 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::approvals::Approvals;
-use crate::model_response_recovery::{DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide};
+use crate::compactor::Payload;
+use crate::model_response_recovery::{
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide, recovery_cause,
+};
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 
+mod compaction;
 mod project_gate;
 
+pub use compaction::Compaction;
 use project_gate::GatedGroup;
 #[cfg(test)]
 use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
@@ -62,6 +67,7 @@ pub struct AgentConfig {
     pub step_limit: u64,
     pub reasoning_effort: Option<String>,
     pub fast_mode: bool,
+    pub auto_compact_percent: AutoCompactPercent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +170,8 @@ pub struct Agent {
     capabilities: Option<KnownCapabilities>,
     project: Option<ProjectInstructions>,
     history: Vec<ChatMessage>,
+    turn_starts: Vec<usize>,
+    compacted: Option<Payload>,
     turns: u64,
 }
 
@@ -188,6 +196,8 @@ impl Agent {
             capabilities: None,
             project: None,
             history: Vec::new(),
+            turn_starts: Vec::new(),
+            compacted: None,
             turns: 0,
         }
     }
@@ -230,6 +240,8 @@ impl Agent {
 
     pub fn clear_history(&mut self) {
         self.history.clear();
+        self.turn_starts.clear();
+        self.compacted = None;
         self.permissions.forget_approvals();
         if let Some(project) = &mut self.project {
             project.deltas.clear();
@@ -257,6 +269,7 @@ impl Agent {
             fast_mode: self.config.fast_mode,
             fast_notice_shown: false,
         };
+        self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
         let result = self.drive(&mut turn, events, cancel).await;
         let (outcome, final_text, failure) = match result {
@@ -271,6 +284,7 @@ impl Agent {
                     && failure != TurnFailure::StepLimitReached
                 {
                     self.history.truncate(turn.start);
+                    self.turn_starts.pop();
                 } else {
                     self.keep_partial_turn(turn.start, &partial);
                 }
@@ -295,7 +309,9 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<String, Stop> {
-        self.resolve_capabilities(cancel).await?;
+        if self.config.reasoning_effort.is_some() || self.config.fast_mode {
+            self.resolve_capabilities(cancel).await?;
+        }
         let mut step = 0;
         loop {
             if self.config.step_limit != 0 && step >= self.config.step_limit {
@@ -355,8 +371,7 @@ impl Agent {
     }
 
     async fn resolve_capabilities(&mut self, cancel: &CancellationToken) -> Result<(), Stop> {
-        let requested = self.config.reasoning_effort.is_some() || self.config.fast_mode;
-        if !requested || self.capabilities.is_some() {
+        if self.capabilities.is_some() {
             return Ok(());
         }
         let lookup = match &self.capability_resolver {
@@ -821,21 +836,6 @@ fn argument_rejection(call: &ToolCall) -> Option<ToolOutput> {
         ),
     };
     Some(ToolOutput::failure(content))
-}
-
-fn recovery_cause(kind: ProviderErrorKind) -> Option<ModelRecoveryCause> {
-    match kind {
-        ProviderErrorKind::RateLimited => Some(ModelRecoveryCause::RateLimited),
-        ProviderErrorKind::ServerError
-        | ProviderErrorKind::BadGateway
-        | ProviderErrorKind::Unavailable
-        | ProviderErrorKind::GatewayTimeout => Some(ModelRecoveryCause::ProviderUnavailable),
-        ProviderErrorKind::ConnectivityLost => Some(ModelRecoveryCause::ConnectivityLost),
-        ProviderErrorKind::TransportInterrupted | ProviderErrorKind::Timeout => {
-            Some(ModelRecoveryCause::NetworkInterrupted)
-        }
-        _ => None,
-    }
 }
 
 fn recovered_status(attempt: usize) -> RouteRecoveryStatus {

@@ -167,6 +167,7 @@ impl Profile {
             model: route.model,
             reasoning_effort: launch.reasoning_effort,
             fast_mode: launch.fast_mode,
+            auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         };
         let permission_mode = launch.permission_mode;
         Ok(AgentSetup {
