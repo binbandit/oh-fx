@@ -33,8 +33,8 @@ impl CommandTree for LinuxTree {
         self.tree().stop_gracefully()
     }
 
-    fn force(&mut self) -> Result<(), &'static str> {
-        self.tree().force()
+    fn force(&mut self, unreaped_target: Option<Pid>) -> Result<(), &'static str> {
+        self.tree().force(unreaped_target)
     }
 
     fn settle_termination(

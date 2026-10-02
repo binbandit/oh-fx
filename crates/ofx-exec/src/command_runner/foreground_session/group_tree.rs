@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 
 use super::supervision::{CommandTree, Escalation};
 
@@ -20,7 +20,10 @@ impl CommandTree for GroupTree {
         Ok(())
     }
 
-    fn force(&mut self) -> Result<(), &'static str> {
+    fn force(&mut self, unreaped_target: Option<Pid>) -> Result<(), &'static str> {
+        if let Some(target) = unreaped_target {
+            let _ = kill_process(target, Signal::KILL);
+        }
         let _ = kill_process_group(self.group, Signal::KILL);
         Ok(())
     }
