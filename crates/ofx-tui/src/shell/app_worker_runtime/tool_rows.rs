@@ -634,11 +634,16 @@ fn whitespace_between_silent_steps_keeps_their_calls_in_one_group() {
     test.deliver(text("\n\n"));
     test.deliver(read("b", "b.txt"));
     test.deliver(finished("b", "read_file", success()));
+    test.deliver(text("  \n"));
+    test.deliver(read("c", "c.txt"));
+    test.deliver(finished("c", "read_file", success()));
     test.deliver(text("Done.\n"));
     test.deliver(turn_finished(TurnOutcome::Completed));
     let screen = test.screen();
     assert!(
-        screen.contains("● 2 tool calls · 2 read\n├ Read a.txt\n└ Read b.txt\n\n  Done."),
+        screen.contains(
+            "● 3 tool calls · 3 read\n├ Read a.txt\n├ Read b.txt\n└ Read c.txt\n\n  Done."
+        ),
         "{screen}"
     );
 }

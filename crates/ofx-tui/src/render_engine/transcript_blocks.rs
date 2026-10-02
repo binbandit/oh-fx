@@ -81,7 +81,7 @@ impl Entry {
 }
 
 pub(crate) fn is_blank_line(event: &Event) -> bool {
-    matches!(event, Event::Line(line) if line.spans.iter().all(|span| span.text.is_empty()))
+    matches!(event, Event::Line(line) if line.spans.iter().all(|span| span.text.trim_matches([' ', '\t']).is_empty()))
 }
 
 pub(crate) fn trailing_blank_lines(events: &[Event]) -> usize {
