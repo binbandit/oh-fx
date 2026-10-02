@@ -69,6 +69,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 | Errors | `thiserror` in libraries; `anyhow` only in `ofx-app` and the binary. Upstream error names stay visible to the model | Tool results expose error names upstream already uses |
 | Panics | `panic = "unwind"`. The agent contains every panic that unwinds out of tool code. One while preparing, describing, inspecting the file mutation of, or executing a call becomes that call's tool error, with all of `execute` running inside the call's tokio task, and one while dropping a call that never ran is discarded. Only the terminal owner restores the terminal, and only on fatal paths: a panic on the UI or main thread, or process exit | A bug in one tool becomes a tool error instead of ending a work session, and a contained panic never disturbs a live UI |
 | Lints | Workspace clippy `pedantic`, `unreachable_pub`, `unwrap_used`, no `unsafe`, no comments | Code explains itself, and dead code stays visible to the compiler |
+| Release linking | The x86_64 Linux release is a static-pie musl binary linked with `-z pack-relative-relocs`, set in `.cargo/config.toml`. Rust links the aarch64 musl target as a static non-PIE binary, which applies no relocations at startup | The startup code applies every relocation before `main`, and packed `DT_RELR` entries cost fewer instructions, less file size, and fewer touched pages than `RELA` entries |
 
 ## Naming and paths
 

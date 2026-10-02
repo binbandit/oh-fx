@@ -1,2 +1,5 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "link-arg=-Wl,-z,pack-relative-relocs"]
