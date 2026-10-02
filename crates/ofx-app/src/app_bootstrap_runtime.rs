@@ -15,12 +15,12 @@ use ofx_config::{
 };
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
-    ModelProvider, PermissionMode, Tool,
+    ModelProvider, PermissionMode, ReviewTransport, Tool,
 };
 use ofx_exec::ManagedExecutions;
-use ofx_gateway::ChatCompletionsProvider;
+use ofx_gateway::{ChatCompletionsProvider, ChatCompletionsReviewTransport, CodexReviewTransport};
 use ofx_http::ClientError;
-use ofx_permissions::PermissionPolicy;
+use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
@@ -135,6 +135,7 @@ pub struct AgentSetup {
 
 struct Route {
     provider: Arc<dyn ModelProvider>,
+    reviewer: Arc<dyn ReviewTransport>,
     capabilities: Option<Arc<dyn CapabilityResolver>>,
     connection: Option<ProviderDefinition>,
     model: String,
@@ -268,10 +269,10 @@ impl Profile {
                 permission_mode.clone(),
                 interactive,
             )),
-            permissions: Arc::new(PermissionPolicy::new(
-                permission_mode.clone(),
-                self.workspace_root.clone(),
-            )),
+            permissions: Arc::new(
+                PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
+                    .with_reviewer(Reviewer::new(route.reviewer, DEFAULT_REVIEW_TIMEOUT)),
+            ),
             permission_mode,
             preferences: self.paths.clone(),
             yolo_acknowledged: self.settings.yolo_acknowledged(),
@@ -304,10 +305,19 @@ impl Profile {
         let configured_model = self.settings.selected_model(connection, None, &lookup).ok();
         let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
         let uses_tls = uses_tls(&resolved.chat_url);
-        let provider = ChatCompletionsProvider::new(resolved, &user_agent())
-            .map_err(ConnectError::InvalidConnection)?;
+        let provider: Arc<dyn ModelProvider> = Arc::new(
+            ChatCompletionsProvider::new(resolved, &user_agent())
+                .map_err(ConnectError::InvalidConnection)?,
+        );
+        let limits = connection.clone();
+        let reviewer = ChatCompletionsReviewTransport::new(
+            Arc::clone(&provider),
+            connection.reviewer_model().map(str::to_owned),
+            move |model| limits.capabilities(model).max_output_tokens,
+        );
         Ok(Route {
-            provider: Arc::new(provider),
+            provider,
+            reviewer: Arc::new(reviewer),
             capabilities: Some(Arc::new(ConnectionCapabilities(connection.clone()))),
             connection: Some(connection.clone()),
             model: model.map_err(ConnectError::InvalidModel)?,
@@ -339,8 +349,10 @@ impl Profile {
             cancel,
         )
         .await?;
+        let provider: Arc<dyn ModelProvider> = Arc::new(subscription.provider);
         Ok(Route {
-            provider: Arc::new(subscription.provider),
+            reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
+            provider,
             capabilities: Some(Arc::new(subscription.capabilities)),
             connection: None,
             model,

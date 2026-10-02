@@ -127,6 +127,7 @@ pub struct ProviderDefinition {
     pub(crate) auth: ProviderAuth,
     pub(crate) tool_choice_mode: ToolChoiceMode,
     pub(crate) max_tokens_parameter: MaxTokensParameter,
+    pub(crate) reviewer_model: Option<String>,
     pub(crate) model_metadata: Vec<ModelMetadata>,
     pub(crate) headers: Vec<HeaderTemplate>,
     pub(crate) ca_file: Option<String>,
@@ -143,6 +144,7 @@ impl fmt::Debug for ProviderDefinition {
             .field("auth", &self.auth)
             .field("tool_choice_mode", &self.tool_choice_mode)
             .field("max_tokens_parameter", &self.max_tokens_parameter)
+            .field("reviewer_model", &self.reviewer_model)
             .field("model_metadata", &self.model_metadata)
             .field("headers", &self.headers)
             .field("ca_file", &self.ca_file)
@@ -183,6 +185,10 @@ impl ProviderDefinition {
             }
         }
         hash.finalize().into()
+    }
+
+    pub fn reviewer_model(&self) -> Option<&str> {
+        self.reviewer_model.as_deref()
     }
 
     pub fn capabilities(&self, model: &str) -> Capabilities {
@@ -272,11 +278,14 @@ fn parse_definition(id: &str, value: &Value) -> ParseResult<ProviderDefinition> 
         }
         Some(_) => return Err(ConfiguredProviderError::InvalidMaxTokensParameter),
     };
-    match fields.get("reviewer_model") {
-        Some(Value::String(model)) => validate_model_id(model)?,
+    let reviewer_model = match fields.get("reviewer_model") {
+        Some(Value::String(model)) => {
+            validate_model_id(model)?;
+            Some(model.clone())
+        }
         Some(_) => return Err(ConfiguredProviderError::InvalidModelId),
-        None => {}
-    }
+        None => None,
+    };
     let model_metadata = fields
         .get("model_metadata")
         .map(parse_metadata)
@@ -300,6 +309,7 @@ fn parse_definition(id: &str, value: &Value) -> ParseResult<ProviderDefinition> 
         auth,
         tool_choice_mode,
         max_tokens_parameter,
+        reviewer_model,
         model_metadata,
         headers,
         ca_file,
@@ -740,6 +750,7 @@ mod tests {
         assert_eq!(local.auth, ProviderAuth::None);
         assert_eq!(local.tool_choice_mode, ToolChoiceMode::Omit);
         assert_eq!(local.max_tokens_parameter, MaxTokensParameter::MaxTokens);
+        assert_eq!(local.reviewer_model(), None);
         assert_eq!(
             local.chat_url(),
             "http://localhost:11434/v1/chat/completions"
@@ -754,6 +765,7 @@ mod tests {
             }
         );
         assert_eq!(router.tool_choice_mode, ToolChoiceMode::Send);
+        assert_eq!(router.reviewer_model(), Some("openai/review"));
         assert_eq!(
             router.capabilities("openai/gpt-4.1"),
             Capabilities {
