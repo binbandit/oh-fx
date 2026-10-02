@@ -452,7 +452,11 @@ impl<'a> Shell<'a> {
             _ => None,
         };
         let (hint, warning_included) = self.hint_row(skills_menu.is_some());
-        let activity = self.activity_rows(now_ms);
+        let activity = if self.question.is_some() {
+            Vec::new()
+        } else {
+            self.activity_rows(now_ms)
+        };
         let banner = self.banner_rows();
         let banner_rows = if banner.is_empty() {
             0

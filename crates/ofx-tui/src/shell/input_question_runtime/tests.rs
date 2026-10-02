@@ -87,6 +87,7 @@ fn a_question_replaces_the_composer_until_a_number_answers_it() {
         assert!(screen.contains(line), "{line}\n{screen}");
     }
     assert!(!screen.contains("auto · model-a"), "{screen}");
+    assert!(!screen.contains("Thinking"), "{screen}");
     press(&mut test, b"2");
     assert_eq!(answers(&test), [answered(4, Some(&["No"]))]);
     let screen = test.screen();
@@ -96,6 +97,7 @@ fn a_question_replaces_the_composer_until_a_number_answers_it() {
         "{screen}"
     );
     assert!(screen.contains("auto · model-a"), "{screen}");
+    assert!(screen.contains("Thinking"), "{screen}");
 }
 
 #[test]
