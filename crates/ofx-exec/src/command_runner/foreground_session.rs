@@ -97,8 +97,9 @@ fn supervise(args: &[OsString]) -> Result<ExitStatus, Failure> {
         launch(name)
     })?;
     report_status(&nonce, status);
-    supervision.settle().map_err(launch)?;
+    let settled = supervision.settle();
     let _ = kill_process_group(session, Signal::KILL);
+    settled.map_err(launch)?;
     Ok(status)
 }
 

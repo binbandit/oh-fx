@@ -112,7 +112,7 @@ fn open_file(path: &str) -> Result<Option<File>, InspectionError> {
     match File::open(path) {
         Ok(file) => Ok(Some(file)),
         Err(error) if vanished(&error) => Ok(None),
-        Err(error) => Err(InspectionError::Failed(error_name(&error))),
+        Err(error) => Err(open_failure(&error)),
     }
 }
 
@@ -120,7 +120,14 @@ fn open_directory(path: &str) -> Result<Option<ReadDir>, InspectionError> {
     match fs::read_dir(path) {
         Ok(entries) => Ok(Some(entries)),
         Err(error) if vanished(&error) => Ok(None),
-        Err(error) => Err(InspectionError::Failed(error_name(&error))),
+        Err(error) => Err(open_failure(&error)),
+    }
+}
+
+fn open_failure(error: &io::Error) -> InspectionError {
+    match errno(error) {
+        Some(Errno::PERM | Errno::ACCESS) => InspectionError::Denied(error_name(error)),
+        _ => InspectionError::Failed(error_name(error)),
     }
 }
 

@@ -11,9 +11,12 @@ use super::{
 };
 
 type Capture = fn(i32) -> Result<ProcessSnapshot, InspectionError>;
+type Children = Result<Option<Vec<Pid>>, InspectionError>;
 
 struct FakeEffects {
     capture: Capture,
+    tasks: fn(i32) -> Result<Vec<Pid>, InspectionError>,
+    task_children: fn(i32, i32) -> Children,
     send: fn(i32) -> Result<(), Errno>,
     sent: RefCell<Vec<i32>>,
 }
@@ -22,6 +25,8 @@ impl FakeEffects {
     fn new(capture: Capture) -> Self {
         Self {
             capture,
+            tasks: |raw| Ok(vec![pid(raw)]),
+            task_children: |_, _| Ok(None),
             send: |_| Ok(()),
             sent: RefCell::default(),
         }
@@ -35,6 +40,14 @@ impl FakeEffects {
 impl Effects for FakeEffects {
     fn capture(&self, pid: Pid) -> Result<ProcessSnapshot, InspectionError> {
         (self.capture)(pid.as_raw_pid())
+    }
+
+    fn tasks(&self, pid: Pid) -> Result<Vec<Pid>, InspectionError> {
+        (self.tasks)(pid.as_raw_pid())
+    }
+
+    fn task_children(&self, pid: Pid, task: Pid) -> Children {
+        (self.task_children)(pid.as_raw_pid(), task.as_raw_pid())
     }
 
     fn send(&self, pid: Pid, _: Signal) -> Result<(), Errno> {
@@ -68,6 +81,43 @@ fn grouped(raw: i32, process_group: Option<i32>) -> ProcessSnapshot {
     ProcessSnapshot {
         process_group: process_group.map(pid),
         ..snapshot(raw.unsigned_abs().into())
+    }
+}
+
+fn child_of(raw: i32, parent: i32) -> ProcessSnapshot {
+    ProcessSnapshot {
+        parent_pid: Some(pid(parent)),
+        ..own_snapshot(raw)
+    }
+}
+
+fn tracked(tracker: &Tracker) -> Vec<i32> {
+    tracker
+        .processes
+        .iter()
+        .map(|process| process.pid.as_raw_pid())
+        .collect()
+}
+
+fn walk(children: fn(i32, i32) -> Children, capture: Capture) -> FakeEffects {
+    FakeEffects {
+        tasks: |raw| match raw {
+            11 => Ok(vec![pid(11), pid(21)]),
+            13 => Err(InspectionError::Denied("PermissionDenied")),
+            _ => Ok(vec![pid(raw)]),
+        },
+        task_children: children,
+        ..FakeEffects::new(capture)
+    }
+}
+
+fn denied_children(raw: i32, task: i32) -> Children {
+    match (raw, task) {
+        (10, 10) => Ok(Some(vec![pid(11), pid(12), pid(13)])),
+        (11, 11) => Err(InspectionError::Denied("AccessDenied")),
+        (11, 21) => Ok(Some(vec![pid(14)])),
+        (13, 13) => Ok(Some(vec![pid(15)])),
+        _ => Ok(None),
     }
 }
 
@@ -154,6 +204,48 @@ fn checked_signal_delivery_keeps_vanished_stale_and_excluded_targets_complete() 
     let delivered = tracker.signal_processes_with(Signal::TERM, Some(pid(41)), &effects);
     assert_eq!(delivered, 0);
     assert!(effects.sent().is_empty());
+}
+
+#[test]
+fn a_walk_skips_what_it_may_not_inspect_and_keeps_going() {
+    let effects = walk(denied_children, |raw| match raw {
+        12 => Err(InspectionError::Denied("PermissionDenied")),
+        11 | 13 => Ok(child_of(raw, 10)),
+        14 => Ok(child_of(14, 11)),
+        15 => Ok(child_of(15, 13)),
+        _ => Ok(own_snapshot(raw)),
+    });
+    let mut tracker = Tracker::default();
+    tracker
+        .track_root_with(pid(10), &effects)
+        .expect("the command is readable");
+    tracker
+        .refresh_with(&effects)
+        .expect("a hidden process does not stop the walk");
+    assert_eq!(tracked(&tracker), [11, 13, 14]);
+
+    let mut hidden_root = Tracker::default();
+    hidden_root
+        .track_root_with(pid(12), &effects)
+        .expect("a hidden command is not an error");
+    assert_eq!(hidden_root.root, None);
+}
+
+#[test]
+fn a_walk_still_fails_on_errors_other_than_denied_access() {
+    let effects = walk(denied_children, |raw| match raw {
+        12 => Err(InspectionError::Failed("ProcessIdentityUnavailable")),
+        11 | 13 => Ok(child_of(raw, 10)),
+        _ => Ok(own_snapshot(raw)),
+    });
+    let mut tracker = Tracker::default();
+    tracker
+        .track_root_with(pid(10), &effects)
+        .expect("the command is readable");
+    assert_eq!(
+        tracker.refresh_with(&effects),
+        Err(InspectionError::Failed("ProcessIdentityUnavailable"))
+    );
 }
 
 #[test]

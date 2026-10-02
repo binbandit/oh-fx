@@ -8,6 +8,7 @@ use rustix::process::{Pid, Signal, kill_process};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InspectionError {
     ProcessNotFound,
+    Denied(&'static str),
     Failed(&'static str),
 }
 
@@ -15,7 +16,7 @@ impl InspectionError {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::ProcessNotFound => "ProcessNotFound",
-            Self::Failed(name) => name,
+            Self::Denied(name) | Self::Failed(name) => name,
         }
     }
 }
@@ -45,6 +46,8 @@ struct ProcessSnapshot {
 
 trait Effects {
     fn capture(&self, pid: Pid) -> Result<ProcessSnapshot, InspectionError>;
+    fn tasks(&self, pid: Pid) -> Result<Vec<Pid>, InspectionError>;
+    fn task_children(&self, pid: Pid, task: Pid) -> Result<Option<Vec<Pid>>, InspectionError>;
     fn send(&self, pid: Pid, signal: Signal) -> Result<(), Errno>;
 }
 
@@ -53,6 +56,14 @@ struct SystemEffects;
 impl Effects for SystemEffects {
     fn capture(&self, pid: Pid) -> Result<ProcessSnapshot, InspectionError> {
         proc_fs::capture_snapshot(pid)
+    }
+
+    fn tasks(&self, pid: Pid) -> Result<Vec<Pid>, InspectionError> {
+        proc_fs::tasks(pid)
+    }
+
+    fn task_children(&self, pid: Pid, task: Pid) -> Result<Option<Vec<Pid>>, InspectionError> {
+        proc_fs::task_children(pid, task)
     }
 
     fn send(&self, pid: Pid, signal: Signal) -> Result<(), Errno> {
@@ -68,46 +79,63 @@ pub(crate) struct Tracker {
 
 impl Tracker {
     pub(crate) fn track_root(&mut self, root_pid: Pid) -> Result<(), InspectionError> {
-        match proc_fs::capture_snapshot(root_pid) {
-            Ok(snapshot) => {
-                self.root = Some(TrackedProcess {
-                    pid: root_pid,
-                    identity: snapshot.identity,
-                });
-                Ok(())
-            }
-            Err(InspectionError::ProcessNotFound) => Ok(()),
-            Err(error) => Err(error),
-        }
+        self.track_root_with(root_pid, &SystemEffects)
     }
 
     pub(crate) fn refresh(&mut self) -> Result<(), InspectionError> {
+        self.refresh_with(&SystemEffects)
+    }
+
+    pub(crate) fn refresh_additional_root(&mut self, root_pid: Pid) -> Result<(), InspectionError> {
+        self.refresh_additional_root_with(root_pid, &SystemEffects)
+    }
+
+    fn track_root_with(
+        &mut self,
+        root_pid: Pid,
+        effects: &impl Effects,
+    ) -> Result<(), InspectionError> {
+        if let Some(snapshot) = visible(effects.capture(root_pid))? {
+            self.root = Some(TrackedProcess {
+                pid: root_pid,
+                identity: snapshot.identity,
+            });
+        }
+        Ok(())
+    }
+
+    fn refresh_with(&mut self, effects: &impl Effects) -> Result<(), InspectionError> {
         if let Some(root) = self.root {
-            self.append_direct_children(root)?;
+            self.append_direct_children(root, effects)?;
         }
         let mut parent_index = 0;
         while let Some(&parent) = self.processes.get(parent_index) {
             parent_index += 1;
-            let Ok(actual) = proc_fs::capture_snapshot(parent.pid) else {
+            let Ok(actual) = effects.capture(parent.pid) else {
                 continue;
             };
             if should_traverse_parent(parent.identity, actual.identity) {
-                self.append_direct_children(parent)?;
+                self.append_direct_children(parent, effects)?;
             }
         }
         Ok(())
     }
 
-    pub(crate) fn refresh_additional_root(&mut self, root_pid: Pid) -> Result<(), InspectionError> {
-        let snapshot = match proc_fs::capture_snapshot(root_pid) {
-            Ok(snapshot) => snapshot,
-            Err(InspectionError::ProcessNotFound) => return Ok(()),
-            Err(error) => return Err(error),
+    fn refresh_additional_root_with(
+        &mut self,
+        root_pid: Pid,
+        effects: &impl Effects,
+    ) -> Result<(), InspectionError> {
+        let Some(snapshot) = visible(effects.capture(root_pid))? else {
+            return Ok(());
         };
-        self.append_direct_children(TrackedProcess {
-            pid: root_pid,
-            identity: snapshot.identity,
-        })
+        self.append_direct_children(
+            TrackedProcess {
+                pid: root_pid,
+                identity: snapshot.identity,
+            },
+            effects,
+        )
     }
 
     pub(crate) fn signal_all(&self, signal: Signal) -> usize {
@@ -145,29 +173,39 @@ impl Tracker {
             .count()
     }
 
-    fn append_direct_children(&mut self, parent: TrackedProcess) -> Result<(), InspectionError> {
-        if !parent_identity_matches(parent)? {
+    fn append_direct_children(
+        &mut self,
+        parent: TrackedProcess,
+        effects: &impl Effects,
+    ) -> Result<(), InspectionError> {
+        if !parent_identity_matches(parent, effects)? {
             return Ok(());
         }
-        for task in proc_fs::tasks(parent.pid)? {
-            let Some(children) = proc_fs::task_children(parent.pid, task)? else {
+        let Some(tasks) = visible(effects.tasks(parent.pid))? else {
+            return Ok(());
+        };
+        for task in tasks {
+            let Some(Some(children)) = visible(effects.task_children(parent.pid, task))? else {
                 continue;
             };
-            if !parent_identity_matches(parent)? {
+            if !parent_identity_matches(parent, effects)? {
                 return Ok(());
             }
             for child in children {
-                self.track_child(child, parent.pid)?;
+                self.track_child(child, parent.pid, effects)?;
             }
         }
         Ok(())
     }
 
-    fn track_child(&mut self, pid: Pid, expected_parent_pid: Pid) -> Result<(), InspectionError> {
-        let snapshot = match proc_fs::capture_snapshot(pid) {
-            Ok(snapshot) => snapshot,
-            Err(InspectionError::ProcessNotFound) => return Ok(()),
-            Err(error) => return Err(error),
+    fn track_child(
+        &mut self,
+        pid: Pid,
+        expected_parent_pid: Pid,
+        effects: &impl Effects,
+    ) -> Result<(), InspectionError> {
+        let Some(snapshot) = visible(effects.capture(pid))? else {
+            return Ok(());
         };
         if !snapshot_belongs_to_parent(snapshot, expected_parent_pid) {
             return Ok(());
@@ -189,10 +227,18 @@ impl Tracker {
     }
 }
 
-fn parent_identity_matches(parent: TrackedProcess) -> Result<bool, InspectionError> {
-    match proc_fs::capture_snapshot(parent.pid) {
-        Ok(snapshot) => Ok(parent.identity == snapshot.identity),
-        Err(InspectionError::ProcessNotFound) => Ok(false),
+fn parent_identity_matches(
+    parent: TrackedProcess,
+    effects: &impl Effects,
+) -> Result<bool, InspectionError> {
+    Ok(visible(effects.capture(parent.pid))?
+        .is_some_and(|snapshot| parent.identity == snapshot.identity))
+}
+
+fn visible<T>(inspected: Result<T, InspectionError>) -> Result<Option<T>, InspectionError> {
+    match inspected {
+        Ok(value) => Ok(Some(value)),
+        Err(InspectionError::ProcessNotFound | InspectionError::Denied(_)) => Ok(None),
         Err(error) => Err(error),
     }
 }
