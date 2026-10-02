@@ -336,7 +336,7 @@ impl PreparedCall for EchoCall {
             if self.arguments.contains("meet") {
                 self.meeting.wait().await;
             }
-            if self.arguments.contains("hang") {
+            if self.arguments.contains(r#""hang""#) {
                 std::future::pending::<()>().await;
             }
             if self.arguments.contains("wait") {
@@ -2226,6 +2226,7 @@ async fn an_interrupted_summary_keeps_the_replay_only_answer() {
     );
 }
 
+mod approvals;
 mod capabilities;
 mod malformed_arguments;
 mod project_context;

@@ -26,3 +26,6 @@ pub(crate) fn ask_tools(
         )),
     ]
 }
+
+#[cfg(test)]
+mod tests;

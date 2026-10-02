@@ -1,4 +1,5 @@
-use crate::ids::{ToolCallId, TurnId};
+use crate::ids::{RequestId, ToolCallId, TurnId};
+use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
 use crate::tool_dispatch::CallDescription;
 use crate::types::{RouteRecoveryStatus, ToolResultStatus, Usage};
 
@@ -62,6 +63,17 @@ impl Notice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalRequest {
+    pub id: RequestId,
+    pub tool_name: String,
+    pub title: String,
+    pub tool_arguments_preview: String,
+    pub scope: ApprovalScope,
+    pub command: Option<CommandRequest>,
+    pub file: Option<FileMutation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     TurnStarted {
         turn_id: TurnId,
@@ -109,6 +121,10 @@ pub enum UiEvent {
         turn_id: TurnId,
         text: String,
     },
+    ApprovalRequested {
+        turn_id: TurnId,
+        request: ApprovalRequest,
+    },
     UsageReported {
         turn_id: TurnId,
         usage: Usage,
@@ -136,9 +152,19 @@ pub enum UiEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCommand {
-    Submit { prompt: String },
-    RunCommand { text: String },
-    Cancel { turn_id: TurnId },
+    Submit {
+        prompt: String,
+    },
+    RunCommand {
+        text: String,
+    },
+    Cancel {
+        turn_id: TurnId,
+    },
+    Approval {
+        request_id: RequestId,
+        decision: ApprovalDecision,
+    },
 }
 
 #[cfg(test)]

@@ -28,6 +28,15 @@ impl TurnId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RequestId(u64);
+
+impl RequestId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +47,6 @@ mod tests {
         assert_eq!(id.to_string(), "call-1");
         assert_eq!(id.as_str(), "call-1");
         assert_eq!(TurnId::new(3), TurnId::new(3));
+        assert_ne!(RequestId::new(1), RequestId::new(2));
     }
 }

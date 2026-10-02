@@ -8,6 +8,9 @@ const FILESYSTEM_ACCESS_DENIED_SUGGESTION: &str = "Do not retry this path unchan
 #[cfg(not(target_os = "macos"))]
 const FILESYSTEM_ACCESS_DENIED_SUGGESTION: &str = "Do not retry this path unchanged or propose a symlink. oh-fx permissions cannot override the operating system. Ask the user to correct OS filesystem permissions or move/copy the project to an accessible location.";
 
+const USER_DENIED_MESSAGE: &str = "Permission denied by user";
+const USER_DENIED_SUGGESTION: &str = "The tool did not run. Do not retry unchanged; explain the denial or use a safer allowed alternative.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionFailure<'a> {
     pub tool_name: &'a str,
@@ -133,6 +136,19 @@ pub fn review_unavailable_json(tool_name: &str) -> String {
     Value::Object(envelope).to_string()
 }
 
+pub fn tool_permission_denied_json(tool_name: &str) -> String {
+    let mut error = Map::new();
+    error.insert("type".to_owned(), Value::from("tool_permission_denied"));
+    error.insert("tool_name".to_owned(), masked(tool_name));
+    error.insert("message".to_owned(), masked(USER_DENIED_MESSAGE));
+    error.insert("reason".to_owned(), Value::from("user_denied"));
+    error.insert("denied".to_owned(), Value::from(true));
+    error.insert("suggestion".to_owned(), masked(USER_DENIED_SUGGESTION));
+    let mut envelope = Map::new();
+    envelope.insert("error".to_owned(), Value::Object(error));
+    Value::Object(envelope).to_string()
+}
+
 fn masked(text: &str) -> Value {
     Value::from(mask_secrets(text).into_owned())
 }
@@ -171,6 +187,14 @@ mod tests {
                 suggestion: None,
             }),
             "{\"error\":{\"type\":\"tool_execution_failed\",\"tool_name\":\"grep_files\",\"message\":\"grep_files failed\"}}"
+        );
+    }
+
+    #[test]
+    fn user_denials_match_upstream_permission_denied_results() {
+        assert_eq!(
+            tool_permission_denied_json("read_file"),
+            "{\"error\":{\"type\":\"tool_permission_denied\",\"tool_name\":\"read_file\",\"message\":\"Permission denied by user\",\"reason\":\"user_denied\",\"denied\":true,\"suggestion\":\"The tool did not run. Do not retry unchanged; explain the denial or use a safer allowed alternative.\"}}"
         );
     }
 
