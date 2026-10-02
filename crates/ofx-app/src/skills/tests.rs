@@ -162,6 +162,35 @@ fn discovery_scans_the_workspace_and_its_ancestors_then_the_managed_and_home_roo
 }
 
 #[test]
+fn a_workspace_and_home_reached_through_a_symlink_scan_up_to_home_without_warnings() {
+    let fixture = Fixture::new();
+    symlink(".", fixture.home.join("alias")).unwrap();
+    fixture.skill("code/app/skills/local", "local");
+    fixture.skill("code/.agents/skills/between", "between");
+    fixture.skill("skills/home-shared", "home-shared");
+    fixture.skill(".claude/skills/global", "global");
+    let alias = fixture.home.join("alias");
+    let skills = HostSkills::load(
+        &alias.join("code/app"),
+        Some(alias.as_os_str()),
+        Some(&fixture.paths),
+        &Settings::default(),
+        &ContextLimits::default(),
+    );
+    assert_eq!(
+        names(&skills),
+        [
+            ("local".to_owned(), SkillSource::WorkspaceShared),
+            ("between".to_owned(), SkillSource::WorkspaceAgents),
+            ("global".to_owned(), SkillSource::GlobalClaude),
+        ]
+    );
+    let found = skills.shared.snapshot();
+    assert!(found.diagnostics.is_empty(), "{:?}", found.diagnostics);
+    assert_eq!(found.skills[0].path, fixture.workspace.join("skills/local"));
+}
+
+#[test]
 fn without_home_no_skills_are_discovered_or_loaded() {
     let fixture = Fixture::new();
     fixture.skill("code/app/.oh-fx/skills/alpha", "alpha");

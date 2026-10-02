@@ -110,7 +110,7 @@ impl HostSkills {
             _ => NO_ROOTS,
         };
         let discovery = SkillDiscoveryContext {
-            workspace_root: Some(workspace_root.to_path_buf()),
+            workspace_root: Some(canonical(workspace_root)),
             home,
             managed_root: managed_root.unwrap_or_default(),
             symlink_authorities: SymlinkAuthorities::from_environment(

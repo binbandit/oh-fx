@@ -1989,7 +1989,9 @@ mod tests {
             Reply::sse(&chat_text_events(&["three"])),
         ]);
         let mut harness = Harness::start(&server).await;
-        let broken = harness.home.path().join("workspace/skills/broken");
+        let broken = fs::canonicalize(harness.home.path())
+            .unwrap()
+            .join("workspace/skills/broken");
         fs::create_dir_all(&broken).unwrap();
         fs::write(broken.join("SKILL.md"), "---\ndescription: nameless\n---\n").unwrap();
         harness.submit("one");
