@@ -38,8 +38,14 @@ fn write_single_path_git_index(
     write_file(root, index_path, &bytes);
 }
 
+const UNHURRIED_GIT_READS: Duration = Duration::from_mins(1);
+
+fn git_info(workspace: &Path) -> GitInfo {
+    collect_git_info(workspace, UNHURRIED_GIT_READS)
+}
+
 fn fragment(workspace: &Path) -> String {
-    build_turn_context_fragment(workspace)
+    build_turn_context_fragment(workspace, UNHURRIED_GIT_READS)
 }
 
 #[test]
@@ -107,7 +113,7 @@ fn git_info_reads_branch_from_head() {
         "workspace/.git/HEAD",
         b"ref: refs/heads/main\n",
     );
-    let info = collect_git_info(&temp.path().join("workspace"));
+    let info = git_info(&temp.path().join("workspace"));
     assert_eq!(info.branch.as_deref(), Some("main"));
     assert_eq!(info.worktree, GitWorktreeState::Unknown);
 }
@@ -163,7 +169,7 @@ fn gitdir_file_resolves_relative_git_directory() {
         fs::canonicalize(resolved).unwrap(),
         fs::canonicalize(temp.path().join("actual-git")).unwrap()
     );
-    let info = collect_git_info(&workspace);
+    let info = git_info(&workspace);
     assert_eq!(info.branch.as_deref(), Some("worktree-branch"));
     assert_eq!(info.worktree, GitWorktreeState::Unknown);
 }
@@ -192,7 +198,7 @@ fn git_info_reads_worktree_branch_from_gitdir_and_origin_config_from_commondir()
         b"[remote \"origin\"]\n    url = git@github.com:vercel-labs/fx.git\n",
     );
     let workspace = temp.path().join("workspace");
-    let info = collect_git_info(&workspace);
+    let info = git_info(&workspace);
     assert_eq!(info.branch.as_deref(), Some("worktree-branch"));
     assert_eq!(info.remote.unwrap().repo, "vercel-labs/fx");
     assert!(fragment(&workspace).contains("github_repo: vercel-labs/fx"));
@@ -238,7 +244,7 @@ fn git_worktree_stays_unknown_for_matched_index_metadata() {
     );
     write_file(temp.path(), "workspace/untracked.txt", b"untracked\n");
     let workspace = temp.path().join("workspace");
-    let info = collect_git_info(&workspace);
+    let info = git_info(&workspace);
     assert_eq!(info.branch.as_deref(), Some("main"));
     assert_eq!(info.worktree, GitWorktreeState::Unknown);
     assert!(!fragment(&workspace).contains("git_worktree: clean"));
@@ -250,7 +256,7 @@ fn git_worktree_reports_dirty_for_obvious_metadata_and_tracked_file_changes() {
     write_file(temp.path(), "merge/.git/HEAD", b"ref: refs/heads/main\n");
     write_file(temp.path(), "merge/.git/MERGE_HEAD", b"0123456789abcdef\n");
     assert_eq!(
-        collect_git_info(&temp.path().join("merge")).worktree,
+        git_info(&temp.path().join("merge")).worktree,
         GitWorktreeState::Dirty
     );
     write_file(temp.path(), "tracked/.git/HEAD", b"ref: refs/heads/main\n");
@@ -263,7 +269,7 @@ fn git_worktree_reports_dirty_for_obvious_metadata_and_tracked_file_changes() {
     );
     write_file(temp.path(), "tracked/tracked.txt", b"changed, longer\n");
     assert_eq!(
-        collect_git_info(&temp.path().join("tracked")).worktree,
+        git_info(&temp.path().join("tracked")).worktree,
         GitWorktreeState::Dirty
     );
 }
@@ -281,14 +287,11 @@ fn git_facts_come_from_the_repository_enclosing_the_workspace() {
     );
     let workspace = temp.path().join("repo/src/nested");
     fs::create_dir_all(&workspace).unwrap();
-    let info = collect_git_info(&workspace);
+    let info = git_info(&workspace);
     assert_eq!(info.branch.as_deref(), Some("main"));
     assert_eq!(info.worktree, GitWorktreeState::Unknown);
     write_file(temp.path(), "repo/tracked.txt", b"changed, longer\n");
-    assert_eq!(
-        collect_git_info(&workspace).worktree,
-        GitWorktreeState::Dirty
-    );
+    assert_eq!(git_info(&workspace).worktree, GitWorktreeState::Dirty);
 }
 
 #[test]
@@ -310,7 +313,7 @@ fn touching_a_tracked_file_without_changing_its_size_is_not_reported_dirty() {
         .set_modified(SystemTime::now() + Duration::from_hours(1))
         .unwrap();
     assert_eq!(
-        collect_git_info(&temp.path().join("repo")).worktree,
+        git_info(&temp.path().join("repo")).worktree,
         GitWorktreeState::Unknown
     );
 }
