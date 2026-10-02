@@ -4,11 +4,13 @@ use ofx_contract::{ApplicableTarget, TargetKind, ToolCall, parse_tool_args_objec
 use ofx_workspace::resolve_workspace_or_external_path;
 
 mod file_mutation_targets;
+mod permissions_snapshot;
 
 pub use file_mutation_targets::{
     FileMutationKind, FileMutationTargets, FileTargetFailure, TraversalDirectory,
     prepare_file_mutation_targets,
 };
+pub(crate) use permissions_snapshot::interactive_body;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionTargetKind {

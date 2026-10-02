@@ -1,7 +1,7 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
 use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
 use crate::tool_dispatch::CallDescription;
-use crate::types::{RouteRecoveryStatus, ToolResultStatus, Usage};
+use crate::types::{PermissionMode, RouteRecoveryStatus, ToolResultStatus, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TurnOutcome {
@@ -144,6 +144,10 @@ pub enum UiEvent {
     ModelSelected {
         model: String,
     },
+    PermissionModeChanged {
+        mode: PermissionMode,
+        full_access_warning: bool,
+    },
     HelpRequested,
     ConversationCleared {
         first_kept_prompt: u64,
@@ -166,6 +170,8 @@ pub enum UiCommand {
         request_id: RequestId,
         decision: ApprovalDecision,
     },
+    TogglePermissionMode,
+    FullAccessWarningShown,
 }
 
 #[cfg(test)]

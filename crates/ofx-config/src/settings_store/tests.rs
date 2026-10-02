@@ -3,6 +3,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::config_runtime::Settings;
 
 const MODEL: &str = "gpt-6.1-sol";
 
@@ -281,7 +282,7 @@ fn concurrent_edits_are_merged_and_persistent_conflicts_give_up() {
     let fixture = Fixture::with_settings("{\"theme\":\"dark\"}");
     let settings = fixture.settings();
     let mut edits = 0;
-    save_codex_model_with(&fixture.paths, MODEL, &mut || {
+    commit(&fixture.paths, Patch::CodexModel(MODEL), &mut || {
         if edits == 0 {
             fs::write(&settings, "{\"theme\":\"light\"}").unwrap();
         }
@@ -297,11 +298,14 @@ fn concurrent_edits_are_merged_and_persistent_conflicts_give_up() {
     let fixture = Fixture::with_settings("{\"theme\":\"dark\"}");
     let settings = fixture.settings();
     let mut edits = 0;
-    let outcome = save_codex_model_with(&fixture.paths, MODEL, &mut || {
+    let outcome = commit(&fixture.paths, Patch::CodexModel(MODEL), &mut || {
         edits += 1;
         fs::write(&settings, format!("{{\"edit\":{edits}}}")).unwrap();
     });
-    assert_eq!(outcome, Err(SettingsWriteError::ConcurrentModification));
+    assert_eq!(
+        outcome,
+        Err(SettingsWriteError::ConcurrentModification.into())
+    );
     assert_eq!(edits, COMMIT_ATTEMPTS);
     assert_eq!(fixture.read(), "{\"edit\":3}");
 }
@@ -474,4 +478,98 @@ fn a_backup_that_cannot_be_written_stops_the_save() {
         assert!(fixture.read().contains("\"provider\":\"codex\""));
     }
     assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn permission_mode_patches_write_the_upstream_label_at_top_level() {
+    let fixture = Fixture::with_settings("{\"future\":{\"nested\":7},\"permission_mode\":\"ask\"}");
+    for (mode, label) in [
+        (PermissionMode::Auto, "auto"),
+        (PermissionMode::Yolo, "yolo"),
+        (PermissionMode::Ask, "ask"),
+    ] {
+        save_permission_mode(&fixture.paths, mode).unwrap();
+        assert_eq!(
+            fixture.read(),
+            format!("{{\"future\":{{\"nested\":7}},\"permission_mode\":\"{label}\"}}\n")
+        );
+    }
+    let backups = fixture.copies("backup").len();
+    save_permission_mode(&fixture.paths, PermissionMode::Ask).unwrap();
+    assert_eq!(fixture.copies("backup").len(), backups);
+    let fresh = Fixture::new();
+    save_permission_mode(&fresh.paths, PermissionMode::Yolo).unwrap();
+    assert_eq!(fresh.read(), "{\"permission_mode\":\"yolo\"}\n");
+}
+
+#[test]
+fn a_permission_mode_patch_snapshots_and_removes_legacy_workspace_copies() {
+    let original = concat!(
+        "{\"future\":7,\"workspaces\":{",
+        "\"/workspace/a\":{\"permission_mode\":\"ask\",\"input_appearance\":\"lines\",\"sandbox\":\"none\"},",
+        "\"/workspace/b\":{\"permission_mode\":\"yolo\"},",
+        "\"/workspace/c\":{\"effort\":\"low\"},",
+        "\"legacy-string\":\"preserve-me\"}}\n"
+    );
+    let fixture = Fixture::with_settings(original);
+    save_permission_mode(&fixture.paths, PermissionMode::Auto).unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"future\":7,\"workspaces\":{\"/workspace/a\":{\"sandbox\":\"none\"},\"/workspace/c\":{\"effort\":\"low\"},\"legacy-string\":\"preserve-me\"},\"permission_mode\":\"auto\"}\n"
+    );
+    let snapshot = fixture
+        .paths
+        .config
+        .join(BACKUPS_DIRECTORY)
+        .join(PERMISSION_MODE_MIGRATION_SNAPSHOT);
+    assert_eq!(fs::read_to_string(&snapshot).unwrap(), original);
+    assert_eq!(mode(&snapshot), 0o600);
+    let settings = Settings::load(&fixture.paths, Path::new("/workspace/b")).unwrap();
+    assert_eq!(settings.permission_mode(&|_| None), PermissionMode::Auto);
+}
+
+#[test]
+fn a_missing_migration_snapshot_stops_the_permission_mode_save() {
+    let original = r#"{"workspaces":{"/workspace":{"permission_mode":"ask"}}}"#;
+    let fixture = Fixture::with_settings(original);
+    fs::write(fixture.paths.config.join(BACKUPS_DIRECTORY), "not a folder").unwrap();
+    assert_eq!(
+        save_permission_mode(&fixture.paths, PermissionMode::Yolo),
+        Err(SettingsWriteError::MigrationSnapshotFailed.into())
+    );
+    assert_eq!(fixture.read(), original);
+}
+
+#[test]
+fn the_full_access_acknowledgment_keeps_every_mode_spelling() {
+    for spelling in ["full-access", "Full Access", "yolo"] {
+        let fixture = Fixture::with_settings(&format!("{{\"permission_mode\":\"{spelling}\"}}\n"));
+        save_yolo_acknowledged(&fixture.paths).unwrap();
+        assert_eq!(
+            fixture.read(),
+            format!("{{\"permission_mode\":\"{spelling}\",\"yolo_acknowledged\":true}}\n")
+        );
+        let backups = fixture.copies("backup");
+        save_yolo_acknowledged(&fixture.paths).unwrap();
+        assert_eq!(fixture.copies("backup"), backups);
+    }
+    let fixture = Fixture::with_settings("{\"yolo_acknowledged\":false}");
+    save_yolo_acknowledged(&fixture.paths).unwrap();
+    assert_eq!(fixture.read(), "{\"yolo_acknowledged\":true}\n");
+}
+
+#[test]
+fn user_preferences_refuse_workspaces_that_are_not_an_object() {
+    let original = r#"{"workspaces":"legacy"}"#;
+    let fixture = Fixture::with_settings(original);
+    assert_eq!(
+        save_permission_mode(&fixture.paths, PermissionMode::Ask),
+        Err(SettingsWriteError::InvalidFormat.into())
+    );
+    assert_eq!(
+        save_yolo_acknowledged(&fixture.paths),
+        Err(SettingsWriteError::InvalidFormat.into())
+    );
+    assert_eq!(fixture.save(MODEL), Err(SettingsWriteError::InvalidFormat));
+    assert_eq!(fixture.read(), original);
 }

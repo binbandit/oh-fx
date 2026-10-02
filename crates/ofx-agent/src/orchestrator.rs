@@ -750,22 +750,22 @@ impl Agent {
         malformed: &mut [Option<ToolOutput>],
         carried: &mut Deferred,
     ) -> Vec<(&'c ToolCall, Prepared)> {
-        let head = carried
-            .0
-            .take()
-            .unwrap_or_else(|| self.prepare(&calls[start], malformed[start].take()));
+        let head = match carried.0.take() {
+            Some(uncompleted) => uncompleted.complete(&calls[start].name),
+            None => self.prepare(&calls[start], malformed[start].take()),
+        };
         let parallel = head.is_parallel();
         let mut group = vec![(&calls[start], head)];
         for (call, malformed) in calls[start + 1..].iter().zip(&mut malformed[start + 1..]) {
             if !parallel {
                 break;
             }
-            let prepared = self.prepare(call, malformed.take());
-            if !prepared.is_parallel() {
-                carried.0 = Some(prepared);
+            let uncompleted = self.prepare_uncompleted(call, malformed.take());
+            if !uncompleted.is_parallel() {
+                carried.0 = Some(uncompleted);
                 break;
             }
-            group.push((call, prepared));
+            group.push((call, uncompleted.complete(&call.name)));
         }
         group
     }
@@ -1006,6 +1006,13 @@ impl Drop for Deferred {
 impl Prepared {
     fn is_parallel(&self) -> bool {
         matches!(self, Self::Ready(_, description, ..) if description.concurrency == Concurrency::Parallel)
+    }
+
+    fn complete(self, tool_name: &str) -> Self {
+        match self {
+            Self::Ready(prepared, ..) => completed(prepared, tool_name),
+            rejected @ Self::Rejected(_) => rejected,
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+use std::env;
 use std::fmt;
 use std::io::{self, IsTerminal};
 use std::panic::{self, AssertUnwindSafe};
@@ -82,7 +83,7 @@ async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> 
         .map_err(|_| vec![failure_line(&SELF_EXE_NOT_FOUND)])?;
     let executions = ManagedExecutions::new(supervisor);
     let settings = profile.settings();
-    let permission_mode = settings.permission_mode();
+    let permission_mode = settings.permission_mode(&|name| env::var(name).ok());
     let setup = profile
         .connect_interactive(
             Launch {
@@ -177,6 +178,8 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
         permission_mode: session.permission_mode,
+        full_access_warning: session.permission_mode == PermissionMode::Yolo
+            && !session.profile.settings().yolo_acknowledged(),
         workspace_label: session
             .profile
             .workspace_root()

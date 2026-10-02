@@ -1,4 +1,5 @@
 mod app_input_runtime;
+mod app_permission_runtime;
 mod app_worker_runtime;
 mod approval_runtime;
 mod event_loop;
@@ -17,13 +18,14 @@ use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
 
+use app_permission_runtime::YoloWarning;
 use approval_runtime::ApprovalPrompt;
 use input_selection_runtime::ClipboardRuntime;
 
 use crate::composer::Composer;
 use crate::footer::input_presentation::ComposerView;
 use crate::footer::input_presentation::{
-    HintState, compose_hint_row, composer_view, input_row_limit,
+    DangerStatus, HintState, compose_hint_row, composer_view, danger_status_text, input_row_limit,
 };
 use crate::host::Clipboard;
 use crate::input::TerminalInput;
@@ -62,6 +64,7 @@ pub struct ShellOptions {
     pub version: String,
     pub model: String,
     pub permission_mode: PermissionMode,
+    pub full_access_warning: bool,
     pub workspace_label: String,
     pub workspace_root: PathBuf,
     pub commands: Vec<SlashCommandSpec>,
@@ -122,6 +125,7 @@ pub(crate) struct Shell<'a> {
     submitted_prompts: u64,
     turn: Option<ActiveTurn>,
     approval: Option<ApprovalPrompt>,
+    yolo_warning: YoloWarning,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
     clipboard: ClipboardRuntime,
@@ -244,6 +248,7 @@ impl<'a> Shell<'a> {
         transcript.push(Entry::Welcome {
             version: options.version.clone(),
         });
+        let yolo_warning = YoloWarning::new(options.full_access_warning);
         Self {
             terminal: setup.terminal,
             input: setup.input,
@@ -260,6 +265,7 @@ impl<'a> Shell<'a> {
             submitted_prompts: 0,
             turn: None,
             approval: None,
+            yolo_warning,
             events,
             send,
             clipboard: ClipboardRuntime::new(clipboard),
@@ -369,16 +375,18 @@ impl<'a> Shell<'a> {
             self.options.permission_mode,
             self.cols(),
         );
-        let hint = compose_hint_row(
-            &self.theme,
-            &base_hint,
-            HintState {
-                ctrl_c_pending: self.gestures.ctrl_c_exit_armed(),
-                esc_clear_armed: self.gestures.escape_clear_armed(),
-                esc_interrupt_armed: self.gestures.escape_interrupt_armed(),
+        let hint_state = HintState {
+            ctrl_c_pending: self.gestures.ctrl_c_exit_armed(),
+            esc_clear_armed: self.gestures.escape_clear_armed(),
+            esc_interrupt_armed: self.gestures.escape_interrupt_armed(),
+            danger: if self.yolo_warning.active() && self.approval.is_none() {
+                DangerStatus::FullAccess
+            } else {
+                DangerStatus::None
             },
-            self.cols(),
-        );
+        };
+        let warning_included = !danger_status_text(hint_state, self.cols()).is_empty();
+        let hint = compose_hint_row(&self.theme, &base_hint, hint_state, self.cols());
         let activity = self.activity_rows(now_ms);
         let banner = self.banner_rows();
         let banner_rows = if banner.is_empty() {
@@ -430,6 +438,7 @@ impl<'a> Shell<'a> {
             .saturating_sub(usize::from(self.layout.rows));
         self.flush_output()?;
         let drawn_ms = self.now_ms();
+        self.note_frame_committed(drawn_ms, warning_included);
         if let (Some(prompt), Some(review)) = (&mut self.approval, &review) {
             let visible = live.composer_start + review.required_rows.start >= hidden_rows;
             prompt.frame_drawn(self.layout, review, visible, drawn_ms);
@@ -575,6 +584,7 @@ impl<'a> Shell<'a> {
             pending_input,
             blink,
             self.gestures.next_expiry_ms(),
+            self.yolo_warning.deadline_ms(),
             self.resize_due_ms,
         ]
         .into_iter()
@@ -730,6 +740,7 @@ mod tests {
             version: "0.1.0".to_owned(),
             model: "m".to_owned(),
             permission_mode: PermissionMode::Auto,
+            full_access_warning: false,
             workspace_label: "proj\x07".to_owned(),
             workspace_root: PathBuf::from("/proj"),
             commands: Vec::new(),

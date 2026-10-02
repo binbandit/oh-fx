@@ -501,6 +501,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         "choose what model and reasoning effort to use",
     )
     .with_payload(),
+    SlashSpec::new(
+        SlashKind::Permissions,
+        "/permissions",
+        "choose what oh-fx is allowed to do",
+    )
+    .with_payload(),
     SlashSpec::new(SlashKind::Quit, "/quit", "exit the interactive shell").with_aliases(&["/exit"]),
 ];
 

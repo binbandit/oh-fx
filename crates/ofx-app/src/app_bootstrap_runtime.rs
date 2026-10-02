@@ -14,8 +14,8 @@ use ofx_config::{
     ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
-    BoxFuture, CapabilityLookup, CapabilityResolver, ModelCapabilities, ModelProvider,
-    PermissionMode, Tool,
+    BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
+    ModelProvider, PermissionMode, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::ChatCompletionsProvider;
@@ -23,6 +23,8 @@ use ofx_http::ClientError;
 use ofx_permissions::PermissionPolicy;
 use tokio_util::sync::CancellationToken;
 
+use crate::app_agent_runtime::Emit;
+use crate::app_permission_runtime::PermissionRuntime;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
 };
@@ -114,7 +116,10 @@ pub struct AgentSetup {
     source: CredentialSource,
     tools: Vec<Arc<dyn Tool>>,
     context: Arc<dyn RuntimeContext>,
+    permission_mode: LivePermissionMode,
     permissions: Arc<PermissionPolicy>,
+    preferences: Option<ProfilePaths>,
+    yolo_acknowledged: bool,
     approvals: Option<Approvals>,
     refreshes: Option<Arc<DetachedRefreshes>>,
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
@@ -162,6 +167,10 @@ impl Profile {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    pub fn paths(&self) -> Option<&ProfilePaths> {
+        self.paths.as_ref()
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -229,7 +238,7 @@ impl Profile {
             fast_mode: launch.fast_mode,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         };
-        let permission_mode = launch.permission_mode;
+        let permission_mode = LivePermissionMode::from(launch.permission_mode);
         Ok(AgentSetup {
             provider: route.provider,
             configured_model: route.configured_model,
@@ -240,17 +249,20 @@ impl Profile {
                 &self.workspace_root,
                 launch.executions,
                 launch.command_timeout,
-                permission_mode,
+                &permission_mode,
             ),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
-                permission_mode,
+                permission_mode.clone(),
                 interactive,
             )),
             permissions: Arc::new(PermissionPolicy::new(
-                permission_mode,
+                permission_mode.clone(),
                 self.workspace_root.clone(),
             )),
+            permission_mode,
+            preferences: self.paths.clone(),
+            yolo_acknowledged: self.settings.yolo_acknowledged(),
             approvals: interactive.then(Approvals::default),
             refreshes,
             project,
@@ -429,6 +441,16 @@ impl AgentSetup {
 
     pub(crate) fn approvals(&self) -> Option<&Approvals> {
         self.approvals.as_ref()
+    }
+
+    pub(crate) fn permission_runtime(&self, emit: Emit) -> PermissionRuntime {
+        PermissionRuntime::new(
+            self.permission_mode.clone(),
+            Arc::clone(&self.permissions),
+            self.preferences.clone(),
+            self.yolo_acknowledged,
+            emit,
+        )
     }
 
     pub(crate) fn refreshes(&self) -> Option<Arc<DetachedRefreshes>> {

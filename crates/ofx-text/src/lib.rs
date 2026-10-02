@@ -12,7 +12,7 @@ pub use display_width::{
     should_wrap_at, status_prefix_end, suffix_by_width, trim_break_whitespace, visible_width,
     wrap_cut_ignoring_ansi,
 };
-pub use fmt::{lowercase_hex, parse_unsigned};
+pub use fmt::{lowercase_hex, parse_unsigned, shell_word};
 pub use model_context_encoding::write_scalar;
 pub use text_utils::{
     EncodedText, contains_ignore_case, encode_terminal_safe, encode_terminal_safe_path_tail,

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use ofx_contract::{
     ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess,
-    TargetKind, ToolCallId, ToolContext, ToolEffect,
+    PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect,
 };
 use ofx_workspace::MAX_PATH_BYTES;
 use tempfile::TempDir;
@@ -185,7 +185,11 @@ fn failed_preparations_name_no_target_unless_full_access_defers_them() {
         assert_eq!(run.description.title, *expected, "{arguments}");
         assert_eq!(run.description.effect, ToolEffect::None, "{arguments}");
     }
-    let full_access = EditFile::new(&fixture.workspace).with_full_access(true);
+    let live = LivePermissionMode::from(PermissionMode::Auto);
+    let full_access = EditFile::new(&fixture.workspace).with_permission_mode(live.clone());
+    let prepared = run(&full_access, &arguments("note.txt", "zz", "b"));
+    assert_eq!(prepared.description.title, "Editing file");
+    live.set(PermissionMode::Yolo);
     let deferred = run(&full_access, &arguments("note.txt", "zz", "b"));
     assert_eq!(deferred.description.title, "Editing note.txt");
     assert_eq!(deferred.description.effect, ToolEffect::Irreversible);

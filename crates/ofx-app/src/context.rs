@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ofx_agent::{DeliveryState, ProjectContext, ProjectContextProvider, RuntimeContext};
-use ofx_contract::{ApplicableTarget, BoxFuture, PermissionMode};
+use ofx_contract::{ApplicableTarget, BoxFuture, LivePermissionMode, PermissionMode};
 use ofx_text::write_scalar;
 
 mod project_instructions;
@@ -34,22 +34,22 @@ const ASK_MODE_CONTEXT: &str = "Runtime context: permission mode is ask. Sensiti
 const AUTO_MODE_CONTEXT: &str = "Runtime context: permission mode is auto. After configured rules, session grants, and deterministic safe-tool authority, oh-fx sends each unresolved action to a narrow safety reviewer. A clear result authorizes only that exact action. A caution or unavailable result holds only that action and returns advice without opening a permission screen, disabling tools, or ending the turn. Exact cautions are reused for this turn; choose a materially different safe action or explain why no safe path remains. Tool admission and exact live revalidation remain authoritative.";
 const YOLO_MODE_CONTEXT: &str = "Runtime context: permission mode is full access. oh-fx permission policy is disabled. Tool lookup, argument validation, execution authority, cancellation, limits, operating-system permissions, and remote authentication remain authoritative.";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct HostRuntimeContext {
     workspace_root: PathBuf,
-    permission_mode: PermissionMode,
+    permission_mode: LivePermissionMode,
     interactive: bool,
 }
 
 impl HostRuntimeContext {
     pub(crate) fn new(
         workspace_root: PathBuf,
-        permission_mode: PermissionMode,
+        permission_mode: impl Into<LivePermissionMode>,
         interactive: bool,
     ) -> Self {
         Self {
             workspace_root,
-            permission_mode,
+            permission_mode: permission_mode.into(),
             interactive,
         }
     }
@@ -58,7 +58,7 @@ impl HostRuntimeContext {
 impl RuntimeContext for HostRuntimeContext {
     fn runtime_context(&self) -> BoxFuture<'_, Vec<String>> {
         let workspace_root = self.workspace_root.clone();
-        let permission_mode = self.permission_mode;
+        let permission_mode = self.permission_mode.get();
         let interactive = self.interactive;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {

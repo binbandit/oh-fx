@@ -31,14 +31,6 @@ pub(crate) fn compact_model_label(model: &str) -> String {
     claude_name.to_owned()
 }
 
-fn permission_mode_label(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::Ask => "ask",
-        PermissionMode::Auto => "auto",
-        PermissionMode::Yolo => "full access",
-    }
-}
-
 pub(crate) fn hint_line(
     theme: &Theme,
     model: &str,
@@ -46,7 +38,7 @@ pub(crate) fn hint_line(
     width: usize,
 ) -> Row {
     let model_label = compact_model_label(model);
-    let permission_label = permission_mode_label(permission_mode);
+    let permission_label = permission_mode.display_label();
     let mut row = Row::new();
     let leading_fits = width > 0
         && visible_width(permission_label)
