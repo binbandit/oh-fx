@@ -262,3 +262,115 @@ async fn context_notices_a_call_reports_reach_the_host_before_it_finishes() {
         ]
     );
 }
+
+struct LoadTool {
+    spec: ToolSpec,
+}
+
+struct LoadCall;
+
+impl Tool for LoadTool {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    fn prepare(&self, _arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        Ok(Box::new(LoadCall))
+    }
+}
+
+impl PreparedCall for LoadCall {
+    fn describe(&self) -> CallDescription {
+        CallDescription {
+            title: "Loading skill review".to_owned(),
+            activity: ToolActivity::Read,
+            effect: ToolEffect::ReadOnly,
+            concurrency: Concurrency::Parallel,
+        }
+    }
+
+    fn execute(self: Box<Self>, _context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+        Box::pin(async {
+            ToolOutput::success("<skill_content name=\"review\">REVIEW</skill_content>")
+        })
+    }
+}
+
+fn skill_reply(id: &str, arguments: &str) -> Script {
+    Script::Reply(
+        Vec::new(),
+        completion(
+            None,
+            vec![ToolCall {
+                id: ToolCallId::new(id),
+                name: "skill".to_owned(),
+                arguments: arguments.to_owned(),
+            }],
+            FinishReason::ToolCalls,
+        ),
+    )
+}
+
+fn user_text(message: &ChatMessage) -> &str {
+    match message {
+        ChatMessage::User { content } => content,
+        _ => "",
+    }
+}
+
+#[tokio::test]
+async fn a_checkpoint_lists_the_skills_the_compacted_turns_loaded() {
+    let mut scripts = vec![
+        skill_reply(
+            "call-1",
+            r#"{"location":"skill:0000000000000001:0/review"}"#,
+        ),
+        skill_reply(
+            "call-2",
+            r#"{"location":"skill:0000000000000001:0/review","resource":"references/checklist.md"}"#,
+        ),
+        skill_reply(
+            "call-3",
+            r#"{"location":"skill:0000000000000001:0/review"}"#,
+        ),
+        text_reply("Reviewed."),
+    ];
+    scripts.extend((1..=4).map(|turn| text_reply(&format!("answer {turn}"))));
+    scripts.push(text_reply(
+        "Turn 1\nIn between: Loaded the review skill.\nT1: loaded review\nT2: read the checklist\nT3: loaded review",
+    ));
+    scripts.push(text_reply("done"));
+    let provider = FakeProvider::new(scripts);
+    let tool: Arc<dyn Tool> = Arc::new(LoadTool {
+        spec: ToolSpec {
+            name: "skill".to_owned(),
+            description: "Load a skill.".to_owned(),
+            input_schema: r#"{"type":"object"}"#,
+        },
+    });
+    let mut agent = new_agent(Arc::clone(&provider), vec![tool]);
+    run(&mut agent, "$review the change").await;
+    for turn in 1..=4 {
+        run(&mut agent, &format!("question {turn}")).await;
+    }
+    assert_eq!(
+        agent.compact(&CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    let requests = provider.requests();
+    let asked = user_text(&requests[8].messages[0]);
+    assert!(
+        asked.contains(
+            "[Tool call T1: skill]\n{\"location\":\"skill:0000000000000001:0/review\"}\n"
+        ),
+        "{asked}"
+    );
+    run(&mut agent, "and now?").await;
+    let checkpoint = user_text(&provider.requests()[9].messages[0]).to_owned();
+    assert!(
+        checkpoint.contains(
+            "Skills and MCP tools used:\n- skill skill:0000000000000001:0/review: 2 calls, first T1, last T3\n- skill skill:0000000000000001:0/review references/checklist.md: 1 call, T2\n"
+        ),
+        "{checkpoint}"
+    );
+}
