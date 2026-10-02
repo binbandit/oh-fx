@@ -77,4 +77,19 @@ mod tests {
         assert!(serde_json::from_str::<TurnOrigin>("\"compaction\"").is_err());
         assert!(serde_json::from_str::<TurnOrigin>("0").is_err());
     }
+
+    fn accepts_what_it_writes<T: FixedField + Serialize>(value: &T) -> bool {
+        let written = serde_json::to_string(value).unwrap();
+        T::accepts(&serde_json::from_str(&written).unwrap())
+    }
+
+    #[test]
+    fn fixed_fields_accept_exactly_what_they_write() {
+        assert!(accepts_what_it_writes(&Null));
+        assert!(accepts_what_it_writes(&NoItems));
+        assert!(accepts_what_it_writes(&False));
+        assert!(accepts_what_it_writes(&ValidIdentity));
+        assert!(accepts_what_it_writes(&LocalProvenance));
+        assert!(accepts_what_it_writes(&TurnOrigin));
+    }
 }
