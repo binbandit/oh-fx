@@ -525,12 +525,13 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 13");
+    let screen = wait(&session, "Commands 14");
     assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
     assert!(screen.contains("  /skills         browse and manage skills"));
     assert!(screen.contains("  /quit           exit the interactive shell"));
     assert!(screen.contains("  /reset          reset the current session context"));
-    assert!(screen.contains("Commands 13  [All]  General  Session  Account  Model"));
+    assert!(screen.contains("  /new            start a fresh session"));
+    assert!(screen.contains("Commands 14  [All]  General  Session  Account  Model"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session.send(b"/stats\r");
@@ -865,7 +866,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 13");
+    wait(&session, "Commands 14");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 

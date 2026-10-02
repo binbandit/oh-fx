@@ -560,3 +560,67 @@ fn a_chosen_model_is_saved_and_resumed_while_launch_flags_are_not_saved() {
     assert_eq!(models, ["vendor/model-b", "vendor/model-b", "model-a"]);
     assert_eq!(home.metadata(&id)["model"], "vendor/model-b");
 }
+
+#[test]
+fn a_session_whose_provider_changed_is_refused_before_the_shell_opens() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Saved."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"keep this\r");
+    wait(&session, "Saved.");
+    exit(session);
+    let id = home.only_session();
+    fs::write(
+        home.root.join("config/oh-fx/settings.json"),
+        settings("http://127.0.0.1:9/v1").to_string(),
+    )
+    .expect("rewrite settings.json");
+    fails_with(
+        home.spawn(&["resume", &id]),
+        "oh-fx: ConfiguredProviderChanged",
+    );
+    fails_with(home.spawn(&["-c"]), "oh-fx: ConfiguredProviderChanged");
+    assert_eq!(server.requests().len(), 1);
+    assert_eq!(kinds(&home.frames(&id)).len(), 3);
+}
+
+#[test]
+fn a_long_session_reopens_with_its_latest_turns_on_screen() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Seed reply."])),
+        Reply::sse(&chat_text_events(&["Still here."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"seed prompt\r");
+    wait(&session, "Seed reply.");
+    exit(session);
+    let id = home.only_session();
+    let template = home.frames(&id);
+    let filler = "lorem ipsum ".repeat(20);
+    let mut appended = Vec::new();
+    for turn in 1..=1500_u64 {
+        for (offset, frame) in (1..).zip(&template) {
+            let mut frame = frame.clone();
+            frame["seq"] = json!(turn * 3 + offset);
+            if let Some(user) = frame["event"].get_mut("user") {
+                user["text"] = json!(format!("prompt {turn}"));
+            }
+            if let Some(assistant) = frame["event"].get_mut("assistant") {
+                assistant["text"] = json!(format!("{filler}reply {turn}"));
+            }
+            appended.extend_from_slice(frame.to_string().as_bytes());
+            appended.push(b'\n');
+        }
+    }
+    home.append(&id, &appended);
+    let session = home.shell(&["-c"], "reply 1500");
+    session.send(b"after the history\r");
+    wait(&session, "Still here.");
+    exit(session);
+    let request = &server.requests()[1];
+    let messages = chat(request);
+    assert_eq!(messages.len(), 2 * 1501 + 1);
+    assert_eq!(messages[3000].1, "prompt 1500");
+    assert_eq!(home.frames(&id).len(), 3 * 1502);
+}
