@@ -86,7 +86,7 @@ fn noninteractive_runtime_context(
     workspace_root: &Path,
     permission_mode: PermissionMode,
 ) -> Vec<String> {
-    let fragment = build_turn_context_fragment(workspace_root);
+    let fragment = build_turn_context_fragment(workspace_root, GIT_READ_BUDGET);
     vec![
         format!("{fragment}\n{NONINTERACTIVE_CONTEXT}"),
         permission_mode_context(permission_mode).to_owned(),
@@ -101,7 +101,7 @@ fn permission_mode_context(mode: PermissionMode) -> &'static str {
     }
 }
 
-fn build_turn_context_fragment(workspace_root: &Path) -> String {
+fn build_turn_context_fragment(workspace_root: &Path, git_read_budget: Duration) -> String {
     let current_directory = env::current_dir().map_or_else(
         |_| "(unavailable)".to_owned(),
         |path| path.to_string_lossy().into_owned(),
@@ -124,7 +124,7 @@ fn build_turn_context_fragment(workspace_root: &Path) -> String {
         shell_path: &shell,
         date_utc: &format_utc_date(unix_seconds()),
         home_directory: &home,
-        git: &collect_git_info(workspace_root),
+        git: &collect_git_info(workspace_root, git_read_budget),
     };
     fragment.render()
 }
@@ -243,20 +243,22 @@ struct GitInfo {
 
 struct GitBudget {
     started: Instant,
+    limit: Duration,
 }
 
 impl GitBudget {
     fn expired(&self) -> bool {
-        self.started.elapsed() > GIT_READ_BUDGET
+        self.started.elapsed() > self.limit
     }
 }
 
-fn collect_git_info(workspace_root: &Path) -> GitInfo {
+fn collect_git_info(workspace_root: &Path, read_budget: Duration) -> GitInfo {
     if workspace_root.as_os_str().is_empty() {
         return GitInfo::default();
     }
     let budget = GitBudget {
         started: Instant::now(),
+        limit: read_budget,
     };
     let Some((repository_root, git_dir)) = find_repository(workspace_root, &budget) else {
         return GitInfo::default();
