@@ -93,6 +93,25 @@ fn saved_providers_bind_exactly_the_configured_ones() {
 }
 
 #[test]
+fn metadata_is_never_written_in_a_form_its_reader_rejects() {
+    for effort in [String::new(), "not valid".to_owned(), "e".repeat(65)] {
+        let mut value = metadata("session");
+        value.preferences.effort = ReasoningEffort::Named(effort.clone());
+        assert_eq!(
+            encode_session_metadata(&value),
+            Err(SessionError::InvalidSessionMetadata),
+            "{effort:?}"
+        );
+    }
+    for name in ["", "not valid", "Gateway", "codex"] {
+        assert!(
+            SavedProvider::new(ProviderId::Configured(name.to_owned()), Some([0; 32])).is_none(),
+            "{name:?}"
+        );
+    }
+}
+
+#[test]
 fn metadata_rejects_invalid_fields_before_returning() {
     let invalid = [
         document("").replace("\"good\"", "\"../bad\""),

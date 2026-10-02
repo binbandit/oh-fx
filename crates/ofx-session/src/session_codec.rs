@@ -28,8 +28,9 @@ pub struct SavedProvider {
 
 impl SavedProvider {
     pub fn new(id: ProviderId, binding: Option<[u8; BINDING_BYTES]>) -> Option<Self> {
-        (matches!(id, ProviderId::Configured(_)) == binding.is_some())
-            .then_some(Self { id, binding })
+        let bound = matches!(id, ProviderId::Configured(_));
+        let reads_back = ProviderId::parse(id.label()).as_ref() == Some(&id);
+        (bound == binding.is_some() && reads_back).then_some(Self { id, binding })
     }
 
     pub fn id(&self) -> &ProviderId {
@@ -224,7 +225,10 @@ fn validate_session_metadata(metadata: &SessionMetadata) -> Result<(), SessionEr
     {
         return Err(SessionError::InvalidDurableField);
     }
-    if metadata.created_at_ms < 0 || metadata.updated_at_ms < metadata.created_at_ms {
+    if metadata.created_at_ms < 0
+        || metadata.updated_at_ms < metadata.created_at_ms
+        || ReasoningEffort::parse(effort_label(&metadata.preferences.effort)).is_none()
+    {
         return Err(SessionError::InvalidSessionMetadata);
     }
     if metadata
