@@ -4,6 +4,7 @@ use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use ofx_config::{EMERGENCY_CEILING_BYTES, line_safe_prefix_length};
+use ofx_text::Utf8Validator;
 use ofx_workspace::{
     PathError, RegularFileError, open_directory, open_regular_file, open_regular_file_at,
     path_inside,
@@ -116,7 +117,7 @@ fn read_rule(file: &File, size: u64, limit_bytes: usize) -> RuleLoad {
 
 fn validate_utf8_content(file: &File, byte_count: usize) -> Result<bool, ()> {
     let mut chunk = vec![0; VALIDATION_CHUNK_BYTES];
-    let mut pending: Vec<u8> = Vec::new();
+    let mut validator = Utf8Validator::default();
     let mut has_content = false;
     let mut offset = 0;
     while offset < byte_count {
@@ -124,22 +125,9 @@ fn validate_utf8_content(file: &File, byte_count: usize) -> Result<bool, ()> {
         let read = &mut chunk[..wanted];
         file.read_exact_at(read, offset as u64).map_err(drop)?;
         has_content |= read.iter().any(|byte| !b" \t\r\n".contains(byte));
-        pending.extend_from_slice(read);
-        let carried = incomplete_utf8_tail(&pending)?;
-        pending.drain(..pending.len() - carried);
+        validator.push(read).map_err(drop)?;
         offset += wanted;
     }
-    if pending.is_empty() {
-        Ok(has_content)
-    } else {
-        Err(())
-    }
-}
-
-fn incomplete_utf8_tail(bytes: &[u8]) -> Result<usize, ()> {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => Ok(0),
-        Err(error) if error.error_len().is_none() => Ok(bytes.len() - error.valid_up_to()),
-        Err(_) => Err(()),
-    }
+    validator.finish().map_err(drop)?;
+    Ok(has_content)
 }
