@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal, kill_process_group, setsid};
 
 use super::{error_name, launch_failure_prefix, status_prefix};
+use crate::directory_identity::{DIRECTORY_CHANGED, DirectoryIdentity};
 #[cfg(not(target_os = "linux"))]
 use group_tree::GroupTree;
 #[cfg(target_os = "linux")]
@@ -59,13 +60,14 @@ pub fn run_foreground_session(args: &[OsString]) -> ! {
 }
 
 fn supervise(args: &[OsString]) -> Result<ExitStatus, Failure> {
-    let [token, deadline, program, arguments @ ..] = args else {
+    let [token, deadline, cwd_identity, program, arguments @ ..] = args else {
         return Err(Failure::Setup);
     };
     if token != TOKEN {
         return Err(Failure::Setup);
     }
     let deadline = parse_deadline(deadline)?;
+    let cwd_identity = DirectoryIdentity::parse(cwd_identity).ok_or(Failure::Setup)?;
     let session = setsid().map_err(|_| Failure::Setup)?;
     let requests = Requests::register().map_err(|_| Failure::Setup)?;
     #[cfg(target_os = "linux")]
@@ -78,6 +80,9 @@ fn supervise(args: &[OsString]) -> Result<ExitStatus, Failure> {
         nonce: nonce.clone(),
         name,
     };
+    if DirectoryIdentity::current() != Some(cwd_identity) {
+        return Err(launch(DIRECTORY_CHANGED));
+    }
     let target = Command::new(program)
         .args(arguments)
         .stdin(Stdio::null())

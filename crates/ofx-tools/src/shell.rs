@@ -2,6 +2,7 @@ mod presentation;
 mod request;
 mod snapshot_format;
 
+use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,10 +13,10 @@ use ofx_contract::{
     ToolSpec,
 };
 use ofx_exec::{
-    Environment, ManagedExecutions, Profile, Snapshot, StartCaptured, configured_login_shell,
-    environment,
+    DirectoryIdentity, Environment, ManagedExecutions, Profile, Snapshot, StartCaptured,
+    configured_login_shell, environment,
 };
-use ofx_workspace::{PathError, path_inside, resolve_workspace_or_external_path};
+use ofx_workspace::{PathError, open_directory, path_inside, resolve_workspace_or_external_path};
 use tokio_util::sync::CancellationToken;
 
 use crate::filesystem::tool_spec;
@@ -33,6 +34,7 @@ const DEFAULT_WAIT_CEILING_MS: u32 = 5_000;
 const MAX_WAIT_CEILING_MS: u32 = 300_000;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 const PATH_OUTSIDE_WORKSPACE: &str = "PathOutsideWorkspace";
+const DIRECTORY_CHANGED: &str = "CommandAuthorityContextMismatch";
 const PATH_WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
 const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const UNAVAILABLE: &str = "unavailable";
@@ -106,7 +108,7 @@ impl Tool for Shell {
 enum Validated {
     Run {
         request: ShellRequest,
-        cwd: PathBuf,
+        cwd: WorkingDirectory,
         environment: Option<Environment>,
     },
     UnresolvedCwd {
@@ -125,7 +127,7 @@ impl Validated {
                 request,
                 cwd,
                 environment,
-            } => run_request(request, cwd, environment.as_ref()),
+            } => run_request(request, &cwd.path, environment.as_ref()),
             Self::UnresolvedCwd { request, cwd, .. } => run_request(request, cwd, None),
             Self::Interact(request) if request.has_input() => CommandRequest::SendInput {
                 input: request.chars.clone().unwrap_or_default(),
@@ -143,6 +145,31 @@ impl Validated {
             }
         }
     }
+}
+
+struct WorkingDirectory {
+    path: PathBuf,
+    identity: Result<DirectoryIdentity, PathError>,
+}
+
+impl WorkingDirectory {
+    fn pin(path: PathBuf) -> Self {
+        let identity = directory_identity(&path);
+        Self { path, identity }
+    }
+
+    fn still_pinned(&self) -> Result<DirectoryIdentity, String> {
+        match self.identity {
+            Err(error) => Err(error.to_string()),
+            Ok(identity) if directory_identity(&self.path) == Ok(identity) => Ok(identity),
+            Ok(_) => Err(DIRECTORY_CHANGED.to_owned()),
+        }
+    }
+}
+
+fn directory_identity(path: &Path) -> Result<DirectoryIdentity, PathError> {
+    let directory = File::from(open_directory(path)?);
+    Ok(DirectoryIdentity::of(&directory.metadata()?))
 }
 
 fn run_request(
@@ -206,7 +233,7 @@ impl ShellContext {
                 };
                 Ok(Validated::Run {
                     request,
-                    cwd,
+                    cwd: WorkingDirectory::pin(cwd),
                     environment,
                 })
             }
@@ -225,24 +252,29 @@ impl ShellContext {
     async fn run(
         &self,
         request: ShellRequest,
-        cwd: PathBuf,
+        cwd: WorkingDirectory,
         environment: Option<Environment>,
         path_access: PathAccess,
         cancel: &CancellationToken,
     ) -> ToolOutput {
-        let cwd = match path_access.confining_root(&self.workspace_root) {
-            None => cwd,
-            Some(root) => match self.resolve_cwd(request.cwd.as_deref()) {
-                Ok(current) if path_inside(root, &current) => current,
-                _ => return ToolOutput::failure(runtime_failure(PATH_OUTSIDE_WORKSPACE)),
-            },
+        if let Some(root) = path_access.confining_root(&self.workspace_root)
+            && !self
+                .resolve_cwd(request.cwd.as_deref())
+                .is_ok_and(|current| path_inside(root, &current))
+        {
+            return ToolOutput::failure(runtime_failure(PATH_OUTSIDE_WORKSPACE));
+        }
+        let cwd_identity = match cwd.still_pinned() {
+            Ok(identity) => identity,
+            Err(code) => return ToolOutput::failure(runtime_failure(&code)),
         };
         let (Some(environment), Some(command)) = (environment, request.command) else {
             return ToolOutput::failure(runtime_failure(UNAVAILABLE));
         };
         let input = StartCaptured {
             command,
-            cwd,
+            cwd: cwd.path,
+            cwd_identity,
             environment,
             max_output_bytes: MAX_COMMAND_OUTPUT_BYTES,
             timeout: request
@@ -335,6 +367,12 @@ impl PreparedCall for ShellCall {
 
     fn refusal(&self) -> Option<&ToolOutput> {
         self.validated.as_ref().err()
+    }
+
+    fn complete(&mut self) {
+        if let Ok(Validated::Run { cwd, .. }) = &mut self.validated {
+            cwd.identity = directory_identity(&cwd.path);
+        }
     }
 
     fn applicable_target(&self) -> Option<ApplicableTarget> {

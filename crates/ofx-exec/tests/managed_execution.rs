@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode, Stdio};
@@ -10,8 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_exec::{
-    CommandStatus, Environment, ExecutionError, ManagedExecutions, OutputEcho, SessionSupervisor,
-    Snapshot, SnapshotState, StartCaptured, is_foreground_session_invocation,
+    CommandStatus, DirectoryIdentity, Environment, ExecutionError, ManagedExecutions, OutputEcho,
+    SessionSupervisor, Snapshot, SnapshotState, StartCaptured, is_foreground_session_invocation,
     run_foreground_session,
 };
 use rustix::process::{Pid, Signal, kill_process, kill_process_group};
@@ -83,7 +84,7 @@ if sys.argv[1] == 'outer':
 recorded = os.path.join(os.path.dirname(sys.argv[0]), 'target')
 target = "import os, sys, time\nopen(sys.argv[1], 'w').write(os.readlink('/proc/self'))\ntime.sleep(60)"
 supervisor = subprocess.Popen(
-    [sys.argv[2], '__oh_fx_foreground_session__', 'none', sys.executable, '-c', target, recorded],
+    [sys.argv[2], '__oh_fx_foreground_session__', 'none', '%d:%d' % (os.stat('.').st_dev, os.stat('.').st_ino), sys.executable, '-c', target, recorded],
     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 if supervisor.stderr.read(1) != b'\x1e':
     sys.exit(1)
@@ -109,7 +110,7 @@ for victim in victims:
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 26] = [
+const TESTS: [(&str, Test); 27] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -149,6 +150,10 @@ const TESTS: [(&str, Test); 26] = [
     (
         "launch_failures_keep_upstream_error_names",
         launch_failures_keep_upstream_error_names,
+    ),
+    (
+        "a_replaced_working_directory_launches_nothing",
+        a_replaced_working_directory_launches_nothing,
     ),
     (
         "commands_have_no_controlling_terminal",
@@ -270,11 +275,21 @@ fn run(command: &str, yield_time: Duration) -> StartCaptured {
     StartCaptured {
         command: command.to_owned(),
         cwd: env::temp_dir(),
+        cwd_identity: identity(&env::temp_dir()),
         environment: Environment::Clean(BASH.into()),
         max_output_bytes: 64 * 1024,
         timeout: None,
         yield_time,
     }
+}
+
+fn identity(directory: &Path) -> DirectoryIdentity {
+    DirectoryIdentity::of(&fs::metadata(directory).expect("the test step succeeds"))
+}
+
+fn supervisor_identity() -> String {
+    let metadata = fs::metadata(".").expect("the test step succeeds");
+    format!("{}:{}", metadata.dev(), metadata.ino())
 }
 
 fn text(snapshot: &Snapshot) -> String {
@@ -669,6 +684,26 @@ fn launch_failures_keep_upstream_error_names() {
     });
 }
 
+fn a_replaced_working_directory_launches_nothing() {
+    let reviewed = tempfile::tempdir().expect("the test step succeeds");
+    let replacement = tempfile::tempdir().expect("the test step succeeds");
+    let snapshot = block_on(async {
+        let input = StartCaptured {
+            cwd: replacement.path().to_owned(),
+            cwd_identity: identity(reviewed.path()),
+            ..run("touch ran", LONG)
+        };
+        executions()
+            .start_captured(input, &CancellationToken::new())
+            .await
+            .expect("the test step succeeds")
+    });
+    assert_eq!(snapshot.state, SnapshotState::Lost);
+    assert_eq!(snapshot.error_name, Some("CommandAuthorityContextMismatch"));
+    assert!(snapshot.output_delta.is_empty());
+    assert!(!replacement.path().join("ran").exists());
+}
+
 fn commands_have_no_controlling_terminal() {
     let snapshot = block_on(async {
         executions()
@@ -921,7 +956,12 @@ impl EscapedCommand {
         fs::write(&script, body).expect("the test step succeeds");
         let mut supervisor =
             process::Command::new(env::current_exe().expect("the test step succeeds"))
-                .args([SUPERVISOR_TOKEN, deadline, "python3"])
+                .args([
+                    SUPERVISOR_TOKEN,
+                    deadline,
+                    &supervisor_identity(),
+                    "python3",
+                ])
                 .arg(&script)
                 .arg(directory.path().join(ESCAPED_PID))
                 .stdin(Stdio::piped())

@@ -13,6 +13,7 @@ use crate::command_runner::{
     CapturedCommand, CapturedOutcome, OutputStream, RunError, SessionSupervisor, StopIntent,
     TERMINATION_SETTLE_TIMEOUT, run_captured,
 };
+use crate::directory_identity::DirectoryIdentity;
 use crate::output_echo::{LineEcho, OutputEcho};
 use crate::shell_resolver::captured_invocation;
 
@@ -38,6 +39,7 @@ pub enum ExecutionError {
 pub struct StartCaptured {
     pub command: String,
     pub cwd: PathBuf,
+    pub cwd_identity: DirectoryIdentity,
     pub environment: Environment,
     pub max_output_bytes: usize,
     pub timeout: Option<Duration>,
@@ -128,6 +130,7 @@ struct Entry {
     id: String,
     command: String,
     cwd: PathBuf,
+    cwd_identity: DirectoryIdentity,
     state: Mutex<EntryState>,
     stop: watch::Sender<Option<StopIntent>>,
     finished: watch::Sender<bool>,
@@ -385,6 +388,7 @@ impl ManagedExecutions {
             id,
             command: input.command.clone(),
             cwd: input.cwd.clone(),
+            cwd_identity: input.cwd_identity,
             state: Mutex::new(EntryState {
                 phase: Phase::Running,
                 output: Vec::new(),
@@ -422,6 +426,7 @@ impl ManagedExecutions {
             let command = CapturedCommand {
                 argv: &invocation,
                 cwd: &entry.cwd,
+                cwd_identity: entry.cwd_identity,
                 deadline,
                 supervisor: &supervisor,
             };

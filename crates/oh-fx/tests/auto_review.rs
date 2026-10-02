@@ -1,8 +1,13 @@
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events};
+use ofx_testkit::{
+    FakeServer, Gate, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+};
 use serde_json::{Value, json};
 
 const PORTKEY_KEY: &str = "pk-test-0123456789";
@@ -32,7 +37,20 @@ impl Home {
     }
 
     fn ask(&self, prompt: &str) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        self.command(prompt).output().expect("run oh-fx")
+    }
+
+    fn start(&self, prompt: &str) -> Child {
+        self.command(prompt)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start oh-fx")
+    }
+
+    fn command(&self, prompt: &str) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
             .args(["ask", "--json", prompt])
             .current_dir(&self.workspace)
             .env_clear()
@@ -45,9 +63,8 @@ impl Home {
             .env("PATH", "/usr/bin:/bin")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env("PORTKEY_API_KEY", PORTKEY_KEY)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run oh-fx")
+            .stdin(Stdio::null());
+        command
     }
 }
 
@@ -75,6 +92,14 @@ fn run(command: &str) -> Reply {
         "call_1",
         "shell",
         &json!({"request": {"action": "run", "command": command}}).to_string(),
+    ))
+}
+
+fn run_in(command: &str, cwd: &str) -> Reply {
+    Reply::sse(&chat_tool_call_events(
+        "call_1",
+        "shell",
+        &json!({"request": {"action": "run", "command": command, "cwd": cwd}}).to_string(),
     ))
 }
 
@@ -443,4 +468,70 @@ fn new_sensitive_files_outside_the_workspace_are_reviewed_with_their_content() {
     );
     assert!(instruction.contains(&evidence), "{instruction}");
     assert_eq!(result(&output)["tool_calls"][0]["status"], "success");
+}
+
+#[test]
+fn a_cleared_command_never_runs_in_a_directory_replaced_while_its_review_was_pending() {
+    let replacements: [fn(&Home, &PathBuf); 2] = [
+        |home, build| {
+            fs::rename(build, home.workspace.join("reviewed"))
+                .expect("move the reviewed directory");
+            symlink(home.root.join("outside"), build).expect("link the outside directory");
+        },
+        |home, build| {
+            fs::rename(build, home.workspace.join("reviewed"))
+                .expect("move the reviewed directory");
+            fs::create_dir(build).expect("create a replacement directory");
+            fs::write(build.join("marker"), "unreviewed").expect("write the replacement marker");
+        },
+    ];
+    for replace in replacements {
+        let gate = Gate::default();
+        let server = FakeServer::start([
+            run_in("rm -f marker", "build"),
+            decision(r#"{"decision":"clear","rationale":"Requested cleanup."}"#).after(&gate),
+            Reply::sse(&chat_text_events(&["Done."])),
+        ]);
+        let home = Home::new(&settings(&server.base_url(), None));
+        let build = home.workspace.join("build");
+        let outside = home.root.join("outside");
+        for directory in [&build, &outside] {
+            fs::create_dir(directory).expect("create a directory");
+        }
+        fs::write(build.join("marker"), "reviewed").expect("write the reviewed marker");
+        fs::write(outside.join("marker"), "unreviewed").expect("write the outside marker");
+
+        let running = home.start("remove the build marker");
+        let started = Instant::now();
+        while server.requests().len() < 2 {
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the review never started"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        replace(&home, &build);
+        gate.open();
+        let output = running.wait_with_output().expect("wait for oh-fx");
+
+        assert!(output.status.success(), "{}", stderr(&output));
+        for unreviewed in [outside.join("marker"), build.join("marker")] {
+            assert_eq!(
+                fs::read_to_string(&unreviewed).expect("the unreviewed marker is kept"),
+                "unreviewed"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(home.workspace.join("reviewed/marker"))
+                .expect("the reviewed marker is kept"),
+            "reviewed"
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            last_tool_result(&requests[2]),
+            r#"{"error":{"tool":"shell","code":"CommandAuthorityContextMismatch","retryable":false}}"#
+        );
+        assert_eq!(result(&output)["tool_calls"][0]["status"], "error");
+    }
 }

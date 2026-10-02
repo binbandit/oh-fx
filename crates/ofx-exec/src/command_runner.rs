@@ -26,6 +26,7 @@ use tokio::time::{Instant, sleep_until};
 pub use foreground_session::{is_foreground_session_invocation, run_foreground_session};
 
 use crate::command_contract::CommandStatus;
+use crate::directory_identity::DirectoryIdentity;
 use foreground_session::{
     FORCE_SIGNAL, LAUNCH_FAILURE_EXIT_CODE, LAUNCH_FAILURE_PREFIX, NO_DEADLINE, NONCE_HEX_BYTES,
     READY_BYTE, RELEASE_BYTE, STATUS_PREFIX, TOKEN,
@@ -76,6 +77,7 @@ pub(crate) enum OutputStream {
 pub(crate) struct CapturedCommand<'a> {
     pub(crate) argv: &'a [OsString],
     pub(crate) cwd: &'a Path,
+    pub(crate) cwd_identity: DirectoryIdentity,
     pub(crate) deadline: Option<Instant>,
     pub(crate) supervisor: &'a SessionSupervisor,
 }
@@ -189,6 +191,7 @@ fn spawn_supervisor(command: &CapturedCommand<'_>) -> Result<Child, RunError> {
     tokio::process::Command::new(&command.supervisor.executable)
         .arg(TOKEN)
         .arg(deadline)
+        .arg(command.cwd_identity.argument())
         .args(command.argv)
         .current_dir(command.cwd)
         .stdin(Stdio::piped())
