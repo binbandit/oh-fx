@@ -54,6 +54,11 @@ impl PendingApproval {
     pub(crate) async fn decision(&mut self) -> ApprovalDecision {
         (&mut self.decision).await.unwrap_or(ApprovalDecision::Deny)
     }
+
+    pub(crate) fn withdraw(&mut self) -> Option<ApprovalDecision> {
+        self.decision.close();
+        self.decision.try_recv().ok()
+    }
 }
 
 impl Drop for PendingApproval {

@@ -303,3 +303,47 @@ async fn requests_preview_the_arguments_terminal_safe_and_bounded_like_upstream(
     );
     assert!(preview.ends_with("x..."), "{preview}");
 }
+
+#[tokio::test]
+async fn an_answer_given_as_the_turn_is_cancelled_is_applied_and_never_dropped() {
+    for cancel_first in [false, true] {
+        let provider = FakeProvider::new(vec![tool_reply(&[("call-1", r#"{"path":"outside"}"#)])]);
+        let gate = Arc::new(RememberingGate::default());
+        let approvals = Approvals::default();
+        let mut agent = Agent::new(
+            provider,
+            vec![echo_tool()],
+            Arc::new(FixedContext),
+            Arc::clone(&gate) as Arc<dyn PermissionGate>,
+            config(),
+        )
+        .with_approvals(approvals.clone());
+        let cancel = CancellationToken::new();
+        let mut accepted = Vec::new();
+        let mut events = Vec::new();
+        let report = agent
+            .run_turn(
+                "go",
+                &mut |event| {
+                    if let UiEvent::ApprovalRequested { request, .. } = &event {
+                        if cancel_first {
+                            cancel.cancel();
+                        }
+                        accepted.push(approvals.resolve(request.id, ApprovalDecision::Always));
+                        cancel.cancel();
+                    }
+                    events.push(event);
+                },
+                &cancel,
+            )
+            .await;
+        assert_eq!(report.outcome, TurnOutcome::Interrupted, "{cancel_first}");
+        assert!(dispatch_order(&events).is_empty(), "{cancel_first}");
+        assert_eq!(accepted, [true], "{cancel_first}");
+        assert_eq!(
+            *gate.remembered.lock().unwrap(),
+            [r#"ReadsUnder("/approved/1")"#],
+            "{cancel_first}"
+        );
+    }
+}

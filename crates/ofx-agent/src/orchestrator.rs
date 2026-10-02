@@ -999,17 +999,20 @@ async fn judge(
                 turn_id,
                 request: approval_request(pending.id(), call, action, description, &scope),
             });
-            let decision = tokio::select! {
+            let answer = tokio::select! {
                 biased;
-                () = cancel.cancelled() => return Verdict::Interrupted,
-                decision = pending.decision() => decision,
+                () = cancel.cancelled() => pending.withdraw(),
+                decision = pending.decision() => Some(decision),
             };
-            if let (ApprovalDecision::Always, Some(grant)) = (decision, &scope.always) {
+            if let (Some(ApprovalDecision::Always), Some(grant)) = (answer, &scope.always) {
                 gate.permissions.remember_approval(grant);
             }
-            match decision {
-                ApprovalDecision::Deny => Verdict::Denied,
-                ApprovalDecision::Once | ApprovalDecision::Always => Verdict::Run(scope.access),
+            match answer {
+                _ if cancel.is_cancelled() => Verdict::Interrupted,
+                None | Some(ApprovalDecision::Deny) => Verdict::Denied,
+                Some(ApprovalDecision::Once | ApprovalDecision::Always) => {
+                    Verdict::Run(scope.access)
+                }
             }
         }
     }
