@@ -184,3 +184,68 @@ async fn contextual_reviews_carry_only_the_users_bounded_requests() {
         "{instruction}"
     );
 }
+
+struct SwitchingMidReview {
+    mode: LivePermissionMode,
+}
+
+impl ReviewTransport for SwitchingMidReview {
+    fn model<'a>(&'a self, source_model: &'a str) -> &'a str {
+        source_model
+    }
+
+    fn max_output_tokens(&self, _model: &str) -> u32 {
+        2048
+    }
+
+    fn request_body(&self, _request: &ModelRequest<'_>) -> Option<String> {
+        Some(String::new())
+    }
+
+    fn send<'a>(
+        &'a self,
+        _request: &'a ModelRequest<'a>,
+        _body: String,
+        _cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, ReviewTransportOutcome> {
+        self.mode.set(PermissionMode::Yolo);
+        Box::pin(async {
+            ReviewTransportOutcome::Completion(Completion {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: ToolCallId::new("review"),
+                    name: "permission_decision".to_owned(),
+                    arguments: r#"{"decision":"caution","rationale":"Untrusted output."}"#
+                        .to_owned(),
+                }],
+                finish_reason: FinishReason::ToolCalls,
+                usage: Usage::default(),
+                provider_replay: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_review_in_flight_keeps_its_verdict_when_full_access_is_switched_on() {
+    let mode = LivePermissionMode::from(PermissionMode::Auto);
+    let transport = Arc::new(SwitchingMidReview { mode: mode.clone() });
+    let policy = PermissionPolicy::new(mode.clone(), "/workspace")
+        .with_reviewer(Reviewer::new(transport, Duration::from_secs(1)));
+    let batch = [shell_call()];
+    let command = touch();
+    assert_eq!(policy.admit_command(&command), Admission::ReviewRequired);
+    assert_eq!(
+        verdict(
+            &policy,
+            request(&batch, GatedAction::Command(&command), &[], None)
+        )
+        .await,
+        ReviewVerdict::Caution("Untrusted output.".to_owned())
+    );
+    assert_eq!(mode.get(), PermissionMode::Yolo);
+    assert_eq!(
+        policy.admit_command(&command),
+        Admission::Allowed(PathAccess::WorkspaceOrExternal)
+    );
+}
