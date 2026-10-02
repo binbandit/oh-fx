@@ -2,12 +2,11 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::process::Command;
 
-use tempfile::TempDir;
-
 use super::*;
 use crate::skill_contract::InvalidMetadataCause;
 use crate::skill_runtime::skill_file::LinkedSkillFile;
 use crate::skill_runtime::{SkillResolution, resolve_skill};
+use crate::test_fixture::Fixture;
 
 const TEST_WORKSPACE_ROOTS: [RootSpec; 3] = [
     RootSpec {
@@ -41,12 +40,6 @@ const TEST_ROOT_POLICY: RootPolicy = RootPolicy {
     global_roots: &TEST_GLOBAL_ROOTS,
 };
 
-const TEST_MANAGED_ROOT_POLICY: RootPolicy = RootPolicy {
-    workspace_roots: &[],
-    managed_root_source: Some(SkillSource::GlobalOhFx),
-    global_roots: &[],
-};
-
 const CUSTOM_ROOTS: [RootSpec; 1] = [RootSpec {
     source: SkillSource::WorkspaceClaw,
     path: "custom-skills",
@@ -74,42 +67,11 @@ const ALIAS_GLOBAL_ROOTS: [RootSpec; 2] = [
     },
 ];
 
-struct Fixture {
-    _temp: TempDir,
-    root: PathBuf,
+trait WorkspaceFixture {
+    fn home_context(&self, workspace: &str) -> SkillDiscoveryContext;
 }
 
-impl Fixture {
-    fn new() -> Self {
-        let temp = TempDir::new().unwrap();
-        let root = fs::canonicalize(temp.path()).unwrap();
-        Self { _temp: temp, root }
-    }
-
-    fn path(&self, sub_path: &str) -> PathBuf {
-        self.root.join(sub_path)
-    }
-
-    fn write(&self, sub_path: &str, content: impl AsRef<[u8]>) {
-        let path = self.path(sub_path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, content).unwrap();
-    }
-
-    fn mkdir(&self, sub_path: &str) {
-        fs::create_dir_all(self.path(sub_path)).unwrap();
-    }
-
-    fn symlink(&self, target: &str, link: &str) {
-        let link = self.path(link);
-        fs::create_dir_all(link.parent().unwrap()).unwrap();
-        symlink(target, link).unwrap();
-    }
-
-    fn real(&self, sub_path: &str) -> PathBuf {
-        fs::canonicalize(self.path(sub_path)).unwrap()
-    }
-
+impl WorkspaceFixture for Fixture {
     fn home_context(&self, workspace: &str) -> SkillDiscoveryContext {
         self.mkdir("home/.oh-fx/skills");
         SkillDiscoveryContext {
@@ -118,16 +80,6 @@ impl Fixture {
             managed_root: self.real("home/.oh-fx/skills"),
             symlink_authorities: SymlinkAuthorities::default(),
         }
-    }
-
-    fn managed_discovery(&self, managed: &str) -> SkillDiscovery {
-        SkillDiscoveryContext {
-            workspace_root: None,
-            home: None,
-            managed_root: self.path(managed),
-            symlink_authorities: SymlinkAuthorities::default(),
-        }
-        .load_visible_skills(&TEST_MANAGED_ROOT_POLICY)
     }
 }
 

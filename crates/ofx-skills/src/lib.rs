@@ -5,6 +5,8 @@ mod io;
 mod skill_contract;
 mod skill_invocation;
 mod skill_runtime;
+#[cfg(test)]
+mod test_fixture;
 
 pub use skill_contract::{
     CallPreparation, ExecuteOutput, InvalidMetadataCause, LocationError, Locations, PreparedSkill,
