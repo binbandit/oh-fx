@@ -85,6 +85,14 @@ impl TestShell {
         String::from_utf8_lossy(&output).into_owned()
     }
 
+    pub(super) fn advance(&mut self, millis: u64) {
+        self.shell.clock = self
+            .shell
+            .clock
+            .checked_sub(Duration::from_millis(millis))
+            .unwrap();
+    }
+
     pub(super) fn step(&mut self) {
         assert!(self.shell.step().unwrap().is_none());
     }

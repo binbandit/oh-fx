@@ -5,8 +5,10 @@ use crate::footer::approval_content::ApprovalContent;
 use crate::footer::approval_panel::{Choice, approval_panel_rows, choices};
 use crate::footer::input_presentation::ComposerView;
 use crate::input::{Action, COMPOSER_INPUT_LIMIT_BYTES, InputEvent, PasteOwner};
-use crate::terminal::TerminalError;
+use crate::terminal::{Layout, TerminalError};
 use crate::theme::Theme;
+
+const AFFIRMATIVE_ARMING_MS: i64 = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ApprovalPrompt {
@@ -14,6 +16,15 @@ pub(super) struct ApprovalPrompt {
     content: ApprovalContent,
     choices: Vec<Choice>,
     choice: usize,
+    shown: Option<Shown>,
+    typed_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shown {
+    rows: u16,
+    cols: u16,
+    since_ms: i64,
 }
 
 impl ApprovalPrompt {
@@ -24,21 +35,49 @@ impl ApprovalPrompt {
             content,
             choices,
             choice: 0,
+            shown: None,
+            typed_ms: None,
         }
     }
 
     pub(super) fn view(&self, theme: &Theme, cols: u16, rows: u16) -> ComposerView {
+        let panel = approval_panel_rows(
+            theme,
+            &self.content,
+            &self.choices,
+            self.choice,
+            usize::from(cols),
+            rows,
+        );
         ComposerView {
-            rows: approval_panel_rows(
-                theme,
-                &self.content,
-                &self.choices,
-                self.choice,
-                usize::from(cols),
-                rows,
-            ),
+            rows: panel.rows,
             cursor: None,
+            required_rows: panel.required_rows,
         }
+    }
+
+    pub(super) fn frame_drawn(&mut self, layout: Layout, complete: bool, now_ms: i64) {
+        self.shown = match self.shown {
+            _ if !complete => None,
+            Some(shown) if shown.rows == layout.rows && shown.cols == layout.cols => Some(shown),
+            _ => Some(Shown {
+                rows: layout.rows,
+                cols: layout.cols,
+                since_ms: now_ms,
+            }),
+        };
+    }
+
+    fn armed(&self, layout: Layout, now_ms: i64) -> bool {
+        let settled = |since_ms: i64| now_ms - since_ms >= AFFIRMATIVE_ARMING_MS;
+        self.shown.is_some_and(|shown| {
+            shown.rows == layout.rows && shown.cols == layout.cols && settled(shown.since_ms)
+        }) && self.typed_ms.is_none_or(settled)
+    }
+
+    fn typing(&self, now_ms: i64) -> bool {
+        self.typed_ms
+            .is_some_and(|typed_ms| now_ms - typed_ms < AFFIRMATIVE_ARMING_MS)
     }
 
     fn choices(&self) -> &[Choice] {
@@ -70,7 +109,7 @@ impl Shell<'_> {
                 3 => self.decide(ApprovalDecision::Deny),
                 b'\r' | b'\n' => self.decide_selected(),
                 b'\t' => self.move_choice(1),
-                key => self.decide_by_key(key),
+                key => self.approval_key(key),
             },
             InputEvent::Action(decoded) => match decoded.action {
                 Action::RemappedByte(byte) => self.input.replay_byte(byte),
@@ -82,7 +121,8 @@ impl Shell<'_> {
                 Action::CursorDown => self.move_choice(1),
                 _ => {}
             },
-            InputEvent::Text(_) | InputEvent::Paste(_) | InputEvent::TextDropped(_) => {}
+            InputEvent::Text(character) => self.keep_typed_text(*character),
+            InputEvent::Paste(_) | InputEvent::TextDropped(_) => {}
         }
         Ok(())
     }
@@ -98,14 +138,45 @@ impl Shell<'_> {
         }
     }
 
-    fn decide_by_key(&mut self, key: u8) {
-        let Some(prompt) = &mut self.approval else {
+    fn approval_key(&mut self, key: u8) {
+        let now_ms = self.now_ms();
+        let Some(prompt) = &self.approval else {
             return;
         };
-        if let Some(index) = prompt.choices().iter().position(|choice| choice.key == key) {
-            prompt.choice = index;
-            self.decide_selected();
+        let Some(index) = prompt.choices().iter().position(|choice| choice.key == key) else {
+            if (32..127).contains(&key) && !(b'1'..=b'3').contains(&key) {
+                self.keep_typed_text(char::from(key));
+            }
+            return;
+        };
+        let affirmative = prompt.choices()[index].decision != ApprovalDecision::Deny;
+        if affirmative && !self.affirmative_armed(now_ms) {
+            if prompt.typing(now_ms) {
+                self.keep_typed_text(char::from(key));
+            }
+            return;
         }
+        if let Some(prompt) = &mut self.approval {
+            prompt.choice = index;
+        }
+        self.decide_selected();
+    }
+
+    fn keep_typed_text(&mut self, character: char) {
+        let now_ms = self.now_ms();
+        if let Some(prompt) = &mut self.approval {
+            prompt.typed_ms = Some(now_ms);
+        }
+        self.insert(character.encode_utf8(&mut [0; 4]));
+    }
+
+    fn affirmative_armed(&self, now_ms: i64) -> bool {
+        self.resize_due_ms.is_none()
+            && !self.dimensions_invalid
+            && self
+                .approval
+                .as_ref()
+                .is_some_and(|prompt| prompt.armed(self.layout, now_ms))
     }
 
     fn move_choice(&mut self, step: isize) {
@@ -116,11 +187,15 @@ impl Shell<'_> {
     }
 
     fn decide_selected(&mut self) {
-        if let Some(decision) = self
+        let now_ms = self.now_ms();
+        let Some(decision) = self
             .approval
             .as_ref()
             .map(|prompt| prompt.choices()[prompt.choice].decision)
-        {
+        else {
+            return;
+        };
+        if decision == ApprovalDecision::Deny || self.affirmative_armed(now_ms) {
             self.decide(decision);
         }
     }
@@ -148,6 +223,7 @@ mod tests {
     use super::super::test_shell::TestShell;
 
     const PANEL: &str = "Permission needed · Choose one";
+    const ARMED_MS: u64 = 600;
 
     fn request(turn: u64, id: u64) -> UiEvent {
         request_with(
@@ -183,6 +259,8 @@ mod tests {
             turn_id: TurnId::new(1),
         });
         test.deliver(request(1, 4));
+        test.screen();
+        test.advance(ARMED_MS);
         test
     }
 
@@ -289,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_denies_and_typed_text_never_reaches_the_composer() {
+    fn ctrl_c_denies_and_text_typed_at_the_prompt_stays_in_the_draft() {
         let mut test = approving();
         press(&mut test, b"x");
         press(&mut test, b"\x03");
@@ -297,9 +375,106 @@ mod tests {
             test.sent().last(),
             Some(&decision(4, ApprovalDecision::Deny))
         );
-        assert!(test.shell.composer.is_empty());
+        assert_eq!(test.shell.composer.text(), "x");
         press(&mut test, b"y");
-        assert_eq!(test.shell.composer.text(), "y");
+        assert_eq!(test.shell.composer.text(), "xy");
+    }
+
+    #[test]
+    fn keys_typed_before_the_prompt_was_drawn_never_approve_it() {
+        let mut test = TestShell::start();
+        test.submit("touch it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.queue(request(1, 4));
+        test.type_bytes(b"\r1\n2");
+        test.step();
+        assert!(!approved(&test));
+        assert!(test.screen().contains(PANEL));
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
+    }
+
+    #[test]
+    fn a_drawn_prompt_waits_before_it_accepts_yes() {
+        let mut test = TestShell::start();
+        test.submit("touch it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.deliver(request(1, 4));
+        test.screen();
+        press(&mut test, b"\r");
+        press(&mut test, b"2");
+        assert!(!approved(&test));
+        test.advance(ARMED_MS);
+        press(&mut test, b"2");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Always))
+        );
+    }
+
+    #[test]
+    fn typing_at_the_prompt_keeps_the_text_and_holds_off_yes_until_it_stops() {
+        let mut test = approving();
+        press(&mut test, b"also update the changelog 12\r");
+        assert!(!approved(&test));
+        assert_eq!(test.shell.composer.text(), "also update the changelog 12");
+        test.advance(ARMED_MS);
+        press(&mut test, b"\r");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
+        assert_eq!(test.shell.composer.text(), "also update the changelog 12");
+    }
+
+    #[test]
+    fn no_and_ctrl_c_answer_before_the_prompt_was_drawn() {
+        for key in [&b"3"[..], b"\x03"] {
+            let mut test = TestShell::start();
+            test.submit("touch it");
+            test.deliver(UiEvent::TurnStarted {
+                turn_id: TurnId::new(1),
+            });
+            test.queue(request(1, 4));
+            press(&mut test, key);
+            assert_eq!(
+                test.sent().last(),
+                Some(&decision(4, ApprovalDecision::Deny))
+            );
+        }
+    }
+
+    #[test]
+    fn a_prompt_whose_choices_do_not_fit_cannot_be_approved() {
+        let mut test = approving();
+        test.resize(24, 40);
+        test.screen();
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        press(&mut test, b"\r");
+        assert!(!approved(&test));
+        test.resize(24, 80);
+        test.screen();
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
+    }
+
+    fn approved(test: &TestShell) -> bool {
+        test.sent()
+            .iter()
+            .any(|command| matches!(command, UiCommand::Approval { .. }))
     }
 
     #[test]
@@ -311,15 +486,13 @@ mod tests {
         });
         test.deliver(request_with(1, 4, None));
         let screen = test.screen();
+        test.advance(ARMED_MS);
         assert!(screen.contains("1. Yes"), "{screen}");
         assert!(screen.contains("3. No"), "{screen}");
         assert!(!screen.contains("2."), "{screen}");
         press(&mut test, b"2");
-        assert!(
-            test.sent()
-                .iter()
-                .all(|command| !matches!(command, UiCommand::Approval { .. }))
-        );
+        assert!(!approved(&test));
+        assert!(test.shell.composer.is_empty());
         press(&mut test, b"\x1b[A");
         assert!(test.screen().contains("❯ 3. No"));
         press(&mut test, b"3");

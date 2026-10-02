@@ -375,6 +375,7 @@ impl<'a> Shell<'a> {
                     &self.theme,
                 ),
             });
+        let required_rows = composer.required_rows.clone();
         let live = solve(
             LiveParts {
                 tail_gap,
@@ -394,7 +395,17 @@ impl<'a> Shell<'a> {
             },
             &mut self.output,
         );
-        self.flush_output()
+        let hidden_rows = live
+            .rows
+            .len()
+            .saturating_sub(usize::from(self.layout.rows));
+        let complete =
+            required_rows.is_some_and(|rows| live.composer_start + rows.start >= hidden_rows);
+        self.flush_output()?;
+        if let Some(prompt) = &mut self.approval {
+            prompt.frame_drawn(self.layout, complete, now_ms);
+        }
+        Ok(())
     }
 
     fn flush_output(&mut self) -> Result<(), TerminalError> {
