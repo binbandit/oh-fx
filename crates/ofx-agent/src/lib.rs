@@ -6,6 +6,7 @@ mod model_response_recovery;
 mod orchestrator;
 mod project_context;
 mod prompt_context;
+mod questions;
 #[cfg(test)]
 mod scripted_provider;
 mod skill_context;
@@ -19,4 +20,5 @@ pub use orchestrator::{
     Agent, AgentConfig, BlockedCall, Compaction, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };
 pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
+pub use questions::{QuestionRequests, Questions};
 pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};

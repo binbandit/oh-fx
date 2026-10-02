@@ -1,11 +1,11 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure, TurnReport};
+use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailure, TurnReport};
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, SkillBinding,
-    TurnOutcome, UiCommand, UiEvent,
+    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, QuestionRequest,
+    SkillBinding, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
@@ -194,10 +194,12 @@ pub(crate) struct Controller {
     agent: Agent,
     state: ControllerState,
     persistence: Option<Persistence>,
+    questions: Option<QuestionRequests>,
 }
 
 impl Controller {
-    pub(crate) fn new(setup: AgentSetup, emit: Emit, persistence: Option<Persistence>) -> Self {
+    pub(crate) fn new(mut setup: AgentSetup, emit: Emit, persistence: Option<Persistence>) -> Self {
+        let questions = setup.take_question_requests();
         let notices = ContextNotices {
             startup: setup.context_notices().to_vec(),
             claimed: HashSet::new(),
@@ -222,6 +224,7 @@ impl Controller {
             agent: state.setup.agent(),
             state,
             persistence,
+            questions,
         }
     }
 
@@ -269,6 +272,7 @@ impl Controller {
                 }
                 UiCommand::Cancel { .. }
                 | UiCommand::Approval { .. }
+                | UiCommand::QuestionAnswered { .. }
                 | UiCommand::CancelCompaction => {}
             }
         }
@@ -329,7 +333,11 @@ impl Controller {
                         Some(UiCommand::FullAccessWarningShown) => {
                             state.permissions.full_access_warning_shown();
                         }
-                        Some(UiCommand::Cancel { .. } | UiCommand::Approval { .. }) => {}
+                        Some(
+                            UiCommand::Cancel { .. }
+                            | UiCommand::Approval { .. }
+                            | UiCommand::QuestionAnswered { .. },
+                        ) => {}
                         Some(UiCommand::RunCommand { text }) => {
                             run_deferred_command(
                                 state,
@@ -417,6 +425,7 @@ impl Controller {
         let notices = Arc::clone(&self.state.context_notices);
         let state = &mut self.state;
         let persistence = &mut self.persistence;
+        let questions = &mut self.questions;
         let mut open = true;
         let report = {
             let mut sink = move |event: UiEvent| match event {
@@ -462,6 +471,11 @@ impl Controller {
                                 approvals.resolve(request_id, decision);
                             }
                         }
+                        Some(UiCommand::QuestionAnswered { request_id, answers }) => {
+                            if let Some(questions) = state.setup.questions() {
+                                questions.resolve(request_id, answers);
+                            }
+                        }
                         Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
                         Some(UiCommand::FullAccessWarningShown) => {
                             state.permissions.full_access_warning_shown();
@@ -471,6 +485,14 @@ impl Controller {
                                 .await;
                         }
                         Some(UiCommand::CancelCompaction) => {}
+                    },
+                    Some(request) = next_question(questions) => match running_turn() {
+                        Some(turn_id) => state.emit(UiEvent::QuestionRequested { turn_id, request }),
+                        None => {
+                            if let Some(questions) = state.setup.questions() {
+                                questions.resolve(request.id, None);
+                            }
+                        }
                     },
                 }
             }
@@ -504,6 +526,13 @@ impl Controller {
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
             self.clear(first_kept_prompt);
         }
+    }
+}
+
+async fn next_question(requests: &mut Option<QuestionRequests>) -> Option<QuestionRequest> {
+    match requests {
+        Some(requests) => requests.next().await,
+        None => std::future::pending().await,
     }
 }
 

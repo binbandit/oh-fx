@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, Approvals, ProjectContext, RuntimeContext, SkillContextProvider,
+    Agent, AgentConfig, Approvals, ProjectContext, QuestionRequests, Questions, RuntimeContext,
+    SkillContextProvider,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
@@ -17,7 +18,7 @@ use ofx_config::{
 };
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
-    ModelProvider, PermissionMode, ReviewTransport, Tool,
+    ModelProvider, PermissionMode, QuestionAsker, ReviewTransport, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{ChatCompletionsProvider, ChatCompletionsReviewTransport, CodexReviewTransport};
@@ -135,6 +136,8 @@ pub struct AgentSetup {
     yolo_acknowledged: bool,
     approvals: Option<Approvals>,
     change_tracker: Option<ChangeTracker>,
+    questions: Option<Questions>,
+    question_requests: Option<QuestionRequests>,
     refreshes: Option<Arc<DetachedRefreshes>>,
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     skills: Arc<HostSkills>,
@@ -277,6 +280,7 @@ impl Profile {
         };
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
         let change_tracker = interactive.then(ChangeTracker::default);
+        let (questions, question_requests) = interactive.then(Questions::new).unzip();
         Ok(AgentSetup {
             provider: route.provider,
             configured_model: route.configured_model,
@@ -289,6 +293,9 @@ impl Profile {
                 launch.command_timeout,
                 &permission_mode,
                 skills.tool(),
+                questions
+                    .clone()
+                    .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
                 launch.web_fetch_progress,
                 change_tracker.as_ref(),
             ),
@@ -307,6 +314,8 @@ impl Profile {
             workspace_root: self.workspace_root.clone(),
             approvals: interactive.then(Approvals::default),
             change_tracker,
+            questions,
+            question_requests,
             refreshes,
             project,
             skills,
@@ -527,6 +536,14 @@ impl AgentSetup {
 
     pub(crate) fn change_tracker(&self) -> Option<&ChangeTracker> {
         self.change_tracker.as_ref()
+    }
+
+    pub(crate) fn questions(&self) -> Option<&Questions> {
+        self.questions.as_ref()
+    }
+
+    pub(crate) fn take_question_requests(&mut self) -> Option<QuestionRequests> {
+        self.question_requests.take()
     }
 
     pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {
