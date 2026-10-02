@@ -38,6 +38,7 @@ fn runs_without_review(workspace_root: &Path, request: &CommandRequest) -> bool 
             command,
             cwd,
             terminal,
+            ..
         } => {
             !terminal && path_inside(workspace_root, cwd) && known_reversible_auto_command(command)
         }
@@ -50,7 +51,7 @@ fn runs_without_review(workspace_root: &Path, request: &CommandRequest) -> bool 
 mod tests {
     use std::path::PathBuf;
 
-    use ofx_contract::ToolCallId;
+    use ofx_contract::{CommandProfile, ToolCallId};
 
     use super::*;
 
@@ -61,6 +62,8 @@ mod tests {
         CommandRequest::Run {
             command: command.to_owned(),
             cwd: PathBuf::from(cwd),
+            profile: CommandProfile::User,
+            shell: None,
             terminal,
         }
     }

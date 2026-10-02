@@ -54,6 +54,11 @@ impl PendingApproval {
     pub(crate) async fn decision(&mut self) -> ApprovalDecision {
         (&mut self.decision).await.unwrap_or(ApprovalDecision::Deny)
     }
+
+    pub(crate) fn withdraw(&mut self) -> Option<ApprovalDecision> {
+        self.decision.close();
+        self.decision.try_recv().ok()
+    }
 }
 
 impl Drop for PendingApproval {
@@ -75,6 +80,18 @@ mod tests {
         assert!(approvals.resolve(first.id(), ApprovalDecision::Always));
         assert!(!approvals.resolve(first.id(), ApprovalDecision::Once));
         assert_eq!(first.decision().await, ApprovalDecision::Always);
+    }
+
+    #[test]
+    fn a_withdrawn_request_keeps_an_answer_already_given_and_refuses_later_ones() {
+        let approvals = Approvals::default();
+        let mut unanswered = approvals.open();
+        assert_eq!(unanswered.withdraw(), None);
+        assert!(!approvals.resolve(unanswered.id(), ApprovalDecision::Always));
+        let mut answered = approvals.open();
+        assert!(approvals.resolve(answered.id(), ApprovalDecision::Always));
+        assert_eq!(answered.withdraw(), Some(ApprovalDecision::Always));
+        assert!(!approvals.resolve(answered.id(), ApprovalDecision::Once));
     }
 
     #[tokio::test]

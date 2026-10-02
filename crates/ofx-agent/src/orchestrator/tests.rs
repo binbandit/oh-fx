@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, CommandRequest, Concurrency, FileMutation,
+    ApplicableTarget, CallDescription, CommandProfile, CommandRequest, Concurrency, FileMutation,
     FileMutationState, ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource, StreamSink,
     ToolActivity, ToolCallId, ToolEffect,
 };
@@ -168,6 +168,8 @@ impl PermissionGate for ArgumentGate {
     fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
         None
     }
+
+    fn forget_approvals(&self) {}
 }
 
 struct ReadOnlyGate;
@@ -180,6 +182,8 @@ impl PermissionGate for ReadOnlyGate {
     fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
         None
     }
+
+    fn forget_approvals(&self) {}
 }
 
 #[derive(Default)]
@@ -196,6 +200,8 @@ impl PermissionGate for RecordingGate {
     fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
         None
     }
+
+    fn forget_approvals(&self) {}
 }
 
 struct EchoTool {
@@ -240,6 +246,8 @@ impl Tool for EchoTool {
             .map(|(_, command)| CommandRequest::Run {
                 command: command.to_owned(),
                 cwd: PathBuf::from("/workspace"),
+                profile: CommandProfile::User,
+                shell: None,
                 terminal: false,
             })
             .or_else(|| arguments.contains("stop").then_some(CommandRequest::Stop));

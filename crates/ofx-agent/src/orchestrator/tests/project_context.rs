@@ -231,6 +231,8 @@ impl PermissionGate for TargetGate {
             kind: TargetKind::Directory,
         })
     }
+
+    fn forget_approvals(&self) {}
 }
 
 #[derive(Default)]
