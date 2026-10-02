@@ -1,7 +1,8 @@
 use crate::command_specs::{
-    OptionDoc, TopLevelExample, TopLevelFlag, TopLevelHelp, TopLevelHelpEntry, TopLevelKind,
-    TopLevelResource, TopLevelSpec,
+    OptionDoc, SlashKind, SlashSpec, TopLevelExample, TopLevelFlag, TopLevelHelp,
+    TopLevelHelpEntry, TopLevelKind, TopLevelResource, TopLevelSpec,
 };
+use crate::registry::SlashRegistry;
 
 const JSON_OPTION: OptionDoc =
     OptionDoc::new("--json", "Emit machine-readable JSON instead of text");
@@ -486,3 +487,21 @@ pub(crate) static TOP_LEVEL_HELP: TopLevelHelp = TopLevelHelp {
     notes: TOP_LEVEL_NOTES,
     resources: TOP_LEVEL_RESOURCES,
 };
+
+pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
+    SlashSpec::new(SlashKind::Help, "/help", "show available slash commands"),
+    SlashSpec::new(
+        SlashKind::ClearScreen,
+        "/clear",
+        "start a fresh conversation while keeping managed processes",
+    ),
+    SlashSpec::new(
+        SlashKind::Model,
+        "/model",
+        "choose what model and reasoning effort to use",
+    )
+    .with_payload(),
+    SlashSpec::new(SlashKind::Quit, "/quit", "exit the interactive shell").with_aliases(&["/exit"]),
+];
+
+pub static SLASH_REGISTRY: SlashRegistry<'static> = SlashRegistry::new(SLASH_SPECS);
