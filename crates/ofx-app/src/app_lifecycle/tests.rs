@@ -27,6 +27,7 @@ const PANIC_TEST: &str =
     "app_lifecycle::tests::a_worker_panic_ends_the_shell_and_a_contained_one_does_not";
 const REFRESH_TEST: &str = "app_lifecycle::tests::an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rotated_login";
 const FIRST_FRAME: &str = "Run /help for commands";
+const REFRESH_STARTED: &str = "refresh-started";
 const WAIT: Duration = Duration::from_secs(15);
 const LOCK_HELD: Duration = Duration::from_millis(1500);
 const REFRESH_DELAY: Duration = Duration::from_millis(14_500);
@@ -78,6 +79,7 @@ fn an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rota
     }
     let home = tempfile::tempdir().unwrap();
     let paths = profile_paths(home.path());
+    let refresh_started = home.path().join(REFRESH_STARTED);
     write_codex_profile(&paths, &home.path().join("workspace"));
     let rotated = json!({
         "access_token": FRESH_TOKEN,
@@ -120,6 +122,7 @@ fn an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rota
         thread::sleep(LOCK_HELD.saturating_sub(refreshing.elapsed()));
         drop(held);
     });
+    wait_until(|| refresh_started.exists());
     session.send(b"\x03");
     session
         .wait_for(WAIT, |screen| screen.contains("Cancelled"))
@@ -229,6 +232,7 @@ fn run_a_codex_session(home: &Path) -> ! {
             &CancellationToken::new(),
         ))
         .unwrap();
+    report_the_first_refresh(setup.refreshes(), home.join(REFRESH_STARTED));
     let session = Session {
         profile,
         setup,
@@ -236,6 +240,16 @@ fn run_a_codex_session(home: &Path) -> ! {
         permission_mode: PermissionMode::Auto,
     };
     process::exit(i32::from(run(session, None, runtime).is_err()));
+}
+
+fn report_the_first_refresh(refreshes: Option<Arc<DetachedRefreshes>>, marker: PathBuf) {
+    let refreshes = refreshes.expect("the interactive session detaches its refreshes");
+    thread::spawn(move || {
+        while !refreshes.pending() {
+            thread::sleep(Duration::from_millis(5));
+        }
+        fs::write(marker, "").unwrap();
+    });
 }
 
 #[test]
