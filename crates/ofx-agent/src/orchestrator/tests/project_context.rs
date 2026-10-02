@@ -288,6 +288,14 @@ struct Harness {
 }
 
 fn harness(scripts: Vec<Script>, snapshot: ProjectContext) -> Harness {
+    built(scripts, Some(snapshot))
+}
+
+fn unscoped_harness(scripts: Vec<Script>) -> Harness {
+    built(scripts, None)
+}
+
+fn built(scripts: Vec<Script>, snapshot: Option<ProjectContext>) -> Harness {
     let provider = FakeProvider::new(scripts);
     let project = Arc::new(FakeProject::default());
     let world = SharedWorld::default();
@@ -308,11 +316,14 @@ fn harness(scripts: Vec<Script>, snapshot: ProjectContext) -> Harness {
             world: Arc::clone(&world),
         }),
         config(),
-    )
-    .with_project_context(
-        Arc::clone(&project) as Arc<dyn ProjectContextProvider>,
-        snapshot,
     );
+    let agent = match snapshot {
+        Some(snapshot) => agent.with_project_context(
+            Arc::clone(&project) as Arc<dyn ProjectContextProvider>,
+            snapshot,
+        ),
+        None => agent,
+    };
     Harness {
         provider,
         project,
@@ -617,6 +628,28 @@ async fn every_call_is_prepared_once_and_completed_only_when_it_runs() {
             r#"complete {"write":"/w/y"}"#,
             r#"execute {"write":"/w/y"}"#,
             r#"execute {"read":"/w/z","inert":true}"#,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn without_project_context_a_call_after_a_parallel_group_is_completed_only_when_it_runs() {
+    let read = r#"{"read":"/w/z"}"#;
+    let write = r#"{"write":"/w/x","mutation":true}"#;
+    let mut harness = unscoped_harness(vec![
+        scoped_reply(&[("call-1", read), ("call-2", write)]),
+        text_reply("done"),
+    ]);
+    let (report, _) = run(&mut harness.agent, "batch").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        log(&harness),
+        [
+            format!("complete {read}"),
+            format!("execute {read}"),
+            format!("complete {write}"),
+            "admit /w/x".to_owned(),
+            format!("execute {write}"),
         ]
     );
 }
