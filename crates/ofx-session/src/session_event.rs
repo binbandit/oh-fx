@@ -1,10 +1,14 @@
+mod frame_decode;
+
 use ofx_config::EMERGENCY_CEILING_BYTES;
 use ofx_contract::{ToolArgumentIntegrity, ToolResultStatus};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::fixed_field::{False, LocalProvenance, NoItems, Null, TurnOrigin, ValidIdentity};
+use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
+use frame_decode::envelope_from;
 
 pub(crate) const CONVERSATION_SCHEMA_VERSION: u8 = 3;
 pub(crate) const EVENT_FRAME_MAX_BYTES: usize = EMERGENCY_CEILING_BYTES;
@@ -13,7 +17,8 @@ const MAX_IDENTITY_BYTES: usize = 256;
 const MAX_PREVIEW_BYTES: usize = 4 * 1024;
 const MAX_REPLAY_BYTES: usize = 4 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationEvent {
     User(UserEvent),
@@ -26,7 +31,8 @@ pub enum ConversationEvent {
     ContextCheckpoint(ContextCheckpointEvent),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct UserEvent {
     pub text: String,
@@ -46,7 +52,8 @@ impl UserEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct AssistantEvent {
     pub text: String,
@@ -56,21 +63,24 @@ pub struct AssistantEvent {
     pub standalone_response: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct SavedReplay {
     pub source: SavedReplaySource,
     pub parts_json: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct SavedReplaySource {
     pub provider: SavedProvider,
     pub model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallEvent {
     pub call_id: String,
@@ -108,7 +118,8 @@ impl ToolCallEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactCompleteness {
     Complete,
@@ -116,7 +127,8 @@ pub enum ArtifactCompleteness {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct ToolResultEvent {
     pub call_id: String,
@@ -184,13 +196,15 @@ impl ToolResultEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct SteeringEvent {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct TurnCompletedEvent {
     #[serde(default)]
@@ -199,14 +213,16 @@ pub struct TurnCompletedEvent {
     turn_summary: Null,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "snake_case")]
 pub enum InterruptReason {
     Cancelled,
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct InterruptedEvent {
     pub reason: InterruptReason,
@@ -241,7 +257,8 @@ impl InterruptedEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct ContextCheckpointEvent {
     pub covers_through_seq: u64,
@@ -256,10 +273,9 @@ struct EnvelopeWire<'a> {
     event: &'a ConversationEvent,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(test, derive(serde::Deserialize), serde(deny_unknown_fields))]
 pub(crate) struct ConversationEnvelope {
-    #[serde(default = "current_schema_version")]
+    #[cfg_attr(test, serde(default = "current_schema_version"))]
     schema_version: u8,
     pub(crate) seq: u64,
     timestamp_ms: i64,
@@ -495,8 +511,10 @@ pub(crate) fn decode_conversation_frame(
     if bytes.is_empty() || bytes.len() > EVENT_FRAME_MAX_BYTES || bytes.last() != Some(&b'\n') {
         return Err(SessionError::InvalidConversationFrame);
     }
-    let envelope: ConversationEnvelope =
-        serde_json::from_slice(bytes).map_err(|_| SessionError::InvalidConversationFrame)?;
+    let envelope = parse_json(bytes)
+        .ok()
+        .and_then(envelope_from)
+        .ok_or(SessionError::InvalidConversationFrame)?;
     if envelope.schema_version != CONVERSATION_SCHEMA_VERSION
         || envelope.seq == 0
         || envelope.timestamp_ms < 0
@@ -561,10 +579,12 @@ fn is_valid_identity(value: &str) -> bool {
     (1..=MAX_IDENTITY_BYTES).contains(&value.len())
 }
 
+#[cfg(test)]
 fn current_schema_version() -> u8 {
     CONVERSATION_SCHEMA_VERSION
 }
 
+#[cfg(test)]
 fn valid_arguments() -> ToolArgumentIntegrity {
     ToolArgumentIntegrity::Valid
 }
@@ -573,6 +593,10 @@ trait WireTag: Copy + 'static {
     const ALL: &'static [Self];
 
     fn tag(self) -> &'static str;
+
+    fn from_tag(tag: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|value| value.tag() == tag)
+    }
 }
 
 impl WireTag for ToolArgumentIntegrity {
@@ -583,6 +607,29 @@ impl WireTag for ToolArgumentIntegrity {
             Self::Valid => "valid",
             Self::MalformedJson => "malformed_json",
             Self::NonObjectJson => "non_object_json",
+        }
+    }
+}
+
+impl WireTag for ArtifactCompleteness {
+    const ALL: &'static [Self] = &[Self::Complete, Self::Partial, Self::Unknown];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl WireTag for InterruptReason {
+    const ALL: &'static [Self] = &[Self::Cancelled, Self::Failed];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
         }
     }
 }
@@ -599,8 +646,7 @@ impl WireTag for ToolResultStatus {
 }
 
 mod wire_tag {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::Serializer;
 
     use super::WireTag;
 
@@ -611,15 +657,12 @@ mod wire_tag {
         serializer.serialize_str(value.tag())
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>, T: WireTag>(
+    #[cfg(test)]
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, T: WireTag>(
         deserializer: D,
     ) -> Result<T, D::Error> {
-        let tag = String::deserialize(deserializer)?;
-        T::ALL
-            .iter()
-            .copied()
-            .find(|value| value.tag() == tag)
-            .ok_or_else(|| D::Error::custom("InvalidEnumTag"))
+        let tag = <String as serde::Deserialize>::deserialize(deserializer)?;
+        T::from_tag(&tag).ok_or_else(|| serde::de::Error::custom("InvalidEnumTag"))
     }
 }
 

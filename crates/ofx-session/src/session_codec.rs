@@ -1,12 +1,11 @@
 use ofx_config::ProviderId;
 use ofx_contract::ReasoningEffort;
 use ofx_text::lowercase_hex;
-use serde::de::Error as _;
 use serde::ser::SerializeMap;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
+use serde::{Serialize, Serializer};
 
 use crate::fixed_field::False;
+use crate::json_fields::{Fields, Json, JsonError, parse_json, string};
 use crate::session_error::SessionError;
 use crate::session_layout::is_valid_session_id;
 use crate::session_store_paths::is_valid_workspace_root;
@@ -54,21 +53,26 @@ impl Serialize for SavedProvider {
     }
 }
 
-impl<'de> Deserialize<'de> for SavedProvider {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        parse_saved_provider(&Value::deserialize(deserializer)?)
-            .ok_or_else(|| D::Error::custom("InvalidProviderBinding"))
+#[cfg(test)]
+impl<'de> serde::Deserialize<'de> for SavedProvider {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        parse_saved_provider(&<Json<'de> as serde::Deserialize>::deserialize(
+            deserializer,
+        )?)
+        .ok_or_else(|| serde::de::Error::custom("InvalidProviderBinding"))
     }
 }
 
-fn parse_saved_provider(value: &Value) -> Option<SavedProvider> {
-    if let Value::String(name) = value {
+pub(crate) fn parse_saved_provider(value: &Json<'_>) -> Option<SavedProvider> {
+    if let Some(name) = value.as_str() {
         let id = ProviderId::parse(name)?;
         return SavedProvider::new(id, None);
     }
-    let object = value.as_object().filter(|object| object.len() == 2)?;
-    let id = ProviderId::parse(object.get("name")?.as_str()?)?;
-    let encoded = object.get("binding")?.as_str()?;
+    if !matches!(value, Json::Object(fields) if fields.len() == 2) {
+        return None;
+    }
+    let id = ProviderId::parse(value.get("name")?.as_str()?)?;
+    let encoded = value.get("binding")?.as_str()?;
     if encoded.len() != BINDING_BYTES * 2 || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
@@ -116,26 +120,6 @@ struct MetadataWire<'a> {
     subagent_child: False,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MetadataRecord {
-    schema_version: u8,
-    id: String,
-    origin_workspace_root: String,
-    workspace_root: String,
-    created_at_ms: i64,
-    updated_at_ms: i64,
-    conversation_language: String,
-    provider: SavedProvider,
-    model: String,
-    effort: String,
-    fast_mode: bool,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default, rename = "subagent_child")]
-    _subagent_child: False,
-}
-
 pub(crate) fn encode_session_metadata(metadata: &SessionMetadata) -> Result<Vec<u8>, SessionError> {
     validate_session_metadata(metadata)?;
     let effort = effort_label(&metadata.preferences.effort);
@@ -165,50 +149,47 @@ pub(crate) fn decode_session_metadata(bytes: &[u8]) -> Result<SessionMetadata, S
     if bytes.is_empty() || bytes.len() > MAX_SESSION_METADATA_BYTES {
         return Err(SessionError::SessionMetadataTooLarge);
     }
-    let record: MetadataRecord =
-        serde_json::from_slice(bytes).map_err(|_| classify_undecodable_metadata(bytes))?;
-    if record.schema_version != SESSION_METADATA_SCHEMA_VERSION {
-        return Err(SessionError::UnsupportedSessionSchema);
-    }
-    let effort =
-        ReasoningEffort::parse(&record.effort).ok_or(SessionError::InvalidSessionMetadata)?;
-    let metadata = SessionMetadata {
-        id: record.id,
-        origin_workspace_root: record.origin_workspace_root,
-        workspace_root: record.workspace_root,
-        created_at_ms: record.created_at_ms,
-        updated_at_ms: record.updated_at_ms,
-        conversation_language: record.conversation_language,
-        preferences: SessionPreferences {
-            provider: record.provider,
-            model: record.model,
-            effort,
-            fast_mode: record.fast_mode,
-        },
-        title: record.title,
-    };
+    let document = parse_json(bytes).map_err(|error| match error {
+        JsonError::Syntax => SessionError::InvalidSessionFormat,
+        JsonError::DuplicateField => SessionError::InvalidSessionMetadata,
+    })?;
+    let undecodable = undecodable_metadata(&document);
+    let metadata = metadata_from(document).ok_or(undecodable)?;
     validate_session_metadata(&metadata).map_err(|_| SessionError::InvalidSessionMetadata)?;
     Ok(metadata)
 }
 
-fn classify_undecodable_metadata(bytes: &[u8]) -> SessionError {
-    #[derive(Deserialize)]
-    struct SchemaProbe {
-        schema_version: Option<Value>,
-    }
-    match serde_json::from_slice::<SchemaProbe>(bytes) {
-        Ok(SchemaProbe {
-            schema_version: Some(version),
-        }) if version.as_u64() == Some(u64::from(SESSION_METADATA_SCHEMA_VERSION)) => {
+fn metadata_from(document: Json<'_>) -> Option<SessionMetadata> {
+    let mut fields = Fields::new(document)?;
+    fields
+        .unsigned("schema_version")
+        .filter(|version| *version == u64::from(SESSION_METADATA_SCHEMA_VERSION))?;
+    let metadata = SessionMetadata {
+        id: fields.string("id")?,
+        origin_workspace_root: fields.string("origin_workspace_root")?,
+        workspace_root: fields.string("workspace_root")?,
+        created_at_ms: fields.signed("created_at_ms")?,
+        updated_at_ms: fields.signed("updated_at_ms")?,
+        conversation_language: fields.string("conversation_language")?,
+        preferences: SessionPreferences {
+            provider: parse_saved_provider(&fields.required("provider")?)?,
+            model: fields.string("model")?,
+            effort: ReasoningEffort::parse(&fields.string("effort")?)?,
+            fast_mode: fields.flag("fast_mode")?,
+        },
+        title: fields.nullable("title", |value| string(value).map(Some))?,
+    };
+    fields.fixed::<False>("subagent_child")?;
+    fields.finish(metadata)
+}
+
+fn undecodable_metadata(document: &Json<'_>) -> SessionError {
+    match document.get("schema_version") {
+        None | Some(Json::Null) => SessionError::InvalidSessionFormat,
+        Some(version) if version.as_u64() == Some(u64::from(SESSION_METADATA_SCHEMA_VERSION)) => {
             SessionError::InvalidSessionMetadata
         }
-        Ok(SchemaProbe {
-            schema_version: Some(_),
-        }) => SessionError::UnsupportedSessionSchema,
-        Ok(SchemaProbe {
-            schema_version: None,
-        })
-        | Err(_) => SessionError::InvalidSessionFormat,
+        Some(_) => SessionError::UnsupportedSessionSchema,
     }
 }
 

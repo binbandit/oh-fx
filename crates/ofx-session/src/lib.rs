@@ -1,4 +1,5 @@
 mod fixed_field;
+mod json_fields;
 mod result_store;
 mod session_adapter;
 mod session_codec;
