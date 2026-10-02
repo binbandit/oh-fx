@@ -331,6 +331,19 @@ fn unsafe_overlong_and_slash_terminated_directories_are_left_out() {
     assert_eq!(paths(&search(&index, "")), ["ok.txt"]);
 }
 
+#[test]
+fn the_index_keeps_at_most_a_hundred_thousand_paths() {
+    let candidates: Vec<Candidate> = (0..=MAX_INDEXED_FILES)
+        .map(|index| file(&format!("f{index:06}")))
+        .collect();
+    let index = ready(&candidates);
+    let revision = index.readable_revision();
+    assert_eq!(revision.count, MAX_INDEXED_FILES);
+    let last = format!("f{:06}", MAX_INDEXED_FILES - 1);
+    assert_eq!(paths(&search(&index, &last)).first(), Some(&last.as_str()));
+    assert!(search(&index, &format!("f{MAX_INDEXED_FILES:06}")).is_empty());
+}
+
 fn workspace() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(temp.path()).unwrap();
