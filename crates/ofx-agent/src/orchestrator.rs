@@ -185,6 +185,8 @@ pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
     tool_specs: Vec<ToolSpec>,
+    offered_specs: Vec<ToolSpec>,
+    tool_guidance: String,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
@@ -214,11 +216,23 @@ impl Agent {
         permissions: Arc<dyn PermissionGate>,
         config: AgentConfig,
     ) -> Self {
-        let tool_specs = tools.iter().map(|tool| tool.spec().clone()).collect();
+        let tool_specs: Vec<ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
+        let (remote, offered): (Vec<_>, Vec<_>) = tools
+            .iter()
+            .zip(&tool_specs)
+            .partition(|(tool, _)| tool.provider_executed());
+        let offered_specs = offered.into_iter().map(|(_, spec)| spec.clone()).collect();
+        let tool_guidance = remote
+            .iter()
+            .map(|(_, spec)| spec.description.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         Self {
             provider,
             tools,
             tool_specs,
+            offered_specs,
+            tool_guidance,
             context,
             permissions,
             approvals: None,
@@ -460,7 +474,7 @@ impl Agent {
                 model: &self.config.model,
                 instructions: &instructions,
                 messages: &self.history,
-                tools: &self.tool_specs,
+                tools: &self.offered_specs,
                 tool_choice: ToolChoice::Auto,
                 max_output_tokens: self.config.max_output_tokens,
                 provider_options: self.provider_options(turn, events),
@@ -522,9 +536,12 @@ impl Agent {
             .project
             .as_ref()
             .map_or(0, |project| project.deltas.len());
-        let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 5);
+        let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 6);
         if !self.config.system_prompt.is_empty() {
             instructions.push(&self.config.system_prompt);
+        }
+        if !self.tool_guidance.is_empty() {
+            instructions.push(&self.tool_guidance);
         }
         if !skills.catalog.is_empty() {
             instructions.push(&skills.catalog);
