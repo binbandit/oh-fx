@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ofx_text::{prefix_by_width, visible_width};
 
 use crate::composer::{Composer, LayoutEvent, UnitKind, terminal_column, visible_window};
@@ -13,6 +15,7 @@ const ESC_INTERRUPT_FALLBACK: &str = "esc esc to interrupt";
 pub(crate) struct ComposerView {
     pub(crate) rows: Vec<Row>,
     pub(crate) cursor: Option<(usize, usize)>,
+    pub(crate) required_rows: Option<Range<usize>>,
 }
 
 pub(crate) fn input_row_limit(content_bottom: usize) -> usize {
@@ -101,6 +104,7 @@ pub(crate) fn composer_view(
     ComposerView {
         rows,
         cursor: Some((cursor_row, cursor_col)),
+        required_rows: None,
     }
 }
 

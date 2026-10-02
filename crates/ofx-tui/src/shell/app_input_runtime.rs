@@ -156,7 +156,7 @@ impl Shell<'_> {
         }
     }
 
-    fn insert(&mut self, text: &str) {
+    pub(super) fn insert(&mut self, text: &str) {
         if self.composer.insert_text(text, COMPOSER_INPUT_LIMIT_BYTES)
             == InsertResult::LimitExceeded
         {

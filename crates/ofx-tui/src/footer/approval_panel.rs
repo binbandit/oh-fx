@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ofx_contract::ApprovalDecision;
 use ofx_text::visible_width;
 
@@ -51,6 +53,11 @@ pub(crate) fn choices(remember: Option<&str>) -> Vec<Choice> {
     }
 }
 
+pub(crate) struct PanelView {
+    pub(crate) rows: Vec<Row>,
+    pub(crate) required_rows: Option<Range<usize>>,
+}
+
 pub(crate) fn approval_panel_rows(
     theme: &Theme,
     content: &ApprovalContent,
@@ -58,7 +65,7 @@ pub(crate) fn approval_panel_rows(
     selected: usize,
     cols: usize,
     terminal_rows: u16,
-) -> Vec<Row> {
+) -> PanelView {
     let spacious = terminal_rows >= SPACIOUS_MIN_TERMINAL_ROWS;
     let mut rows = vec![header_row(theme, content.kind, cols)];
     if spacious {
@@ -66,20 +73,30 @@ pub(crate) fn approval_panel_rows(
     }
     rows.push(inset(content.question, Paint::PLAIN.with_bold()));
     rows.push(reason_row(theme, content.reason.as_deref()));
+    let action_start = rows.len();
+    let mut complete = true;
     for block in &content.action {
-        rows.extend(action_rows(theme, block, cols));
+        let (block_rows, block_complete) = action_rows(theme, block, cols);
+        rows.extend(block_rows);
+        complete &= block_complete;
     }
     if spacious {
         rows.push(Row::new());
     }
     for (index, choice) in choices.iter().enumerate() {
-        rows.push(choice_row(theme, &choice.label, index == selected));
+        let row = choice_row(theme, &choice.label, index == selected);
+        complete &= row.width() <= cols;
+        rows.push(row);
     }
+    let required_rows = complete.then_some(action_start..rows.len());
     if spacious {
         rows.push(Row::new());
     }
     rows.push(inset(hint_for(cols.saturating_sub(INSET)), theme.dim));
-    rows.into_iter().map(|row| row.clipped(cols)).collect()
+    PanelView {
+        rows: rows.into_iter().map(|row| row.clipped(cols)).collect(),
+        required_rows,
+    }
 }
 
 fn inset(text: &str, paint: Paint) -> Row {
@@ -111,15 +128,21 @@ fn reason_row(theme: &Theme, reason: Option<&str>) -> Row {
     row
 }
 
-fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> Vec<Row> {
+fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bool) {
     match block {
-        ActionBlock::Line(text) => vec![inset(text, Paint::PLAIN)],
+        ActionBlock::Line(text) => {
+            let row = inset(text, Paint::PLAIN);
+            let complete = row.width() <= cols;
+            (vec![row], complete)
+        }
         ActionBlock::Wrapped { lead, text } => {
             let lead_width = visible_width(lead);
             let continuation = " ".repeat(lead_width);
             let content_width = cols.saturating_sub(INSET + lead_width);
-            let segments = command_segments(text, content_width).unwrap_or_else(|| vec![text]);
-            segments
+            let segments = command_segments(text, content_width);
+            let complete = segments.is_some();
+            let rows = segments
+                .unwrap_or_else(|| vec![text])
                 .iter()
                 .enumerate()
                 .map(|(index, segment)| {
@@ -129,7 +152,8 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> Vec<Row> {
                     row.push(segment, theme.tag);
                     row
                 })
-                .collect()
+                .collect();
+            (rows, complete)
         }
     }
 }
@@ -194,6 +218,7 @@ mod tests {
             cols,
             24,
         )
+        .rows
     }
 
     fn command_content(command: &str) -> ApprovalContent {
@@ -255,7 +280,8 @@ mod tests {
             2,
             80,
             34,
-        );
+        )
+        .rows;
         let texts = texts(&rows);
         assert_eq!(texts.len(), 11);
         assert_eq!(texts[1], "");
@@ -276,6 +302,17 @@ mod tests {
             texts(&rows("Reading a", REMEMBER, 0, 50))[7],
             "  1–3 choose now    enter confirm    esc cancel"
         );
+    }
+
+    #[test]
+    fn panels_name_the_rows_that_must_be_seen_only_when_nothing_is_cut() {
+        let view = |title: &str, cols| {
+            approval_panel_rows(&theme(), &titled(title), &choices(REMEMBER), 0, cols, 34)
+                .required_rows
+        };
+        assert_eq!(view("Reading a", 80), Some(4..9));
+        assert_eq!(view("Reading a", 40), None);
+        assert_eq!(view(&"a".repeat(79), 80), None);
     }
 
     #[test]
@@ -332,6 +369,8 @@ mod tests {
             100,
             24,
         );
+        assert_eq!(rows.required_rows, Some(3..8));
+        let rows = rows.rows;
         let texts = texts(&rows);
         assert!(rows.iter().all(|row| row.width() <= 100));
         assert_eq!(
@@ -363,7 +402,8 @@ mod tests {
             0,
             80,
             24,
-        );
+        )
+        .rows;
         let joined = texts(&rows).concat();
         assert_eq!(joined.matches('x').count(), 5000, "{joined}");
         assert!(

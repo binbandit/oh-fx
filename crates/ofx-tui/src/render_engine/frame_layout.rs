@@ -15,6 +15,7 @@ pub(crate) struct LiveLayout {
     pub(crate) rows: Vec<Row>,
     pub(crate) cursor: Option<(usize, usize)>,
     pub(crate) footer_row: usize,
+    pub(crate) composer_start: usize,
 }
 
 pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
@@ -63,6 +64,7 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
         rows,
         cursor,
         footer_row: leading_gaps.saturating_sub(dropped),
+        composer_start,
     }
 }
 
@@ -74,6 +76,7 @@ mod tests {
         ComposerView {
             rows: vec![Row::plain("┃ ")],
             cursor: Some((0, 2)),
+            required_rows: None,
         }
     }
 
@@ -127,6 +130,7 @@ mod tests {
             ["", "• Generating", "", "┋ next", "", "┃ ", "", "auto · m"]
         );
         assert_eq!(layout.cursor, Some((5, 2)));
+        assert_eq!(layout.composer_start, 5);
     }
 
     #[test]

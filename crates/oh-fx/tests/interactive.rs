@@ -10,6 +10,7 @@ use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events, chat_tool_cal
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(15);
+const APPROVAL_ARMING: Duration = Duration::from_millis(700);
 const CANCELLATION: &str = "■ Cancelled · What can oh-fx do differently?";
 const SIGTERM: i32 = 15;
 const SIGNAL_RESTORE: &[u8] = b"\x1b[?25h\x1b[?2031l\x1b[?2004l\x1b[<u\x1b[>4;0m";
@@ -141,6 +142,7 @@ fn reads_outside_the_workspace_wait_for_approval_in_the_footer() {
     ] {
         assert!(screen.contains(line), "{line}\n{screen}");
     }
+    thread::sleep(APPROVAL_ARMING);
     session.send(b"2");
     wait(&session, "Read it.");
     session.send(b"again\r");
@@ -206,6 +208,7 @@ fn ask_mode_file_changes_run_once_approved_and_project_instructions_reach_the_mo
     session.send(b"write the notes\r");
     let screen = wait(&session, "Permission needed · Choose one");
     assert!(screen.contains("notes.md"), "{screen}");
+    thread::sleep(APPROVAL_ARMING);
     session.send(b"1");
     wait(&session, "Wrote it.");
     assert_eq!(
