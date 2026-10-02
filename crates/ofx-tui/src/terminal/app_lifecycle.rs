@@ -8,6 +8,10 @@ use super::{
 const KITTY_KEYBOARD_POP: &str = "\x1b[<u";
 const ABNORMAL_EXIT_RESTORE: [&str; 18] = [
     "\x1b[?2026l",
+    "\x1b[?1000l",
+    "\x1b[?1002l",
+    "\x1b[?1004l",
+    "\x1b[?1006l",
     "\x1b[?1049l",
     KITTY_KEYBOARD_POP,
     "\x1b[>4;0m",
@@ -15,10 +19,6 @@ const ABNORMAL_EXIT_RESTORE: [&str; 18] = [
     "\x1b[?2031l",
     "\x1b[?25h",
     "\x1b[?7h",
-    "\x1b[?1000l",
-    "\x1b[?1002l",
-    "\x1b[?1004l",
-    "\x1b[?1006l",
     "\x1b[?1l",
     "\x1b>",
     "\x1b[4l",
@@ -214,7 +214,7 @@ mod tests {
         for (tmux, keyboard_pop) in [(false, "\x1b[<u"), (true, "")] {
             let restore = abnormal_restore(tmux);
             let first = format!(
-                "\x1b[?2026l\x1b[?1049l{keyboard_pop}\x1b[>4;0m\x1b[?2004l\x1b[?2031l\x1b[?25h\x1b[?7h"
+                "\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1004l\x1b[?1006l\x1b[?1049l{keyboard_pop}\x1b[>4;0m\x1b[?2004l\x1b[?2031l\x1b[?25h\x1b[?7h"
             );
             assert!(restore.starts_with(&first), "{restore:?}");
             for sequence in abnormal_exit_restore_sequences(tmux) {
