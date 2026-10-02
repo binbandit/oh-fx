@@ -13,8 +13,9 @@ pub(crate) struct LiveParts<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LiveLayout {
     pub(crate) rows: Vec<Row>,
-    pub(crate) cursor: (usize, usize),
+    pub(crate) cursor: Option<(usize, usize)>,
     pub(crate) footer_row: usize,
+    pub(crate) composer_start: usize,
 }
 
 pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
@@ -53,11 +54,17 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
     rows.drain(..dropped);
     let footer_start = footer_start - dropped;
     let composer_start = footer_start + banner_rows;
-    let cursor_row = composer_start + parts.composer.cursor.0.min(composer_rows.saturating_sub(1));
+    let cursor = parts.composer.cursor.map(|(row, col)| {
+        (
+            composer_start + row.min(composer_rows.saturating_sub(1)),
+            col,
+        )
+    });
     LiveLayout {
         rows,
-        cursor: (cursor_row, parts.composer.cursor.1),
+        cursor,
         footer_row: leading_gaps.saturating_sub(dropped),
+        composer_start,
     }
 }
 
@@ -68,7 +75,8 @@ mod tests {
     fn prompt() -> ComposerView {
         ComposerView {
             rows: vec![Row::plain("┃ ")],
-            cursor: (0, 2),
+            cursor: Some((0, 2)),
+            review: None,
         }
     }
 
@@ -95,11 +103,11 @@ mod tests {
     fn idle_frames_place_the_composer_above_a_blank_row_and_the_status() {
         let layout = solve(parts(&prompt(), false, &[], &[]), 30);
         assert_eq!(texts(&layout), ["┃ ", "", "auto · m"]);
-        assert_eq!(layout.cursor, (0, 2));
+        assert_eq!(layout.cursor, Some((0, 2)));
         assert_eq!(layout.footer_row, 0);
         let layout = solve(parts(&prompt(), true, &[], &[]), 30);
         assert_eq!(texts(&layout), ["", "┃ ", "", "auto · m"]);
-        assert_eq!(layout.cursor, (1, 2));
+        assert_eq!(layout.cursor, Some((1, 2)));
         assert_eq!(layout.footer_row, 1);
     }
 
@@ -110,7 +118,7 @@ mod tests {
             texts(&layout),
             ["", "• Thinking (0s)", "", "┃ ", "", "auto · m"]
         );
-        assert_eq!(layout.cursor, (3, 2));
+        assert_eq!(layout.cursor, Some((3, 2)));
         assert_eq!(layout.footer_row, 1);
     }
 
@@ -121,13 +129,14 @@ mod tests {
             texts(&layout),
             ["", "• Generating", "", "┋ next", "", "┃ ", "", "auto · m"]
         );
-        assert_eq!(layout.cursor, (5, 2));
+        assert_eq!(layout.cursor, Some((5, 2)));
+        assert_eq!(layout.composer_start, 5);
     }
 
     #[test]
     fn short_terminals_keep_the_footer_and_drop_activity_gaps() {
         let layout = solve(parts(&prompt(), true, &["• Thinking"], &[]), 4);
         assert_eq!(texts(&layout), ["• Thinking", "┃ ", "", "auto · m"]);
-        assert_eq!(layout.cursor, (1, 2));
+        assert_eq!(layout.cursor, Some((1, 2)));
     }
 }

@@ -48,6 +48,8 @@ pub(crate) enum PasteOwner {
     AuthCode,
 }
 
+pub(crate) const COMPOSER_INPUT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PasteOutcome {
     Text {
@@ -68,6 +70,7 @@ pub(crate) enum PasteOutcome {
     TrailingInput {
         owner: PasteOwner,
     },
+    Discarded,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -157,7 +160,7 @@ impl PasteFraming {
         let owner = self.owner?;
         match self.settlement() {
             Settlement::None => None,
-            Settlement::Finish => self.finish(owner),
+            Settlement::Finish => Some(self.finish(owner)),
             Settlement::Reject => {
                 self.reset();
                 Some(PasteOutcome::TrailingInput { owner })
@@ -221,30 +224,28 @@ impl PasteFraming {
         }
     }
 
-    fn finish(&mut self, owner: PasteOwner) -> Option<PasteOutcome> {
+    fn finish(&mut self, owner: PasteOwner) -> PasteOutcome {
         if self.overflow_bytes > 0 {
             let attempted_bytes = self.attempted_bytes();
             self.reset();
-            return Some(PasteOutcome::LimitExceeded {
+            return PasteOutcome::LimitExceeded {
                 owner,
                 attempted_bytes,
-            });
+            };
         }
         if owner == PasteOwner::DecisionPrompt {
             self.reset();
-            return None;
+            return PasteOutcome::Discarded;
         }
         if owner == PasteOwner::AuthCode {
-            return Some(self.finish_secret(owner));
+            return self.finish_secret(owner);
         }
         let mut bytes = std::mem::take(&mut self.buffer);
         self.reset();
         normalize_for_owner(owner, &mut bytes);
         match String::from_utf8(bytes) {
-            Ok(text) if is_model_safe_text(text.as_bytes()) => {
-                Some(PasteOutcome::Text { owner, text })
-            }
-            Ok(_) | Err(_) => Some(PasteOutcome::UnsupportedBytes { owner }),
+            Ok(text) if is_model_safe_text(text.as_bytes()) => PasteOutcome::Text { owner, text },
+            Ok(_) | Err(_) => PasteOutcome::UnsupportedBytes { owner },
         }
     }
 
@@ -547,7 +548,7 @@ mod tests {
         let mut state = framing(PasteOwner::DecisionPrompt, usize::MAX);
         feed(&mut state, b"1");
         feed(&mut state, PASTE_END_MARKER);
-        assert_eq!(state.settle_delivery_epoch(), None);
+        assert_eq!(state.settle_delivery_epoch(), Some(PasteOutcome::Discarded));
         assert!(!state.active());
     }
 }

@@ -156,11 +156,11 @@ mod tests {
     }
 
     #[test]
-    fn backspace_follows_upstream_widths_for_a_lone_skin_tone_modifier() {
+    fn backspace_removes_a_lone_skin_tone_modifier_on_its_own() {
         let mut composer = Composer::new();
         composer.insert_text("ab\u{1f3fd}", usize::MAX);
         assert!(composer.delete(DeletionKind::CharacterLeft));
-        assert_eq!(composer.text(), "a");
+        assert_eq!(composer.text(), "ab");
     }
 
     #[test]
