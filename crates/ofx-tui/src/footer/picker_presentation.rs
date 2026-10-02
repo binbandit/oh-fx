@@ -79,12 +79,19 @@ fn file_picker_rows(theme: &Theme, frame: &FilePickerFrame<'_>) -> Vec<Row> {
         }
         let visible = frame.rows.saturating_sub(rows.len());
         let start = update_edge_start(frame.window_start, count, selected, visible);
-        for index in edge_from_start(count, start, visible) {
+        let window = edge_from_start(count, start, visible);
+        for (index, item) in frame
+            .items
+            .iter()
+            .enumerate()
+            .skip(window.start)
+            .take(window.len())
+        {
             let highlighted = frame.selected.is_some() && index == selected;
             rows.push(file_row(
                 theme,
                 frame.start_col,
-                &frame.items[index],
+                item,
                 highlighted,
                 frame.cols,
             ));
@@ -158,7 +165,8 @@ impl FileLabel<'_> {
             return;
         }
         let dirname_len = if slash == 0 { 1 } else { slash };
-        let directory_budget = visible_width(&path[..dirname_len]).min((width / 3).clamp(3, 12));
+        let dirname = path.get(..dirname_len).unwrap_or_default();
+        let directory_budget = visible_width(dirname).min((width / 3).clamp(3, 12));
         let basename_budget = width - directory_budget - 1 - slash_width;
         self.ellipsized(0, dirname_len, directory_budget, Placement::Middle);
         self.styled(dirname_len, basename_start);
@@ -192,7 +200,7 @@ impl FileLabel<'_> {
         if width == 0 || start >= end {
             return;
         }
-        let source = &self.item.path[start..end];
+        let source = self.item.path.get(start..end).unwrap_or_default();
         if visible_width(source) <= width {
             self.styled(start, end);
             return;
@@ -226,14 +234,20 @@ impl FileLabel<'_> {
             let visible_start = span.start.max(start);
             let visible_end = span.end.min(end);
             if cursor < visible_start {
-                self.row.push(&path[cursor..visible_start], self.base);
+                self.row.push(
+                    path.get(cursor..visible_start).unwrap_or_default(),
+                    self.base,
+                );
             }
-            self.row
-                .push(&path[visible_start..visible_end], self.base.with_bold());
+            self.row.push(
+                path.get(visible_start..visible_end).unwrap_or_default(),
+                self.base.with_bold(),
+            );
             cursor = visible_end;
         }
         if cursor < end {
-            self.row.push(&path[cursor..end], self.base);
+            self.row
+                .push(path.get(cursor..end).unwrap_or_default(), self.base);
         }
     }
 }
@@ -251,7 +265,7 @@ fn display_safe_suffix(source: &str, width: usize) -> &str {
         }
         start += unit.byte_len;
     }
-    &suffix[start..]
+    suffix.get(start..).unwrap_or_default()
 }
 
 #[cfg(test)]

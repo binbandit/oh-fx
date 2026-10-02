@@ -76,8 +76,7 @@ fn needs_quotes(path: &str) -> bool {
 fn token_end(text: &[u8], start: usize) -> usize {
     let mut index = start;
     let mut quote = None;
-    while index < text.len() {
-        let byte = text[index];
+    while let Some(&byte) = text.get(index) {
         if byte == b'\\' && index + 1 < text.len() {
             index += 2;
             continue;
@@ -95,7 +94,12 @@ fn token_end(text: &[u8], start: usize) -> usize {
 
 pub(crate) fn parse_at(text: &str, start: usize) -> Option<Token> {
     let bytes = text.as_bytes();
-    if bytes.get(start) != Some(&b'@') || (start > 0 && !is_start_boundary(bytes[start - 1])) {
+    if bytes.get(start) != Some(&b'@')
+        || start
+            .checked_sub(1)
+            .and_then(|before| bytes.get(before))
+            .is_some_and(|byte| !is_start_boundary(*byte))
+    {
         return None;
     }
     let quoted = bytes.get(start + 1) == Some(&b'"');
@@ -105,8 +109,11 @@ pub(crate) fn parse_at(text: &str, start: usize) -> Option<Token> {
             token_end(bytes, path_start)
         } else {
             let mut end = path_start;
-            while end < bytes.len() && !is_separator(bytes[end]) {
-                end += if bytes[end] == b'\\' && end + 1 < bytes.len() {
+            while let Some(&byte) = bytes.get(end) {
+                if is_separator(byte) {
+                    break;
+                }
+                end += if byte == b'\\' && end + 1 < bytes.len() {
                     2
                 } else {
                     1
@@ -129,18 +136,18 @@ pub(crate) fn parse_at(text: &str, start: usize) -> Option<Token> {
         });
     }
     let mut index = path_start;
-    while index < bytes.len() {
-        let byte = bytes[index];
+    while let Some(&byte) = bytes.get(index) {
         if matches!(byte, b'\n' | b'\r' | b'\t') {
             break;
         }
         if byte == b'\\' {
-            if index + 1 == bytes.len() {
-                index = bytes.len();
-                break;
-            }
-            if matches!(bytes[index + 1], b'\n' | b'\r' | b'\t') {
-                break;
+            match bytes.get(index + 1) {
+                None => {
+                    index = bytes.len();
+                    break;
+                }
+                Some(b'\n' | b'\r' | b'\t') => break,
+                Some(_) => {}
             }
             index += 2;
             continue;
@@ -149,11 +156,10 @@ pub(crate) fn parse_at(text: &str, start: usize) -> Option<Token> {
             let quote_end = index + 1;
             let end = token_end(bytes, quote_end);
             let valid = index > path_start
-                && is_terminal_safe(&text[path_start..index])
-                && bytes[quote_end..end]
-                    .iter()
-                    .copied()
-                    .all(is_sentence_punctuation);
+                && text.get(path_start..index).is_some_and(is_terminal_safe)
+                && bytes
+                    .get(quote_end..end)
+                    .is_some_and(|suffix| suffix.iter().copied().all(is_sentence_punctuation));
             return Some(Token {
                 start,
                 end,
@@ -200,18 +206,10 @@ pub(crate) fn decode(payload: &str) -> Option<String> {
     if !is_terminal_safe(payload) {
         return None;
     }
-    let bytes = payload.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            index += 1;
-            if index == bytes.len() {
-                return None;
-            }
-        }
-        decoded.push(bytes[index]);
-        index += 1;
+    let mut decoded = Vec::with_capacity(payload.len());
+    let mut bytes = payload.bytes();
+    while let Some(byte) = bytes.next() {
+        decoded.push(if byte == b'\\' { bytes.next()? } else { byte });
     }
     String::from_utf8(decoded).ok()
 }

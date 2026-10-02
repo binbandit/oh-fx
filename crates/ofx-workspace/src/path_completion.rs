@@ -78,7 +78,9 @@ pub fn complete(
         let Some(kind) = entry_kind(&entry) else {
             continue;
         };
-        let path = format!("{}{name}", parsed.display_prefix);
+        let mut path = String::with_capacity(parsed.display_prefix.len() + name.len());
+        path.push_str(&parsed.display_prefix);
+        path.push_str(&name);
         if path.len() > MAX_PATH_LEN || !is_terminal_safe(&path) {
             continue;
         }
@@ -108,7 +110,7 @@ pub fn complete(
         .map(|(_, mut result)| {
             checkpoint(cancel)?;
             let spans = matcher
-                .match_spans(&result.path[prefix_len..])
+                .match_spans(result.path.get(prefix_len..).unwrap_or_default())
                 .ok_or(PathCompletionError::Unavailable)?;
             result.matched_spans = spans
                 .into_iter()
@@ -140,22 +142,18 @@ pub fn is_current_candidate_kind(
 }
 
 fn parse_explicit_query(query: &str) -> Option<ParsedQuery<'_>> {
-    if DIRECTORY_SHORTCUTS.contains(&query) {
-        return Some(ParsedQuery {
-            parent: query,
-            display_prefix: format!("{query}/"),
-            basename_query: "",
-        });
-    }
-    let separator = query.rfind('/')?;
+    let (parent, basename_query) = if DIRECTORY_SHORTCUTS.contains(&query) {
+        (query, "")
+    } else {
+        query.rsplit_once('/')?
+    };
+    let mut display_prefix = String::with_capacity(parent.len() + 1);
+    display_prefix.push_str(parent);
+    display_prefix.push('/');
     Some(ParsedQuery {
-        parent: if separator == 0 {
-            &query[..1]
-        } else {
-            &query[..separator]
-        },
-        display_prefix: query[..=separator].to_owned(),
-        basename_query: &query[separator + 1..],
+        parent: if parent.is_empty() { "/" } else { parent },
+        display_prefix,
+        basename_query,
     })
 }
 

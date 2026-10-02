@@ -182,12 +182,12 @@ pub(super) fn rank_top(
     };
     let mut ranked: Vec<(MatchScore, usize)> = Vec::with_capacity(cap);
     let mut worst = 0;
-    for index in 0..total {
+    for (index, entry) in generation.entries.iter().take(total).enumerate() {
         let Some(score) = query.score(
-            generation.path_at(index),
-            generation.lower_path_at(index),
-            generation.basename_offset(index),
-            generation.masks[index],
+            generation.path(entry),
+            generation.lower_path(entry),
+            entry.basename_offset(),
+            entry.mask,
         ) else {
             continue;
         };
@@ -197,8 +197,10 @@ pub(super) fn rank_top(
             if ranked.len() == cap {
                 worst = worst_slot(&ranked, &better);
             }
-        } else if better(&candidate, &ranked[worst]) {
-            ranked[worst] = candidate;
+        } else if let Some(slot) = ranked.get_mut(worst)
+            && better(&candidate, slot)
+        {
+            *slot = candidate;
             worst = worst_slot(&ranked, &better);
         }
     }
@@ -242,13 +244,14 @@ fn ranked_better(
 }
 
 fn worst_slot<T>(ranked: &[T], better: &impl Fn(&T, &T) -> bool) -> usize {
-    let mut worst = 0;
-    for (index, candidate) in ranked.iter().enumerate().skip(1) {
-        if better(&ranked[worst], candidate) {
-            worst = index;
+    let mut worst: Option<(usize, &T)> = None;
+    for (index, candidate) in ranked.iter().enumerate() {
+        match worst {
+            Some((_, current)) if !better(current, candidate) => {}
+            _ => worst = Some((index, candidate)),
         }
     }
-    worst
+    worst.map_or(0, |(index, _)| index)
 }
 
 fn score_ascii_match(
@@ -260,16 +263,17 @@ fn score_ascii_match(
     if query.is_empty() || path.is_empty() {
         return None;
     }
-    let exact_fit = lower == query || &lower[basename_offset..] == query;
-    let matches = |position: usize, query_index: usize| lower[position] == query[query_index];
+    let exact_fit = lower == query || lower.get(basename_offset..) == Some(query);
     let facts_from = |range_start: usize| {
         subsequence_facts(
             path.as_bytes(),
             range_start,
-            query.len(),
-            range_start..lower.len(),
-            |position| position,
-            matches,
+            query,
+            lower
+                .iter()
+                .enumerate()
+                .skip(range_start)
+                .map(|(position, byte)| (position, position, *byte)),
         )
     };
     if let Some(facts) = facts_from(basename_offset) {
@@ -286,6 +290,14 @@ struct FoldedPath {
 }
 
 impl FoldedPath {
+    fn positions(&self) -> impl Iterator<Item = (usize, usize, char)> + '_ {
+        self.scalars
+            .iter()
+            .zip(&self.byte_offsets)
+            .enumerate()
+            .map(|(position, (scalar, offset))| (position, *offset, *scalar))
+    }
+
     fn decode(path: &str, basename_offset: usize) -> Option<Self> {
         let mut scalars = Vec::new();
         let mut byte_offsets = Vec::new();
@@ -314,19 +326,14 @@ fn score_folded_match(path: &str, basename_offset: usize, query: &[char]) -> Opt
         return None;
     }
     let folded = FoldedPath::decode(path, basename_offset)?;
-    let scalars = &folded.scalars;
-    let exact_fit = scalars == query || &scalars[folded.basename_scalar..] == query;
+    let scalars = folded.scalars.as_slice();
+    let exact_fit = scalars == query || scalars.get(folded.basename_scalar..) == Some(query);
     let facts_from = |range_start: usize| {
-        if query.len() > scalars.len() - range_start {
-            return None;
-        }
         subsequence_facts(
             path.as_bytes(),
             range_start,
-            query.len(),
-            range_start..scalars.len(),
-            |position| folded.byte_offsets[position],
-            |position, query_index| scalars[position] == query[query_index],
+            query,
+            folded.positions().skip(range_start),
         )
     };
     if let Some(facts) = facts_from(folded.basename_scalar) {
@@ -336,49 +343,51 @@ fn score_folded_match(path: &str, basename_offset: usize, query: &[char]) -> Opt
     Some(MatchScore::new(exact_fit, false, facts))
 }
 
-fn subsequence_facts(
+fn subsequence_facts<T: PartialEq + Copy>(
     path: &[u8],
     range_start: usize,
-    query_len: usize,
-    positions: impl Iterator<Item = usize>,
-    byte_at: impl Fn(usize) -> usize,
-    matches: impl Fn(usize, usize) -> bool,
+    query: &[T],
+    haystack: impl Iterator<Item = (usize, usize, T)>,
 ) -> Option<SubsequenceFacts> {
     let mut facts = SubsequenceFacts::default();
-    let mut query_index = 0;
-    let mut previous = 0;
+    let mut wanted = query.iter();
+    let mut next = wanted.next();
+    let mut previous = None;
     let mut run = 0;
-    for position in positions {
-        if query_index == query_len {
+    for (position, byte_offset, value) in haystack {
+        let Some(target) = next else {
             break;
-        }
-        if !matches(position, query_index) {
+        };
+        if value != *target {
             continue;
         }
-        if query_index == 0 {
-            facts.first_position = position - range_start;
-            facts.prefix = position == range_start;
-            run = 1;
-        } else if position == previous + 1 {
-            facts.consecutive_matches += 1;
-            run += 1;
-        } else {
-            facts.gaps += position - previous - 1;
-            run = 1;
+        match previous {
+            None => {
+                facts.first_position = position - range_start;
+                facts.prefix = position == range_start;
+                run = 1;
+            }
+            Some(previous) if position == previous + 1 => {
+                facts.consecutive_matches += 1;
+                run += 1;
+            }
+            Some(previous) => {
+                facts.gaps += position - previous - 1;
+                run = 1;
+            }
         }
         facts.longest_run = facts.longest_run.max(run);
-        facts.boundary_matches += usize::from(is_match_boundary(path, byte_at(position)));
-        previous = position;
-        query_index += 1;
+        facts.boundary_matches += usize::from(is_match_boundary(path, byte_offset));
+        previous = Some(position);
+        next = wanted.next();
     }
-    (query_index == query_len).then_some(facts)
+    next.is_none().then_some(facts)
 }
 
 fn is_match_boundary(path: &[u8], byte_index: usize) -> bool {
-    if byte_index == 0 {
+    let Some(previous) = byte_index.checked_sub(1).and_then(|index| path.get(index)) else {
         return true;
-    }
-    let previous = path[byte_index - 1];
+    };
     if matches!(previous, b'/' | b'-' | b'_' | b'.' | b' ') {
         return true;
     }
@@ -402,26 +411,26 @@ fn collect_match_offsets(
     range_start: usize,
     query: &[char],
 ) -> Option<Vec<usize>> {
-    if query.len() > folded.scalars.len() - range_start {
-        return None;
-    }
     let mut offsets = Vec::with_capacity(query.len());
-    for position in range_start..folded.scalars.len() {
-        if offsets.len() == query.len() {
+    let mut wanted = query.iter();
+    let mut next = wanted.next();
+    for (_, offset, scalar) in folded.positions().skip(range_start) {
+        let Some(target) = next else {
             break;
-        }
-        if folded.scalars[position] == query[offsets.len()] {
-            offsets.push(folded.byte_offsets[position]);
+        };
+        if scalar == *target {
+            offsets.push(offset);
+            next = wanted.next();
         }
     }
-    (offsets.len() == query.len()).then_some(offsets)
+    next.is_none().then_some(offsets)
 }
 
 fn spans_from_matched_offsets(path: &str, offsets: &[usize]) -> Option<Vec<Range<usize>>> {
     let mut spans: Vec<Range<usize>> = Vec::new();
-    let mut matched = 0;
+    let mut pending = offsets.iter().copied().peekable();
     let mut cursor = 0;
-    while cursor < path.len() && matched < offsets.len() {
+    while cursor < path.len() && pending.peek().is_some() {
         let cluster_start = cursor;
         let first = display_unit_at(path, cursor);
         if first.byte_len == 0 {
@@ -439,12 +448,11 @@ fn spans_from_matched_offsets(path: &str, offsets: &[usize]) -> Option<Vec<Range
             cursor += continuation.byte_len;
         }
         let mut cluster_matched = false;
-        while matched < offsets.len() && offsets[matched] < cursor {
-            if offsets[matched] < cluster_start {
+        while let Some(offset) = pending.next_if(|offset| *offset < cursor) {
+            if offset < cluster_start {
                 return None;
             }
             cluster_matched = true;
-            matched += 1;
         }
         if !cluster_matched {
             continue;
@@ -454,5 +462,5 @@ fn spans_from_matched_offsets(path: &str, offsets: &[usize]) -> Option<Vec<Range
             _ => spans.push(cluster_start..cursor),
         }
     }
-    (matched == offsets.len()).then_some(spans)
+    pending.peek().is_none().then_some(spans)
 }

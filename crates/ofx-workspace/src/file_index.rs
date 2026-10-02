@@ -59,16 +59,31 @@ pub struct ReadableRevision {
 #[error("InvalidIndexData")]
 pub struct InvalidIndexData;
 
+struct IndexedPath {
+    start: u32,
+    end: u32,
+    basename: u32,
+    mask: u32,
+    kind: CandidateKind,
+}
+
+impl IndexedPath {
+    fn range(&self) -> Range<usize> {
+        self.start as usize..self.end as usize
+    }
+
+    fn basename_offset(&self) -> usize {
+        self.basename as usize
+    }
+}
+
 struct Generation {
     id: usize,
     scope_epoch: u64,
     from_cache: bool,
     paths: String,
     lower: Vec<u8>,
-    offsets: Vec<usize>,
-    basename_starts: Vec<usize>,
-    kinds: Vec<CandidateKind>,
-    masks: Vec<u32>,
+    entries: Vec<IndexedPath>,
 }
 
 impl Generation {
@@ -84,10 +99,7 @@ impl Generation {
             from_cache: false,
             paths: String::new(),
             lower: Vec::new(),
-            offsets: vec![0],
-            basename_starts: Vec::new(),
-            kinds: Vec::new(),
-            masks: Vec::new(),
+            entries: Vec::new(),
         };
         for candidate in candidates
             .iter()
@@ -103,32 +115,40 @@ impl Generation {
     }
 
     fn push(&mut self, candidate: &Candidate) {
-        let start = self.paths.len();
         let path = candidate.path.as_str();
+        let (Ok(start), Ok(end), Ok(basename)) = (
+            u32::try_from(self.paths.len()),
+            u32::try_from(self.paths.len() + path.len()),
+            u32::try_from(path.rfind('/').map_or(0, |slash| slash + 1)),
+        ) else {
+            return;
+        };
         self.paths.push_str(path);
         self.lower
             .extend(path.bytes().map(|byte| byte.to_ascii_lowercase()));
-        self.basename_starts
-            .push(start + path.rfind('/').map_or(0, |slash| slash + 1));
-        self.masks.push(matcher::path_mask(path));
-        self.kinds.push(candidate.kind);
-        self.offsets.push(self.paths.len());
+        self.entries.push(IndexedPath {
+            start,
+            end,
+            basename,
+            mask: matcher::path_mask(path),
+            kind: candidate.kind,
+        });
     }
 
     fn count(&self) -> usize {
-        self.kinds.len()
+        self.entries.len()
+    }
+
+    fn path(&self, entry: &IndexedPath) -> &str {
+        self.paths.get(entry.range()).unwrap_or_default()
+    }
+
+    fn lower_path(&self, entry: &IndexedPath) -> &[u8] {
+        self.lower.get(entry.range()).unwrap_or_default()
     }
 
     fn path_at(&self, index: usize) -> &str {
-        &self.paths[self.offsets[index]..self.offsets[index + 1]]
-    }
-
-    fn lower_path_at(&self, index: usize) -> &[u8] {
-        &self.lower[self.offsets[index]..self.offsets[index + 1]]
-    }
-
-    fn basename_offset(&self, index: usize) -> usize {
-        self.basename_starts[index] - self.offsets[index]
+        self.entries.get(index).map_or("", |entry| self.path(entry))
     }
 }
 
@@ -280,10 +300,13 @@ impl FileIndex {
             return Ok(Vec::new());
         }
         if query.is_empty() {
-            return Ok((0..revision.count.min(limit))
-                .map(|index| SearchResult {
-                    path: generation.path_at(index).to_owned(),
-                    kind: generation.kinds[index],
+            return Ok(generation
+                .entries
+                .iter()
+                .take(revision.count.min(limit))
+                .map(|entry| SearchResult {
+                    path: generation.path(entry).to_owned(),
+                    kind: entry.kind,
                     matched_spans: Vec::new(),
                 })
                 .collect());
@@ -299,12 +322,13 @@ impl FileIndex {
         )
         .into_iter()
         .map(|index| {
-            let path = generation.path_at(index);
-            let spans = matcher::match_spans(path, generation.basename_offset(index), &prepared)
+            let entry = generation.entries.get(index).ok_or(InvalidIndexData)?;
+            let path = generation.path(entry);
+            let spans = matcher::match_spans(path, entry.basename_offset(), &prepared)
                 .ok_or(InvalidIndexData)?;
             Ok(SearchResult {
                 path: path.to_owned(),
-                kind: generation.kinds[index],
+                kind: entry.kind,
                 matched_spans: spans,
             })
         })
