@@ -1,5 +1,5 @@
 use ofx_contract::{ProviderOptions, ProviderReplay, ReplaySource, ToolResultStatus, ToolSpec};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -1030,6 +1030,32 @@ fn chat_completions_malformed_and_nonobject_final_arguments_never_become_tools()
             "{arguments}"
         );
         assert_eq!(reducer.finish(false), Err(ProtocolError::StreamClosed));
+    }
+}
+
+#[test]
+fn objects_the_upstream_parser_accepts_become_tools_and_replay() {
+    for arguments in [
+        r#"{"limit":1e999}"#,
+        r#"{"offset":123456789012345678901234567890,"scale":-1.5E-999}"#,
+        r#" {"nested":[1,null,{}]} "#,
+    ] {
+        let mut reducer = new_reducer(&test_tool_request());
+        let chunk = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":arguments}}]}}]});
+        accept(&mut reducer, &chunk.to_string()).unwrap();
+        let completion = finish_with(&mut reducer, TEST_TOOLS_FINISH).unwrap();
+        assert_eq!(completion.tool_calls[0].arguments, arguments);
+
+        let mut request = test_request();
+        request.messages = vec![
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: completion.tool_calls,
+                provider_replay: None,
+            },
+            tool_result("call-1", "read_file", "result"),
+        ];
+        assert!(build(&request, ToolChoiceMode::Omit).is_ok(), "{arguments}");
     }
 }
 

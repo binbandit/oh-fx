@@ -253,6 +253,24 @@ fn non_object_function_arguments_cannot_enter_a_responses_request() {
 }
 
 #[test]
+fn objects_the_upstream_parser_accepts_enter_a_responses_request_unchanged() {
+    let deep = format!("{{\"a\":{}{}}}", "[".repeat(200), "]".repeat(200));
+    for arguments in [
+        "{}",
+        r#"{"limit":1e999}"#,
+        r#"{"offset":123456789012345678901234567890}"#,
+        deep.as_str(),
+    ] {
+        let messages = [
+            assistant(None, vec![call("call", "read_file", arguments)]),
+            tool_result("call", "result"),
+        ];
+        let items = input(&messages, &[None]).unwrap();
+        assert_eq!(items[0]["arguments"], arguments);
+    }
+}
+
+#[test]
 fn responses_requests_reject_system_messages_and_oversized_replays() {
     assert_eq!(
         input(
