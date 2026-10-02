@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, CommandProfile, CommandRequest, Concurrency, FileMutation,
-    FileMutationState, ModelRecoveryAction, PreparedCall, ProviderReplay, ReplaySource, StreamSink,
-    ToolActivity, ToolCallId, ToolEffect,
+    ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile, CommandRequest,
+    Concurrency, FileMutation, FileMutationState, ModelRecoveryAction, PreparedCall,
+    ProviderReplay, ReplaySource, StreamSink, ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -37,6 +37,7 @@ struct FakeProvider {
     scripts: Mutex<VecDeque<Script>>,
     requests: Mutex<Vec<SeenRequest>>,
     projections: Mutex<Vec<(String, bool, bool)>>,
+    bodies: Mutex<Vec<String>>,
 }
 
 impl FakeProvider {
@@ -45,7 +46,12 @@ impl FakeProvider {
             scripts: Mutex::new(scripts.into()),
             requests: Mutex::new(Vec::new()),
             projections: Mutex::new(Vec::new()),
+            bodies: Mutex::new(Vec::new()),
         })
+    }
+
+    fn bodies(&self) -> Vec<String> {
+        self.bodies.lock().unwrap().clone()
     }
 
     fn requests(&self) -> Vec<SeenRequest> {
@@ -99,6 +105,24 @@ impl ModelProvider for FakeProvider {
                 None => Err(ProviderError::new(ProviderErrorKind::Protocol, "NoScript")),
             }
         })
+    }
+
+    fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        Some(format!(
+            "{:?} {:?} {:?}",
+            request.instructions, request.messages, request.tools
+        ))
+    }
+
+    fn stream_body<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        body: String,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        self.bodies.lock().unwrap().push(body);
+        self.stream(request, sink, cancel)
     }
 
     fn project_replay(
@@ -508,6 +532,7 @@ fn config() -> AgentConfig {
         step_limit: 0,
         reasoning_effort: None,
         fast_mode: false,
+        auto_compact_percent: AutoCompactPercent::new(80).unwrap(),
     }
 }
 
@@ -2236,5 +2261,6 @@ async fn an_interrupted_summary_keeps_the_replay_only_answer() {
 
 mod approvals;
 mod capabilities;
+mod compaction;
 mod malformed_arguments;
 mod project_context;

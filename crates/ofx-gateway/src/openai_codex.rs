@@ -145,10 +145,20 @@ impl CodexProvider {
         sink: &mut dyn StreamSink,
         cancel: &CancellationToken,
     ) -> Result<Completion, ProviderError> {
+        let body = build_request(request, &replay_parts(request)).map_err(codex_failure)?;
+        self.complete_body(request, body, sink, cancel).await
+    }
+
+    async fn complete_body(
+        &self,
+        request: &ModelRequest<'_>,
+        body: String,
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+    ) -> Result<Completion, ProviderError> {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
-        let body = build_request(request, &replay_parts(request)).map_err(codex_failure)?;
         self.refresh_if_due(cancel).await;
         let mut sent = Vec::new();
         let mut response = self.post(&body, &mut sent, cancel).await?;
@@ -259,6 +269,20 @@ impl ModelProvider for CodexProvider {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
         Box::pin(self.complete(request, sink, cancel))
+    }
+
+    fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        build_request(request, &replay_parts(request)).ok()
+    }
+
+    fn stream_body<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        body: String,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        Box::pin(self.complete_body(request, body, sink, cancel))
     }
 
     fn project_replay(

@@ -38,6 +38,7 @@ fn supporting(efforts: &[&str], fast: bool) -> CapabilityLookup {
     CapabilityLookup::Resolved(ModelCapabilities {
         reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
         supports_fast_mode: fast,
+        context_window: None,
     })
 }
 

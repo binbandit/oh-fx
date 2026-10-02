@@ -67,19 +67,20 @@ async fn the_catalog_is_fetched_with_the_subscription_and_the_live_client_versio
     let models = catalog(&server, None)
         .fetch(Some(&credential()), &CancellationToken::new())
         .await;
-    let model = |id: &str, efforts: &[&str], fast| CodexModel {
+    let model = |id: &str, efforts: &[&str], fast, window| CodexModel {
         id: id.to_owned(),
         capabilities: ModelCapabilities {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
+            context_window: window,
         },
     };
     assert_eq!(
         models,
         Ok(vec![
-            model("gpt-6.1-sol", &["medium"], false),
-            model("gpt-5.6-terra", &["medium"], false),
-            model("gpt-5.6-luna", &["low", "high"], true),
+            model("gpt-6.1-sol", &["medium"], false, Some(272_000)),
+            model("gpt-5.6-terra", &["medium"], false, Some(272_000)),
+            model("gpt-5.6-luna", &["low", "high"], true, None),
         ])
     );
     let requests = server.requests();

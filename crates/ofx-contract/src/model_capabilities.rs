@@ -6,6 +6,7 @@ use crate::stream_provider::{BoxFuture, ProviderOptions};
 pub struct ModelCapabilities {
     pub reasoning_efforts: Vec<String>,
     pub supports_fast_mode: bool,
+    pub context_window: Option<u32>,
 }
 
 impl ModelCapabilities {
@@ -48,6 +49,7 @@ mod tests {
         ModelCapabilities {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
+            context_window: None,
         }
     }
 

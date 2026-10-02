@@ -184,9 +184,10 @@ fn listed(model: &Map<String, Value>) -> Option<bool> {
 fn listed_model(model: &Map<String, Value>) -> Option<CodexModel> {
     let slug = required_string(model, "slug").filter(|slug| valid_model_id(slug))?;
     let reasoning_efforts = reasoning_levels(model)?;
-    if !valid_context_window(model) {
-        return None;
-    }
+    let context_window = match model.get("context_window") {
+        None | Some(Value::Null) => None,
+        Some(window) => Some(u32::try_from(window.as_u64()?).ok()?).filter(|window| *window > 0),
+    };
     lists_value(model, "input_modalities", "image")?;
     let supports_fast_mode = lists_value(model, "additional_speed_tiers", "fast")?;
     Some(CodexModel {
@@ -194,6 +195,7 @@ fn listed_model(model: &Map<String, Value>) -> Option<CodexModel> {
         capabilities: ModelCapabilities {
             reasoning_efforts,
             supports_fast_mode,
+            context_window,
         },
     })
 }
@@ -224,15 +226,6 @@ fn reasoning_levels(model: &Map<String, Value>) -> Option<Vec<String>> {
             is_valid_reasoning_effort(effort).then(|| effort.to_owned())
         })
         .collect()
-}
-
-fn valid_context_window(model: &Map<String, Value>) -> bool {
-    match model.get("context_window") {
-        None | Some(Value::Null) => true,
-        Some(window) => window
-            .as_u64()
-            .is_some_and(|window| u32::try_from(window).is_ok()),
-    }
 }
 
 fn lists_value(model: &Map<String, Value>, key: &str, expected: &str) -> Option<bool> {

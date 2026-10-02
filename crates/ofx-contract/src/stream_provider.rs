@@ -112,6 +112,20 @@ pub trait ModelProvider: Send + Sync {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Completion, ProviderError>>;
 
+    fn request_body(&self, _request: &ModelRequest<'_>) -> Option<String> {
+        None
+    }
+
+    fn stream_body<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        _body: String,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        self.stream(request, sink, cancel)
+    }
+
     fn project_replay(
         &self,
         _replay: &ProviderReplay,
@@ -159,6 +173,20 @@ mod tests {
                 "ProviderReplayProjectionUnavailable"
             ))
         );
+    }
+
+    #[test]
+    fn providers_that_cannot_show_their_request_body_measure_nothing() {
+        let request = ModelRequest {
+            model: "model",
+            instructions: &[],
+            messages: &[],
+            tools: &[],
+            tool_choice: ToolChoice::Auto,
+            max_output_tokens: None,
+            provider_options: ProviderOptions::default(),
+        };
+        assert_eq!(Silent.request_body(&request), None);
     }
 
     #[test]

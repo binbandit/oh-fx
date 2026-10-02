@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ofx_agent::{Agent, AgentConfig, TurnFailure, TurnReport};
 use ofx_contract::{
-    ModelRecoveryCause, PermissionMode, ProviderErrorKind, Tool, ToolResultStatus, TurnOutcome,
-    UiEvent,
+    AutoCompactPercent, ModelRecoveryCause, PermissionMode, ProviderErrorKind, Tool,
+    ToolResultStatus, TurnOutcome, UiEvent,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
@@ -147,6 +147,7 @@ fn agent_config(model: &str, effort: Option<&str>, fast_mode: bool) -> AgentConf
         step_limit: 0,
         reasoning_effort: effort.map(str::to_owned),
         fast_mode,
+        auto_compact_percent: AutoCompactPercent::resolve(None, None),
     }
 }
 

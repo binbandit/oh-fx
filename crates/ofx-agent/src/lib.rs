@@ -1,11 +1,18 @@
 mod approvals;
 mod assistant_stream;
+mod compactor;
+mod execution_memory;
 mod model_response_recovery;
 mod orchestrator;
 mod project_context;
+mod prompt_context;
+#[cfg(test)]
+mod scripted_provider;
+mod text_completion;
 
 pub use approvals::Approvals;
 pub use assistant_stream::{normalize_assistant_text_for_display, text_for_completed_presentation};
+pub use compactor::CompactionError;
 pub use orchestrator::{
     Agent, AgentConfig, BlockedCall, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };
