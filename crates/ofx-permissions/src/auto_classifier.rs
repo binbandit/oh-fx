@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use ofx_contract::{
     ChatMessage, Completion, ModelRequest, ProviderOptions, ReviewFailure, ReviewTransport,
-    ReviewTransportOutcome, ReviewVerdict, Reviewed, ToolArgumentIntegrity, ToolCall, ToolChoice,
-    ToolResultStatus, ToolSpec, Usage,
+    ReviewTransportOutcome, ReviewVerdict, Reviewed, ToolArgsError, ToolArgumentIntegrity,
+    ToolCall, ToolChoice, ToolResultStatus, ToolSpec, Usage, parse_tool_args_object,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -303,21 +303,21 @@ fn parse_completion(completion: &Completion) -> Result<ReviewVerdict, ReviewFail
 }
 
 fn parse_arguments(arguments: &str) -> Result<ReviewVerdict, ReviewFailure> {
-    let value: Value = serde_json::from_str(arguments).map_err(|_| ReviewFailure::ArgumentsJson)?;
-    let Value::Object(object) = value else {
-        return Err(ReviewFailure::ArgumentsShape);
-    };
-    match object.get("decision").and_then(Value::as_str) {
+    let object = parse_tool_args_object(arguments).map_err(|error| match error {
+        ToolArgsError::InvalidJson => ReviewFailure::ArgumentsJson,
+        ToolArgsError::NotObject => ReviewFailure::ArgumentsShape,
+    })?;
+    match object.optional_string("decision") {
         Some("clear") => Ok(ReviewVerdict::Clear),
         Some("caution") => Ok(ReviewVerdict::Caution(normalized_rationale(
-            object.get("rationale"),
+            object.optional_string("rationale"),
         ))),
         _ => Err(ReviewFailure::ArgumentsDecision),
     }
 }
 
-fn normalized_rationale(value: Option<&Value>) -> String {
-    match value.and_then(Value::as_str) {
+fn normalized_rationale(rationale: Option<&str>) -> String {
+    match rationale {
         Some(rationale) if !rationale.is_empty() => {
             rationale[..rationale.floor_char_boundary(MAX_RATIONALE_BYTES)].to_owned()
         }
