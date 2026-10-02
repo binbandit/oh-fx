@@ -282,14 +282,16 @@ impl Terminal {
     }
 
     pub(crate) fn write_abnormal_restore(&self) {
-        let sequence = app_lifecycle::abnormal_exit_restore_sequence(self.capabilities.tmux);
         let deadline = Instant::now() + ABNORMAL_RESTORE_WAIT;
-        let _ = write_fully(
-            self.output.as_fd(),
-            sequence.as_bytes(),
-            None,
-            Some(deadline),
-        );
+        let _ = app_lifecycle::abnormal_exit_restore_sequences(self.capabilities.tmux)
+            .try_for_each(|sequence| {
+                write_fully(
+                    self.output.as_fd(),
+                    sequence.as_bytes(),
+                    None,
+                    Some(deadline),
+                )
+            });
     }
 
     fn read_reply(
@@ -648,6 +650,10 @@ mod tests {
         assert!(!read_master(&pty).is_empty());
     }
 
+    fn abnormal_restore() -> String {
+        app_lifecycle::abnormal_exit_restore_sequences(false).collect()
+    }
+
     fn drain_until(master: &OwnedFd, needle: &[u8]) -> Vec<u8> {
         let deadline = Instant::now() + test_pty::WAIT;
         let mut collected = Vec::new();
@@ -688,7 +694,7 @@ mod tests {
         rustix::io::write(&wake, &[1]).unwrap();
         terminal.enable_raw_mode().unwrap();
         fill_output_queue(&terminal);
-        let restore = app_lifecycle::abnormal_exit_restore_sequence(false).replace('\n', "\r\n");
+        let restore = abnormal_restore().replace('\n', "\r\n");
         let master = pty.master.try_clone().unwrap();
         let needle = restore.clone().into_bytes();
         let reader = std::thread::spawn(move || {
@@ -827,11 +833,7 @@ mod tests {
         let restored = termios::tcgetattr(&pty.slave).unwrap();
         assert!(restored.local_modes.contains(LocalModes::ICANON));
         let written = String::from_utf8(read_master(&pty)).unwrap();
-        assert!(
-            written
-                .replace("\r\n", "\n")
-                .ends_with(app_lifecycle::abnormal_exit_restore_sequence(false))
-        );
+        assert!(written.replace("\r\n", "\n").ends_with(&abnormal_restore()));
     }
 
     #[test]
@@ -860,11 +862,7 @@ mod tests {
         let restored = termios::tcgetattr(&pty.slave).unwrap();
         assert!(restored.local_modes.contains(LocalModes::ICANON));
         let written = String::from_utf8(read_master(&pty)).unwrap();
-        assert!(
-            written
-                .replace("\r\n", "\n")
-                .ends_with(app_lifecycle::abnormal_exit_restore_sequence(false))
-        );
+        assert!(written.replace("\r\n", "\n").ends_with(&abnormal_restore()));
     }
 
     #[test]
