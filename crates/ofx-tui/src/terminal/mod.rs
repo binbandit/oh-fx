@@ -10,6 +10,10 @@ mod theme_protocol;
 use thiserror::Error;
 
 pub(crate) use shell_runtime::Terminal;
+pub(crate) use theme_monitor::{ThemeQuery, ThemeUpdate};
+
+pub(crate) use forwarded_bytes::ForwardedBytes;
+pub(crate) use theme_monitor::{FeedResult as ThemeMonitorFeed, Monitor as ThemeMonitor};
 
 const INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[>1u\x1b[?2004h\x1b[?7l";
 const TMUX_INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[?2004h\x1b[?7l";

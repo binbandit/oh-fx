@@ -72,6 +72,17 @@ impl Monitor {
         !self.candidate.is_empty() || self.deferred_start < self.deferred.len()
     }
 
+    pub(crate) fn owns_input(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.has_pending_input()
+            || matches!(
+                self.query_state,
+                QueryState::AwaitingResponseFence { .. } | QueryState::AwaitingBackground { .. }
+            )
+    }
+
     pub(crate) fn feed(&mut self, byte: u8, now_ms: i64) -> FeedResult {
         if !self.enabled || (self.candidate.is_empty() && byte != 0x1b) {
             return FeedResult::Forward(ForwardedBytes::single(byte));
@@ -189,6 +200,10 @@ impl Monitor {
 
     pub(crate) fn take_settled_update(&mut self) -> Option<ThemeUpdate> {
         self.settled_update.take()
+    }
+
+    pub(crate) fn has_deferred_bytes(&self) -> bool {
+        self.deferred_start < self.deferred.len()
     }
 
     pub(crate) fn take_deferred_byte(&mut self) -> Option<u8> {
