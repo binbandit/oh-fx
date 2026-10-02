@@ -7,11 +7,15 @@
     )
 )]
 
+mod assistant;
 mod composer;
 mod input;
+mod output;
+mod render;
 mod render_engine;
 mod row_text;
 mod terminal;
 mod theme;
+mod transcript;
 
 pub use terminal::TerminalError;
