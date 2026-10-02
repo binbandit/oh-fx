@@ -2,6 +2,7 @@ mod app_agent_runtime;
 mod app_bootstrap_runtime;
 mod app_commands;
 mod app_lifecycle;
+mod app_panic_runtime;
 mod app_upgrade_runtime;
 mod codex_provider;
 mod context;
