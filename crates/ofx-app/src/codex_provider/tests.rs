@@ -253,6 +253,7 @@ fn assert_offers_the_ask_tools(body: &Value, workspace: &Path) {
         .collect();
     let ask_tools: Vec<String> = ask_tools(workspace)
         .iter()
+        .filter(|tool| !tool.provider_executed())
         .map(|tool| tool.spec().name.clone())
         .collect();
     assert_eq!(offered, ask_tools);
