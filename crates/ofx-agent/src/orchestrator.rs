@@ -7,14 +7,14 @@ use std::time::Duration;
 
 use ofx_contract::{
     Admission, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage,
-    CommandRequest, Completion, Concurrency, ExecutionFailure, FileMutation, FinishReason,
-    ModelCapabilities, ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest,
-    PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
-    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
+    CommandRequest, Completion, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure,
+    FileMutation, FinishReason, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
+    ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError,
+    ProviderErrorKind, ProviderOptions, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool,
+    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolContext, ToolEffect,
+    ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, UiEvent, Usage,
     format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
-    review_unavailable_json, tool_execution_failure_json,
+    prepare_model_output, review_unavailable_json, tool_execution_failure_json,
 };
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -22,7 +22,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::model_response_recovery::{DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide};
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
-use crate::tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 
 mod project_gate;
 

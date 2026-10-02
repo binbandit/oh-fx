@@ -7,6 +7,7 @@ mod tool_args;
 mod tool_dispatch;
 mod tool_presentation;
 mod tool_result_errors;
+mod tool_result_limits;
 mod types;
 mod ui;
 
@@ -31,6 +32,7 @@ pub use tool_result_errors::{
     malformed_tool_arguments_json, non_object_tool_arguments_json, review_unavailable_json,
     tool_execution_failure_json,
 };
+pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction,
     ModelRecoveryCause, PermissionMode, ProviderReplay, ReasoningEffort, ReplaySource,
