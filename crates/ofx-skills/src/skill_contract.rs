@@ -72,3 +72,23 @@ pub struct RootPolicy {
     pub managed_root_source: Option<SkillSource>,
     pub global_roots: &'static [RootSpec],
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecuteOutput {
+    pub model_output: String,
+    pub notice: Option<String>,
+    pub diagnostic_notice: Option<String>,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedSkill {
+    pub skill: Skill,
+    pub diagnostics: Vec<SkillDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallPreparation {
+    Selected(PreparedSkill),
+    Failure(ExecuteOutput),
+}
