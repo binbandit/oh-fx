@@ -1,0 +1,424 @@
+use std::env;
+use std::ffi::OsStr;
+use std::fs;
+use std::mem;
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use ofx_agent::{Agent, AgentConfig, ProjectContext, RuntimeContext};
+use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
+use ofx_config::{
+    ConnectionError, ContextLimitOverride, ProfilePaths, ProviderDefinition, SelectionError,
+    Settings, SettingsError, request_output_tokens,
+};
+use ofx_contract::{CapabilityResolver, ModelProvider, PermissionMode, Tool};
+use ofx_exec::ManagedExecutions;
+use ofx_gateway::ChatCompletionsProvider;
+use ofx_http::ClientError;
+use ofx_permissions::PermissionPolicy;
+use tokio_util::sync::CancellationToken;
+
+use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
+use crate::context::{
+    GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
+    ProfileLocation, gather_project_context,
+};
+use crate::tool_set;
+
+const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
+
+pub struct Profile {
+    workspace_root: PathBuf,
+    paths: Option<ProfilePaths>,
+    settings: Settings,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProfileError {
+    #[error("WorkspaceUnavailable")]
+    WorkspaceUnavailable,
+    #[error("{0}")]
+    Settings(#[from] SettingsError),
+    #[error("InvalidProfileConfiguration")]
+    Unusable,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectError {
+    #[error("{0}")]
+    Selection(#[from] SelectionError),
+    #[error("{0}")]
+    Connection(#[from] ConnectionError),
+    #[error("{0}")]
+    InvalidConnection(ClientError),
+    #[error("{0}")]
+    Codex(#[from] CodexUnavailable),
+    #[error("InvalidModel")]
+    InvalidModel(Vec<u8>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialSource {
+    Configured,
+    Codex,
+}
+
+impl CredentialSource {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Configured => CONFIGURED_SOURCE_LABEL,
+            Self::Codex => CHATGPT_SOURCE_LABEL,
+        }
+    }
+
+    pub const fn relogin(self) -> Option<&'static str> {
+        match self {
+            Self::Configured => None,
+            Self::Codex => Some(CHATGPT_RELOGIN_MESSAGE),
+        }
+    }
+}
+
+pub struct Launch<'a> {
+    pub model: Option<&'a OsStr>,
+    pub permission_mode: PermissionMode,
+    pub system_prompt: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub fast_mode: bool,
+    pub context_limits: &'a [ContextLimitOverride],
+    pub command_timeout: Option<Duration>,
+    pub executions: &'a ManagedExecutions,
+    pub endpoints: SubscriptionEndpoints,
+}
+
+pub struct AgentSetup {
+    provider: Arc<dyn ModelProvider>,
+    capabilities: Option<Arc<dyn CapabilityResolver>>,
+    source: CredentialSource,
+    tools: Vec<Arc<dyn Tool>>,
+    context: Arc<dyn RuntimeContext>,
+    permissions: Arc<PermissionPolicy>,
+    project: Option<(Arc<HostProjectContext>, ProjectContext)>,
+    context_notices: Vec<String>,
+    config: AgentConfig,
+}
+
+struct Route {
+    provider: Arc<dyn ModelProvider>,
+    capabilities: Option<Arc<dyn CapabilityResolver>>,
+    connection: Option<ProviderDefinition>,
+    model: String,
+    source: CredentialSource,
+    uses_tls: bool,
+}
+
+impl Profile {
+    pub fn load() -> Result<Self, ProfileError> {
+        let workspace_root = env::current_dir()
+            .and_then(fs::canonicalize)
+            .map_err(|_| ProfileError::WorkspaceUnavailable)?;
+        let paths = ProfilePaths::from_environment();
+        let settings = match &paths {
+            Some(paths) => Settings::load(paths, &workspace_root)?,
+            None => Settings::default(),
+        };
+        if settings.profile_is_unusable() {
+            return Err(ProfileError::Unusable);
+        }
+        Ok(Self {
+            workspace_root,
+            paths,
+            settings,
+        })
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    pub async fn connect(
+        &self,
+        launch: Launch<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<AgentSetup, ConnectError> {
+        let route = self.route(launch.model, launch.endpoints, cancel).await?;
+        if route.uses_tls {
+            ofx_http::warm_tls_roots();
+        }
+        let mut project = self.project_context(launch.context_limits);
+        let context_notices = project
+            .as_mut()
+            .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
+            .unwrap_or_default();
+        let lookup = |name: &str| env::var(name).ok();
+        let config = AgentConfig {
+            system_prompt: launch
+                .system_prompt
+                .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
+            max_output_tokens: route.connection.as_ref().and_then(|connection| {
+                request_output_tokens(connection.capabilities(&route.model))
+            }),
+            step_limit: self.settings.max_agent_steps(&lookup),
+            model: route.model,
+            reasoning_effort: launch.reasoning_effort,
+            fast_mode: launch.fast_mode,
+        };
+        let permission_mode = launch.permission_mode;
+        Ok(AgentSetup {
+            provider: route.provider,
+            capabilities: route.capabilities,
+            source: route.source,
+            tools: tool_set::ask_tools(
+                &self.workspace_root,
+                launch.executions,
+                launch.command_timeout,
+                permission_mode,
+            ),
+            context: Arc::new(HostRuntimeContext::new(
+                self.workspace_root.clone(),
+                permission_mode,
+            )),
+            permissions: Arc::new(PermissionPolicy::new(
+                permission_mode,
+                self.workspace_root.clone(),
+            )),
+            project,
+            context_notices,
+            config,
+        })
+    }
+
+    async fn route(
+        &self,
+        requested: Option<&OsStr>,
+        endpoints: SubscriptionEndpoints,
+        cancel: &CancellationToken,
+    ) -> Result<Route, ConnectError> {
+        let lookup = |name: &str| env::var(name).ok();
+        if self.settings.codex_selected(&lookup)? {
+            return self
+                .codex_route(requested, endpoints, &lookup, cancel)
+                .await;
+        }
+        let connection = self.settings.selected_connection(&lookup)?;
+        let model = select_model(requested, |model| {
+            self.settings.selected_model(connection, model, &lookup)
+        })?;
+        let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
+        let uses_tls = uses_tls(&resolved.chat_url);
+        let provider = ChatCompletionsProvider::new(resolved, &user_agent())
+            .map_err(ConnectError::InvalidConnection)?;
+        Ok(Route {
+            provider: Arc::new(provider),
+            capabilities: None,
+            connection: Some(connection.clone()),
+            model: model.map_err(ConnectError::InvalidModel)?,
+            source: CredentialSource::Configured,
+            uses_tls,
+        })
+    }
+
+    async fn codex_route(
+        &self,
+        requested: Option<&OsStr>,
+        endpoints: SubscriptionEndpoints,
+        lookup: &dyn Fn(&str) -> Option<String>,
+        cancel: &CancellationToken,
+    ) -> Result<Route, ConnectError> {
+        let model = select_model(requested, |model| {
+            self.settings.selected_codex_model(model, lookup)
+        })?
+        .map_err(ConnectError::InvalidModel)?;
+        let uses_tls = uses_tls(&endpoints.codex.responses);
+        let subscription =
+            codex_subscription(self.paths.as_ref(), &user_agent(), endpoints, cancel).await?;
+        Ok(Route {
+            provider: Arc::new(subscription.provider),
+            capabilities: Some(Arc::new(subscription.capabilities)),
+            connection: None,
+            model,
+            source: CredentialSource::Codex,
+            uses_tls,
+        })
+    }
+
+    fn project_context(
+        &self,
+        command_line: &[ContextLimitOverride],
+    ) -> Option<(Arc<HostProjectContext>, ProjectContext)> {
+        if !self.settings.context_enabled() {
+            return None;
+        }
+        let mut limits = self.settings.context_limits();
+        limits.apply_command_line(command_line);
+        let limits = InstructionLimits::from_limits(&limits);
+        let home = env::var_os("HOME");
+        let snapshot = gather_project_context(
+            &self.workspace_root,
+            ProfileLocation {
+                home: home.as_deref(),
+                config_directory: self.paths.as_ref().map(|paths| paths.config.as_path()),
+            },
+            limits,
+        );
+        Some((
+            Arc::new(HostProjectContext::new(self.workspace_root.clone(), limits)),
+            snapshot,
+        ))
+    }
+}
+
+fn select_model(
+    requested: Option<&OsStr>,
+    select: impl FnOnce(Option<&str>) -> Result<String, SelectionError>,
+) -> Result<Result<String, Vec<u8>>, SelectionError> {
+    match requested {
+        Some(requested) if requested.to_str().is_none() => Ok(Err(requested.as_bytes().to_vec())),
+        requested => select(requested.and_then(OsStr::to_str)).map(Ok),
+    }
+}
+
+fn uses_tls(url: &str) -> bool {
+    url.get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+}
+
+impl AgentSetup {
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    pub fn source(&self) -> CredentialSource {
+        self.source
+    }
+
+    pub fn context_notices(&self) -> &[String] {
+        &self.context_notices
+    }
+
+    pub fn agent(&self) -> Agent {
+        let mut agent = Agent::new(
+            Arc::clone(&self.provider),
+            self.tools.clone(),
+            Arc::clone(&self.context),
+            self.permissions.clone(),
+            self.config.clone(),
+        );
+        if let Some(capabilities) = &self.capabilities {
+            agent = agent.with_capability_resolver(Arc::clone(capabilities));
+        }
+        match &self.project {
+            Some((provider, snapshot)) => {
+                agent.with_project_context(provider.clone(), snapshot.clone())
+            }
+            None => agent,
+        }
+    }
+}
+
+pub fn user_agent() -> String {
+    format!("oh-fx/{}", ofx_upgrade::VERSION)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use ofx_auth::ChatGptEndpoints;
+    use ofx_exec::SessionSupervisor;
+    use ofx_gateway::CodexEndpoints;
+    use ofx_testkit::{FakeServer, Reply};
+
+    use super::*;
+
+    const EXPIRED_SESSION: &str = r#"{"version":1,"access_token":"eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl","refresh_token":"rt-refresh-secret-0123456789","expires_at_ms":1,"account_id":"acct_test"}"#;
+
+    fn profile(directory: &Path, settings: &str) -> Profile {
+        let paths = ProfilePaths {
+            config: directory.join("config"),
+            data: directory.join("data"),
+            state: directory.join("state"),
+            cache: directory.join("cache"),
+        };
+        let workspace = directory.join("workspace");
+        for directory in [&paths.config, &paths.data, &workspace] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        fs::write(paths.config.join("settings.json"), settings).unwrap();
+        let settings = Settings::load(&paths, &workspace).unwrap();
+        Profile {
+            workspace_root: workspace,
+            paths: Some(paths),
+            settings,
+        }
+    }
+
+    #[tokio::test]
+    async fn non_utf8_codex_models_fail_before_the_login_is_refreshed() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = profile(
+            directory.path(),
+            r#"{"provider":"codex","models":{"codex":"gpt-6.1-sol"}}"#,
+        );
+        let session = directory.path().join("data/chatgpt-auth.json");
+        fs::write(&session, EXPIRED_SESSION).unwrap();
+        let auth = FakeServer::start([Reply::status(500, "unexpected refresh")]);
+        let base_url = auth.base_url();
+        let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+        let failure = profile
+            .connect(
+                Launch {
+                    model: Some(OsStr::from_bytes(b" m\xff ")),
+                    permission_mode: PermissionMode::Auto,
+                    system_prompt: None,
+                    reasoning_effort: None,
+                    fast_mode: false,
+                    context_limits: &[],
+                    command_timeout: None,
+                    executions: &executions,
+                    endpoints: SubscriptionEndpoints {
+                        chatgpt: ChatGptEndpoints {
+                            issuer: base_url.clone(),
+                            token_url: format!("{base_url}/oauth/token"),
+                            callback_ports: vec![0],
+                        },
+                        codex: CodexEndpoints {
+                            responses: format!("{base_url}/backend-api/codex/responses"),
+                        },
+                        ..SubscriptionEndpoints::default()
+                    },
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .err()
+            .expect("an invalid model");
+        assert!(
+            matches!(&failure, ConnectError::InvalidModel(model) if model == b" m\xff "),
+            "{failure:?}"
+        );
+        assert!(auth.requests().is_empty());
+        assert_eq!(fs::read_to_string(session).unwrap(), EXPIRED_SESSION);
+    }
+
+    #[test]
+    fn only_https_endpoints_warm_the_tls_roots() {
+        assert!(uses_tls("https://gateway.example/v1/chat/completions"));
+        assert!(uses_tls("HTTPS://gateway.example/v1"));
+        assert!(!uses_tls("http://127.0.0.1:8080/v1/chat/completions"));
+        assert!(!uses_tls("https:"));
+    }
+
+    #[test]
+    fn credential_sources_name_themselves_and_the_codex_relogin() {
+        assert_eq!(CredentialSource::Configured.label(), "configured provider");
+        assert_eq!(CredentialSource::Codex.label(), "Codex subscription");
+        assert_eq!(
+            CredentialSource::Codex.relogin(),
+            Some("Run oh-fx login codex to sign in again.")
+        );
+        assert_eq!(CredentialSource::Configured.relogin(), None);
+    }
+}

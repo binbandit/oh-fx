@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ofx_auth::{
-    ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, PreparationError, RefreshMode,
-    prepare_chatgpt_credential, refresh_chatgpt_credential,
+    ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, MISSING_CHATGPT_CREDENTIAL_MESSAGE,
+    PreparationError, RefreshMode, prepare_chatgpt_credential, refresh_chatgpt_credential,
 };
 use ofx_config::ProfilePaths;
 use ofx_contract::{BoxFuture, CapabilityLookup, CapabilityResolver};
@@ -15,16 +15,19 @@ use ofx_http::ClientError;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SubscriptionEndpoints {
-    pub(crate) chatgpt: ChatGptEndpoints,
-    pub(crate) codex: CodexEndpoints,
-    pub(crate) models: CodexModelsEndpoints,
+pub struct SubscriptionEndpoints {
+    pub chatgpt: ChatGptEndpoints,
+    pub codex: CodexEndpoints,
+    pub models: CodexModelsEndpoints,
 }
 
-#[derive(Debug)]
-pub(crate) enum CodexUnavailable {
+#[derive(Debug, thiserror::Error)]
+pub enum CodexUnavailable {
+    #[error("{MISSING_CHATGPT_CREDENTIAL_MESSAGE}")]
     MissingLogin,
+    #[error("{}", .0.notice())]
     Preparation(PreparationError),
+    #[error("{0}")]
     Client(ClientError),
 }
 
