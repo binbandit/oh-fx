@@ -16,6 +16,19 @@ const HINTS: [&str; 3] = [
     "1–3 choose now    enter confirm    esc cancel",
     "enter confirm    esc cancel",
 ];
+const SCREEN_HINTS: [&str; 5] = [
+    "1–3 choose now    ↑↓ or tab options    pgup/pgdn scroll    enter confirm    esc cancel",
+    "1–3 choose now    ↑↓ options    pgup/pgdn scroll    enter confirm    esc cancel",
+    "1–3 choose    pgup/pgdn scroll    enter confirm    esc cancel",
+    "1–3 choose now    enter confirm    esc cancel",
+    "enter confirm    esc cancel",
+];
+const RESIZE_TO_REVIEW: &str = " · resize to review";
+const SCROLL_TO_REVIEW: &str = " · scroll to review";
+const BLOCKED_MARKER: &str = "! ";
+const INLINE_FIXED_ROWS: usize = 4;
+const SCREEN_SPACED_FIXED_ROWS: usize = 7;
+const SCREEN_SPACED_MIN_WINDOW: usize = 2;
 const INSET: usize = 2;
 const CHOICE_MARKER_WIDTH: usize = 2;
 const SPACIOUS_MIN_TERMINAL_ROWS: u16 = 34;
@@ -56,7 +69,33 @@ pub(crate) fn choices(remember: Option<&Phrase>) -> Vec<Choice> {
 
 pub(crate) struct PanelView {
     pub(crate) rows: Vec<Row>,
-    pub(crate) required_rows: Option<Range<usize>>,
+    pub(crate) review: Review,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Review {
+    pub(crate) required_rows: Range<usize>,
+    pub(crate) window: Range<usize>,
+    pub(crate) action_rows: usize,
+    pub(crate) complete: bool,
+    pub(crate) screen: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PanelFrame<'a> {
+    pub(crate) cols: usize,
+    pub(crate) terminal_rows: u16,
+    pub(crate) inline_rows: usize,
+    pub(crate) screen_rows: usize,
+    pub(crate) scroll: usize,
+    pub(crate) seen: &'a [bool],
+}
+
+struct ChoiceRows<'a> {
+    labels: Vec<(String, bool)>,
+    choices: &'a [Choice],
+    selected: usize,
+    blocked: Option<&'static str>,
 }
 
 pub(crate) fn approval_panel_rows(
@@ -64,10 +103,56 @@ pub(crate) fn approval_panel_rows(
     content: &ApprovalContent,
     choices: &[Choice],
     selected: usize,
-    cols: usize,
-    terminal_rows: u16,
+    frame: PanelFrame<'_>,
 ) -> PanelView {
-    let spacious = terminal_rows >= SPACIOUS_MIN_TERMINAL_ROWS;
+    let cols = frame.cols;
+    let mut action = Vec::new();
+    let mut drawable = true;
+    for block in &content.action {
+        let (block_rows, block_complete) = action_rows(theme, block, cols);
+        action.extend(block_rows);
+        drawable &= block_complete;
+    }
+    let labels: Vec<(String, bool)> = choices
+        .iter()
+        .map(|choice| {
+            choice
+                .label
+                .fit(cols.saturating_sub(INSET + CHOICE_MARKER_WIDTH))
+        })
+        .collect();
+    drawable &= labels.iter().all(|(_, fits)| *fits);
+    let mut choice_rows = ChoiceRows {
+        labels,
+        choices,
+        selected,
+        blocked: None,
+    };
+    let spacious = frame.terminal_rows >= SPACIOUS_MIN_TERMINAL_ROWS;
+    let inline_rows = INLINE_FIXED_ROWS + usize::from(spacious) * 3 + action.len() + choices.len();
+    let view = if inline_rows <= frame.inline_rows {
+        if !drawable {
+            choice_rows.blocked = Some(RESIZE_TO_REVIEW);
+        }
+        inline_panel(theme, content, action, &choice_rows, cols, spacious)
+    } else {
+        screen_panel(theme, content, action, &mut choice_rows, frame, drawable)
+    };
+    PanelView {
+        rows: view.rows.into_iter().map(|row| row.clipped(cols)).collect(),
+        review: view.review,
+    }
+}
+
+fn inline_panel(
+    theme: &Theme,
+    content: &ApprovalContent,
+    action: Vec<Row>,
+    choices: &ChoiceRows<'_>,
+    cols: usize,
+    spacious: bool,
+) -> PanelView {
+    let action_rows = action.len();
     let mut rows = vec![header_row(theme, content.kind, cols)];
     if spacious {
         rows.push(Row::new());
@@ -75,30 +160,106 @@ pub(crate) fn approval_panel_rows(
     rows.push(inset(content.question, Paint::PLAIN.with_bold()));
     rows.push(reason_row(theme, content.reason.as_deref()));
     let action_start = rows.len();
-    let mut complete = true;
-    for block in &content.action {
-        let (block_rows, block_complete) = action_rows(theme, block, cols);
-        rows.extend(block_rows);
-        complete &= block_complete;
-    }
+    rows.extend(action);
     if spacious {
         rows.push(Row::new());
     }
-    for (index, choice) in choices.iter().enumerate() {
-        let (label, fits) = choice
-            .label
-            .fit(cols.saturating_sub(INSET + CHOICE_MARKER_WIDTH));
-        complete &= fits;
-        rows.push(choice_row(theme, &label, index == selected));
-    }
-    let required_rows = complete.then_some(action_start..rows.len());
+    rows.extend(choices.rows(theme));
+    let required_rows = action_start..rows.len();
     if spacious {
         rows.push(Row::new());
     }
-    rows.push(inset(hint_for(cols.saturating_sub(INSET)), theme.dim));
+    rows.push(inset(
+        hint_for(&HINTS, cols.saturating_sub(INSET)),
+        theme.dim,
+    ));
     PanelView {
-        rows: rows.into_iter().map(|row| row.clipped(cols)).collect(),
-        required_rows,
+        rows,
+        review: Review {
+            required_rows,
+            window: 0..action_rows,
+            action_rows,
+            complete: choices.blocked.is_none(),
+            screen: false,
+        },
+    }
+}
+
+fn screen_panel(
+    theme: &Theme,
+    content: &ApprovalContent,
+    action: Vec<Row>,
+    choices: &mut ChoiceRows<'_>,
+    frame: PanelFrame<'_>,
+    drawable: bool,
+) -> PanelView {
+    let count = choices.choices.len();
+    let spaced_fixed = SCREEN_SPACED_FIXED_ROWS + count;
+    let spaced = frame.screen_rows >= spaced_fixed + SCREEN_SPACED_MIN_WINDOW;
+    let window_rows = if spaced {
+        frame.screen_rows - spaced_fixed
+    } else {
+        frame.screen_rows.saturating_sub(count)
+    };
+    let action_rows = action.len();
+    let scroll = frame.scroll.min(action_rows.saturating_sub(window_rows));
+    let window = scroll..(scroll + window_rows).min(action_rows);
+    let unseen = (0..action_rows)
+        .any(|row| !window.contains(&row) && !frame.seen.get(row).copied().unwrap_or(false));
+    choices.blocked = if window_rows == 0 || !drawable {
+        Some(RESIZE_TO_REVIEW)
+    } else if unseen {
+        Some(SCROLL_TO_REVIEW)
+    } else {
+        None
+    };
+    let mut rows = Vec::new();
+    if spaced {
+        rows.push(header_row(theme, content.kind, frame.cols));
+        rows.push(inset(content.question, Paint::PLAIN.with_bold()));
+        rows.push(reason_row(theme, content.reason.as_deref()));
+        rows.push(Row::new());
+    }
+    let window_start = rows.len();
+    rows.extend(action.into_iter().skip(window.start).take(window.len()));
+    rows.resize(window_start + window_rows, Row::new());
+    if spaced {
+        rows.push(Row::new());
+    }
+    rows.extend(choices.rows(theme));
+    let required_rows = window_start..rows.len();
+    if spaced {
+        rows.push(Row::new());
+        rows.push(inset(
+            hint_for(&SCREEN_HINTS, frame.cols.saturating_sub(INSET)),
+            theme.dim,
+        ));
+    }
+    PanelView {
+        rows,
+        review: Review {
+            required_rows,
+            window,
+            action_rows,
+            complete: window_rows > 0 && drawable,
+            screen: true,
+        },
+    }
+}
+
+impl ChoiceRows<'_> {
+    fn rows(&self, theme: &Theme) -> Vec<Row> {
+        self.choices
+            .iter()
+            .zip(&self.labels)
+            .enumerate()
+            .map(|(index, (choice, (label, _)))| {
+                let blocked = self
+                    .blocked
+                    .filter(|_| choice.decision != ApprovalDecision::Deny);
+                choice_row(theme, label, index == self.selected, blocked)
+            })
+            .collect()
     }
 }
 
@@ -165,24 +326,36 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bo
     }
 }
 
-fn choice_row(theme: &Theme, label: &str, selected: bool) -> Row {
+fn choice_row(theme: &Theme, label: &str, selected: bool, blocked: Option<&str>) -> Row {
     let mut row = Row::new();
     row.push_spaces(INSET);
-    if selected {
-        row.push("❯ ", Paint::PLAIN);
-        row.push(label, theme.tag);
-    } else {
-        row.push_spaces(2);
-        row.push(label, Paint::PLAIN);
+    let marker = if selected { "❯ " } else { "  " };
+    match blocked {
+        Some(reason) => {
+            row.push(marker, theme.statusline);
+            row.push(BLOCKED_MARKER, theme.statusline);
+            row.push(label, theme.statusline);
+            if selected {
+                row.push(reason, theme.statusline);
+            }
+        }
+        None if selected => {
+            row.push(marker, Paint::PLAIN);
+            row.push(label, theme.tag);
+        }
+        None => {
+            row.push(marker, Paint::PLAIN);
+            row.push(label, Paint::PLAIN);
+        }
     }
     row
 }
 
-fn hint_for(width: usize) -> &'static str {
-    HINTS
+fn hint_for(hints: &[&'static str], width: usize) -> &'static str {
+    hints
         .iter()
         .find(|hint| visible_width(hint) <= width)
-        .unwrap_or(&HINTS[HINTS.len() - 1])
+        .unwrap_or(&hints[hints.len() - 1])
 }
 
 #[cfg(test)]
@@ -198,6 +371,17 @@ mod tests {
 
     fn remember() -> Phrase {
         Phrase::plain("don't ask again for this request")
+    }
+
+    fn frame(cols: usize, terminal_rows: u16) -> PanelFrame<'static> {
+        PanelFrame {
+            cols,
+            terminal_rows,
+            inline_rows: usize::from(terminal_rows),
+            screen_rows: usize::from(terminal_rows),
+            scroll: 0,
+            seen: &[],
+        }
     }
 
     fn texts(rows: &[Row]) -> Vec<String> {
@@ -224,8 +408,7 @@ mod tests {
             &titled(title),
             &choices(remember),
             selected,
-            cols,
-            24,
+            frame(cols, 24),
         )
         .rows
     }
@@ -287,8 +470,7 @@ mod tests {
             &titled("Reading a"),
             &choices(Some(&remember())),
             2,
-            80,
-            34,
+            frame(80, 34),
         )
         .rows;
         let texts = texts(&rows);
@@ -304,7 +486,7 @@ mod tests {
         let narrow = rows("Reading a", Some(&remember()), 1, 34);
         let shown = texts(&narrow);
         assert_eq!(shown[0], "  Permission needed · Choose one");
-        assert_eq!(shown[5], "  ❯ 2. Yes, and don't ask again fo");
+        assert_eq!(shown[5], "  ❯ ! 2. Yes, and don't ask again ");
         assert_eq!(shown[7], "  enter confirm    esc cancel");
         assert!(narrow.iter().all(|row| row.width() <= 34));
         assert_eq!(
@@ -321,14 +503,15 @@ mod tests {
                 &titled(title),
                 &choices(Some(&remember())),
                 0,
-                cols,
-                34,
+                frame(cols, 34),
             )
-            .required_rows
+            .review
         };
-        assert_eq!(view("Reading a", 80), Some(4..9));
-        assert_eq!(view("Reading a", 40), None);
-        assert_eq!(view(&"a".repeat(79), 80), None);
+        let review = view("Reading a", 80);
+        assert_eq!(review.required_rows, 4..9);
+        assert!(review.complete && !review.screen);
+        assert!(!view("Reading a", 40).complete);
+        assert!(!view(&"a".repeat(79), 80).complete);
     }
 
     #[test]
@@ -382,10 +565,9 @@ mod tests {
             &content,
             &choices(content.remember.as_ref()),
             0,
-            100,
-            24,
+            frame(100, 24),
         );
-        assert_eq!(rows.required_rows, Some(3..8));
+        assert_eq!(rows.review.required_rows, 3..8);
         let rows = rows.rows;
         let texts = texts(&rows);
         assert!(rows.iter().all(|row| row.width() <= 100));
@@ -416,8 +598,10 @@ mod tests {
             &command_content(&command),
             &choices(None),
             0,
-            80,
-            24,
+            PanelFrame {
+                inline_rows: 200,
+                ..frame(80, 24)
+            },
         )
         .rows;
         let joined = texts(&rows).concat();
@@ -427,5 +611,93 @@ mod tests {
             "{joined}"
         );
         assert!(rows.iter().all(|row| row.width() <= 80));
+    }
+
+    fn numbered_command(lines: usize) -> ApprovalContent {
+        let command = (0..lines)
+            .map(|line| format!("echo line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        command_content(&command)
+    }
+
+    #[test]
+    fn short_terminals_review_the_request_in_a_scrolling_window_before_a_yes() {
+        let content = numbered_command(30);
+        let remember = remember();
+        let choices = choices(Some(&remember));
+        let short = PanelFrame {
+            inline_rows: 22,
+            screen_rows: 22,
+            ..frame(80, 24)
+        };
+        let first = approval_panel_rows(&theme(), &content, &choices, 0, short);
+        let shown = texts(&first.rows);
+        assert_eq!(shown.len(), 22);
+        assert!(first.review.screen);
+        assert_eq!(first.review.window, 0..12);
+        assert_eq!(first.review.action_rows, 30);
+        assert_eq!(shown[4], "  $ echo line 0");
+        assert_eq!(shown[15], "    echo line 11");
+        assert_eq!(shown[17], "  ❯ ! 1. Yes · scroll to review");
+        assert_eq!(shown[19], "    3. No");
+        assert!(shown[21].contains("pgup/pgdn scroll"), "{}", shown[21]);
+        assert_eq!(first.review.required_rows, 4..20);
+        let seen: Vec<bool> = (0..30).map(|row| row < 18).collect();
+        let last = approval_panel_rows(
+            &theme(),
+            &content,
+            &choices,
+            0,
+            PanelFrame {
+                scroll: 99,
+                seen: &seen,
+                ..short
+            },
+        );
+        assert_eq!(last.review.window, 18..30);
+        assert_eq!(texts(&last.rows)[17], "  ❯ 1. Yes");
+        assert!(last.review.complete);
+    }
+
+    #[test]
+    fn terminals_too_short_for_any_of_the_request_refuse_a_yes() {
+        let tiny = approval_panel_rows(
+            &theme(),
+            &numbered_command(30),
+            &choices(None),
+            0,
+            PanelFrame {
+                inline_rows: 2,
+                screen_rows: 2,
+                ..frame(80, 5)
+            },
+        );
+        assert_eq!(
+            texts(&tiny.rows),
+            ["  ❯ ! 1. Yes · resize to review", "    3. No"]
+        );
+        assert!(!tiny.review.complete);
+        let compact = approval_panel_rows(
+            &theme(),
+            &numbered_command(30),
+            &choices(None),
+            0,
+            PanelFrame {
+                inline_rows: 6,
+                screen_rows: 6,
+                ..frame(80, 8)
+            },
+        );
+        assert_eq!(
+            texts(&compact.rows)[..5],
+            [
+                "  $ echo line 0",
+                "    echo line 1",
+                "    echo line 2",
+                "    echo line 3",
+                "  ❯ ! 1. Yes · scroll to review"
+            ]
+        );
     }
 }

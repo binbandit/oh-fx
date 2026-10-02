@@ -2,13 +2,14 @@ use ofx_contract::{ApprovalDecision, ApprovalRequest, TurnId, UiCommand};
 
 use super::Shell;
 use crate::footer::approval_content::ApprovalContent;
-use crate::footer::approval_panel::{Choice, approval_panel_rows, choices};
+use crate::footer::approval_panel::{Choice, PanelFrame, Review, approval_panel_rows, choices};
 use crate::footer::input_presentation::ComposerView;
 use crate::input::{Action, COMPOSER_INPUT_LIMIT_BYTES, InputEvent, PasteOwner};
 use crate::terminal::{Layout, TerminalError};
 use crate::theme::Theme;
 
 const AFFIRMATIVE_ARMING_MS: i64 = 500;
+const LIVE_ROWS_BELOW_PANEL: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ApprovalPrompt {
@@ -18,6 +19,10 @@ pub(super) struct ApprovalPrompt {
     choice: usize,
     shown: Option<Shown>,
     typed_ms: Option<i64>,
+    scroll: usize,
+    page: usize,
+    seen: Vec<bool>,
+    seen_cols: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,26 +42,61 @@ impl ApprovalPrompt {
             choice: 0,
             shown: None,
             typed_ms: None,
+            scroll: 0,
+            page: 1,
+            seen: Vec::new(),
+            seen_cols: 0,
         }
     }
 
-    pub(super) fn view(&self, theme: &Theme, cols: u16, rows: u16) -> ComposerView {
+    pub(super) fn view(&self, theme: &Theme, layout: Layout, banner_rows: usize) -> ComposerView {
+        let screen_rows = usize::from(layout.rows).saturating_sub(LIVE_ROWS_BELOW_PANEL);
+        let seen: &[bool] = if self.seen_cols == layout.cols {
+            &self.seen
+        } else {
+            &[]
+        };
         let panel = approval_panel_rows(
             theme,
             &self.content,
             &self.choices,
             self.choice,
-            usize::from(cols),
-            rows,
+            PanelFrame {
+                cols: usize::from(layout.cols),
+                terminal_rows: layout.rows,
+                inline_rows: screen_rows.saturating_sub(banner_rows),
+                screen_rows,
+                scroll: self.scroll,
+                seen,
+            },
         );
         ComposerView {
             rows: panel.rows,
             cursor: None,
-            required_rows: panel.required_rows,
+            review: Some(panel.review),
         }
     }
 
-    pub(super) fn frame_drawn(&mut self, layout: Layout, complete: bool, now_ms: i64) {
+    pub(super) fn frame_drawn(
+        &mut self,
+        layout: Layout,
+        review: &Review,
+        visible: bool,
+        now_ms: i64,
+    ) {
+        if self.seen_cols != layout.cols || self.seen.len() != review.action_rows {
+            self.seen = vec![false; review.action_rows];
+            self.seen_cols = layout.cols;
+        }
+        self.scroll = review.window.start;
+        self.page = review.window.len().max(1);
+        let shown = visible && review.complete;
+        if shown {
+            for row in review.window.clone() {
+                self.seen[row] = true;
+            }
+        }
+        let complete = shown && self.seen.iter().all(|seen| *seen);
         self.shown = match self.shown {
             _ if !complete => None,
             Some(shown) if shown.rows == layout.rows && shown.cols == layout.cols => Some(shown),
@@ -66,6 +106,12 @@ impl ApprovalPrompt {
                 since_ms: now_ms,
             }),
         };
+    }
+
+    fn scroll_by(&mut self, pages: isize) {
+        self.scroll = self
+            .scroll
+            .saturating_add_signed(pages.saturating_mul(self.page.cast_signed()));
     }
 
     fn armed(&self, layout: Layout, now_ms: i64) -> bool {
@@ -119,6 +165,8 @@ impl Shell<'_> {
                 Action::Escape => self.approval_escape(),
                 Action::CursorUp => self.move_choice(-1),
                 Action::CursorDown => self.move_choice(1),
+                Action::PageUp => self.scroll_approval(-1),
+                Action::PageDown => self.scroll_approval(1),
                 _ => {}
             },
             InputEvent::Text(character) => self.keep_typed_text(*character),
@@ -177,6 +225,12 @@ impl Shell<'_> {
                 .approval
                 .as_ref()
                 .is_some_and(|prompt| prompt.armed(self.layout, now_ms))
+    }
+
+    fn scroll_approval(&mut self, pages: isize) {
+        if let Some(prompt) = &mut self.approval {
+            prompt.scroll_by(pages);
+        }
     }
 
     fn move_choice(&mut self, step: isize) {
@@ -283,7 +337,7 @@ mod tests {
             request: ApprovalRequest {
                 id: RequestId::new(id),
                 tool_name: "shell".to_owned(),
-                title: format!("Running {}...", &command[..60]),
+                title: format!("Running {}...", &command[..command.len().min(60)]),
                 tool_arguments_preview: String::new(),
                 scope: ApprovalScope {
                     target: None,
@@ -401,6 +455,48 @@ mod tests {
         ] {
             assert!(screen.contains(line), "{line}\n{screen}");
         }
+    }
+
+    #[test]
+    fn a_short_terminal_reviews_the_whole_command_before_it_accepts_yes() {
+        let mut test = TestShell::start();
+        test.resize(14, 80);
+        test.submit("run it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        let command = (0..6)
+            .map(|line| format!("echo {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        test.deliver(command_request(1, 4, &command));
+        let screen = test.screen();
+        for line in [
+            PANEL,
+            "$ echo 0",
+            "! 1. Yes · scroll to review",
+            "pgup/pgdn",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
+        assert!(!screen.contains("echo 5"), "{screen}");
+        test.advance(ARMED_MS);
+        press(&mut test, b"\r");
+        press(&mut test, b"1");
+        assert!(!approved(&test));
+        for _ in 0..2 {
+            press(&mut test, b"\x1b[6~");
+            test.screen();
+        }
+        let screen = test.screen();
+        assert!(screen.contains("echo 5"), "{screen}");
+        assert!(screen.contains("❯ 1. Yes"), "{screen}");
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
     }
 
     #[test]
