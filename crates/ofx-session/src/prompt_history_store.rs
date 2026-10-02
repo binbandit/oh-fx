@@ -4,8 +4,7 @@ use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use memchr::memmem::Finder;
 use memchr::{memchr, memrchr, memrchr_iter};
@@ -15,13 +14,14 @@ use rustix::io::Errno;
 use serde::Serialize;
 
 use crate::json_fields::{Fields, parse_json};
-use crate::session_log::managed_file::{file_type, permissions, private_file_mode};
+use crate::session_log::managed_file::{
+    file_type, lock_with_deadline, permissions, private_file_mode,
+};
 use crate::session_store_paths::MAX_PATH_BYTES;
 
 const HISTORY_FILE: &str = "history.jsonl";
 const HISTORY_LOCK_FILE: &str = "history.lock";
 const LOCK_DEADLINE: Duration = Duration::from_secs(2);
-const LOCK_RETRY: Duration = Duration::from_millis(10);
 const DEFAULT_SCAN_BLOCK_BYTES: usize = 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 256 * 1024;
 const COMPACTION_THRESHOLD_BYTES: u64 = 1024 * 1024;
@@ -187,16 +187,8 @@ impl PromptHistoryStore {
 
     fn acquire_lock(&self) -> Result<AdvisoryLock, PromptHistoryError> {
         let home = self.home.as_ref().ok_or(PromptHistoryError::LayoutFailed)?;
-        let started = Instant::now();
-        loop {
-            if let Some(lock) = home.try_lock(HISTORY_LOCK_FILE)? {
-                return Ok(lock);
-            }
-            if started.elapsed() >= self.lock_deadline {
-                return Err(PromptHistoryError::LockBusy);
-            }
-            thread::sleep(LOCK_RETRY.min(self.lock_deadline));
-        }
+        lock_with_deadline(home, HISTORY_LOCK_FILE, self.lock_deadline)?
+            .ok_or(PromptHistoryError::LockBusy)
     }
 
     fn open_history(
