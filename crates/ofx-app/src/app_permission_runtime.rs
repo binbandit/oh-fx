@@ -1,9 +1,7 @@
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use ofx_config::{
-    LegacyCleanup, ProfilePaths, SettingsWriteError, SettingsWriteFailure, save_permission_mode,
-    save_yolo_acknowledged,
+    ProfilePaths, SettingsWriteFailure, save_permission_mode, save_yolo_acknowledged,
 };
 use ofx_contract::{
     LivePermissionMode, Notice, NoticeTone, PermissionGate, PermissionMode, UiEvent,
@@ -11,6 +9,7 @@ use ofx_contract::{
 use ofx_permissions::PermissionPolicy;
 
 use crate::app_agent_runtime::Emit;
+use crate::user_settings::{self, Unsaved, unsaved_notice};
 
 const PERMISSIONS_TOPIC: &str = "permissions";
 const MODE_PREFERENCE_TOPIC: &str = "permission-mode";
@@ -20,7 +19,6 @@ const RESET_NOTICE: &str = "permissions reset to ask, session grants cleared";
 const SAVED_SESSION_REQUIRED: &str =
     "saved-session permission rules require an active saved session";
 const NO_SAVED_SESSION_RULES: &str = "saved-session permission rules: none";
-const HOME_NOT_SET: &str = "HomeNotSet";
 
 pub(crate) struct PermissionRuntime {
     mode: LivePermissionMode,
@@ -138,63 +136,19 @@ impl PermissionRuntime {
         &self,
         commit: impl FnOnce(&ProfilePaths) -> Result<(), SettingsWriteFailure>,
     ) -> Result<(), Unsaved> {
-        let paths = self.preferences.as_ref().ok_or(Unsaved::HomeNotSet)?;
-        commit(paths).map_err(Unsaved::Failed)
+        user_settings::save(self.preferences.as_ref(), commit)
     }
 
     fn report_unsaved(&self, topic: &str, unsaved: &Unsaved) {
-        self.notice(NoticeTone::Error, topic, &unsaved_settings_body(unsaved));
+        (self.emit)(UiEvent::Notice {
+            notice: unsaved_notice(topic, unsaved),
+        });
     }
 
     fn notice(&self, tone: NoticeTone, topic: &str, body: &str) {
         (self.emit)(UiEvent::Notice {
             notice: Notice::new(tone, topic, body),
         });
-    }
-}
-
-#[derive(Debug)]
-enum Unsaved {
-    HomeNotSet,
-    Failed(SettingsWriteFailure),
-}
-
-fn unsaved_settings_body(unsaved: &Unsaved) -> String {
-    let (error, cleanup) = match unsaved {
-        Unsaved::HomeNotSet => (HOME_NOT_SET.to_owned(), None),
-        Unsaved::Failed(failure) => (failure.error.to_string(), Some(&failure.cleanup)),
-    };
-    let mut body = if matches!(
-        unsaved,
-        Unsaved::Failed(SettingsWriteFailure {
-            error: SettingsWriteError::CommitIndeterminate,
-            ..
-        })
-    ) {
-        format!("user settings persistence uncertain (scope=user, error={error})")
-    } else {
-        format!("active for this process but not saved to user settings ({error})")
-    };
-    if let Some(cleanup) = cleanup {
-        append_legacy_cleanup(&mut body, cleanup);
-    }
-    body
-}
-
-fn append_legacy_cleanup(body: &mut String, cleanup: &LegacyCleanup) {
-    if cleanup.fields_removed > 0 {
-        let plural = |count: usize| if count == 1 { "" } else { "s" };
-        let _ = write!(
-            body,
-            "; normalized {} legacy value{} across {} workspace{}",
-            cleanup.fields_removed,
-            plural(cleanup.fields_removed),
-            cleanup.workspaces_changed,
-            plural(cleanup.workspaces_changed),
-        );
-    }
-    for path in &cleanup.recovery_paths {
-        let _ = write!(body, "; recovery={}", path.display());
     }
 }
 
