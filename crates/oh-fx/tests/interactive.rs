@@ -546,6 +546,9 @@ fn slash_commands_switch_models_show_help_and_exit() {
     let screen = wait(&session, "* status: model=vendor/model-b");
     assert!(screen.contains("permission_mode=auto"), "{screen}");
     assert!(screen.contains("history_turns=0"), "{screen}");
+    let saved = saved_settings(&home);
+    assert_eq!(saved["models"]["local"], "vendor/model-b");
+    assert_eq!(saved["fast_mode"], false);
     session.send(b"/compact\r");
     wait(&session, "No context to compact.");
     session.send(b"go\r");
