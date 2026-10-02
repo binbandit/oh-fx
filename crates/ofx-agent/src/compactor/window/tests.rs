@@ -453,3 +453,34 @@ fn a_request_after_the_conversation_gets_what_the_conversation_leaves() {
     };
     assert_eq!(rejected.room_after_conversation(), None);
 }
+
+#[test]
+fn a_request_is_due_once_it_reaches_the_compaction_point() {
+    let size = Size {
+        compact_at_tokens: Some(1_000),
+        request_tokens: Some(999),
+        ..Size::default()
+    };
+    assert!(!size.due());
+    assert!(
+        Size {
+            request_tokens: Some(1_000),
+            ..size
+        }
+        .due()
+    );
+    assert!(
+        !Size {
+            compact_at_tokens: None,
+            ..size
+        }
+        .due()
+    );
+    assert!(
+        !Size {
+            request_tokens: None,
+            ..size
+        }
+        .due()
+    );
+}

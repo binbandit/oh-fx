@@ -15,7 +15,7 @@ use crate::execution_memory::{Cut, HistoryTurn, ToolStep};
 pub(crate) use checkpoint::Payload;
 pub(crate) use model::Summarizer;
 pub(crate) use summarize::SummaryModel;
-pub(crate) use window::Size;
+pub(crate) use window::{Correction, Size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionError {

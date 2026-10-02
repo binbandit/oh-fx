@@ -5,6 +5,7 @@ mod execution_memory;
 mod model_response_recovery;
 mod orchestrator;
 mod project_context;
+mod prompt_context;
 #[cfg(test)]
 mod scripted_provider;
 mod text_completion;

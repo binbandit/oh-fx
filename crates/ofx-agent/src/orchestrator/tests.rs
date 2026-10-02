@@ -101,6 +101,13 @@ impl ModelProvider for FakeProvider {
         })
     }
 
+    fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        Some(format!(
+            "{:?} {:?} {:?}",
+            request.instructions, request.messages, request.tools
+        ))
+    }
+
     fn project_replay(
         &self,
         replay: &ProviderReplay,

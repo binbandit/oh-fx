@@ -24,16 +24,18 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::approvals::Approvals;
-use crate::compactor::Payload;
+use crate::compactor::{CompactionError, Payload};
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide, recovery_cause,
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
+use crate::prompt_context::Calibration;
 
 mod compaction;
 mod project_gate;
 
 pub use compaction::Compaction;
+use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
 #[cfg(test)]
 use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
@@ -85,6 +87,7 @@ pub enum TurnFailure {
     InvalidCompletion,
     PermissionRequired(BlockedCall),
     ProjectContext,
+    Compaction(CompactionError),
 }
 
 impl TurnFailure {
@@ -96,6 +99,7 @@ impl TurnFailure {
             Self::InvalidCompletion => "ModelError",
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
             Self::ProjectContext => "ProjectContextFailed",
+            Self::Compaction(error) => error.code(),
         }
     }
 }
@@ -143,6 +147,7 @@ struct Turn {
     malformed_batches: u32,
     fast_mode: bool,
     fast_notice_shown: bool,
+    compaction: TurnCompaction,
 }
 
 struct ProjectInstructions {
@@ -172,6 +177,8 @@ pub struct Agent {
     history: Vec<ChatMessage>,
     turn_starts: Vec<usize>,
     compacted: Option<Payload>,
+    calibration: Option<Calibration>,
+    request_fixed_tokens: Option<usize>,
     turns: u64,
 }
 
@@ -198,6 +205,8 @@ impl Agent {
             history: Vec::new(),
             turn_starts: Vec::new(),
             compacted: None,
+            calibration: None,
+            request_fixed_tokens: None,
             turns: 0,
         }
     }
@@ -242,6 +251,7 @@ impl Agent {
         self.history.clear();
         self.turn_starts.clear();
         self.compacted = None;
+        self.calibration = None;
         self.permissions.forget_approvals();
         if let Some(project) = &mut self.project {
             project.deltas.clear();
@@ -268,6 +278,7 @@ impl Agent {
             malformed_batches: 0,
             fast_mode: self.config.fast_mode,
             fast_notice_shown: false,
+            compaction: TurnCompaction::default(),
         };
         self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
@@ -281,6 +292,7 @@ impl Agent {
             Err(Stop::Failed { failure, partial }) => {
                 if partial.trim_matches(TRIMMED).is_empty()
                     && !self.has_completed_tool_steps(turn.start)
+                    && !turn.compaction.compacted_steps
                     && failure != TurnFailure::StepLimitReached
                 {
                     self.history.truncate(turn.start);
@@ -325,6 +337,9 @@ impl Agent {
             if cancel.is_cancelled() {
                 return Err(Stop::interrupted());
             }
+            if self.has_compactable_context(turn) {
+                self.resolve_capabilities(cancel).await?;
+            }
             let context = self.context.runtime_context().await;
             let deltas = self
                 .project
@@ -349,7 +364,37 @@ impl Agent {
                 max_output_tokens: self.config.max_output_tokens,
                 provider_options: self.provider_options(turn, events),
             };
-            let completion = self.complete(turn, request, events, cancel).await?;
+            let measured = self.measure(turn, &request);
+            match self
+                .preflight(&mut turn.compaction, request, measured.as_ref(), cancel)
+                .await
+            {
+                Ok(None) => {}
+                Ok(Some(compacted)) => {
+                    self.settle_measurement(measured, None);
+                    self.install_turn_compaction(turn, compacted);
+                    continue;
+                }
+                Err(error) => return Err(compaction_stop(error, cancel)),
+            }
+            let outcome = self.complete(turn, request, events, cancel).await;
+            let completion = match outcome {
+                Ok(completion) => {
+                    self.settle_measurement(measured, completion.usage.input_tokens);
+                    completion
+                }
+                Err(Stop::Failed {
+                    failure: TurnFailure::Provider(error),
+                    partial,
+                }) if self.recovers_overflow(turn, &error, &partial, cancel) => {
+                    self.settle_measurement(measured, None);
+                    continue;
+                }
+                Err(ended) => {
+                    self.settle_measurement(measured, None);
+                    return Err(ended);
+                }
+            };
             turn.usage.accumulate(completion.usage);
             events(UiEvent::UsageReported {
                 turn_id: turn.id,

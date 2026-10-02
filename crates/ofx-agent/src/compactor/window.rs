@@ -38,6 +38,13 @@ impl Size {
         }
     }
 
+    pub(crate) fn due(self) -> bool {
+        matches!(
+            (self.compact_at_tokens, self.request_tokens),
+            (Some(at), Some(request)) if request >= at
+        )
+    }
+
     fn estimate(self, tokens: usize) -> usize {
         let Some(correction) = self.correction else {
             return tokens;
