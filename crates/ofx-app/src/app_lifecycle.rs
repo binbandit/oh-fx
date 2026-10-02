@@ -198,11 +198,15 @@ fn spawn_worker(
     let emit = Arc::new(move |event: UiEvent| {
         sender.send(event);
     });
+    let refreshes = setup.refreshes();
     let controller = Controller::new(setup, emit);
     Worker::spawn(move || {
         runtime.block_on(async {
             controller.run(commands).await;
             executions.shutdown().await;
+            if let Some(refreshes) = refreshes {
+                refreshes.settle().await;
+            }
         });
         runtime.shutdown_timeout(Duration::from_millis(100));
     })

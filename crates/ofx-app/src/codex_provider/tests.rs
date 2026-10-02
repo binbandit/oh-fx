@@ -97,6 +97,7 @@ impl Fixture {
             Some(&self.paths),
             "oh-fx/test",
             endpoints,
+            None,
             &CancellationToken::new(),
         )
         .await
@@ -422,6 +423,62 @@ async fn a_cancelled_turn_stops_waiting_for_a_stalled_refresh_after_unauthorized
 }
 
 #[tokio::test]
+async fn an_interactive_turn_cancelled_during_a_refresh_stops_while_the_refresh_saves() {
+    let fixture = Fixture::new();
+    fixture.write_session(FAR_FUTURE_MS, 0o600);
+    let rotated = json!({
+        "access_token": FRESH_TOKEN,
+        "refresh_token": ROTATED_REFRESH_TOKEN,
+        "expires_in": 3600,
+    });
+    let auth = FakeServer::start([Reply::delayed_status(
+        200,
+        rotated.to_string(),
+        Duration::from_secs(3),
+    )]);
+    let codex = FakeServer::start([Reply::status(
+        401,
+        r#"{"error":{"message":"token expired"}}"#,
+    )]);
+    let refreshes = Arc::new(DetachedRefreshes::default());
+    let provider = codex_subscription(
+        Some(&fixture.paths),
+        "oh-fx/test",
+        subscription_endpoints(&auth, &codex),
+        Some(Arc::clone(&refreshes)),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("provider")
+    .provider;
+    let mut agent = fixture.agent(provider);
+    let cancel = CancellationToken::new();
+    let interrupt = async {
+        let started = Instant::now();
+        while auth.requests().is_empty() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the turn never asked to refresh the login"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        cancel.cancel();
+        Instant::now()
+    };
+    let mut record = |_| {};
+    let turn = agent.run_turn("Hello", &mut record, &cancel);
+    let (report, cancelled) = tokio::join!(turn, interrupt);
+
+    assert!(cancelled.elapsed() < Duration::from_secs(1));
+    assert_eq!(report.outcome, TurnOutcome::Interrupted, "{report:?}");
+    assert_eq!(fixture.saved()["refresh_token"], REFRESH_TOKEN);
+    refreshes.settle().await;
+    assert_eq!(auth.requests().len(), 1);
+    assert_eq!(fixture.saved()["access_token"], FRESH_TOKEN);
+    assert_eq!(fixture.saved()["refresh_token"], ROTATED_REFRESH_TOKEN);
+}
+
+#[tokio::test]
 async fn a_rejected_refresh_after_unauthorized_retires_the_login() {
     let fixture = Fixture::new();
     fixture.write_session(FAR_FUTURE_MS, 0o600);
@@ -526,6 +583,7 @@ async fn missing_expired_and_unsafe_logins_never_build_a_provider() {
             None,
             "oh-fx/test",
             SubscriptionEndpoints::default(),
+            None,
             &CancellationToken::new()
         )
         .await,
