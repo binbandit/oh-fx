@@ -26,8 +26,6 @@ pub(crate) const CURSOR_POSITION_QUERY: &str = "\x1b[6n";
 pub enum TerminalError {
     #[error("oh-fx requires an interactive terminal (TTY).")]
     NotATerminal,
-    #[error("oh-fx cannot reopen its terminal for nonblocking output: {0}")]
-    OutputUnavailable(std::io::Error),
     #[error("unable to read the terminal size")]
     UnableToReadTerminalSize,
     #[error("oh-fx needs at least 5 terminal rows.")]
