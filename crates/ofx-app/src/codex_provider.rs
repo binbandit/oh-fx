@@ -1,5 +1,6 @@
+use std::mem;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_auth::{
     ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, MISSING_CHATGPT_CREDENTIAL_MESSAGE,
@@ -12,6 +13,8 @@ use ofx_gateway::{
     CodexModelCatalog, CodexModelsEndpoints, CodexProvider, CodexRefresh,
 };
 use ofx_http::ClientError;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default)]
@@ -72,8 +75,29 @@ impl CapabilityResolver for CatalogCapabilities {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct DetachedRefreshes {
+    running: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl DetachedRefreshes {
+    fn track(&self, refresh: JoinHandle<()>) {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        running.retain(|running| !running.is_finished());
+        running.push(refresh);
+    }
+
+    pub(crate) async fn settle(&self) {
+        let running = mem::take(&mut *self.running.lock().unwrap_or_else(PoisonError::into_inner));
+        for refresh in running {
+            let _ = refresh.await;
+        }
+    }
+}
+
 struct SubscriptionCredentials {
-    oauth: ChatGptOAuth,
+    oauth: Arc<ChatGptOAuth>,
+    detached: Option<Arc<DetachedRefreshes>>,
 }
 
 impl CodexCredentials for SubscriptionCredentials {
@@ -88,11 +112,26 @@ impl CodexCredentials for SubscriptionCredentials {
             CodexRefresh::Force => RefreshMode::Force,
         };
         Box::pin(async move {
-            refresh_chatgpt_credential(&self.oauth, mode, account_id, cancel)
-                .await
-                .ok()
-                .flatten()
-                .map(codex_access)
+            let Some(detached) = &self.detached else {
+                return refresh_chatgpt_credential(&self.oauth, mode, account_id, cancel)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(codex_access);
+            };
+            let (finished, refreshed) = oneshot::channel();
+            let oauth = Arc::clone(&self.oauth);
+            let account_id = account_id.to_owned();
+            detached.track(tokio::spawn(async move {
+                let never = CancellationToken::new();
+                let access = refresh_chatgpt_credential(&oauth, mode, &account_id, &never).await;
+                let _ = finished.send(access.ok().flatten());
+            }));
+            tokio::select! {
+                biased;
+                refreshed = refreshed => refreshed.ok().flatten().map(codex_access),
+                () = cancel.cancelled() => None,
+            }
         })
     }
 }
@@ -101,6 +140,7 @@ pub(crate) async fn codex_subscription(
     paths: Option<&ProfilePaths>,
     user_agent: &str,
     endpoints: SubscriptionEndpoints,
+    detached: Option<Arc<DetachedRefreshes>>,
     cancel: &CancellationToken,
 ) -> Result<CodexSubscription, CodexUnavailable> {
     let paths = paths.ok_or(CodexUnavailable::Preparation(
@@ -124,7 +164,10 @@ pub(crate) async fn codex_subscription(
         credential: CatalogCredential::new(token.clone(), account_id.clone()),
     };
     let access = CodexAccess::new(token, account_id, refresh_after_ms);
-    let credentials = Arc::new(SubscriptionCredentials { oauth });
+    let credentials = Arc::new(SubscriptionCredentials {
+        oauth: Arc::new(oauth),
+        detached,
+    });
     let provider = CodexProvider::new(access, credentials, user_agent, endpoints.codex)
         .map_err(CodexUnavailable::Client)?;
     Ok(CodexSubscription {
