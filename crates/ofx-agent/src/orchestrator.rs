@@ -8,16 +8,17 @@ use std::time::Duration;
 use ofx_contract::{
     Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent, BoxFuture,
     CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion,
-    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange,
-    FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
-    ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
-    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
-    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
+    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure,
+    FileChange, FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities,
+    ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId,
+    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
+    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity,
+    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext,
+    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    TurnStop, UiEvent, Usage, malformed_tool_arguments_json, non_object_tool_arguments_json,
+    prepare_model_output, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -199,12 +200,19 @@ fn describe_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<ToolSpec>, Str
     (tool_specs, offered_specs, tool_guidance)
 }
 
+struct DynamicToolSet {
+    source: Arc<dyn DynamicTools>,
+    generation: Option<u64>,
+    tools: Vec<Arc<dyn Tool>>,
+}
+
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
     tool_specs: Vec<ToolSpec>,
     offered_specs: Vec<ToolSpec>,
     tool_guidance: String,
+    dynamic: Option<DynamicToolSet>,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
@@ -242,6 +250,7 @@ impl Agent {
             tool_specs,
             offered_specs,
             tool_guidance,
+            dynamic: None,
             context,
             permissions,
             approvals: None,
@@ -268,6 +277,16 @@ impl Agent {
     #[must_use]
     pub fn with_approvals(mut self, approvals: Approvals) -> Self {
         self.approvals = Some(approvals);
+        self
+    }
+
+    #[must_use]
+    pub fn with_dynamic_tools(mut self, source: Arc<dyn DynamicTools>) -> Self {
+        self.dynamic = Some(DynamicToolSet {
+            source,
+            generation: None,
+            tools: Vec::new(),
+        });
         self
     }
 
@@ -307,6 +326,9 @@ impl Agent {
     pub(crate) fn replace_tools(&mut self, tools: Vec<Arc<dyn Tool>>) {
         (self.tool_specs, self.offered_specs, self.tool_guidance) = describe_tools(&tools);
         self.tools = tools;
+        if let Some(set) = &mut self.dynamic {
+            set.generation = None;
+        }
     }
 
     pub(crate) fn inherit_root_user_requests(&mut self, requests: Arc<RootUserRequests>) {
@@ -492,6 +514,7 @@ impl Agent {
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
+            self.refresh_dynamic_tools();
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
             let request = ModelRequest {
@@ -945,10 +968,35 @@ impl Agent {
     }
 
     fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        let dynamic = self.dynamic.iter().flat_map(|set| &set.tools);
         self.tools
             .iter()
+            .chain(dynamic)
             .zip(&self.tool_specs)
             .find_map(|(tool, spec)| (spec.name == name).then_some(tool))
+    }
+
+    fn refresh_dynamic_tools(&mut self) {
+        let Some(set) = &mut self.dynamic else {
+            return;
+        };
+        let generation = set.source.generation();
+        if set.generation == Some(generation) {
+            return;
+        }
+        set.generation = Some(generation);
+        set.tools = set.source.tools();
+        self.tool_specs.truncate(self.tools.len());
+        self.tool_specs
+            .extend(set.tools.iter().map(|tool| tool.spec().clone()));
+        let offered = self.tools.iter().filter(|tool| !tool.provider_executed());
+        self.offered_specs.truncate(offered.count());
+        self.offered_specs.extend(
+            set.tools
+                .iter()
+                .filter(|tool| !tool.provider_executed())
+                .map(|tool| tool.spec().clone()),
+        );
     }
 
     fn history_call(&self, call: ToolCall) -> ToolCall {
