@@ -67,7 +67,7 @@ impl Tool for GrepFiles {
         Ok(BlockingCall::boxed(
             description,
             move |path_access| match decoded {
-                Ok(arguments) => arguments.run(&context, path_access),
+                Ok(arguments) => arguments.run(&context, &path_access),
                 Err(failure) => failure,
             },
         ))
@@ -166,7 +166,7 @@ impl GrepFilesArgs {
         })
     }
 
-    fn run(&self, context: &FilesystemContext, path_access: PathAccess) -> ToolOutput {
+    fn run(&self, context: &FilesystemContext, path_access: &PathAccess) -> ToolOutput {
         if let Err(failure) = admit_optional_path(TOOL_NAME, &context.workspace_root, &self.path) {
             return failure;
         }
@@ -179,7 +179,7 @@ impl GrepFilesArgs {
     fn resolve_root(
         &self,
         context: &FilesystemContext,
-        path_access: PathAccess,
+        path_access: &PathAccess,
     ) -> Result<PathBuf, ToolOutput> {
         let failure = |error: PathError| {
             if error.is_access_denied() {
@@ -193,7 +193,9 @@ impl GrepFilesArgs {
         };
         let root = resolve_workspace_or_external_path(&context.workspace_root, &self.path)
             .map_err(failure)?;
-        if path_access == PathAccess::WorkspaceOnly && !path_inside(&context.workspace_root, &root)
+        if path_access
+            .confining_root(&context.workspace_root)
+            .is_some_and(|confining| !path_inside(confining, &root))
         {
             return Err(failure(PathError::PathOutsideWorkspace));
         }
@@ -203,7 +205,7 @@ impl GrepFilesArgs {
     fn execute(
         &self,
         context: &FilesystemContext,
-        path_access: PathAccess,
+        path_access: &PathAccess,
     ) -> Result<String, ToolOutput> {
         let absolute_root = self.resolve_root(context, path_access)?;
         let include = self
@@ -569,7 +571,7 @@ mod tests {
 
     use super::*;
     use crate::filesystem::DEFAULT_MAX_LIST_ENTRIES;
-    use crate::filesystem::tests::{run_tool, run_tool_with};
+    use crate::filesystem::tests::{RememberedGrant, run_tool, run_tool_with};
 
     struct Workspace {
         _temp: TempDir,
@@ -593,7 +595,7 @@ mod tests {
         fn grep(&self, arguments: &Value) -> Result<String, ToolOutput> {
             GrepFilesArgs::decode(&arguments.to_string())?.execute(
                 &FilesystemContext::new(&self.root),
-                PathAccess::WorkspaceOrExternal,
+                &PathAccess::WorkspaceOrExternal,
             )
         }
     }
@@ -760,6 +762,27 @@ mod tests {
                 .contains(&format!("{}:1: needle outside", external_file.display())),
             "{}",
             approved.content
+        );
+    }
+
+    #[test]
+    fn grep_files_refuses_a_remembered_grant_root_swapped_out_of_its_tree() {
+        let grant = RememberedGrant::new();
+        let tool = GrepFiles::new(&grant.workspace);
+
+        let (before, after) =
+            grant.run_around_a_swap(&tool, r#"{"pattern":"needle","path":"../link"}"#);
+
+        assert!(
+            before.content.contains("/allowed/a.txt:1: needle allowed"),
+            "{}",
+            before.content
+        );
+        assert_eq!(
+            after,
+            ToolOutput::failure(
+                "Unable to resolve grep search root: ../link (PathOutsideWorkspace)"
+            )
         );
     }
 

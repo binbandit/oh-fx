@@ -200,10 +200,10 @@ impl ShellContext {
         path_access: PathAccess,
         cancel: &CancellationToken,
     ) -> ToolOutput {
-        let cwd = match path_access {
-            PathAccess::WorkspaceOrExternal => cwd,
-            PathAccess::WorkspaceOnly => match self.resolve_cwd(request.cwd.as_deref()) {
-                Ok(current) if path_inside(&self.workspace_root, &current) => current,
+        let cwd = match path_access.confining_root(&self.workspace_root) {
+            None => cwd,
+            Some(root) => match self.resolve_cwd(request.cwd.as_deref()) {
+                Ok(current) if path_inside(root, &current) => current,
                 _ => return ToolOutput::failure(runtime_failure(PATH_OUTSIDE_WORKSPACE)),
             },
         };

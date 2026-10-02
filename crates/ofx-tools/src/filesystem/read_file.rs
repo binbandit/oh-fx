@@ -70,7 +70,7 @@ impl Tool for ReadFile {
         Ok(BlockingCall::boxed(
             description,
             move |path_access| match decoded {
-                Ok(arguments) => arguments.run(&context, path_access),
+                Ok(arguments) => arguments.run(&context, &path_access),
                 Err(failure) => failure,
             },
         ))
@@ -109,7 +109,7 @@ impl ReadFileArgs {
         })
     }
 
-    fn run(&self, context: &FilesystemContext, path_access: PathAccess) -> ToolOutput {
+    fn run(&self, context: &FilesystemContext, path_access: &PathAccess) -> ToolOutput {
         if let Err(failure) =
             admit_existing_path(TOOL_NAME, &context.workspace_root, &self.requested_path)
         {
@@ -124,7 +124,7 @@ impl ReadFileArgs {
     fn read(
         &self,
         context: &FilesystemContext,
-        path_access: PathAccess,
+        path_access: &PathAccess,
     ) -> Result<String, ToolOutput> {
         let target = self.resolve(context, path_access)?;
         self.read_target(context, &target)
@@ -133,13 +133,14 @@ impl ReadFileArgs {
     fn resolve(
         &self,
         context: &FilesystemContext,
-        path_access: PathAccess,
+        path_access: &PathAccess,
     ) -> Result<PathBuf, ToolOutput> {
         let failure = |error| read_file_failure(RegularFileError::Path(error), &self.path);
         let target = resolve_workspace_or_external_path(&context.workspace_root, &self.path)
             .map_err(failure)?;
-        if path_access == PathAccess::WorkspaceOnly
-            && !path_inside(&context.workspace_root, &target)
+        if path_access
+            .confining_root(&context.workspace_root)
+            .is_some_and(|root| !path_inside(root, &target))
         {
             return Err(failure(PathError::PathOutsideWorkspace));
         }
@@ -416,7 +417,7 @@ mod tests {
 
     use super::*;
     use crate::filesystem::DEFAULT_MAX_READ_FILE_LINE_LEN;
-    use crate::filesystem::tests::{run_tool, run_tool_with};
+    use crate::filesystem::tests::{RememberedGrant, run_tool, run_tool_with};
 
     struct Workspace {
         _temp: TempDir,
@@ -451,7 +452,7 @@ mod tests {
     }
 
     fn read(context: &FilesystemContext, args_json: &str) -> Result<String, ToolOutput> {
-        ReadFileArgs::decode(args_json)?.read(context, PathAccess::WorkspaceOrExternal)
+        ReadFileArgs::decode(args_json)?.read(context, &PathAccess::WorkspaceOrExternal)
     }
 
     fn text(context: &FilesystemContext, args_json: &str) -> String {
@@ -633,6 +634,28 @@ mod tests {
     }
 
     #[test]
+    fn read_file_refuses_a_remembered_grant_path_swapped_out_of_its_tree() {
+        let grant = RememberedGrant::new();
+        let tool = ReadFile::new(&grant.workspace);
+
+        let (before, after) = grant.run_around_a_swap(&tool, r#"{"path":"../link/a.txt"}"#);
+
+        assert!(
+            before
+                .content
+                .ends_with("<content>\n1\tneedle allowed\n</content>"),
+            "{}",
+            before.content
+        );
+        assert_eq!(
+            after,
+            ToolOutput::failure(
+                r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"read_file failed","details":{"field":"path","path":"../link/a.txt","error":"PathOutsideWorkspace"},"suggestion":"Run glob_files to discover matching paths, or check the path relative to the workspace."}}"#
+            )
+        );
+    }
+
+    #[test]
     fn read_file_access_denial_returns_structured_recovery() {
         let failure = read_file_failure(
             RegularFileError::Path(PathError::AccessDenied),
@@ -682,7 +705,7 @@ mod tests {
         let arguments = ReadFileArgs::decode(r#"{"path":"dir/notes.txt"}"#).unwrap();
 
         let target = arguments
-            .resolve(&context, PathAccess::WorkspaceOnly)
+            .resolve(&context, &PathAccess::WorkspaceOnly)
             .unwrap();
         fs::rename(workspace.root.join("dir"), workspace.root.join("moved")).unwrap();
         symlink(&outside.root, workspace.root.join("dir")).unwrap();
