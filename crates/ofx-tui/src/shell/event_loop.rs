@@ -16,6 +16,12 @@ struct Readiness {
     input_closed: bool,
 }
 
+enum InputRead {
+    Closed,
+    Drained,
+    StillReadable,
+}
+
 pub(super) enum Exit {
     Quit,
     Signal(i32),
@@ -52,8 +58,12 @@ impl Shell<'_> {
         if self.should_exit {
             return Ok(Some(Exit::Quit));
         }
-        if ready.input && self.read_input()? {
-            return Ok(Some(Exit::Quit));
+        if ready.input {
+            match self.read_input()? {
+                InputRead::Closed => return Ok(Some(Exit::Quit)),
+                InputRead::StillReadable => return Ok(self.should_exit.then_some(Exit::Quit)),
+                InputRead::Drained => {}
+            }
         }
         if ready.input_closed && !ready.input {
             return Ok(Some(Exit::Quit));
@@ -114,24 +124,24 @@ impl Shell<'_> {
         })
     }
 
-    fn read_input(&mut self) -> Result<bool, TerminalError> {
+    fn read_input(&mut self) -> Result<InputRead, TerminalError> {
         let mut buffer = [0_u8; INPUT_CHUNK_BYTES];
         for _ in 0..MAX_INPUT_READS_PER_FACT_COLLECTION {
             let count = self.terminal.read(&mut buffer)?;
             if count == 0 {
-                return Ok(true);
+                return Ok(InputRead::Closed);
             }
             self.input.push_bytes(&buffer[..count]);
             self.process_input()?;
             if self.should_exit {
-                return Ok(false);
+                return Ok(InputRead::Drained);
             }
             let poll = self.terminal.poll_input(Some(Duration::ZERO))?;
             if !poll.readable {
-                break;
+                return Ok(InputRead::Drained);
             }
         }
-        Ok(false)
+        Ok(InputRead::StillReadable)
     }
 }
 
@@ -172,6 +182,25 @@ mod tests {
             Some(&UiCommand::Cancel {
                 turn_id: TurnId::new(2)
             })
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_paste_end_marker_at_the_read_budget_waits_for_the_rest_of_the_input() {
+        let mut test = TestShell::start();
+        let mut clipboard = b"\x1b[200~".to_vec();
+        clipboard.extend(std::iter::repeat_n(b'a', 4084));
+        clipboard.extend_from_slice(b"\x1b[201~INJn\r\x1b[201~");
+        test.type_bytes(&clipboard);
+        test.step();
+        test.step();
+        assert!(test.sent().is_empty(), "{:?}", test.sent());
+        assert!(test.shell.composer.is_empty());
+        let screen = test.screen();
+        assert!(
+            screen.contains("Paste was not applied because extra input followed its end marker."),
+            "{screen}"
         );
     }
 
