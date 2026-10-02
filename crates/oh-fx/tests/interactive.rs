@@ -527,11 +527,12 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 12");
+    let screen = wait(&session, "Commands 13");
     assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
+    assert!(screen.contains("  /skills         browse and manage skills"));
     assert!(screen.contains("  /quit           exit the interactive shell"));
     assert!(screen.contains("  /reset          reset the current session context"));
-    assert!(screen.contains("Commands 12  [All]  General  Session  Account  Model"));
+    assert!(screen.contains("Commands 13  [All]  General  Session  Account  Model"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session.send(b"/stats\r");
@@ -588,6 +589,50 @@ fn a_saved_fast_choice_follows_only_the_model_it_was_saved_with() {
         assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
         fs::write(settings_file(&home), saved.to_string()).expect("restore settings.json");
     }
+}
+
+#[test]
+fn a_skill_chosen_in_the_skills_menu_is_loaded_for_the_prompt() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Reviewed."]))]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let skill = home.workspace.join(".oh-fx/skills/review");
+    fs::create_dir_all(&skill).expect("create the skill");
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: review\ndescription: Review a diff\n---\nCheck every hunk.\n",
+    )
+    .expect("write the skill");
+    let mut session = home.shell(30, 100);
+    session.send(b"/skills\r");
+    let screen = wait(&session, "Skills 1  [All]  oh-fx");
+    assert!(screen.contains("  review    oh-fx · Workspace"), "{screen}");
+    assert!(screen.contains("↑↓ navigate     tab source     enter use     esc close"));
+    session.send(b"\r");
+    wait(&session, "auto · model-a");
+    session.send(b"the change\r");
+    wait(&session, "Reviewed.");
+    let request = server.requests()[0].json();
+    let system: String = request["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .filter_map(|message| message["content"].as_str())
+        .collect();
+    assert!(
+        system.contains("<skill_content name=\"review\"") && system.contains("Check every hunk."),
+        "{system}"
+    );
+    let user = request["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .expect("the prompt");
+    assert_eq!(user["content"], "$review the change");
+    session.send(b"/exit\r");
+    assert!(session.wait_exit(WAIT).expect("oh-fx exits").success());
 }
 
 #[test]
