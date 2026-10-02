@@ -1,7 +1,9 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,6 +15,7 @@ pub(crate) const ARCHIVE_FILES: [&str; 3] = [BINARY, "LICENSE", "NOTICE"];
 const RELEASE_VERSION: &str = "0.1.0-dev.1";
 
 pub(crate) struct Builds {
+    repository: PathBuf,
     target_dir: PathBuf,
     staging: PathBuf,
 }
@@ -21,18 +24,14 @@ impl Builds {
     pub(crate) fn prepare(invoked_from: &Path) -> Result<Self, String> {
         let target_dir = env::var_os("CARGO_TARGET_DIR")
             .map_or_else(|| PathBuf::from("target"), |path| invoked_from.join(path));
-        let target_dir = env::current_dir()
-            .map_err(|error| format!("read the current directory: {error}"))?
-            .join(target_dir);
+        let repository =
+            env::current_dir().map_err(|error| format!("read the current directory: {error}"))?;
+        let target_dir = repository.join(target_dir);
         let staging = target_dir.join("footprint");
-        match fs::remove_dir_all(&staging) {
-            Err(error) if error.kind() != ErrorKind::NotFound => {
-                return Err(format!("clear {}: {error}", staging.display()));
-            }
-            _ => {}
-        }
+        remove_if_present(&staging)?;
         create_dir(&staging)?;
         Ok(Self {
+            repository,
             target_dir,
             staging,
         })
@@ -44,9 +43,11 @@ impl Builds {
     }
 
     pub(crate) fn base(&self, commit: &str) -> Result<PathBuf, String> {
-        let source = self.staging.join("base-source");
+        let source = base_source(&temp_dir()?, &self.repository, &self.target_dir)?;
         let source_text = source.to_string_lossy().into_owned();
+        remove_if_present(&source)?;
         repository::git(&["worktree", "prune"])?;
+        claim(&source)?;
         repository::git(&[
             "worktree",
             "add",
@@ -107,6 +108,45 @@ fn cargo_build(source: &Path, target_dir: &Path) -> Result<(), String> {
     }
 }
 
+fn temp_dir() -> Result<PathBuf, String> {
+    let temp_dir = env::temp_dir();
+    fs::canonicalize(&temp_dir).map_err(|error| {
+        format!(
+            "resolve the temp directory \"{}\": {error}",
+            temp_dir.display()
+        )
+    })
+}
+
+fn base_source(temp_dir: &Path, repository: &Path, target_dir: &Path) -> Result<PathBuf, String> {
+    if temp_dir.starts_with(repository) {
+        return Err(format!(
+            "the temp directory {} is inside the repository, where the base would build with the head's cargo config; set TMPDIR outside {}",
+            temp_dir.display(),
+            repository.display()
+        ));
+    }
+    let mut hasher = DefaultHasher::new();
+    target_dir.hash(&mut hasher);
+    Ok(temp_dir.join(format!("oh-fx-footprint-base-{:016x}", hasher.finish())))
+}
+
+fn claim(path: &Path) -> Result<(), String> {
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(path)
+        .map_err(|error| format!("create {}: {error}", path.display()))
+}
+
+fn remove_if_present(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            Err(format!("clear {}: {error}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn create_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| format!("create {}: {error}", path.display()))
 }
@@ -115,4 +155,58 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
     fs::copy(from, to)
         .map(drop)
         .map_err(|error| format!("copy {} to {}: {error}", from.display(), to.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    use super::*;
+
+    #[test]
+    fn the_base_checkout_sits_in_the_temp_directory_keyed_by_the_target_dir() {
+        let temp_dir = Path::new("/tmp");
+        let repository = Path::new("/work/oh-fx");
+        let target_dir = repository.join("target");
+        let source = base_source(temp_dir, repository, &target_dir).expect("a separate temp dir");
+        assert_eq!(source.parent(), Some(temp_dir));
+        assert_eq!(
+            base_source(temp_dir, repository, &target_dir),
+            Ok(source.clone())
+        );
+        assert_ne!(
+            base_source(temp_dir, repository, Path::new("/elsewhere/target")),
+            Ok(source)
+        );
+    }
+
+    #[test]
+    fn refuses_a_temp_directory_inside_the_repository() {
+        let repository = Path::new("/work/oh-fx");
+        for temp_dir in [repository.to_path_buf(), repository.join("tmp")] {
+            assert!(
+                base_source(&temp_dir, repository, &repository.join("target")).is_err(),
+                "{}",
+                temp_dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn claims_only_a_path_nothing_else_holds() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let elsewhere = dir.path().join("elsewhere");
+        create_dir(&elsewhere).expect("a directory to point at");
+        let planted = dir.path().join("planted");
+        symlink(&elsewhere, &planted).expect("a planted symlink");
+        assert!(claim(&planted).is_err());
+        assert!(claim(&elsewhere).is_err());
+        let claimed = dir.path().join("claimed");
+        claim(&claimed).expect("a fresh directory");
+        let mode = fs::metadata(&claimed)
+            .expect("the claimed directory")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
 }
