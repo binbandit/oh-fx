@@ -68,6 +68,10 @@ pub(crate) struct SessionGrants {
 }
 
 impl SessionGrants {
+    pub(crate) fn count(&self) -> usize {
+        self.lock().len()
+    }
+
     pub(crate) fn remember(&self, grant: &SessionGrant) {
         let mut grants = self.lock();
         if !grants.contains(grant) {

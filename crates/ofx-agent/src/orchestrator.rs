@@ -360,6 +360,10 @@ impl Agent {
         }
     }
 
+    pub fn history_turns(&self) -> usize {
+        self.turn_starts.len() + usize::from(self.compacted.is_some())
+    }
+
     pub fn last_assistant_reply(&self) -> Option<&str> {
         self.last_reply.as_ref().map(|reply| reply.text.as_str())
     }

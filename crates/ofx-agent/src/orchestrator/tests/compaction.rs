@@ -95,6 +95,22 @@ async fn manual_compaction_asks_the_conversations_model_for_notes_on_tool_work()
 }
 
 #[tokio::test]
+async fn history_turns_count_the_checkpoint_as_one_turn() {
+    let provider = FakeProvider::new(chat_replies(6));
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    assert_eq!(agent.history_turns(), 0);
+    chat(&mut agent, 6).await;
+    assert_eq!(agent.history_turns(), 6);
+    assert_eq!(
+        agent.compact(&CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    assert_eq!(agent.history_turns(), 5);
+    agent.clear_history();
+    assert_eq!(agent.history_turns(), 0);
+}
+
+#[tokio::test]
 async fn a_conversation_that_fits_is_left_alone() {
     let provider = FakeProvider::new(chat_replies(2));
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
