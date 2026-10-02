@@ -5,7 +5,7 @@ const MAX_TURN_REVIEW_HOLDS: usize = 64;
 const MAX_TURN_UNAVAILABLE_ATTEMPTS: usize = 64;
 const ACTION_ID_DOMAIN: &[u8] = b"fx.permission-action.v1\0";
 
-type ActionId = Vec<u8>;
+type ActionId = [u8; 32];
 
 #[derive(Debug, Default)]
 pub(crate) struct TurnReviews {
@@ -71,7 +71,7 @@ fn action_id(call: &ToolCall) -> ActionId {
     hasher.update(call.name.as_bytes());
     hasher.update(b"\0");
     hasher.update(call.arguments.as_bytes());
-    hasher.finalize().to_vec()
+    hasher.finalize().into()
 }
 
 #[cfg(test)]
