@@ -74,6 +74,10 @@ impl Composer {
         self.edit.selection_range()
     }
 
+    pub(crate) fn selected_text(&self) -> Option<&str> {
+        self.edit.selected_text()
+    }
+
     pub(crate) fn expanded_text(&self) -> Cow<'_, str> {
         pasted_blocks::expand(&self.edit.input, &self.entities.pasted_blocks)
     }

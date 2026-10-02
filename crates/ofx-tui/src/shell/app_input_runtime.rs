@@ -259,7 +259,8 @@ impl Shell<'_> {
             }
             ShortcutAction::Redraw => self.start_fresh_transcript(FreshScreen::Erase),
             ShortcutAction::InsertNewline => self.insert("\n"),
-            ShortcutAction::CopySelection | ShortcutAction::CutSelection => {}
+            ShortcutAction::CopySelection => self.copy_selection(),
+            ShortcutAction::CutSelection => self.cut_selection(),
         }
     }
 

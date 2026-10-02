@@ -21,6 +21,7 @@ use crate::app_commands::slash_command_specs;
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
+use crate::native::NativeClipboard;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const WORKER_THREAD: &str = "oh-fx-agent";
@@ -224,7 +225,7 @@ fn host(
     let worker = Worker::spawn(events.clone(), move || work(events, worker_commands))?;
     let result = panics
         .contain_shell(|| {
-            run_shell(options, receiver, move |command| {
+            run_shell(options, receiver, NativeClipboard, move |command| {
                 let _ = commands.send(command);
             })
         })

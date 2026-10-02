@@ -10,7 +10,7 @@ impl Composer {
 #[cfg(test)]
 mod tests {
     use super::super::SelectionRange;
-    use super::super::test_fixture::{replace_text, select, selected_text};
+    use super::super::test_fixture::{replace_text, select};
     use super::*;
 
     #[test]
@@ -40,7 +40,7 @@ mod tests {
         assert_eq!(composer.cursor(), 1);
 
         select(&mut composer, 1, 4);
-        assert_eq!(selected_text(&composer), Some("e\u{301}"));
+        assert_eq!(composer.selected_text(), Some("e\u{301}"));
         let right = crate::input::MoveIntent::new(crate::input::MoveKind::CharacterRight);
         assert!(composer.move_cursor(right));
         assert_eq!(composer.cursor(), 4);
