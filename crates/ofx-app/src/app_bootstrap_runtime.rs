@@ -169,6 +169,10 @@ impl Profile {
         &self.settings
     }
 
+    pub fn paths(&self) -> Option<&ProfilePaths> {
+        self.paths.as_ref()
+    }
+
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }

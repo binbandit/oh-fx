@@ -757,17 +757,23 @@ fn permission_flags_override_the_configured_mode_for_one_request() {
     settings["permission_mode"] = json!("ask");
     let home = Home::with_settings(&settings);
     let warning = "Full access enabled: oh-fx permission checks disabled\n";
-    for (flags, expected_stderr) in [
-        (&[][..], ""),
-        (&["--auto"], ""),
-        (&["--full-access"], warning),
-        (&["--yolo", "--no-color"], warning),
+    let saved = || -> Value {
+        serde_json::from_slice(&fs::read(home.root.join("config/oh-fx/settings.json")).unwrap())
+            .unwrap()
+    };
+    for (flags, expected_stderr, acknowledged) in [
+        (&[][..], "", Value::Null),
+        (&["--auto"], "", Value::Null),
+        (&["--full-access"], warning, json!(true)),
+        (&["--yolo", "--no-color"], "", json!(true)),
     ] {
         let args = [&["ask"], flags, &["hi"]].concat();
         let output = home.ask(&args, &KEY);
         assert!(output.status.success(), "{flags:?}: {}", stderr(&output));
         assert_eq!(stdout(&output), "ok", "{flags:?}");
         assert_eq!(stderr(&output), expected_stderr, "{flags:?}");
+        assert_eq!(saved()["yolo_acknowledged"], acknowledged, "{flags:?}");
+        assert_eq!(saved()["permission_mode"], "ask", "{flags:?}");
     }
     let modes: Vec<String> = server
         .requests()
@@ -782,6 +788,35 @@ fn permission_flags_override_the_configured_mode_for_one_request() {
             mode.starts_with(&format!("Runtime context: permission mode is {expected}.")),
             "{mode}"
         );
+    }
+}
+
+#[test]
+fn a_full_access_acknowledgment_that_cannot_be_saved_is_reported_after_the_warning() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["ok"])),
+        Reply::sse(&chat_text_events(&["ok"])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let path = home.root.join("config/oh-fx/settings.json");
+    let unsaveable = fs::read_to_string(&path).unwrap().replacen(
+        '{',
+        "{\"note\":123456789012345678901234567890,",
+        1,
+    );
+    fs::write(&path, &unsaveable).unwrap();
+    let warning = "Full access enabled: oh-fx permission checks disabled\n";
+    for _ in 0..2 {
+        let output = home.ask(&["ask", "--full-access", "hi"], &KEY);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(stdout(&output), "ok");
+        assert_eq!(
+            stderr(&output),
+            format!(
+                "{warning}oh-fx ask: failed to save full access acknowledgment: SettingsNumberNotPreserved\n"
+            )
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), unsaveable);
     }
 }
 
