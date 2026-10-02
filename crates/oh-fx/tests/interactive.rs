@@ -485,7 +485,7 @@ fn a_prompt_streams_a_reply_and_a_second_ctrl_c_exits() {
     session.send(b"hello there");
     wait(&session, "┃ hello there");
     session.send(b"\r");
-    let screen = wait(&session, "(↑4 ↓3)");
+    let screen = wait(&session, "s (↑4 ↓3)");
     let rows = session.screen_rows();
     assert!(rows[0].starts_with("oh-fx v"));
     assert!(rows[0].ends_with(" · Run /help for commands"));
