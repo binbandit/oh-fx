@@ -7,6 +7,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::cargo_env::{cargo_home, config_variables, set_by_head};
 use crate::repository::{self, GIT_REPOSITORY_VARIABLES};
 
 pub(crate) const TARGET: &str = "x86_64-unknown-linux-musl";
@@ -18,6 +19,7 @@ pub(crate) struct Builds {
     repository: PathBuf,
     target_dir: PathBuf,
     staging: PathBuf,
+    cargo_home: Option<PathBuf>,
 }
 
 impl Builds {
@@ -34,16 +36,19 @@ impl Builds {
             repository,
             target_dir,
             staging,
+            cargo_home: cargo_home(),
         })
     }
 
     pub(crate) fn head(&self) -> Result<PathBuf, String> {
-        cargo_build(Path::new("."), &self.target_dir)?;
+        let mut command = self.command(Path::new("."), |name| env::var_os(name))?;
+        cargo_build(&mut command, Path::new("."))?;
         self.stage(Path::new("."), "head")
     }
 
     pub(crate) fn base(&self, commit: &str) -> Result<PathBuf, String> {
         let source = base_source(&temp_dir()?, &self.repository, &self.target_dir)?;
+        let mut command = self.command(&source, |name| env::var_os(name))?;
         let source_text = source.to_string_lossy().into_owned();
         remove_if_present(&source)?;
         repository::git(&["worktree", "prune"])?;
@@ -56,13 +61,22 @@ impl Builds {
             &source_text,
             commit,
         ])?;
-        let staged =
-            cargo_build(&source, &self.target_dir).and_then(|()| self.stage(&source, "base"));
+        let staged = cargo_build(&mut command, &source).and_then(|()| self.stage(&source, "base"));
         if repository::git(&["worktree", "remove", "--force", &source_text]).is_err() {
             let _ = fs::remove_dir_all(&source);
             let _ = repository::git(&["worktree", "prune"]);
         }
         staged
+    }
+
+    fn command(
+        &self,
+        source: &Path,
+        current: impl Fn(&str) -> Option<OsString>,
+    ) -> Result<Command, String> {
+        let exported = config_variables(&self.repository, self.cargo_home.as_deref())?;
+        let hidden = set_by_head(&exported, current);
+        Ok(cargo_command(source, &self.target_dir, &hidden))
     }
 
     fn stage(&self, source: &Path, name: &str) -> Result<PathBuf, String> {
@@ -79,9 +93,23 @@ impl Builds {
     }
 }
 
-fn cargo_build(source: &Path, target_dir: &Path) -> Result<(), String> {
+fn cargo_build(command: &mut Command, source: &Path) -> Result<(), String> {
+    let status = command
+        .status()
+        .map_err(|error| format!("run cargo build: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("cargo build failed in {}", source.display()))
+    }
+}
+
+fn cargo_command(source: &Path, target_dir: &Path, hidden: &[String]) -> Command {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(cargo);
+    for variable in hidden {
+        command.env_remove(variable);
+    }
     command
         .args([
             "build",
@@ -98,14 +126,7 @@ fn cargo_build(source: &Path, target_dir: &Path) -> Result<(), String> {
     for variable in GIT_REPOSITORY_VARIABLES {
         command.env_remove(variable);
     }
-    let status = command
-        .status()
-        .map_err(|error| format!("run cargo build: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("cargo build failed in {}", source.display()))
-    }
+    command
 }
 
 fn temp_dir() -> Result<PathBuf, String> {
@@ -159,6 +180,7 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     use super::*;
@@ -189,6 +211,45 @@ mod tests {
                 "{}",
                 temp_dir.display()
             );
+        }
+    }
+
+    #[test]
+    fn a_build_drops_the_hidden_variables_but_keeps_its_own() {
+        let hidden = vec!["FROM_HEAD".to_owned(), "CARGO_TARGET_DIR".to_owned()];
+        let command = cargo_command(Path::new("/base"), Path::new("/shared/target"), &hidden);
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(OsStr::new("FROM_HEAD"), None)));
+        assert!(envs.contains(&(
+            OsStr::new("CARGO_TARGET_DIR"),
+            Some(OsStr::new("/shared/target"))
+        )));
+        assert_eq!(command.get_current_dir(), Some(Path::new("/base")));
+    }
+
+    #[test]
+    fn both_builds_drop_what_the_head_config_exported() {
+        let repository = tempfile::tempdir().expect("a scratch repository");
+        let config = repository.path().join(".cargo/config.toml");
+        create_dir(config.parent().expect("a parent")).expect("a config directory");
+        fs::write(&config, "[env]\nEXPORTED = \"head\"\nUSER_SET = \"head\"\n")
+            .expect("a config file");
+        let builds = Builds {
+            repository: repository.path().to_path_buf(),
+            target_dir: PathBuf::from("/shared/target"),
+            staging: PathBuf::from("/shared/target/footprint"),
+            cargo_home: None,
+        };
+        let current = |name: &str| match name {
+            "EXPORTED" => Some(OsString::from("head")),
+            "USER_SET" => Some(OsString::from("mine")),
+            _ => None,
+        };
+        for source in [Path::new("."), Path::new("/base")] {
+            let command = builds.command(source, current).expect("a build command");
+            let envs: Vec<_> = command.get_envs().collect();
+            assert!(envs.contains(&(OsStr::new("EXPORTED"), None)));
+            assert!(!envs.iter().any(|(name, _)| *name == "USER_SET"));
         }
     }
 
