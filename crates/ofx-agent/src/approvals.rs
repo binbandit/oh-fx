@@ -82,6 +82,18 @@ mod tests {
         assert_eq!(first.decision().await, ApprovalDecision::Always);
     }
 
+    #[test]
+    fn a_withdrawn_request_keeps_an_answer_already_given_and_refuses_later_ones() {
+        let approvals = Approvals::default();
+        let mut unanswered = approvals.open();
+        assert_eq!(unanswered.withdraw(), None);
+        assert!(!approvals.resolve(unanswered.id(), ApprovalDecision::Always));
+        let mut answered = approvals.open();
+        assert!(approvals.resolve(answered.id(), ApprovalDecision::Always));
+        assert_eq!(answered.withdraw(), Some(ApprovalDecision::Always));
+        assert!(!approvals.resolve(answered.id(), ApprovalDecision::Once));
+    }
+
     #[tokio::test]
     async fn abandoned_requests_cannot_be_resolved_and_unanswered_ones_deny() {
         let approvals = Approvals::default();
