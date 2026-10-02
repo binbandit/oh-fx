@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_agent::{Agent, TurnFailure};
@@ -10,6 +10,10 @@ use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{CommandEffect, handle_command};
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
+
+const CONTEXT_TOPIC: &str = "context";
+const LEGACY_CONTEXT_LINE: &str = "[context]";
+const LEGACY_CONTEXT_PREFIX: &str = "[context] ";
 
 pub(crate) struct ControllerState {
     setup: AgentSetup,
@@ -53,13 +57,55 @@ impl ControllerState {
     }
 }
 
+struct ContextNotices {
+    startup: Vec<String>,
+    claimed: HashSet<String>,
+}
+
+impl ContextNotices {
+    fn claim(&mut self, text: &str) -> Option<Notice> {
+        self.claimed
+            .insert(text.to_owned())
+            .then(|| context_notice(text))
+    }
+
+    fn restart(&mut self) -> Vec<Notice> {
+        self.claimed.clear();
+        self.startup
+            .iter()
+            .filter(|text| self.claimed.insert((*text).clone()))
+            .map(|text| context_notice(text))
+            .collect()
+    }
+}
+
+fn context_notice(text: &str) -> Notice {
+    let body = text
+        .split('\n')
+        .map(|line| {
+            if line == LEGACY_CONTEXT_LINE {
+                ""
+            } else {
+                line.strip_prefix(LEGACY_CONTEXT_PREFIX).unwrap_or(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Notice::new(NoticeTone::Warning, CONTEXT_TOPIC, body)
+}
+
 pub(crate) struct Controller {
     agent: Agent,
     state: ControllerState,
+    notices: ContextNotices,
 }
 
 impl Controller {
     pub(crate) fn new(setup: AgentSetup, emit: Emit) -> Self {
+        let notices = ContextNotices {
+            startup: setup.context_notices().to_vec(),
+            claimed: HashSet::new(),
+        };
         let state = ControllerState {
             model: setup.model().to_owned(),
             setup,
@@ -72,10 +118,12 @@ impl Controller {
         Self {
             agent: state.setup.agent(),
             state,
+            notices,
         }
     }
 
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
+        self.show_startup_notices();
         loop {
             if let Some(prompt) = self.state.queue.pop_front() {
                 if !self.run_turn(&prompt, &mut commands).await {
@@ -114,6 +162,13 @@ impl Controller {
         self.agent.clear_history();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
+        self.show_startup_notices();
+    }
+
+    fn show_startup_notices(&mut self) {
+        for notice in self.notices.restart() {
+            self.state.emit(UiEvent::Notice { notice });
+        }
     }
 
     async fn run_turn(
@@ -125,18 +180,24 @@ impl Controller {
         let emit = Arc::clone(&self.state.emit);
         let running = Arc::new(Mutex::new(None));
         let started = Arc::clone(&running);
-        let mut sink = move |event: UiEvent| match &event {
-            UiEvent::TurnFinished { .. } => {}
-            UiEvent::TurnStarted { turn_id } => {
-                *started.lock().unwrap_or_else(PoisonError::into_inner) = Some(*turn_id);
-                emit(event);
-            }
-            _ => emit(event),
-        };
         let running_turn = || *running.lock().unwrap_or_else(PoisonError::into_inner);
         let state = &mut self.state;
+        let notices = &mut self.notices;
         let mut open = true;
         let report = {
+            let mut sink = move |event: UiEvent| match event {
+                UiEvent::TurnFinished { .. } => {}
+                UiEvent::TurnStarted { turn_id } => {
+                    *started.lock().unwrap_or_else(PoisonError::into_inner) = Some(turn_id);
+                    emit(event);
+                }
+                UiEvent::ContextNotice { text, .. } => {
+                    if let Some(notice) = notices.claim(&text) {
+                        emit(UiEvent::Notice { notice });
+                    }
+                }
+                event => emit(event),
+            };
             let turn = self.agent.run_turn(prompt, &mut sink, &cancel);
             tokio::pin!(turn);
             loop {
@@ -673,6 +734,44 @@ mod tests {
             .until(|event| requested(event) || matches!(event, UiEvent::TurnFinished { .. }))
             .await;
         assert!(asked.last().is_some_and(requested), "{asked:?}");
+    }
+
+    #[test]
+    fn context_notice_bodies_drop_legacy_markers_from_every_line() {
+        let notice =
+            context_notice("[context] first\n[context] second\nalready semantic\n[context]\n");
+        assert_eq!(notice.body, "first\nsecond\nalready semantic\n\n");
+        assert_eq!(notice.topic, "context");
+        assert_eq!(notice.tone, NoticeTone::Warning);
+        assert_eq!(context_notice("[context]x").body, "[context]x");
+    }
+
+    #[test]
+    fn context_notices_show_once_per_conversation_and_again_after_a_clear() {
+        let mut notices = ContextNotices {
+            startup: vec![
+                "[context] startup".to_owned(),
+                "[context] startup".to_owned(),
+            ],
+            claimed: HashSet::new(),
+        };
+        let bodies = |shown: Vec<Notice>| -> Vec<String> {
+            shown.into_iter().map(|notice| notice.body).collect()
+        };
+        let claimed =
+            |notices: &mut ContextNotices, text| notices.claim(text).map(|notice| notice.body);
+        assert_eq!(bodies(notices.restart()), ["startup"]);
+        assert_eq!(claimed(&mut notices, "[context] startup"), None);
+        assert_eq!(
+            claimed(&mut notices, "[context] scoped").as_deref(),
+            Some("scoped")
+        );
+        assert_eq!(claimed(&mut notices, "[context] scoped"), None);
+        assert_eq!(bodies(notices.restart()), ["startup"]);
+        assert_eq!(
+            claimed(&mut notices, "[context] scoped").as_deref(),
+            Some("scoped")
+        );
     }
 
     #[test]

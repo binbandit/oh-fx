@@ -579,3 +579,53 @@ fn typing_during_startup_reaches_the_composer() {
     session.send(b"\x15\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
+
+#[test]
+fn project_instruction_notices_reach_the_transcript_with_their_repair_hints() {
+    let scoped = "sub\u{9b}2J";
+    let read = json!({"path": format!("{scoped}/notes.txt")}).to_string();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events("call-1", "read_file", &read)),
+        Reply::sse(&chat_text_events(&["Read it."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let rules = "Run the whole test suite before every single commit.\n";
+    fs::write(home.workspace.join("AGENTS.md"), rules).expect("write AGENTS.md");
+    fs::create_dir_all(home.workspace.join(scoped).join("AGENTS.md"))
+        .expect("create a non-regular rule file");
+    fs::write(home.workspace.join(scoped).join("notes.txt"), "notes\n").expect("write the notes");
+    let workspace = fs::canonicalize(&home.workspace).expect("canonicalize the workspace");
+    let workspace = workspace.display();
+    let truncated = format!(
+        "! context: project instruction file \"{workspace}/AGENTS.md\" truncated: observed={} bytes effective=4 bytes source=command line; override with --context-limit project_instruction_file_bytes=BYTES|off",
+        rules.len()
+    );
+    let shown_scope = ofx_text::encode_terminal_safe(scoped.as_bytes(), usize::MAX).text;
+    let omitted = format!(
+        "! context: project instructions action=omitted reason=non-regular rule file source=\"{workspace}/{shown_scope}/AGENTS.md\"; repair=replace the source with a regular file"
+    );
+    let mut session = home.shell_with(
+        &["--context-limit", "project_instruction_file_bytes=4"],
+        30,
+        300,
+        "auto · model-a",
+    );
+    wait(&session, &truncated);
+    session.send(b"read the notes\r");
+    let screen = wait(&session, "Read it.");
+    assert_eq!(screen.matches(&truncated).count(), 1, "{screen}");
+    assert!(screen.contains(&omitted), "{screen}");
+    let output = session.output();
+    assert_eq!(count(&output, "\u{9b}2J".as_bytes()), 0);
+    session.send(b"/clear\r");
+    let screen = session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("Read it.") && screen.contains(&truncated)
+        })
+        .unwrap_or_else(|screen| {
+            panic!("the startup notice did not return after /clear:\n{screen}")
+        });
+    assert!(!screen.contains(&omitted), "{screen}");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
