@@ -26,9 +26,11 @@ use std::borrow::Cow;
 
 pub(crate) use composer_deletion::DeletionKind;
 pub(crate) use composer_history::HistoryNavigation;
+pub(crate) use composer_kill_ring::KillKind;
 pub(crate) use editor_state::{InsertResult, SelectionRange};
+pub(crate) use vertical_navigation::VerticalOutcome;
 pub(crate) use visual_layout::{
-    LayoutEvent, UnitKind, VisualLayout, terminal_column, visible_window,
+    LayoutEvent, UnitKind, VerticalDirection, VisualLayout, terminal_column, visible_window,
 };
 
 use composer_history::PromptHistory;

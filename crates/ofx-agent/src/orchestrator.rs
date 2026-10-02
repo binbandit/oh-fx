@@ -1055,7 +1055,13 @@ async fn judge(
             let mut pending = approvals.open();
             events(UiEvent::ApprovalRequested {
                 turn_id,
-                request: approval_request(pending.id(), call, action, description, &scope),
+                request: Box::new(approval_request(
+                    pending.id(),
+                    call,
+                    action,
+                    description,
+                    &scope,
+                )),
             });
             let answer = tokio::select! {
                 biased;
@@ -1088,15 +1094,13 @@ fn approval_request(
         GatedAction::FileMutation(mutation) => (None, Some(mutation.clone())),
         GatedAction::Command(command) => (Some(command.clone()), None),
     };
+    let preview = encode_terminal_safe(call.arguments.as_bytes(), MAX_TOOL_ARGUMENTS_PREVIEW_BYTES);
     ApprovalRequest {
         id,
         tool_name: call.name.clone(),
         title: description.title.clone(),
-        tool_arguments_preview: encode_terminal_safe(
-            call.arguments.as_bytes(),
-            MAX_TOOL_ARGUMENTS_PREVIEW_BYTES,
-        )
-        .text,
+        tool_arguments_preview: preview.text,
+        tool_arguments_truncated: preview.truncated,
         scope: scope.clone(),
         command,
         file,

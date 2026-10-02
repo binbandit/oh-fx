@@ -79,6 +79,7 @@ pub enum SessionGrant {
     GrepsUnder(PathBuf),
     Command {
         command: String,
+        cwd: PathBuf,
         profile: CommandProfile,
         shell: Option<PathBuf>,
         terminal: bool,

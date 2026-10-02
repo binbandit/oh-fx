@@ -94,7 +94,7 @@ fn approval_requests(events: &[UiEvent]) -> Vec<ApprovalRequest> {
     events
         .iter()
         .filter_map(|event| match event {
-            UiEvent::ApprovalRequested { request, .. } => Some(request.clone()),
+            UiEvent::ApprovalRequested { request, .. } => Some((**request).clone()),
             _ => None,
         })
         .collect()
@@ -141,6 +141,7 @@ async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remem
                 tool_name: "echo".to_owned(),
                 title: r#"Echoing {"access":"outside"}"#.to_owned(),
                 tool_arguments_preview: r#"{"access":"outside"}"#.to_owned(),
+                tool_arguments_truncated: false,
                 scope: approved_tree(1),
                 command: None,
                 file: None,
@@ -297,7 +298,9 @@ async fn requests_preview_the_arguments_terminal_safe_and_bounded_like_upstream(
         Some(ApprovalDecision::Deny)
     })
     .await;
-    let preview = approval_requests(&events).remove(0).tool_arguments_preview;
+    let request = approval_requests(&events).remove(0);
+    assert!(request.tool_arguments_truncated);
+    let preview = request.tool_arguments_preview;
     assert_eq!(preview.len(), MAX_TOOL_ARGUMENTS_PREVIEW_BYTES);
     assert!(
         preview.starts_with(r#"{"path":"outside","text":"\x7fxxx"#),

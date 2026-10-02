@@ -38,8 +38,7 @@ pub(crate) struct Transition {
     pub(crate) step: Step,
 }
 
-#[cfg(test)]
-fn has_pending(state: State) -> bool {
+pub(crate) fn has_pending(state: State) -> bool {
     state.len > 0
 }
 
