@@ -34,8 +34,9 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
         footer.extend(parts.menu);
     }
     footer.push(parts.hint);
-    let mut body = parts.provisional.to_vec();
-    let mut leading_gaps = parts.provisional.len();
+    let visible = &parts.provisional[parts.provisional.len().saturating_sub(max_rows)..];
+    let mut body = visible.to_vec();
+    let mut leading_gaps = visible.len();
     if parts.activity.is_empty() {
         if parts.tail_gap {
             body.push(Row::new());
@@ -156,6 +157,37 @@ mod tests {
             ["┃ ", "──", "  src/main.rs", "──", "auto · m"]
         );
         assert_eq!(layout.cursor, Some((0, 2)));
+    }
+
+    #[test]
+    fn provisional_rows_taller_than_the_screen_keep_their_last_rows() {
+        let composer = prompt();
+        let provisional: Vec<Row> = (0..50)
+            .map(|index| Row::plain(&format!("p{index}")))
+            .collect();
+        for (activity, expected, footer_row) in [
+            (
+                &[][..],
+                &["p47", "p48", "p49", "", "┃ ", "", "auto · m"][..],
+                4,
+            ),
+            (
+                &["• Running"][..],
+                &["p48", "p49", "", "• Running", "", "┃ ", "", "auto · m"][..],
+                3,
+            ),
+        ] {
+            let layout = solve(
+                LiveParts {
+                    provisional: &provisional,
+                    ..parts(&composer, true, activity, &[])
+                },
+                expected.len(),
+            );
+            assert_eq!(texts(&layout), expected);
+            assert_eq!(layout.footer_row, footer_row);
+            assert_eq!(layout.composer_start, expected.len() - 3);
+        }
     }
 
     #[test]
