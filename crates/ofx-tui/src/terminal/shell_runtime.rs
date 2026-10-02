@@ -184,12 +184,14 @@ impl Terminal {
     }
 
     pub(crate) fn restore_abnormally(&mut self) {
-        if self.raw_enabled {
+        let was_raw = std::mem::take(&mut self.raw_enabled);
+        if was_raw {
             let _ = termios::tcsetattr(&self.input, OptionalActions::Now, &self.original);
-            self.raw_enabled = false;
         }
         self.write_abnormal_restore();
-        let _ = termios::tcflush(&self.input, QueueSelector::IFlush);
+        if was_raw {
+            let _ = termios::tcflush(&self.input, QueueSelector::IFlush);
+        }
     }
 
     pub(crate) fn query_layout(&self, footer_rows: u16) -> Result<Layout, TerminalError> {
@@ -774,6 +776,16 @@ mod tests {
         terminal.restore_abnormally();
         assert!(typist.join().unwrap().ends_with(&restore));
         assert_eq!(test_pty::unread_input(&pty), 0);
+    }
+
+    #[test]
+    fn an_abnormal_restore_outside_raw_mode_keeps_unread_input() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        rustix::io::write(&pty.master, b"typed\r").unwrap();
+        assert!(terminal.poll_input(Some(test_pty::WAIT)).unwrap().readable);
+        terminal.restore_abnormally();
+        assert_eq!(test_pty::unread_input(&pty), 6);
     }
 
     #[test]
