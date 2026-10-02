@@ -956,8 +956,6 @@ dependencies = [
  "ofx-config",
  "ofx-text",
  "rustix",
- "serde",
- "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
