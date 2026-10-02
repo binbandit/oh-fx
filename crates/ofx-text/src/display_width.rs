@@ -212,7 +212,7 @@ fn match_rgi_sequence(rest: &str) -> usize {
     let Some(first) = rest.chars().next() else {
         return 0;
     };
-    if !starts_rgi_sequence(&rest[..first.len_utf8()]) {
+    if !RGI_EMOJI_SEQUENCES.has_line_starting_with(first) {
         return 0;
     }
     let window_end = rest
@@ -225,7 +225,7 @@ fn match_rgi_sequence(rest: &str) -> usize {
     let mut end = cluster.len();
     while end > first.len_utf8() {
         let candidate = &cluster[..end];
-        if RGI_EMOJI_SEQUENCES.binary_search(&candidate).is_ok() {
+        if RGI_EMOJI_SEQUENCES.contains(candidate) {
             return end;
         }
         end = candidate
@@ -234,13 +234,6 @@ fn match_rgi_sequence(rest: &str) -> usize {
             .map_or(0, |(offset, _)| offset);
     }
     0
-}
-
-fn starts_rgi_sequence(first: &str) -> bool {
-    let position = RGI_EMOJI_SEQUENCES.partition_point(|sequence| *sequence < first);
-    RGI_EMOJI_SEQUENCES
-        .get(position)
-        .is_some_and(|sequence| sequence.starts_with(first))
 }
 
 pub fn should_wrap_at(col: u16, width: u16, cols: u16) -> bool {
@@ -403,7 +396,7 @@ mod tests {
         text.char_indices()
             .take(MAX_RGI_SEQUENCE_CODEPOINTS)
             .map(|(offset, codepoint)| offset + codepoint.len_utf8())
-            .filter(|&end| RGI_EMOJI_SEQUENCES.binary_search(&&text[..end]).is_ok())
+            .filter(|&end| RGI_EMOJI_SEQUENCES.contains(&text[..end]))
             .max()
             .unwrap_or(0)
     }
@@ -435,8 +428,17 @@ mod tests {
     }
 
     #[test]
+    fn rgi_sequences_are_sorted_without_duplicates() {
+        assert!(
+            RGI_EMOJI_SEQUENCES
+                .lines()
+                .is_sorted_by(|earlier, later| earlier < later)
+        );
+    }
+
+    #[test]
     fn every_rgi_sequence_is_one_display_unit_whatever_follows_it() {
-        for sequence in RGI_EMOJI_SEQUENCES {
+        for sequence in RGI_EMOJI_SEQUENCES.lines() {
             for suffix in ["", "x", "\u{200d}", "\u{fe0f}", "\u{1f3fb}", "\u{1f1fa}"] {
                 let text = format!("{sequence}{suffix}");
                 assert_eq!(
