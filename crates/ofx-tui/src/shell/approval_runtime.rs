@@ -1017,8 +1017,10 @@ mod tests {
         let now_ms = test.shell.now_ms();
         test.shell.handle_resize_signal(now_ms);
         test.advance(200);
-        let now_ms = test.shell.now_ms();
-        test.shell.apply_pending_resize(now_ms);
+        test.draining(|shell| {
+            let now_ms = shell.now_ms();
+            shell.apply_pending_resize(now_ms);
+        });
         assert!(!approve_now(&mut test));
         test.screen();
         assert!(!approve_now(&mut test));
@@ -1050,7 +1052,7 @@ mod tests {
             },
         ] {
             let mut test = approving();
-            redraw(&mut test.shell);
+            test.draining(redraw);
             assert!(!approve_now(&mut test));
             test.screen();
             assert!(!approve_now(&mut test));
@@ -1063,7 +1065,7 @@ mod tests {
     #[test]
     fn a_resume_that_cannot_read_the_size_refuses_yes_until_it_can() {
         let mut test = approving();
-        test.shell.repaint_after_stop(None).unwrap();
+        test.draining(|shell| shell.repaint_after_stop(None).unwrap());
         assert!(test.shell.dimensions_invalid);
         test.advance(ARMED_MS);
         assert!(!approve_now(&mut test));

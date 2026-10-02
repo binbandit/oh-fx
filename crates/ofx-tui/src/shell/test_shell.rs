@@ -1,6 +1,8 @@
 use std::cell::RefCell;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{PermissionMode, UiCommand, UiEvent};
@@ -20,6 +22,7 @@ const COLS: u16 = 80;
 pub(super) struct TestShell {
     pty: PtyPair,
     screen: vt100::Parser,
+    output: Vec<u8>,
     events: UiEventSender,
     commands: Rc<RefCell<Vec<UiCommand>>>,
     pub(super) shell: Shell<'static>,
@@ -52,6 +55,7 @@ impl TestShell {
         Self {
             pty,
             screen: vt100::Parser::new(ROWS, COLS, 0),
+            output: Vec::new(),
             events,
             commands,
             shell,
@@ -74,8 +78,24 @@ impl TestShell {
     pub(super) fn resize(&mut self, rows: u16, cols: u16) {
         rustix::termios::tcsetwinsize(&self.pty.master, winsize(rows, cols)).unwrap();
         self.shell.resize_due_ms = Some(0);
-        let now_ms = self.shell.now_ms();
-        self.shell.apply_pending_resize(now_ms);
+        self.draining(|shell| {
+            let now_ms = shell.now_ms();
+            shell.apply_pending_resize(now_ms);
+        });
+    }
+
+    pub(super) fn draining<T>(&mut self, action: impl FnOnce(&mut Shell<'static>) -> T) -> T {
+        let done = AtomicBool::new(false);
+        let master = &self.pty.master;
+        let shell = &mut self.shell;
+        let (result, output) = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| drain(master, &done));
+            let result = action(shell);
+            done.store(true, Ordering::Release);
+            (result, reader.join().unwrap())
+        });
+        self.output.extend_from_slice(&output);
+        result
     }
 
     pub(super) fn read_output_after(&self, delay: Duration) -> std::thread::JoinHandle<usize> {
@@ -96,8 +116,8 @@ impl TestShell {
     }
 
     pub(super) fn written(&mut self) -> String {
-        self.shell.commit_frame().unwrap();
-        let output = drain(&self.pty);
+        self.draining(|shell| shell.commit_frame().unwrap());
+        let output = std::mem::take(&mut self.output);
         self.screen.process(&output);
         String::from_utf8_lossy(&output).into_owned()
     }
@@ -141,16 +161,20 @@ fn winsize(rows: u16, cols: u16) -> Winsize {
     }
 }
 
-fn drain(pty: &PtyPair) -> Vec<u8> {
+fn drain(master: &OwnedFd, done: &AtomicBool) -> Vec<u8> {
     let mut written = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
-        let mut fds = [PollFd::new(&pty.master, PollFlags::IN)];
+        let finished = done.load(Ordering::Acquire);
+        let mut fds = [PollFd::new(master, PollFlags::IN)];
         let timeout = Timespec::try_from(Duration::from_millis(20)).unwrap();
         if rustix::event::poll(&mut fds, Some(&timeout)).unwrap() == 0 {
-            return written;
+            if finished {
+                return written;
+            }
+            continue;
         }
-        let count = rustix::io::read(&pty.master, &mut buffer).unwrap();
+        let count = rustix::io::read(master, &mut buffer).unwrap();
         written.extend_from_slice(&buffer[..count]);
     }
 }

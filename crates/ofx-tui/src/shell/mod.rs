@@ -645,16 +645,16 @@ mod tests {
     fn activate_switches_the_current_theme_seen_by_core_producers() {
         let mut test = test_shell::TestShell::start();
         test.screen();
-        test.shell.apply_theme(true);
+        test.draining(|shell| shell.apply_theme(true));
         assert!(test.shell.theme.light);
         let light = test.written();
         assert!(light.contains("\x1b[2J\x1b[3J"), "{light:?}");
         assert!(light.contains("\x1b[0;1;38;5;235moh-fx"), "{light:?}");
-        test.shell.apply_theme(false);
+        test.draining(|shell| shell.apply_theme(false));
         assert!(!test.shell.theme.light);
         let dark = test.written();
         assert!(dark.contains("\x1b[0;1;38;5;255moh-fx"), "{dark:?}");
-        test.shell.apply_theme(false);
+        test.draining(|shell| shell.apply_theme(false));
         assert!(test.written().is_empty());
     }
 
@@ -675,12 +675,12 @@ mod tests {
     fn a_fatal_signal_skips_the_normal_exit_and_keeps_its_restore() {
         let mut test = test_shell::TestShell::start();
         test.screen();
-        assert_eq!(test.shell.shutdown(Some(15)), Some(15));
+        assert_eq!(test.draining(|shell| shell.shutdown(Some(15))), Some(15));
         let written = test.written();
         assert!(!written.contains("\x1b]2;\x07"), "{written:?}");
         let mut test = test_shell::TestShell::start();
         test.screen();
-        assert_eq!(test.shell.shutdown(None), None);
+        assert_eq!(test.draining(|shell| shell.shutdown(None)), None);
         let written = test.written();
         assert!(written.contains("\x1b]2;\x07\x1b[?2031l"), "{written:?}");
     }
