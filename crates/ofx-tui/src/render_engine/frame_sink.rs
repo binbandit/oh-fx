@@ -88,9 +88,12 @@ impl LiveRegionRenderer {
         }
     }
 
-    fn target(&self, live: &[Row], padding: usize) -> Vec<String> {
-        let mut target = vec![String::new(); padding];
-        target.extend(live.iter().map(|row| row.clipped(self.cols).encode()));
+    fn target(&self, live: &[Row], padding: usize) -> Vec<(String, usize)> {
+        let mut target = vec![(String::new(), 0); padding];
+        target.extend(live.iter().map(|row| {
+            let clipped = row.clipped(self.cols);
+            (clipped.encode(), clipped.width())
+        }));
         target
     }
 
@@ -128,7 +131,7 @@ impl LiveRegionRenderer {
             out.push_str(&row.clipped(self.cols).encode());
             separator = "\r\n";
         }
-        for line in &target {
+        for (line, _) in &target {
             out.push_str(separator);
             out.push_str(line);
             separator = "\r\n";
@@ -136,7 +139,7 @@ impl LiveRegionRenderer {
         self.top = top;
         self.padding = padding;
         self.pinned = self.pinned || top + padding + natural > self.rows;
-        self.drawn = target;
+        self.drawn = target.into_iter().map(|(line, _)| line).collect();
     }
 
     fn redraw(&mut self, live: &[Row], out: &mut String) {
@@ -157,16 +160,13 @@ impl LiveRegionRenderer {
             0
         };
         let target = self.target(live, padding);
-        let widths: Vec<usize> = std::iter::repeat_n(0, padding)
-            .chain(live.iter().map(|row| row.width().min(self.cols)))
-            .collect();
-        for (index, line) in target.iter().enumerate() {
+        for (index, (line, width)) in target.iter().enumerate() {
             if !scrolled && self.valid && self.drawn.get(index) == Some(line) {
                 continue;
             }
             move_to(out, self.top + index, 1);
             out.push_str(line);
-            if widths[index] < self.cols {
+            if *width < self.cols {
                 out.push_str(ERASE_LINE_TAIL);
             }
         }
@@ -177,7 +177,7 @@ impl LiveRegionRenderer {
         }
         self.padding = padding;
         self.pinned = self.pinned || self.top + padding + natural > self.rows;
-        self.drawn = target;
+        self.drawn = target.into_iter().map(|(line, _)| line).collect();
     }
 }
 
@@ -383,6 +383,15 @@ mod tests {
         assert_eq!(screen.lines(), live);
         assert!(screen.present(&[], &live, None).is_empty());
         assert_eq!(screen.lines(), live);
+    }
+
+    #[test]
+    fn a_wide_character_clipped_at_the_edge_leaves_no_stale_cell() {
+        let mut screen = Screen::new(3, 4);
+        screen.present(&[], &["abcd"], None);
+        assert_eq!(screen.lines()[0], "abcd");
+        screen.present(&[], &["abc界"], None);
+        assert_eq!(screen.lines()[0], "abc");
     }
 
     #[test]
