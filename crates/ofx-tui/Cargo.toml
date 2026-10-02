@@ -11,5 +11,12 @@ rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "ter
 signal-hook.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+ofx-testkit.workspace = true
+rustix = { workspace = true, features = ["pty"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { workspace = true, features = ["thread"] }
+
 [lints]
 workspace = true

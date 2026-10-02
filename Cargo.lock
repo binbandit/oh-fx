@@ -890,6 +890,7 @@ dependencies = [
 name = "ofx-tui"
 version = "0.1.0"
 dependencies = [
+ "ofx-testkit",
  "rustix",
  "signal-hook",
  "thiserror",

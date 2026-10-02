@@ -1,20 +1,29 @@
+mod app_lifecycle;
 mod cursor_probe;
+mod shell_runtime;
 pub(crate) mod signal_pipe;
 mod theme_detection;
 mod theme_protocol;
 
 use thiserror::Error;
 
+pub(crate) use shell_runtime::Terminal;
+
 const INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[>1u\x1b[?2004h\x1b[?7l";
 const TMUX_INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[?2004h\x1b[?7l";
+pub(crate) const THEME_NOTIFICATION_ENABLE_SEQUENCE: &str = "\x1b[?2031h";
+pub(crate) const THEME_COLOR_SCHEME_QUERY: &str = "\x1b[?996n";
 pub(crate) const THEME_BACKGROUND_QUERY: &str = "\x1b]11;?\x1b\\";
 pub(crate) const THEME_RESPONSE_FENCE_QUERY: &str = "\x1b[c";
 pub(crate) const THEME_BACKGROUND_QUERY_WITH_FENCE: &str = "\x1b]11;?\x1b\\\x1b[c";
+pub(crate) const CURSOR_POSITION_QUERY: &str = "\x1b[6n";
 
 #[derive(Debug, Error)]
 pub enum TerminalError {
     #[error("oh-fx requires an interactive terminal (TTY).")]
     NotATerminal,
+    #[error("oh-fx cannot reopen its terminal for nonblocking output: {0}")]
+    OutputUnavailable(std::io::Error),
     #[error("unable to read the terminal size")]
     UnableToReadTerminalSize,
     #[error("oh-fx needs at least 5 terminal rows.")]
