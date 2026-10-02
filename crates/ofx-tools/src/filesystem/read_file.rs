@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 use memchr::{memchr, memchr_iter};
 use ofx_contract::{
-    CallDescription, CallPresentation, Concurrency, ExecutionFailure, PathAccess, PreparedCall,
-    Tool, ToolActivity, ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action,
-    plain_action_label, tool_execution_failure_json,
+    CallPresentation, ExecutionFailure, PathAccess, PreparedCall, Tool, ToolActivity, ToolOutput,
+    ToolSpec, filesystem_access_denied_json, plain_description, tool_execution_failure_json,
 };
 use ofx_text::{is_model_safe_text, sanitize_model_text_owned};
 use ofx_workspace::{
@@ -61,14 +60,12 @@ impl Tool for ReadFile {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let decoded = ReadFileArgs::decode(arguments);
-        let label = plain_action_label(&PRESENTATION, arguments);
-        let description = CallDescription {
-            title: format_plain_action(TOOL_NAME, label.as_ref()),
-            label,
-            activity: PRESENTATION.activity,
-            effect: read_only_effect(&decoded),
-            concurrency: Concurrency::Parallel,
-        };
+        let description = plain_description(
+            TOOL_NAME,
+            &PRESENTATION,
+            arguments,
+            read_only_effect(&decoded),
+        );
         let context = Arc::clone(&self.context);
         Ok(BlockingCall::boxed(
             description,
@@ -415,7 +412,9 @@ mod tests {
     use std::fs::{self, File};
     use std::os::unix::fs::symlink;
 
-    use ofx_contract::{ToolEffect, ToolResultStatus, ToolStatusDetail};
+    use ofx_contract::{
+        CallDescription, Concurrency, ToolEffect, ToolResultStatus, ToolStatusDetail,
+    };
     use tempfile::TempDir;
 
     use super::*;

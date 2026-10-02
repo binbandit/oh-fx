@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use memchr::{memchr, memchr_iter};
 use ofx_contract::{
-    CallDescription, CallPresentation, Concurrency, PathAccess, PreparedCall, Tool, ToolActivity,
-    ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action, plain_action_label,
+    CallPresentation, PathAccess, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec,
+    filesystem_access_denied_json, plain_description,
 };
 use ofx_text::sanitize_model_text_owned;
 use ofx_workspace::{
@@ -58,14 +58,12 @@ impl Tool for GrepFiles {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let decoded = GrepFilesArgs::decode(arguments);
-        let label = plain_action_label(&PRESENTATION, arguments);
-        let description = CallDescription {
-            title: format_plain_action(TOOL_NAME, label.as_ref()),
-            label,
-            activity: PRESENTATION.activity,
-            effect: read_only_effect(&decoded),
-            concurrency: Concurrency::Parallel,
-        };
+        let description = plain_description(
+            TOOL_NAME,
+            &PRESENTATION,
+            arguments,
+            read_only_effect(&decoded),
+        );
         let context = Arc::clone(&self.context);
         Ok(BlockingCall::boxed(
             description,
@@ -567,7 +565,7 @@ fn display_path(workspace_root: &Path, absolute_path: &Path) -> Vec<u8> {
 mod tests {
     use std::os::unix::fs::symlink;
 
-    use ofx_contract::{ToolEffect, ToolStatusDetail};
+    use ofx_contract::{CallDescription, Concurrency, ToolEffect, ToolStatusDetail};
     use ofx_workspace::CandidateStats;
     use serde_json::{Value, json};
     use tempfile::TempDir;

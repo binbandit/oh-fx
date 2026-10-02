@@ -3,7 +3,9 @@ use serde_json::{Map, Value};
 
 use crate::subagent::SteeringDelivery;
 use crate::tool_args::parse_tool_args_object;
-use crate::tool_dispatch::{ActionLabel, CallPresentation};
+use crate::tool_dispatch::{
+    ActionLabel, CallDescription, CallPresentation, Concurrency, ToolEffect,
+};
 
 const SUBAGENT_TOOL_NAME: &str = "subagent";
 const SUBAGENT_NAME_BYTES: usize = 64;
@@ -33,7 +35,23 @@ pub struct SubagentActionText {
     pub detail: String,
 }
 
-pub fn plain_action_label(presentation: &CallPresentation, arguments: &str) -> Option<ActionLabel> {
+pub fn plain_description(
+    tool_name: &str,
+    presentation: &CallPresentation,
+    arguments: &str,
+    effect: ToolEffect,
+) -> CallDescription {
+    let label = plain_action_label(presentation, arguments);
+    CallDescription {
+        title: format_plain_action(tool_name, label.as_ref()),
+        label,
+        activity: presentation.activity,
+        effect,
+        concurrency: Concurrency::Parallel,
+    }
+}
+
+fn plain_action_label(presentation: &CallPresentation, arguments: &str) -> Option<ActionLabel> {
     let arguments = parse_tool_args_object(arguments).ok()?;
     let value = arguments
         .optional_string(presentation.label_argument)

@@ -50,7 +50,7 @@ pub use tool_dispatch::{
 };
 pub use tool_presentation::{
     SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
-    format_unknown_action, plain_action_label, subagent_action, subagent_failure_label,
+    format_unknown_action, plain_description, subagent_action, subagent_failure_label,
     subagent_status_line,
 };
 pub use tool_result_errors::{

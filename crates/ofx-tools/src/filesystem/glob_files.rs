@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ofx_contract::{
-    CallDescription, CallPresentation, Concurrency, PathAccess, PreparedCall, Tool, ToolActivity,
-    ToolOutput, ToolSpec, filesystem_access_denied_json, format_plain_action, plain_action_label,
+    CallPresentation, PathAccess, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec,
+    filesystem_access_denied_json, plain_description,
 };
 use ofx_text::sanitize_model_text_owned;
 use ofx_workspace::{
@@ -56,14 +56,12 @@ impl Tool for GlobFiles {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let decoded = GlobFilesArgs::decode(arguments);
-        let label = plain_action_label(&PRESENTATION, arguments);
-        let description = CallDescription {
-            title: format_plain_action(TOOL_NAME, label.as_ref()),
-            label,
-            activity: PRESENTATION.activity,
-            effect: read_only_effect(&decoded),
-            concurrency: Concurrency::Parallel,
-        };
+        let description = plain_description(
+            TOOL_NAME,
+            &PRESENTATION,
+            arguments,
+            read_only_effect(&decoded),
+        );
         let context = Arc::clone(&self.context);
         Ok(BlockingCall::boxed(
             description,
@@ -487,7 +485,7 @@ fn merge_root_untracked_candidates(
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    use ofx_contract::{ToolEffect, ToolStatusDetail};
+    use ofx_contract::{CallDescription, Concurrency, ToolEffect, ToolStatusDetail};
     use tempfile::TempDir;
 
     use super::*;
