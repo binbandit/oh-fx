@@ -864,6 +864,7 @@ dependencies = [
 name = "ofx-text"
 version = "0.1.0"
 dependencies = [
+ "unicode-properties",
  "unicode-segmentation",
  "unicode-width",
 ]

