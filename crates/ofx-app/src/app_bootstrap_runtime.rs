@@ -676,6 +676,7 @@ mod tests {
                     command_timeout: None,
                     executions: &executions,
                     endpoints: SubscriptionEndpoints::default(),
+                    web_fetch_progress: None,
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
