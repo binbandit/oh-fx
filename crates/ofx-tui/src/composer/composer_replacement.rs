@@ -36,6 +36,11 @@ impl Composer {
     }
 
     pub(crate) fn insert_text(&mut self, text: &str, max_len: usize) -> InsertResult {
+        if self.claim_auto_separator(text) {
+            self.vertical.reset();
+            self.limit_rejection.clear();
+            return InsertResult::Inserted;
+        }
         if self.edit.selection_range().is_none() {
             return self.insert_slice_bounded(text, max_len);
         }

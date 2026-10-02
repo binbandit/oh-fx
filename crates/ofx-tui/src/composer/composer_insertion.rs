@@ -1,7 +1,7 @@
-use super::Composer;
 use super::edit_history::{EditHistory, Prepared};
 use super::editor_state::{InsertResult, can_insert, can_replace};
 use super::pasted_blocks::{expanded_len, expanded_range_len};
+use super::{AutoSeparator, Composer};
 
 impl Composer {
     pub(crate) fn can_insert(&self, inserted_len: usize, max_len: usize) -> bool {
@@ -63,6 +63,26 @@ impl Composer {
         self.insert_slice(text);
         self.limit_rejection.clear();
         InsertResult::Inserted
+    }
+
+    pub(crate) fn mark_auto_separator(&mut self, offset: usize) {
+        self.auto_separator = (self.edit.input.as_bytes().get(offset) == Some(&b' ')
+            && self.edit.cursor == offset + 1)
+            .then_some(AutoSeparator {
+                offset,
+                revision: self.edit.revision,
+            });
+    }
+
+    pub(crate) fn claim_auto_separator(&mut self, text: &str) -> bool {
+        let Some(pending) = self.auto_separator.take() else {
+            return false;
+        };
+        text == " "
+            && pending.revision == self.edit.revision
+            && self.edit.selection_range().is_none()
+            && self.edit.input.as_bytes().get(pending.offset) == Some(&b' ')
+            && self.edit.cursor == pending.offset + 1
     }
 
     pub(crate) fn insert_slice_without_history(&mut self, text: &str) {

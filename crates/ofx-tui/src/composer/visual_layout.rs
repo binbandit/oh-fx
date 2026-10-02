@@ -774,6 +774,22 @@ pub(crate) fn input_prefix(row_index: usize) -> InputPrefix {
     }
 }
 
+pub(crate) fn projected_anchor_column(summary: LayoutSummary, terminal_cols: u16) -> u16 {
+    let Some(anchor) = summary.anchor else {
+        return 1;
+    };
+    if anchor.row_index == summary.cursor.row_index {
+        return terminal_column(anchor, terminal_cols);
+    }
+    terminal_column(
+        CursorPoint {
+            content_column: 0,
+            ..summary.cursor
+        },
+        terminal_cols,
+    )
+}
+
 pub(crate) fn terminal_column(point: CursorPoint, terminal_cols: u16) -> u16 {
     if terminal_cols == 0 {
         return 1;
@@ -1217,5 +1233,12 @@ mod tests {
         let summary = source.summary(Some(1));
         assert_eq!(summary.cursor, point(6, 1, 2));
         assert_eq!(summary.anchor, Some(point(1, 0, 1)));
+        assert_eq!(projected_anchor_column(summary, 80), 3);
+        let same_row = layout("one @two", 8, 80).summary(Some(4));
+        assert_eq!(projected_anchor_column(same_row, 80), 7);
+        assert_eq!(
+            projected_anchor_column(layout("x", 1, 80).summary(None), 80),
+            1
+        );
     }
 }

@@ -1,6 +1,8 @@
 use ofx_contract::{SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource};
 use ofx_text::contains_ignore_case;
 
+use crate::list_window::update_edge_start;
+
 const MATCH_RANKS: usize = 3;
 const QUERY_TRIM: [char; 5] = [' ', '\t', '\r', '\n', '/'];
 
@@ -118,7 +120,7 @@ impl SkillsMenu {
         let current = self.selected % count;
         self.selected = current.saturating_add_signed(delta).min(count - 1);
         self.window_start =
-            edge_window_start(self.window_start, count, self.selected, visible_rows.max(1));
+            update_edge_start(self.window_start, count, self.selected, visible_rows.max(1));
         true
     }
 
@@ -143,7 +145,7 @@ impl SkillsMenu {
         }
         self.selected = self.selected.min(count - 1);
         self.window_start =
-            edge_window_start(self.window_start, count, self.selected, visible_rows);
+            update_edge_start(self.window_start, count, self.selected, visible_rows);
     }
 }
 
@@ -164,26 +166,6 @@ fn match_rank(item: &SkillMenuItem, query: &str) -> Option<usize> {
         || contains_ignore_case(&item.source_label, query)
         || contains_ignore_case(item.path.as_os_str().as_encoded_bytes(), query);
     elsewhere.then_some(MATCH_RANKS - 1)
-}
-
-pub(crate) fn edge_window_start(
-    current: usize,
-    count: usize,
-    selected: usize,
-    rows: usize,
-) -> usize {
-    if count == 0 || rows == 0 || count <= rows {
-        return 0;
-    }
-    let selected = selected.min(count - 1);
-    let start = current.min(count - rows);
-    if selected < start {
-        selected
-    } else if selected >= start + rows {
-        selected + 1 - rows
-    } else {
-        start
-    }
 }
 
 #[cfg(test)]
@@ -308,14 +290,5 @@ mod tests {
                 .unwrap()
                 .catalog_is_empty()
         );
-    }
-
-    #[test]
-    fn the_window_follows_the_selection_like_upstream() {
-        assert_eq!(edge_window_start(0, 11, 5, 6), 0);
-        assert_eq!(edge_window_start(0, 11, 6, 6), 1);
-        assert_eq!(edge_window_start(4, 11, 3, 6), 3);
-        assert_eq!(edge_window_start(9, 11, 10, 6), 5);
-        assert_eq!(edge_window_start(3, 4, 2, 6), 0);
     }
 }

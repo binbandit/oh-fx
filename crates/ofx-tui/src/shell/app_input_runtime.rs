@@ -57,6 +57,7 @@ impl Shell<'_> {
         if self.approval.is_some() {
             return self.handle_approval_input(&event);
         }
+        let revision = self.composer.edit_revision();
         match event {
             InputEvent::Raw(raw) => self.handle_raw(raw)?,
             InputEvent::Text(character) => {
@@ -68,6 +69,9 @@ impl Shell<'_> {
             InputEvent::Action(decoded) => self.handle_action(decoded),
             InputEvent::Paste(outcome) => self.handle_paste(outcome),
             InputEvent::TextDropped(_) => {}
+        }
+        if self.composer.edit_revision() != revision {
+            self.file_picker_after_edit();
         }
         self.sync_skills_menu();
         Ok(())
@@ -82,22 +86,24 @@ impl Shell<'_> {
             self.gestures.disarm_escape_clear();
             self.gestures.disarm_escape_interrupt();
         }
+        if let Some(delta) = picker_control_delta(byte)
+            && self.move_footer_menu(delta)
+        {
+            return Ok(());
+        }
         match byte {
             26 => return self.suspend(),
             3 => self.handle_ctrl_c(),
             4 => self.handle_ctrl_d(),
-            b'\r' => {
-                if !self.submit_skills_menu_selection()
-                    && !self.composer.replace_backslash_before_cursor_with_newline()
+            b'\r' => self.handle_enter(),
+            b'\t' => {
+                if !self.cycle_skills_menu_source(1)
+                    && self.has_file_query()
+                    && self.autocomplete_file_picker() == InsertResult::LimitExceeded
                 {
-                    self.submit();
+                    self.report_limit();
                 }
             }
-            b'\t' => {
-                self.cycle_skills_menu_source(1);
-            }
-            b'\n' if self.move_skills_menu(1) => {}
-            11 if self.move_skills_menu(-1) => {}
             7 | 22 | 24 => {}
             _ => {
                 if let Some(action) = raw.composer_shortcut {
@@ -179,7 +185,7 @@ impl Shell<'_> {
     }
 
     fn resolve_escape(&mut self, cancel_pending: bool) {
-        if self.cancel_skills_menu() {
+        if self.cancel_skills_menu() || self.dismiss_file_picker() {
             self.gestures.disarm_escape_clear();
             self.gestures.disarm_escape_interrupt();
             return;
@@ -265,7 +271,7 @@ impl Shell<'_> {
                 self.composer.redo();
             }
             ShortcutAction::HistoryNext => {
-                if !self.move_skills_menu(1) {
+                if !self.move_footer_menu(1) {
                     self.navigate_history(1);
                 }
             }
@@ -305,7 +311,7 @@ impl Shell<'_> {
     }
 
     fn move_vertical(&mut self, kind: MoveKind, extend_selection: bool) {
-        let (direction, delta) = match kind {
+        let (direction, delta): (VerticalDirection, i32) = match kind {
             MoveKind::VisualUp | MoveKind::PageUp => (VerticalDirection::Up, -1),
             _ => (VerticalDirection::Down, 1),
         };
@@ -314,9 +320,11 @@ impl Shell<'_> {
                 self.layout.content_bottom,
             ))
         });
-        let menu_rows = isize::try_from(page_rows.unwrap_or(1)).unwrap_or(isize::MAX);
-        let menu_delta = if delta < 0 { -menu_rows } else { menu_rows };
-        if self.move_skills_menu(menu_delta) {
+        let menu_delta = page_rows.map_or(delta, |rows| {
+            delta.saturating_mul(i32::try_from(rows).unwrap_or(i32::MAX))
+        });
+        if self.move_footer_menu(menu_delta) {
+            self.composer.reset_vertical();
             return;
         }
         let outcome =
@@ -330,12 +338,40 @@ impl Shell<'_> {
         }
     }
 
+    fn handle_enter(&mut self) {
+        if self.submit_skills_menu_selection() {
+            return;
+        }
+        if let Some(result) = self.submit_file_picker_on_enter() {
+            if result == InsertResult::LimitExceeded {
+                self.report_limit();
+            }
+        } else if !self.composer.replace_backslash_before_cursor_with_newline() {
+            self.submit();
+        }
+    }
+
+    fn move_footer_menu(&mut self, delta: i32) -> bool {
+        self.move_skills_menu(isize::try_from(delta).unwrap_or_default())
+            || self.navigate_file_picker(delta)
+    }
+
     fn navigate_history(&mut self, delta: i32) {
-        if let HistoryNavigation::LimitExceeded(_) = self
+        match self
             .composer
             .navigate_history(delta, COMPOSER_INPUT_LIMIT_BYTES)
         {
-            self.report_limit();
+            HistoryNavigation::LimitExceeded(_) => self.report_limit(),
+            HistoryNavigation::Moved => self.reset_file_picker_episode(),
+            HistoryNavigation::Unchanged => {}
         }
+    }
+}
+
+fn picker_control_delta(byte: u8) -> Option<i32> {
+    match byte {
+        10 => Some(1),
+        11 => Some(-1),
+        _ => None,
     }
 }

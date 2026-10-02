@@ -197,6 +197,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         commands: slash_command_specs(),
         command_categories: slash_command_categories(),
         prompt_history,
+        file_mentions: None,
     };
     let refreshes = session.setup.refreshes();
     let agent = agent_work(session.setup, session.executions, runtime);
