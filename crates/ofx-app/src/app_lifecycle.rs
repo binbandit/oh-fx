@@ -62,7 +62,14 @@ pub fn run_interactive(modifiers: &LaunchModifiers) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
-            ExitCode::FAILURE
+            if matches!(
+                error,
+                SessionError::Terminal(TerminalError::TerminalTooSmall)
+            ) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
@@ -130,6 +137,11 @@ enum SessionError {
 impl fmt::Display for SessionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Terminal(
+                error @ (TerminalError::NotATerminal
+                | TerminalError::TerminalTooSmall
+                | TerminalError::OutputUnavailable(_)),
+            ) => write!(formatter, "{error}"),
             Self::Terminal(error) => write!(formatter, "oh-fx: {error}"),
             Self::AgentStopped(Some(report)) => {
                 write!(formatter, "oh-fx: the agent stopped unexpectedly: {report}")
@@ -253,6 +265,29 @@ mod tests {
 
     use super::*;
     use crate::app_panic_runtime::HOOK_TESTS;
+
+    #[test]
+    fn terminal_refusals_read_as_upstream_prints_them() {
+        let message = |error| SessionError::Terminal(error).to_string();
+        assert_eq!(
+            message(TerminalError::TerminalTooSmall),
+            "oh-fx needs at least 5 terminal rows."
+        );
+        assert_eq!(
+            message(TerminalError::NotATerminal),
+            "oh-fx requires an interactive terminal (TTY)."
+        );
+        assert!(
+            message(TerminalError::OutputUnavailable(
+                io::ErrorKind::NotFound.into()
+            ))
+            .starts_with("oh-fx cannot reopen its terminal")
+        );
+        assert_eq!(
+            message(TerminalError::UnableToReadTerminalSize),
+            "oh-fx: unable to read the terminal size"
+        );
+    }
 
     #[test]
     fn worker_panics_are_reported_instead_of_printed_and_clean_exits_are_quiet() {

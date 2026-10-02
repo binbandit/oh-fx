@@ -297,6 +297,29 @@ fn sigterm_ends_a_frame_write_blocked_on_a_stalled_terminal() {
 }
 
 #[test]
+fn a_terminal_shorter_than_five_rows_is_refused_as_upstream_refuses_it() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = PtySession::spawn(home.command(), 4, 80).expect("spawn oh-fx in a pty");
+    let status = session
+        .wait_exit(WAIT)
+        .expect("a short terminal ends the shell");
+    assert!(status.success(), "{status:?}");
+    assert!(session.drain_output(WAIT), "the terminal never closed");
+    let output = String::from_utf8_lossy(&session.output()).into_owned();
+    assert_eq!(
+        count(
+            output.as_bytes(),
+            b"oh-fx needs at least 5 terminal rows.\r\n"
+        ),
+        1,
+        "{output:?}"
+    );
+    assert!(!output.contains("oh-fx: oh-fx"), "{output:?}");
+    assert!(session.cooked().unwrap());
+}
+
+#[test]
 fn an_exit_waits_for_a_stalled_terminal_and_sigterm_still_restores_it() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&settings(&server.base_url()));
