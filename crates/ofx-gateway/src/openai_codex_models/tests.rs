@@ -34,11 +34,16 @@ fn listed_ids(body: &[u8]) -> Option<Vec<String>> {
 }
 
 fn codex_model(id: &str, efforts: &[&str], fast: bool) -> CodexModel {
+    windowed_model(id, efforts, fast, Some(272_000))
+}
+
+fn windowed_model(id: &str, efforts: &[&str], fast: bool, window: Option<u32>) -> CodexModel {
     CodexModel {
         id: id.to_owned(),
         capabilities: ModelCapabilities {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
+            context_window: window,
         },
     }
 }
@@ -70,7 +75,7 @@ fn codex_catalog_parser_keeps_visible_api_models_in_server_order() {
         Some(vec![
             codex_model("gpt-6.1-sol", &["low", "high"], false),
             codex_model("gpt-5.6-luna", &["low", "high"], true),
-            codex_model("gpt-5.6-terra", &[], false),
+            windowed_model("gpt-5.6-terra", &[], false, None),
         ])
     );
 }
@@ -191,7 +196,7 @@ fn listed_values_after_the_matching_capability_are_not_checked() {
         Some(vec![
             codex_model("a", &["low", "high"], false),
             codex_model("b", &["low", "high"], true),
-            codex_model("c", &["low", "high"], false),
+            windowed_model("c", &["low", "high"], false, None),
         ])
     );
 }
@@ -246,4 +251,19 @@ fn catalog_credentials_never_print_their_token_or_account() {
     let debug = format!("{credential:?}");
     assert!(!debug.contains("secret-token"));
     assert!(!debug.contains("acct_9f2c"));
+}
+
+#[test]
+fn listed_models_keep_their_context_window_and_zero_means_unknown() {
+    let body = catalog(&[
+        with(model("wide"), "context_window", json!(1_000_000)),
+        with(model("zero"), "context_window", json!(0)),
+    ]);
+    assert_eq!(
+        parse_catalog(&body),
+        Some(vec![
+            windowed_model("wide", &["low", "high"], false, Some(1_000_000)),
+            windowed_model("zero", &["low", "high"], false, None),
+        ])
+    );
 }

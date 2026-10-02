@@ -129,7 +129,7 @@ async fn an_unavailable_catalog_drops_fast_mode_with_a_notice() {
 }
 
 #[tokio::test]
-async fn without_an_effort_or_fast_mode_the_catalog_is_never_fetched() {
+async fn a_single_request_without_an_effort_or_fast_mode_never_fetches_the_catalog() {
     let fixture = Fixture::new();
     fixture.write_session(FAR_FUTURE_MS, 0o600);
     let codex = FakeServer::start([Reply::sse(&text_events("hi"))]);
@@ -137,4 +137,24 @@ async fn without_an_effort_or_fast_mode_the_catalog_is_never_fetched() {
     let (report, _) = ask(&fixture, &codex, &catalog, None, false).await;
     assert_eq!(report.outcome, TurnOutcome::Completed, "{report:?}");
     assert!(catalog.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_conversation_with_something_to_compact_fetches_the_catalog_once() {
+    let fixture = Fixture::new();
+    fixture.write_session(FAR_FUTURE_MS, 0o600);
+    let codex = FakeServer::start([
+        Reply::sse(&tool_step_events()),
+        Reply::sse(&text_events("Done.")),
+    ]);
+    let catalog = FakeServer::start([release(), catalog_reply()]);
+    let (report, _) = ask(&fixture, &codex, &catalog, None, false).await;
+    assert_eq!(report.outcome, TurnOutcome::Completed, "{report:?}");
+    assert_eq!(codex.requests().len(), 2);
+    let lookups = catalog.requests();
+    assert_eq!(lookups.len(), 2);
+    assert_eq!(
+        lookups[1].path,
+        "/v1/backend-api/codex/models?client_version=0.153.1"
+    );
 }

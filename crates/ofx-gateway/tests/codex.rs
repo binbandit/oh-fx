@@ -86,13 +86,12 @@ fn user(text: &str) -> Vec<ChatMessage> {
     vec![ChatMessage::user(text)]
 }
 
-async fn run(
-    provider: &CodexProvider,
-    instructions: &[&str],
-    messages: &[ChatMessage],
-    tools: &[ToolSpec],
-) -> (Result<Completion, ProviderError>, Vec<StreamEvent>) {
-    let request = ModelRequest {
+fn request<'a>(
+    instructions: &'a [&'a str],
+    messages: &'a [ChatMessage],
+    tools: &'a [ToolSpec],
+) -> ModelRequest<'a> {
+    ModelRequest {
         model: "gpt-5.4",
         instructions,
         messages,
@@ -100,7 +99,16 @@ async fn run(
         tool_choice: ToolChoice::Auto,
         max_output_tokens: Some(4096),
         provider_options: ProviderOptions::default(),
-    };
+    }
+}
+
+async fn run(
+    provider: &CodexProvider,
+    instructions: &[&str],
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+) -> (Result<Completion, ProviderError>, Vec<StreamEvent>) {
+    let request = request(instructions, messages, tools);
     let mut events = Vec::new();
     let mut sink = |event: StreamEvent| events.push(event);
     let result = provider
@@ -250,6 +258,12 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
         content: output.to_owned(),
         status: ToolResultStatus::Success,
     });
+    assert_eq!(
+        codex
+            .request_body(&request(&instructions, &history, &tools))
+            .as_deref(),
+        Some(AFTER_TOOL_GOLDEN)
+    );
     let (second, _) = run(&codex, &instructions, &history, &tools).await;
     let second = second.expect("final step completes");
     assert_eq!(second.content.as_deref(), Some("Done reading."));
@@ -583,4 +597,42 @@ async fn replay_from_another_model_or_provider_is_omitted() {
         .map(|item| item["content"][0]["text"].as_str().expect("assistant text"))
         .collect();
     assert_eq!(texts, ["OK", "OK", "OK"]);
+}
+
+#[tokio::test]
+async fn a_measured_body_is_sent_as_it_was_measured() {
+    let server = FakeServer::start([Reply::sse(&text_events("hi"))]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let history = user("Hello.");
+    let body =
+        r#"{"model":"gpt-5.4","store":false,"stream":true,"instructions":"measured","input":[]}"#;
+    let mut sink = |_: StreamEvent| {};
+    let outcome = codex
+        .stream_body(
+            &request(&[], &history, &[]),
+            body.to_owned(),
+            &mut sink,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(outcome.expect("completes").content.as_deref(), Some("hi"));
+    assert_eq!(server.requests()[0].body_text(), body);
+}
+
+#[tokio::test]
+async fn a_context_overflow_failure_keeps_its_code_in_the_detail() {
+    let failed = json!({"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}});
+    let server = FakeServer::start([Reply::sse(&[failed.to_string()])]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let error = run(&codex, &[], &user("Hello."), &[])
+        .await
+        .0
+        .expect_err("failure");
+    assert_eq!(error.kind, ProviderErrorKind::ProviderError);
+    assert_eq!(
+        error.detail.as_deref(),
+        Some(
+            "provider error: context_length_exceeded: Your input exceeds the context window of this model."
+        )
+    );
 }

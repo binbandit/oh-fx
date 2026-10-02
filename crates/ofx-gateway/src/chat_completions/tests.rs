@@ -501,6 +501,7 @@ async fn stream_text(
 async fn portkey_connections_send_configured_headers_and_the_exact_body() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Hel", "lo"]))]);
     let provider = portkey(&server);
+    let measured = provider.request_body(&test_request().borrowed());
     let (outcome, text) = stream_text(&provider, &test_request()).await;
     let completion = outcome.unwrap();
     assert_eq!(text, "Hello");
@@ -521,6 +522,7 @@ async fn portkey_connections_send_configured_headers_and_the_exact_body() {
         request.body_text(),
         r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hi"}]}"#
     );
+    assert_eq!(measured.as_deref(), Some(&*request.body_text()));
 }
 
 #[tokio::test]
@@ -840,4 +842,23 @@ async fn tool_choice_and_output_limit_options_reach_the_wire() {
     assert!(second.get("tool_choice").is_none());
     assert!(second.get("max_tokens").is_none());
     assert_eq!(second["max_completion_tokens"], 512);
+}
+
+#[tokio::test]
+async fn a_measured_body_is_sent_as_it_was_measured() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["ok"]))]);
+    let provider = portkey(&server);
+    let request = test_request();
+    let body = r#"{"model":"opaque/local-model:8b","stream":true,"messages":[{"role":"user","content":"measured"}]}"#;
+    let mut sink = |_: StreamEvent| {};
+    let outcome = provider
+        .stream_body(
+            &request.borrowed(),
+            body.to_owned(),
+            &mut sink,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(outcome.unwrap().content.as_deref(), Some("ok"));
+    assert_eq!(server.requests()[0].body_text(), body);
 }
