@@ -4,9 +4,9 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::file_index::{
-    CandidateKind, MAX_PATH_LEN, MAX_SEARCH_RESULTS, NameQuery, SearchResult, is_terminal_safe,
-};
+use ofx_text::is_terminal_safe;
+
+use crate::file_index::{CandidateKind, MAX_PATH_LEN, MAX_SEARCH_RESULTS, NameQuery, SearchResult};
 use crate::pathing::resolve_workspace_or_external_literal_path;
 
 const DIRECTORY_SHORTCUTS: [&str; 3] = ["~", ".", ".."];
@@ -68,7 +68,7 @@ pub fn complete(
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !is_terminal_safe(&name) {
+        if !is_terminal_safe(name.as_bytes()) {
             continue;
         }
         let Some(score) = matcher.score(&name) else {
@@ -81,7 +81,7 @@ pub fn complete(
         let mut path = String::with_capacity(parsed.display_prefix.len() + name.len());
         path.push_str(&parsed.display_prefix);
         path.push_str(&name);
-        if path.len() > MAX_PATH_LEN || !is_terminal_safe(&path) {
+        if path.len() > MAX_PATH_LEN || !is_terminal_safe(path.as_bytes()) {
             continue;
         }
         let position = ranked
@@ -126,7 +126,7 @@ pub fn is_current_candidate_kind(
     path: &str,
     expected: CandidateKind,
 ) -> bool {
-    if !is_terminal_safe(path) {
+    if !is_terminal_safe(path.as_bytes()) {
         return false;
     }
     let home = env::var_os("HOME");

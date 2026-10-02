@@ -3,12 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use memchr::memchr2;
 use ofx_config::PrivateDir;
-use ofx_text::lowercase_hex;
+use ofx_text::{is_terminal_safe, lowercase_hex};
 use sha2::{Digest, Sha256};
 
-use crate::file_index::{
-    Candidate, CandidateKind, MAX_INDEXED_FILES, MAX_PATH_LEN, is_terminal_safe,
-};
+use crate::file_index::{Candidate, CandidateKind, MAX_INDEXED_FILES, MAX_PATH_LEN};
 
 const MAGIC: &[u8] = b"fx-file-index-v1\n";
 const DIRECTORY: &str = "file-index";
@@ -242,7 +240,7 @@ impl PayloadReader<'_> {
 }
 
 fn valid_path(path: &str) -> bool {
-    !path.is_empty() && path.len() <= MAX_PATH_LEN && is_terminal_safe(path)
+    !path.is_empty() && path.len() <= MAX_PATH_LEN && is_terminal_safe(path.as_bytes())
 }
 
 fn utf8_roots<'a>(roots: &[&'a Path]) -> Option<Vec<&'a str>> {

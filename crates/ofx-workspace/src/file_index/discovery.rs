@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, open, statat};
 
-use super::{Candidate, CandidateKind, MAX_INDEXED_FILES, accepted_candidate, is_terminal_safe};
+use ofx_text::is_terminal_safe;
+
+use super::{Candidate, CandidateKind, MAX_INDEXED_FILES, accepted_candidate};
 use crate::workspace_files::{
     DiscoveryOptions, UntrackedFiles, discover_listing_directories, discover_listing_files,
 };
@@ -66,7 +68,7 @@ pub(super) fn discover_scope(
         if path
             .split('/')
             .any(|component| component == GIT_METADATA_NAME)
-            || !is_terminal_safe(path)
+            || !is_terminal_safe(path.as_bytes())
         {
             continue;
         }

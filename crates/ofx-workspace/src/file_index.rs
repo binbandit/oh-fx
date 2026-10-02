@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
+use ofx_text::is_terminal_safe;
 use rustix::fs::{AtFlags, FileType, statat};
 
 use crate::file_index_cache;
@@ -339,7 +340,7 @@ impl FileIndex {
         let Some(root) = &self.root else {
             return false;
         };
-        if !is_terminal_safe(path) {
+        if !is_terminal_safe(path.as_bytes()) {
             return false;
         }
         let resolved = if path.starts_with('/') {
@@ -457,14 +458,10 @@ impl LoadJob {
     }
 }
 
-pub(crate) fn is_terminal_safe(path: &str) -> bool {
-    path.chars().all(ofx_text::is_terminal_safe_char)
-}
-
 pub(crate) fn accepted_candidate(candidate: &Candidate) -> bool {
     !candidate.path.is_empty()
         && candidate.path.len() <= MAX_PATH_LEN
-        && is_terminal_safe(&candidate.path)
+        && is_terminal_safe(candidate.path.as_bytes())
         && !(candidate.kind == CandidateKind::Directory && candidate.path.ends_with('/'))
 }
 

@@ -1,4 +1,4 @@
-use ofx_text::is_terminal_safe_char;
+use ofx_text::is_terminal_safe;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Status {
@@ -44,12 +44,8 @@ pub(crate) struct EncodeOptions {
     pub(crate) workspace_relative: bool,
 }
 
-pub(crate) fn is_terminal_safe(text: &str) -> bool {
-    text.chars().all(is_terminal_safe_char)
-}
-
 pub(crate) fn is_representable(path: &str) -> bool {
-    !path.is_empty() && is_terminal_safe(path)
+    !path.is_empty() && is_terminal_safe(path.as_bytes())
 }
 
 pub(crate) fn is_separator(byte: u8) -> bool {
@@ -156,7 +152,7 @@ pub(crate) fn parse_at(text: &str, start: usize) -> Option<Token> {
             let quote_end = index + 1;
             let end = token_end(bytes, quote_end);
             let valid = index > path_start
-                && text.get(path_start..index).is_some_and(is_terminal_safe)
+                && bytes.get(path_start..index).is_some_and(is_terminal_safe)
                 && bytes
                     .get(quote_end..end)
                     .is_some_and(|suffix| suffix.iter().copied().all(is_sentence_punctuation));
@@ -203,7 +199,7 @@ fn tokens(text: &str) -> impl Iterator<Item = Token> + '_ {
 }
 
 pub(crate) fn decode(payload: &str) -> Option<String> {
-    if !is_terminal_safe(payload) {
+    if !is_terminal_safe(payload.as_bytes()) {
         return None;
     }
     let mut decoded = Vec::with_capacity(payload.len());
@@ -229,7 +225,9 @@ pub(crate) fn query_at(text: &str, cursor: usize) -> Option<Query<'_>> {
             return None;
         }
         let prefix = text.get(token.path_start..cursor)?;
-        if !is_terminal_safe(prefix) || (!token.quoted && prefix.bytes().any(is_separator)) {
+        if !is_terminal_safe(prefix.as_bytes())
+            || (!token.quoted && prefix.bytes().any(is_separator))
+        {
             return None;
         }
         return Some(Query {
