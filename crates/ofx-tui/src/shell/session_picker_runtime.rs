@@ -294,8 +294,8 @@ fn wall_clock_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        HistoryEntry, ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope,
-        UiCommand, UiEvent,
+        FULL_ACCESS_WARNING, HistoryEntry, PermissionMode, ResumeRefusal, SessionCursor,
+        SessionPage, SessionRow, SessionScope, UiCommand, UiEvent,
     };
 
     use super::super::Opening;
@@ -367,6 +367,25 @@ mod tests {
                 scope: SessionScope::AllWorkspaces
             }]
         );
+    }
+
+    #[test]
+    fn the_full_access_warning_waits_until_the_picker_gives_back_the_status_line() {
+        let mut test = TestShell::start_with(|options| {
+            options.opening = Opening::SessionPicker;
+            options.permission_mode = PermissionMode::Yolo;
+            options.full_access_warning = true;
+        });
+        let screen = test.screen();
+        assert!(!screen.contains(FULL_ACCESS_WARNING), "{screen}");
+        assert!(!test.sent().contains(&UiCommand::FullAccessWarningShown));
+        keys(&mut test, b"\x1b");
+        test.advance(1_000);
+        test.draining(super::super::Shell::flush_pending_input)
+            .unwrap();
+        let screen = test.screen();
+        assert!(screen.contains(FULL_ACCESS_WARNING), "{screen}");
+        assert_eq!(test.sent().last(), Some(&UiCommand::FullAccessWarningShown));
     }
 
     #[test]
