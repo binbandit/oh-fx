@@ -1,4 +1,6 @@
+use std::cmp::Reverse;
 use std::fmt::Write as _;
+use std::mem;
 
 use ofx_contract::{CommandProcessPresentation, ToolActivity, ToolCallId, TurnOutcome};
 use ofx_markdown::{highlight, resolve};
@@ -155,12 +157,12 @@ impl Summary {
             self.total,
             if self.total == 1 { "" } else { "s" }
         );
-        let mut order: Vec<usize> = (0..CATEGORY_LABELS.len())
-            .filter(|index| self.categories[*index] > 0)
-            .collect();
-        order.sort_by(|left, right| self.categories[*right].cmp(&self.categories[*left]));
-        for index in order {
-            let count = self.categories[index];
+        let mut remaining = self.categories;
+        while let Some(index) = (0..remaining.len())
+            .filter(|index| remaining[*index] > 0)
+            .max_by_key(|index| (remaining[*index], Reverse(*index)))
+        {
+            let count = mem::take(&mut remaining[index]);
             let label = if index == COMMAND_CATEGORY && count != 1 {
                 "commands"
             } else {
