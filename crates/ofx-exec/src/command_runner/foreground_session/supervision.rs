@@ -4,7 +4,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
@@ -16,6 +16,7 @@ use crate::command_runner::TERMINATION_GRACE;
 pub(in crate::command_runner) const FORCE_SIGNAL: Signal = Signal::USR1;
 const SURVIVED_SIGNALS: [i32; 4] = [SIGINT, SIGHUP, SIGQUIT, SIGUSR2];
 const READ_BYTES: usize = 64;
+const LONGEST_POLL_MILLISECONDS: u32 = i32::MAX.unsigned_abs();
 
 pub(super) trait CommandTree {
     fn stop_gracefully(&mut self) -> Result<(), &'static str>;
@@ -166,10 +167,7 @@ impl<T: CommandTree> Supervision<T> {
     }
 
     fn wait_for_event(&mut self) {
-        let now = Instant::now();
-        let timeout = self
-            .next_timer()
-            .and_then(|at| Timespec::try_from(at.saturating_duration_since(now)).ok());
+        let timeout = poll_timeout(self.next_timer(), Instant::now());
         let stdin = io::stdin();
         let watched = if self.owner_alive { 2 } else { 1 };
         let mut descriptors = [
@@ -192,6 +190,11 @@ impl<T: CommandTree> Supervision<T> {
             .map(|started| started + TERMINATION_GRACE);
         self.deadline.into_iter().chain(grace_ends).min()
     }
+}
+
+fn poll_timeout(next_timer: Option<Instant>, now: Instant) -> Option<Timespec> {
+    let wait = next_timer?.saturating_duration_since(now);
+    Timespec::try_from(wait.min(Duration::from_millis(LONGEST_POLL_MILLISECONDS.into()))).ok()
 }
 
 fn owner_still_open(stdin: &io::Stdin) -> bool {
@@ -254,7 +257,7 @@ mod tests {
 
     use super::{
         CommandTree, Requests, Supervision, TerminationAction, TerminationRequest,
-        decide_termination_action, request_at_deadline,
+        decide_termination_action, poll_timeout, request_at_deadline,
     };
 
     const EXIT_LIMIT: Duration = Duration::from_secs(5);
@@ -314,6 +317,26 @@ mod tests {
             "the forced stop left the command running"
         );
         assert_eq!(supervision.next_timer(), None);
+    }
+
+    #[test]
+    fn a_distant_timer_waits_no_longer_than_poll_can_express() {
+        let now = Instant::now();
+        let soon = poll_timeout(Some(now + Duration::from_millis(5)), now)
+            .expect("a near timer sets a timeout");
+        assert_eq!((soon.tv_sec, soon.tv_nsec), (0, 5_000_000));
+        assert_eq!(poll_timeout(None, now), None);
+        assert_eq!(
+            poll_timeout(Some(now), now + Duration::from_millis(1)).map(|due| due.tv_nsec),
+            Some(0)
+        );
+        let distant = poll_timeout(Some(now + Duration::from_hours(720)), now)
+            .expect("a distant timer sets a timeout");
+        let milliseconds = distant.tv_sec * 1000 + (distant.tv_nsec + 999_999) / 1_000_000;
+        assert!(
+            milliseconds <= i64::from(i32::MAX),
+            "{milliseconds} ms does not fit poll's timeout"
+        );
     }
 
     #[test]
