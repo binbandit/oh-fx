@@ -1,3 +1,4 @@
+mod launch_overrides;
 mod persistence;
 mod resume_transcript;
 mod session_picker;
@@ -14,6 +15,7 @@ use ofx_session::{
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
 
+pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
 
 #[derive(Debug)]

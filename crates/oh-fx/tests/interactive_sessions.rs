@@ -1354,3 +1354,34 @@ fn a_picked_session_brings_back_its_model_and_one_from_another_provider_is_refus
     assert_eq!(home.metadata(&other)["provider"]["name"], "other");
     assert_eq!(home.metadata(&other)["workspace_root"], other_workspace);
 }
+
+#[test]
+fn a_launch_model_flag_outlasts_the_model_of_a_picked_session() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["On b."])),
+        Reply::sse(&chat_text_events(&["Flagged a."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"/model vendor/model-b\r");
+    wait(&session, "auto · model-b");
+    session.send(b"use b\r");
+    wait(&session, "On b.");
+    exit(session);
+    let id = home.only_session();
+    let session = home.spawn(&["--model", "model-a", "-r"]);
+    wait(&session, PICKER_HEADER);
+    session.send(b"\r");
+    let screen = wait(&session, "session resumed: use b");
+    assert!(screen.contains("auto · model-a"), "{screen}");
+    session.send(b"flagged\r");
+    wait(&session, "Flagged a.");
+    exit(session);
+    let models: Vec<Value> = server
+        .requests()
+        .iter()
+        .map(|request| request.json()["model"].clone())
+        .collect();
+    assert_eq!(models, ["vendor/model-b", "model-a"]);
+    assert_eq!(home.metadata(&id)["model"], "vendor/model-b");
+}

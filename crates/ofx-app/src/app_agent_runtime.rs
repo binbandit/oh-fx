@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_session_runtime::Persistence;
+use crate::app_session_runtime::{Persistence, RestoredPreferences};
 use crate::native::NativeClipboard;
 use crate::session_commands::SettingsAccess;
 use crate::skills::HostSkills;
@@ -432,10 +432,7 @@ impl Controller {
         };
         match persistence.resume_selected(id, &mut self.agent) {
             Ok(switched) => {
-                if switched.model != self.state.model {
-                    self.state.use_model(switched.model);
-                    self.reconfigure();
-                }
+                self.restore_preferences(switched.preferences);
                 self.remember_agent_facts();
                 self.state.emit(UiEvent::SessionResumed {
                     history: switched.history,
@@ -448,6 +445,17 @@ impl Controller {
                 self.refuse_resume(id, refused.refusal);
             }
         }
+    }
+
+    fn restore_preferences(&mut self, restored: RestoredPreferences) {
+        self.state
+            .setup
+            .restore_reasoning(restored.reasoning_effort, restored.fast_mode);
+        self.state.fast_mode = restored.fast_mode;
+        if restored.model != self.state.model {
+            self.state.use_model(restored.model);
+        }
+        self.reconfigure();
     }
 
     fn refuse_resume(&self, id: &str, refusal: ResumeRefusal) {

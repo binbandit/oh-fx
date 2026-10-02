@@ -6,11 +6,11 @@ use ofx_contract::{
 use ofx_session::{ListScope, ResumeContinuation, SessionError, SessionSummary};
 
 use super::persistence::{Persistence, SESSION_TOPIC};
-use super::{LiveSession, ResumedSession};
+use super::{LiveSession, RestoredPreferences, ResumedSession};
 
 pub(crate) struct Switched {
     pub(crate) history: Vec<HistoryEntry>,
-    pub(crate) model: String,
+    pub(crate) preferences: RestoredPreferences,
     pub(crate) notice: Option<Notice>,
 }
 
@@ -68,7 +68,7 @@ impl Persistence {
         self.store.move_here(&mut session).map_err(refused)?;
         let resumed = ResumedSession::load(session).map_err(refused)?;
         let history = resumed.transcript().map_err(refused)?;
-        let model = resumed.preferences().model.clone();
+        let preferences = self.overrides.restore(resumed.preferences());
         self.close(agent);
         agent.clear_history();
         let live = LiveSession::resume(resumed, self.provider.clone(), agent);
@@ -77,7 +77,7 @@ impl Persistence {
         self.live = Some(live);
         Ok(Switched {
             history,
-            model,
+            preferences,
             notice,
         })
     }

@@ -2,7 +2,7 @@ use ofx_agent::{Agent, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, TurnOutcome};
 use ofx_session::{SavedProvider, SessionError, SessionPreferences, SessionStore};
 
-use super::{LiveSession, ResumedSession};
+use super::{LaunchOverrides, LiveSession, ResumedSession};
 
 pub(super) const SESSION_TOPIC: &str = "session";
 
@@ -16,6 +16,7 @@ pub(crate) struct Persistence {
     pub(super) provider: SavedProvider,
     preferences: SessionPreferences,
     pub(super) live: Option<LiveSession>,
+    pub(super) overrides: LaunchOverrides,
     resumption: Option<Resumption>,
     remember_fresh: bool,
     degraded: bool,
@@ -26,6 +27,7 @@ impl Persistence {
         store: SessionStore,
         provider: SavedProvider,
         preferences: SessionPreferences,
+        overrides: LaunchOverrides,
         resumption: Option<Resumption>,
     ) -> Self {
         Self {
@@ -33,6 +35,7 @@ impl Persistence {
             provider,
             preferences,
             live: None,
+            overrides,
             resumption,
             remember_fresh: false,
             degraded: false,
