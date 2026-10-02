@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ofx_contract::{AutoCompactPercent, PermissionMode, ReasoningEffort};
 use serde_json::{Map, Value};
@@ -61,6 +61,7 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
 ];
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
 const CONTEXT_LIMITS_REPAIR: &str = "; context_limits keys must be documented limit names with a non-negative integer or \"off\" value";
+const MAX_SKILL_SYMLINK_AUTHORITIES: usize = 32;
 const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL";
 
 type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -79,6 +80,7 @@ enum DiagnosticCause {
     InvalidModelId,
     IgnoredProjectUserOnlySetting,
     InvalidContextLimits,
+    InvalidSkillSymlinkAuthorities,
 }
 
 impl DiagnosticCause {
@@ -90,6 +92,7 @@ impl DiagnosticCause {
             Self::InvalidModelId => "invalid_model_id",
             Self::IgnoredProjectUserOnlySetting => "ignored_project_user_only_setting",
             Self::InvalidContextLimits => "invalid_context_limits",
+            Self::InvalidSkillSymlinkAuthorities => "invalid_skill_symlink_authorities",
         }
     }
 }
@@ -111,8 +114,13 @@ impl fmt::Display for ConfigDiagnostic {
         if let Some(key) = &self.key {
             write!(formatter, "; key={key}")?;
         }
-        if self.cause == DiagnosticCause::InvalidContextLimits {
-            formatter.write_str(CONTEXT_LIMITS_REPAIR)?;
+        match self.cause {
+            DiagnosticCause::InvalidContextLimits => formatter.write_str(CONTEXT_LIMITS_REPAIR)?,
+            DiagnosticCause::InvalidSkillSymlinkAuthorities => write!(
+                formatter,
+                "; skill_symlink_authorities must be an array of at most {MAX_SKILL_SYMLINK_AUTHORITIES} absolute directory paths without .. components"
+            )?,
+            _ => {}
         }
         Ok(())
     }
@@ -168,6 +176,8 @@ pub enum LayerError {
     ContextLimits(ContextLimitError),
     #[error("InvalidContextType")]
     InvalidContextType,
+    #[error("InvalidSkillSymlinkAuthorities")]
+    InvalidSkillSymlinkAuthorities,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -216,6 +226,7 @@ struct Layer {
     fast_mode_model_bound: Option<bool>,
     context_limits: ContextLimitOverrides,
     context: Option<bool>,
+    skill_symlink_authorities: Option<Vec<PathBuf>>,
 }
 
 impl Layer {
@@ -262,6 +273,7 @@ impl From<LayerError> for DiagnosticCause {
         match error {
             LayerError::InvalidModelValue => Self::InvalidModelId,
             LayerError::ContextLimits(_) => Self::InvalidContextLimits,
+            LayerError::InvalidSkillSymlinkAuthorities => Self::InvalidSkillSymlinkAuthorities,
             _ => Self::MalformedSettings,
         }
     }
@@ -333,6 +345,14 @@ impl Settings {
             .or(self.global.context)
             .or(self.project_context)
             .unwrap_or(true)
+    }
+
+    pub fn skill_symlink_authorities(&self) -> &[PathBuf] {
+        self.workspace
+            .skill_symlink_authorities
+            .as_deref()
+            .or(self.global.skill_symlink_authorities.as_deref())
+            .unwrap_or_default()
     }
 
     pub fn context_limits(&self) -> ContextLimits {
@@ -650,7 +670,31 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         LayerError::InvalidFastModeBindingType,
     )?;
     layer.context = parse_switch(object, "context", LayerError::InvalidContextType)?;
+    layer.skill_symlink_authorities = object
+        .get("skill_symlink_authorities")
+        .map(parse_skill_symlink_authorities)
+        .transpose()?;
     Ok(layer)
+}
+
+fn parse_skill_symlink_authorities(value: &Value) -> Result<Vec<PathBuf>, LayerError> {
+    let Value::Array(items) = value else {
+        return Err(LayerError::InvalidSkillSymlinkAuthorities);
+    };
+    if items.len() > MAX_SKILL_SYMLINK_AUTHORITIES {
+        return Err(LayerError::InvalidSkillSymlinkAuthorities);
+    }
+    items
+        .iter()
+        .map(|item| match item {
+            Value::String(path)
+                if path.starts_with('/') && !path.split('/').any(|part| part == "..") =>
+            {
+                Ok(PathBuf::from(path))
+            }
+            _ => Err(LayerError::InvalidSkillSymlinkAuthorities),
+        })
+        .collect()
 }
 
 fn parse_switch(
@@ -1360,6 +1404,75 @@ mod tests {
         let total = limits.get(ContextLimitName::ProjectInstructionsTotalBytes);
         assert_eq!(total.effective_bytes(), 128 * 1024);
         assert_eq!(total.source.label(), "compiled default");
+    }
+
+    #[test]
+    fn skill_symlink_authorities_parse_and_a_workspace_list_replaces_the_global_one() {
+        assert!(
+            fixture_settings("{}")
+                .skill_symlink_authorities()
+                .is_empty()
+        );
+        let global = fixture_settings(
+            r#"{"skill_symlink_authorities":["/Applications/Codiff.app/Contents/Resources/app/codex/skills","/nix/store"]}"#,
+        );
+        assert!(global.diagnostics().is_empty());
+        assert_eq!(
+            global.skill_symlink_authorities(),
+            [
+                PathBuf::from("/Applications/Codiff.app/Contents/Resources/app/codex/skills"),
+                PathBuf::from("/nix/store"),
+            ]
+        );
+        let fixture = fixture(
+            Some("{}"),
+            Some(r#"{"skill_symlink_authorities":["/opt/project-skills"]}"#),
+        );
+        let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+        let json = format!(
+            r#"{{"skill_symlink_authorities":["/opt/global-skills"],"workspaces":{{{workspace}:{{"skill_symlink_authorities":[]}}}}}}"#
+        );
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+        let settings = load(&fixture).unwrap();
+        assert!(settings.skill_symlink_authorities().is_empty());
+        assert_eq!(
+            settings.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=skill_symlink_authorities"
+        );
+    }
+
+    #[test]
+    fn invalid_skill_symlink_authorities_discard_the_layer_with_a_repair_hint() {
+        for json in [
+            r#"{"permission_mode":"ask","skill_symlink_authorities":"/nix/store"}"#,
+            r#"{"permission_mode":"ask","skill_symlink_authorities":[7]}"#,
+            r#"{"permission_mode":"ask","skill_symlink_authorities":["relative/skills"]}"#,
+            r#"{"permission_mode":"ask","skill_symlink_authorities":["/opt/../etc"]}"#,
+        ] {
+            let settings = fixture_settings(json);
+            assert_eq!(
+                settings.diagnostics()[0].to_string(),
+                "config user: invalid_skill_symlink_authorities; skill_symlink_authorities must be an array of at most 32 absolute directory paths without .. components",
+                "{json}"
+            );
+            assert!(!settings.profile_is_unusable(), "{json}");
+            assert_eq!(settings.permission_mode(), PermissionMode::Auto, "{json}");
+            assert!(settings.skill_symlink_authorities().is_empty(), "{json}");
+        }
+        let entries: Vec<String> = (0..33).map(|index| format!("\"/opt/{index}\"")).collect();
+        let too_many = fixture_settings(&format!(
+            r#"{{"skill_symlink_authorities":[{}]}}"#,
+            entries.join(",")
+        ));
+        assert_eq!(
+            too_many.diagnostics()[0].cause,
+            DiagnosticCause::InvalidSkillSymlinkAuthorities
+        );
+        let at_limit = fixture_settings(&format!(
+            r#"{{"skill_symlink_authorities":[{}]}}"#,
+            entries[..32].join(",")
+        ));
+        assert_eq!(at_limit.skill_symlink_authorities().len(), 32);
     }
 
     #[test]
