@@ -534,6 +534,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
     )
     .with_payload(),
     SlashSpec::new(
+        SlashKind::Skills,
+        "/skills",
+        "browse and manage skills",
+        SlashPresentationCategory::Extensions,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Copy,
         "/copy",
         "copy the last assistant response",

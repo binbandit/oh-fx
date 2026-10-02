@@ -822,7 +822,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 12");
+    wait(&session, "Commands 13");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 

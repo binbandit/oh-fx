@@ -1,10 +1,11 @@
 use std::collections::{HashSet, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure};
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, UiCommand, UiEvent,
+    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, SkillBinding, UiCommand,
+    UiEvent,
 };
 use ofx_tui::Clipboard;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -14,6 +15,7 @@ use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::native::NativeClipboard;
+use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
@@ -30,13 +32,19 @@ pub(crate) struct ControllerState {
     config_pending: bool,
     pending_clear: Option<u64>,
     received_prompts: u64,
-    queue: VecDeque<String>,
+    queue: VecDeque<Prompt>,
     permissions: PermissionRuntime,
+    context_notices: Arc<Mutex<ContextNotices>>,
     emit: Emit,
     clipboard: Arc<dyn Clipboard>,
     last_reply: Option<Arc<str>>,
     history_turns: usize,
     context_to_compact: bool,
+}
+
+struct Prompt {
+    text: String,
+    skills: Vec<SkillBinding>,
 }
 
 impl ControllerState {
@@ -94,6 +102,20 @@ impl ControllerState {
         &*self.clipboard
     }
 
+    pub(crate) fn skills(&self) -> &HostSkills {
+        self.setup.skills()
+    }
+
+    pub(crate) fn claim_context_notice(&self, text: &str) {
+        self.lock_context_notices().claim(text);
+    }
+
+    fn lock_context_notices(&self) -> MutexGuard<'_, ContextNotices> {
+        self.context_notices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub(crate) fn emit(&self, event: UiEvent) {
         (self.emit)(event);
     }
@@ -119,9 +141,9 @@ impl ControllerState {
         self.save_model_preference(MODEL_TOPIC);
     }
 
-    fn receive_prompt(&mut self, prompt: String) {
+    fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>) {
         self.received_prompts += 1;
-        self.queue.push_back(prompt);
+        self.queue.push_back(Prompt { text, skills });
     }
 }
 
@@ -165,7 +187,6 @@ fn context_notice(text: &str) -> Notice {
 pub(crate) struct Controller {
     agent: Agent,
     state: ControllerState,
-    notices: ContextNotices,
 }
 
 impl Controller {
@@ -183,6 +204,7 @@ impl Controller {
             pending_clear: None,
             received_prompts: 0,
             queue: VecDeque::new(),
+            context_notices: Arc::new(Mutex::new(notices)),
             emit,
             clipboard: Arc::new(NativeClipboard),
             last_reply: None,
@@ -192,7 +214,6 @@ impl Controller {
         Self {
             agent: state.setup.agent(),
             state,
-            notices,
         }
     }
 
@@ -215,7 +236,7 @@ impl Controller {
                 return;
             };
             match command {
-                UiCommand::Submit { prompt } => self.state.receive_prompt(prompt),
+                UiCommand::Submit { prompt, skills } => self.state.receive_prompt(prompt, skills),
                 UiCommand::RunCommand { text } => {
                     if !self.run_idle_command(&text, &mut commands).await {
                         return;
@@ -275,7 +296,9 @@ impl Controller {
                             open = false;
                             cancel.cancel();
                         }
-                        Some(UiCommand::Submit { prompt }) => state.receive_prompt(prompt),
+                        Some(UiCommand::Submit { prompt, skills }) => {
+                            state.receive_prompt(prompt, skills);
+                        }
                         Some(UiCommand::CancelCompaction) => cancel.cancel(),
                         Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
                         Some(UiCommand::FullAccessWarningShown) => {
@@ -315,24 +338,25 @@ impl Controller {
     }
 
     fn show_startup_notices(&mut self) {
-        for notice in self.notices.restart() {
+        let restarted = self.state.lock_context_notices().restart();
+        for notice in restarted {
             self.state.emit(UiEvent::Notice { notice });
         }
     }
 
     async fn run_turn(
         &mut self,
-        prompt: &str,
+        prompt: &Prompt,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
-        self.state.setup.refresh_skills();
+        self.state.skills().refresh();
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
         let running = Arc::new(Mutex::new(None));
         let started = Arc::clone(&running);
         let running_turn = || *running.lock().unwrap_or_else(PoisonError::into_inner);
+        let notices = Arc::clone(&self.state.context_notices);
         let state = &mut self.state;
-        let notices = &mut self.notices;
         let mut open = true;
         let report = {
             let mut sink = move |event: UiEvent| match event {
@@ -342,13 +366,19 @@ impl Controller {
                     emit(event);
                 }
                 UiEvent::ContextNotice { text, .. } => {
-                    if let Some(notice) = notices.claim(&text) {
+                    let claimed = notices
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .claim(&text);
+                    if let Some(notice) = claimed {
                         emit(UiEvent::Notice { notice });
                     }
                 }
                 event => emit(event),
             };
-            let turn = self.agent.run_turn(prompt, &mut sink, &cancel);
+            let turn =
+                self.agent
+                    .run_turn_with_skills(&prompt.text, &prompt.skills, &mut sink, &cancel);
             tokio::pin!(turn);
             loop {
                 tokio::select! {
@@ -359,7 +389,9 @@ impl Controller {
                             open = false;
                             cancel.cancel();
                         }
-                        Some(UiCommand::Submit { prompt }) => state.receive_prompt(prompt),
+                        Some(UiCommand::Submit { prompt, skills }) => {
+                            state.receive_prompt(prompt, skills);
+                        }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {
                                 cancel.cancel();
@@ -484,7 +516,8 @@ mod tests {
 
     use ofx_config::{ProfilePaths, Settings};
     use ofx_contract::{
-        ApprovalDecision, PermissionMode, ProviderErrorKind, ToolResultStatus, TurnId, TurnOutcome,
+        ApprovalDecision, PermissionMode, ProviderErrorKind, SkillMenuFocus, ToolResultStatus,
+        TurnId, TurnOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
@@ -695,6 +728,7 @@ mod tests {
         fn submit(&self, prompt: &str) {
             self.send(UiCommand::Submit {
                 prompt: prompt.to_owned(),
+                skills: Vec::new(),
             });
         }
 
@@ -2014,6 +2048,155 @@ mod tests {
         harness.submit("three");
         let third = harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(notices(third), warned);
+    }
+
+    fn is_skills_menu(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::SkillsMenu { .. })
+    }
+
+    fn is_notice(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::Notice { .. })
+    }
+
+    async fn skills_menu(harness: &mut Harness, command: &str) -> (Vec<String>, SkillMenuFocus) {
+        harness.command(command);
+        let events = harness.until(is_skills_menu).await;
+        let Some(UiEvent::SkillsMenu { items, focus }) = events.last() else {
+            unreachable!();
+        };
+        let names = items
+            .iter()
+            .map(|item| format!("{} {}", item.name, item.scope))
+            .collect();
+        (names, focus.clone())
+    }
+
+    async fn skills_notice(harness: &mut Harness, command: &str) -> String {
+        harness.command(command);
+        notice_body(harness.until(is_notice).await).join("\n")
+    }
+
+    #[tokio::test]
+    async fn skills_commands_open_the_menu_on_the_rediscovered_catalog() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, ".oh-fx/skills/review", "review");
+        write_skill(&harness.home, ".claude/skills/deploy", "deploy");
+        assert_eq!(
+            skills_menu(&mut harness, "/skills").await,
+            (
+                vec![
+                    "review oh-fx \u{b7} Workspace".to_owned(),
+                    "deploy Claude \u{b7} Workspace".to_owned()
+                ],
+                SkillMenuFocus::Start
+            )
+        );
+        assert_eq!(
+            skills_menu(&mut harness, "/skills show deploy").await.1,
+            SkillMenuFocus::Item(1)
+        );
+        write_skill(&harness.home, "skills/deploy", "deploy");
+        assert_eq!(
+            skills_menu(&mut harness, "/skills show deploy").await.1,
+            SkillMenuFocus::Query("deploy".to_owned())
+        );
+        assert_eq!(
+            skills_notice(&mut harness, "/skills show missing").await,
+            "skills|Skill 'missing' not found."
+        );
+    }
+
+    #[tokio::test]
+    async fn skills_commands_create_and_remove_only_inside_the_managed_root() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        let managed = fs::canonicalize(harness.home.path().join("config"))
+            .unwrap()
+            .join("skills");
+        let created = managed.join("fresh/SKILL.md");
+        assert_eq!(
+            skills_notice(&mut harness, "/skills create fresh").await,
+            format!("skills|Created {}", created.display())
+        );
+        assert!(created.is_file());
+        assert_eq!(
+            skills_menu(&mut harness, "/skills").await.0,
+            ["fresh oh-fx \u{b7} Global"]
+        );
+        assert_eq!(
+            skills_notice(&mut harness, "/skills remove fresh").await,
+            "skills|Removed skill 'fresh'."
+        );
+        assert!(!managed.join("fresh").exists());
+        write_skill(&harness.home, ".oh-fx/skills/review", "review");
+        let review = fs::canonicalize(harness.home.path())
+            .unwrap()
+            .join("workspace/.oh-fx/skills/review");
+        assert_eq!(
+            skills_notice(&mut harness, "/skills remove review").await,
+            format!(
+                "skills|Skill 'review' comes from workspace .oh-fx/skills, not the oh-fx managed install root. Remove it from {}.",
+                review.display()
+            )
+        );
+        assert!(review.exists());
+        assert_eq!(
+            skills_notice(&mut harness, "/skills create a/b").await,
+            "skills|Invalid skill name. Use a single directory name without '/' or '\\'."
+        );
+        assert_eq!(
+            skills_notice(&mut harness, "/skills path").await,
+            format!(
+                "skills|oh-fx workspace roots are auto-discovered from .oh-fx/skills and skills/.\noh-fx managed install root: {}\ncompatibility roots are auto-discovered from workspace and home (.opencode/.codex/.claude/.agents/.claw).",
+                managed.display()
+            )
+        );
+        assert_eq!(
+            skills_notice(&mut harness, "/skills list all").await,
+            "|usage: /skills [list|add|install|show|create|remove|path] [name|url|path]"
+        );
+        harness.command("/skills add vercel-labs/agent-skills --skill review");
+        harness.until(is_notice).await;
+        assert_eq!(
+            notice_body(harness.until(is_notice).await),
+            ["skills|Skill installation is not available yet."]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_skill_bound_in_the_composer_picks_one_of_two_same_named_skills() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, ".oh-fx/skills/review", "review");
+        write_skill(&harness.home, ".claude/skills/review", "review");
+        let claude = fs::canonicalize(harness.home.path())
+            .unwrap()
+            .join("workspace/.claude/skills/review");
+        harness.send(UiCommand::Submit {
+            prompt: "$review the diff".to_owned(),
+            skills: vec![SkillBinding {
+                name: "review".to_owned(),
+                path: claude.clone(),
+            }],
+        });
+        let events = harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            notices(events),
+            [(
+                NoticeTone::Neutral,
+                String::new(),
+                "1 requested skill loaded\n\u{2514} Loaded skill review".to_owned()
+            )]
+        );
+        let system = system_text(&server.requests()[0].json());
+        assert!(
+            system.contains(&format!(
+                "<skill_content name=\"review\" location=\"{}\" resource=\"SKILL.md\"",
+                claude.display()
+            )),
+            "{system}"
+        );
     }
 
     #[test]

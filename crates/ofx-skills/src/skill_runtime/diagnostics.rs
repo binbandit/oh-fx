@@ -10,7 +10,7 @@ use crate::skill_contract::{
 const DIAGNOSTIC_NOTICE_ITEM_COUNT: usize = 4;
 const DIAGNOSTIC_PATH_MAX_BYTES: usize = 4 * 1024;
 
-pub(crate) fn diagnostic_summary(diagnostics: &[SkillDiagnostic]) -> Option<String> {
+pub fn diagnostic_summary(diagnostics: &[SkillDiagnostic]) -> Option<String> {
     if diagnostics.is_empty() {
         return None;
     }
