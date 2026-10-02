@@ -2,6 +2,7 @@ mod fixed_field;
 mod session_adapter;
 mod session_codec;
 mod session_commands;
+mod session_discovery;
 mod session_error;
 mod session_event;
 mod session_layout;
@@ -9,6 +10,7 @@ mod session_log;
 mod session_replay;
 mod session_store;
 mod session_store_paths;
+mod session_summary_codec;
 
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 pub use session_codec::{SavedProvider, SessionMetadata, SessionPreferences};
@@ -21,4 +23,5 @@ pub use session_event::{
 };
 pub use session_layout::is_valid_session_id;
 pub use session_log::{CompactedHistory, SavedHistory, SavedSession, SavedTurn, WritableSession};
-pub use session_store::SessionStore;
+pub use session_store::{ListScope, SessionStore};
+pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSummary};

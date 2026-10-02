@@ -9,6 +9,7 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags, RenameFlags, Stat};
 use rustix::io::Errno;
 
 use crate::session_error::SessionError;
+use crate::session_layout::is_valid_session_id;
 
 const LOCK_RETRY: Duration = Duration::from_millis(10);
 
@@ -129,6 +130,29 @@ pub(crate) fn remove_created_dir(parent: &PrivateDir, name: &str) {
     let _ = fs::unlinkat(parent.as_fd(), name, AtFlags::REMOVEDIR);
 }
 
+pub(crate) fn session_directory_names(dir: &PrivateDir) -> Result<Vec<String>, SessionError> {
+    let mut names = Vec::new();
+    for entry in fs::Dir::read_from(dir.as_fd())? {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if !is_valid_session_id(name) {
+            continue;
+        }
+        let directory = match entry.file_type() {
+            FileType::Directory => true,
+            FileType::Unknown => fs::statat(dir.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW)
+                .is_ok_and(|stat| file_type(&stat) == FileType::Directory),
+            _ => false,
+        };
+        if directory {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
 pub(crate) fn lock_with_deadline(
     dir: &PrivateDir,
     name: &str,
@@ -146,15 +170,20 @@ pub(crate) fn lock_with_deadline(
     }
 }
 
-fn file_type(stat: &Stat) -> FileType {
+pub(crate) fn has_private_dir_mode(dir: &PrivateDir) -> Result<bool, SessionError> {
+    let stat = fs::fstat(dir.as_fd())?;
+    Ok(permissions(&stat) == Mode::RWXU)
+}
+
+pub(crate) fn file_type(stat: &Stat) -> FileType {
     FileType::from_raw_mode(stat.st_mode)
 }
 
-fn permissions(stat: &Stat) -> Mode {
+pub(crate) fn permissions(stat: &Stat) -> Mode {
     Mode::from_raw_mode(stat.st_mode) & (Mode::RWXU | Mode::RWXG | Mode::RWXO)
 }
 
-fn private_file_mode() -> Mode {
+pub(crate) fn private_file_mode() -> Mode {
     Mode::RUSR | Mode::WUSR
 }
 
