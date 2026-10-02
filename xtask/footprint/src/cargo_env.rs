@@ -11,11 +11,19 @@ pub(crate) fn config_variables(repository: &Path) -> Result<Vec<(String, OsStrin
     } else {
         cargo.join("config.toml")
     };
-    let mut variables = BTreeMap::new();
+    let mut entries = BTreeMap::new();
     if file.exists() {
-        load(&file, &mut variables, &mut Vec::new())?;
+        load(&file, &mut entries, &mut Vec::new())?;
     }
-    Ok(variables.into_iter().collect())
+    entries
+        .into_iter()
+        .map(|(name, entry)| {
+            let value = entry
+                .exported()
+                .ok_or_else(|| format!("env.{name} in the head's cargo config has no value"))?;
+            Ok((name, value))
+        })
+        .collect()
 }
 
 pub(crate) fn set_by_head(
@@ -34,9 +42,34 @@ struct Include {
     optional: bool,
 }
 
+enum Entry {
+    Plain(OsString),
+    Fields {
+        value: Option<(String, PathBuf)>,
+        relative: Option<bool>,
+    },
+}
+
+impl Entry {
+    fn exported(self) -> Option<OsString> {
+        match self {
+            Self::Plain(value) => Some(value),
+            Self::Fields {
+                value: Some((value, root)),
+                relative: Some(true),
+            } => Some(root.join(value).into_os_string()),
+            Self::Fields {
+                value: Some((value, _)),
+                ..
+            } => Some(OsString::from(value)),
+            Self::Fields { value: None, .. } => None,
+        }
+    }
+}
+
 fn load(
     file: &Path,
-    variables: &mut BTreeMap<String, OsString>,
+    entries: &mut BTreeMap<String, Entry>,
     loading: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     let identity =
@@ -56,11 +89,11 @@ fn load(
         if include.optional && !path.exists() {
             continue;
         }
-        load(&path, variables, loading)?;
+        load(&path, entries, loading)?;
     }
     loading.pop();
-    variables.extend(env_table(&config, directory.parent().unwrap_or(directory)));
-    Ok(())
+    merge_env(&config, directory.parent().unwrap_or(directory), entries)
+        .map_err(|error| format!("{error} in {}", file.display()))
 }
 
 fn includes(config: &toml::Table) -> Result<Vec<Include>, &'static str> {
@@ -89,28 +122,51 @@ fn includes(config: &toml::Table) -> Result<Vec<Include>, &'static str> {
         .collect()
 }
 
-fn env_table(config: &toml::Table, root: &Path) -> Vec<(String, OsString)> {
-    let Some(toml::Value::Table(variables)) = config.get("env") else {
-        return Vec::new();
+fn merge_env(
+    config: &toml::Table,
+    root: &Path,
+    entries: &mut BTreeMap<String, Entry>,
+) -> Result<(), String> {
+    let Some(table) = config.get("env") else {
+        return Ok(());
     };
-    variables
-        .iter()
-        .filter_map(|(name, entry)| {
-            let value = match entry {
-                toml::Value::String(value) => OsString::from(value),
-                toml::Value::Table(entry) => {
-                    let value = entry.get("value")?.as_str()?;
-                    if entry.get("relative").and_then(toml::Value::as_bool) == Some(true) {
-                        root.join(value).into_os_string()
-                    } else {
-                        OsString::from(value)
-                    }
-                }
-                _ => return None,
-            };
-            Some((name.clone(), value))
-        })
-        .collect()
+    let toml::Value::Table(table) = table else {
+        return Err("`env` is not a table".to_owned());
+    };
+    for (name, incoming) in table {
+        let merged = match (entries.remove(name), incoming) {
+            (None | Some(Entry::Plain(_)), toml::Value::String(value)) => {
+                Entry::Plain(OsString::from(value))
+            }
+            (None, toml::Value::Table(fields)) => fields_entry(name, fields, root, None, None)?,
+            (Some(Entry::Fields { value, relative }), toml::Value::Table(fields)) => {
+                fields_entry(name, fields, root, value, relative)?
+            }
+            _ => return Err(format!("env.{name} mixes a string with a table")),
+        };
+        entries.insert(name.clone(), merged);
+    }
+    Ok(())
+}
+
+fn fields_entry(
+    name: &str,
+    fields: &toml::Table,
+    root: &Path,
+    value: Option<(String, PathBuf)>,
+    relative: Option<bool>,
+) -> Result<Entry, String> {
+    let value = match fields.get("value") {
+        None => value,
+        Some(toml::Value::String(value)) => Some((value.clone(), root.to_path_buf())),
+        Some(_) => return Err(format!("env.{name}.value is not a string")),
+    };
+    let relative = match fields.get("relative") {
+        None => relative,
+        Some(toml::Value::Boolean(relative)) => Some(*relative),
+        Some(_) => return Err(format!("env.{name}.relative is not a boolean")),
+    };
+    Ok(Entry::Fields { value, relative })
 }
 
 #[cfg(test)]
@@ -131,24 +187,74 @@ mod tests {
 
     #[test]
     fn reads_the_value_cargo_exports_for_each_entry() {
-        let config: toml::Table = "[env]\nPLAIN = \"one\"\nFORCED = { value = \"two\", force = true }\nRELATIVE = { value = \"tools/bin\", relative = true }\n[target.x86_64-unknown-linux-musl]\nrustflags = [\"-C\", \"opt-level=3\"]\n"
-            .parse()
-            .expect("a valid config");
-        let mut read = env_table(&config, Path::new("/work/oh-fx"));
-        read.sort();
+        let repository = tempfile::tempdir().expect("a scratch repository");
+        write(
+            &repository.path().join(".cargo/config.toml"),
+            "[env]\nDOTTED.value = \"v\"\nPLAIN = \"one\"\nFORCED = { value = \"two\", force = true }\nRELATIVE = { value = \"tools/bin\", relative = true }\nABSOLUTE = { value = \"tools/bin\", relative = false }\n[target.x86_64-unknown-linux-musl]\nrustflags = [\"-C\", \"opt-level=3\"]\n",
+        );
+        let relative = repository.path().join("tools/bin");
         assert_eq!(
-            read,
-            variables(&[
+            config_variables(repository.path()),
+            Ok(variables(&[
+                ("ABSOLUTE", "tools/bin"),
+                ("DOTTED", "v"),
                 ("FORCED", "two"),
                 ("PLAIN", "one"),
-                ("RELATIVE", "/work/oh-fx/tools/bin"),
-            ])
+                ("RELATIVE", relative.to_str().expect("a UTF-8 path")),
+            ]))
         );
-        let dotted: toml::Table = "env.DOTTED = \"v\"\n".parse().expect("a dotted key");
+    }
+
+    #[test]
+    fn merges_entry_fields_across_files_as_cargo_does() {
+        let repository = tempfile::tempdir().expect("a scratch repository");
+        let cargo = repository.path().join(".cargo");
+        write(
+            &cargo.join("sub/inc.toml"),
+            "[env]\nSPLIT = { value = \"vendor/sdk\" }\nFLAG_FIRST = { relative = true }\nTURNED_OFF = { value = \"vendor/sdk\", relative = true }\nLATER_VALUE = { value = \"a\", relative = true }\n",
+        );
+        write(
+            &cargo.join("inc2.toml"),
+            "[env]\nLATER_VALUE = { value = \"b\" }\n",
+        );
+        write(
+            &cargo.join("config.toml"),
+            "include = [\"sub/inc.toml\", \"inc2.toml\"]\n[env]\nSPLIT = { relative = true }\nFLAG_FIRST = { value = \"vendor/sdk\" }\nTURNED_OFF = { relative = false }\n",
+        );
+        let in_cargo = cargo.join("vendor/sdk");
+        let in_repository = repository.path().join("vendor/sdk");
+        let later = repository.path().join("b");
         assert_eq!(
-            env_table(&dotted, Path::new("/r")),
-            variables(&[("DOTTED", "v")])
+            config_variables(repository.path()),
+            Ok(variables(&[
+                ("FLAG_FIRST", in_repository.to_str().expect("a UTF-8 path")),
+                ("LATER_VALUE", later.to_str().expect("a UTF-8 path")),
+                ("SPLIT", in_cargo.to_str().expect("a UTF-8 path")),
+                ("TURNED_OFF", "vendor/sdk"),
+            ]))
         );
+    }
+
+    #[test]
+    fn refuses_entries_cargo_cannot_merge() {
+        let repository = tempfile::tempdir().expect("a scratch repository");
+        let cargo = repository.path().join(".cargo");
+        write(
+            &cargo.join("config.toml"),
+            "include = [\"inc.toml\"]\n[env]\nX = { relative = true }\n",
+        );
+        for included in [
+            "[env]\nX = \"plain\"\n",
+            "[env]\nY = 1\n",
+            "[env]\nX = { value = 1 }\n",
+            "[env]\nX = { value = \"v\", relative = \"yes\" }\n",
+            "env = 1\n",
+        ] {
+            write(&cargo.join("inc.toml"), included);
+            assert!(config_variables(repository.path()).is_err(), "{included}");
+        }
+        write(&cargo.join("inc.toml"), "");
+        assert!(config_variables(repository.path()).is_err());
     }
 
     #[test]
