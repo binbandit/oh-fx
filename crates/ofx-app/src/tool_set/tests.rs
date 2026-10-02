@@ -845,3 +845,29 @@ async fn clearing_the_conversation_forgets_the_approvals_remembered_in_it() {
             .denied_request("read_file");
     }
 }
+
+#[tokio::test]
+async fn questions_run_without_approval_in_every_mode_and_ask_has_no_one_to_answer_them() {
+    let fixture = Fixture::new();
+    for mode in [
+        PermissionMode::Ask,
+        PermissionMode::Auto,
+        PermissionMode::Yolo,
+    ] {
+        let mut session = Session::switchable(&fixture.workspace, &mode.into(), false);
+        let outcome = session
+            .call(
+                "ask_user_question",
+                r#"{"questions":[{"question":"Proceed?","options":[{"label":"Yes"},{"label":"No"}]}]}"#,
+                unasked,
+            )
+            .await;
+        assert!(outcome.requests.is_empty(), "{mode:?}");
+        assert_eq!(outcome.status, ToolResultStatus::Success, "{mode:?}");
+        assert_eq!(
+            outcome.content,
+            "(ask_user_question is only available in the interactive shell; ask the user freeform instead)",
+            "{mode:?}"
+        );
+    }
+}
