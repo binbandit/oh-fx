@@ -164,6 +164,7 @@ impl Composer {
         self.insert_slice_without_history(replacement);
         self.edit.set_cursor(cursor_after);
         self.limit_rejection.clear();
+        self.vertical.reset();
     }
 }
 
@@ -173,6 +174,7 @@ mod tests {
     use super::super::entity_spans::Span;
     use super::super::pasted_blocks::PastedBlock;
     use super::super::test_fixture::{replace_text, select};
+    use super::super::visual_layout::VerticalDirection;
     use super::*;
     use crate::input::TextOwner;
 
@@ -232,6 +234,23 @@ mod tests {
         );
         assert_eq!(composer.preferred_column(), Some(7));
         assert!(!composer.note_limit_rejection(TextOwner::Composer));
+    }
+
+    #[test]
+    fn an_accepted_replacement_ends_the_vertical_motion() {
+        let mut composer = Composer::new();
+        replace_text(&mut composer, "abcdef\nabcdef\nabcdef");
+        select(&mut composer, 0, 7);
+        composer.vertical.preferred_column = Some(0);
+        assert_eq!(
+            composer.insert_text("x\nxyz", usize::MAX),
+            InsertResult::Inserted
+        );
+        assert_eq!(composer.text(), "x\nxyzabcdef\nabcdef");
+        assert_eq!(composer.cursor(), 5);
+        assert_eq!(composer.preferred_column(), None);
+        composer.move_vertical(VerticalDirection::Down, false, None, 80);
+        assert_eq!(composer.cursor(), 15);
     }
 
     #[test]
