@@ -7,6 +7,7 @@
     )
 )]
 
+mod composer;
 mod input;
 mod terminal;
 
