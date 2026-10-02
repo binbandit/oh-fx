@@ -660,36 +660,7 @@ impl Agent {
                 usage: &mut turn.usage,
             };
             let settled = run_group(turn.id, group, gate, &mut reviewing, events, cancel).await;
-            for Settled {
-                call,
-                output,
-                escalates,
-                review_hold,
-            } in settled.outcomes
-            {
-                let Some(output) = output else {
-                    continue;
-                };
-                let status = output.status;
-                turn.raw_outputs
-                    .push((call.id.clone(), output.content.len()));
-                let model_output =
-                    prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
-                let content = if escalates {
-                    escalate_repeated_failure(turn, call, status, model_output)
-                } else {
-                    model_output
-                };
-                if review_hold {
-                    turn.reviews.record_held_result(&call.id, &content);
-                }
-                self.history.push(ChatMessage::Tool {
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    content,
-                    status,
-                });
-            }
+            self.record_settled(turn, settled.outcomes);
             if let Some(blocked) = settled.blocked {
                 return Err(Stop::failed(TurnFailure::PermissionRequired(blocked)));
             }
@@ -711,6 +682,39 @@ impl Agent {
             ));
         }
         Ok(())
+    }
+
+    fn record_settled(&mut self, turn: &mut Turn, outcomes: Vec<Settled<'_>>) {
+        for Settled {
+            call,
+            output,
+            escalates,
+            review_hold,
+        } in outcomes
+        {
+            let Some(output) = output else {
+                continue;
+            };
+            let status = output.status;
+            turn.raw_outputs
+                .push((call.id.clone(), output.content.len()));
+            let model_output =
+                prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
+            let content = if escalates {
+                escalate_repeated_failure(turn, call, status, model_output)
+            } else {
+                model_output
+            };
+            if review_hold {
+                turn.reviews.record_held_result(&call.id, &content);
+            }
+            self.history.push(ChatMessage::Tool {
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                content,
+                status,
+            });
+        }
     }
 
     fn record_tool_step(
