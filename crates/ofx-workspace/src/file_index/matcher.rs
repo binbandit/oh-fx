@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::ops::Range;
 
 use ofx_text::display_unit_at;
@@ -203,16 +202,24 @@ pub(super) fn rank_top(
             worst = worst_slot(&ranked, &better);
         }
     }
-    ranked.sort_by(|left, right| {
-        if better(left, right) {
-            Ordering::Less
-        } else if better(right, left) {
-            Ordering::Greater
-        } else {
-            Ordering::Equal
-        }
-    });
+    insertion_sort(&mut ranked, &better);
     ranked.into_iter().map(|(_, index)| index).collect()
+}
+
+fn insertion_sort<T>(items: &mut [T], better: &impl Fn(&T, &T) -> bool) {
+    for end in 1..items.len() {
+        let mut position = end;
+        while let Some([left, right]) = position
+            .checked_sub(1)
+            .and_then(|start| items.get_mut(start..=position))
+        {
+            if !better(right, left) {
+                break;
+            }
+            std::mem::swap(left, right);
+            position -= 1;
+        }
+    }
 }
 
 fn ranked_better(
