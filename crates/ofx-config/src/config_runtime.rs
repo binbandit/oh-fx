@@ -1460,7 +1460,10 @@ mod tests {
             "config user: retired_skill_match_fuzzy; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool"
         );
         assert!(!settings.profile_is_unusable());
-        assert_eq!(settings.permission_mode(), PermissionMode::Auto);
+        assert_eq!(
+            settings.permission_mode(&no_environment),
+            PermissionMode::Auto
+        );
         let project = load(&fixture(None, Some(r#"{"skill_match_fuzzy":false}"#))).unwrap();
         assert_eq!(
             project.diagnostics()[0].to_string(),
@@ -1483,7 +1486,11 @@ mod tests {
                 "{json}"
             );
             assert!(!settings.profile_is_unusable(), "{json}");
-            assert_eq!(settings.permission_mode(), PermissionMode::Auto, "{json}");
+            assert_eq!(
+                settings.permission_mode(&no_environment),
+                PermissionMode::Auto,
+                "{json}"
+            );
             assert!(settings.skill_symlink_authorities().is_empty(), "{json}");
         }
         let entries: Vec<String> = (0..33).map(|index| format!("\"/opt/{index}\"")).collect();
