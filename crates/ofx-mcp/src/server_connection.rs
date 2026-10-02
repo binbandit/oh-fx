@@ -5,8 +5,9 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::error::McpError;
 use crate::features::tools::ToolCatalog;
-use crate::mcp_contract::{McpServerConfig, TransportType};
+use crate::mcp_contract::{ConfigSource, McpServerConfig, TransportType, WorkspaceAdmission};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
     ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse, connect_stdio,
@@ -36,6 +37,7 @@ pub struct McpClient {
     pub(crate) catalog: Mutex<Arc<ToolCatalog>>,
     pub(crate) tools_stale: AtomicBool,
     notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
+    received: Mutex<Vec<ServerNotification>>,
 }
 
 impl McpClient {
@@ -43,6 +45,11 @@ impl McpClient {
         config: &McpServerConfig,
         options: &ConnectOptions,
     ) -> Result<Self, StartupFailure> {
+        if config.source == ConfigSource::Workspace
+            && config.workspace_admission != Some(WorkspaceAdmission::Approved)
+        {
+            return Err(StartupFailure::from(McpError::McpWorkspaceApprovalRequired));
+        }
         let connected = match config.transport {
             TransportType::Stdio => connect_stdio(config, options).await?,
             TransportType::Http => connect_http(config, options).await?,
@@ -61,6 +68,7 @@ impl McpClient {
             catalog: Mutex::new(Arc::new(connected.catalog)),
             tools_stale: AtomicBool::new(false),
             notifications: Mutex::new(connected.notifications),
+            received: Mutex::new(Vec::new()),
         }
     }
 
@@ -81,14 +89,17 @@ impl McpClient {
     }
 
     pub fn poll_notifications(&self) -> Vec<ServerNotification> {
-        let mut received = Vec::new();
+        self.receive_notifications();
+        std::mem::take(&mut *lock(&self.received))
+    }
+
+    pub(crate) fn receive_notifications(&self) {
         let mut notifications = lock(&self.notifications);
         while let Ok(value) = notifications.try_recv() {
             if let Some(notification) = self.classify_notification(&value) {
-                received.push(notification);
+                lock(&self.received).push(notification);
             }
         }
-        received
     }
 
     fn classify_notification(&self, value: &Value) -> Option<ServerNotification> {
@@ -144,7 +155,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::error::McpError;
     use crate::features::tools::{ToolCallOutcome, ToolContent};
     use crate::tool_operations::CallOptions;
     use crate::transport::Progress;
@@ -491,6 +501,26 @@ printf '%s\n' "$3" > "$STATE/cidfile"
     }
 
     #[tokio::test]
+    async fn workspace_servers_never_launch_without_approval() {
+        let state = tempfile::tempdir().unwrap();
+        let script = r#"touch "$STATE/launched""#;
+        for admission in [WorkspaceAdmission::Pending, WorkspaceAdmission::Rejected] {
+            let config = McpServerConfig {
+                source: ConfigSource::Workspace,
+                scope: crate::mcp_contract::ConfigScope::Workspace,
+                workspace_admission: Some(admission),
+                ..script_config("project", script, state.path())
+            };
+            let failure = McpClient::connect(&config, &ConnectOptions::default())
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(failure.error, McpError::McpWorkspaceApprovalRequired);
+        }
+        assert!(!state.path().join("launched").exists());
+    }
+
+    #[tokio::test]
     async fn notifications_are_filtered_by_advertised_capabilities() {
         let state = tempfile::tempdir().unwrap();
         let config = script_config("fixture", SERVER_LOOP, state.path());
@@ -513,6 +543,15 @@ printf '%s\n' "$3" > "$STATE/cidfile"
             })
         );
         assert!(client.poll_notifications().is_empty());
+        client
+            .call_tool("alpha", &json!({}), CallOptions::default())
+            .await
+            .unwrap();
+        client.current_tools().await.unwrap();
+        assert_eq!(
+            client.poll_notifications(),
+            vec![ServerNotification::ToolsListChanged]
+        );
         client.shutdown(ShutdownMode::Immediate).await;
     }
 }

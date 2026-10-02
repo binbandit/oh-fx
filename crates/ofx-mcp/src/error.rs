@@ -48,6 +48,8 @@ pub enum McpError {
     McpProtocolError(RpcError),
     #[error("McpInvalidServerConfig")]
     McpInvalidServerConfig,
+    #[error("McpWorkspaceApprovalRequired")]
+    McpWorkspaceApprovalRequired,
     #[error("McpHeaderEnvironmentMissing")]
     McpHeaderEnvironmentMissing,
     #[error("McpBearerEnvironmentMissing")]

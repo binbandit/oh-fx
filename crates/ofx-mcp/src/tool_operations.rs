@@ -47,7 +47,7 @@ impl McpClient {
     }
 
     pub async fn current_tools(&self) -> Result<Arc<ToolCatalog>, McpError> {
-        self.poll_notifications();
+        self.receive_notifications();
         if self.tools_stale.load(Ordering::Acquire) {
             return self.list_tools().await;
         }

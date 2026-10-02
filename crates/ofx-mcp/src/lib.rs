@@ -16,6 +16,7 @@ mod server_auth;
 mod server_connection;
 mod server_transport;
 mod settings_choices;
+mod startup_admission;
 mod stdio_dispatcher;
 mod streamable_http;
 #[cfg(test)]
@@ -52,6 +53,7 @@ pub use protocol_messages::{PromptCapabilities, ResourceCapabilities, ServerCapa
 pub use server_connection::{McpClient, ServerNotification};
 pub use server_transport::{ConnectOptions, ServerInfo, StartupFailure};
 pub use settings_choices::{ProjectMcpSettingsChange, apply_project_mcp_action};
+pub use startup_admission::{StartupDecision, StartupPhase, decide_startup};
 pub use stdio_dispatcher::{ChildDiagnostics, RejectedOutput, StderrCapture};
 pub use streamable_http::{EndpointError, HeaderError, validate_endpoint, validate_static_headers};
 pub use tool_operations::{CallOptions, DEFAULT_MAX_TOOL_RESULT_BYTES};
