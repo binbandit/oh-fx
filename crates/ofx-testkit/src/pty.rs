@@ -94,11 +94,23 @@ impl PtySession {
         while !remaining.is_empty() {
             match rustix::io::write(&self.master, remaining) {
                 Ok(written) => remaining = &remaining[written..],
-                Err(Errno::AGAIN) => {
-                    let _ = poll(&mut [PollFd::new(&self.master, PollFlags::OUT)], None);
-                }
+                Err(Errno::AGAIN) if self.wait_until_writable() => {}
                 Err(Errno::INTR) => {}
                 Err(_) => return,
+            }
+        }
+    }
+
+    fn wait_until_writable(&self) -> bool {
+        let mut fds = [PollFd::new(&self.master, PollFlags::OUT)];
+        loop {
+            match poll(&mut fds, None) {
+                Ok(_) => {
+                    let closed = PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL;
+                    return !fds[0].revents().intersects(closed);
+                }
+                Err(Errno::INTR) => {}
+                Err(_) => return false,
             }
         }
     }
@@ -437,6 +449,24 @@ mod tests {
         assert!(
             flooded,
             "the reader stopped reading output while replies were held back"
+        );
+    }
+
+    #[test]
+    fn sending_stops_once_the_terminal_side_closes_with_input_unread() {
+        let session = Arc::new(shell("stty raw -echo; printf 'ready\\r\\n'; sleep 0.2"));
+        session
+            .wait_for(WAIT, |screen| screen.contains("ready"))
+            .unwrap();
+        let (done, finished) = mpsc::channel();
+        let sender = Arc::clone(&session);
+        thread::spawn(move || {
+            sender.send(&vec![b'x'; 1_000_000]);
+            let _ = done.send(());
+        });
+        assert!(
+            finished.recv_timeout(WAIT).is_ok(),
+            "sending kept retrying input after the terminal side closed"
         );
     }
 
