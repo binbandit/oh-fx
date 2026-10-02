@@ -9,12 +9,12 @@ const PROJECT: &str = "<project-rules>\n</project-rules>";
 
 struct FakeSkills {
     uses_window: bool,
-    prepared: Option<SkillContext>,
+    prepared: Result<SkillContext, SkillContextFailure>,
     calls: Mutex<Vec<(String, Option<u32>)>>,
 }
 
 impl FakeSkills {
-    fn new(uses_window: bool, prepared: Option<SkillContext>) -> Arc<Self> {
+    fn new(uses_window: bool, prepared: Result<SkillContext, SkillContextFailure>) -> Arc<Self> {
         Arc::new(Self {
             uses_window,
             prepared,
@@ -37,7 +37,7 @@ impl SkillContextProvider for FakeSkills {
         prompt: &'a str,
         context_window: Option<u32>,
         _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Option<SkillContext>> {
+    ) -> BoxFuture<'a, Result<SkillContext, SkillContextFailure>> {
         self.calls
             .lock()
             .unwrap()
@@ -131,7 +131,7 @@ fn context_notices(events: &[UiEvent]) -> Vec<&str> {
 #[tokio::test]
 async fn the_catalog_follows_the_system_prompt_and_explicit_skills_precede_the_runtime_context() {
     let provider = FakeProvider::new(vec![tool_reply(&[("call-1", "{}")]), text_reply("done")]);
-    let skills = FakeSkills::new(true, Some(prepared()));
+    let skills = FakeSkills::new(true, Ok(prepared()));
     let resolver = resolver();
     let mut agent = skilled_agent(&provider, &skills, &resolver);
     let (report, events) = run(&mut agent, "use $review").await;
@@ -178,7 +178,7 @@ async fn the_catalog_follows_the_system_prompt_and_explicit_skills_precede_the_r
 #[tokio::test]
 async fn a_catalog_that_needs_no_window_leaves_the_capabilities_unresolved() {
     let provider = FakeProvider::new(vec![text_reply("done")]);
-    let skills = FakeSkills::new(false, Some(SkillContext::default()));
+    let skills = FakeSkills::new(false, Ok(SkillContext::default()));
     let resolver = resolver();
     let mut agent = skilled_agent(&provider, &skills, &resolver);
     let (report, events) = run(&mut agent, "hello").await;
@@ -205,11 +205,29 @@ async fn a_catalog_that_needs_no_window_leaves_the_capabilities_unresolved() {
 #[tokio::test]
 async fn a_cancelled_skill_load_interrupts_the_turn_before_any_request() {
     let provider = FakeProvider::new(vec![text_reply("never")]);
-    let skills = FakeSkills::new(false, None);
+    let skills = FakeSkills::new(false, Err(SkillContextFailure::Cancelled));
     let resolver = resolver();
     let mut agent = skilled_agent(&provider, &skills, &resolver);
     let (report, _) = run(&mut agent, "$review").await;
     assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert!(provider.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_skill_load_fails_the_turn_with_its_error_name() {
+    let provider = FakeProvider::new(vec![text_reply("never")]);
+    let skills = FakeSkills::new(
+        false,
+        Err(SkillContextFailure::Failed(
+            "SkillContextTooLarge".to_owned(),
+        )),
+    );
+    let resolver = resolver();
+    let mut agent = skilled_agent(&provider, &skills, &resolver);
+    let (report, _) = run(&mut agent, "$review").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    let failure = report.failure.unwrap();
+    assert_eq!(failure.code(), "SkillContextTooLarge");
     assert!(provider.requests().is_empty());
 }
 

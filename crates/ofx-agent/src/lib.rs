@@ -19,4 +19,4 @@ pub use orchestrator::{
     Agent, AgentConfig, BlockedCall, Compaction, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };
 pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
-pub use skill_context::{SkillContext, SkillContextProvider};
+pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};

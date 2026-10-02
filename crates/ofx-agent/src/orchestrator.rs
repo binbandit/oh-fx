@@ -31,7 +31,7 @@ use crate::model_response_recovery::{
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
-use crate::skill_context::{SkillContext, SkillContextProvider};
+use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 use crate::turn_reviews::TurnReviews;
 
 mod compaction;
@@ -92,6 +92,7 @@ pub enum TurnFailure {
     InvalidCompletion,
     PermissionRequired(BlockedCall),
     ProjectContext,
+    SkillContext(String),
     Compaction(CompactionError),
     Persistence(LogFailure),
 }
@@ -105,6 +106,7 @@ impl TurnFailure {
             Self::InvalidCompletion => "ModelError",
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
             Self::ProjectContext => "ProjectContextFailed",
+            Self::SkillContext(code) => code,
             Self::Compaction(error) => error.code(),
             Self::Persistence(failure) => &failure.code,
         }
@@ -510,8 +512,12 @@ impl Agent {
             .capabilities
             .as_ref()
             .and_then(|known| known.model.context_window);
-        let Some(mut prepared) = skills.prepare(prompt, context_window, cancel).await else {
-            return Err(Stop::interrupted());
+        let mut prepared = match skills.prepare(prompt, context_window, cancel).await {
+            Ok(prepared) => prepared,
+            Err(SkillContextFailure::Cancelled) => return Err(Stop::interrupted()),
+            Err(SkillContextFailure::Failed(code)) => {
+                return Err(Stop::failed(TurnFailure::SkillContext(code)));
+            }
         };
         for text in mem::take(&mut prepared.context_notices) {
             events(UiEvent::ContextNotice { turn_id, text });

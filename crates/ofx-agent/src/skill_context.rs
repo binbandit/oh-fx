@@ -9,6 +9,12 @@ pub struct SkillContext {
     pub load_notice: Option<Notice>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillContextFailure {
+    Cancelled,
+    Failed(String),
+}
+
 pub trait SkillContextProvider: Send + Sync {
     fn uses_context_window(&self) -> bool;
 
@@ -17,5 +23,5 @@ pub trait SkillContextProvider: Send + Sync {
         prompt: &'a str,
         context_window: Option<u32>,
         cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Option<SkillContext>>;
+    ) -> BoxFuture<'a, Result<SkillContext, SkillContextFailure>>;
 }
