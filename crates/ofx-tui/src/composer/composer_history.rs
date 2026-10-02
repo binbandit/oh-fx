@@ -57,6 +57,17 @@ impl PromptHistory {
         self.draft.as_ref().map(|draft| draft.text.as_str())
     }
 
+    fn install_text_entries(&mut self, entries: Vec<String>) {
+        self.entries = entries
+            .into_iter()
+            .map(|text| Snapshot {
+                text,
+                pasted_blocks: Vec::new(),
+            })
+            .collect();
+        self.reset_navigation();
+    }
+
     pub(crate) fn record(&mut self, max_entries: usize, text: &str, pasted_blocks: &[PastedBlock]) {
         let entry = Snapshot {
             text: text.to_owned(),
@@ -118,9 +129,17 @@ impl Composer {
         HistoryNavigation::Moved
     }
 
+    pub(crate) fn install_history(&mut self, entries: Vec<String>) {
+        self.prompt_history.install_text_entries(entries);
+    }
+
     pub(crate) fn record_history(&mut self, max_entries: usize) {
         self.prompt_history
             .record(max_entries, &self.edit.input, &self.entities.pasted_blocks);
+    }
+
+    pub(crate) fn record_text_history(&mut self, max_entries: usize, text: &str) {
+        self.prompt_history.record(max_entries, text, &[]);
     }
 
     fn replace_active_composer(&mut self, snapshot: Snapshot) {
@@ -363,6 +382,24 @@ mod tests {
         );
         assert_eq!(composer.text(), "draft");
         assert_eq!(composer.prompt_history.index, None);
+    }
+
+    #[test]
+    fn installed_entries_replace_history_and_end_navigation() {
+        let mut composer = Composer::new();
+        install(&mut composer, &["session"]);
+        replace_text(&mut composer, "draft");
+        navigate(&mut composer, -1);
+        composer.install_history(vec!["older".to_owned(), "newer".to_owned()]);
+        assert_eq!(entry_texts(&composer.prompt_history), ["older", "newer"]);
+        assert_eq!(composer.prompt_history.index, None);
+        assert_eq!(composer.prompt_history.draft, None);
+        composer.record_text_history(100, "newer");
+        composer.record_text_history(100, "/help");
+        assert_eq!(
+            entry_texts(&composer.prompt_history),
+            ["older", "newer", "/help"]
+        );
     }
 
     #[test]

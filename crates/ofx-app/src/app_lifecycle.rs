@@ -23,6 +23,7 @@ use crate::app_panic_runtime::PanicCapture;
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::native::NativeClipboard;
+use crate::prompt_history_runtime::PromptHistoryRuntime;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const WORKER_THREAD: &str = "oh-fx-agent";
@@ -169,6 +170,14 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             notice: Notice::new(NoticeTone::Warning, "", diagnostic.to_string()),
         });
     }
+    let (prompt_history, history_notice) = PromptHistoryRuntime::initialize(
+        session.profile.data_dir(),
+        session.profile.workspace_root(),
+    )
+    .into_shell_history(session.profile.settings().prompt_history_enabled());
+    if let Some(notice) = history_notice {
+        sender.send(UiEvent::Notice { notice });
+    }
     if let Some(notice) = update {
         sender.send(UiEvent::Notice { notice });
     }
@@ -187,6 +196,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         workspace_root: session.profile.workspace_root().to_owned(),
         commands: slash_command_specs(),
         command_categories: slash_command_categories(),
+        prompt_history,
     };
     let refreshes = session.setup.refreshes();
     let agent = agent_work(session.setup, session.executions, runtime);

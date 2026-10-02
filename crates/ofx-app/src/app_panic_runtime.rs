@@ -198,7 +198,7 @@ mod tests {
 
     use ofx_contract::{PermissionMode, UiCommand, UiEvent};
     use ofx_testkit::PtySession;
-    use ofx_tui::{ShellOptions, run_shell, ui_channel};
+    use ofx_tui::{PromptHistory, ShellOptions, run_shell, ui_channel};
     use rustix::fs::Mode;
 
     use super::*;
@@ -319,6 +319,7 @@ mod tests {
             workspace_root: PathBuf::from("/workspace"),
             commands: Vec::new(),
             command_categories: Vec::new(),
+            prompt_history: PromptHistory::disabled(),
         };
         let outcome = panics.contain_shell(|| {
             run_shell(options, events, NativeClipboard, |command| {
