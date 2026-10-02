@@ -309,7 +309,8 @@ impl Profile {
             ChatCompletionsProvider::new(resolved, &user_agent())
                 .map_err(ConnectError::InvalidConnection)?,
         );
-        let limits = connection.clone();
+        let definition = Arc::new(connection.clone());
+        let limits = Arc::clone(&definition);
         let reviewer = ChatCompletionsReviewTransport::new(
             Arc::clone(&provider),
             connection.reviewer_model().map(str::to_owned),
@@ -318,7 +319,7 @@ impl Profile {
         Ok(Route {
             provider,
             reviewer: Arc::new(reviewer),
-            capabilities: Some(Arc::new(ConnectionCapabilities(connection.clone()))),
+            capabilities: Some(Arc::new(ConnectionCapabilities(definition))),
             connection: Some(connection.clone()),
             model: model.map_err(ConnectError::InvalidModel)?,
             configured_model,
@@ -388,7 +389,7 @@ impl Profile {
     }
 }
 
-struct ConnectionCapabilities(ProviderDefinition);
+struct ConnectionCapabilities(Arc<ProviderDefinition>);
 
 impl CapabilityResolver for ConnectionCapabilities {
     fn resolve<'a>(
@@ -672,7 +673,7 @@ mod tests {
             r#"{"provider":"local","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:9/v1","auth":{"type":"none"},"model_metadata":{"sized":{"context_window":128000,"max_output_tokens":16000}}}}}"#,
         );
         let connection = profile.settings().selected_connection(&|_| None).unwrap();
-        let resolver = ConnectionCapabilities(connection.clone());
+        let resolver = ConnectionCapabilities(Arc::new(connection.clone()));
         let cancel = CancellationToken::new();
         assert_eq!(
             resolver.resolve("sized", &cancel).await,
