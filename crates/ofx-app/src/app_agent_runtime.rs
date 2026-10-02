@@ -325,6 +325,7 @@ impl Controller {
         prompt: &str,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
+        self.state.setup.refresh_skills();
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
         let running = Arc::new(Mutex::new(None));

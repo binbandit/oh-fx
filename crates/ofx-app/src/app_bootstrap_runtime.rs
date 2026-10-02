@@ -7,11 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ofx_agent::{Agent, AgentConfig, Approvals, ProjectContext, RuntimeContext};
+use ofx_agent::{
+    Agent, AgentConfig, Approvals, ProjectContext, RuntimeContext, SkillContextProvider,
+};
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
-    ConfigDiagnostic, ConnectionError, ContextLimitOverride, ProfilePaths, ProviderDefinition,
-    ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
+    ConfigDiagnostic, ConnectionError, ContextLimitOverride, ContextLimits, ProfilePaths,
+    ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
@@ -33,6 +35,7 @@ use crate::context::{
     ProfileLocation, gather_project_context,
 };
 use crate::output_contracts::StatusSnapshot;
+use crate::skills::HostSkills;
 use crate::tool_set;
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
@@ -129,6 +132,7 @@ pub struct AgentSetup {
     approvals: Option<Approvals>,
     refreshes: Option<Arc<DetachedRefreshes>>,
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
+    skills: Arc<HostSkills>,
     context_notices: Vec<String>,
     config: AgentConfig,
 }
@@ -228,7 +232,16 @@ impl Profile {
         if route.uses_tls {
             ofx_http::warm_tls_roots();
         }
-        let mut project = self.project_context(launch.context_limits);
+        let mut limits = self.settings.context_limits();
+        limits.apply_command_line(launch.context_limits);
+        let skills = Arc::new(HostSkills::load(
+            &self.workspace_root,
+            env::var_os("HOME").as_deref(),
+            self.paths.as_ref(),
+            &self.settings,
+            limits,
+        ));
+        let mut project = self.project_context(&limits);
         let context_notices = project
             .as_mut()
             .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
@@ -263,6 +276,7 @@ impl Profile {
                 launch.executions,
                 launch.command_timeout,
                 &permission_mode,
+                skills.tool(),
             ),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
@@ -280,6 +294,7 @@ impl Profile {
             approvals: interactive.then(Approvals::default),
             refreshes,
             project,
+            skills,
             context_notices,
             config,
         })
@@ -365,14 +380,12 @@ impl Profile {
 
     fn project_context(
         &self,
-        command_line: &[ContextLimitOverride],
+        limits: &ContextLimits,
     ) -> Option<(Arc<HostProjectContext>, ProjectContext)> {
         if !self.settings.context_enabled() {
             return None;
         }
-        let mut limits = self.settings.context_limits();
-        limits.apply_command_line(command_line);
-        let limits = InstructionLimits::from_limits(&limits);
+        let limits = InstructionLimits::from_limits(limits);
         let home = env::var_os("HOME");
         let snapshot = gather_project_context(
             &self.workspace_root,
@@ -516,6 +529,10 @@ impl AgentSetup {
         self.refreshes.clone()
     }
 
+    pub(crate) fn refresh_skills(&self) {
+        self.skills.refresh();
+    }
+
     pub(crate) fn config(&self, model: &str) -> AgentConfig {
         AgentConfig {
             model: model.to_owned(),
@@ -531,7 +548,8 @@ impl AgentSetup {
             Arc::clone(&self.context),
             self.permissions.clone(),
             self.config.clone(),
-        );
+        )
+        .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>);
         if let Some(capabilities) = &self.capabilities {
             agent = agent.with_capability_resolver(Arc::clone(capabilities));
         }
