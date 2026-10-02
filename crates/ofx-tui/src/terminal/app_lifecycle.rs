@@ -1,5 +1,4 @@
 use rustix::process::Signal;
-use rustix::termios::OptionalActions;
 
 use super::cursor_probe::CursorPosition;
 use super::{
@@ -137,7 +136,7 @@ impl Terminal {
     }
 
     pub(crate) fn restore_after_signal(&mut self) {
-        self.release_raw_mode(OptionalActions::Now);
+        self.release_raw_mode();
         self.write_abnormal_restore();
     }
 
@@ -171,6 +170,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use ofx_testkit::PtyPair;
+    use rustix::termios::OptionalActions;
 
     use super::super::shell_runtime::test_pty;
     use super::*;
@@ -443,6 +443,16 @@ mod tests {
         );
         drop(terminal);
         assert!(drain(&pty).is_empty());
+    }
+
+    #[test]
+    fn signal_restoration_discards_input_typed_for_the_session() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        terminal.enable_raw_mode().unwrap();
+        test_pty::type_ahead(&pty, &terminal);
+        terminal.restore_after_signal();
+        assert_eq!(test_pty::unread_input(&pty), 0);
     }
 
     #[test]

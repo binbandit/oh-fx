@@ -8,7 +8,8 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use rustix::termios::{
-    self, ControlModes, InputModes, LocalModes, OptionalActions, SpecialCodeIndex, Termios,
+    self, ControlModes, InputModes, LocalModes, OptionalActions, QueueSelector, SpecialCodeIndex,
+    Termios,
 };
 
 use super::app_lifecycle;
@@ -174,15 +175,18 @@ impl Terminal {
     }
 
     pub(crate) fn disable_raw_mode(&mut self) {
-        self.release_raw_mode(OptionalActions::Flush);
+        if self.raw_enabled {
+            let _ = termios::tcsetattr(&self.input, OptionalActions::Flush, &self.original);
+            self.raw_enabled = false;
+        }
     }
 
-    pub(crate) fn release_raw_mode(&mut self, when: OptionalActions) {
-        if !self.raw_enabled {
-            return;
+    pub(crate) fn release_raw_mode(&mut self) {
+        if self.raw_enabled {
+            let _ = termios::tcsetattr(&self.input, OptionalActions::Now, &self.original);
+            let _ = termios::tcflush(&self.input, QueueSelector::IFlush);
+            self.raw_enabled = false;
         }
-        let _ = termios::tcsetattr(&self.input, when, &self.original);
-        self.raw_enabled = false;
     }
 
     pub(crate) fn query_layout(&self, footer_rows: u16) -> Result<Layout, TerminalError> {
@@ -323,7 +327,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.raw_enabled {
-            self.release_raw_mode(OptionalActions::Now);
+            self.release_raw_mode();
             self.write_abnormal_restore();
         }
     }
@@ -526,6 +530,15 @@ pub(crate) mod test_pty {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    pub(crate) fn type_ahead(pty: &PtyPair, terminal: &Terminal) {
+        rustix::io::write(&pty.master, b"git push --force\r").unwrap();
+        assert!(terminal.poll_input(Some(WAIT)).unwrap().readable);
+    }
+
+    pub(crate) fn unread_input(pty: &PtyPair) -> u64 {
+        rustix::io::ioctl_fionread(&pty.slave).unwrap()
     }
 
     pub(crate) fn terminal(pty: &PtyPair) -> Terminal {
@@ -852,6 +865,47 @@ mod tests {
                 .replace("\r\n", "\n")
                 .ends_with(app_lifecycle::abnormal_exit_restore_sequence(false))
         );
+    }
+
+    #[test]
+    fn unwinding_through_the_owner_discards_input_typed_for_it() {
+        let pty = test_pty::open();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut terminal = test_pty::terminal(&pty);
+            terminal.enable_raw_mode().unwrap();
+            test_pty::type_ahead(&pty, &terminal);
+            panic!("fatal");
+        }));
+        assert!(unwound.is_err());
+        let restored = termios::tcgetattr(&pty.slave).unwrap();
+        assert!(restored.local_modes.contains(LocalModes::ICANON));
+        assert_eq!(test_pty::unread_input(&pty), 0);
+    }
+
+    #[test]
+    fn a_startup_error_after_raw_mode_discards_input_typed_for_the_session() {
+        let pty = test_pty::open();
+        let empty = termios::Winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        termios::tcsetwinsize(&pty.master, empty).unwrap();
+        let start = || -> Result<Terminal, TerminalError> {
+            let mut terminal = test_pty::terminal(&pty);
+            terminal.enable_raw_mode()?;
+            test_pty::type_ahead(&pty, &terminal);
+            terminal.query_layout(4)?;
+            Ok(terminal)
+        };
+        assert!(matches!(
+            start(),
+            Err(TerminalError::UnableToReadTerminalSize)
+        ));
+        let restored = termios::tcgetattr(&pty.slave).unwrap();
+        assert!(restored.local_modes.contains(LocalModes::ICANON));
+        assert_eq!(test_pty::unread_input(&pty), 0);
     }
 
     fn spawn_on(pty: &PtyPair, test: &str) -> Child {
