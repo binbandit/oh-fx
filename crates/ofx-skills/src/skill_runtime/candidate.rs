@@ -1,9 +1,13 @@
 use std::ffi::OsStr;
 use std::fs::File;
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use ofx_workspace::{PathError, basename, dirname, open_child_directory, open_directory};
+use ofx_workspace::{
+    FileKind, PathError, RegularFileError, basename, dirname, entry_identity, open_child_directory,
+    open_directory, open_regular_file_at,
+};
 
 use super::SymlinkAuthorities;
 use super::skill_file::{
@@ -11,10 +15,13 @@ use super::skill_file::{
     open_contained_directory, open_primary_skill_file,
 };
 use crate::io::FileFreshness;
-use crate::skill_contract::{Skill, SkillDiagnosticCause};
+use crate::skill_contract::{SKILL_FILE_NAME, Skill, SkillDiagnosticCause};
+
+const RESOURCE_PADDING: &[char] = &[' ', '\t', '\r', '\n'];
 
 #[derive(Debug)]
 pub(crate) struct OpenedSkillCandidate {
+    directory: OwnedFd,
     skill_file: File,
     freshness: FileFreshness,
 }
@@ -27,6 +34,19 @@ pub(crate) enum CandidateOpen {
     Skipped(SkillDiagnosticCause),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResourceOpenError {
+    InvalidPath,
+    NotRegularFile,
+    Path(PathError),
+}
+
+impl From<PathError> for ResourceOpenError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
+    }
+}
+
 impl OpenedSkillCandidate {
     pub(crate) fn skill_file(&self) -> &File {
         &self.skill_file
@@ -35,6 +55,68 @@ impl OpenedSkillCandidate {
     pub(crate) fn freshness(&self) -> FileFreshness {
         self.freshness
     }
+
+    pub(crate) fn open_resource(
+        &self,
+        resource: &str,
+    ) -> Result<(File, FileFreshness), ResourceOpenError> {
+        let mut segments = resource_segments(resource).ok_or(ResourceOpenError::InvalidPath)?;
+        let mut segment = valid_segment(segments.next())?;
+        let Some(child) = segments.next() else {
+            return open_resource_file(&self.directory, segment);
+        };
+        let mut next = valid_segment(Some(child))?;
+        let mut current = open_child_directory(&self.directory, segment)?;
+        for following in segments {
+            let following = valid_segment(Some(following))?;
+            segment = next;
+            current = open_child_directory(&current, segment)?;
+            next = following;
+        }
+        open_resource_file(&current, next)
+    }
+}
+
+fn resource_segments(resource: &str) -> Option<impl Iterator<Item = &OsStr>> {
+    let trimmed = resource.trim_matches(RESOURCE_PADDING);
+    if trimmed.is_empty() || trimmed.starts_with('/') {
+        return None;
+    }
+    Some(
+        trimmed
+            .split(['/', '\\'])
+            .filter(|segment| !segment.is_empty())
+            .map(OsStr::new),
+    )
+}
+
+fn valid_segment(segment: Option<&OsStr>) -> Result<&OsStr, ResourceOpenError> {
+    segment
+        .filter(|segment| segment.as_bytes() != b"." && segment.as_bytes() != b"..")
+        .ok_or(ResourceOpenError::InvalidPath)
+}
+
+fn open_resource_file(
+    directory: &OwnedFd,
+    name: &OsStr,
+) -> Result<(File, FileFreshness), ResourceOpenError> {
+    match entry_identity(directory, name)?.kind() {
+        FileKind::RegularFile => open_regular_file_at(directory, name)
+            .map(|(file, metadata)| (file, FileFreshness::of(&metadata)))
+            .map_err(|error| match error {
+                RegularFileError::NotRegularFile => ResourceOpenError::NotRegularFile,
+                RegularFileError::Path(error) => ResourceOpenError::Path(error),
+            }),
+        FileKind::Directory => Err(ResourceOpenError::Path(PathError::IsDir)),
+        FileKind::Symlink => Err(ResourceOpenError::Path(PathError::SymLinkLoop)),
+        FileKind::Other => Err(ResourceOpenError::NotRegularFile),
+    }
+}
+
+pub(crate) fn resource_is_skill_file(resource: &str) -> bool {
+    resource_segments(resource).is_some_and(|mut segments| {
+        segments.next() == Some(OsStr::new(SKILL_FILE_NAME)) && segments.next().is_none()
+    })
 }
 
 pub(crate) fn open_validated_skill_candidate(
@@ -75,6 +157,7 @@ pub(crate) fn open_validated_skill_candidate(
     match inspect_skill_file(&skill_file, candidate_name) {
         Inspection::Valid(metadata, freshness) if metadata.name == skill.name => {
             CandidateOpen::Current(OpenedSkillCandidate {
+                directory,
                 skill_file,
                 freshness,
             })
