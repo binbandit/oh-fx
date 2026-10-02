@@ -135,9 +135,11 @@ fn reads_outside_the_workspace_wait_for_approval_in_the_footer() {
     session.send(b"read the notes\r");
     let screen = wait(&session, "Permission needed · Choose one");
     for line in [
-        "Reading ../notes.txt",
+        "read_file ",
+        "notes.txt",
         "❯ 1. Yes",
-        "2. Yes, and don't ask again for this request",
+        "2. Yes, and allow reads under ",
+        " for this session",
         "3. No",
     ] {
         assert!(screen.contains(line), "{line}\n{screen}");

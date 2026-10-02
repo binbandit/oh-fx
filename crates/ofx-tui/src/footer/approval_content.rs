@@ -5,6 +5,7 @@ use ofx_contract::{ApprovalRequest, CommandProfile, CommandRequest, SessionGrant
 use ofx_text::encode_terminal_safe;
 
 use super::command_text::project_command_text;
+use super::phrase::{PathText, Phrase};
 
 const GENERIC_KIND: &str = "Tool";
 const COMMAND_KIND: &str = "Command";
@@ -14,8 +15,8 @@ const GENERIC_REASON: &str = "This action needs approval before oh-fx can contin
 const COMMAND_LEAD: &str = "$ ";
 const INPUT_LEAD: &str = "> ";
 const RUN_HEADER: &str = "# shell.run";
-const REMEMBER_REQUEST: &str = "don't ask again for this request";
 const REMEMBER_COMMAND: &str = "don't ask again for this exact command";
+const FOR_THIS_SESSION: &str = " for this session";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApprovalContent {
@@ -23,12 +24,12 @@ pub(crate) struct ApprovalContent {
     pub(crate) question: &'static str,
     pub(crate) reason: Option<String>,
     pub(crate) action: Vec<ActionBlock>,
-    pub(crate) remember: Option<String>,
+    pub(crate) remember: Option<Phrase>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActionBlock {
-    Line(String),
+    Line(Phrase),
     Wrapped { lead: &'static str, text: String },
 }
 
@@ -70,13 +71,24 @@ impl ApprovalContent {
                 ],
                 remember,
             ),
-            Some(CommandRequest::Observe | CommandRequest::Stop) | None => {
+            Some(CommandRequest::Observe | CommandRequest::Stop) => {
                 Self::generic(vec![title_line(request)], remember)
             }
+            None => match &request.scope.target {
+                Some(target) => Self::generic(
+                    vec![ActionBlock::Line(Phrase::with_path(
+                        format!("{} ", safe_text(request.tool_name.as_bytes())),
+                        PathText::from_raw(target.as_os_str().as_bytes()),
+                        "",
+                    ))],
+                    remember,
+                ),
+                None => Self::generic(vec![title_line(request)], remember),
+            },
         }
     }
 
-    fn generic(action: Vec<ActionBlock>, remember: Option<String>) -> Self {
+    fn generic(action: Vec<ActionBlock>, remember: Option<Phrase>) -> Self {
         Self {
             kind: GENERIC_KIND,
             question: GENERIC_QUESTION,
@@ -88,7 +100,7 @@ impl ApprovalContent {
 }
 
 fn title_line(request: &ApprovalRequest) -> ActionBlock {
-    ActionBlock::Line(safe_text(request.title.as_bytes()))
+    ActionBlock::Line(Phrase::plain(safe_text(request.title.as_bytes())))
 }
 
 struct RunSettings<'a> {
@@ -127,7 +139,7 @@ fn run_text(command: &str, settings: &RunSettings<'_>) -> String {
     }
 }
 
-fn remember_label(grant: &SessionGrant) -> String {
+fn remember_label(grant: &SessionGrant) -> Phrase {
     match grant {
         SessionGrant::Command {
             profile,
@@ -143,13 +155,27 @@ fn remember_label(grant: &SessionGrant) -> String {
             }
             .describe();
             if parts.is_empty() {
-                REMEMBER_COMMAND.to_owned()
+                Phrase::plain(REMEMBER_COMMAND)
             } else {
-                format!("{REMEMBER_COMMAND} ({})", parts.join(", "))
+                Phrase::plain(format!("{REMEMBER_COMMAND} ({})", parts.join(", ")))
             }
         }
-        _ => REMEMBER_REQUEST.to_owned(),
+        SessionGrant::WorkspaceFiles => {
+            Phrase::plain(format!("allow workspace file access{FOR_THIS_SESSION}"))
+        }
+        SessionGrant::FileChangesUnder(root) => under("allow file changes under ", root),
+        SessionGrant::ReadsUnder(root) => under("allow reads under ", root),
+        SessionGrant::GlobsUnder(root) => under("allow name searches under ", root),
+        SessionGrant::GrepsUnder(root) => under("allow content searches under ", root),
     }
+}
+
+fn under(head: &str, root: &Path) -> Phrase {
+    Phrase::with_path(
+        head,
+        PathText::from_raw(root.as_os_str().as_bytes()),
+        FOR_THIS_SESSION,
+    )
 }
 
 fn safe_text(raw: &[u8]) -> String {
@@ -220,8 +246,8 @@ mod tests {
             }]
         );
         assert_eq!(
-            shown.remember.as_deref(),
-            Some("don't ask again for this exact command")
+            shown.remember,
+            Some(Phrase::plain("don't ask again for this exact command"))
         );
     }
 
@@ -239,8 +265,10 @@ mod tests {
             }]
         );
         assert_eq!(
-            shown.remember.as_deref(),
-            Some("don't ask again for this exact command (profile=clean, tty=true)")
+            shown.remember,
+            Some(Phrase::plain(
+                "don't ask again for this exact command (profile=clean, tty=true)"
+            ))
         );
         let named = CommandRequest::Run {
             command: "top".to_owned(),
@@ -264,11 +292,82 @@ mod tests {
             }]
         );
         assert_eq!(
-            shown.remember.as_deref(),
-            Some("don't ask again for this exact command (tty=true, shell=/opt/fish\\x1b)")
+            shown.remember,
+            Some(Phrase::plain(
+                "don't ask again for this exact command (tty=true, shell=/opt/fish\\x1b)"
+            ))
         );
         let plain = content(run("make", "/ws", CommandProfile::User, false), None);
         assert_eq!(plain.remember, None);
+    }
+
+    #[test]
+    fn reads_and_searches_name_their_resolved_target_and_the_tree_they_grant() {
+        let read = |tool: &str, always| ApprovalRequest {
+            id: RequestId::new(1),
+            tool_name: tool.to_owned(),
+            title: "Reading ../workspace/../secret.txt".to_owned(),
+            tool_arguments_preview: String::new(),
+            scope: ApprovalScope {
+                target: Some(PathBuf::from("/home/me/secret.txt")),
+                access: PathAccess::Within(PathBuf::from("/home/me")),
+                always,
+            },
+            command: None,
+            file: None,
+        };
+        let root = || PathBuf::from("/home/me");
+        for (tool, grant, label) in [
+            (
+                "read_file",
+                SessionGrant::ReadsUnder(root()),
+                "allow reads under ",
+            ),
+            (
+                "glob_files",
+                SessionGrant::GlobsUnder(root()),
+                "allow name searches under ",
+            ),
+            (
+                "grep_files",
+                SessionGrant::GrepsUnder(root()),
+                "allow content searches under ",
+            ),
+        ] {
+            let shown = ApprovalContent::from_request(&read(tool, Some(grant)), Path::new("/ws"));
+            assert_eq!(
+                shown.action,
+                [ActionBlock::Line(Phrase::with_path(
+                    format!("{tool} "),
+                    PathText::from_raw(b"/home/me/secret.txt"),
+                    ""
+                ))]
+            );
+            assert_eq!(
+                shown.remember,
+                Some(Phrase::with_path(
+                    label,
+                    PathText::from_raw(b"/home/me"),
+                    " for this session"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn file_change_grants_name_the_workspace_or_their_tree() {
+        assert_eq!(
+            remember_label(&SessionGrant::WorkspaceFiles),
+            Phrase::plain("allow workspace file access for this session")
+        );
+        assert_eq!(
+            remember_label(&SessionGrant::FileChangesUnder(PathBuf::from("/etc"))),
+            Phrase::with_path(
+                "allow file changes under ",
+                PathText::from_raw(b"/etc"),
+                " for this session"
+            )
+        );
     }
 
     #[test]
@@ -283,7 +382,7 @@ mod tests {
         assert_eq!(
             shown.action,
             [
-                ActionBlock::Line("Running echo hi".to_owned()),
+                ActionBlock::Line(Phrase::plain("Running echo hi")),
                 ActionBlock::Wrapped {
                     lead: "> ",
                     text: "yes\\x0a\\x03".to_owned()

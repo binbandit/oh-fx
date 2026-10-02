@@ -5,6 +5,7 @@ use ofx_text::visible_width;
 
 use super::approval_content::{ActionBlock, ApprovalContent};
 use super::command_text::command_segments;
+use super::phrase::Phrase;
 use crate::row_text::{Paint, Row};
 use crate::theme::Theme;
 
@@ -16,40 +17,40 @@ const HINTS: [&str; 3] = [
     "enter confirm    esc cancel",
 ];
 const INSET: usize = 2;
+const CHOICE_MARKER_WIDTH: usize = 2;
 const SPACIOUS_MIN_TERMINAL_ROWS: u16 = 34;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Choice {
     pub(crate) key: u8,
-    label: String,
+    label: Phrase,
     pub(crate) decision: ApprovalDecision,
 }
 
 impl Choice {
-    fn new(key: u8, label: impl Into<String>, decision: ApprovalDecision) -> Self {
+    fn new(key: u8, label: Phrase, decision: ApprovalDecision) -> Self {
         Self {
             key,
-            label: label.into(),
+            label,
             decision,
         }
     }
 }
 
-pub(crate) fn choices(remember: Option<&str>) -> Vec<Choice> {
+pub(crate) fn choices(remember: Option<&Phrase>) -> Vec<Choice> {
+    let yes = Choice::new(b'1', Phrase::plain("1. Yes"), ApprovalDecision::Once);
+    let no = Choice::new(b'3', Phrase::plain("3. No"), ApprovalDecision::Deny);
     match remember {
         Some(remember) => vec![
-            Choice::new(b'1', "1. Yes", ApprovalDecision::Once),
+            yes,
             Choice::new(
                 b'2',
-                format!("2. Yes, and {remember}"),
+                remember.clone().after("2. Yes, and "),
                 ApprovalDecision::Always,
             ),
-            Choice::new(b'3', "3. No", ApprovalDecision::Deny),
+            no,
         ],
-        None => vec![
-            Choice::new(b'1', "1. Yes", ApprovalDecision::Once),
-            Choice::new(b'3', "3. No", ApprovalDecision::Deny),
-        ],
+        None => vec![yes, no],
     }
 }
 
@@ -84,9 +85,11 @@ pub(crate) fn approval_panel_rows(
         rows.push(Row::new());
     }
     for (index, choice) in choices.iter().enumerate() {
-        let row = choice_row(theme, &choice.label, index == selected);
-        complete &= row.width() <= cols;
-        rows.push(row);
+        let (label, fits) = choice
+            .label
+            .fit(cols.saturating_sub(INSET + CHOICE_MARKER_WIDTH));
+        complete &= fits;
+        rows.push(choice_row(theme, &label, index == selected));
     }
     let required_rows = complete.then_some(action_start..rows.len());
     if spacious {
@@ -130,10 +133,9 @@ fn reason_row(theme: &Theme, reason: Option<&str>) -> Row {
 
 fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bool) {
     match block {
-        ActionBlock::Line(text) => {
-            let row = inset(text, Paint::PLAIN);
-            let complete = row.width() <= cols;
-            (vec![row], complete)
+        ActionBlock::Line(phrase) => {
+            let (text, complete) = phrase.fit(cols.saturating_sub(INSET));
+            (vec![inset(&text, Paint::PLAIN)], complete)
         }
         ActionBlock::Wrapped { lead, text } => {
             let lead_width = visible_width(lead);
@@ -189,7 +191,9 @@ mod tests {
 
     use super::*;
 
-    const REMEMBER: Option<&str> = Some("don't ask again for this request");
+    fn remember() -> Phrase {
+        Phrase::plain("don't ask again for this request")
+    }
 
     fn texts(rows: &[Row]) -> Vec<String> {
         rows.iter().map(Row::text).collect()
@@ -204,12 +208,12 @@ mod tests {
             kind: "Tool",
             question: "Would you like to allow this action?",
             reason: Some("This action needs approval before oh-fx can continue.".to_owned()),
-            action: vec![ActionBlock::Line(title.to_owned())],
+            action: vec![ActionBlock::Line(Phrase::plain(title))],
             remember: None,
         }
     }
 
-    fn rows(title: &str, remember: Option<&str>, selected: usize, cols: usize) -> Vec<Row> {
+    fn rows(title: &str, remember: Option<&Phrase>, selected: usize, cols: usize) -> Vec<Row> {
         approval_panel_rows(
             &theme(),
             &titled(title),
@@ -251,7 +255,7 @@ mod tests {
 
     #[test]
     fn compact_panels_follow_upstreams_generic_approval_rows() {
-        let rows = rows("Reading ../notes.txt", REMEMBER, 0, 80);
+        let rows = rows("Reading ../notes.txt", Some(&remember()), 0, 80);
         let header = format!("  {HEADER}{}Tool", " ".repeat(76 - 30 - 4));
         assert_eq!(
             texts(&rows),
@@ -276,7 +280,7 @@ mod tests {
         let rows = approval_panel_rows(
             &theme(),
             &titled("Reading a"),
-            &choices(REMEMBER),
+            &choices(Some(&remember())),
             2,
             80,
             34,
@@ -292,14 +296,14 @@ mod tests {
 
     #[test]
     fn narrow_panels_drop_the_kind_and_keep_the_confirm_and_cancel_hints() {
-        let narrow = rows("Reading a", REMEMBER, 1, 34);
+        let narrow = rows("Reading a", Some(&remember()), 1, 34);
         let shown = texts(&narrow);
         assert_eq!(shown[0], "  Permission needed · Choose one");
         assert_eq!(shown[5], "  ❯ 2. Yes, and don't ask again fo");
         assert_eq!(shown[7], "  enter confirm    esc cancel");
         assert!(narrow.iter().all(|row| row.width() <= 34));
         assert_eq!(
-            texts(&rows("Reading a", REMEMBER, 0, 50))[7],
+            texts(&rows("Reading a", Some(&remember()), 0, 50))[7],
             "  1–3 choose now    enter confirm    esc cancel"
         );
     }
@@ -307,8 +311,15 @@ mod tests {
     #[test]
     fn panels_name_the_rows_that_must_be_seen_only_when_nothing_is_cut() {
         let view = |title: &str, cols| {
-            approval_panel_rows(&theme(), &titled(title), &choices(REMEMBER), 0, cols, 34)
-                .required_rows
+            approval_panel_rows(
+                &theme(),
+                &titled(title),
+                &choices(Some(&remember())),
+                0,
+                cols,
+                34,
+            )
+            .required_rows
         };
         assert_eq!(view("Reading a", 80), Some(4..9));
         assert_eq!(view("Reading a", 40), None);
@@ -317,14 +328,15 @@ mod tests {
 
     #[test]
     fn choices_map_to_upstreams_decisions() {
-        let decisions = |remember| {
+        let decisions = |remember: Option<&Phrase>| {
             choices(remember)
                 .iter()
                 .map(|choice| (choice.key, choice.decision))
                 .collect::<Vec<_>>()
         };
+        let remember = remember();
         assert_eq!(
-            decisions(REMEMBER),
+            decisions(Some(&remember)),
             [
                 (b'1', ApprovalDecision::Once),
                 (b'2', ApprovalDecision::Always),
@@ -360,11 +372,10 @@ mod tests {
             ["building-the-project-please-wait"; 3].join(" ")
         );
         let content = command_content(&command);
-        let remember = content.remember.clone();
         let rows = approval_panel_rows(
             &theme(),
             &content,
-            &choices(remember.as_deref()),
+            &choices(content.remember.as_ref()),
             0,
             100,
             24,

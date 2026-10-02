@@ -104,6 +104,17 @@ pub(crate) fn prefix_terminal_safe_by_width(encoded: &str, max_width: usize) -> 
     &encoded[..end]
 }
 
+pub(crate) fn suffix_terminal_safe_by_width(encoded: &str, max_width: usize) -> &str {
+    let mut width = visible_width(encoded);
+    let mut start = 0;
+    while start < encoded.len() && width > max_width {
+        let token_end = start + encoded_token_len(&encoded[start..]);
+        width = width.saturating_sub(visible_width(&encoded[start..token_end]));
+        start = token_end;
+    }
+    &encoded[start..]
+}
+
 fn encoded_token_len(encoded: &str) -> usize {
     let bytes = encoded.as_bytes();
     if bytes.len() >= 4
@@ -194,6 +205,11 @@ mod tests {
     #[test]
     fn segments_never_split_an_escape_and_report_commands_that_cannot_fit() {
         assert_eq!(prefix_terminal_safe_by_width("ab\\x1bcd", 4), "ab");
+        assert_eq!(suffix_terminal_safe_by_width("ab\\x1bcd", 3), "cd");
+        assert_eq!(
+            suffix_terminal_safe_by_width("a\\u{202e}b", 9),
+            "\\u{202e}b"
+        );
         assert_eq!(command_segments("abc", 0), None);
         assert_eq!(command_segments("\\x1b", 3), None);
         assert_eq!(command_segments("", 0).unwrap(), [""]);
