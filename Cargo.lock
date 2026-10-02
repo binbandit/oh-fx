@@ -823,6 +823,7 @@ name = "ofx-permissions"
 version = "0.1.0"
 dependencies = [
  "ofx-contract",
+ "ofx-exec",
  "ofx-markdown",
  "ofx-shell",
  "ofx-text",

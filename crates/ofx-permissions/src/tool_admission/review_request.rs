@@ -1,7 +1,10 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use ofx_contract::{CommandRequest, FileChange, FileMutation, GatedAction, ReviewRequest};
+use ofx_contract::{
+    CommandProfile, CommandRequest, FileChange, FileMutation, GatedAction, ReviewRequest,
+};
+use ofx_exec::{Environment, Profile, configured_login_shell, environment};
 use ofx_markdown::FileReview;
 use ofx_shell::{tokenize_argv, unsafe_compound_indicator};
 use ofx_workspace::current_branch;
@@ -10,6 +13,8 @@ use crate::auto_classifier::{Action, ReviewSubject, Target, select_prior_tool_re
 
 const TARGET_ROLE: &str = "target";
 const PARENT_ROLE: &str = "parent";
+const ENVIRONMENT_IDENTITY_PREFIX: &str = "@fx-terminal-env:";
+const TERMINAL_IDENTITY_PREFIX: &str = "@fx-shell-mode:tty:";
 
 pub(super) fn review_subject<'a>(
     request: &'a ReviewRequest<'a>,
@@ -17,15 +22,15 @@ pub(super) fn review_subject<'a>(
 ) -> Option<ReviewSubject<'a>> {
     let call = request.call;
     let (action, targets) = match request.action {
-        GatedAction::Command(CommandRequest::Run { command, cwd, .. }) => (
+        GatedAction::Command(request @ CommandRequest::Run { command, cwd, .. }) => (
             Action::Command { command, cwd },
-            vec![command_target(cwd, command)],
+            vec![command_target(request)?],
         ),
         GatedAction::Command(CommandRequest::SendInput { .. }) => (
             Action::ShellInput {
                 arguments_json: &call.arguments,
             },
-            Vec::new(),
+            vec![named_target(&call.name)],
         ),
         GatedAction::FileMutation(mutation) => {
             let file = request.file?;
@@ -37,7 +42,7 @@ pub(super) fn review_subject<'a>(
                 tool_name: &call.name,
                 arguments_json: &call.arguments,
             },
-            Vec::new(),
+            vec![named_target(&call.name)],
         ),
     };
     let proven_current_branch = match &action {
@@ -56,13 +61,53 @@ pub(super) fn review_subject<'a>(
     })
 }
 
-fn command_target(cwd: &Path, command: &str) -> Target {
+fn command_target(request: &CommandRequest) -> Option<Target> {
+    let CommandRequest::Run {
+        command,
+        cwd,
+        profile,
+        shell,
+        terminal,
+    } = request
+    else {
+        return None;
+    };
+    let profile = match profile {
+        CommandProfile::Clean => Profile::Clean,
+        CommandProfile::User => Profile::User,
+    };
+    let environment = match shell {
+        Some(shell) => match profile {
+            Profile::Clean => Environment::Clean(shell.clone()),
+            Profile::User => Environment::User(shell.clone()),
+        },
+        None => environment(configured_login_shell().as_deref(), Some(profile)).ok()?,
+    };
+    let (label, shell) = match &environment {
+        Environment::Clean(shell) => ("clean", shell),
+        Environment::User(shell) => ("user", shell),
+    };
+    let shell = shell.as_os_str().as_bytes();
     let mut path = cwd.as_os_str().as_bytes().to_vec();
     path.extend_from_slice(b"::");
+    if *terminal {
+        path.extend_from_slice(TERMINAL_IDENTITY_PREFIX.as_bytes());
+    }
+    path.extend_from_slice(ENVIRONMENT_IDENTITY_PREFIX.as_bytes());
+    path.extend_from_slice(format!("{label}:{}:", shell.len()).as_bytes());
+    path.extend_from_slice(shell);
+    path.extend_from_slice(b"::");
     path.extend_from_slice(command.as_bytes());
-    Target {
+    Some(Target {
         role: TARGET_ROLE,
         path,
+    })
+}
+
+fn named_target(name: &str) -> Target {
+    Target {
+        role: TARGET_ROLE,
+        path: name.as_bytes().to_vec(),
     }
 }
 
@@ -166,6 +211,42 @@ mod tests {
         ] {
             assert_eq!(direct_git_push_branch(command), None, "{command}");
         }
+    }
+
+    fn run(profile: CommandProfile, shell: Option<&str>, terminal: bool) -> CommandRequest {
+        CommandRequest::Run {
+            command: "touch marker".to_owned(),
+            cwd: "/workspace".into(),
+            profile,
+            shell: shell.map(Into::into),
+            terminal,
+        }
+    }
+
+    fn target(request: &CommandRequest) -> Option<String> {
+        command_target(request).map(|target| String::from_utf8(target.path).unwrap())
+    }
+
+    #[test]
+    fn command_targets_bind_the_cwd_and_the_shell_environment_as_upstream() {
+        assert_eq!(
+            target(&run(CommandProfile::User, Some("/bin/zsh"), false)).as_deref(),
+            Some("/workspace::@fx-terminal-env:user:8:/bin/zsh::touch marker")
+        );
+        assert_eq!(
+            target(&run(CommandProfile::Clean, Some("/usr/bin/bash"), true)).as_deref(),
+            Some(
+                "/workspace::@fx-shell-mode:tty:@fx-terminal-env:clean:13:/usr/bin/bash::touch marker"
+            )
+        );
+        if let Some(login) = target(&run(CommandProfile::Clean, None, false)) {
+            assert!(
+                login.starts_with("/workspace::@fx-terminal-env:clean:"),
+                "{login}"
+            );
+            assert!(login.ends_with("::touch marker"), "{login}");
+        }
+        assert_eq!(target(&CommandRequest::Stop), None);
     }
 
     #[test]

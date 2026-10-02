@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 ofx-contract.workspace = true
+ofx-exec.workspace = true
 ofx-markdown.workspace = true
 ofx-shell.workspace = true
 ofx-text.workspace = true

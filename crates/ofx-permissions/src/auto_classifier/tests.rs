@@ -413,6 +413,15 @@ fn automatic_review_rejects_missing_and_legacy_decisions() {
             completion(None, vec![decision_call("{\"decision\":\"clear\"")]),
             ReviewFailure::CompletionArgumentIntegrity,
         ),
+        (
+            completion(
+                None,
+                vec![decision_call(
+                    r#"{"decision":"caution","decision":"clear"}"#,
+                )],
+            ),
+            ReviewFailure::CompletionArgumentIntegrity,
+        ),
     ] {
         assert_eq!(parse_completion(&completion), Err(failure));
     }

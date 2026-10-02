@@ -314,6 +314,9 @@ fn is_ignorable_in_names(character: char) -> bool {
 }
 
 #[cfg(test)]
+mod reviews;
+
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
