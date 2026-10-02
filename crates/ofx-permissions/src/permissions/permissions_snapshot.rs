@@ -66,7 +66,16 @@ fn grant_lines(workspace_root: &Path, grant: &SessionGrant) -> Vec<String> {
 }
 
 fn displayed(path: &Path) -> String {
-    escape_terminal_controls(&path.to_string_lossy()).into_owned()
+    let text = escape_terminal_controls(&path.to_string_lossy()).into_owned();
+    let bare = !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+,:@%".contains(&byte));
+    if bare {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
 }
 
 fn tree_pattern(workspace_root: &Path, root: &Path) -> String {
@@ -172,7 +181,32 @@ mod tests {
             concat!(
                 "mode=auto\nconfigured rules: (none)\nsession grants:\n",
                 " - read -> notes\\x0a - edit -> **/**\n",
-                " - bash -> true\\x0a - read -> **\\x1b[2J (cwd=/ws/a\\x0db, tty=true, shell=/bin/\\x07sh)",
+                " - bash -> true\\x0a - read -> **\\x1b[2J (cwd='/ws/a\\x0db', tty=true, shell='/bin/\\x07sh')",
+            )
+        );
+    }
+
+    #[test]
+    fn a_directory_or_shell_name_cannot_pass_for_another_setting_of_the_grant() {
+        let command = |cwd: &str, shell: Option<&str>| SessionGrant::Command {
+            command: "make".to_owned(),
+            cwd: PathBuf::from(cwd),
+            profile: CommandProfile::User,
+            shell: shell.map(PathBuf::from),
+            terminal: false,
+        };
+        let grants = [
+            command("/ws/x, profile=clean", Some("/bin/sh, tty=true")),
+            command("/ws/it's here", None),
+            command("/ws/v1.2_a-b+c,d:e@f%g", Some("/usr/bin/zsh")),
+        ];
+        assert_eq!(
+            interactive_body(Path::new("/ws"), PermissionMode::Ask, &grants),
+            concat!(
+                "mode=ask\nconfigured rules: (none)\nsession grants:\n",
+                " - bash -> make (cwd='/ws/x, profile=clean', shell='/bin/sh, tty=true')\n",
+                " - bash -> make (cwd='/ws/it'\\''s here')\n",
+                " - bash -> make (cwd=/ws/v1.2_a-b+c,d:e@f%g, shell=/usr/bin/zsh)",
             )
         );
     }
