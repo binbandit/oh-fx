@@ -220,7 +220,7 @@ fn run_a_codex_session(home: &Path) -> ! {
                 permission_mode: PermissionMode::Auto,
                 system_prompt: None,
                 reasoning_effort: None,
-                fast_mode: false,
+                fast_mode: None,
                 context_limits: &[],
                 command_timeout: None,
                 executions: &executions,

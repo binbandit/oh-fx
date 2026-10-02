@@ -587,7 +587,7 @@ fn a_model_preference_snapshots_and_removes_workspace_fast_choices() {
         .join(FAST_MODE_MIGRATION.snapshot);
     assert_eq!(fs::read_to_string(&snapshot).unwrap(), original);
     let settings = Settings::load(&fixture.paths, Path::new("/workspace/b")).unwrap();
-    assert!(settings.fast_mode());
+    assert!(settings.fast_mode_for(&ProviderId::Codex, MODEL));
     let bound_only = Fixture::with_settings(
         r#"{"workspaces":{"/workspace":{"fast_mode_model_bound":true,"effort":"low"}}}"#,
     );

@@ -213,17 +213,36 @@ struct Layer {
     auto_compact_percent: Option<AutoCompactPercent>,
     effort: Option<ReasoningEffort>,
     fast_mode: Option<bool>,
+    fast_mode_model_bound: Option<bool>,
     context_limits: ContextLimitOverrides,
     context: Option<bool>,
 }
 
 impl Layer {
     fn codex_model(&self) -> Option<&str> {
-        self.models
+        self.saved_model(&ProviderId::Codex)
+    }
+
+    fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
+        let listed = self
+            .models
             .iter()
-            .find(|(id, _)| *id == ProviderId::Codex)
-            .map(|(_, model)| model.as_str())
-            .or(self.codex_model.as_deref())
+            .find(|(id, _)| id == provider)
+            .map(|(_, model)| model.as_str());
+        let legacy = match provider {
+            ProviderId::Codex => self.codex_model.as_deref(),
+            _ => self.model.as_deref(),
+        };
+        listed.or(legacy)
+    }
+
+    fn fast_mode_for(&self, provider: &ProviderId, model: &str) -> Option<bool> {
+        let enabled = self.fast_mode?;
+        let bound_elsewhere = self.fast_mode_model_bound == Some(true)
+            && self
+                .saved_model(provider)
+                .is_some_and(|saved| saved != model);
+        Some(enabled && !bound_elsewhere)
     }
 }
 
@@ -301,10 +320,10 @@ impl Settings {
             .unwrap_or(ReasoningEffort::Auto)
     }
 
-    pub fn fast_mode(&self) -> bool {
+    pub fn fast_mode_for(&self, provider: &ProviderId, model: &str) -> bool {
         self.workspace
-            .fast_mode
-            .or(self.global.fast_mode)
+            .fast_mode_for(provider, model)
+            .or_else(|| self.global.fast_mode_for(provider, model))
             .unwrap_or(false)
     }
 
@@ -421,14 +440,7 @@ impl Settings {
         lookup: EnvironmentLookup<'_>,
     ) -> Result<String, SelectionError> {
         let provider = ProviderId::Configured(connection.id.clone());
-        let saved = |layer: &Layer| {
-            layer
-                .models
-                .iter()
-                .find(|(id, _)| *id == provider)
-                .map(|(_, model)| model.clone())
-                .or_else(|| layer.model.clone())
-        };
+        let saved = |layer: &Layer| layer.saved_model(&provider).map(str::to_owned);
         run_model
             .map(str::to_owned)
             .or_else(|| environment_model(lookup))
@@ -632,7 +644,7 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         .transpose()?;
     layer.effort = object.get("effort").map(parse_effort).transpose()?;
     layer.fast_mode = parse_switch(object, "fast_mode", LayerError::InvalidFastModeType)?;
-    parse_switch(
+    layer.fast_mode_model_bound = parse_switch(
         object,
         "fast_mode_model_bound",
         LayerError::InvalidFastModeBindingType,
@@ -1185,7 +1197,9 @@ mod tests {
     fn effort_and_fast_mode_follow_workspace_overrides() {
         let defaults = fixture_settings("{}");
         assert_eq!(defaults.reasoning_effort(), ReasoningEffort::Auto);
-        assert!(!defaults.fast_mode());
+        let codex =
+            |model: &str, settings: &Settings| settings.fast_mode_for(&ProviderId::Codex, model);
+        assert!(!codex("m", &defaults));
         let saved =
             fixture_settings(r#"{"effort":"xHigh","fast_mode":true,"fast_mode_model_bound":true}"#);
         assert!(saved.diagnostics().is_empty());
@@ -1193,7 +1207,7 @@ mod tests {
             saved.reasoning_effort(),
             ReasoningEffort::Named("xHigh".to_owned())
         );
-        assert!(saved.fast_mode());
+        assert!(codex("m", &saved));
         assert_eq!(
             fixture_settings(r#"{"effort":"Adaptive"}"#).reasoning_effort(),
             ReasoningEffort::Auto
@@ -1218,7 +1232,64 @@ mod tests {
             fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
             let settings = load(&fixture).unwrap();
             assert_eq!(settings.reasoning_effort(), effort, "{entry}");
-            assert_eq!(settings.fast_mode(), fast, "{entry}");
+            assert_eq!(codex("m", &settings), fast, "{entry}");
+        }
+    }
+
+    #[test]
+    fn a_bound_fast_choice_follows_only_the_model_saved_beside_it() {
+        let local = ProviderId::Configured("local".to_owned());
+        let bound = fixture_settings(
+            r#"{"models":{"codex":"model-a","local":"model-l"},"fast_mode":true,"fast_mode_model_bound":true}"#,
+        );
+        assert!(bound.diagnostics().is_empty());
+        assert!(bound.fast_mode_for(&ProviderId::Codex, "model-a"));
+        assert!(!bound.fast_mode_for(&ProviderId::Codex, "model-b"));
+        assert!(bound.fast_mode_for(&local, "model-l"));
+        assert!(!bound.fast_mode_for(&local, "model-a"));
+        let legacy = fixture_settings(
+            r#"{"codex_model":"model-a","model":"model-g","fast_mode":true,"fast_mode_model_bound":true}"#,
+        );
+        assert!(legacy.fast_mode_for(&ProviderId::Codex, "model-a"));
+        assert!(!legacy.fast_mode_for(&ProviderId::Codex, "model-b"));
+        assert!(!legacy.fast_mode_for(&local, "model-b"));
+        for unbound in [
+            r#"{"models":{"codex":"model-a"},"fast_mode":true}"#,
+            r#"{"models":{"codex":"model-a"},"fast_mode":true,"fast_mode_model_bound":false}"#,
+            r#"{"fast_mode":true,"fast_mode_model_bound":true}"#,
+        ] {
+            let settings = fixture_settings(unbound);
+            assert!(
+                settings.fast_mode_for(&ProviderId::Codex, "model-b"),
+                "{unbound}"
+            );
+        }
+        let fixture = fixture(None, None);
+        let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+        for (entry, model, fast) in [
+            (r#"{"models":{"codex":"model-w"}}"#, "model-w", false),
+            (r#"{"models":{"codex":"model-w"}}"#, "model-a", true),
+            (
+                r#"{"models":{"codex":"model-w"},"fast_mode":true}"#,
+                "model-w",
+                true,
+            ),
+            (
+                r#"{"fast_mode":true,"fast_mode_model_bound":true,"models":{"codex":"model-w"}}"#,
+                "model-a",
+                false,
+            ),
+        ] {
+            let json = format!(
+                r#"{{"models":{{"codex":"model-a"}},"fast_mode":true,"fast_mode_model_bound":true,"workspaces":{{{workspace}:{entry}}}}}"#
+            );
+            fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+            let settings = load(&fixture).unwrap();
+            assert_eq!(
+                settings.fast_mode_for(&ProviderId::Codex, model),
+                fast,
+                "{entry} {model}"
+            );
         }
     }
 

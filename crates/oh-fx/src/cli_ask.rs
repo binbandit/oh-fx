@@ -496,16 +496,16 @@ fn requested_reasoning(
     args: &AskArgs,
     settings: &Settings,
     resumed: Option<&SessionPreferences>,
-) -> (Option<String>, bool) {
+) -> (Option<String>, Option<bool>) {
     let effort = args.effort.clone().unwrap_or_else(|| {
         resumed.map_or_else(
             || settings.reasoning_effort(),
             |preferences| preferences.effort.clone(),
         )
     });
-    let fast_mode = args.fast.unwrap_or_else(|| {
-        resumed.map_or_else(|| settings.fast_mode(), |preferences| preferences.fast_mode)
-    });
+    let fast_mode = args
+        .fast
+        .or_else(|| resumed.map(|preferences| preferences.fast_mode));
     (effort.into_named(), fast_mode)
 }
 
@@ -1502,18 +1502,23 @@ mod tests {
         )
         .unwrap();
         let saved = login.settings();
-        let cases: [(&[&str], Option<&str>, bool); 4] = [
-            (&["ask", "hi"], Some("high"), true),
+        let cases: [(&[&str], Option<&str>, Option<bool>); 5] = [
+            (&["ask", "hi"], Some("high"), None),
             (
                 &["ask", "--effort", "low", "--no-fast", "hi"],
                 Some("low"),
-                false,
+                Some(false),
             ),
-            (&["ask", "--effort", "auto", "hi"], None, true),
+            (&["ask", "--effort", "auto", "hi"], None, None),
             (
                 &["ask", "--model", "gpt-5.6-terra", "hi"],
                 Some("high"),
-                true,
+                None,
+            ),
+            (
+                &["ask", "--model", "gpt-5.6-terra", "--fast", "hi"],
+                Some("high"),
+                Some(true),
             ),
         ];
         for (args, effort, fast) in cases {
@@ -1529,11 +1534,11 @@ mod tests {
                 &Settings::default(),
                 None
             ),
-            (None, true)
+            (None, Some(true))
         );
         assert_eq!(
             requested_reasoning(&ask_args(&["ask", "hi"]), &Settings::default(), None),
-            (None, false)
+            (None, None)
         );
         let resumed = SessionPreferences {
             provider: ofx_session::SavedProvider::new(ofx_config::ProviderId::Codex, None).unwrap(),
@@ -1543,7 +1548,7 @@ mod tests {
         };
         assert_eq!(
             requested_reasoning(&ask_args(&["ask", "hi"]), &saved, Some(&resumed)),
-            (Some("medium".to_owned()), false)
+            (Some("medium".to_owned()), Some(false))
         );
         assert_eq!(
             requested_reasoning(
@@ -1551,7 +1556,7 @@ mod tests {
                 &saved,
                 Some(&resumed)
             ),
-            (Some("low".to_owned()), true)
+            (Some("low".to_owned()), Some(true))
         );
     }
 

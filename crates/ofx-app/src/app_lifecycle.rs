@@ -95,9 +95,7 @@ async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> 
                     .cloned()
                     .unwrap_or_else(|| settings.reasoning_effort())
                     .into_named(),
-                fast_mode: modifiers
-                    .fast_mode()
-                    .unwrap_or_else(|| settings.fast_mode()),
+                fast_mode: modifiers.fast_mode(),
                 context_limits: modifiers.context_limit_overrides(),
                 command_timeout: None,
                 executions: &executions,

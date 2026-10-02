@@ -559,6 +559,37 @@ fn slash_commands_switch_models_show_help_and_exit() {
 }
 
 #[test]
+fn a_saved_fast_choice_follows_only_the_model_it_was_saved_with() {
+    let server = FakeServer::start([]);
+    let mut saved = settings(&server.base_url());
+    saved["models"] = json!({"local": "model-a"});
+    saved["fast_mode"] = json!(true);
+    saved["fast_mode_model_bound"] = json!(true);
+    let home = Home::with_settings(&saved);
+    for (args, hint, fast) in [
+        (&[][..], "auto · model-a", "* fast: off"),
+        (&["--model", "model-a"], "auto · model-a", "* fast: off"),
+        (
+            &["--model", "vendor/model-b"],
+            "auto · model-b",
+            "* fast: This model does not come with a fast mode.",
+        ),
+        (
+            &["--model", "vendor/model-b", "--fast"],
+            "auto · model-b",
+            "* fast: off",
+        ),
+    ] {
+        let mut session = home.shell_with(args, 24, 100, hint);
+        session.send(b"/fast\r");
+        wait(&session, fast);
+        session.send(b"\x04");
+        assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+        fs::write(settings_file(&home), saved.to_string()).expect("restore settings.json");
+    }
+}
+
+#[test]
 fn ctrl_c_cancels_a_streaming_turn_and_clear_starts_over() {
     let held =
         Reply::held_sse(&chat_text_events(&["First line.\nSecond line.\n", "still going"])[..3]);

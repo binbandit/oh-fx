@@ -106,7 +106,7 @@ pub struct Launch<'a> {
     pub permission_mode: PermissionMode,
     pub system_prompt: Option<String>,
     pub reasoning_effort: Option<String>,
-    pub fast_mode: bool,
+    pub fast_mode: Option<bool>,
     pub context_limits: &'a [ContextLimitOverride],
     pub command_timeout: Option<Duration>,
     pub executions: &'a ManagedExecutions,
@@ -233,6 +233,12 @@ impl Profile {
             .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
             .unwrap_or_default();
         let lookup = |name: &str| env::var(name).ok();
+        let fast_mode = launch.fast_mode.unwrap_or_else(|| {
+            self.settings.fast_mode_for(
+                &connection_provider(route.connection.as_ref()),
+                &route.model,
+            )
+        });
         let config = AgentConfig {
             system_prompt: launch
                 .system_prompt
@@ -241,7 +247,7 @@ impl Profile {
             step_limit: self.settings.max_agent_steps(&lookup),
             model: route.model,
             reasoning_effort: launch.reasoning_effort,
-            fast_mode: launch.fast_mode,
+            fast_mode,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         };
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
@@ -398,6 +404,12 @@ fn select_model(
     }
 }
 
+fn connection_provider(connection: Option<&ProviderDefinition>) -> ProviderId {
+    connection.map_or(ProviderId::Codex, |connection| {
+        ProviderId::Configured(connection.id().to_owned())
+    })
+}
+
 fn output_tokens(connection: Option<&ProviderDefinition>, model: &str) -> Option<u32> {
     connection.and_then(|connection| request_output_tokens(connection.capabilities(model)))
 }
@@ -417,11 +429,7 @@ impl AgentSetup {
     }
 
     pub fn provider(&self) -> ProviderId {
-        self.connection
-            .as_ref()
-            .map_or(ProviderId::Codex, |connection| {
-                ProviderId::Configured(connection.id().to_owned())
-            })
+        connection_provider(self.connection.as_ref())
     }
 
     pub fn provider_binding(&self) -> Option<[u8; 32]> {
@@ -576,7 +584,7 @@ mod tests {
                     permission_mode: PermissionMode::Auto,
                     system_prompt: None,
                     reasoning_effort: None,
-                    fast_mode: false,
+                    fast_mode: None,
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
@@ -603,6 +611,45 @@ mod tests {
         );
         assert!(auth.requests().is_empty());
         assert_eq!(fs::read_to_string(session).unwrap(), EXPIRED_SESSION);
+    }
+
+    #[tokio::test]
+    async fn a_saved_fast_choice_reaches_only_the_model_saved_with_it_unless_a_flag_decides() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = profile(
+            directory.path(),
+            r#"{"provider":"local","models":{"local":"model-a"},"fast_mode":true,"fast_mode_model_bound":true,"providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:9/v1","auth":{"type":"none"}}}}"#,
+        );
+        let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+        for (model, flag, fast) in [
+            (None, None, true),
+            (Some("model-a"), None, true),
+            (Some("model-b"), None, false),
+            (Some("model-b"), Some(true), true),
+            (None, Some(false), false),
+        ] {
+            for interactive in [false, true] {
+                let launch = Launch {
+                    model: model.map(OsStr::new),
+                    permission_mode: PermissionMode::Auto,
+                    system_prompt: None,
+                    reasoning_effort: None,
+                    fast_mode: flag,
+                    context_limits: &[],
+                    command_timeout: None,
+                    executions: &executions,
+                    endpoints: SubscriptionEndpoints::default(),
+                };
+                let cancel = CancellationToken::new();
+                let setup = if interactive {
+                    profile.connect_interactive(launch, &cancel).await
+                } else {
+                    profile.connect(launch, &cancel).await
+                }
+                .unwrap();
+                assert_eq!(setup.fast_mode(), fast, "{model:?} {flag:?} {interactive}");
+            }
+        }
     }
 
     #[tokio::test]
