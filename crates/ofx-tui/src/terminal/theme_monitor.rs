@@ -179,12 +179,7 @@ impl Monitor {
 
     pub(crate) fn poll(&mut self, now_ms: i64) {
         if self.candidate_len > 0 && now_ms >= self.candidate_deadline_ms {
-            if self.candidate().starts_with(OSC11_PREFIX) {
-                self.discard_candidate();
-                self.candidate_deadline_ms = 0;
-            } else {
-                self.defer_candidate();
-            }
+            self.defer_candidate();
         }
         let query_deadline = match self.query_state {
             QueryState::AwaitingResponseFence { deadline_ms }
@@ -560,11 +555,12 @@ mod tests {
     }
 
     #[test]
-    fn theme_monitor_discards_incomplete_osc_11_on_idle_timeout_with_one_trace() {
+    fn theme_monitor_hands_an_incomplete_osc_11_to_the_decoder_on_idle_timeout() {
         let mut monitor = started();
         feed_all(&mut monitor, b"\x1b]11;rgb:ffff", 0);
         monitor.poll(RESPONSE_IDLE_TIMEOUT_MS);
-        assert_eq!(monitor.take_deferred_byte(), None);
+        let deferred: Vec<u8> = std::iter::from_fn(|| monitor.take_deferred_byte()).collect();
+        assert_eq!(deferred, b"\x1b]11;rgb:ffff");
         assert!(!monitor.has_pending_input());
     }
 
@@ -649,7 +645,9 @@ mod tests {
 
         feed_all(&mut monitor, b"\x1b]11;rgb:ffff", 2);
         monitor.poll(2 + RESPONSE_IDLE_TIMEOUT_MS);
-        assert!(!monitor.has_pending_input());
         assert_eq!(monitor.candidate, [0; MAX_CANDIDATE_BYTES]);
+        while monitor.take_deferred_byte().is_some() {}
+        assert!(!monitor.has_pending_input());
+        assert_eq!(monitor.deferred, [0; MAX_CANDIDATE_BYTES]);
     }
 }

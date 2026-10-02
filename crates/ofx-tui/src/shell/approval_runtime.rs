@@ -197,6 +197,9 @@ impl Shell<'_> {
         let Some(prompt) = &self.approval else {
             return;
         };
+        if self.input.awaiting_terminal_reply() && (b'1'..=b'3').contains(&key) {
+            return;
+        }
         let Some(index) = prompt.choices().iter().position(|choice| choice.key == key) else {
             if (32..127).contains(&key) && !(b'1'..=b'3').contains(&key) {
                 self.keep_typed_text(char::from(key));
@@ -247,6 +250,9 @@ impl Shell<'_> {
     }
 
     fn decide_selected(&mut self) {
+        if self.input.awaiting_terminal_reply() {
+            return;
+        }
         let now_ms = self.now_ms();
         let Some(decision) = self
             .approval
@@ -741,6 +747,58 @@ mod tests {
         press(&mut test, b"\x1b[200~1\r2\n\x1b[201~");
         assert!(!approved(&test));
         assert!(test.shell.composer.is_empty());
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
+    }
+
+    fn command_prompt_with_theme_monitor() -> TestShell {
+        let mut test = TestShell::start();
+        test.shell.input.start_theme_monitor();
+        test.submit("run it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.deliver(command_request(1, 4, "echo hi"));
+        test.screen();
+        test.advance(ARMED_MS);
+        test
+    }
+
+    #[test]
+    fn a_background_colour_reply_split_anywhere_never_answers_the_prompt() {
+        for (first, rest) in [
+            (&b"\x1b]11;rgb:"[..], &b"2828/2c2c/3434\x1b\\"[..]),
+            (b"\x1b]1", b"1;rgb:2828/2c2c/3434\x1b\\"),
+            (b"\x1b]11;rgba:2828/2c2c/3434/ffff\x1b\\", b""),
+            (b"\x1bP1+r", b"544e=787465726d\x1b\\"),
+        ] {
+            let mut test = command_prompt_with_theme_monitor();
+            press(&mut test, first);
+            test.advance(100);
+            test.step();
+            press(&mut test, rest);
+            test.advance(100);
+            test.step();
+            assert!(!approved(&test), "{first:?} {rest:?}");
+            assert!(test.shell.composer.is_empty(), "{first:?} {rest:?}");
+        }
+    }
+
+    #[test]
+    fn decision_keys_wait_while_a_terminal_reply_is_expected() {
+        let mut test = command_prompt_with_theme_monitor();
+        press(&mut test, b"\x1b[?997;1n");
+        test.step();
+        assert!(test.shell.input.awaiting_terminal_reply());
+        press(&mut test, b"1");
+        press(&mut test, b"\r");
+        assert!(!approved(&test));
+        test.advance(ARMED_MS);
+        test.step();
+        assert!(!test.shell.input.awaiting_terminal_reply());
         press(&mut test, b"1");
         assert_eq!(
             test.sent().last(),

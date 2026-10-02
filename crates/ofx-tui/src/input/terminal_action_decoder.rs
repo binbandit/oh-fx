@@ -5,6 +5,7 @@ use super::input_action::{
 };
 
 const MOUSE_REPORT_ESCAPE_TIMEOUT_MS: i64 = 250;
+const BELL: u8 = 0x07;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Decoder {
@@ -19,7 +20,11 @@ impl Decoder {
     }
 
     pub(crate) fn has_pending(&self) -> bool {
-        !self.parser.is_idle()
+        !self.parser.is_idle() && !self.parser.is_control_string()
+    }
+
+    pub(crate) fn in_control_string(&self) -> bool {
+        self.parser.is_control_string()
     }
 
     pub(crate) fn feed(
@@ -75,6 +80,7 @@ impl Decoder {
     ) {
         let prior_plain_bare_escape = self.parser.is_plain_bare_escape();
         let prior_x10_payload = self.parser.is_legacy_x10_payload();
+        let prior_control_string = self.parser.is_control_string();
         let action = self.parser.consume(byte);
 
         if byte == 0x1b && !prior_x10_payload {
@@ -85,6 +91,13 @@ impl Decoder {
 
         if !self.parser.is_idle() {
             self.started_ms = context.now_ms;
+        }
+
+        if prior_control_string && self.parser.is_idle() && byte < 0x20 && byte != BELL {
+            let was_cancel_pending = self.take_cancel_pending();
+            append_action(ingress, Action::Ignore, was_cancel_pending);
+            ingress.replay_byte_after_routing = Some(byte);
+            return;
         }
 
         if prior_plain_bare_escape
@@ -117,7 +130,7 @@ impl Decoder {
         paste_active: bool,
     ) -> TerminalInputIngress {
         let mut ingress = TerminalInputIngress::default();
-        if self.parser.is_idle() {
+        if self.parser.is_idle() || self.parser.is_control_string() {
             return ingress;
         }
 
