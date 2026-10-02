@@ -111,10 +111,10 @@ fn named_target(name: &str) -> Target {
     }
 }
 
-fn file_action<'a>(tool_name: &'a str, file: &FileChange<'a>) -> Action<'a> {
+fn file_action<'a>(tool_name: &'a str, file: &'a FileChange<'a>) -> Action<'a> {
     Action::FileMutation {
         tool_name,
-        display_path: file.display_path,
+        display_path: &file.display_path,
         preimage_present: file.before.is_some(),
         review: FileReview::new(file.before.unwrap_or_default(), file.after),
     }

@@ -100,7 +100,7 @@ pub struct ApprovalScope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange<'a> {
-    pub display_path: &'a str,
+    pub display_path: String,
     pub before: Option<&'a [u8]>,
     pub after: &'a [u8],
     pub parents: Vec<PathBuf>,

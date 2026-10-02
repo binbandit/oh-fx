@@ -105,12 +105,10 @@ impl PreparedCall for MutationCall {
     }
 
     fn file_change(&self) -> Option<FileChange<'_>> {
-        match &self.plan {
-            Ok(Plan {
-                stage: Stage::Prepared(prepared),
-                ..
-            }) => Some(prepared.file_change()),
-            _ => None,
+        let plan = self.plan.as_ref().ok()?;
+        match &plan.stage {
+            Stage::Prepared(prepared) => Some(prepared.file_change()),
+            Stage::Deferred(targets) => plan.new_file_change(targets),
         }
     }
 
@@ -199,6 +197,24 @@ impl Plan {
                 MAX_ENCODED_PATH_BYTES,
             ),
         }
+    }
+
+    fn new_file_change<'p>(&'p self, targets: &FileMutationTargets) -> Option<FileChange<'p>> {
+        let MutationInput::Write(content) = &self.input else {
+            return None;
+        };
+        if targets.target_identity.is_some() {
+            return None;
+        }
+        Some(FileChange {
+            display_path: encode_terminal_safe_path_tail(
+                targets.target.path().as_os_str().as_bytes(),
+                MAX_ENCODED_PATH_BYTES,
+            )?,
+            before: None,
+            after: content.as_bytes(),
+            parents: targets.review_parents(),
+        })
     }
 
     fn file_mutation(&self) -> FileMutation {

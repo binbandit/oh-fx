@@ -204,7 +204,7 @@ impl PreparedMutation {
 
     pub(crate) fn file_change(&self) -> FileChange<'_> {
         FileChange {
-            display_path: &self.display_path,
+            display_path: self.display_path.clone(),
             before: match &self.preimage {
                 Preimage::Absent => None,
                 Preimage::Present { content, .. } => Some(content),

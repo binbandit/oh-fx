@@ -658,7 +658,7 @@ fn cancelled_writes_report_cancellation_and_leave_no_file() {
 }
 
 #[test]
-fn prepared_workspace_changes_show_the_reviewer_their_exact_content_and_external_ones_do_not() {
+fn prepared_changes_show_the_reviewer_their_exact_content_unless_they_would_read_outside() {
     let workspace = Fixture::new();
     fs::create_dir_all(workspace.workspace.join(".git")).unwrap();
     fs::write(workspace.workspace.join(".git/config"), "[core]\n").unwrap();
@@ -671,7 +671,7 @@ fn prepared_workspace_changes_show_the_reviewer_their_exact_content_and_external
     assert_eq!(
         changed.file_change(),
         Some(FileChange {
-            display_path: ".git/config",
+            display_path: ".git/config".to_owned(),
             before: Some(b"[core]\n"),
             after: b"[core]\n\thooksPath = /tmp/x\n",
             parents: vec![workspace.workspace.join(".git")],
@@ -685,7 +685,7 @@ fn prepared_workspace_changes_show_the_reviewer_their_exact_content_and_external
     assert_eq!(
         created.file_change(),
         Some(FileChange {
-            display_path: "a/b/new.txt",
+            display_path: "a/b/new.txt".to_owned(),
             before: None,
             after: b"new\n",
             parents: vec![
@@ -706,4 +706,24 @@ fn prepared_workspace_changes_show_the_reviewer_their_exact_content_and_external
         Some(FileMutationState::Unread)
     );
     assert_eq!(outside.file_change(), None);
+    let mut fresh = workspace
+        .tool()
+        .prepare(&arguments(
+            workspace.root.join("fresh/new.txt").to_str().unwrap(),
+            "fresh\n",
+        ))
+        .unwrap();
+    fresh.complete();
+    assert_eq!(
+        fresh.file_mutation().map(|mutation| mutation.state),
+        Some(FileMutationState::Creates)
+    );
+    let change = fresh
+        .file_change()
+        .expect("a new external file is prepared");
+    assert_eq!((change.before, change.after), (None, &b"fresh\n"[..]));
+    assert!(
+        change.display_path.ends_with("/fresh/new.txt"),
+        "{change:?}"
+    );
 }

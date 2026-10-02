@@ -408,3 +408,39 @@ fn existing_files_outside_the_workspace_are_held_without_reading_them_for_review
     );
     assert!(last_tool_result(&requests[1]).contains(r#""reason":"review_evidence_incomplete""#));
 }
+
+#[test]
+fn new_sensitive_files_outside_the_workspace_are_reviewed_with_their_content() {
+    let outside = tempfile::tempdir().expect("create a directory outside the workspace");
+    let ssh = fs::canonicalize(outside.path())
+        .expect("canonicalize")
+        .join(".ssh");
+    fs::create_dir(&ssh).expect("create the ssh directory");
+    let path = ssh.join("config");
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "write_file",
+            &json!({"path": path, "content": "Host example\n"}).to_string(),
+        )),
+        decision(r#"{"decision":"clear"}"#),
+        Reply::sse(&chat_text_events(&["Added it."])),
+    ]);
+    let home = Home::new(&settings(&server.base_url(), None));
+
+    let output = home.ask("add the example host");
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(&path).expect("read"), "Host example\n");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let instruction = review_instruction(&requests[1]);
+    let evidence = format!(
+        "target[target]: {}\ntarget[parent]: {}\naction: prepared_file_mutation\ntool: write_file\npath: {}\npreimage: absent\nadditions: 1\ndeletions: 0\nreview[addition]: Host example\naction_evidence_incomplete: false\n",
+        path.display(),
+        ssh.display(),
+        path.display(),
+    );
+    assert!(instruction.contains(&evidence), "{instruction}");
+    assert_eq!(result(&output)["tool_calls"][0]["status"], "success");
+}
