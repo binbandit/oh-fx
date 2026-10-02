@@ -16,7 +16,7 @@ mod tests {
     use ofx_config::ContextLimits;
     use ofx_contract::Tool;
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
-    use ofx_skills::{Locations, RootPolicy, SkillDiscoveryContext, SymlinkAuthorities};
+    use ofx_skills::{RootPolicy, SkillDiscoveryContext, SymlinkAuthorities};
     use serde_json::Value;
 
     use super::*;
@@ -41,7 +41,6 @@ mod tests {
                 global_roots: &[],
             },
             ContextLimits::default(),
-            Locations::default(),
         );
         let tools: [&dyn Tool; 7] = [
             &ReadFile::new("/"),
