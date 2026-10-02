@@ -457,6 +457,7 @@ mod tests {
                 access: PathAccess::WorkspaceOnly,
                 always: Some(SessionGrant::Command {
                     command: command.to_owned(),
+                    cwd: Path::new("/ws").to_path_buf(),
                     profile: CommandProfile::User,
                     shell: None,
                     terminal: false,
@@ -618,7 +619,7 @@ mod tests {
         );
         assert_eq!(
             texts[6],
-            "    2. Yes, and don't ask again for this exact command"
+            "    2. Yes, and don't ask again for this exact command in /ws"
         );
         assert_eq!(rows[3].segments()[1].paint, theme().tag);
     }

@@ -296,6 +296,7 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
         run.scope.always,
         Some(SessionGrant::Command {
             command,
+            cwd: fixture.root.join("approved"),
             profile: CommandProfile::User,
             shell: None,
             terminal: false,
@@ -457,6 +458,7 @@ async fn a_remembered_command_asks_again_under_another_profile_or_terminal_mode(
             }),
             Some(SessionGrant::Command {
                 command: "echo granted".to_owned(),
+                cwd: fixture.workspace.clone(),
                 profile,
                 shell: None,
                 terminal,
@@ -494,6 +496,43 @@ async fn a_remembered_command_asks_again_under_another_profile_or_terminal_mode(
 }
 
 #[tokio::test]
+async fn a_remembered_command_asks_again_in_another_directory() {
+    let fixture = Fixture::new();
+    let mut session = Session::new(&fixture.workspace);
+    let first = session
+        .call("shell", &run(serde_json::json!({})), always)
+        .await;
+    let [request] = <[ApprovalRequest; 1]>::try_from(first.requests).unwrap();
+    assert_eq!(
+        request.scope.always,
+        Some(SessionGrant::Command {
+            command: "echo granted".to_owned(),
+            cwd: fixture.workspace.clone(),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+        })
+    );
+    let again = session
+        .call("shell", &run(serde_json::json!({"cwd": "."})), unasked)
+        .await;
+    assert!(again.requests.is_empty(), "{again:?}");
+    for cwd in ["..", "../approved", fixture.root.to_str().unwrap()] {
+        let asked = session
+            .call("shell", &run(serde_json::json!({ "cwd": cwd })), deny)
+            .await
+            .denied_request("shell");
+        assert!(
+            matches!(
+                asked.command,
+                Some(CommandRequest::Run { cwd: ref asked_cwd, .. }) if *asked_cwd != fixture.workspace
+            ),
+            "{cwd}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_terminal_run_that_names_its_shell_asks_with_that_shell_and_binds_it() {
     let fixture = Fixture::new();
     let mut session = Session::new(&fixture.workspace);
@@ -509,6 +548,7 @@ async fn a_terminal_run_that_names_its_shell_asks_with_that_shell_and_binds_it()
             }),
             Some(SessionGrant::Command {
                 command: "echo granted".to_owned(),
+                cwd: fixture.workspace.clone(),
                 profile,
                 shell,
                 terminal: true,

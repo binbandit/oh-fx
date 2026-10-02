@@ -618,6 +618,7 @@ mod tests {
                 access: PathAccess::WorkspaceOrExternal,
                 always: Some(SessionGrant::Command {
                     command: "cargo test".to_owned(),
+                    cwd: workspace.clone(),
                     profile: CommandProfile::Clean,
                     shell: None,
                     terminal: true,
@@ -753,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn remembered_commands_run_again_only_with_the_same_text_profile_and_terminal_mode() {
+    fn remembered_commands_run_again_only_with_the_same_text_directory_profile_and_terminal_mode() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = fs::canonicalize(temp.path()).unwrap();
         let run = |command: &str, cwd: PathBuf, profile, terminal| CommandRequest::Run {
@@ -773,18 +774,14 @@ mod tests {
             &policy,
             GatedAction::Command(&cargo_test(workspace.clone())),
         );
-        for cwd in [
-            workspace.clone(),
-            workspace.join("sub"),
-            PathBuf::from("/elsewhere"),
-        ] {
-            assert_eq!(
-                policy.admit_command(&cargo_test(cwd.clone())),
-                Admission::Allowed(PathAccess::WorkspaceOrExternal),
-                "{cwd:?}"
-            );
-        }
+        assert_eq!(
+            policy.admit_command(&cargo_test(workspace.clone())),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
         for different in [
+            cargo_test(workspace.join("sub")),
+            cargo_test(PathBuf::from("/root")),
+            cargo_test(PathBuf::from("/")),
             run(
                 "cargo test --release",
                 workspace.clone(),

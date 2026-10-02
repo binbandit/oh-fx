@@ -19,7 +19,7 @@ const EXTERNAL_CHANGE_REASON: &str = "This action changes a file outside your wo
 const COMMAND_LEAD: &str = "$ ";
 const INPUT_LEAD: &str = "> ";
 const RUN_HEADER: &str = "# shell.run";
-const REMEMBER_COMMAND: &str = "don't ask again for this exact command";
+const REMEMBER_COMMAND: &str = "don't ask again for this exact command in ";
 const FOR_THIS_SESSION: &str = " for this session";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +206,7 @@ fn run_text(command: &str, settings: &RunSettings<'_>) -> String {
 fn remember_label(grant: &SessionGrant) -> Phrase {
     match grant {
         SessionGrant::Command {
+            cwd,
             profile,
             shell,
             terminal,
@@ -218,11 +219,16 @@ fn remember_label(grant: &SessionGrant) -> Phrase {
                 terminal: *terminal,
             }
             .describe();
-            if parts.is_empty() {
-                Phrase::plain(REMEMBER_COMMAND)
+            let tail = if parts.is_empty() {
+                String::new()
             } else {
-                Phrase::plain(format!("{REMEMBER_COMMAND} ({})", parts.join(", ")))
-            }
+                format!(" ({})", parts.join(", "))
+            };
+            Phrase::with_path(
+                REMEMBER_COMMAND,
+                PathText::from_raw(cwd.as_os_str().as_bytes()),
+                &tail,
+            )
         }
         SessionGrant::WorkspaceFiles => {
             Phrase::plain(format!("allow workspace file access{FOR_THIS_SESSION}"))
@@ -303,6 +309,7 @@ mod tests {
     fn grant(profile: CommandProfile, terminal: bool) -> SessionGrant {
         SessionGrant::Command {
             command: "echo hi".to_owned(),
+            cwd: PathBuf::from("/ws"),
             profile,
             shell: None,
             terminal,
@@ -331,7 +338,11 @@ mod tests {
         );
         assert_eq!(
             shown.remember,
-            Some(Phrase::plain("don't ask again for this exact command"))
+            Some(Phrase::with_path(
+                "don't ask again for this exact command in ",
+                PathText::from_raw(b"/ws"),
+                ""
+            ))
         );
     }
 
@@ -375,8 +386,10 @@ mod tests {
         );
         assert_eq!(
             shown.remember,
-            Some(Phrase::plain(
-                "don't ask again for this exact command (profile=clean, tty=true)"
+            Some(Phrase::with_path(
+                "don't ask again for this exact command in ",
+                PathText::from_raw(b"/ws"),
+                " (profile=clean, tty=true)"
             ))
         );
         let named = CommandRequest::Run {
@@ -388,6 +401,7 @@ mod tests {
         };
         let named_grant = SessionGrant::Command {
             command: "top".to_owned(),
+            cwd: PathBuf::from("/ws/sub\x1b"),
             profile: CommandProfile::User,
             shell: Some(PathBuf::from("/opt/fish\x1b")),
             terminal: true,
@@ -402,9 +416,15 @@ mod tests {
         );
         assert_eq!(
             shown.remember,
-            Some(Phrase::plain(
-                "don't ask again for this exact command (tty=true, shell=/opt/fish\\x1b)"
+            Some(Phrase::with_path(
+                "don't ask again for this exact command in ",
+                PathText::from_raw(b"/ws/sub\x1b"),
+                " (tty=true, shell=/opt/fish\\x1b)"
             ))
+        );
+        assert_eq!(
+            shown.remember.unwrap().fit(200).0,
+            "don't ask again for this exact command in /ws/sub\\x1b (tty=true, shell=/opt/fish\\x1b)"
         );
         let plain = content(run("make", "/ws", CommandProfile::User, false), None);
         assert_eq!(plain.remember, None);
