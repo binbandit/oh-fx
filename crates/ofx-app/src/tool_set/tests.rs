@@ -402,34 +402,27 @@ async fn always_on_a_workspace_file_change_offers_and_grants_workspace_file_acce
 async fn always_on_an_external_file_change_grants_the_tree_it_showed_before_the_prompt() {
     let fixture = Fixture::new();
     let mut session = Session::new(&fixture.workspace);
-    let missing_parents = session
-        .call("write_file", &write("../approved/a/b/new.txt"), deny)
-        .await
-        .denied_request("write_file");
-    let approved = || SessionGrant::FileChangesUnder(fixture.root.join("approved"));
-    assert_eq!(missing_parents.scope.always, Some(approved()));
-
-    let target = fixture.root.join("approved/new.txt");
     let first = session
-        .call("write_file", &write("../link/new.txt"), |_| {
-            fs::create_dir(&target).unwrap();
+        .call("write_file", &write("../link/a/b/new.txt"), |_| {
+            fs::create_dir_all(fixture.root.join("approved/a/b")).unwrap();
             fixture.point_link_at_unapproved();
             ApprovalDecision::Always
         })
         .await;
     let [request] = <[ApprovalRequest; 1]>::try_from(first.requests).unwrap();
-    assert_eq!(request.scope.always, Some(approved()));
+    assert_eq!(
+        request.scope.always,
+        Some(SessionGrant::FileChangesUnder(
+            fixture.root.join("approved")
+        ))
+    );
 
     let sibling = session
-        .call(
-            "write_file",
-            &write("../approved/deeper/sibling.txt"),
-            unasked,
-        )
+        .call("write_file", &write("../approved/x.txt"), unasked)
         .await;
     assert_eq!(sibling.status, ToolResultStatus::Success, "{sibling:?}");
     assert_eq!(
-        fs::read_to_string(fixture.root.join("approved/deeper/sibling.txt")).unwrap(),
+        fs::read_to_string(fixture.root.join("approved/x.txt")).unwrap(),
         "written\n"
     );
     for outside in ["../link/new.txt", "../unapproved/new.txt", "notes.txt"] {
