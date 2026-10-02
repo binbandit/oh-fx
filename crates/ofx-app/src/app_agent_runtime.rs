@@ -34,7 +34,7 @@ pub(crate) struct ControllerState {
     permissions: PermissionRuntime,
     emit: Emit,
     clipboard: Arc<dyn Clipboard>,
-    last_reply: Option<String>,
+    last_reply: Option<Arc<str>>,
     history_turns: usize,
     context_to_compact: bool,
 }
@@ -302,7 +302,7 @@ impl Controller {
     }
 
     fn remember_agent_facts(&mut self) {
-        self.state.last_reply = self.agent.last_assistant_reply().map(str::to_owned);
+        self.state.last_reply = self.agent.last_assistant_reply();
         self.state.history_turns = self.agent.history_turns();
         self.state.context_to_compact = self.agent.has_context_to_compact();
     }

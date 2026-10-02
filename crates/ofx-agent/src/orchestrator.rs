@@ -171,7 +171,7 @@ struct KnownCapabilities {
 
 struct LastReply {
     turn: usize,
-    text: String,
+    text: Arc<str>,
 }
 
 pub struct Agent {
@@ -346,7 +346,7 @@ impl Agent {
         if outcome == TurnOutcome::Completed {
             self.last_reply = Some(LastReply {
                 turn: self.turn_starts.len().saturating_sub(1),
-                text: final_text.clone(),
+                text: Arc::from(final_text.as_str()),
             });
         }
         TurnReport {
@@ -361,8 +361,10 @@ impl Agent {
         self.turn_starts.len() + usize::from(self.compacted.is_some())
     }
 
-    pub fn last_assistant_reply(&self) -> Option<&str> {
-        self.last_reply.as_ref().map(|reply| reply.text.as_str())
+    pub fn last_assistant_reply(&self) -> Option<Arc<str>> {
+        self.last_reply
+            .as_ref()
+            .map(|reply| Arc::clone(&reply.text))
     }
 
     async fn drive(

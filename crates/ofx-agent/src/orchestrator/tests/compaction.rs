@@ -40,7 +40,7 @@ async fn manual_compaction_keeps_the_newest_turns_and_replaces_the_rest_with_a_c
     );
     assert_eq!(summarizing, 1);
     assert_eq!(provider.requests().len(), 6);
-    assert_eq!(agent.last_assistant_reply(), Some("answer 6"));
+    assert_eq!(agent.last_assistant_reply().as_deref(), Some("answer 6"));
 
     run(&mut agent, "question 7").await;
     let requests = provider.requests();
@@ -473,7 +473,7 @@ async fn a_second_context_overflow_fails_the_turn() {
     assert_eq!(provider.requests().len(), 5);
     assert_eq!(agent.history.len(), 1);
     assert!(user_text(&agent.history[0]).starts_with("<compacted_conversation>\n"));
-    assert_eq!(agent.last_assistant_reply(), None);
+    assert_eq!(agent.last_assistant_reply().as_deref(), None);
 }
 
 #[tokio::test]
