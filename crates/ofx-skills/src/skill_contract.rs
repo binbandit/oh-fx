@@ -1,8 +1,10 @@
+mod locations;
 mod metadata;
 mod metadata_prefix;
 
 use std::path::PathBuf;
 
+pub use locations::{LocationError, Locations};
 pub use metadata::InvalidMetadataCause;
 pub(crate) use metadata::{SkillMetadata, parse_skill_file, resolve_metadata};
 pub(crate) use metadata_prefix::{MetadataPrefixError, read_metadata_prefix};
