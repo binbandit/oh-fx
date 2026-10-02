@@ -95,19 +95,19 @@ impl Transcript {
     }
 
     pub(crate) fn cancel_active_tools(&mut self) -> bool {
-        self.settle_active_tools(ToolGroup::cancel_active)
+        self.settle_active_tools(ToolActivityRow::cancel)
     }
 
     pub(crate) fn abandon_active_tools(&mut self, outcome: TurnOutcome) -> bool {
-        self.settle_active_tools(|group| group.abandon_active(outcome))
+        self.settle_active_tools(|row| row.abandon(outcome))
     }
 
-    fn settle_active_tools(&mut self, mut settle: impl FnMut(&mut ToolGroup) -> bool) -> bool {
+    fn settle_active_tools(&mut self, settle: impl Fn(&mut ToolActivityRow)) -> bool {
         let start = self.rendered.min(self.entries.len());
         let mut settled = false;
         for entry in &mut self.entries[start..] {
             if let Entry::ToolGroup(group) = entry {
-                settled |= settle(group);
+                settled |= group.settle_active(&settle);
             }
         }
         self.open_group = None;

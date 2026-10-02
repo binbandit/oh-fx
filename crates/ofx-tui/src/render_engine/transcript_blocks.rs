@@ -20,7 +20,7 @@ pub(crate) struct HelpEntry {
     pub(crate) description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum Entry {
     Welcome {
         version: String,

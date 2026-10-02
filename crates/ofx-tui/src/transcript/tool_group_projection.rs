@@ -1,8 +1,9 @@
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::fmt::Write as _;
 use std::mem;
 
-use ofx_contract::{CommandProcessPresentation, ToolActivity, ToolCallId, TurnOutcome};
+use ofx_contract::{CommandProcessPresentation, ToolActivity, ToolCallId};
 use ofx_markdown::{highlight, resolve};
 use ofx_text::{prefix_by_width, visible_width};
 
@@ -30,9 +31,24 @@ const KNOWN_MULTIWORD_LABELS: [&str; 6] = [
     "Timed out",
 ];
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct ToolGroup {
     rows: Vec<ToolActivityRow>,
+    drawn: RefCell<DrawnRows>,
+}
+
+#[derive(Debug, Default)]
+struct DrawnRows {
+    key: Option<(usize, Theme)>,
+    children: Vec<Option<Row>>,
+}
+
+impl DrawnRows {
+    fn forget(&mut self, index: usize) {
+        if let Some(child) = self.children.get_mut(index) {
+            *child = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -48,56 +64,60 @@ struct Summary {
 
 impl ToolGroup {
     pub(crate) fn new(row: ToolActivityRow) -> Self {
-        Self { rows: vec![row] }
+        Self {
+            rows: vec![row],
+            drawn: RefCell::default(),
+        }
     }
 
     pub(crate) fn push(&mut self, row: ToolActivityRow) {
+        self.drawn.get_mut().forget(self.rows.len() - 1);
         self.rows.push(row);
     }
 
     pub(crate) fn row_mut(&mut self, call_id: &ToolCallId) -> Option<&mut ToolActivityRow> {
-        self.rows
-            .iter_mut()
-            .rev()
-            .find(|row| &row.call_id == call_id)
+        let index = self.rows.iter().rposition(|row| &row.call_id == call_id)?;
+        self.drawn.get_mut().forget(index);
+        Some(&mut self.rows[index])
     }
 
     pub(crate) fn is_settled(&self) -> bool {
         self.rows.iter().all(|row| !row.is_active())
     }
 
-    pub(crate) fn cancel_active(&mut self) -> bool {
-        let mut cancelled = false;
-        for row in &mut self.rows {
+    pub(crate) fn settle_active(&mut self, settle: impl Fn(&mut ToolActivityRow)) -> bool {
+        let drawn = self.drawn.get_mut();
+        let mut settled = false;
+        for (index, row) in self.rows.iter_mut().enumerate() {
             if row.is_active() {
-                row.cancel();
-                cancelled = true;
+                settle(row);
+                drawn.forget(index);
+                settled = true;
             }
         }
-        cancelled
-    }
-
-    pub(crate) fn abandon_active(&mut self, outcome: TurnOutcome) -> bool {
-        let mut abandoned = false;
-        for row in &mut self.rows {
-            if row.is_active() {
-                row.abandon(outcome);
-                abandoned = true;
-            }
-        }
-        abandoned
+        settled
     }
 
     pub(crate) fn render(&self, cols: usize, theme: &Theme) -> Vec<Row> {
         let mut rows = vec![header_row(&self.summary(), cols, theme)];
-        let last = self.rows.len().saturating_sub(1);
-        for (index, row) in self.rows.iter().enumerate() {
+        let mut drawn = self.drawn.borrow_mut();
+        if drawn.key != Some((cols, *theme)) {
+            drawn.key = Some((cols, *theme));
+            drawn.children.clear();
+        }
+        drawn.children.resize(self.rows.len(), None);
+        let last = self.rows.len() - 1;
+        for (index, (row, child)) in self.rows.iter().zip(&mut drawn.children).enumerate() {
             let connector = if index == last {
                 LAST_CONNECTOR
             } else {
                 MIDDLE_CONNECTOR
             };
-            rows.push(child_row(row, connector, cols, theme));
+            rows.push(
+                child
+                    .get_or_insert_with(|| child_row(row, connector, cols, theme))
+                    .clone(),
+            );
         }
         for row in &self.rows {
             if row.status.outcome != Some(ToolOutcome::Cancelled) {
@@ -513,7 +533,7 @@ fn token_exceeds_width(units: &[Unit<'_>], start: usize, max_width: usize) -> bo
 mod tests {
     use ofx_contract::{
         ActionLabel, CallDescription, Concurrency, FileChangeStats, ToolEffect, ToolResultStatus,
-        tool_permission_denied_json,
+        TurnOutcome, tool_permission_denied_json,
     };
 
     use super::super::tool_presentation::Finished;
@@ -1055,17 +1075,17 @@ mod tests {
         assert!(!rows.is_settled());
         rows.push(read("2", "b"));
         assert!(!rows.is_settled());
-        assert!(rows.cancel_active());
+        assert!(rows.settle_active(ToolActivityRow::cancel));
         assert!(rows.is_settled());
-        assert!(!rows.cancel_active());
-        assert!(!rows.abandon_active(TurnOutcome::Completed));
+        assert!(!rows.settle_active(ToolActivityRow::cancel));
+        assert!(!rows.settle_active(|row| row.abandon(TurnOutcome::Completed)));
         let mut unreported = group(vec![started(
             "1",
             "read_file",
             ToolActivity::Read,
             ("Reading", "Read", "a"),
         )]);
-        assert!(unreported.abandon_active(TurnOutcome::Completed));
+        assert!(unreported.settle_active(|row| row.abandon(TurnOutcome::Completed)));
         assert_eq!(
             texts(&unreported.render(100, &theme())),
             [
@@ -1076,6 +1096,56 @@ mod tests {
         let row = unreported.row_mut(&ToolCallId::new("1")).unwrap();
         assert!(!row.is_active());
         assert!(unreported.row_mut(&ToolCallId::new("9")).is_none());
+    }
+
+    fn fresh(group: &ToolGroup) -> ToolGroup {
+        let mut rows = group.rows.iter().cloned();
+        let mut copy = ToolGroup::new(rows.next().unwrap());
+        for row in rows {
+            copy.push(row);
+        }
+        copy
+    }
+
+    #[test]
+    fn cached_rows_redraw_whatever_changed_since_the_last_render() {
+        let dark = theme();
+        let light = Theme::builtin(true, false, true);
+        let mut rows = group(vec![command("1", "cat log.txt | head -80", None)]);
+        let check = |rows: &ToolGroup, cols, theme: &Theme| {
+            assert_eq!(rows.render(cols, theme), fresh(rows).render(cols, theme));
+        };
+        check(&rows, 100, &dark);
+        rows.push(started(
+            "2",
+            "read_file",
+            ToolActivity::Read,
+            ("Reading", "Read", "notes.md"),
+        ));
+        check(&rows, 100, &dark);
+        rows.row_mut(&ToolCallId::new("2"))
+            .unwrap()
+            .finish(&Finished {
+                status: ToolResultStatus::Failure,
+                content: "",
+                process: None,
+                status_detail: None,
+                file_change: None,
+            });
+        check(&rows, 100, &dark);
+        rows.push(started(
+            "3",
+            "shell",
+            ToolActivity::Command,
+            ("Running", "Ran", "sleep 8"),
+        ));
+        check(&rows, 100, &dark);
+        assert!(rows.settle_active(ToolActivityRow::cancel));
+        check(&rows, 100, &dark);
+        check(&rows, 12, &dark);
+        check(&rows, 12, &light);
+        check(&rows, 100, &light);
+        assert_eq!(rows.render(100, &light)[3].text(), "└ Cancelled sleep 8");
     }
 
     #[test]
