@@ -245,9 +245,8 @@ impl Controller {
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => {
-                if toggle_fast(&mut self.state).await {
-                    self.reconfigure();
-                }
+                toggle_fast(&mut self.state).await;
+                self.reconfigure();
             }
             CommandEffect::Compact => return self.compact(commands).await,
         }
@@ -429,9 +428,8 @@ async fn run_deferred_command(
             cancel.cancel();
         }
         CommandEffect::ToggleFast => {
-            if toggle_fast(state).await {
-                state.config_pending = true;
-            }
+            toggle_fast(state).await;
+            state.config_pending = true;
         }
     }
 }
@@ -612,7 +610,11 @@ mod tests {
         }
     }
 
-    fn codex_catalog(fast: bool, lookups: usize) -> FakeServer {
+    fn catalog_version() -> Reply {
+        Reply::status(200, json!({"version": "0.153.1"}).to_string())
+    }
+
+    fn catalog_listing(fast: bool) -> Reply {
         let tiers: &[&str] = if fast { &["fast"] } else { &[] };
         let model = |slug: &str| {
             json!({
@@ -624,11 +626,12 @@ mod tests {
             })
         };
         let listing = json!({"models": [model(CODEX_MODEL), model(OTHER_CODEX_MODEL)]});
-        let mut replies = vec![Reply::status(
-            200,
-            json!({"version": "0.153.1"}).to_string(),
-        )];
-        replies.extend((0..lookups).map(|_| Reply::status(200, listing.to_string())));
+        Reply::status(200, listing.to_string())
+    }
+
+    fn codex_catalog(fast: bool, lookups: usize) -> FakeServer {
+        let mut replies = vec![catalog_version()];
+        replies.extend((0..lookups).map(|_| catalog_listing(fast)));
         FakeServer::start(replies)
     }
 
@@ -1361,6 +1364,25 @@ mod tests {
         harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(codex.requests()[0].json()["service_tier"], "priority");
         assert_eq!(catalog.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fast_mode_enabled_after_a_failed_catalog_lookup_reaches_the_next_request() {
+        let codex = FakeServer::start([codex_text("one"), codex_text("two"), codex_text("three")]);
+        let catalog = FakeServer::start([
+            catalog_version(),
+            Reply::status(400, "{}"),
+            catalog_listing(true),
+        ]);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        chat(&mut harness, &["one", "two"]).await;
+        assert_eq!(catalog.requests().len(), 2);
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        chat(&mut harness, &["three"]).await;
+        let requests = codex.requests();
+        assert_eq!(requests[1].json().get("service_tier"), None);
+        assert_eq!(requests[2].json()["service_tier"], "priority");
+        assert_eq!(catalog.requests().len(), 3);
     }
 
     #[tokio::test]

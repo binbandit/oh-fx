@@ -258,7 +258,12 @@ impl Agent {
     }
 
     pub fn set_config(&mut self, config: AgentConfig) {
-        if config.model != self.config.model {
+        if config.model != self.config.model
+            || self
+                .capabilities
+                .as_ref()
+                .is_some_and(|known| known.catalog_unavailable)
+        {
             self.capabilities = None;
         }
         self.config = config;

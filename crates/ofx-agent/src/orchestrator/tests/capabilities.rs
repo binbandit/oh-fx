@@ -194,6 +194,33 @@ async fn an_unavailable_catalog_drops_fast_mode_with_one_notice_per_turn() {
 }
 
 #[tokio::test]
+async fn a_reconfigured_agent_looks_an_unavailable_catalog_up_again() {
+    let provider = FakeProvider::new(vec![
+        text_reply("one"),
+        text_reply("two"),
+        text_reply("three"),
+        text_reply("four"),
+    ]);
+    let resolver = FakeResolver::new(vec![
+        CapabilityLookup::CatalogUnavailable,
+        supporting(&["low"], true),
+    ]);
+    let mut agent = agent_with(&provider, Some(&resolver), requesting(Some("low"), true));
+    run(&mut agent, "one").await;
+    run(&mut agent, "two").await;
+    agent.set_config(requesting(Some("low"), true));
+    run(&mut agent, "three").await;
+    agent.set_config(requesting(Some("low"), false));
+    run(&mut agent, "four").await;
+    let low = |fast| (Some("low".to_owned()), fast);
+    assert_eq!(
+        sent_options(&provider),
+        [(None, false), (None, false), low(true), low(false)]
+    );
+    assert_eq!(resolver.models(), ["test-model", "test-model"]);
+}
+
+#[tokio::test]
 async fn an_unavailable_catalog_stays_quiet_when_fast_mode_is_off() {
     let provider = FakeProvider::new(vec![text_reply("done")]);
     let resolver = FakeResolver::new(vec![CapabilityLookup::CatalogUnavailable]);
