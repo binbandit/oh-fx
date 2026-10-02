@@ -297,6 +297,33 @@ fn sigterm_ends_a_frame_write_blocked_on_a_stalled_terminal() {
 }
 
 #[test]
+fn an_exit_waits_for_a_stalled_terminal_and_sigterm_still_restores_it() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = PtySession::spawn(home.command(), 24, 80).expect("spawn oh-fx in a pty");
+    session
+        .stall_output_after(b"Run /help for commands")
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while count(&session.output(), b"Run /help for commands") == 0 {
+        assert!(Instant::now() < deadline, "the shell never started");
+        thread::sleep(Duration::from_millis(20));
+    }
+    session.fill_stalled_output().unwrap();
+    session.send(b"\x04");
+    assert!(
+        session.wait_exit(Duration::from_millis(500)).is_none(),
+        "the exit gave up on a terminal that only stopped reading"
+    );
+    session.terminate().unwrap();
+    let status = session
+        .wait_exit(WAIT)
+        .expect("SIGTERM ends an exit blocked on the terminal");
+    assert_eq!(status.signal(), Some(SIGTERM));
+    assert!(session.cooked().unwrap());
+}
+
+#[test]
 fn a_prompt_streams_a_reply_and_a_second_ctrl_c_exits() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&[
         "Hello from the fake ",

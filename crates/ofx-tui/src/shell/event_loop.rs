@@ -39,7 +39,7 @@ impl Shell<'_> {
         }
     }
 
-    fn pending_fatal_signal(&mut self) -> Option<i32> {
+    pub(super) fn pending_fatal_signal(&mut self) -> Option<i32> {
         let signal = self.signals.take().fatal?;
         self.terminal.restore_after_signal();
         Some(signal)
