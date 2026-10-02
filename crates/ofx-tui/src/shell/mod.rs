@@ -362,12 +362,17 @@ impl<'a> Shell<'a> {
         );
         let activity = self.activity_rows(now_ms);
         let banner = self.banner_rows();
+        let banner_rows = if banner.is_empty() {
+            0
+        } else {
+            banner.len() + 1
+        };
         let tail_gap = self.transcript.tail_wants_footer_gap();
         let composer = self
             .frame
             .composer
             .get_or_insert_with(|| match &self.approval {
-                Some(prompt) => prompt.view(&self.theme, self.layout.cols, self.layout.rows),
+                Some(prompt) => prompt.view(&self.theme, self.layout, banner_rows),
                 None => composer_view(
                     &self.composer,
                     self.layout.cols,
@@ -375,7 +380,12 @@ impl<'a> Shell<'a> {
                     &self.theme,
                 ),
             });
-        let required_rows = composer.required_rows.clone();
+        let review = composer.review.clone();
+        let banner = if review.as_ref().is_some_and(|review| review.screen) {
+            Vec::new()
+        } else {
+            banner
+        };
         let live = solve(
             LiveParts {
                 tail_gap,
@@ -399,11 +409,10 @@ impl<'a> Shell<'a> {
             .rows
             .len()
             .saturating_sub(usize::from(self.layout.rows));
-        let complete =
-            required_rows.is_some_and(|rows| live.composer_start + rows.start >= hidden_rows);
         self.flush_output()?;
-        if let Some(prompt) = &mut self.approval {
-            prompt.frame_drawn(self.layout, complete, now_ms);
+        if let (Some(prompt), Some(review)) = (&mut self.approval, &review) {
+            let visible = live.composer_start + review.required_rows.start >= hidden_rows;
+            prompt.frame_drawn(self.layout, review, visible, now_ms);
         }
         Ok(())
     }

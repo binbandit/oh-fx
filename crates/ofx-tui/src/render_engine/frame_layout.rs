@@ -76,7 +76,7 @@ mod tests {
         ComposerView {
             rows: vec![Row::plain("┃ ")],
             cursor: Some((0, 2)),
-            required_rows: None,
+            review: None,
         }
     }
 
