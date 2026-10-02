@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,6 +9,7 @@ use rustix::io::Errno;
 
 const COPY_LIMIT: Duration = Duration::from_secs(5);
 const EXIT_POLL: Duration = Duration::from_millis(10);
+const DEFAULT_SEARCH_PATH: &str = "/usr/local/bin:/bin/:/usr/bin";
 
 pub(crate) struct NativeClipboard;
 
@@ -30,13 +32,7 @@ fn copy_through(argv: &[&str], text: &[u8], limit: Duration) -> bool {
     let Some((program, arguments)) = argv.split_first() else {
         return false;
     };
-    let Ok(mut child) = Command::new(program)
-        .args(arguments)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+    let Some(mut child) = spawn(program, arguments) else {
         return false;
     };
     let deadline = Instant::now() + limit;
@@ -54,6 +50,31 @@ fn copy_through(argv: &[&str], text: &[u8], limit: Duration) -> bool {
         let _ = child.wait();
     }
     status.is_some_and(|status| status.success())
+}
+
+fn spawn(program: &str, arguments: &[&str]) -> Option<Child> {
+    let search = std::env::var_os("PATH").unwrap_or_else(|| DEFAULT_SEARCH_PATH.into());
+    for directory in std::env::split_paths(&search) {
+        if directory.as_os_str().is_empty() {
+            continue;
+        }
+        match Command::new(directory.join(program))
+            .args(arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => return Some(child),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::NotFound | ErrorKind::PermissionDenied | ErrorKind::NotADirectory
+                ) => {}
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 fn write_before(stdin: &ChildStdin, mut text: &[u8], deadline: Instant) -> bool {
@@ -105,10 +126,15 @@ fn exit_before(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use super::*;
 
     const HANG_LIMIT: Duration = Duration::from_secs(1);
+    const SEARCH_CHILD: &str = "OH_FX_CLIPBOARD_SEARCH_CHILD";
+    const SEARCH_TEST: &str =
+        "native::tests::the_command_is_found_through_path_entries_and_never_in_the_workspace";
 
     fn large_text() -> String {
         "clipboard ✓\n".repeat(8 * 1024 * 1024 / "clipboard ✓\n".len())
@@ -121,6 +147,77 @@ mod tests {
             .status()
             .unwrap()
             .success()
+    }
+
+    fn plant_clipboard_commands(directory: &Path, record: &Path) {
+        for name in ["pbcopy", "xclip"] {
+            let command = directory.join(name);
+            fs::write(
+                &command,
+                format!(
+                    "#!/bin/sh\nwhile read -r _; do :; done\necho \"$0\" >> '{}'\n",
+                    record.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn copies_with_search_path(workspace: &Path, search: &str) -> bool {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", SEARCH_TEST, "--test-threads=1"])
+            .env(SEARCH_CHILD, "1")
+            .env("PATH", search)
+            .current_dir(workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            matches!(status.code(), Some(0 | 1)),
+            "{search:?} {status:?}"
+        );
+        status.code() == Some(1)
+    }
+
+    #[test]
+    fn the_command_is_found_through_path_entries_and_never_in_the_workspace() {
+        if std::env::var_os(SEARCH_CHILD).is_some() {
+            std::process::exit(i32::from(NativeClipboard.copy("text")));
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let planted = workspace.path().join("planted");
+        let installed = tools.path().join("installed");
+        plant_clipboard_commands(workspace.path(), &planted);
+        plant_clipboard_commands(tools.path(), &installed);
+        let tools = tools.path().to_str().unwrap();
+        let elsewhere = elsewhere.path().to_str().unwrap();
+        for search in [
+            String::new(),
+            ":".to_owned(),
+            format!("{elsewhere}:"),
+            format!(":{elsewhere}"),
+            format!("{elsewhere}::{elsewhere}"),
+        ] {
+            assert!(
+                !copies_with_search_path(workspace.path(), &search),
+                "{search:?}"
+            );
+        }
+        assert!(copies_with_search_path(
+            workspace.path(),
+            &format!(":{elsewhere}::{tools}:")
+        ));
+        assert!(
+            !planted.exists(),
+            "{}",
+            fs::read_to_string(&planted).unwrap_or_default()
+        );
+        assert_eq!(fs::read_to_string(&installed).unwrap().lines().count(), 1);
     }
 
     #[test]
