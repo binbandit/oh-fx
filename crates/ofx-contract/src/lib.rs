@@ -5,6 +5,7 @@ mod history_turn;
 mod ids;
 mod model_capabilities;
 mod permission_gate;
+mod skill_menu;
 mod stream_provider;
 mod tool_args;
 mod tool_dispatch;
@@ -27,6 +28,9 @@ pub use permission_gate::{
     Admission, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest, FileChange,
     FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ReviewRequest,
     ReviewVerdict, Reviewed, SessionGrant,
+};
+pub use skill_menu::{
+    SkillBinding, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
 };
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
