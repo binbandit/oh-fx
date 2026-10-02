@@ -36,7 +36,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
-use crate::ask_session::{ResumeFailure, Resumed, SavedAsk};
+use crate::ask_session::{ResumeFailure, Resumed, SavedAsk, open_store};
 use crate::command_echo::CommandEcho;
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
@@ -432,8 +432,8 @@ async fn prepare_agent(
     let saved = match resumed {
         Some(resumed) => Some(SavedAsk::resume(resumed, &setup, &mut agent)?),
         None if args.session.no_save => None,
-        None => match SavedAsk::start(&profile, &setup) {
-            Ok(saved) => Some(saved),
+        None => match open_store(&profile) {
+            Ok(store) => Some(SavedAsk::start(store, &profile, &setup)?),
             Err(error) => {
                 write_stderr(&format!(
                     "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"

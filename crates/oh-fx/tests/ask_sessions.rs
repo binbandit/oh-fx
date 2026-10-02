@@ -435,3 +435,46 @@ fn no_save_runs_neither_create_nor_resume_sessions() {
     let output = home.ask(&["ask", "--no-save", "--resume", "last", "hello"], &[]);
     assert_eq!(output.status.code(), Some(1));
 }
+
+#[test]
+fn an_unusable_store_warns_and_runs_without_saving() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+    let home = Home::new(&server.base_url());
+    fs::create_dir_all(home.root.join("data")).expect("create the data directory");
+    fs::write(home.root.join("data/oh-fx"), "not a directory").expect("block the store");
+    let output = home.ask(&["ask", "--json", "hello"], &[]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "oh-fx ask: warning: session persistence unavailable; error=SessionPathUnsafe; continuing without saving\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["final_output"], "one");
+    assert_eq!(result["session_id"], "");
+    let output = home.ask(&["ask", "--resume", "last", "hello"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "oh-fx: SessionPathUnsafe\n"
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn a_session_the_open_store_cannot_start_fails_the_run_before_any_request() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let model = "m".repeat(1025);
+    let unsavable = [("OH_FX_MODEL", model.as_str())];
+    let output = home.ask(&["ask", "hello"], &unsavable);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "oh-fx: InvalidDurableField\n"
+    );
+    let result = home.ask_json(&["hello"], &unsavable);
+    assert_eq!(result["error"], "InvalidDurableField");
+    assert_eq!(result["session_id"], "");
+    assert!(home.session_ids().is_empty());
+    assert!(server.requests().is_empty());
+}

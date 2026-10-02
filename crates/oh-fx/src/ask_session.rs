@@ -73,8 +73,11 @@ impl SavedAsk {
         Ok(Self::new(resumed.store, resumed.session, provider, true))
     }
 
-    pub(crate) fn start(profile: &Profile, setup: &AgentSetup) -> Result<Self, SessionError> {
-        let store = open_store(profile)?;
+    pub(crate) fn start(
+        store: SessionStore,
+        profile: &Profile,
+        setup: &AgentSetup,
+    ) -> Result<Self, SessionError> {
         let provider = running_provider(setup)?;
         let settings = profile.settings();
         let session = store.start(SessionPreferences {
@@ -125,7 +128,7 @@ impl SavedAsk {
     }
 }
 
-fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {
+pub(crate) fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {
     let data = profile
         .data_dir()
         .ok_or(SessionError::SessionStoreUnavailable)?;
