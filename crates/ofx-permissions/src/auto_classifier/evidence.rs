@@ -56,6 +56,24 @@ pub(crate) struct PriorToolResults<'a> {
     older_entries_omitted: bool,
 }
 
+#[cfg(test)]
+impl<'a> PriorToolResults<'a> {
+    pub(super) fn entries(&self) -> &[PriorToolResult<'a>] {
+        &self.entries
+    }
+}
+
+#[cfg(test)]
+impl<'a> PriorToolResult<'a> {
+    pub(super) fn call_id(&self) -> &'a str {
+        self.call_id
+    }
+
+    pub(super) fn content(&self) -> &'a str {
+        self.content
+    }
+}
+
 pub(super) struct Evidence {
     pub(super) text: String,
     pub(super) action_complete: bool,
@@ -207,7 +225,7 @@ fn write_review_rows(out: &mut String, review: &FileReview<'_>, complete: &mut b
     }
 }
 
-fn write_prior_tool_results(out: &mut String, results: &PriorToolResults<'_>) {
+pub(super) fn write_prior_tool_results(out: &mut String, results: &PriorToolResults<'_>) {
     let mut evidence_complete = !results.older_entries_omitted;
     let rendered: Vec<(String, bool)> = results
         .entries

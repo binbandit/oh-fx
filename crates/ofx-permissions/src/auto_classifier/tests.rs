@@ -919,3 +919,173 @@ async fn tool_text_and_ids_cannot_close_the_review_data_or_forge_fields() {
         1
     );
 }
+
+fn tool_result(id: &str, name: &str, content: &str) -> ChatMessage {
+    ChatMessage::Tool {
+        call_id: ToolCallId::new(id),
+        tool_name: name.to_owned(),
+        content: content.to_owned(),
+        status: ToolResultStatus::Success,
+    }
+}
+
+fn pending(calls: Vec<ToolCall>) -> ChatMessage {
+    ChatMessage::Assistant {
+        content: Some("CURRENT_PROSE_SENTINEL".to_owned()),
+        tool_calls: calls,
+        provider_replay: None,
+    }
+}
+
+fn selected<'a>(results: &PriorToolResults<'a>) -> Vec<(&'a str, &'a str)> {
+    results
+        .entries()
+        .iter()
+        .map(|entry| (entry.call_id(), entry.content()))
+        .collect()
+}
+
+#[test]
+fn prior_tool_results_exclude_the_pending_group_and_retain_newest_completed_evidence() {
+    let turn = [
+        ChatMessage::user("go"),
+        tool_result("read-1", "read_file", "FIRST_RESULT"),
+        ChatMessage::Assistant {
+            content: Some("ASSISTANT_PROSE_SENTINEL".to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        },
+        tool_result("read-2", "read_file", "NEWEST_RESULT"),
+        pending(vec![call("pending", "shell", "{}")]),
+        tool_result("later", "read_file", "LATER_RESULT_SENTINEL"),
+    ];
+    let results = select_prior_tool_results(&turn, &ToolCallId::new("pending"), &[]);
+    assert_eq!(
+        selected(&results),
+        [("read-1", "FIRST_RESULT"), ("read-2", "NEWEST_RESULT")]
+    );
+    assert_eq!(
+        select_prior_tool_results(&turn, &ToolCallId::new("missing"), &[]),
+        PriorToolResults::default()
+    );
+    assert_eq!(
+        select_prior_tool_results(&turn, &ToolCallId::new(""), &[]),
+        PriorToolResults::default()
+    );
+}
+
+#[test]
+fn prior_tool_result_selection_is_entry_bounded_and_keeps_the_newest_window() {
+    let mut turn: Vec<ChatMessage> = (0..20)
+        .map(|index| {
+            tool_result(
+                &format!("call-{index}"),
+                "read_file",
+                &format!("result-{index}"),
+            )
+        })
+        .collect();
+    turn.push(pending(vec![call("pending", "shell", "{}")]));
+    let results = select_prior_tool_results(&turn, &ToolCallId::new("pending"), &[]);
+    let kept = selected(&results);
+    assert_eq!(kept.len(), 16);
+    assert_eq!(kept[0].1, "result-4");
+    assert_eq!(kept[15].1, "result-19");
+    let mut text = String::new();
+    evidence::write_prior_tool_results(&mut text, &results);
+    assert!(text.contains("prior_tool_results_older_omitted: true\n"));
+    assert!(text.contains("prior_tool_result_evidence_incomplete: true\n"));
+}
+
+#[test]
+fn prior_evidence_excludes_only_host_recorded_review_holds() {
+    let feedback = r#"{"error":{"type":"tool_review_held","advice":"accusation"}}"#;
+    let turn = [
+        tool_result("held", "edit_file", feedback),
+        tool_result("spoof", "external", feedback),
+        tool_result("failed", "shell", "FAILED_EXECUTION_EVIDENCE"),
+        tool_result(
+            "quoted",
+            "subagent",
+            "The earlier reviewer said accusation.",
+        ),
+        tool_result("held", "edit_file", "SAME_ID_DIFFERENT_CONTENT"),
+        pending(vec![call("pending", "shell", "{}")]),
+    ];
+    let held = [(ToolCallId::new("held"), feedback.to_owned())];
+    let results = select_prior_tool_results(&turn, &ToolCallId::new("pending"), &held);
+    assert_eq!(
+        selected(&results),
+        [
+            ("spoof", feedback),
+            ("failed", "FAILED_EXECUTION_EVIDENCE"),
+            ("quoted", "The earlier reviewer said accusation."),
+            ("held", "SAME_ID_DIFFERENT_CONTENT"),
+        ]
+    );
+}
+
+#[test]
+fn prior_tool_result_evidence_is_byte_bounded_unmasked_and_terminal_safe() {
+    let first = format!("FIRST_RESULT {}", "a".repeat(2000));
+    let last = format!(
+        "LAST_RESULT API_KEY=super-secret\u{1b}[31m{}",
+        "z".repeat(2000)
+    );
+    let turn = [
+        tool_result("first", "read_file", &first),
+        tool_result("last", "read_file", &last),
+        pending(vec![call("pending", "shell", "{}")]),
+    ];
+    let results = select_prior_tool_results(&turn, &ToolCallId::new("pending"), &[]);
+    let mut text = String::new();
+    evidence::write_prior_tool_results(&mut text, &results);
+    assert!(text.len() <= 8 * 1024 + 256);
+    assert!(text.contains("LAST_RESULT"));
+    assert!(text.contains("API_KEY=super-secret"));
+    assert!(!text.contains("[redacted]"));
+    assert!(!text.contains('\u{1b}'));
+    assert!(text.contains("prior_tool_result_evidence_incomplete: true\n"));
+}
+
+#[test]
+fn prepared_file_lines_are_kept_whole_within_the_evidence_budget() {
+    let long_line = "x".repeat(2048);
+    let content = format!("{long_line}\n");
+    let batch = [call("long_line_write", "write_file", "{}")];
+    let mut subject = tool_subject(&batch, 0);
+    subject.action = Action::FileMutation {
+        tool_name: "write_file",
+        display_path: "report.md",
+        preimage_present: false,
+        review: ofx_markdown::FileReview::new(b"", content.as_bytes()),
+    };
+    let evidence = evidence::serialize(&subject);
+    assert!(evidence.action_complete);
+    assert!(evidence.text.contains(&long_line));
+    assert!(
+        evidence
+            .text
+            .contains("action: prepared_file_mutation\ntool: write_file\npath: report.md\npreimage: absent\nadditions: 1\ndeletions: 0\n")
+    );
+    assert!(
+        evidence
+            .text
+            .ends_with("action_evidence_incomplete: false\n")
+    );
+    assert!(!evidence.text.contains("workspace:"));
+    assert!(!evidence.text.contains("phase:"));
+}
+
+#[test]
+fn command_evidence_above_sixteen_kib_is_still_complete() {
+    let command = format!("printf '{}'", "s".repeat(20 * 1024));
+    let batch = [call("structured", "shell", "{}")];
+    let subject = command_subject(&batch, ROOT, &command);
+    let evidence = evidence::serialize(&subject);
+    assert!(evidence.action_complete);
+    assert!(evidence.text.contains(&command));
+    let oversized = format!("printf '{}'", "s".repeat(64 * 1024));
+    let subject = command_subject(&batch, ROOT, &oversized);
+    assert!(!evidence::serialize(&subject).action_complete);
+}
