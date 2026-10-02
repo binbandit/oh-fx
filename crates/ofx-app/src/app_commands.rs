@@ -10,12 +10,15 @@ const CLIPBOARD_TOPIC: &str = "clipboard";
 const NO_REPLY_TO_COPY: &str = "No assistant reply to copy.";
 const COPIED: &str = "Copied to clipboard.";
 const COPY_FAILED: &str = "Failed to copy to clipboard.";
+const FAST_TOPIC: &str = "fast";
+const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
     None,
     SwitchModel(String),
     Clear,
+    ToggleFast,
 }
 
 pub(crate) fn slash_command_specs() -> Vec<SlashCommandSpec> {
@@ -65,6 +68,7 @@ pub(crate) fn handle_command(
             state.emit(UiEvent::StatsRequested);
             CommandEffect::None
         }
+        SlashKind::Fast => CommandEffect::ToggleFast,
         SlashKind::Copy => {
             copy_last_reply(state);
             CommandEffect::None
@@ -92,6 +96,21 @@ pub(crate) fn handle_command(
             CommandEffect::SwitchModel(resolved)
         }
     }
+}
+
+pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
+    if state.fast_mode() {
+        state.set_fast_mode(false);
+        state.notice(NoticeTone::Neutral, FAST_TOPIC, "off");
+        return true;
+    }
+    if !state.supports_fast_mode().await {
+        state.notice(NoticeTone::Neutral, FAST_TOPIC, NO_FAST_MODE);
+        return false;
+    }
+    state.set_fast_mode(true);
+    state.notice(NoticeTone::Neutral, FAST_TOPIC, "on");
+    true
 }
 
 fn copy_last_reply(state: &ControllerState) {
@@ -137,12 +156,14 @@ mod tests {
                 "/stats",
                 "/model",
                 "/permissions",
+                "/copy",
+                "/fast",
                 "/version",
                 "/quit"
             ]
         );
-        assert_eq!(specs[8].aliases, ["/exit"]);
-        assert_eq!(specs[8].description, "exit the interactive shell");
+        assert_eq!(specs[9].aliases, ["/exit"]);
+        assert_eq!(specs[9].description, "exit the interactive shell");
     }
 
     #[test]
@@ -163,6 +184,7 @@ mod tests {
                 ("/model", "Model"),
                 ("/permissions", "Security"),
                 ("/copy", "Session"),
+                ("/fast", "Model"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]

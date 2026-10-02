@@ -439,6 +439,20 @@ impl AgentSetup {
             .map_or(&[], |connection| connection.models())
     }
 
+    pub(crate) fn fast_mode(&self) -> bool {
+        self.config.fast_mode
+    }
+
+    pub(crate) async fn supports_fast_mode(&self, model: &str) -> bool {
+        let Some(resolver) = &self.capabilities else {
+            return false;
+        };
+        matches!(
+            resolver.resolve(model, &CancellationToken::new()).await,
+            CapabilityLookup::Resolved(capabilities) if capabilities.supports_fast_mode
+        )
+    }
+
     pub(crate) fn approvals(&self) -> Option<&Approvals> {
         self.approvals.as_ref()
     }

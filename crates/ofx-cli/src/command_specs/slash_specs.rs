@@ -9,6 +9,7 @@ pub enum SlashKind {
     Model,
     Permissions,
     Copy,
+    Fast,
     Version,
     Quit,
 }
@@ -199,6 +200,8 @@ mod tests {
                 "/stats",
                 "/model",
                 "/permissions",
+                "/copy",
+                "/fast",
                 "/version",
                 "/quit"
             ]
@@ -228,6 +231,10 @@ mod tests {
             spec(SlashKind::Copy).completion_description,
             "copy the last assistant response"
         );
+        assert_eq!(
+            spec(SlashKind::Fast).completion_description,
+            "toggle Fast mode when supported"
+        );
     }
 
     #[test]
@@ -247,6 +254,7 @@ mod tests {
                 ("/model", "Model"),
                 ("/permissions", "Security"),
                 ("/copy", "Session"),
+                ("/fast", "Model"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]

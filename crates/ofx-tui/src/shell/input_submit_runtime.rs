@@ -130,6 +130,7 @@ mod tests {
             ("/stats", &[]),
             ("/model", &[]),
             ("/copy", &[]),
+            ("/fast", &[]),
             ("/version", &[]),
             ("/quit", &["/exit"]),
         ]
@@ -181,8 +182,13 @@ mod tests {
         assert_eq!(
             slash_completions(&commands, "/"),
             [
-                "/help", "/clear", "/reset", "/stats", "/model", "/copy", "/version", "/quit"
+                "/help", "/clear", "/reset", "/stats", "/model", "/copy", "/fast", "/version",
+                "/quit"
             ]
+        );
+        assert_eq!(
+            classify("/fa", &commands),
+            Submit::Command("/fast".to_owned())
         );
         assert_eq!(
             classify("/st", &commands),

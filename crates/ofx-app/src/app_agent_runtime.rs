@@ -8,7 +8,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
-use crate::app_commands::{CommandEffect, handle_command};
+use crate::app_commands::{CommandEffect, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::native::NativeClipboard;
 
@@ -21,7 +21,8 @@ const LEGACY_CONTEXT_PREFIX: &str = "[context] ";
 pub(crate) struct ControllerState {
     setup: AgentSetup,
     model: String,
-    model_pending: bool,
+    fast_mode: bool,
+    config_pending: bool,
     pending_clear: Option<u64>,
     received_prompts: u64,
     queue: VecDeque<String>,
@@ -42,6 +43,18 @@ impl ControllerState {
 
     pub(crate) fn permissions(&self) -> &PermissionRuntime {
         &self.permissions
+    }
+
+    pub(crate) fn fast_mode(&self) -> bool {
+        self.fast_mode
+    }
+
+    pub(crate) fn set_fast_mode(&mut self, enabled: bool) {
+        self.fast_mode = enabled;
+    }
+
+    pub(crate) async fn supports_fast_mode(&self) -> bool {
+        self.setup.supports_fast_mode(&self.model).await
     }
 
     pub(crate) fn last_reply(&self) -> Option<&str> {
@@ -127,8 +140,9 @@ impl Controller {
         let state = ControllerState {
             model: setup.model().to_owned(),
             permissions: setup.permission_runtime(Arc::clone(&emit)),
+            fast_mode: setup.fast_mode(),
             setup,
-            model_pending: false,
+            config_pending: false,
             pending_clear: None,
             received_prompts: 0,
             queue: VecDeque::new(),
@@ -163,7 +177,7 @@ impl Controller {
             };
             match command {
                 UiCommand::Submit { prompt } => self.state.receive_prompt(prompt),
-                UiCommand::RunCommand { text } => self.run_idle_command(&text),
+                UiCommand::RunCommand { text } => self.run_idle_command(&text).await,
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
@@ -173,7 +187,7 @@ impl Controller {
         }
     }
 
-    fn run_idle_command(&mut self, text: &str) {
+    async fn run_idle_command(&mut self, text: &str) {
         match handle_command(&self.state, text, false) {
             CommandEffect::None => {}
             CommandEffect::SwitchModel(model) => {
@@ -181,12 +195,18 @@ impl Controller {
                 self.reconfigure();
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
+            CommandEffect::ToggleFast => {
+                if toggle_fast(&mut self.state).await {
+                    self.reconfigure();
+                }
+            }
         }
     }
 
     fn reconfigure(&mut self) {
-        self.agent
-            .set_config(self.state.setup.config(&self.state.model));
+        let mut config = self.state.setup.config(&self.state.model);
+        config.fast_mode = self.state.fast_mode;
+        self.agent.set_config(config);
     }
 
     fn remember_agent_facts(&mut self) {
@@ -264,13 +284,18 @@ impl Controller {
                             match handle_command(state, &text, true) {
                                 CommandEffect::None => {}
                                 CommandEffect::SwitchModel(model) => {
-                                    state.model_pending = true;
+                                    state.config_pending = true;
                                     state.select_model(model);
                                 }
                                 CommandEffect::Clear => {
                                     state.pending_clear = Some(state.received_prompts);
                                     state.queue.clear();
                                     cancel.cancel();
+                                }
+                                CommandEffect::ToggleFast => {
+                                    if toggle_fast(state).await {
+                                        state.config_pending = true;
+                                    }
                                 }
                             }
                         }
@@ -293,7 +318,7 @@ impl Controller {
             });
         }
         self.remember_agent_facts();
-        if std::mem::take(&mut self.state.model_pending) {
+        if std::mem::take(&mut self.state.config_pending) {
             self.reconfigure();
         }
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
@@ -328,6 +353,7 @@ fn provider_status(error: &ProviderError, source: CredentialSource) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
@@ -336,6 +362,7 @@ mod tests {
         ApprovalDecision, PermissionMode, ProviderErrorKind, ToolResultStatus, TurnId, TurnOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
+    use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
     use ofx_testkit::{FakeServer, Reply, chat_text_events, chat_tool_call_events};
     use serde_json::{Value, json};
     use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -373,10 +400,6 @@ mod tests {
     }
 
     async fn agent_setup(home: &tempfile::TempDir, server: &FakeServer) -> AgentSetup {
-        let config = home.path().join("config");
-        let workspace = home.path().join("workspace");
-        fs::create_dir_all(&config).unwrap();
-        fs::create_dir_all(&workspace).unwrap();
         let settings = json!({
             "provider": "local",
             "providers": {
@@ -388,6 +411,18 @@ mod tests {
                 }
             }
         });
+        agent_setup_with(home, &settings, SubscriptionEndpoints::default()).await
+    }
+
+    async fn agent_setup_with(
+        home: &tempfile::TempDir,
+        settings: &Value,
+        endpoints: SubscriptionEndpoints,
+    ) -> AgentSetup {
+        let config = home.path().join("config");
+        let workspace = home.path().join("workspace");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
         fs::write(config.join("settings.json"), settings.to_string()).unwrap();
         let paths = ProfilePaths {
             config,
@@ -409,7 +444,7 @@ mod tests {
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
-                    endpoints: SubscriptionEndpoints::default(),
+                    endpoints,
                 },
                 &CancellationToken::new(),
             )
@@ -417,10 +452,81 @@ mod tests {
             .unwrap()
     }
 
+    const CODEX_MODEL: &str = "gpt-6.1-sol";
+
+    fn codex_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let data = home.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+        let session = json!({
+            "version": 1,
+            "access_token": "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl",
+            "refresh_token": "rt-refresh-secret-0123456789",
+            "expires_at_ms": 4_102_444_800_000_i64,
+            "account_id": "acct_test",
+        });
+        let file = data.join("chatgpt-auth.json");
+        fs::write(&file, format!("{session}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        home
+    }
+
+    fn codex_endpoints(codex: &FakeServer, catalog: &FakeServer) -> SubscriptionEndpoints {
+        SubscriptionEndpoints {
+            codex: CodexEndpoints {
+                responses: format!("{}/backend-api/codex/responses", codex.base_url()),
+            },
+            models: CodexModelsEndpoints {
+                models: format!("{}/backend-api/codex/models", catalog.base_url()),
+                client_version: format!("{}/@openai/codex/latest", catalog.base_url()),
+            },
+            ..SubscriptionEndpoints::default()
+        }
+    }
+
+    fn codex_catalog(fast: bool, lookups: usize) -> FakeServer {
+        let tiers: &[&str] = if fast { &["fast"] } else { &[] };
+        let listing = json!({"models": [{
+            "slug": CODEX_MODEL,
+            "visibility": "list",
+            "supported_in_api": true,
+            "supported_reasoning_levels": [{"effort": "low"}],
+            "additional_speed_tiers": tiers,
+        }]});
+        let mut replies = vec![Reply::status(
+            200,
+            json!({"version": "0.153.1"}).to_string(),
+        )];
+        replies.extend((0..lookups).map(|_| Reply::status(200, listing.to_string())));
+        FakeServer::start(replies)
+    }
+
+    fn codex_text(text: &str) -> Reply {
+        let events = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
+            json!({"type":"response.output_text.delta","output_index":0,"delta":text}),
+            json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}),
+        ]
+        .map(|event| event.to_string());
+        Reply::sse(&events)
+    }
+
     impl Harness {
         async fn start(server: &FakeServer) -> Self {
             let home = tempfile::tempdir().unwrap();
             let setup = agent_setup(&home, server).await;
+            Self::with_setup(home, setup)
+        }
+
+        async fn codex(codex: &FakeServer, catalog: &FakeServer) -> Self {
+            let home = codex_home();
+            let settings = json!({"provider": "codex", "models": {"codex": CODEX_MODEL}});
+            let setup = agent_setup_with(&home, &settings, codex_endpoints(codex, catalog)).await;
+            Self::with_setup(home, setup)
+        }
+
+        fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
             let (events_sender, events) = unbounded_channel();
             let emit: Emit = Arc::new(move |event| {
                 let _ = events_sender.send(event);
@@ -755,6 +861,79 @@ mod tests {
             .await;
         let cleared = copy_notice(&mut harness).await;
         assert_eq!(cleared.body, "No assistant reply to copy.");
+    }
+
+    async fn fast_notice(harness: &mut Harness) -> String {
+        harness.command("/fast");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "fast"))
+            .await;
+        notice_body(shown).pop().unwrap()
+    }
+
+    #[tokio::test]
+    async fn fast_mode_needs_a_model_that_comes_with_it() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        assert_eq!(
+            fast_notice(&mut harness).await,
+            "fast|This model does not come with a fast mode."
+        );
+        assert_eq!(
+            fast_notice(&mut harness).await,
+            "fast|This model does not come with a fast mode."
+        );
+    }
+
+    #[tokio::test]
+    async fn fast_mode_toggles_the_priority_tier_of_the_next_codex_requests() {
+        let codex = FakeServer::start([codex_text("fast"), codex_text("standard")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        harness.submit("hurry");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|off");
+        harness.submit("relax");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_eq!(requests[0].json()["service_tier"], "priority");
+        assert_eq!(requests[1].json().get("service_tier"), None);
+    }
+
+    #[tokio::test]
+    async fn fast_mode_stays_off_for_a_codex_model_without_a_fast_tier() {
+        let codex = FakeServer::start([codex_text("standard")]);
+        let catalog = codex_catalog(false, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(
+            fast_notice(&mut harness).await,
+            "fast|This model does not come with a fast mode."
+        );
+        harness.submit("go");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(codex.requests()[0].json().get("service_tier"), None);
+    }
+
+    #[tokio::test]
+    async fn fast_mode_switched_during_a_turn_applies_to_the_next_one() {
+        let held = Reply::held_sse(&[json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}).to_string(), json!({"type":"response.output_text.delta","output_index":0,"delta":"partial\n"}).to_string()]);
+        let codex = FakeServer::start([held, codex_text("next")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        harness.submit("next");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_eq!(requests[0].json().get("service_tier"), None);
+        assert_eq!(requests[1].json()["service_tier"], "priority");
     }
 
     #[tokio::test]

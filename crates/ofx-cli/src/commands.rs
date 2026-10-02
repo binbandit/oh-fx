@@ -534,6 +534,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Fast,
+        "/fast",
+        "toggle Fast mode when supported",
+        SlashPresentationCategory::Model,
+    ),
+    SlashSpec::new(
         SlashKind::Version,
         "/version",
         "show the oh-fx version",
