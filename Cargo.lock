@@ -663,6 +663,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-app"
+version = "0.1.0"
+dependencies = [
+ "ofx-agent",
+ "ofx-auth",
+ "ofx-config",
+ "ofx-contract",
+ "ofx-exec",
+ "ofx-gateway",
+ "ofx-http",
+ "ofx-permissions",
+ "ofx-testkit",
+ "ofx-text",
+ "ofx-tools",
+ "ofx-upgrade",
+ "ofx-workspace",
+ "rustix",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "ofx-auth"
 version = "0.1.0"
 dependencies = [
@@ -878,6 +904,7 @@ name = "oh-fx"
 version = "0.1.0"
 dependencies = [
  "ofx-agent",
+ "ofx-app",
  "ofx-auth",
  "ofx-cli",
  "ofx-config",
@@ -885,17 +912,13 @@ dependencies = [
  "ofx-exec",
  "ofx-gateway",
  "ofx-http",
- "ofx-permissions",
  "ofx-session",
  "ofx-testkit",
  "ofx-text",
- "ofx-tools",
  "ofx-upgrade",
- "ofx-workspace",
  "rustix",
  "serde",
  "serde_json",
- "sha2",
  "signal-hook",
  "tempfile",
  "tokio",

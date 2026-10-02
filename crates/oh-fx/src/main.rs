@@ -1,15 +1,12 @@
 mod auto_upgrade;
 mod cli_ask;
-mod codex_provider;
 mod command_echo;
-mod context;
 mod help;
 mod login_command;
 mod models_command;
 mod provider_activation;
 mod provider_command;
 mod shell_call_record;
-mod tool_set;
 mod upgrade_command;
 
 use std::env;
@@ -168,10 +165,6 @@ fn ignores_sigpipe(kind: TopLevelKind) -> bool {
             | TopLevelKind::Credits
             | TopLevelKind::Upgrade
     )
-}
-
-pub(crate) fn user_agent() -> String {
-    format!("oh-fx/{}", ofx_upgrade::VERSION)
 }
 
 pub(crate) fn write_stdout(text: &str) -> io::Result<()> {

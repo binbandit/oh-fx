@@ -1,10 +1,6 @@
 use std::env;
-use std::ffi::OsStr;
-use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::mem;
-use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -12,23 +8,23 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, BlockedCall, ProjectContext, TurnFailure, TurnReport,
-    normalize_assistant_text_for_display, text_for_completed_presentation,
+    Agent, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
+    text_for_completed_presentation,
 };
-use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, MISSING_CHATGPT_CREDENTIAL_MESSAGE};
+use ofx_app::{
+    CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, SubscriptionEndpoints,
+};
+use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{
-    ConnectionError, ContextLimitName, ContextLimitOverride, ProfilePaths, SelectionError,
-    Settings, request_output_tokens,
+    ConnectionError, ContextLimitName, ContextLimitOverride, SelectionError, Settings,
 };
 use ofx_contract::{
-    CapabilityResolver, ModelProvider, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
-    TurnOutcome, UiEvent, Usage,
+    ModelRecoveryAction, ModelRecoveryCause, PermissionMode, RouteRecoveryStatus, ToolActivity,
+    ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent, Usage,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
-use ofx_gateway::{ChatCompletionsProvider, HttpFailure};
-use ofx_permissions::PermissionPolicy;
+use ofx_gateway::HttpFailure;
 use ofx_session::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
@@ -38,18 +34,11 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
-use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
 use crate::command_echo::CommandEcho;
-use crate::context::{
-    GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
-    ProfileLocation, gather_project_context,
-};
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
 };
-use crate::tool_set;
 
-const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
@@ -161,24 +150,16 @@ impl From<CodexUnavailable> for Failure {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CredentialSource {
-    Configured,
-    Codex,
-}
-
-impl CredentialSource {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Configured => CONFIGURED_SOURCE_LABEL,
-            Self::Codex => CHATGPT_SOURCE_LABEL,
-        }
-    }
-
-    const fn relogin(self) -> Option<&'static str> {
-        match self {
-            Self::Configured => None,
-            Self::Codex => Some(CHATGPT_RELOGIN_MESSAGE),
+impl From<ConnectError> for Failure {
+    fn from(error: ConnectError) -> Self {
+        match error {
+            ConnectError::Selection(error) => error.into(),
+            ConnectError::Connection(error) => error.into(),
+            ConnectError::InvalidConnection(error) => {
+                Self::notice("InvalidConnection", error.to_string())
+            }
+            ConnectError::Codex(error) => error.into(),
+            ConnectError::InvalidModel(model) => Self::invalid_model(model),
         }
     }
 }
@@ -223,15 +204,6 @@ struct PreparedAsk {
     permission_mode: PermissionMode,
     source: CredentialSource,
     context_notices: Vec<String>,
-}
-
-struct Route {
-    provider: Arc<dyn ModelProvider>,
-    capabilities: Option<Arc<dyn CapabilityResolver>>,
-    model: String,
-    max_output_tokens: Option<u32>,
-    source: CredentialSource,
-    uses_tls: bool,
 }
 
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -402,100 +374,32 @@ async fn prepare_agent(
     cancel: &CancellationToken,
 ) -> Result<PreparedAsk, Failure> {
     let args = request.args;
-    let workspace_root = workspace_root()?;
-    let paths = ProfilePaths::from_environment();
-    let settings = match &paths {
-        Some(paths) => Settings::load(paths, &workspace_root)
-            .map_err(|error| Failure::code(error.to_string()))?,
-        None => Settings::default(),
-    };
-    if settings.profile_is_unusable() {
-        return Err(Failure::code("InvalidProfileConfiguration"));
-    }
+    let profile = Profile::load().map_err(|error| Failure::code(error.to_string()))?;
+    let settings = profile.settings();
     let permission_mode = args
         .permissions
         .mode
         .unwrap_or_else(|| settings.permission_mode());
-    announce_settings(args, &settings, permission_mode)?;
-    let lookup = |name: &str| env::var(name).ok();
-    let requested = args.model.as_deref();
-    let route = if settings.codex_selected(&lookup)? {
-        codex_route(
-            &settings,
-            requested,
-            paths.as_ref(),
-            endpoints,
-            &lookup,
-            cancel,
-        )
-        .await?
-    } else {
-        let connection = settings.selected_connection(&lookup)?;
-        let model = select_model(requested, |model| {
-            settings.selected_model(connection, model, &lookup)
-        })?;
-        let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
-        let uses_tls = uses_tls(&resolved.chat_url);
-        let provider = ChatCompletionsProvider::new(resolved, &crate::user_agent())
-            .map_err(|error| Failure::notice("InvalidConnection", error.to_string()))?;
-        let model = model.map_err(Failure::invalid_model)?;
-        Route {
-            provider: Arc::new(provider),
-            capabilities: None,
-            max_output_tokens: request_output_tokens(connection.capabilities(&model)),
-            model,
-            source: CredentialSource::Configured,
-            uses_tls,
-        }
-    };
-    if route.uses_tls {
-        ofx_http::warm_tls_roots();
-    }
-    let project = ask_project_context(
-        &settings,
-        request.context_limits,
-        paths.as_ref(),
-        &workspace_root,
-    );
-    let model = route.model;
-    let (reasoning_effort, fast_mode) = requested_reasoning(args, &settings);
-    let config = AgentConfig {
-        system_prompt: args
-            .system_prompt
-            .clone()
-            .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
-        max_output_tokens: route.max_output_tokens,
-        step_limit: settings.max_agent_steps(&lookup),
-        model: model.clone(),
+    announce_settings(args, settings, permission_mode)?;
+    let (reasoning_effort, fast_mode) = requested_reasoning(args, settings);
+    let launch = Launch {
+        model: args.model.as_deref(),
+        permission_mode,
+        system_prompt: args.system_prompt.clone(),
         reasoning_effort,
         fast_mode,
+        context_limits: request.context_limits,
+        command_timeout: args.timeout_ms.map(Duration::from_millis),
+        executions: request.executions,
+        endpoints,
     };
-    let command_timeout = args.timeout_ms.map(Duration::from_millis);
-    let tools = tool_set::ask_tools(
-        &workspace_root,
-        request.executions,
-        command_timeout,
-        permission_mode,
-    );
-    let permissions = PermissionPolicy::new(permission_mode, workspace_root.clone());
-    let context = HostRuntimeContext::new(workspace_root, permission_mode);
-    let mut agent = Agent::new(
-        route.provider,
-        tools,
-        Arc::new(context),
-        Arc::new(permissions),
-        config,
-    );
-    if let Some(capabilities) = route.capabilities {
-        agent = agent.with_capability_resolver(capabilities);
-    }
-    let (agent, context_notices) = attach_project_context(agent, project);
+    let setup = profile.connect(launch, cancel).await?;
     Ok(PreparedAsk {
-        agent,
-        model,
+        agent: setup.agent(),
+        model: setup.model().to_owned(),
         permission_mode,
-        source: route.source,
-        context_notices,
+        source: setup.source(),
+        context_notices: setup.context_notices().to_vec(),
     })
 }
 
@@ -519,47 +423,6 @@ fn announce_settings(
     Ok(())
 }
 
-fn ask_project_context(
-    settings: &Settings,
-    command_line: &[ContextLimitOverride],
-    paths: Option<&ProfilePaths>,
-    workspace_root: &Path,
-) -> Option<(HostProjectContext, ProjectContext)> {
-    if !settings.context_enabled() {
-        return None;
-    }
-    let mut limits = settings.context_limits();
-    limits.apply_command_line(command_line);
-    let limits = InstructionLimits::from_limits(&limits);
-    let home = env::var_os("HOME");
-    let snapshot = gather_project_context(
-        workspace_root,
-        ProfileLocation {
-            home: home.as_deref(),
-            config_directory: paths.map(|paths| paths.config.as_path()),
-        },
-        limits,
-    );
-    Some((
-        HostProjectContext::new(workspace_root.to_path_buf(), limits),
-        snapshot,
-    ))
-}
-
-fn attach_project_context(
-    agent: Agent,
-    project: Option<(HostProjectContext, ProjectContext)>,
-) -> (Agent, Vec<String>) {
-    let Some((provider, mut snapshot)) = project else {
-        return (agent, Vec::new());
-    };
-    let notices = mem::take(&mut snapshot.notices);
-    (
-        agent.with_project_context(Arc::new(provider), snapshot),
-        notices,
-    )
-}
-
 fn requested_reasoning(args: &AskArgs, settings: &Settings) -> (Option<String>, bool) {
     let effort = args
         .effort
@@ -567,51 +430,6 @@ fn requested_reasoning(args: &AskArgs, settings: &Settings) -> (Option<String>, 
         .unwrap_or_else(|| settings.reasoning_effort());
     let fast_mode = args.fast.unwrap_or_else(|| settings.fast_mode());
     (effort.into_named(), fast_mode)
-}
-
-async fn codex_route(
-    settings: &Settings,
-    requested: Option<&OsStr>,
-    paths: Option<&ProfilePaths>,
-    endpoints: SubscriptionEndpoints,
-    lookup: &dyn Fn(&str) -> Option<String>,
-    cancel: &CancellationToken,
-) -> Result<Route, Failure> {
-    let model = select_model(requested, |model| {
-        settings.selected_codex_model(model, lookup)
-    })?
-    .map_err(Failure::invalid_model)?;
-    let uses_tls = uses_tls(&endpoints.codex.responses);
-    let subscription = codex_subscription(paths, &crate::user_agent(), endpoints, cancel).await?;
-    Ok(Route {
-        provider: Arc::new(subscription.provider),
-        capabilities: Some(Arc::new(subscription.capabilities)),
-        model,
-        max_output_tokens: None,
-        source: CredentialSource::Codex,
-        uses_tls,
-    })
-}
-
-fn uses_tls(url: &str) -> bool {
-    url.get(..8)
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
-}
-
-fn select_model(
-    requested: Option<&OsStr>,
-    select: impl FnOnce(Option<&str>) -> Result<String, SelectionError>,
-) -> Result<Result<String, Vec<u8>>, SelectionError> {
-    match requested {
-        Some(requested) if requested.to_str().is_none() => Ok(Err(requested.as_bytes().to_vec())),
-        requested => select(requested.and_then(OsStr::to_str)).map(Ok),
-    }
-}
-
-fn workspace_root() -> Result<PathBuf, Failure> {
-    env::current_dir()
-        .and_then(fs::canonicalize)
-        .map_err(|_| Failure::code("WorkspaceUnavailable"))
 }
 
 fn watch_signals(cancel: CancellationToken) -> ReceivedSignals {
@@ -1325,16 +1143,18 @@ impl Presenter {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::{BufRead, BufReader, Read};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{self, Child, Stdio};
     use std::sync::{Mutex, mpsc};
     use std::time::{Duration, Instant};
 
     use ofx_auth::{ChatGptEndpoints, PreparationError};
     use ofx_cli::{CommandLaunch, Invocation};
+    use ofx_config::ProfilePaths;
     use ofx_contract::{
         CallDescription, Concurrency, ModelFailureDiagnostic, ProviderError, ProviderErrorKind,
         RouteRecoveryKind, ToolActivity, TurnId,
@@ -1575,10 +1395,6 @@ mod tests {
         assert_a_stalled_login_refresh_exits_by_the_first(&[("TERM", SIGTERM), ("INT", SIGINT)]);
     }
 
-    fn no_environment(_: &str) -> Option<String> {
-        None
-    }
-
     fn ask_args(args: &[&str]) -> AskArgs {
         let Ok(Invocation::Command(CommandLaunch {
             command: ofx_cli::Command::Ask(args),
@@ -1628,36 +1444,6 @@ mod tests {
             requested_reasoning(&ask_args(&["ask", "hi"]), &Settings::default()),
             (None, false)
         );
-    }
-
-    #[tokio::test]
-    async fn non_utf8_codex_models_fail_before_the_login_is_refreshed() {
-        let login = ExpiredLogin::new();
-        let auth = FakeServer::start([Reply::status(500, "unexpected refresh")]);
-        let model = OsStr::from_bytes(b" m\xff ");
-        let failure = codex_route(
-            &login.settings(),
-            Some(model),
-            Some(&login.paths),
-            endpoints(&auth.base_url()),
-            &no_environment,
-            &CancellationToken::new(),
-        )
-        .await
-        .err()
-        .expect("an invalid model");
-        assert_eq!(failure.code, INVALID_MODEL_CODE);
-        assert_eq!(failure.model, b" m\xff ");
-        assert!(auth.requests().is_empty());
-        assert_eq!(login.session(), EXPIRED_SESSION);
-    }
-
-    #[test]
-    fn only_https_endpoints_warm_the_tls_roots() {
-        assert!(uses_tls("https://gateway.example/v1/chat/completions"));
-        assert!(uses_tls("HTTPS://gateway.example/v1"));
-        assert!(!uses_tls("http://127.0.0.1:8080/v1/chat/completions"));
-        assert!(!uses_tls("https:"));
     }
 
     fn result_json(result: &RunResult<'_>) -> String {

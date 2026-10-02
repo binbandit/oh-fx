@@ -52,7 +52,7 @@ fn block_on_upgrade(
 
 async fn upgrade(show_progress: bool, lock: &UpgradeLock) -> Result<UpgradeOutcome, UpgradeError> {
     let client = ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
-        user_agent: crate::user_agent(),
+        user_agent: ofx_app::user_agent(),
         follow_redirects: true,
         ..ofx_http::ConnectionOptions::default()
     })

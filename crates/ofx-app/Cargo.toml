@@ -1,5 +1,5 @@
 [package]
-name = "oh-fx"
+name = "ofx-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,31 +8,28 @@ publish.workspace = true
 
 [dependencies]
 ofx-agent.workspace = true
-ofx-app.workspace = true
 ofx-auth.workspace = true
-ofx-cli.workspace = true
 ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-exec.workspace = true
 ofx-gateway.workspace = true
 ofx-http.workspace = true
-ofx-session.workspace = true
+ofx-permissions.workspace = true
 ofx-text.workspace = true
+ofx-tools.workspace = true
 ofx-upgrade.workspace = true
-rustix = { workspace = true, features = ["stdio", "termios"] }
-serde.workspace = true
-serde_json.workspace = true
-signal-hook.workspace = true
+ofx-workspace.workspace = true
+rustix.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
 ofx-testkit.workspace = true
-tokio = { workspace = true, features = ["macros"] }
+serde_json.workspace = true
 tempfile.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-rustix = { workspace = true, features = ["fs", "net", "pty"] }
+tokio = { workspace = true, features = ["macros"] }
 
 [lints]
 workspace = true
