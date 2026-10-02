@@ -6,7 +6,7 @@ use rustix::io::Errno;
 use rustix::process::{Pid, Signal};
 
 use super::{
-    Effects, Identity, InspectionError, Membership, ProcessSnapshot, TrackedProcess, Tracker,
+    Effects, Identity, InspectionError, ProcessSnapshot, TrackedProcess, Tracker,
     should_signal_process, should_traverse_parent, snapshot_belongs_to_parent, snapshot_is_alive,
 };
 
@@ -14,7 +14,6 @@ type Capture = fn(i32) -> Result<ProcessSnapshot, InspectionError>;
 
 struct FakeEffects {
     capture: Capture,
-    process_group: fn(i32) -> Membership,
     send: fn(i32) -> Result<(), Errno>,
     sent: RefCell<Vec<i32>>,
 }
@@ -23,7 +22,6 @@ impl FakeEffects {
     fn new(capture: Capture) -> Self {
         Self {
             capture,
-            process_group: |raw| Membership::Found(pid(raw)),
             send: |_| Ok(()),
             sent: RefCell::default(),
         }
@@ -37,10 +35,6 @@ impl FakeEffects {
 impl Effects for FakeEffects {
     fn capture(&self, pid: Pid) -> Result<ProcessSnapshot, InspectionError> {
         (self.capture)(pid.as_raw_pid())
-    }
-
-    fn process_group(&self, pid: Pid) -> Membership {
-        (self.process_group)(pid.as_raw_pid())
     }
 
     fn send(&self, pid: Pid, _: Signal) -> Result<(), Errno> {
@@ -61,12 +55,20 @@ fn snapshot(start_ticks: u64) -> ProcessSnapshot {
     ProcessSnapshot {
         identity: identity(start_ticks),
         parent_pid: Some(pid(1)),
+        process_group: Some(pid(1)),
         zombie: false,
     }
 }
 
 fn own_snapshot(raw: i32) -> ProcessSnapshot {
-    snapshot(raw.unsigned_abs().into())
+    grouped(raw, Some(raw))
+}
+
+fn grouped(raw: i32, process_group: Option<i32>) -> ProcessSnapshot {
+    ProcessSnapshot {
+        process_group: process_group.map(pid),
+        ..snapshot(raw.unsigned_abs().into())
+    }
 }
 
 fn tracking(pids: impl IntoIterator<Item = i32>) -> Tracker {
@@ -101,6 +103,7 @@ fn child_admission_binds_the_observed_process_to_its_expected_parent() {
     let observed = ProcessSnapshot {
         identity: identity(42),
         parent_pid: Some(pid(17)),
+        process_group: Some(pid(17)),
         zombie: false,
     };
     assert!(snapshot_belongs_to_parent(observed, pid(17)));
@@ -115,12 +118,6 @@ fn child_admission_binds_the_observed_process_to_its_expected_parent() {
 #[test]
 fn checked_signal_delivery_distinguishes_vanished_stale_and_failed_targets() {
     let effects = FakeEffects {
-        process_group: |raw| match raw {
-            14 => Membership::Vanished,
-            15 => Membership::Unavailable,
-            16 => Membership::Found(pid(41)),
-            _ => Membership::Found(pid(raw + 100)),
-        },
         send: |raw| match raw {
             17 => Err(Errno::PERM),
             18 => Err(Errno::SRCH),
@@ -130,7 +127,13 @@ fn checked_signal_delivery_distinguishes_vanished_stale_and_failed_targets() {
             11 => Err(InspectionError::ProcessNotFound),
             12 => Err(InspectionError::Failed("ProcessIdentityUnavailable")),
             13 => Ok(snapshot(113)),
-            _ => Ok(own_snapshot(raw)),
+            14 => Ok(ProcessSnapshot {
+                zombie: true,
+                ..own_snapshot(14)
+            }),
+            15 => Ok(grouped(15, None)),
+            16 => Ok(grouped(16, Some(41))),
+            _ => Ok(grouped(raw, Some(raw + 100))),
         })
     };
     let tracker = tracking(10..19);
@@ -141,17 +144,12 @@ fn checked_signal_delivery_distinguishes_vanished_stale_and_failed_targets() {
 
 #[test]
 fn checked_signal_delivery_keeps_vanished_stale_and_excluded_targets_complete() {
-    let effects = FakeEffects {
-        process_group: |raw| match raw {
-            23 => Membership::Vanished,
-            _ => Membership::Found(pid(41)),
-        },
-        ..FakeEffects::new(|raw| match raw {
-            21 => Err(InspectionError::ProcessNotFound),
-            22 => Ok(snapshot(122)),
-            _ => Ok(own_snapshot(raw)),
-        })
-    };
+    let effects = FakeEffects::new(|raw| match raw {
+        21 => Err(InspectionError::ProcessNotFound),
+        22 => Ok(snapshot(122)),
+        23 => Ok(grouped(23, None)),
+        _ => Ok(grouped(raw, Some(41))),
+    });
     let tracker = tracking(21..25);
     let delivered = tracker.signal_processes_with(Signal::TERM, Some(pid(41)), &effects);
     assert_eq!(delivered, 0);

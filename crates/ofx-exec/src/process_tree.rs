@@ -3,7 +3,7 @@ mod proc_fs;
 mod tests;
 
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, getpgid, kill_process};
+use rustix::process::{Pid, Signal, kill_process};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InspectionError {
@@ -35,19 +35,12 @@ struct TrackedProcess {
 struct ProcessSnapshot {
     identity: Identity,
     parent_pid: Option<Pid>,
+    process_group: Option<Pid>,
     zombie: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Membership {
-    Found(Pid),
-    Vanished,
-    Unavailable,
 }
 
 trait Effects {
     fn capture(&self, pid: Pid) -> Result<ProcessSnapshot, InspectionError>;
-    fn process_group(&self, pid: Pid) -> Membership;
     fn send(&self, pid: Pid, signal: Signal) -> Result<(), Errno>;
 }
 
@@ -58,20 +51,8 @@ impl Effects for SystemEffects {
         proc_fs::capture_snapshot(pid)
     }
 
-    fn process_group(&self, pid: Pid) -> Membership {
-        membership(getpgid(Some(pid)))
-    }
-
     fn send(&self, pid: Pid, signal: Signal) -> Result<(), Errno> {
         kill_process(pid, signal)
-    }
-}
-
-fn membership(inspected: Result<Pid, Errno>) -> Membership {
-    match inspected {
-        Ok(id) => Membership::Found(id),
-        Err(Errno::SRCH) => Membership::Vanished,
-        Err(_) => Membership::Unavailable,
     }
 }
 
@@ -224,7 +205,7 @@ fn signal_tracked_process(
     if process.identity != actual.identity || actual.zombie {
         return false;
     }
-    let Membership::Found(process_group) = effects.process_group(process.pid) else {
+    let Some(process_group) = actual.process_group else {
         return false;
     };
     should_signal_process(Some(process_group), preserved_group)

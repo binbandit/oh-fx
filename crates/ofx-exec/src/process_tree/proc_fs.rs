@@ -9,7 +9,7 @@ use super::{Identity, InspectionError, ProcessSnapshot};
 use crate::command_runner::error_name;
 
 const STAT_BYTES: usize = 4096;
-const THREADS_AFTER_PARENT: usize = 15;
+const THREADS_AFTER_PROCESS_GROUP: usize = 14;
 const START_TICKS_AFTER_THREADS: usize = 1;
 const IDENTITY_UNAVAILABLE: InspectionError = InspectionError::Failed("ProcessIdentityUnavailable");
 const INSPECTION_FAILED: InspectionError = InspectionError::Failed("ProcessTreeInspectionFailed");
@@ -71,11 +71,13 @@ fn parse_stat(stat: &[u8]) -> Option<ProcessSnapshot> {
         .filter(|field| !field.is_empty());
     let state = fields.next()?;
     let parent_pid = parse_field::<i32>(fields.next()?)?;
-    let threads = parse_field::<u32>(fields.nth(THREADS_AFTER_PARENT)?)?;
+    let process_group = parse_field::<i32>(fields.next()?)?;
+    let threads = parse_field::<u32>(fields.nth(THREADS_AFTER_PROCESS_GROUP)?)?;
     let start_ticks = parse_field::<u64>(fields.nth(START_TICKS_AFTER_THREADS)?)?;
     Some(ProcessSnapshot {
         identity: Identity { start_ticks },
         parent_pid: positive_pid(parent_pid),
+        process_group: positive_pid(process_group),
         zombie: state == b"Z" && threads <= 1,
     })
 }
@@ -141,11 +143,35 @@ mod tests {
             Some(ProcessSnapshot {
                 identity: Identity { start_ticks: 98765 },
                 parent_pid: rustix::process::Pid::from_raw(7),
+                process_group: rustix::process::Pid::from_raw(42),
                 zombie: true,
             })
         );
         assert_eq!(parse_stat(b"42 (sh) S 0 42"), None);
         assert_eq!(parse_stat(b"42 sh S 1"), None);
+    }
+
+    #[test]
+    fn stat_parsing_reports_ids_outside_the_proc_namespace_as_unknown() {
+        let hidden = b"42 (sh) S 0 0 0 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 98765 1 1 \n";
+        assert_eq!(
+            parse_stat(hidden),
+            Some(ProcessSnapshot {
+                identity: Identity { start_ticks: 98765 },
+                parent_pid: None,
+                process_group: None,
+                zombie: false,
+            })
+        );
+        assert_eq!(
+            parse_stat(b"42 (sh) S 1 -3 1 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 5 1 1")
+                .map(|snapshot| snapshot.process_group),
+            Some(None)
+        );
+        assert_eq!(
+            parse_stat(b"42 (sh) S 1 x 1 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 5 1 1"),
+            None
+        );
     }
 
     #[test]
