@@ -113,6 +113,7 @@ impl Shell<'_> {
                 }
             }
             Submit::Prompt(prompt) => {
+                let skills = self.composer.skill_bindings();
                 self.record_prompt_history();
                 self.composer.clear();
                 self.outstanding.push_back(Submission {
@@ -122,7 +123,7 @@ impl Shell<'_> {
                     sequence: self.submitted_prompts,
                 });
                 self.submitted_prompts += 1;
-                self.send(UiCommand::Submit { prompt });
+                self.send(UiCommand::Submit { prompt, skills });
                 self.promote_next();
                 self.save_accepted_input(&text);
             }

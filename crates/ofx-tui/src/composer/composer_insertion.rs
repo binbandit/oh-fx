@@ -26,7 +26,7 @@ impl Composer {
     }
 
     pub(crate) fn insert_slice(&mut self, text: &str) {
-        if text.is_empty() {
+        if text.is_empty() || self.claim_pending_separator(text) {
             return;
         }
         let insert_start = self.edit.cursor;
@@ -46,13 +46,18 @@ impl Composer {
             )
         };
         self.vertical.reset();
-        self.edit.insert_str(text);
-        self.entities.shift_for_insert(insert_start, text.len());
+        self.insert_slice_without_history(text);
         self.edit_history.commit(prepared);
     }
 
     pub(crate) fn insert_slice_bounded(&mut self, text: &str, max_len: usize) -> InsertResult {
         if !self.can_insert(text.len(), max_len) {
+            let pending = self.entities.pending_separator;
+            if self.claim_pending_separator(text) {
+                self.limit_rejection.clear();
+                return InsertResult::Inserted;
+            }
+            self.entities.pending_separator = pending;
             return InsertResult::LimitExceeded;
         }
         self.insert_slice(text);
@@ -65,8 +70,21 @@ impl Composer {
             return;
         }
         let insert_start = self.edit.cursor;
+        self.entities.discard_pending_separator();
+        self.entities.remove_skill_token_containing(insert_start);
         self.edit.insert_str(text);
         self.entities.shift_for_insert(insert_start, text.len());
+    }
+
+    fn claim_pending_separator(&mut self, text: &str) -> bool {
+        if !self
+            .entities
+            .claim_pending_separator(&self.edit.input, self.edit.cursor, text)
+        {
+            return false;
+        }
+        self.vertical.reset();
+        true
     }
 }
 

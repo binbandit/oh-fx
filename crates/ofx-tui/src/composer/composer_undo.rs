@@ -76,6 +76,7 @@ impl Composer {
     }
 
     fn apply_history_transition(&mut self, transition: &Transition) {
+        self.entities.discard_pending_separator();
         if transition.start < transition.end {
             self.entities
                 .adjust_for_delete(transition.start, transition.end);
