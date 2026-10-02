@@ -48,7 +48,7 @@ impl ResumedSession {
                 &preferences.model,
             )
             .map_err(ResumeFailure::Selection)?;
-        let title = session.display_title().title;
+        let title = session.display_title();
         let history = session.restored_history()?;
         Ok(Self {
             session,

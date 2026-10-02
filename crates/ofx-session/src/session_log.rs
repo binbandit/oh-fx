@@ -17,7 +17,7 @@ use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
 };
-use crate::session_display_metadata::{DisplayTitle, derive_display_title};
+use crate::session_display_metadata::derive_display_title;
 use crate::session_error::SessionError;
 use crate::session_event::{
     ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent,
@@ -125,12 +125,9 @@ impl WritableSession {
         visit_turns(self.writer.file(), self.writer.committed_bytes(), visit)
     }
 
-    pub fn display_title(&self) -> DisplayTitle {
+    pub fn display_title(&self) -> String {
         match &self.metadata.title {
-            Some(title) => DisplayTitle {
-                title: title.clone(),
-                present: true,
-            },
+            Some(title) => title.clone(),
             None => derive_display_title(&self.history),
         }
     }

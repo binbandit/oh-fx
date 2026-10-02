@@ -655,17 +655,11 @@ fn the_display_title_prefers_the_saved_title_over_the_first_prompt() {
     session.append(2, &turn("explain the build")).unwrap();
     drop(session);
     let resumed = fixture.resume("titled").unwrap();
-    assert_eq!(resumed.display_title().title, "explain the build");
+    assert_eq!(resumed.display_title(), "explain the build");
     let mut titled = metadata("named");
     titled.title = Some("Release prep".to_owned());
     let named = start_session(&fixture.sessions, titled).unwrap();
-    assert_eq!(
-        named.display_title(),
-        DisplayTitle {
-            title: "Release prep".to_owned(),
-            present: true,
-        }
-    );
+    assert_eq!(named.display_title(), "Release prep");
 }
 
 #[test]

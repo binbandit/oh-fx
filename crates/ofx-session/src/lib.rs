@@ -22,7 +22,6 @@ pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 pub use session_codec::{SavedProvider, SessionMetadata, SessionPreferences};
 pub use session_commands::resolve_model_query_from_ids;
 pub use session_conversation_log::SessionLog;
-pub use session_display_metadata::DisplayTitle;
 pub use session_error::SessionError;
 pub use session_event::{
     ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, ConversationEvent,
