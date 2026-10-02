@@ -25,7 +25,9 @@ use ofx_contract::{
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
-use ofx_session::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
+use ofx_session::{
+    SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, sessions_v2_variable_is_on,
+};
 use ofx_text::encode_terminal_safe;
 use rustix::io::Errno;
 use serde::{Serialize, Serializer};
@@ -34,6 +36,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
+use crate::ask_session::{ResumeFailure, Resumed, SavedAsk};
 use crate::command_echo::CommandEcho;
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
@@ -118,9 +121,9 @@ impl From<SelectionError> for Failure {
             | SelectionError::ProviderUnavailable(_) => {
                 Self::notice(error.code(), error.to_string())
             }
-            SelectionError::InvalidProviderValue | SelectionError::UnknownConfiguredProvider => {
-                Self::code(error.code())
-            }
+            SelectionError::InvalidProviderValue
+            | SelectionError::UnknownConfiguredProvider
+            | SelectionError::ConfiguredProviderChanged => Self::code(error.code()),
         }
     }
 }
@@ -146,6 +149,21 @@ impl From<CodexUnavailable> for Failure {
             CodexUnavailable::Client(error) => {
                 Self::notice("TransportUnavailable", error.to_string())
             }
+        }
+    }
+}
+
+impl From<SessionError> for Failure {
+    fn from(error: SessionError) -> Self {
+        Self::code(error.to_string())
+    }
+}
+
+impl From<ResumeFailure> for Failure {
+    fn from(failure: ResumeFailure) -> Self {
+        match failure {
+            ResumeFailure::Session(error) => error.into(),
+            ResumeFailure::Selection(error) => error.into(),
         }
     }
 }
@@ -204,6 +222,7 @@ struct PreparedAsk {
     permission_mode: PermissionMode,
     source: CredentialSource,
     context_notices: Vec<String>,
+    saved: Option<SavedAsk>,
 }
 
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -261,7 +280,6 @@ fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<St
         return Some(flag.to_owned());
     }
     first_requested(ask)
-        .or(args.session.resume_flag)
         .map(|flag| format!("ask {flag}"))
         .or_else(|| sessions_v2_source(args, modifiers).map(str::to_owned))
 }
@@ -350,6 +368,7 @@ async fn answer(
         permission_mode,
         source,
         context_notices,
+        saved,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
@@ -371,8 +390,9 @@ async fn answer(
             cancel,
         )
         .await;
+    drop(agent);
     let report = received.unless_signalled(report)?;
-    Ok(presenter.finish(&report, &model))
+    Ok(presenter.finish(&report, &model, saved))
 }
 
 async fn prepare_agent(
@@ -381,14 +401,21 @@ async fn prepare_agent(
     cancel: &CancellationToken,
 ) -> Result<PreparedAsk, Failure> {
     let args = request.args;
-    let profile = Profile::load().map_err(|error| Failure::code(error.to_string()))?;
-    let settings = profile.settings();
+    let mut profile = Profile::load().map_err(|error| Failure::code(error.to_string()))?;
     let permission_mode = args
         .permissions
         .mode
-        .unwrap_or_else(|| settings.permission_mode());
-    announce_settings(args, settings, permission_mode)?;
-    let (reasoning_effort, fast_mode) = requested_reasoning(args, settings);
+        .unwrap_or_else(|| profile.settings().permission_mode());
+    announce_settings(args, profile.settings(), permission_mode)?;
+    let resumed = match &args.session.resume {
+        Some(target) => Some(Resumed::open(&mut profile, target)?),
+        None => None,
+    };
+    let (reasoning_effort, fast_mode) = requested_reasoning(
+        args,
+        profile.settings(),
+        resumed.as_ref().map(Resumed::preferences),
+    );
     let launch = Launch {
         model: args.model.as_deref(),
         permission_mode,
@@ -401,12 +428,31 @@ async fn prepare_agent(
         endpoints,
     };
     let setup = profile.connect(launch, cancel).await?;
+    let mut agent = setup.agent();
+    let saved = match resumed {
+        Some(resumed) => Some(SavedAsk::resume(resumed, &setup, &mut agent)?),
+        None if args.session.no_save => None,
+        None => match SavedAsk::start(&profile, &setup) {
+            Ok(saved) => Some(saved),
+            Err(error) => {
+                write_stderr(&format!(
+                    "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
+                ))
+                .map_err(|error| Failure::written(&error))?;
+                None
+            }
+        },
+    };
+    if let Some(saved) = &saved {
+        agent = saved.attach(agent);
+    }
     Ok(PreparedAsk {
-        agent: setup.agent(),
+        agent,
         model: setup.model().to_owned(),
         permission_mode,
         source: setup.source(),
         context_notices: setup.context_notices().to_vec(),
+        saved,
     })
 }
 
@@ -430,12 +476,20 @@ fn announce_settings(
     Ok(())
 }
 
-fn requested_reasoning(args: &AskArgs, settings: &Settings) -> (Option<String>, bool) {
-    let effort = args
-        .effort
-        .clone()
-        .unwrap_or_else(|| settings.reasoning_effort());
-    let fast_mode = args.fast.unwrap_or_else(|| settings.fast_mode());
+fn requested_reasoning(
+    args: &AskArgs,
+    settings: &Settings,
+    resumed: Option<&SessionPreferences>,
+) -> (Option<String>, bool) {
+    let effort = args.effort.clone().unwrap_or_else(|| {
+        resumed.map_or_else(
+            || settings.reasoning_effort(),
+            |preferences| preferences.effort.clone(),
+        )
+    });
+    let fast_mode = args.fast.unwrap_or_else(|| {
+        resumed.map_or_else(|| settings.fast_mode(), |preferences| preferences.fast_mode)
+    });
     (effort.into_named(), fast_mode)
 }
 
@@ -605,7 +659,7 @@ struct RecoveryRecord {
 }
 
 impl RecoveryRecord {
-    fn new(status: &RouteRecoveryStatus) -> Self {
+    fn new(status: &RouteRecoveryStatus, durable: bool) -> Self {
         Self {
             state: if status.is_recovered() {
                 "recovered"
@@ -618,7 +672,7 @@ impl RecoveryRecord {
             attempt: status.reported_attempt(),
             attempt_limit: status.attempt_limit,
             delay_seconds: status.delay_seconds,
-            durable: false,
+            durable,
             message: status.label(),
         }
     }
@@ -1071,10 +1125,11 @@ impl Presenter {
         })
     }
 
-    fn finish(mut self, report: &TurnReport, model: &str) -> ExitCode {
+    fn finish(mut self, report: &TurnReport, model: &str, saved: Option<SavedAsk>) -> ExitCode {
         if self.mode == OutputMode::Terminal {
             let _ = self.end_line();
         }
+        let durable = saved.is_some();
         if let (None, Some(failure @ TurnFailure::PermissionRequired(blocked))) =
             (self.write_error, &report.failure)
         {
@@ -1094,6 +1149,10 @@ impl Presenter {
         let completed = report.outcome == TurnOutcome::Completed
             && self.write_error.is_none()
             && summary.error.is_none();
+        let untouched = summary.auth_failure && self.steps == 0;
+        let session_id = saved
+            .map(|saved| saved.close(untouched))
+            .unwrap_or_default();
         if self.mode != OutputMode::Json {
             if let Some(code) = self.write_error {
                 let _ = write_stderr(&format!("oh-fx: {code}\n"));
@@ -1116,7 +1175,7 @@ impl Presenter {
             exit_code: u8::from(!completed),
             model: JsonText(model.as_bytes()),
             resolved_provider: None,
-            session_id: "",
+            session_id: &session_id,
             steps: self.steps,
             tool_calls: &self.tool_calls,
             usage: usage_record(report.usage),
@@ -1126,7 +1185,10 @@ impl Presenter {
                 reason: "http_unauthorized",
                 http_status: 401,
             }),
-            recovery: self.recovery.as_ref().map(RecoveryRecord::new),
+            recovery: self
+                .recovery
+                .as_ref()
+                .map(|status| RecoveryRecord::new(status, durable)),
         })
     }
 
@@ -1441,18 +1503,40 @@ mod tests {
         ];
         for (args, effort, fast) in cases {
             assert_eq!(
-                requested_reasoning(&ask_args(args), &saved),
+                requested_reasoning(&ask_args(args), &saved, None),
                 (effort.map(str::to_owned), fast),
                 "{args:?}"
             );
         }
         assert_eq!(
-            requested_reasoning(&ask_args(&["ask", "--fast", "hi"]), &Settings::default()),
+            requested_reasoning(
+                &ask_args(&["ask", "--fast", "hi"]),
+                &Settings::default(),
+                None
+            ),
             (None, true)
         );
         assert_eq!(
-            requested_reasoning(&ask_args(&["ask", "hi"]), &Settings::default()),
+            requested_reasoning(&ask_args(&["ask", "hi"]), &Settings::default(), None),
             (None, false)
+        );
+        let resumed = SessionPreferences {
+            provider: ofx_session::SavedProvider::new(ofx_config::ProviderId::Codex, None).unwrap(),
+            model: "gpt-5.4".to_owned(),
+            effort: ofx_contract::ReasoningEffort::parse("medium").unwrap(),
+            fast_mode: false,
+        };
+        assert_eq!(
+            requested_reasoning(&ask_args(&["ask", "hi"]), &saved, Some(&resumed)),
+            (Some("medium".to_owned()), false)
+        );
+        assert_eq!(
+            requested_reasoning(
+                &ask_args(&["ask", "--effort", "low", "--fast", "hi"]),
+                &saved,
+                Some(&resumed)
+            ),
+            (Some("low".to_owned()), true)
         );
     }
 
@@ -1487,7 +1571,7 @@ mod tests {
         let result = RunResult {
             tool_calls: &records,
             error: None,
-            recovery: Some(RecoveryRecord::new(&recovered)),
+            recovery: Some(RecoveryRecord::new(&recovered, false)),
             ..RunResult::error("")
         };
         assert_eq!(
@@ -1505,8 +1589,8 @@ mod tests {
             diagnostic: Some(ModelFailureDiagnostic::new("HTTP 429 · slow")),
         };
         assert_eq!(
-            serde_json::to_string(&RecoveryRecord::new(&retrying)).unwrap(),
-            r#"{"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":2,"durable":false,"message":"⚠ Rate limited · HTTP 429 · slow · retrying request in 2s"}"#
+            serde_json::to_string(&RecoveryRecord::new(&retrying, true)).unwrap(),
+            r#"{"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":2,"durable":true,"message":"⚠ Rate limited · HTTP 429 · slow · retrying request in 2s"}"#
         );
     }
 
@@ -1857,7 +1941,10 @@ mod tests {
                 ),
             ],
         );
-        assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+        assert_eq!(
+            presenter.finish(&report(None), "m", None),
+            ExitCode::SUCCESS
+        );
         assert_eq!(
             screen.text(),
             "I'll read `readme.md` to find the project name.\n\nReading readme.md\n\nThe project is named **oh-fx**, as shown in the heading of `README.md`.\n"
@@ -2017,7 +2104,10 @@ mod tests {
             let (mut presenter, screen) = terminal_presenter();
             present(&mut presenter, reply.iter().map(|text| assistant(text)));
             present(&mut presenter, [operational("Done.")]);
-            assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+            assert_eq!(
+                presenter.finish(&report(None), "m", None),
+                ExitCode::SUCCESS
+            );
             assert_eq!(screen.text(), "Done.\n", "{reply:?}");
         }
 
@@ -2032,7 +2122,10 @@ mod tests {
                 operational("Done."),
             ],
         );
-        assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+        assert_eq!(
+            presenter.finish(&report(None), "m", None),
+            ExitCode::SUCCESS
+        );
         assert_eq!(screen.text(), "Looking.\n\nReading a.txt\n\nDone.\n");
     }
 
@@ -2072,7 +2165,10 @@ mod tests {
             present(&mut presenter, before.iter().map(|text| assistant(text)));
             present(&mut presenter, read("call-1"));
             present(&mut presenter, after.iter().map(|text| assistant(text)));
-            assert_eq!(presenter.finish(&report(None), "m"), ExitCode::SUCCESS);
+            assert_eq!(
+                presenter.finish(&report(None), "m", None),
+                ExitCode::SUCCESS
+            );
             assert_eq!(screen.text(), expected, "{before:?} {after:?}");
         }
     }
@@ -2191,7 +2287,7 @@ mod tests {
             for (index, piece) in sequence.iter().enumerate() {
                 present(&mut presenter, sequence_events(*piece, index));
             }
-            let _ = presenter.finish(&report(None), "m");
+            let _ = presenter.finish(&report(None), "m", None);
             assert_status_lines_stand_apart(&screen.text(), &format!("{sequence:?}"));
         }
     }
@@ -2209,7 +2305,10 @@ mod tests {
             ],
         );
         let failure = Some(TurnFailure::StepLimitReached);
-        assert_eq!(presenter.finish(&report(failure), "m"), ExitCode::FAILURE);
+        assert_eq!(
+            presenter.finish(&report(failure), "m", None),
+            ExitCode::FAILURE
+        );
         assert_eq!(
             screen.text(),
             "Looking.\n\nReading a.txt\n\nStep limit reached.\n"
@@ -2218,14 +2317,20 @@ mod tests {
         let (mut presenter, screen) = terminal_presenter();
         present(&mut presenter, [assistant("Partial answer")]);
         let failure = Some(TurnFailure::StepLimitReached);
-        assert_eq!(presenter.finish(&report(failure), "m"), ExitCode::FAILURE);
+        assert_eq!(
+            presenter.finish(&report(failure), "m", None),
+            ExitCode::FAILURE
+        );
         assert_eq!(screen.text(), "Partial answer\n");
 
         let notice = "Repeated malformed tool arguments stopped the agent loop. The invalid calls were not executed. Continue with a follow-up prompt if needed.";
         let (mut presenter, screen) = terminal_presenter();
         present(&mut presenter, [operational(&format!("{notice}\n"))]);
         let failure = Some(TurnFailure::RepeatedMalformedArguments);
-        assert_eq!(presenter.finish(&report(failure), "m"), ExitCode::FAILURE);
+        assert_eq!(
+            presenter.finish(&report(failure), "m", None),
+            ExitCode::FAILURE
+        );
         assert_eq!(screen.text(), format!("{notice}\n"));
     }
 }
