@@ -43,12 +43,7 @@ impl ReviewTransport for CodexReviewTransport {
         body: String,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ReviewTransportOutcome> {
-        Box::pin(async move {
-            match stream(&*self.provider, request, body, cancel).await {
-                Ok(completion) => ReviewTransportOutcome::Completion(completion),
-                Err(error) => responses_failure(&error),
-            }
-        })
+        send(&*self.provider, request, body, cancel, responses_failure)
     }
 }
 
@@ -93,25 +88,33 @@ impl ReviewTransport for ChatCompletionsReviewTransport {
         body: String,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ReviewTransportOutcome> {
-        Box::pin(async move {
-            match stream(&*self.provider, request, body, cancel).await {
-                Ok(completion) => ReviewTransportOutcome::Completion(completion),
-                Err(error) => chat_completions_failure(&error),
-            }
-        })
+        send(
+            &*self.provider,
+            request,
+            body,
+            cancel,
+            chat_completions_failure,
+        )
     }
 }
 
-async fn stream(
-    provider: &dyn ModelProvider,
-    request: &ModelRequest<'_>,
+fn send<'a>(
+    provider: &'a dyn ModelProvider,
+    request: &'a ModelRequest<'a>,
     body: String,
-    cancel: &CancellationToken,
-) -> Result<Completion, ProviderError> {
-    let mut discarded = |_: StreamEvent| {};
-    provider
-        .stream_body(request, body, &mut discarded, cancel)
-        .await
+    cancel: &'a CancellationToken,
+    failure: fn(&ProviderError) -> ReviewTransportOutcome,
+) -> BoxFuture<'a, ReviewTransportOutcome> {
+    Box::pin(async move {
+        let mut discarded = |_: StreamEvent| {};
+        match provider
+            .stream_body(request, body, &mut discarded, cancel)
+            .await
+        {
+            Ok(completion) => ReviewTransportOutcome::Completion(completion),
+            Err(error) => failure(&error),
+        }
+    })
 }
 
 fn responses_failure(error: &ProviderError) -> ReviewTransportOutcome {
