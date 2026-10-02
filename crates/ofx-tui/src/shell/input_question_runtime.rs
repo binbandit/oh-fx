@@ -40,7 +40,6 @@ impl Shell<'_> {
         if let Some(displaced) = self.question.replace(QuestionPrompt::new(request)) {
             self.answer_question(displaced.request_id, None);
         }
-        self.question_limit_rejected = false;
         self.invalidate();
     }
 
@@ -85,19 +84,15 @@ impl Shell<'_> {
             3 => self.cancel_question(),
             b'\r' | b'\n' => self.decide_question(QuestionPrompt::submit),
             b'\t' => self.with_question(QuestionPrompt::next_entry),
-            0x7f | 0x08 => {
-                if let Some(prompt) = &mut self.question
-                    && prompt.backspace()
-                {
-                    self.question_limit_rejected = false;
-                }
-            }
+            0x7f | 0x08 => self.with_question(|prompt| {
+                prompt.backspace();
+            }),
             digit @ b'1'..=b'9' if !freeform => {
                 let index = usize::from(digit - b'1');
                 self.decide_question(|prompt| prompt.select_ordinal(index));
             }
             byte @ 0x20..=0x7e => {
-                self.insert_answer_text(char::from(byte).encode_utf8(&mut [0; 4]))
+                self.insert_answer_text(char::from(byte).encode_utf8(&mut [0; 4]));
             }
             _ => {}
         }
@@ -208,11 +203,9 @@ impl Shell<'_> {
     }
 
     fn edit_answer(&mut self, edit: FreeformEdit) {
-        if let Some(prompt) = &mut self.question
-            && prompt.edit(edit)
-        {
-            self.question_limit_rejected = false;
-        }
+        self.with_question(|prompt| {
+            prompt.edit(edit);
+        });
     }
 
     fn insert_answer_text(&mut self, text: &str) {
@@ -220,14 +213,17 @@ impl Shell<'_> {
             return;
         };
         match prompt.insert(text, COMPOSER_INPUT_LIMIT_BYTES) {
-            Insertion::Inserted => self.question_limit_rejected = false,
-            Insertion::Inactive => {}
+            Insertion::Inserted | Insertion::Inactive => {}
             Insertion::LimitExceeded => self.report_answer_limit(),
         }
     }
 
     fn report_answer_limit(&mut self) {
-        if !std::mem::replace(&mut self.question_limit_rejected, true) {
+        if self
+            .question
+            .as_mut()
+            .is_some_and(QuestionPrompt::note_limit_rejection)
+        {
             self.input_notice(LIMIT_REJECTED);
         }
     }
@@ -236,7 +232,6 @@ impl Shell<'_> {
         let Some(prompt) = &mut self.question else {
             return;
         };
-        self.question_limit_rejected = false;
         if decide(prompt) != Decision::AllDecided {
             return;
         }

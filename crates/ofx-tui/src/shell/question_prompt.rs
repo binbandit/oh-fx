@@ -92,6 +92,7 @@ pub(crate) struct QuestionPrompt {
     pub(crate) request_id: RequestId,
     entries: Vec<PromptEntry>,
     current: usize,
+    limit_rejected: bool,
 }
 
 impl QuestionPrompt {
@@ -129,6 +130,7 @@ impl QuestionPrompt {
             request_id: request.id,
             entries,
             current: 0,
+            limit_rejected: false,
         }
     }
 
@@ -154,12 +156,14 @@ impl QuestionPrompt {
     }
 
     pub(crate) fn clear_draft(&mut self) {
+        self.limit_rejected = false;
         if let Some(draft) = self.selected_draft_mut() {
             *draft = Draft::default();
         }
     }
 
     pub(crate) fn move_choice(&mut self, step: isize) {
+        self.limit_rejected = false;
         let Some(entry) = self.entries.get_mut(self.current) else {
             return;
         };
@@ -172,6 +176,7 @@ impl QuestionPrompt {
     }
 
     pub(crate) fn next_entry(&mut self) {
+        self.limit_rejected = false;
         if self.entries.is_empty() {
             return;
         }
@@ -181,6 +186,7 @@ impl QuestionPrompt {
     }
 
     pub(crate) fn retreat(&mut self) -> bool {
+        self.limit_rejected = false;
         if self.current == 0 || self.current > self.entries.len() {
             return false;
         }
@@ -191,6 +197,7 @@ impl QuestionPrompt {
     }
 
     pub(crate) fn select_ordinal(&mut self, index: usize) -> Decision {
+        self.limit_rejected = false;
         let Some(entry) = self.entries.get_mut(self.current) else {
             return Decision::Pending;
         };
@@ -207,6 +214,7 @@ impl QuestionPrompt {
     }
 
     pub(crate) fn submit(&mut self) -> Decision {
+        self.limit_rejected = false;
         let answered = self.current;
         let Some(entry) = self.entries.get_mut(answered) else {
             return Decision::Pending;
@@ -265,10 +273,16 @@ impl QuestionPrompt {
         draft.text.insert_str(draft.cursor, text);
         draft.cursor += text.len();
         draft.preferred_column = None;
+        self.limit_rejected = false;
         Insertion::Inserted
     }
 
+    pub(crate) fn note_limit_rejection(&mut self) -> bool {
+        !std::mem::replace(&mut self.limit_rejected, true)
+    }
+
     pub(crate) fn backspace(&mut self) -> bool {
+        self.limit_rejected = false;
         let Some(draft) = self.selected_draft_mut() else {
             return false;
         };
@@ -279,6 +293,7 @@ impl QuestionPrompt {
     }
 
     pub(crate) fn edit(&mut self, edit: FreeformEdit) -> bool {
+        self.limit_rejected = false;
         let Some(draft) = self.selected_draft_mut() else {
             return false;
         };
@@ -589,6 +604,18 @@ mod tests {
         assert_eq!(prompt.insert("d", 4), Insertion::Inserted);
         prompt.clear_draft();
         assert_eq!(prompt.draft_len(), 0);
+    }
+
+    #[test]
+    fn limit_rejections_are_reported_once_until_an_edit_lands() {
+        let mut prompt = proceed();
+        prompt.move_choice(-1);
+        assert!(prompt.note_limit_rejection());
+        assert!(!prompt.note_limit_rejection());
+        assert_eq!(prompt.insert("a", 4), Insertion::Inserted);
+        assert!(prompt.note_limit_rejection());
+        prompt.move_choice(1);
+        assert!(prompt.note_limit_rejection());
     }
 
     #[test]
