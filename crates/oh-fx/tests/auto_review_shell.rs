@@ -1,7 +1,7 @@
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{MetadataExt, symlink};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -206,47 +206,64 @@ fn a_failing_reviewer_asks_the_user_and_a_denial_reaches_the_model() {
 
 #[test]
 fn an_approval_never_runs_the_command_in_a_directory_replaced_while_the_prompt_was_open() {
-    let server = FakeServer::start([
-        Reply::sse(&chat_tool_call_events(
-            "call-1",
-            "shell",
-            r#"{"request":{"action":"run","command":"rm -f marker","cwd":"build"}}"#,
-        )),
-        Reply::status(503, r#"{"error":{"message":"reviewer unavailable"}}"#),
-        Reply::sse(&chat_text_events(&["Stopped."])),
-    ]);
-    let home = Home::new(&server.base_url());
-    let build = home.workspace.join("build");
-    let outside = home.root.join("outside");
-    for directory in [&build, &outside] {
-        fs::create_dir(directory).expect("create a directory");
+    let replacements: [fn(&Path, &Path); 2] = [
+        |build, outside| {
+            fs::rename(build, build.with_file_name("reviewed"))
+                .expect("move the reviewed directory");
+            symlink(outside, build).expect("link the outside directory");
+        },
+        |build, _| {
+            let inode = |directory: &Path| fs::metadata(directory).expect("read").ino();
+            let reviewed = inode(build);
+            for _ in 0..100 {
+                fs::remove_dir_all(build).expect("remove the reviewed directory");
+                fs::create_dir(build).expect("create a replacement directory");
+                if inode(build) == reviewed {
+                    break;
+                }
+            }
+            fs::write(build.join("marker"), "unreviewed").expect("write the replacement marker");
+        },
+    ];
+    for replace in replacements {
+        let server = FakeServer::start([
+            Reply::sse(&chat_tool_call_events(
+                "call-1",
+                "shell",
+                r#"{"request":{"action":"run","command":"rm -f marker","cwd":"build"}}"#,
+            )),
+            Reply::status(503, r#"{"error":{"message":"reviewer unavailable"}}"#),
+            Reply::sse(&chat_text_events(&["Stopped."])),
+        ]);
+        let home = Home::new(&server.base_url());
+        let build = home.workspace.join("build");
+        let outside = home.root.join("outside");
+        for directory in [&build, &outside] {
+            fs::create_dir(directory).expect("create a directory");
+        }
+        fs::write(build.join("marker"), "reviewed").expect("write the reviewed marker");
+        fs::write(outside.join("marker"), "unreviewed").expect("write the outside marker");
+        let session = home.shell();
+        session.send(b"remove the build marker\r");
+        wait(&session, PERMISSION_NEEDED);
+        replace(&build, &outside);
+        thread::sleep(APPROVAL_ARMING);
+        session.send(b"1");
+        wait(&session, "Stopped.");
+        for unreviewed in [outside.join("marker"), build.join("marker")] {
+            assert_eq!(
+                fs::read_to_string(&unreviewed).expect("the unreviewed marker is kept"),
+                "unreviewed"
+            );
+        }
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            last_tool_result(&requests[2]),
+            r#"{"error":{"tool":"shell","code":"CommandAuthorityContextMismatch","retryable":false}}"#
+        );
+        exit(session);
     }
-    fs::write(build.join("marker"), "reviewed").expect("write the reviewed marker");
-    fs::write(outside.join("marker"), "unreviewed").expect("write the outside marker");
-    let session = home.shell();
-    session.send(b"remove the build marker\r");
-    wait(&session, PERMISSION_NEEDED);
-    fs::rename(&build, home.workspace.join("reviewed")).expect("move the reviewed directory");
-    symlink(&outside, &build).expect("link the outside directory");
-    thread::sleep(APPROVAL_ARMING);
-    session.send(b"1");
-    wait(&session, "Stopped.");
-    assert_eq!(
-        fs::read_to_string(outside.join("marker")).expect("the outside marker is kept"),
-        "unreviewed"
-    );
-    assert_eq!(
-        fs::read_to_string(home.workspace.join("reviewed/marker"))
-            .expect("the reviewed marker is kept"),
-        "reviewed"
-    );
-    let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(
-        last_tool_result(&requests[2]),
-        r#"{"error":{"tool":"shell","code":"CommandAuthorityContextMismatch","retryable":false}}"#
-    );
-    exit(session);
 }
 
 #[test]

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal, kill_process_group, setsid};
 
 use super::{error_name, launch_failure_prefix, status_prefix};
-use crate::directory_identity::{DIRECTORY_CHANGED, DirectoryIdentity};
+use crate::held_directory::{DIRECTORY_CHANGED, DirectoryIdentity};
 #[cfg(not(target_os = "linux"))]
 use group_tree::GroupTree;
 #[cfg(target_os = "linux")]

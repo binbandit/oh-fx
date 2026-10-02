@@ -1,4 +1,4 @@
-use crate::directory_identity::DIRECTORY_CHANGED;
+use crate::held_directory::DIRECTORY_CHANGED;
 
 const MAX_NAME_BYTES: usize = 64;
 

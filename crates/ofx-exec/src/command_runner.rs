@@ -26,7 +26,7 @@ use tokio::time::{Instant, sleep_until};
 pub use foreground_session::{is_foreground_session_invocation, run_foreground_session};
 
 use crate::command_contract::CommandStatus;
-use crate::directory_identity::DirectoryIdentity;
+use crate::held_directory::HeldDirectory;
 use foreground_session::{
     FORCE_SIGNAL, LAUNCH_FAILURE_EXIT_CODE, LAUNCH_FAILURE_PREFIX, NO_DEADLINE, NONCE_HEX_BYTES,
     READY_BYTE, RELEASE_BYTE, STATUS_PREFIX, TOKEN,
@@ -77,7 +77,7 @@ pub(crate) enum OutputStream {
 pub(crate) struct CapturedCommand<'a> {
     pub(crate) argv: &'a [OsString],
     pub(crate) cwd: &'a Path,
-    pub(crate) cwd_identity: DirectoryIdentity,
+    pub(crate) cwd_directory: HeldDirectory,
     pub(crate) deadline: Option<Instant>,
     pub(crate) supervisor: &'a SessionSupervisor,
 }
@@ -137,6 +137,7 @@ pub(crate) async fn run_captured(
     let started = Instant::now();
     let nonce = nonce()?;
     let mut child = spawn_supervisor(&command)?;
+    drop(command.cwd_directory);
     let (Some(mut input), Some(stdout), Some(mut stderr), Some(group)) = (
         child.stdin.take(),
         child.stdout.take(),
@@ -181,6 +182,10 @@ fn reap_in_background(mut child: Child) {
 }
 
 fn spawn_supervisor(command: &CapturedCommand<'_>) -> Result<Child, RunError> {
+    let identity = command
+        .cwd_directory
+        .identity()
+        .map_err(|error| RunError::Failed(error_name(&error)))?;
     let deadline = command.deadline.map_or_else(
         || NO_DEADLINE.to_owned(),
         |deadline| {
@@ -191,14 +196,24 @@ fn spawn_supervisor(command: &CapturedCommand<'_>) -> Result<Child, RunError> {
     tokio::process::Command::new(&command.supervisor.executable)
         .arg(TOKEN)
         .arg(deadline)
-        .arg(command.cwd_identity.argument())
+        .arg(identity.argument())
         .args(command.argv)
-        .current_dir(command.cwd)
+        .current_dir(supervisor_directory(&command.cwd_directory, command.cwd))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| RunError::Failed(error_name(&error)))
+}
+
+#[cfg(target_os = "linux")]
+fn supervisor_directory(held: &HeldDirectory, _path: &Path) -> PathBuf {
+    held.descriptor_path()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn supervisor_directory(_held: &HeldDirectory, path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 async fn await_ready(

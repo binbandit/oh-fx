@@ -2,7 +2,6 @@ mod presentation;
 mod request;
 mod snapshot_format;
 
-use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +12,7 @@ use ofx_contract::{
     ToolSpec,
 };
 use ofx_exec::{
-    DirectoryIdentity, Environment, ManagedExecutions, Profile, Snapshot, StartCaptured,
+    Environment, HeldDirectory, ManagedExecutions, Profile, Snapshot, StartCaptured,
     configured_login_shell, environment,
 };
 use ofx_workspace::{PathError, open_directory, path_inside, resolve_workspace_or_external_path};
@@ -149,27 +148,29 @@ impl Validated {
 
 struct WorkingDirectory {
     path: PathBuf,
-    identity: Result<DirectoryIdentity, PathError>,
+    held: Option<Result<HeldDirectory, PathError>>,
 }
 
 impl WorkingDirectory {
-    fn pin(path: PathBuf) -> Self {
-        let identity = directory_identity(&path);
-        Self { path, identity }
+    fn hold(&mut self) {
+        self.held = Some(hold_directory(&self.path));
     }
 
-    fn still_pinned(&self) -> Result<DirectoryIdentity, String> {
-        match self.identity {
-            Err(error) => Err(error.to_string()),
-            Ok(identity) if directory_identity(&self.path) == Ok(identity) => Ok(identity),
-            Ok(_) => Err(DIRECTORY_CHANGED.to_owned()),
+    fn still_named(self) -> Result<(PathBuf, HeldDirectory), String> {
+        match self.held {
+            Some(Err(error)) => Err(error.to_string()),
+            Some(Ok(held))
+                if hold_directory(&self.path).is_ok_and(|named| held.is_same_directory(&named)) =>
+            {
+                Ok((self.path, held))
+            }
+            Some(Ok(_)) | None => Err(DIRECTORY_CHANGED.to_owned()),
         }
     }
 }
 
-fn directory_identity(path: &Path) -> Result<DirectoryIdentity, PathError> {
-    let directory = File::from(open_directory(path)?);
-    Ok(DirectoryIdentity::of(&directory.metadata()?))
+fn hold_directory(path: &Path) -> Result<HeldDirectory, PathError> {
+    open_directory(path).map(HeldDirectory::new)
 }
 
 fn run_request(
@@ -233,7 +234,10 @@ impl ShellContext {
                 };
                 Ok(Validated::Run {
                     request,
-                    cwd: WorkingDirectory::pin(cwd),
+                    cwd: WorkingDirectory {
+                        path: cwd,
+                        held: None,
+                    },
                     environment,
                 })
             }
@@ -267,14 +271,14 @@ impl ShellContext {
         let (Some(environment), Some(command)) = (environment, request.command) else {
             return ToolOutput::failure(runtime_failure(UNAVAILABLE));
         };
-        let cwd_identity = match cwd.still_pinned() {
-            Ok(identity) => identity,
+        let (cwd, cwd_directory) = match cwd.still_named() {
+            Ok(held) => held,
             Err(code) => return ToolOutput::failure(runtime_failure(&code)),
         };
         let input = StartCaptured {
             command,
-            cwd: cwd.path,
-            cwd_identity,
+            cwd,
+            cwd_directory,
             environment,
             max_output_bytes: MAX_COMMAND_OUTPUT_BYTES,
             timeout: request
@@ -371,7 +375,7 @@ impl PreparedCall for ShellCall {
 
     fn complete(&mut self) {
         if let Ok(Validated::Run { cwd, .. }) = &mut self.validated {
-            cwd.identity = directory_identity(&cwd.path);
+            cwd.hold();
         }
     }
 

@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_exec::{
-    CommandStatus, DirectoryIdentity, Environment, ExecutionError, ManagedExecutions, OutputEcho,
+    CommandStatus, Environment, ExecutionError, HeldDirectory, ManagedExecutions, OutputEcho,
     SessionSupervisor, Snapshot, SnapshotState, StartCaptured, is_foreground_session_invocation,
     run_foreground_session,
 };
@@ -152,8 +152,8 @@ const TESTS: [(&str, Test); 27] = [
         launch_failures_keep_upstream_error_names,
     ),
     (
-        "a_replaced_working_directory_launches_nothing",
-        a_replaced_working_directory_launches_nothing,
+        "commands_run_only_in_the_held_directory",
+        commands_run_only_in_the_held_directory,
     ),
     (
         "commands_have_no_controlling_terminal",
@@ -275,7 +275,7 @@ fn run(command: &str, yield_time: Duration) -> StartCaptured {
     StartCaptured {
         command: command.to_owned(),
         cwd: env::temp_dir(),
-        cwd_identity: identity(&env::temp_dir()),
+        cwd_directory: held(&env::temp_dir()),
         environment: Environment::Clean(BASH.into()),
         max_output_bytes: 64 * 1024,
         timeout: None,
@@ -283,8 +283,9 @@ fn run(command: &str, yield_time: Duration) -> StartCaptured {
     }
 }
 
-fn identity(directory: &Path) -> DirectoryIdentity {
-    DirectoryIdentity::of(&fs::metadata(directory).expect("the test step succeeds"))
+fn held(directory: &Path) -> HeldDirectory {
+    let directory = fs::File::open(directory).expect("the test step succeeds");
+    HeldDirectory::new(directory.into())
 }
 
 fn supervisor_identity() -> String {
@@ -671,26 +672,16 @@ fn launch_failures_keep_upstream_error_names() {
         assert_eq!(snapshot.state, SnapshotState::Lost);
         assert_eq!(snapshot.error_name, Some("FileNotFound"));
         assert!(snapshot.output_delta.is_empty());
-        let missing_cwd = StartCaptured {
-            cwd: "/nonexistent/directory".into(),
-            ..run("true", LONG)
-        };
-        let snapshot = executions
-            .start_captured(missing_cwd, &cancel)
-            .await
-            .expect("the test step succeeds");
-        assert_eq!(snapshot.state, SnapshotState::Lost);
-        assert_eq!(snapshot.error_name, Some("FileNotFound"));
     });
 }
 
-fn a_replaced_working_directory_launches_nothing() {
+fn commands_run_only_in_the_held_directory() {
     let reviewed = tempfile::tempdir().expect("the test step succeeds");
     let replacement = tempfile::tempdir().expect("the test step succeeds");
     let snapshot = block_on(async {
         let input = StartCaptured {
             cwd: replacement.path().to_owned(),
-            cwd_identity: identity(reviewed.path()),
+            cwd_directory: held(reviewed.path()),
             ..run("touch ran", LONG)
         };
         executions()
@@ -698,10 +689,18 @@ fn a_replaced_working_directory_launches_nothing() {
             .await
             .expect("the test step succeeds")
     });
-    assert_eq!(snapshot.state, SnapshotState::Lost);
-    assert_eq!(snapshot.error_name, Some("CommandAuthorityContextMismatch"));
-    assert!(snapshot.output_delta.is_empty());
     assert!(!replacement.path().join("ran").exists());
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            snapshot.state,
+            SnapshotState::Completed(CommandStatus::ExitCode(0))
+        );
+        assert!(reviewed.path().join("ran").exists());
+    } else {
+        assert_eq!(snapshot.state, SnapshotState::Lost);
+        assert_eq!(snapshot.error_name, Some("CommandAuthorityContextMismatch"));
+        assert!(!reviewed.path().join("ran").exists());
+    }
 }
 
 fn commands_have_no_controlling_terminal() {

@@ -1,6 +1,6 @@
 use std::fs;
-use std::os::unix::fs::symlink;
-use std::path::PathBuf;
+use std::os::unix::fs::{MetadataExt, symlink};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -176,6 +176,8 @@ fn unavailable(cause: &str, message: &str, suggestion: &str) -> String {
     }})
     .to_string()
 }
+
+type Replacement = fn(&Home, &PathBuf);
 
 const UNAVAILABLE: &str = "Safety reviewer unavailable; action held";
 const UNAVAILABLE_SUGGESTION: &str = "The action did not run because safety review was unavailable. Continue with a different safe action or retry later.";
@@ -472,20 +474,28 @@ fn new_sensitive_files_outside_the_workspace_are_reviewed_with_their_content() {
 
 #[test]
 fn a_cleared_command_never_runs_in_a_directory_replaced_while_its_review_was_pending() {
-    let replacements: [fn(&Home, &PathBuf); 2] = [
-        |home, build| {
-            fs::rename(build, home.workspace.join("reviewed"))
-                .expect("move the reviewed directory");
-            symlink(home.root.join("outside"), build).expect("link the outside directory");
-        },
-        |home, build| {
-            fs::rename(build, home.workspace.join("reviewed"))
-                .expect("move the reviewed directory");
-            fs::create_dir(build).expect("create a replacement directory");
-            fs::write(build.join("marker"), "unreviewed").expect("write the replacement marker");
-        },
+    let replacements: [(Replacement, bool); 3] = [
+        (
+            |home, build| {
+                fs::rename(build, home.workspace.join("reviewed"))
+                    .expect("move the reviewed directory");
+                symlink(home.root.join("outside"), build).expect("link the outside directory");
+            },
+            true,
+        ),
+        (
+            |home, build| {
+                fs::rename(build, home.workspace.join("reviewed"))
+                    .expect("move the reviewed directory");
+                fs::create_dir(build).expect("create a replacement directory");
+                fs::write(build.join("marker"), "unreviewed")
+                    .expect("write the replacement marker");
+            },
+            true,
+        ),
+        (|_, build| recreate_reusing_the_inode(build), false),
     ];
-    for replace in replacements {
+    for (replace, moved) in replacements {
         let gate = Gate::default();
         let server = FakeServer::start([
             run_in("rm -f marker", "build"),
@@ -521,11 +531,13 @@ fn a_cleared_command_never_runs_in_a_directory_replaced_while_its_review_was_pen
                 "unreviewed"
             );
         }
-        assert_eq!(
-            fs::read_to_string(home.workspace.join("reviewed/marker"))
-                .expect("the reviewed marker is kept"),
-            "reviewed"
-        );
+        if moved {
+            assert_eq!(
+                fs::read_to_string(home.workspace.join("reviewed/marker"))
+                    .expect("the reviewed marker is kept"),
+                "reviewed"
+            );
+        }
         let requests = server.requests();
         assert_eq!(requests.len(), 3);
         assert_eq!(
@@ -534,4 +546,17 @@ fn a_cleared_command_never_runs_in_a_directory_replaced_while_its_review_was_pen
         );
         assert_eq!(result(&output)["tool_calls"][0]["status"], "error");
     }
+}
+
+fn recreate_reusing_the_inode(directory: &Path) {
+    let inode = |directory: &Path| fs::metadata(directory).expect("read the directory").ino();
+    let reviewed = inode(directory);
+    for _ in 0..100 {
+        fs::remove_dir_all(directory).expect("remove the reviewed directory");
+        fs::create_dir(directory).expect("create a replacement directory");
+        if inode(directory) == reviewed {
+            break;
+        }
+    }
+    fs::write(directory.join("marker"), "unreviewed").expect("write the replacement marker");
 }

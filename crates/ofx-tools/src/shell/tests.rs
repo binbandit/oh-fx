@@ -342,7 +342,7 @@ fn workspace_only_runs_fail_once_their_working_directory_leaves_the_workspace() 
 
 #[test]
 fn approved_runs_fail_once_their_working_directory_is_replaced() {
-    let replacements: [fn(&Directories); 3] = [
+    let replacements: [fn(&Directories); 4] = [
         |directories| {
             directories.move_build_away();
             symlink(&directories.outside, &directories.build).unwrap();
@@ -356,6 +356,12 @@ fn approved_runs_fail_once_their_working_directory_is_replaced() {
             fs::rename(external, external.with_file_name("moved")).unwrap();
             symlink(&directories.outside, external).unwrap();
             fs::create_dir(directories.outside.join("build")).unwrap();
+        },
+        |directories| {
+            for _ in 0..20 {
+                fs::remove_dir(&directories.build).unwrap();
+                fs::create_dir(&directories.build).unwrap();
+            }
         },
     ];
     for (index, replace) in replacements.into_iter().enumerate() {
@@ -376,18 +382,18 @@ fn approved_runs_fail_once_their_working_directory_is_replaced() {
 }
 
 #[test]
-fn working_directories_are_pinned_again_when_the_call_completes() {
+fn working_directories_are_held_from_completion_until_launch() {
     let directories = Directories::new();
     let arguments =
         serde_json::json!({"action": "run", "command": "ls", "cwd": directories.build}).to_string();
     let shell = shell_in(&directories.workspace);
-    let stale = shell.prepare(&arguments).unwrap();
+    let uncompleted = shell.prepare(&arguments).unwrap();
     let mut completed = shell.prepare(&arguments).unwrap();
     directories.move_build_away();
     fs::create_dir(&directories.build).unwrap();
     completed.complete();
     assert_eq!(
-        execute(stale, PathAccess::WorkspaceOrExternal).content,
+        execute(uncompleted, PathAccess::WorkspaceOrExternal).content,
         runtime_failure(DIRECTORY_CHANGED)
     );
     let output = execute(completed, PathAccess::WorkspaceOrExternal);
