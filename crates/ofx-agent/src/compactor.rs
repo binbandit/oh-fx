@@ -106,6 +106,7 @@ fn turns_from<'a>(history: &[HistoryTurn<'a>], cut: Cut) -> Vec<summarize::Turn<
         .iter()
         .map(|turn| {
             let mut items = step_items(&turn.steps);
+            items.extend(turn.notes.iter().copied().map(summarize::Item::Note));
             if !turn.reply.is_empty() {
                 items.push(summarize::Item::Assistant(turn.reply));
             }
@@ -129,6 +130,7 @@ fn turns_from<'a>(history: &[HistoryTurn<'a>], cut: Cut) -> Vec<summarize::Turn<
 fn step_items<'a>(steps: &[ToolStep<'a>]) -> Vec<summarize::Item<'a>> {
     let mut items = Vec::new();
     for step in steps {
+        items.extend(step.notes.iter().copied().map(summarize::Item::Note));
         if !step.assistant.is_empty() {
             items.push(summarize::Item::Assistant(step.assistant));
         }

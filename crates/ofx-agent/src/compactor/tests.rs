@@ -199,3 +199,46 @@ fn error_codes_use_upstream_names() {
     );
     assert_eq!(CompactionError::EmptySummary.code(), "EmptySummary");
 }
+
+#[tokio::test]
+async fn messages_oh_fx_added_to_a_turn_reach_the_notes_request_as_notes() {
+    let notes = "recorded notes ".repeat(400);
+    let history = vec![
+        ChatMessage::user("read the notes"),
+        assistant("", Some("notes")),
+        result("notes", &notes),
+        assistant("", Some("plan")),
+        result("plan", &notes),
+        ChatMessage::user("Summarize what you just did."),
+        assistant("Read them.", None),
+        ChatMessage::user("now rewrite them"),
+    ];
+    let starts = [0, 7];
+    let turns = history_turns(&history, &starts);
+    let mut model = Notes::default();
+    let compacted = compact(
+        Request {
+            turns: &turns,
+            active: true,
+            earlier: None,
+            size: size(),
+            model: "m",
+            sends_after_conversation: false,
+        },
+        &mut model,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        compacted.cut,
+        Cut {
+            turns: 1,
+            tool_steps: 0
+        }
+    );
+    assert!(model.prompts[0].0.contains(
+        "[From oh-fx, not the user]\nSummarize what you just did.\n\n[Assistant]\nRead them.\n"
+    ));
+}

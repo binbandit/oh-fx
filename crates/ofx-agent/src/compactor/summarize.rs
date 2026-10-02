@@ -39,6 +39,7 @@ pub(crate) struct ToolResult<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Item<'a> {
     Assistant(&'a str),
+    Note(&'a str),
     ToolCall(ToolCall<'a>),
     ToolResult(ToolResult<'a>),
 }
@@ -151,7 +152,7 @@ fn turn_tokens(turn: &Turn<'_>) -> usize {
     for item in &turn.items {
         estimator.consume(" ");
         match item {
-            Item::Assistant(text) => estimator.consume(text),
+            Item::Assistant(text) | Item::Note(text) => estimator.consume(text),
             Item::ToolCall(call) => {
                 estimator.consume(call.name);
                 estimator.consume(" ");
@@ -600,7 +601,7 @@ fn prepare<'a>(
                     *next_tool += 1;
                 }
             }
-            Item::Assistant(_) => {}
+            Item::Assistant(_) | Item::Note(_) => {}
         }
     }
 
@@ -610,7 +611,7 @@ fn prepare<'a>(
     for (index, item) in turn.items.iter().enumerate() {
         has_work |= match item {
             Item::Assistant(text) => !text.is_empty() && Some(index) != final_index,
-            Item::ToolCall(_) | Item::ToolResult(_) => true,
+            Item::Note(_) | Item::ToolCall(_) | Item::ToolResult(_) => true,
         };
     }
 
@@ -626,6 +627,9 @@ fn prepare<'a>(
                 let _ = write!(text, "{label}:\n{message}\n\n");
             }
             Item::Assistant(_) => {}
+            Item::Note(message) => {
+                let _ = write!(text, "From oh-fx, not the user:\n{message}\n\n");
+            }
             Item::ToolCall(call) => {
                 let index_line = index_line(call.arguments);
                 let separator = if index_line.is_empty() { "" } else { ": " };
@@ -945,7 +949,7 @@ fn longest_text(plan: &Plan<'_>) -> usize {
         .iter()
         .flat_map(|turn| {
             let items = turn.source.items.iter().map(|item| match item {
-                Item::Assistant(text) => text.len(),
+                Item::Assistant(text) | Item::Note(text) => text.len(),
                 Item::ToolCall(call) => call.arguments.len(),
                 Item::ToolResult(result) => result.output.len(),
             });
@@ -1061,6 +1065,13 @@ fn render_transcript(plan: &Plan<'_>, clip: usize, earlier_clip: usize) -> (Stri
                     let _ = write!(text, "[Assistant]\n{}\n\n", clipped(assistant, clip));
                 }
                 Item::Assistant(_) => {}
+                Item::Note(note) => {
+                    let _ = write!(
+                        text,
+                        "[From oh-fx, not the user]\n{}\n\n",
+                        clipped(note, clip)
+                    );
+                }
                 Item::ToolCall(call) => {
                     let _ = write!(
                         text,

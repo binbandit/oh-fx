@@ -99,6 +99,8 @@ fn turns_read_their_steps_and_final_reply_from_the_messages() {
     assert!(!turns[1].steps[0].results[1].failed);
     assert!(turns[1].steps[1].calls.is_empty());
     assert!(turns[1].steps[1].replay.is_some());
+    assert!(turns[1].steps[1].notes.is_empty());
+    assert_eq!(turns[1].notes, ["Summarize what you just did."]);
     assert_eq!(turns[1].reply, "Summary.");
 
     assert_eq!(turns[2].steps.len(), 1);
@@ -152,6 +154,51 @@ fn a_cut_inside_a_turn_keeps_its_user_message_and_its_later_steps() {
         ]
     );
     assert_eq!(starts, [1, 5]);
+}
+
+#[test]
+fn a_cut_covering_every_step_keeps_the_messages_after_the_last_one() {
+    let (mut history, mut starts) = conversation();
+    retain(
+        &mut history,
+        &mut starts,
+        Cut {
+            turns: 1,
+            tool_steps: 2,
+        },
+        ChatMessage::user("<checkpoint>"),
+    );
+    assert_eq!(
+        contents(&history),
+        [
+            "user:<checkpoint>",
+            "user:second",
+            "user:Summarize what you just did.",
+            "assistant:Summary.:0",
+            "user:third",
+            "assistant::1",
+            "tool:d",
+        ]
+    );
+    assert_eq!(starts, [1, 4]);
+}
+
+#[test]
+fn notes_between_steps_belong_to_the_step_after_them() {
+    let history = vec![
+        ChatMessage::user("start"),
+        assistant("", &["a"]),
+        result("a", ToolResultStatus::Success),
+        ChatMessage::user("Summarize what you just did."),
+        assistant("", &["b"]),
+        result("b", ToolResultStatus::Success),
+        assistant("Done.", &[]),
+    ];
+    let turns = history_turns(&history, &[0]);
+    assert!(turns[0].steps[0].notes.is_empty());
+    assert_eq!(turns[0].steps[1].notes, ["Summarize what you just did."]);
+    assert!(turns[0].notes.is_empty());
+    assert_eq!(turns[0].reply, "Done.");
 }
 
 #[test]

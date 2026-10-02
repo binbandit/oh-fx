@@ -555,3 +555,35 @@ async fn a_turn_that_fails_after_compacting_its_steps_keeps_its_prompt_after_the
     assert_eq!(user_text(&agent.history[1]), "read the notes");
     assert_eq!(agent.turn_starts, [1]);
 }
+
+#[tokio::test]
+async fn compacting_every_step_keeps_the_summary_prompt_that_follows_them() {
+    let large = format!(r#"{{"value":"{}"}}"#, "x".repeat(20_000));
+    let provider = FakeProvider::new(vec![
+        spoken_tool_reply("", "call-1", r#"{"value":"small"}"#),
+        spoken_tool_reply("", "call-2", &large),
+        metered(text_reply(""), Some(40_000)),
+        unmetered(text_reply(
+            "Turn in progress\nIn between: Did the work.\nT1: echoed small\nT2: echoed large",
+        )),
+        unmetered(text_reply("Summary of the work.")),
+    ]);
+    let (mut agent, _) = windowed(&provider, 45_000, 64);
+    let (report, _) = run(&mut agent, "do the work").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(report.final_text, "Summary of the work.");
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 5);
+    let rebuilt = &requests[4].messages;
+    assert_eq!(rebuilt.len(), 3);
+    assert!(
+        user_text(&rebuilt[0])
+            .contains("Turn in progress, whose first user message follows this:\n")
+    );
+    assert_eq!(user_text(&rebuilt[1]), "do the work");
+    assert_eq!(
+        rebuilt[2],
+        ChatMessage::user("Summarize what you just did.")
+    );
+}

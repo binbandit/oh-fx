@@ -1,3 +1,5 @@
+use std::mem;
+
 use ofx_contract::{ChatMessage, ProviderReplay, ToolCall, ToolResultStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +12,7 @@ pub(crate) struct ToolResult<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolStep<'a> {
+    pub(crate) notes: Vec<&'a str>,
     pub(crate) assistant: &'a str,
     pub(crate) replay: Option<&'a ProviderReplay>,
     pub(crate) calls: &'a [ToolCall],
@@ -21,6 +24,7 @@ pub(crate) struct ToolStep<'a> {
 pub(crate) struct HistoryTurn<'a> {
     pub(crate) user: &'a str,
     pub(crate) steps: Vec<ToolStep<'a>>,
+    pub(crate) notes: Vec<&'a str>,
     pub(crate) reply: &'a str,
     pub(crate) reply_replay: Option<&'a ProviderReplay>,
     start: usize,
@@ -53,6 +57,7 @@ fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTur
     };
     let mut steps: Vec<ToolStep<'_>> = Vec::new();
     let mut pending: Option<ToolStep<'_>> = None;
+    let mut notes: Vec<&str> = Vec::new();
     for (index, message) in history.iter().enumerate().take(end).skip(start + 1) {
         match message {
             ChatMessage::Assistant {
@@ -62,6 +67,7 @@ fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTur
             } => {
                 steps.extend(pending.take());
                 let step = ToolStep {
+                    notes: mem::take(&mut notes),
                     assistant: content.as_deref().unwrap_or_default(),
                     replay: provider_replay.as_ref(),
                     calls: tool_calls,
@@ -93,6 +99,7 @@ fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTur
                         step.end = index + 1;
                     }
                     _ => steps.push(ToolStep {
+                        notes: mem::take(&mut notes),
                         assistant: "",
                         replay: None,
                         calls: &[],
@@ -101,15 +108,26 @@ fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTur
                     }),
                 }
             }
-            ChatMessage::User { .. } | ChatMessage::System { .. } => {
+            ChatMessage::User { content } => {
+                steps.extend(pending.take());
+                notes.push(content);
+            }
+            ChatMessage::System { .. } => {
                 steps.extend(pending.take());
             }
         }
     }
-    let (reply, reply_replay) = pending.map_or(("", None), |step| (step.assistant, step.replay));
+    let (reply, reply_replay) = match pending {
+        Some(step) => {
+            notes.splice(0..0, step.notes);
+            (step.assistant, step.replay)
+        }
+        None => ("", None),
+    };
     HistoryTurn {
         user,
         steps,
+        notes,
         reply,
         reply_replay,
         start,
@@ -133,11 +151,11 @@ pub(crate) fn retain(
         start
     } else {
         let steps = history_turn(history, start, end).steps;
-        if cut.tool_steps < steps.len() {
-            steps[cut.tool_steps - 1].end
-        } else {
-            end
-        }
+        let covered = cut.tool_steps.min(steps.len());
+        covered
+            .checked_sub(1)
+            .and_then(|last| steps.get(last))
+            .map_or(end, |step| step.end)
     };
     let tail = history.split_off(tail_from);
     let kept_user = (cut.tool_steps > 0).then(|| history.swap_remove(start));
