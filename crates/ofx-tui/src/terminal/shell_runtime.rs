@@ -499,10 +499,11 @@ fn history_reset_uses_ris_for_values(term_program: Option<&str>, tmux: bool) -> 
 #[cfg(test)]
 pub(crate) mod test_pty {
     use std::os::unix::process::CommandExt;
-    use std::process::Command;
+    use std::process::{Child, Command, ExitStatus, Stdio};
     use std::time::{Duration, Instant};
 
     use ofx_testkit::{PtyPair, PtySession};
+    use rustix::termios::LocalModes;
 
     use super::{Capabilities, ColorSupport, HistoryReset, Terminal};
 
@@ -521,6 +522,32 @@ pub(crate) mod test_pty {
 
     pub(crate) fn open() -> PtyPair {
         PtyPair::open(24, 80).unwrap()
+    }
+
+    pub(crate) fn spawn_on(pty: &PtyPair, test: &str) -> Child {
+        child_command(test, &[])
+            .stdin(Stdio::from(pty.slave.try_clone().unwrap()))
+            .stdout(Stdio::from(pty.slave.try_clone().unwrap()))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    pub(crate) fn exit_within(mut child: Child, limit: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+
+    pub(crate) fn cooked(modes: LocalModes) -> bool {
+        modes.contains(LocalModes::ICANON | LocalModes::ECHO)
     }
 
     pub(crate) fn in_child() -> bool {
@@ -588,7 +615,7 @@ pub(crate) mod test_pty {
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Child, ExitStatus, Stdio};
+    use std::process::Stdio;
     use std::time::Duration;
 
     use rustix::termios::{self, InputModes, LocalModes, OptionalActions, SpecialCodeIndex};
@@ -1003,32 +1030,6 @@ mod tests {
         assert_eq!(test_pty::unread_input(&pty), 0);
     }
 
-    fn spawn_on(pty: &PtyPair, test: &str) -> Child {
-        test_pty::child_command(test, &[])
-            .stdin(Stdio::from(pty.slave.try_clone().unwrap()))
-            .stdout(Stdio::from(pty.slave.try_clone().unwrap()))
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap()
-    }
-
-    fn exit_within(mut child: Child, limit: Duration) -> Option<ExitStatus> {
-        let deadline = Instant::now() + limit;
-        while Instant::now() < deadline {
-            if let Some(status) = child.try_wait().unwrap() {
-                return Some(status);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        None
-    }
-
-    fn cooked(modes: LocalModes) -> bool {
-        modes.contains(LocalModes::ICANON | LocalModes::ECHO)
-    }
-
     fn forbid_reopening_by_path() {
         let stdout = rustix::stdio::stdout();
         rustix::fs::fchmod(stdout, Mode::empty()).unwrap();
@@ -1059,14 +1060,14 @@ mod tests {
             std::process::exit(i32::from(unwound.is_ok()));
         }
         let pty = test_pty::open();
-        let child = spawn_on(
+        let child = test_pty::spawn_on(
             &pty,
             "terminal::shell_runtime::tests::unwinding_with_stalled_output_restores_termios_without_waiting_for_it",
         );
-        let status = exit_within(child, test_pty::WAIT);
+        let status = test_pty::exit_within(child, test_pty::WAIT);
         let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
         assert!(
-            status.is_some_and(|status| status.success()) && cooked(modes),
+            status.is_some_and(|status| status.success()) && test_pty::cooked(modes),
             "{status:?} {modes:?}"
         );
     }
@@ -1096,14 +1097,14 @@ mod tests {
             std::process::exit(i32::from(unwound.is_ok()));
         }
         let pty = test_pty::open();
-        let child = spawn_on(
+        let child = test_pty::spawn_on(
             &pty,
             "terminal::shell_runtime::tests::unwinding_on_blocking_output_gives_up_on_a_stalled_terminal",
         );
-        let status = exit_within(child, test_pty::WAIT);
+        let status = test_pty::exit_within(child, test_pty::WAIT);
         let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
         assert!(
-            status.is_some_and(|status| status.success()) && cooked(modes),
+            status.is_some_and(|status| status.success()) && test_pty::cooked(modes),
             "{status:?} {modes:?}"
         );
     }
@@ -1138,7 +1139,7 @@ mod tests {
             std::process::exit(1);
         }
         let pty = test_pty::open();
-        let mut child = spawn_on(
+        let mut child = test_pty::spawn_on(
             &pty,
             "terminal::shell_runtime::tests::sigterm_ends_a_stalled_write_when_the_terminal_path_cannot_be_reopened",
         );
@@ -1154,11 +1155,11 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(100));
         let _ = rustix::process::kill_process(Pid::from_child(&child), Signal::TERM);
-        let status = exit_within(child, test_pty::WAIT);
+        let status = test_pty::exit_within(child, test_pty::WAIT);
         let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
         assert!(
             status.and_then(|status| status.signal()) == Some(Signal::TERM.as_raw())
-                && cooked(modes),
+                && test_pty::cooked(modes),
             "{status:?} {modes:?}"
         );
     }

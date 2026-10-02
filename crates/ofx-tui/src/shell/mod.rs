@@ -172,10 +172,7 @@ impl<'a> Shell<'a> {
         events: UiEventReceiver,
         send: Box<dyn FnMut(UiCommand) + 'a>,
     ) -> Result<Self, TerminalError> {
-        let mut terminal = Terminal::open()?;
-        terminal.enable_raw_mode()?;
-        let signals = SignalPipe::install()?;
-        terminal.abort_writes_when_readable(signals.fatal_wakeup()?);
+        let (signals, mut terminal) = claim_terminal()?;
         let layout = terminal.query_layout(FOOTER_ROWS)?;
         let detection = terminal.detect_theme();
         let theme_pinned = detection.pinned;
@@ -572,6 +569,14 @@ impl<'a> Shell<'a> {
     }
 }
 
+fn claim_terminal() -> Result<(SignalPipe, Terminal), TerminalError> {
+    let signals = SignalPipe::install()?;
+    let mut terminal = Terminal::open()?;
+    terminal.abort_writes_when_readable(signals.fatal_wakeup()?);
+    terminal.enable_raw_mode()?;
+    Ok((signals, terminal))
+}
+
 fn title_sequence(options: &ShellOptions) -> String {
     let label = format!(
         "oh-fx v{} | {}",
@@ -591,7 +596,11 @@ fn title_sequence(options: &ShellOptions) -> String {
 
 #[cfg(test)]
 mod tests {
+    use rustix::process::{Signal, getpid, kill_process};
+    use rustix::termios::{self, LocalModes};
+
     use super::*;
+    use crate::terminal::test_pty;
 
     #[test]
     fn resizing_back_from_a_too_small_terminal_replays_the_screen() {
@@ -674,6 +683,44 @@ mod tests {
         assert_eq!(test.shell.shutdown(None), None);
         let written = test.written();
         assert!(written.contains("\x1b]2;\x07\x1b[?2031l"), "{written:?}");
+    }
+
+    #[test]
+    fn a_termination_while_claiming_the_terminal_still_leaves_it_cooked() {
+        if test_pty::in_child() {
+            let watcher = std::thread::spawn(|| {
+                let stdin = rustix::stdio::stdin();
+                while termios::tcgetattr(stdin)
+                    .unwrap()
+                    .local_modes
+                    .contains(LocalModes::ICANON)
+                {}
+                kill_process(getpid(), Signal::TERM).unwrap();
+            });
+            let (signals, terminal) = claim_terminal().unwrap();
+            watcher.join().unwrap();
+            let deadline = Instant::now() + test_pty::WAIT;
+            while signals.take().fatal.is_none() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            drop(terminal);
+            drop(signals);
+            std::process::exit(0);
+        }
+        for _ in 0..5 {
+            let pty = test_pty::open();
+            let child = test_pty::spawn_on(
+                &pty,
+                "shell::tests::a_termination_while_claiming_the_terminal_still_leaves_it_cooked",
+            );
+            let status = test_pty::exit_within(child, test_pty::WAIT);
+            let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
+            assert!(
+                status.is_some_and(|status| status.success()) && test_pty::cooked(modes),
+                "{status:?} {modes:?}"
+            );
+        }
     }
 
     #[test]
