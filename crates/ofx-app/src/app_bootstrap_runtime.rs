@@ -23,7 +23,9 @@ use ofx_http::ClientError;
 use ofx_permissions::PermissionPolicy;
 use tokio_util::sync::CancellationToken;
 
-use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints, codex_subscription};
+use crate::codex_provider::{
+    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
+};
 use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
     ProfileLocation, gather_project_context,
@@ -113,6 +115,7 @@ pub struct AgentSetup {
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<PermissionPolicy>,
     approvals: Option<Approvals>,
+    refreshes: Option<Arc<DetachedRefreshes>>,
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     context_notices: Vec<String>,
     config: AgentConfig,
@@ -185,7 +188,10 @@ impl Profile {
         interactive: bool,
         cancel: &CancellationToken,
     ) -> Result<AgentSetup, ConnectError> {
-        let route = self.route(launch.model, launch.endpoints, cancel).await?;
+        let refreshes = interactive.then(Arc::default);
+        let route = self
+            .route(launch.model, launch.endpoints, refreshes.clone(), cancel)
+            .await?;
         if route.uses_tls {
             ofx_http::warm_tls_roots();
         }
@@ -228,6 +234,7 @@ impl Profile {
                 self.workspace_root.clone(),
             )),
             approvals: interactive.then(Approvals::default),
+            refreshes,
             project,
             context_notices,
             config,
@@ -238,12 +245,13 @@ impl Profile {
         &self,
         requested: Option<&OsStr>,
         endpoints: SubscriptionEndpoints,
+        refreshes: Option<Arc<DetachedRefreshes>>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let lookup = |name: &str| env::var(name).ok();
         if self.settings.codex_selected(&lookup)? {
             return self
-                .codex_route(requested, endpoints, &lookup, cancel)
+                .codex_route(requested, endpoints, &lookup, refreshes, cancel)
                 .await;
         }
         let connection = self.settings.selected_connection(&lookup)?;
@@ -269,6 +277,7 @@ impl Profile {
         requested: Option<&OsStr>,
         endpoints: SubscriptionEndpoints,
         lookup: &dyn Fn(&str) -> Option<String>,
+        refreshes: Option<Arc<DetachedRefreshes>>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let model = select_model(requested, |model| {
@@ -276,8 +285,14 @@ impl Profile {
         })?
         .map_err(ConnectError::InvalidModel)?;
         let uses_tls = uses_tls(&endpoints.codex.responses);
-        let subscription =
-            codex_subscription(self.paths.as_ref(), &user_agent(), endpoints, cancel).await?;
+        let subscription = codex_subscription(
+            self.paths.as_ref(),
+            &user_agent(),
+            endpoints,
+            refreshes,
+            cancel,
+        )
+        .await?;
         Ok(Route {
             provider: Arc::new(subscription.provider),
             capabilities: Some(Arc::new(subscription.capabilities)),
@@ -372,6 +387,10 @@ impl AgentSetup {
 
     pub(crate) fn approvals(&self) -> Option<&Approvals> {
         self.approvals.as_ref()
+    }
+
+    pub(crate) fn refreshes(&self) -> Option<Arc<DetachedRefreshes>> {
+        self.refreshes.clone()
     }
 
     pub(crate) fn config(&self, model: &str) -> AgentConfig {
