@@ -150,16 +150,24 @@ fn run_request(
     cwd: &Path,
     environment: Option<&Environment>,
 ) -> CommandRequest {
-    let profile = match (environment, request.profile) {
-        (Some(Environment::Clean(_)), _) | (None, Some(Profile::Clean)) => CommandProfile::Clean,
-        (Some(Environment::User(_)), _) | (None, Some(Profile::User) | None) => {
-            CommandProfile::User
-        }
+    let clean = match (environment, &request.shell) {
+        (Some(environment), _) => matches!(environment, Environment::Clean(_)),
+        (None, Some(shell)) => shell.clean_start,
+        (None, None) => request.profile == Some(Profile::Clean),
+    };
+    let profile = if clean {
+        CommandProfile::Clean
+    } else {
+        CommandProfile::User
     };
     CommandRequest::Run {
         command: request.command.clone().unwrap_or_default(),
         cwd: cwd.to_path_buf(),
         profile,
+        shell: request
+            .shell
+            .as_ref()
+            .map(|shell| PathBuf::from(&shell.path)),
         terminal: request.tty,
     }
 }

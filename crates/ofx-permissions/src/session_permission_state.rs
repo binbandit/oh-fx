@@ -48,11 +48,13 @@ pub(crate) fn command_grant(request: &CommandRequest) -> Option<SessionGrant> {
         CommandRequest::Run {
             command,
             profile,
+            shell,
             terminal,
             ..
         } => Some(SessionGrant::Command {
             command: command.clone(),
             profile: *profile,
+            shell: shell.clone(),
             terminal: *terminal,
         }),
         CommandRequest::Observe | CommandRequest::SendInput { .. } | CommandRequest::Stop => None,

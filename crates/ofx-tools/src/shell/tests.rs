@@ -86,6 +86,7 @@ fn shell_calls_describe_the_decoded_request_the_gate_decides() {
             command: "git status".to_owned(),
             cwd: std::env::temp_dir(),
             profile,
+            shell: None,
             terminal,
         })
     };
@@ -112,6 +113,28 @@ fn shell_calls_describe_the_decoded_request_the_gate_decides() {
         ),
     ] {
         assert_eq!(request(arguments), expected, "{arguments}");
+    }
+    let named = |clean_start: &str, profile| {
+        (
+            request(&format!(
+                r#"{{"action":"run","command":"git status","tty":true,"shell":{{"kind":"executable","path":"/opt/zsh"{clean_start}}}}}"#
+            )),
+            Some(CommandRequest::Run {
+                command: "git status".to_owned(),
+                cwd: std::env::temp_dir(),
+                profile,
+                shell: Some(PathBuf::from("/opt/zsh")),
+                terminal: true,
+            }),
+        )
+    };
+    for (clean_start, profile) in [
+        ("", CommandProfile::User),
+        (r#","clean_start":false"#, CommandProfile::User),
+        (r#","clean_start":true"#, CommandProfile::Clean),
+    ] {
+        let (decoded, expected) = named(clean_start, profile);
+        assert_eq!(decoded, expected, "{clean_start}");
     }
     assert_eq!(
         request(r#"{"request":{"action":"interact","session_id":"shell-1"}}"#),
@@ -220,6 +243,7 @@ fn unresolved_working_directories_outside_the_workspace_reach_the_gate_and_fail_
             command: "ls".to_owned(),
             cwd: PathBuf::from(missing),
             profile: CommandProfile::User,
+            shell: None,
             terminal: false,
         })
     );

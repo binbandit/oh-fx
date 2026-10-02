@@ -260,7 +260,13 @@ fn shell_decoder_reads_a_shell_object_encoded_as_a_string() {
     let request = decoded(
         r#"{"action":"run","command":"true","tty":true,"shell":"{\"kind\":\"executable\",\"path\":\"/bin/bash\"}"}"#,
     );
-    assert!(request.has_shell);
+    assert_eq!(
+        request.shell,
+        Some(ShellSpec {
+            path: "/bin/bash".to_owned(),
+            clean_start: false,
+        })
+    );
     assert!(request.tty);
     for shell in [
         r#""{\"kind\":\"script\",\"path\":\"/bin/bash\"}""#,

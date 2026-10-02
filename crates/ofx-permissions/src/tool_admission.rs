@@ -606,6 +606,7 @@ mod tests {
                 command: "cargo test".to_owned(),
                 cwd: workspace.clone(),
                 profile: CommandProfile::Clean,
+                shell: None,
                 terminal: true,
             })),
             ApprovalScope {
@@ -614,6 +615,7 @@ mod tests {
                 always: Some(SessionGrant::Command {
                     command: "cargo test".to_owned(),
                     profile: CommandProfile::Clean,
+                    shell: None,
                     terminal: true,
                 }),
             }
@@ -752,6 +754,7 @@ mod tests {
             command: command.to_owned(),
             cwd: PathBuf::from(cwd),
             profile,
+            shell: None,
             terminal,
         };
         let policy = PermissionPolicy::new(PermissionMode::Ask, "/workspace");
@@ -801,6 +804,7 @@ mod tests {
             command: "cargo test".to_owned(),
             cwd: workspace.clone(),
             profile: CommandProfile::User,
+            shell: None,
             terminal: false,
         };
         let change = FileMutation {

@@ -95,12 +95,18 @@ impl Action {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ShellSpec {
+    pub(super) path: String,
+    pub(super) clean_start: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ShellRequest {
     pub(super) action: Action,
     pub(super) command: Option<String>,
     pub(super) cwd: Option<String>,
     pub(super) profile: Option<Profile>,
-    pub(super) has_shell: bool,
+    pub(super) shell: Option<ShellSpec>,
     pub(super) tty: bool,
     pub(super) yield_time_ms: u32,
     pub(super) timeout_ms: Option<u64>,
@@ -128,10 +134,10 @@ impl ShellRequest {
                         "request.timeout_ms must be at least 1; choose the intended deadline.",
                     );
                 }
-                if self.profile.is_some() && self.has_shell {
+                if self.profile.is_some() && self.shell.is_some() {
                     return Some("Choose either request.profile or request.shell.");
                 }
-                if !self.tty && self.has_shell {
+                if !self.tty && self.shell.is_some() {
                     return Some(
                         "request.shell requires tty=true; choose the intended execution mode.",
                     );
@@ -286,7 +292,7 @@ fn parse_request(fields: &Map<String, Value>) -> Result<ShellRequest, ()> {
         command: optional(fields, "command", string)?,
         cwd: optional(fields, "cwd", string)?,
         profile: optional(fields, "profile", profile)?,
-        has_shell: optional(fields, "shell", shell)?.is_some(),
+        shell: optional(fields, "shell", shell)?,
         tty: optional(fields, "tty", boolean)?.unwrap_or(false),
         yield_time_ms: optional(fields, "yield_time_ms", |value| {
             unsigned(value, u64::from(u32::MAX)).and_then(|value| u32::try_from(value).ok())
@@ -335,7 +341,7 @@ fn profile(value: &Value) -> Option<Profile> {
     }
 }
 
-fn shell(value: &Value) -> Option<()> {
+fn shell(value: &Value) -> Option<ShellSpec> {
     let Value::Object(members) = value else {
         return None;
     };
@@ -353,12 +359,16 @@ fn shell(value: &Value) -> Option<()> {
         Value::Number(number) => number.as_u64()? == 0,
         _ => false,
     };
-    let path = members.get("path")?.is_string();
+    let path = members.get("path")?.as_str()?;
     let clean_start = match members.get("clean_start") {
-        None | Some(Value::Null | Value::Bool(_)) => true,
-        Some(_) => false,
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(clean_start)) => *clean_start,
+        Some(_) => return None,
     };
-    (kind && path && clean_start).then_some(())
+    kind.then(|| ShellSpec {
+        path: path.to_owned(),
+        clean_start,
+    })
 }
 
 fn unsigned(value: &Value, maximum: u64) -> Option<u64> {

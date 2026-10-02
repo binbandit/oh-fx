@@ -288,6 +288,7 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
             command: command.clone(),
             cwd: fixture.root.join("approved"),
             profile: CommandProfile::User,
+            shell: None,
             terminal: false,
         })
     );
@@ -296,6 +297,7 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
         Some(SessionGrant::Command {
             command,
             profile: CommandProfile::User,
+            shell: None,
             terminal: false,
         })
     );
@@ -450,11 +452,13 @@ async fn a_remembered_command_asks_again_under_another_profile_or_terminal_mode(
                 command: "echo granted".to_owned(),
                 cwd: fixture.workspace.clone(),
                 profile,
+                shell: None,
                 terminal,
             }),
             Some(SessionGrant::Command {
                 command: "echo granted".to_owned(),
                 profile,
+                shell: None,
                 terminal,
             }),
         )
@@ -485,6 +489,52 @@ async fn a_remembered_command_asks_again_under_another_profile_or_terminal_mode(
         assert_eq!(
             (asked.command, asked.scope.always),
             identity(profile, terminal)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_terminal_run_that_names_its_shell_asks_with_that_shell_and_binds_it() {
+    let fixture = Fixture::new();
+    let mut session = Session::new(&fixture.workspace);
+    let identity = |profile, shell: Option<&str>| {
+        let shell = shell.map(PathBuf::from);
+        (
+            Some(CommandRequest::Run {
+                command: "echo granted".to_owned(),
+                cwd: fixture.workspace.clone(),
+                profile,
+                shell: shell.clone(),
+                terminal: true,
+            }),
+            Some(SessionGrant::Command {
+                command: "echo granted".to_owned(),
+                profile,
+                shell,
+                terminal: true,
+            }),
+        )
+    };
+    let login = session
+        .call("shell", &run(serde_json::json!({"tty": true})), always)
+        .await;
+    let [request] = <[ApprovalRequest; 1]>::try_from(login.requests).unwrap();
+    assert_eq!(
+        (request.command, request.scope.always),
+        identity(CommandProfile::User, None)
+    );
+    for (clean_start, profile) in [(false, CommandProfile::User), (true, CommandProfile::Clean)] {
+        let named = run(serde_json::json!({
+            "tty": true,
+            "shell": {"kind": "executable", "path": "/tmp/other-shell", "clean_start": clean_start}
+        }));
+        let asked = session
+            .call("shell", &named, deny)
+            .await
+            .denied_request("shell");
+        assert_eq!(
+            (asked.command, asked.scope.always),
+            identity(profile, Some("/tmp/other-shell"))
         );
     }
 }

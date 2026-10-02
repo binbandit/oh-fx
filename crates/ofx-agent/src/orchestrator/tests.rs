@@ -241,6 +241,7 @@ impl Tool for EchoTool {
                 command: command.to_owned(),
                 cwd: PathBuf::from("/workspace"),
                 profile: CommandProfile::User,
+                shell: None,
                 terminal: false,
             })
             .or_else(|| arguments.contains("stop").then_some(CommandRequest::Stop));

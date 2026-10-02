@@ -63,6 +63,7 @@ mod tests {
             command: command.to_owned(),
             cwd: PathBuf::from(cwd),
             profile: CommandProfile::User,
+            shell: None,
             terminal,
         }
     }

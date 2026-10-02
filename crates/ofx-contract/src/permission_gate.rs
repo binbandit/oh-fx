@@ -53,6 +53,7 @@ pub enum CommandRequest {
         command: String,
         cwd: PathBuf,
         profile: CommandProfile,
+        shell: Option<PathBuf>,
         terminal: bool,
     },
     Observe,
@@ -79,6 +80,7 @@ pub enum SessionGrant {
     Command {
         command: String,
         profile: CommandProfile,
+        shell: Option<PathBuf>,
         terminal: bool,
     },
 }
