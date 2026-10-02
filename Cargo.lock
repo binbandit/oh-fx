@@ -899,6 +899,7 @@ dependencies = [
  "rustix",
  "signal-hook",
  "thiserror",
+ "vt100",
  "zeroize",
 ]
 

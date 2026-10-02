@@ -17,6 +17,7 @@ zeroize.workspace = true
 [dev-dependencies]
 ofx-testkit.workspace = true
 rustix = { workspace = true, features = ["pty"] }
+vt100.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["thread"] }
