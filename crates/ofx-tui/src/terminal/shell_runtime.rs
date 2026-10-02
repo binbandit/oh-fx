@@ -755,11 +755,13 @@ mod tests {
         let restore = abnormal_restore().replace('\n', "\r\n").into_bytes();
         let needle = restore.clone();
         let typist = std::thread::spawn(move || {
+            let deadline = Instant::now() + test_pty::WAIT;
             while !termios::tcgetattr(&slave)
                 .unwrap()
                 .local_modes
                 .contains(LocalModes::ICANON)
             {
+                assert!(Instant::now() < deadline, "termios never became canonical");
                 std::thread::sleep(Duration::from_millis(1));
             }
             std::thread::sleep(Duration::from_millis(20));
