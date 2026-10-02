@@ -514,8 +514,7 @@ async fn always_on_an_external_file_change_grants_the_tree_it_showed_before_the_
 }
 
 #[tokio::test]
-async fn a_batch_switched_from_full_access_to_auto_while_its_first_call_runs_changes_a_workspace_file()
- {
+async fn a_switch_from_full_access_to_auto_mid_batch_lets_a_later_call_change_a_workspace_file() {
     for scoped_instructions in [false, true] {
         let fixture = Fixture::new();
         let notes = fixture.workspace.join("notes.txt");
@@ -529,7 +528,8 @@ async fn a_batch_switched_from_full_access_to_auto_while_its_first_call_runs_cha
                     ("write_file", &write("notes.txt")),
                 ],
                 |event| {
-                    if matches!(event, UiEvent::ToolStarted { call_id, .. } if call_id.as_str() == "call-1")
+                    if let UiEvent::ToolStarted { call_id, .. } = event
+                        && call_id.as_str() == "call-1"
                     {
                         mode.set(PermissionMode::Auto);
                     }
