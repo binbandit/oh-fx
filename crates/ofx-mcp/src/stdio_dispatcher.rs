@@ -331,15 +331,14 @@ impl StdioDispatcher {
             terminate_child_gracefully(shared.pid);
             shared.wait_reader_done(TERMINATION_GRACE).await;
         }
-        if shared.child_may_be_running() {
-            terminate_child(shared.pid);
-        }
+        shared.kill_child();
         let reader = lock(&self.reader).take();
         if let Some(mut reader) = reader
             && timeout(READER_JOIN_GRACE, &mut reader).await.is_err()
         {
             reader.abort();
         }
+        kill_process_group(shared.pid);
         let stderr = lock(&self.stderr).take();
         if let Some(mut stderr) = stderr
             && timeout(STDERR_EOF_GRACE, &mut stderr).await.is_err()
@@ -365,6 +364,7 @@ impl Drop for StdioDispatcher {
         }
         self.shared.responses.close(McpError::McpConnectionClosed);
         self.shared.kill_child();
+        kill_process_group(self.shared.pid);
         let cleanup = lock(&self.docker_cleanup).take();
         if let (Some(cleanup), Ok(runtime)) = (cleanup, tokio::runtime::Handle::try_current()) {
             runtime.spawn(cleanup.run());
@@ -783,6 +783,12 @@ fn terminate_child(pid: u32) {
     }
 }
 
+fn kill_process_group(pid: u32) {
+    if let Some(pid) = rustix_pid(pid) {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
+}
+
 fn terminate_child_gracefully(pid: u32) {
     if let Some(pid) = rustix_pid(pid) {
         let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
@@ -1139,6 +1145,48 @@ cat >/dev/null";
                 .await
                 .is_ok()
         );
+    }
+
+    fn process_ended(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat
+                .rsplit_once(") ")
+                .is_some_and(|(_, fields)| fields.starts_with('Z')),
+            Err(_) => true,
+        }
+    }
+
+    #[tokio::test]
+    async fn stopping_kills_what_the_server_left_in_its_process_group() {
+        let state = tempfile::tempdir().unwrap();
+        let pid_file = state.path().join("sleeper");
+        let script = format!(
+            "sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '{}'; read -r line; exit 0",
+            pid_file.display()
+        );
+        let (dispatcher, _notifications) = shell(&script);
+        let mut sleeper = None;
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                sleeper = Some(pid);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let sleeper = sleeper.unwrap();
+        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        let mut ended = false;
+        for _ in 0..200 {
+            if process_ended(sleeper) {
+                ended = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ended, "the server's background process outlived shutdown");
     }
 
     #[tokio::test]

@@ -134,10 +134,37 @@ pub enum McpError {
     InvalidJson,
     #[error("MetadataLimitExceeded")]
     MetadataLimitExceeded,
-    #[error("{0}")]
+    #[error("{}", io_error_name(.0))]
     Io(Arc<io::Error>),
-    #[error("{0}")]
+    #[error("{}", http_error_name(.0))]
     Http(Arc<reqwest::Error>),
+}
+
+fn io_error_name(error: &io::Error) -> &'static str {
+    match error.kind() {
+        io::ErrorKind::NotFound => "FileNotFound",
+        io::ErrorKind::PermissionDenied => "AccessDenied",
+        io::ErrorKind::BrokenPipe => "BrokenPipe",
+        io::ErrorKind::ConnectionRefused => "ConnectionRefused",
+        io::ErrorKind::ConnectionReset => "ConnectionResetByPeer",
+        io::ErrorKind::TimedOut => "Timeout",
+        io::ErrorKind::InvalidData => "InvalidData",
+        _ => "Unexpected",
+    }
+}
+
+fn http_error_name(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "Timeout"
+    } else if error.is_connect() {
+        "ConnectionRefused"
+    } else if error.is_redirect() {
+        "RedirectNotAllowed"
+    } else if error.is_body() || error.is_decode() {
+        "ReadFailed"
+    } else {
+        "HttpRequestFailed"
+    }
 }
 
 impl From<io::Error> for McpError {
@@ -168,5 +195,33 @@ impl PartialEq for McpError {
             (Self::Http(left), Self::Http(right)) => Arc::ptr_eq(left, right),
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ofx_http::ConnectionOptions;
+
+    use super::*;
+
+    #[test]
+    fn io_failures_display_their_name_without_the_detail() {
+        let missing = McpError::from(io::Error::new(io::ErrorKind::NotFound, "/private/server"));
+        assert_eq!(missing.to_string(), "FileNotFound");
+    }
+
+    #[tokio::test]
+    async fn http_failures_never_display_the_request_url() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = ofx_http::build_connection_client(&ConnectionOptions::default()).unwrap();
+        let failure = client
+            .get(format!("http://127.0.0.1:{port}/mcp?token=secret"))
+            .send()
+            .await
+            .unwrap_err();
+        let error = McpError::from(failure);
+        assert_eq!(error.to_string(), "ConnectionRefused");
     }
 }
