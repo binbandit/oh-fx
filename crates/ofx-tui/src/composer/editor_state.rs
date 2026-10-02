@@ -25,6 +25,12 @@ pub(crate) struct EditorState {
 }
 
 impl EditorState {
+    pub(crate) fn clear(&mut self) {
+        self.input.clear();
+        self.cursor = 0;
+        self.selection_anchor = None;
+    }
+
     pub(crate) fn swap_input(&mut self, other: &mut String) {
         std::mem::swap(&mut self.input, other);
         self.cursor = self.input.len();
