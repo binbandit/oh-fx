@@ -11,34 +11,53 @@ impl Xorshift {
     }
 }
 
-fn scanned(words: &Words, token: &str, case: KeywordCase) -> bool {
-    words.iter().any(|word| match case {
-        KeywordCase::Sensitive => token.as_bytes() == word,
-        KeywordCase::AsciiInsensitive => token.as_bytes().eq_ignore_ascii_case(word),
-    })
+struct Listed {
+    words: &'static Words,
+    case: KeywordCase,
+    written: Vec<&'static [u8]>,
 }
 
-fn word_lists() -> Vec<(&'static Words, KeywordCase)> {
-    PROFILES
-        .iter()
-        .flat_map(|profile| {
-            [
-                (profile.aliases, KeywordCase::AsciiInsensitive),
-                (profile.keywords, profile.keyword_case),
-                (profile.literals, profile.keyword_case),
-                (profile.keywords, KeywordCase::Sensitive),
-                (profile.keywords, KeywordCase::AsciiInsensitive),
-            ]
+impl Listed {
+    fn scanned(&self, token: &str) -> bool {
+        self.written.iter().any(|&word| match self.case {
+            KeywordCase::Sensitive => token.as_bytes() == word,
+            KeywordCase::AsciiInsensitive => token.as_bytes().eq_ignore_ascii_case(word),
         })
-        .collect()
+    }
 }
 
-fn assert_same_answers(lists: &[(&'static Words, KeywordCase)], token: &str) {
-    for &(words, case) in lists {
+fn word_lists() -> Vec<Listed> {
+    let mut lists: Vec<Listed> = Vec::new();
+    for profile in &PROFILES {
+        for (words, case) in [
+            (profile.aliases, KeywordCase::AsciiInsensitive),
+            (profile.literals, profile.keyword_case),
+            (profile.keywords, KeywordCase::Sensitive),
+            (profile.keywords, KeywordCase::AsciiInsensitive),
+        ] {
+            if !lists
+                .iter()
+                .any(|listed| listed.words == words && listed.case == case)
+            {
+                lists.push(Listed {
+                    words,
+                    case,
+                    written: words.iter().collect(),
+                });
+            }
+        }
+    }
+    lists
+}
+
+fn assert_same_answers(lists: &[Listed], token: &str) {
+    for listed in lists {
         assert_eq!(
-            words.contains(token, case),
-            scanned(words, token, case),
-            "{token:?} {case:?} {words:?}"
+            listed.words.contains(token, listed.case),
+            listed.scanned(token),
+            "{token:?} {:?} {:?}",
+            listed.case,
+            listed.words
         );
     }
 }
@@ -47,8 +66,8 @@ fn assert_same_answers(lists: &[(&'static Words, KeywordCase)], token: &str) {
 fn every_listed_word_and_its_near_misses_match_like_a_scan() {
     let lists = word_lists();
     let mut tokens = vec![String::new(), " ".to_owned(), "_".to_owned()];
-    for (words, _) in &lists {
-        for word in words.iter() {
+    for listed in &lists {
+        for word in &listed.written {
             let word = std::str::from_utf8(word).expect("ascii words");
             let mut capitalized = word.to_owned();
             capitalized[..1].make_ascii_uppercase();
