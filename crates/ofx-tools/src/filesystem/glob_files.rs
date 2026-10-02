@@ -65,7 +65,7 @@ impl Tool for GlobFiles {
         Ok(BlockingCall::boxed(
             description,
             move |path_access| match decoded {
-                Ok(arguments) => arguments.run(&context, path_access),
+                Ok(arguments) => arguments.run(&context, &path_access),
                 Err(failure) => failure,
             },
         ))
@@ -114,7 +114,7 @@ impl GlobFilesArgs {
         })
     }
 
-    fn run(&self, context: &FilesystemContext, path_access: PathAccess) -> ToolOutput {
+    fn run(&self, context: &FilesystemContext, path_access: &PathAccess) -> ToolOutput {
         if let Err(failure) = admit_optional_path(TOOL_NAME, &context.workspace_root, &self.path) {
             return failure;
         }
@@ -127,7 +127,7 @@ impl GlobFilesArgs {
     fn execute(
         &self,
         context: &FilesystemContext,
-        path_access: PathAccess,
+        path_access: &PathAccess,
     ) -> Result<String, ToolOutput> {
         self.search(context, &DiscoveryOptions::default(), path_access)
     }
@@ -136,7 +136,7 @@ impl GlobFilesArgs {
         &self,
         context: &FilesystemContext,
         base_options: &DiscoveryOptions<'_>,
-        path_access: PathAccess,
+        path_access: &PathAccess,
     ) -> Result<String, ToolOutput> {
         let Some((root, scoped)) = self.effective_root(context, path_access)? else {
             return Ok(self.format(&[], 0, false, &CandidateStats::default(), context));
@@ -189,7 +189,7 @@ impl GlobFilesArgs {
     fn effective_root(
         &self,
         context: &FilesystemContext,
-        path_access: PathAccess,
+        path_access: &PathAccess,
     ) -> Result<Option<(SearchRoot, StaticGlobBase<'_>)>, ToolOutput> {
         let requested_root = resolve_search_root(&context.workspace_root, &self.path, path_access)
             .map_err(|error| self.root_failure(error, &self.path))?;
@@ -334,10 +334,13 @@ fn format_matches(
 fn resolve_search_root(
     workspace_root: &Path,
     requested: &str,
-    path_access: PathAccess,
+    path_access: &PathAccess,
 ) -> Result<SearchRoot, PathError> {
     let absolute = resolve_workspace_or_external_path(workspace_root, requested)?;
-    if path_access == PathAccess::WorkspaceOnly && !path_inside(workspace_root, &absolute) {
+    if path_access
+        .confining_root(workspace_root)
+        .is_some_and(|root| !path_inside(root, &absolute))
+    {
         return Err(PathError::PathOutsideWorkspace);
     }
     directory_or_file_root(absolute)
@@ -485,7 +488,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::filesystem::tests::{run_git, run_tool, run_tool_with};
+    use crate::filesystem::tests::{RememberedGrant, run_git, run_tool, run_tool_with};
 
     struct Workspace {
         _temp: TempDir,
@@ -516,7 +519,7 @@ mod tests {
                 arguments["path"] = serde_json::Value::from(path);
             }
             GlobFilesArgs::decode(&arguments.to_string())?
-                .execute(&self.context(), PathAccess::WorkspaceOrExternal)
+                .execute(&self.context(), &PathAccess::WorkspaceOrExternal)
         }
 
         fn numbered_files(&self, count: usize) {
@@ -723,7 +726,7 @@ mod tests {
 
         let result = GlobFilesArgs::decode("{\"pattern\":\"**/*.txt\",\"mode\":\"count\"}")
             .unwrap()
-            .execute(&workspace.context(), PathAccess::WorkspaceOrExternal)
+            .execute(&workspace.context(), &PathAccess::WorkspaceOrExternal)
             .unwrap();
 
         assert_eq!(result, "[glob] count 150 matches for **/*.txt\n");
@@ -757,7 +760,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.search(&context, &options, PathAccess::WorkspaceOrExternal)
+            args.search(&context, &options, &PathAccess::WorkspaceOrExternal)
                 .unwrap(),
             "[glob] 1 matches for target.zig\n - src/core/workspace/target.zig\n"
         );
@@ -782,7 +785,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.search(&context, &options, PathAccess::WorkspaceOrExternal)
+            args.search(&context, &options, &PathAccess::WorkspaceOrExternal)
                 .unwrap(),
             "[glob] 1 matches for src/tools/**/*.zig\n - src/tools/target.zig\n"
         );
@@ -858,7 +861,7 @@ mod tests {
         );
         let count = GlobFilesArgs::decode("{\"pattern\":\"*.txt\",\"mode\":\"count\"}")
             .unwrap()
-            .execute(&workspace.context(), PathAccess::WorkspaceOrExternal)
+            .execute(&workspace.context(), &PathAccess::WorkspaceOrExternal)
             .unwrap();
         assert_eq!(count, "[glob] count 4 matches for *.txt\n");
     }
@@ -915,7 +918,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.execute(&context, PathAccess::WorkspaceOrExternal)
+            args.execute(&context, &PathAccess::WorkspaceOrExternal)
                 .unwrap(),
             format!(
                 "[glob] 1 matches for *.txt\n - {}\n",
@@ -953,6 +956,28 @@ mod tests {
     }
 
     #[test]
+    fn glob_files_refuses_a_remembered_grant_root_swapped_out_of_its_tree() {
+        let grant = RememberedGrant::new();
+        let tool = GlobFiles::new(&grant.workspace);
+
+        let (before, after) =
+            grant.run_around_a_swap(&tool, r#"{"pattern":"*.txt","path":"../link"}"#);
+
+        assert!(
+            before.content.starts_with("[glob] 1 matches for *.txt\n")
+                && before.content.ends_with("/allowed/a.txt\n"),
+            "{}",
+            before.content
+        );
+        assert_eq!(
+            after,
+            ToolOutput::failure(
+                "Unable to resolve glob search root: ../link (PathOutsideWorkspace)"
+            )
+        );
+    }
+
+    #[test]
     fn glob_files_pattern_static_base_cannot_escape_the_approved_search_root() {
         let workspace = Workspace::new();
         let inside = workspace.root.join("workspace");
@@ -968,7 +993,7 @@ mod tests {
                 mode: GlobMode::Matches,
             };
             let failure = args
-                .execute(&context, PathAccess::WorkspaceOrExternal)
+                .execute(&context, &PathAccess::WorkspaceOrExternal)
                 .unwrap_err();
             assert!(
                 failure.content.contains("PathOutsideWorkspace"),

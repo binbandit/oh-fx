@@ -82,14 +82,82 @@ pub(crate) fn tool_spec(name: &str, description: &str, input_schema: &'static st
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::process::Command;
 
-    use ofx_contract::{CallDescription, PathAccess, Tool, ToolCallId, ToolContext, ToolOutput};
+    use ofx_contract::{
+        Admission, CallDescription, GatedAction, PathAccess, PermissionGate, PermissionMode,
+        PreparedCall, Tool, ToolCall, ToolCallId, ToolContext, ToolOutput,
+    };
+    use ofx_permissions::PermissionPolicy;
     use ofx_workspace::GIT_REPOSITORY_VARIABLES;
+    use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
+
+    pub(crate) struct RememberedGrant {
+        _temp: TempDir,
+        root: PathBuf,
+        pub(crate) workspace: PathBuf,
+    }
+
+    impl RememberedGrant {
+        pub(crate) fn new() -> Self {
+            let temp = TempDir::new().unwrap();
+            let root = fs::canonicalize(temp.path()).unwrap();
+            let workspace = root.join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            for (name, content) in [
+                ("allowed/a.txt", "needle allowed\n"),
+                ("secret/a.txt", "needle secret\n"),
+                ("secret/credentials.txt", "needle secret\n"),
+            ] {
+                let path = root.join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, content).unwrap();
+            }
+            symlink(root.join("allowed"), root.join("link")).unwrap();
+            Self {
+                _temp: temp,
+                root,
+                workspace,
+            }
+        }
+
+        pub(crate) fn run_around_a_swap(
+            &self,
+            tool: &dyn Tool,
+            arguments: &str,
+        ) -> (ToolOutput, ToolOutput) {
+            let call = ToolCall {
+                id: ToolCallId::new("call-1"),
+                name: tool.spec().name.clone(),
+                arguments: arguments.to_owned(),
+            };
+            let policy = PermissionPolicy::new(PermissionMode::Ask, &self.workspace);
+            assert_eq!(policy.admit(&call), Admission::ApprovalRequired);
+            policy.remember_approval(GatedAction::Call(&call));
+            let admitted = || match policy.admit(&call) {
+                Admission::Allowed(path_access) => path_access,
+                other => panic!("the remembered approval admits the call: {other:?}"),
+            };
+            let (_, before) = run_tool_with(tool, arguments, admitted());
+            let path_access = admitted();
+            let mut prepared = tool.prepare(arguments).unwrap();
+            prepared.complete();
+            fs::remove_file(self.root.join("link")).unwrap();
+            symlink(self.root.join("secret"), self.root.join("link")).unwrap();
+            assert_eq!(policy.admit(&call), Admission::ApprovalRequired);
+            let after = execute(prepared, path_access);
+            for disclosed in ["secret", "credentials"] {
+                assert!(!after.content.contains(disclosed), "{}", after.content);
+            }
+            (before, after)
+        }
+    }
 
     pub(crate) fn run_git(root: &Path, args: &[&str]) -> bool {
         let mut command = Command::new("git");
@@ -112,6 +180,10 @@ pub(crate) mod tests {
         let mut prepared = tool.prepare(arguments).unwrap();
         prepared.complete();
         let description = prepared.describe();
+        (description, execute(prepared, path_access))
+    }
+
+    fn execute(prepared: Box<dyn PreparedCall>, path_access: PathAccess) -> ToolOutput {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -120,8 +192,7 @@ pub(crate) mod tests {
             CancellationToken::new(),
             path_access,
         );
-        let output = runtime.block_on(prepared.execute(context));
-        (description, output)
+        runtime.block_on(prepared.execute(context))
     }
 
     #[test]
