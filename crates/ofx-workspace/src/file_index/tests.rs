@@ -1,4 +1,6 @@
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::time::{Duration, Instant};
 
@@ -382,6 +384,41 @@ fn git_workspaces_list_tracked_untracked_and_hidden_files_with_their_directories
 }
 
 #[test]
+fn nested_repositories_symlink_loops_and_undecodable_names_stay_out_of_the_index() {
+    let (_temp, root) = workspace();
+    assert!(run_git(&root, &["init", "-q"]));
+    write(&root, "src/main.rs");
+    let nested = root.join("vendor/nested");
+    fs::create_dir_all(&nested).unwrap();
+    assert!(run_git(&nested, &["init", "-q"]));
+    write(&root, "vendor/nested/inner.rs");
+    symlink(&root, root.join("src/loop")).unwrap();
+    fs::write(root.join(OsStr::from_bytes(b"bad\xffname.txt")), "x").unwrap();
+    let listed = discovered(&root);
+    assert_eq!(
+        listed,
+        [
+            ("src".to_owned(), CandidateKind::Directory),
+            ("src/loop".to_owned(), CandidateKind::File),
+            ("src/main.rs".to_owned(), CandidateKind::File),
+            ("vendor".to_owned(), CandidateKind::Directory),
+            ("vendor/nested".to_owned(), CandidateKind::Directory),
+        ]
+    );
+}
+
+#[test]
+fn a_repository_git_cannot_read_fails_instead_of_walking() {
+    let (_temp, root) = workspace();
+    write(&root, "src/main.rs");
+    fs::write(root.join(".git"), "not a gitdir\n").unwrap();
+    assert_eq!(
+        discovery::discover_scope(&root, &AtomicBool::new(false)),
+        Err(discovery::DiscoveryError::Failed)
+    );
+}
+
+#[test]
 fn plain_directories_are_walked_without_git_metadata_or_ignored_names() {
     let (_temp, root) = workspace();
     write(&root, "README.md");
@@ -389,6 +426,7 @@ fn plain_directories_are_walked_without_git_metadata_or_ignored_names() {
     write(&root, ".hidden/notes.txt");
     write(&root, "src/lib.rs");
     symlink(root.join("README.md"), root.join("linked.md")).unwrap();
+    symlink(&root, root.join("src/loop")).unwrap();
     let names: Vec<String> = discovered(&root)
         .into_iter()
         .map(|(path, _)| path)
@@ -401,7 +439,8 @@ fn plain_directories_are_walked_without_git_metadata_or_ignored_names() {
             "README.md",
             "linked.md",
             "src",
-            "src/lib.rs"
+            "src/lib.rs",
+            "src/loop"
         ]
     );
     assert_eq!(

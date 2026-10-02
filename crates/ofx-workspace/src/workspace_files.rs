@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::ffi::{CStr, OsStr};
 use std::fs;
+use std::io;
 use std::iter;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -266,46 +267,59 @@ pub(crate) fn discover_listing_files(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
 ) -> Option<Discovery> {
-    let git = trusted_git_executable().filter(|git| work_tree_contains(git, workspace_root));
-    match git {
-        Some(git) => {
-            git_raw_list(workspace_root, options, git).map(|raw| parse_raw_list(raw, options))
+    if let Some(git) = trusted_git_executable() {
+        if let Some(raw) = git_raw_list(workspace_root, options, git) {
+            return Some(parse_raw_list(raw, options));
         }
-        None => Some(walk_workspace(workspace_root, options)),
+        if has_git_metadata(workspace_root) {
+            return None;
+        }
     }
+    Some(walk_workspace(workspace_root, options))
 }
 
 pub(crate) fn discover_listing_directories(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
 ) -> Option<Discovery> {
-    let git = trusted_git_executable().filter(|git| work_tree_contains(git, workspace_root));
-    let Some(git) = git else {
-        return Some(walk_workspace_paths(
-            workspace_root,
-            options,
-            WalkTarget::Directories,
-            None,
-        ));
-    };
-    let output = run_bounded(
-        git_command_at(git, workspace_root).args(IGNORED_DIRECTORIES_ARGS),
-        GIT_STDOUT_LIMIT,
-    )?;
-    if !output.status.success() {
-        return None;
+    if let Some(git) = trusted_git_executable() {
+        if let Some(output) = run_bounded(
+            git_command_at(git, workspace_root).args(IGNORED_DIRECTORIES_ARGS),
+            GIT_STDOUT_LIMIT,
+        )
+        .filter(|output| output.status.success())
+        {
+            let ignored = parse_ignored_directories(&output.stdout);
+            let git_options = DiscoveryOptions {
+                ignored_names: &[GIT_METADATA_NAME],
+                ..*options
+            };
+            return Some(walk_workspace_paths(
+                workspace_root,
+                &git_options,
+                WalkTarget::Directories,
+                Some(&ignored),
+            ));
+        }
+        if has_git_metadata(workspace_root) {
+            return None;
+        }
     }
-    let ignored = parse_ignored_directories(&output.stdout);
-    let git_options = DiscoveryOptions {
-        ignored_names: &[GIT_METADATA_NAME],
-        ..*options
-    };
     Some(walk_workspace_paths(
         workspace_root,
-        &git_options,
+        options,
         WalkTarget::Directories,
-        Some(&ignored),
+        None,
     ))
+}
+
+fn has_git_metadata(workspace_root: &Path) -> bool {
+    workspace_root.ancestors().any(|directory| {
+        !matches!(
+            fs::symlink_metadata(directory.join(GIT_METADATA_NAME)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound
+        )
+    })
 }
 
 fn parse_ignored_directories(raw: &[u8]) -> HashSet<Vec<u8>> {
