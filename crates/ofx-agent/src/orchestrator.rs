@@ -11,13 +11,13 @@ use ofx_contract::{
     Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileMutation,
     FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, RouteRecoveryKind,
-    RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection,
-    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
+    RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
+    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
     format_unknown_action, malformed_tool_arguments_json, non_object_tool_arguments_json,
-    prepare_model_output, review_unavailable_json, tool_execution_failure_json,
-    tool_permission_denied_json,
+    prepare_model_output, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -1112,7 +1112,7 @@ async fn judge(
 ) -> Verdict {
     match admit(gate.permissions, action, description) {
         Admission::Allowed(path_access) => Verdict::Run(path_access),
-        Admission::ReviewUnavailable => Verdict::Held,
+        Admission::ReviewRequired => Verdict::Held,
         Admission::ApprovalRequired => {
             let Some(approvals) = gate.approvals else {
                 return Verdict::Blocked;
@@ -1247,7 +1247,10 @@ async fn run_group<'c>(
                         dispatched.push((call, Dispatched::Running(task)));
                         continue;
                     }
-                    Verdict::Held => review_unavailable_json(&call.name),
+                    Verdict::Held => tool_review_held_json(
+                        &call.name,
+                        ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured),
+                    ),
                     Verdict::Denied => tool_permission_denied_json(&call.name),
                     Verdict::Blocked | Verdict::Interrupted => {
                         discard(prepared);

@@ -1,13 +1,19 @@
+mod review_request;
+
+use std::fmt;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
-    Admission, ApplicableTarget, ApprovalScope, CommandRequest, FileMutation, FileMutationState,
-    GatedAction, LivePermissionMode, PathAccess, PermissionGate, PermissionMode, SessionGrant,
-    ToolCall,
+    Admission, ApplicableTarget, ApprovalScope, BoxFuture, CommandRequest, FileMutation,
+    FileMutationState, GatedAction, LivePermissionMode, PathAccess, PermissionGate, PermissionMode,
+    ReviewFailure, ReviewRequest, ReviewVerdict, Reviewed, SessionGrant, ToolCall, Usage,
 };
 use ofx_workspace::path_inside;
+use tokio_util::sync::CancellationToken;
 
+use crate::auto_classifier::Reviewer;
+use crate::auto_classifier_context::build_canonical_root_user_context;
 use crate::command_admission::{command_admission, undescribed_shell_call_admission};
 use crate::permissions::{applicable_target, external_path_target, interactive_body};
 use crate::session_permission_state::{SessionGrants, TreePermission, command_grant};
@@ -41,11 +47,23 @@ const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
     &[".pam_environment"],
 ];
 
-#[derive(Debug)]
 pub struct PermissionPolicy {
     mode: LivePermissionMode,
     workspace_root: PathBuf,
     session_grants: SessionGrants,
+    reviewer: Option<Reviewer>,
+}
+
+impl fmt::Debug for PermissionPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PermissionPolicy")
+            .field("mode", &self.mode)
+            .field("workspace_root", &self.workspace_root)
+            .field("session_grants", &self.session_grants)
+            .field("reviewer", &self.reviewer.is_some())
+            .finish()
+    }
 }
 
 impl PermissionPolicy {
@@ -54,6 +72,7 @@ impl PermissionPolicy {
             mode: mode.into(),
             workspace_root: workspace_root.into(),
             session_grants: SessionGrants::default(),
+            reviewer: None,
         }
     }
 
@@ -67,6 +86,12 @@ impl PermissionPolicy {
 
     pub fn session_grant_count(&self) -> usize {
         self.session_grants.count()
+    }
+
+    #[must_use]
+    pub fn with_reviewer(mut self, reviewer: Reviewer) -> Self {
+        self.reviewer = Some(reviewer);
+        self
     }
 }
 
@@ -157,8 +182,37 @@ impl PermissionGate for PermissionPolicy {
             {
                 Admission::Allowed(access)
             }
-            _ => Admission::ReviewUnavailable,
+            _ => Admission::ReviewRequired,
         }
+    }
+
+    fn review<'a>(
+        &'a self,
+        request: ReviewRequest<'a>,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Option<Reviewed>> {
+        Box::pin(async move {
+            let Some(reviewer) = &self.reviewer else {
+                return Some(Reviewed::unavailable(ReviewFailure::ReviewerUnconfigured));
+            };
+            if !request.attempt_available {
+                return Some(Reviewed::unavailable(
+                    ReviewFailure::TurnReviewBudgetExhausted,
+                ));
+            }
+            let trusted_root_context = build_canonical_root_user_context(
+                request.current_request,
+                request.earlier_requests,
+                request.compacted_turns,
+            );
+            match review_request::review_subject(&request, &trusted_root_context) {
+                Some(subject) => reviewer.review(&subject, cancel).await,
+                None => Some(Reviewed {
+                    verdict: ReviewVerdict::EvidenceIncomplete,
+                    usage: Usage::default(),
+                }),
+            }
+        })
     }
 }
 
@@ -429,7 +483,7 @@ mod tests {
         );
         assert_eq!(
             policy.admit_file_mutation(&change),
-            Admission::ReviewUnavailable
+            Admission::ReviewRequired
         );
         live.set(PermissionMode::Ask);
         assert_eq!(policy.admit(&outside), Admission::ApprovalRequired);
@@ -471,7 +525,7 @@ mod tests {
 
         const INSIDE: Admission = Admission::Allowed(PathAccess::WorkspaceOnly);
         const OUTSIDE: Admission = Admission::Allowed(PathAccess::WorkspaceOrExternal);
-        const HELD: Admission = Admission::ReviewUnavailable;
+        const HELD: Admission = Admission::ReviewRequired;
         let cases = [
             ("/workspace/src/main.rs", Changes, INSIDE),
             ("/workspace/new/file.rs", Creates, INSIDE),

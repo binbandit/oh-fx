@@ -1,17 +1,17 @@
 const WHITESPACE: &[u8] = b" \t\r\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LexError {
+pub enum LexError {
     EmbeddedNul,
     MalformedEscape,
     UnbalancedQuote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ArgvToken<'a> {
-    pub(crate) raw: &'a str,
-    pub(crate) value: String,
-    pub(crate) operator: bool,
+pub struct ArgvToken<'a> {
+    pub raw: &'a str,
+    pub value: String,
+    pub operator: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub(crate) enum RedirectionKind {
     Unsupported,
 }
 
-pub(crate) fn tokenize_argv(command: &str) -> Result<Vec<ArgvToken<'_>>, LexError> {
+pub fn tokenize_argv(command: &str) -> Result<Vec<ArgvToken<'_>>, LexError> {
     if command.contains('\0') {
         return Err(LexError::EmbeddedNul);
     }
@@ -86,6 +86,53 @@ pub(crate) fn tokenize_argv(command: &str) -> Result<Vec<ArgvToken<'_>>, LexErro
         tokens.push(word(command, start, bytes.len(), &mut value));
     }
     Ok(tokens)
+}
+
+pub fn unsafe_compound_indicator(command: &str) -> bool {
+    if command.contains('\0') {
+        return true;
+    }
+    let bytes = command.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' if !in_single => {
+                if index + 1 >= bytes.len() {
+                    return true;
+                }
+                escaped = true;
+                continue;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                continue;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                continue;
+            }
+            _ if in_single || in_double => continue,
+            _ => {}
+        }
+        let next = bytes.get(index + 1).copied();
+        let unsafe_byte = match byte {
+            b'$' => next == Some(b'('),
+            b'`' | b'(' | b')' | b'{' | b'}' | b';' | b'\n' => true,
+            b'&' => next != Some(b'>') && (index == 0 || bytes[index - 1] != b'>'),
+            b'|' => next == Some(b'|'),
+            _ => false,
+        };
+        if unsafe_byte {
+            return true;
+        }
+    }
+    in_single || in_double
 }
 
 fn word<'a>(command: &'a str, start: usize, end: usize, value: &mut Vec<u8>) -> ArgvToken<'a> {
@@ -235,6 +282,39 @@ mod tests {
     #[test]
     fn tokenize_argv_reports_malformed_trailing_escapes() {
         assert_eq!(tokenize_argv("printf x\\"), Err(LexError::MalformedEscape));
+    }
+
+    #[test]
+    fn unsafe_compound_indicator_detects_subshells_groups_and_logical_control() {
+        for command in [
+            "echo $(pwd)",
+            "(cd src; make)",
+            "{ echo hi; }",
+            "cd src && touch x",
+            "grep x file || true",
+            "sleep 1 &",
+            "echo `id`",
+            "printf a\nprintf b",
+            "printf 'open",
+            "printf x\\",
+            "printf \0",
+        ] {
+            assert!(unsafe_compound_indicator(command), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn unsafe_compound_indicator_ignores_pipes_redirects_and_quoted_or_escaped_syntax() {
+        for command in [
+            "printf a | grep a",
+            "printf \\& \\| \\;",
+            "printf \"$(literal)\"",
+            "printf ok &> log.txt",
+            "printf ok >& log.txt",
+            "git push origin 'a;b'",
+        ] {
+            assert!(!unsafe_compound_indicator(command), "{command:?}");
+        }
     }
 
     #[test]

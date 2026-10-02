@@ -1,4 +1,5 @@
 mod bounded_process;
+mod current_branch;
 mod fs_path;
 mod glob_pattern;
 mod grep_search;
@@ -8,6 +9,7 @@ mod pathing;
 mod regular_file;
 mod workspace_files;
 
+pub use current_branch::current_branch;
 pub use fs_path::{basename, dirname};
 pub use glob_pattern::{CompileError, MAX_PATTERN_BYTES, Pattern};
 pub use grep_search::{

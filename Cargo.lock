@@ -822,10 +822,15 @@ name = "ofx-permissions"
 version = "0.1.0"
 dependencies = [
  "ofx-contract",
+ "ofx-markdown",
  "ofx-shell",
  "ofx-text",
  "ofx-workspace",
+ "serde_json",
+ "sha2",
  "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

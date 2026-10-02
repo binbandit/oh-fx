@@ -253,7 +253,12 @@ mod tests {
             failed_call(
                 "shell",
                 run,
-                &ofx_contract::review_unavailable_json("shell"),
+                &ofx_contract::tool_review_held_json(
+                    "shell",
+                    ofx_contract::ReviewHold::Unavailable(
+                        ofx_contract::ReviewFailure::ReviewerUnconfigured
+                    )
+                ),
                 None
             ),
             Some(failure(Some("run"), "rejected", "rejected"))

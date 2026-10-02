@@ -1,6 +1,7 @@
 use ofx_text::mask_secrets;
 use serde_json::{Map, Value};
 
+use crate::auto_classifier::ReviewFailure;
 use crate::types::{ToolArgumentDiagnostic, ToolArgumentFailure};
 
 #[cfg(target_os = "macos")]
@@ -111,26 +112,67 @@ pub fn filesystem_access_denied_json(tool_name: &str, path: &str, error_name: &s
     })
 }
 
-pub fn review_unavailable_json(tool_name: &str) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewHold<'a> {
+    Caution(&'a str),
+    EvidenceIncomplete,
+    Unavailable(ReviewFailure),
+}
+
+impl ReviewHold<'_> {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Caution(_) => "review_caution",
+            Self::EvidenceIncomplete => "review_evidence_incomplete",
+            Self::Unavailable(_) => "review_unavailable",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Caution(_) => "Action held after safety review",
+            Self::EvidenceIncomplete => "Safety review evidence incomplete; action held",
+            Self::Unavailable(failure) if failure.is_malformed_completion() => {
+                "Safety reviewer returned an invalid response; action held"
+            }
+            Self::Unavailable(_) => "Safety reviewer unavailable; action held",
+        }
+    }
+
+    fn suggestion(self) -> &'static str {
+        match self {
+            Self::Caution(_) => {
+                "The action did not run. Use the review advice to choose a materially different safe action, or explain why no safe path remains."
+            }
+            Self::EvidenceIncomplete => {
+                "The action did not run because safety review could not inspect the complete exact action. Do not retry unchanged; reduce the action or supporting evidence to fit the review limits, or choose a materially different fully inspectable action."
+            }
+            Self::Unavailable(failure) if failure.is_malformed_completion() => {
+                "The action did not run because the reviewer did not return a valid decision. Continue with a different safe action or retry in a later turn."
+            }
+            Self::Unavailable(_) => {
+                "The action did not run because safety review was unavailable. Continue with a different safe action or retry later."
+            }
+        }
+    }
+}
+
+pub fn tool_review_held_json(tool_name: &str, hold: ReviewHold<'_>) -> String {
     let mut error = Map::new();
     error.insert("type".to_owned(), Value::from("tool_review_held"));
     error.insert("tool_name".to_owned(), Value::from(tool_name));
-    error.insert(
-        "message".to_owned(),
-        masked("Safety reviewer unavailable; action held"),
-    );
-    error.insert("reason".to_owned(), Value::from("review_unavailable"));
-    error.insert(
-        "review_cause".to_owned(),
-        Value::from("reviewer_unconfigured"),
-    );
+    error.insert("message".to_owned(), masked(hold.message()));
+    error.insert("reason".to_owned(), Value::from(hold.reason()));
+    if let ReviewHold::Unavailable(failure) = hold {
+        error.insert("review_cause".to_owned(), Value::from(failure.as_str()));
+    }
     error.insert("held".to_owned(), Value::Bool(true));
-    error.insert(
-        "suggestion".to_owned(),
-        masked(
-            "The action did not run because safety review was unavailable. Continue with a different safe action or retry later.",
-        ),
-    );
+    if let ReviewHold::Caution(advice) = hold
+        && !advice.is_empty()
+    {
+        error.insert("advice".to_owned(), masked(advice));
+    }
+    error.insert("suggestion".to_owned(), masked(hold.suggestion()));
     let mut envelope = Map::new();
     envelope.insert("error".to_owned(), Value::Object(error));
     Value::Object(envelope).to_string()
@@ -221,9 +263,77 @@ mod tests {
     #[test]
     fn unavailable_reviews_hold_the_action_with_upstream_fields() {
         assert_eq!(
-            review_unavailable_json("edit_file"),
+            tool_review_held_json(
+                "edit_file",
+                ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured)
+            ),
             "{\"error\":{\"type\":\"tool_review_held\",\"tool_name\":\"edit_file\",\"message\":\"Safety reviewer unavailable; action held\",\"reason\":\"review_unavailable\",\"review_cause\":\"reviewer_unconfigured\",\"held\":true,\"suggestion\":\"The action did not run because safety review was unavailable. Continue with a different safe action or retry later.\"}}"
         );
+        assert_eq!(
+            tool_review_held_json(
+                "edit_file",
+                ReviewHold::Unavailable(ReviewFailure::TransportTransient)
+            ),
+            "{\"error\":{\"type\":\"tool_review_held\",\"tool_name\":\"edit_file\",\"message\":\"Safety reviewer unavailable; action held\",\"reason\":\"review_unavailable\",\"review_cause\":\"transport_transient\",\"held\":true,\"suggestion\":\"The action did not run because safety review was unavailable. Continue with a different safe action or retry later.\"}}"
+        );
+    }
+
+    #[test]
+    fn held_reviews_report_caution_advice_incomplete_evidence_and_invalid_responses() {
+        let caution: Value = serde_json::from_str(&tool_review_held_json(
+            "edit_file",
+            ReviewHold::Caution("Concrete injection"),
+        ))
+        .unwrap();
+        assert_eq!(
+            caution,
+            serde_json::json!({"error": {
+                "type": "tool_review_held",
+                "tool_name": "edit_file",
+                "message": "Action held after safety review",
+                "reason": "review_caution",
+                "held": true,
+                "advice": "Concrete injection",
+                "suggestion": "The action did not run. Use the review advice to choose a materially different safe action, or explain why no safe path remains."
+            }})
+        );
+        let incomplete: Value = serde_json::from_str(&tool_review_held_json(
+            "write_file",
+            ReviewHold::EvidenceIncomplete,
+        ))
+        .unwrap();
+        assert_eq!(incomplete["error"]["reason"], "review_evidence_incomplete");
+        assert_eq!(
+            incomplete["error"]["message"],
+            "Safety review evidence incomplete; action held"
+        );
+        assert!(incomplete["error"].get("review_cause").is_none());
+        assert!(incomplete["error"].get("advice").is_none());
+        let malformed: Value = serde_json::from_str(&tool_review_held_json(
+            "shell",
+            ReviewHold::Unavailable(ReviewFailure::CompletionText),
+        ))
+        .unwrap();
+        assert_eq!(
+            malformed["error"]["message"],
+            "Safety reviewer returned an invalid response; action held"
+        );
+        assert_eq!(malformed["error"]["review_cause"], "completion_text");
+        assert_eq!(
+            malformed["error"]["suggestion"],
+            "The action did not run because the reviewer did not return a valid decision. Continue with a different safe action or retry in a later turn."
+        );
+    }
+
+    #[test]
+    fn held_review_advice_is_masked_and_left_out_when_empty() {
+        let masked = tool_review_held_json("shell", ReviewHold::Caution("token=abcdefghijklmnop"));
+        assert!(
+            masked.contains("\"advice\":\"token=[redacted]\""),
+            "{masked}"
+        );
+        let empty = tool_review_held_json("shell", ReviewHold::Caution(""));
+        assert!(!empty.contains("\"advice\""), "{empty}");
     }
 
     #[test]
