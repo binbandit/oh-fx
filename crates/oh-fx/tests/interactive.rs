@@ -1005,3 +1005,77 @@ fn at_mentions_pick_workspace_files_and_reach_the_model_as_typed() {
         .count();
     assert_eq!(cached, 1);
 }
+
+const QUESTIONS: &str = r#"{"questions":[{"question":"Which depth?","options":[{"label":"Thorough","description":"Run every test"},{"label":"Fast"}]},{"question":"Ship it?","options":[{"label":"Yes"},{"label":"No"}]}]}"#;
+
+#[test]
+fn the_model_asks_in_the_footer_and_receives_the_answers() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "ask_user_question",
+            QUESTIONS,
+        )),
+        Reply::sse(&chat_text_events(&["Shipping fast."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = home.shell(30, 100);
+    session.send(b"pick for me\r");
+    let screen = wait(&session, "Which depth?");
+    for line in [
+        "    1) Thorough",
+        "Run every test",
+        "    2) Fast",
+        "    3) Other",
+        "1–3 choose now",
+        "Question 1 of 2",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    session.send(b"2");
+    wait(&session, "Ship it?");
+    session.send(b"3after review\r");
+    let screen = wait(&session, "Shipping fast.");
+    for line in [
+        "  1) Which depth?",
+        "     Fast",
+        "  2) Ship it?",
+        "     after review",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    assert_eq!(
+        last_tool_result(&server.requests()[1]),
+        r#"[{"question":"Which depth?","answer":"Fast"},{"question":"Ship it?","answer":"after review"}]"#
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn escape_cancels_the_question_with_its_turn() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "ask_user_question",
+            QUESTIONS,
+        )),
+        Reply::sse(&chat_text_events(&["Asking in text instead."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = home.shell(30, 100);
+    session.send(b"pick for me\r");
+    wait(&session, "Which depth?");
+    session.send(b"\x1b");
+    let screen = wait(&session, "■ Cancelled");
+    assert!(!screen.contains("Which depth?"), "{screen}");
+    assert!(!screen.contains(CANCELLATION), "{screen}");
+    session.send(b"go on\r");
+    wait(&session, "Asking in text instead.");
+    assert_eq!(
+        last_tool_result(&server.requests()[1]),
+        "(user cancelled the question)"
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
