@@ -899,16 +899,21 @@ dependencies = [
 name = "ofx-tools"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "getrandom 0.4.3",
  "memchr",
  "ofx-config",
  "ofx-contract",
  "ofx-exec",
+ "ofx-http",
  "ofx-permissions",
  "ofx-skills",
+ "ofx-testkit",
  "ofx-text",
  "ofx-workspace",
+ "reqwest",
  "rustix",
+ "rustls",
  "serde_json",
  "sha2",
  "tempfile",

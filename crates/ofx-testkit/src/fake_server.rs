@@ -17,8 +17,11 @@ use tokio_rustls::LazyConfigAcceptor;
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const SERVER_KEY_PEM: &str = include_str!("tls/server.key");
+const WEB_SERVER_KEY_PEM: &str = include_str!("tls/web-server.key");
+const WEB_SERVER_CERTIFICATE_PEM: &str = include_str!("tls/web-server.pem");
 pub const TEST_CA_PEM: &str = include_str!("tls/ca.pem");
 pub const OTHER_CA_PEM: &str = include_str!("tls/other-ca.pem");
+pub const WEB_CA_PEM: &str = include_str!("tls/web-ca.pem");
 pub const TEST_SERVER_CERTIFICATE_PEM: &str = include_str!("tls/server.pem");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +47,7 @@ pub enum Reply {
         gate: Gate,
         reply: Box<Reply>,
     },
+    Raw(Vec<u8>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -206,7 +210,20 @@ impl FakeServer {
     }
 
     pub fn start_tls(replies: impl IntoIterator<Item = Reply>) -> Self {
-        Self::serve_on_loopback(replies, Some(server_config()))
+        Self::serve_on_loopback(
+            replies,
+            Some(server_config(TEST_SERVER_CERTIFICATE_PEM, SERVER_KEY_PEM)),
+        )
+    }
+
+    pub fn start_web_tls(replies: impl IntoIterator<Item = Reply>) -> Self {
+        Self::serve_on_loopback(
+            replies,
+            Some(server_config(
+                WEB_SERVER_CERTIFICATE_PEM,
+                WEB_SERVER_KEY_PEM,
+            )),
+        )
     }
 
     fn serve_on_loopback(
@@ -245,6 +262,10 @@ impl FakeServer {
         format!("{}://{}/v1", self.scheme, self.address)
     }
 
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
+
     pub fn requests(&self) -> Vec<RecordedRequest> {
         lock(&self.state).requests.clone()
     }
@@ -254,12 +275,11 @@ impl FakeServer {
     }
 }
 
-fn server_config() -> Arc<ServerConfig> {
-    let certificates = CertificateDer::pem_slice_iter(TEST_SERVER_CERTIFICATE_PEM.as_bytes())
+fn server_config(certificate_pem: &str, key_pem: &str) -> Arc<ServerConfig> {
+    let certificates = CertificateDer::pem_slice_iter(certificate_pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("parse the test server certificate");
-    let key = PrivateKeyDer::from_pem_slice(SERVER_KEY_PEM.as_bytes())
-        .expect("parse the test server key");
+    let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).expect("parse the test server key");
     let config =
         ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()
@@ -405,6 +425,9 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
             let _ = stream.write_all(body.as_bytes()).await;
         }
         Reply::Disconnect | Reply::Gated { .. } => {}
+        Reply::Raw(bytes) => {
+            let _ = stream.write_all(&bytes).await;
+        }
         Reply::Stream { chunks, hold_open } => {
             let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
             if stream.write_all(head.as_bytes()).await.is_err() {

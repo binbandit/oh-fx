@@ -40,6 +40,14 @@ pub enum ClientError {
 pub fn build_connection_client(
     options: &ConnectionOptions,
 ) -> Result<reqwest::Client, ClientError> {
+    connection_client_builder(options)?
+        .build()
+        .map_err(ClientError::Build)
+}
+
+pub fn connection_client_builder(
+    options: &ConnectionOptions,
+) -> Result<ClientBuilder, ClientError> {
     install_crypto_provider();
     let mut builder = reqwest::Client::builder()
         .user_agent(&options.user_agent)
@@ -53,7 +61,7 @@ pub fn build_connection_client(
         let proxy = Proxy::all(proxy).map_err(|_| ClientError::InvalidProxy)?;
         builder = builder.proxy(proxy);
     }
-    builder.build().map_err(ClientError::Build)
+    Ok(builder)
 }
 
 #[cfg(target_os = "linux")]
