@@ -14,7 +14,7 @@ pub(super) fn open_requested(
     requested: &RequestedResume,
 ) -> Result<Option<Resumption>, String> {
     let target = match requested {
-        RequestedResume::Pick => return Ok(None),
+        RequestedResume::Pick => return available(store).map(|_| None),
         RequestedResume::Last => ResumeTarget::Last,
         RequestedResume::Id(id) => ResumeTarget::Id(id.clone()),
         RequestedResume::Remembered => remembered_target(available(store)?)?,

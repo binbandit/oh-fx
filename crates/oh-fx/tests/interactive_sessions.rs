@@ -288,6 +288,21 @@ fn a_shell_left_without_a_prompt_saves_nothing_and_continue_explains_why() {
 }
 
 #[test]
+fn a_requested_resume_needs_the_session_store_but_a_plain_launch_runs_without_it() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Unsaved."]))]);
+    let home = Home::new(&server.base_url());
+    fs::create_dir_all(home.root.join("data")).expect("create the data home");
+    fs::write(home.root.join("data/oh-fx"), "not a directory").expect("block the store");
+    for args in [&["-r"][..], &["-c"], &["resume"], &["--resume", "some-id"]] {
+        fails_with(home.spawn(args), "oh-fx: SessionPathUnsafe");
+    }
+    let session = home.shell(&[], WELCOME);
+    session.send(b"still answered\r");
+    wait(&session, "Unsaved.");
+    exit(session);
+}
+
+#[test]
 fn resume_targets_reopen_a_session_by_id_or_the_latest_and_remember_it() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["Answer one."])),
