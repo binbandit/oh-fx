@@ -31,7 +31,7 @@ const SESSION_LOCK_FILE: &str = "session.lock";
 const OWNER_LIVE_FILE: &str = "owner.live";
 const STAGING_PREFIX: &str = "creating+";
 const STAGING_RANDOM_BYTES: usize = 16;
-const LOCK_DEADLINE: Duration = Duration::from_secs(2);
+pub(crate) const LOCK_DEADLINE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedSession {
@@ -46,8 +46,8 @@ struct OwnedSessionDir {
 }
 
 impl OwnedSessionDir {
-    fn acquire(dir: PrivateDir) -> Result<Self, SessionError> {
-        let lock = lock_with_deadline(&dir, SESSION_LOCK_FILE, LOCK_DEADLINE)?;
+    fn acquire(dir: PrivateDir, lock_deadline: Duration) -> Result<Self, SessionError> {
+        let lock = lock_with_deadline(&dir, SESSION_LOCK_FILE, lock_deadline)?;
         let previous_owner_died = entry_exists(&dir, OWNER_LIVE_FILE).unwrap_or(false);
         let marker = format!(
             "{{\"pid\":{},\"opened_at_ms\":{}}}\n",
@@ -188,7 +188,7 @@ fn prepare_session(
     let dir = sessions
         .open_child_private(staging)?
         .ok_or(SessionError::SessionStartFailed)?;
-    let owned = OwnedSessionDir::acquire(dir)?;
+    let owned = OwnedSessionDir::acquire(dir, LOCK_DEADLINE)?;
     owned.dir.replace(MANIFEST_FILE, manifest)?;
     let file = create_managed_file(&owned.dir, EVENTS_FILE)?;
     file.sync_all()?;
@@ -199,6 +199,7 @@ fn prepare_session(
 pub(crate) fn resume_session(
     sessions: &PrivateDir,
     id: &str,
+    lock_deadline: Duration,
 ) -> Result<WritableSession, SessionError> {
     if !is_valid_session_id(id) {
         return Err(SessionError::InvalidSessionId);
@@ -206,7 +207,7 @@ pub(crate) fn resume_session(
     let dir = sessions
         .open_child_private(id)?
         .ok_or(SessionError::SessionNotFound)?;
-    let owned = OwnedSessionDir::acquire(dir)?;
+    let owned = OwnedSessionDir::acquire(dir, lock_deadline)?;
     let metadata = read_metadata(&owned.dir, id)?;
     let file = open_managed_file(&owned.dir, EVENTS_FILE, Access::Writable)?
         .ok_or(SessionError::InvalidSessionFormat)?;

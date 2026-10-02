@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 use std::io::Read;
 use std::os::fd::AsFd;
 use std::path::Path;
+use std::time::Duration;
 
 use ofx_config::PrivateDir;
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
@@ -16,7 +17,8 @@ use crate::session_log::managed_file::{
     file_type, has_private_dir_mode, permissions, private_file_mode, session_directory_names,
 };
 use crate::session_log::{
-    SavedSession, WritableSession, load_session, now_ms, resume_session, start_session,
+    LOCK_DEADLINE, SavedSession, WritableSession, load_session, now_ms, resume_session,
+    start_session,
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
 use crate::session_summary_codec::{
@@ -40,6 +42,7 @@ pub struct SessionStore {
     sessions: Option<PrivateDir>,
     workspace_root: String,
     writable: bool,
+    lock_deadline: Duration,
 }
 
 struct SummaryScan {
@@ -59,6 +62,7 @@ impl SessionStore {
             sessions: Some(sessions),
             workspace_root,
             writable: true,
+            lock_deadline: LOCK_DEADLINE,
         })
     }
 
@@ -74,6 +78,7 @@ impl SessionStore {
             sessions,
             workspace_root,
             writable: false,
+            lock_deadline: LOCK_DEADLINE,
         })
     }
 
@@ -100,7 +105,7 @@ impl SessionStore {
         let sessions = self
             .writable_sessions()
             .map_err(|_| SessionError::SessionNotFound)?;
-        let mut session = resume_session(sessions, id)?;
+        let mut session = resume_session(sessions, id, self.lock_deadline)?;
         if session.metadata().workspace_root != self.workspace_root {
             session.rebind_workspace(&self.workspace_root)?;
         }
@@ -117,13 +122,14 @@ impl SessionStore {
             if summary.workspace_root != self.workspace_root {
                 continue;
             }
-            let opened = resume_session(sessions, &summary.id).and_then(|session| {
-                if session.metadata().workspace_root == self.workspace_root {
-                    Ok(session)
-                } else {
-                    Err(SessionError::SessionTargetChanged)
-                }
-            });
+            let opened =
+                resume_session(sessions, &summary.id, self.lock_deadline).and_then(|session| {
+                    if session.metadata().workspace_root == self.workspace_root {
+                        Ok(session)
+                    } else {
+                        Err(SessionError::SessionTargetChanged)
+                    }
+                });
             match opened {
                 Ok(session) => return Ok(session),
                 Err(SessionError::SessionNotFound | SessionError::SessionTargetChanged) => {

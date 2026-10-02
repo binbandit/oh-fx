@@ -315,8 +315,9 @@ fn latest_resume_reports_a_busy_session_instead_of_skipping_it() {
     let fixture = Fixture::new();
     fixture.seed("older", "/w", 1, 10);
     fixture.seed("newer", "/w", 1, 20);
-    let store = fixture.store("/w");
+    let mut store = fixture.store("/w");
     let held = store.resume("newer").unwrap();
+    store.lock_deadline = Duration::ZERO;
     assert_eq!(store.resume_latest().err(), Some(SessionError::SessionBusy));
     drop(held);
 }

@@ -3,6 +3,7 @@ use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
 
 use ofx_config::ProviderId;
 use ofx_contract::{ReasoningEffort, ToolArgumentIntegrity, ToolResultStatus};
@@ -37,6 +38,10 @@ impl Fixture {
 
     fn start(&self, id: &str) -> WritableSession {
         start_session(&self.sessions, metadata(id)).unwrap()
+    }
+
+    fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
+        resume_session(&self.sessions, id, LOCK_DEADLINE)
     }
 
     fn append_raw(&self, id: &str, bytes: &[u8]) {
@@ -322,7 +327,7 @@ fn conversation_writer_rolls_back_failed_sync_and_refuses_uncertain_continuation
         Err(SessionError::SessionPersistenceUncertain)
     );
     drop(session);
-    let mut resumed = resume_session(&fixture.sessions, "sync").unwrap();
+    let mut resumed = fixture.resume("sync").unwrap();
     assert_eq!(prompts(&resumed.take_history()), ["kept", "after"]);
 }
 
@@ -330,7 +335,7 @@ fn conversation_writer_rolls_back_failed_sync_and_refuses_uncertain_continuation
 fn owner_liveness_marker_reports_unclean_exit_and_clears_on_clean_close() {
     let fixture = Fixture::new();
     drop(fixture.start("owner"));
-    let resumed = resume_session(&fixture.sessions, "owner").unwrap();
+    let resumed = fixture.resume("owner").unwrap();
     assert!(!resumed.previous_owner_died());
     let marker = fs::read_to_string(fixture.dir("owner").join("owner.live")).unwrap();
     assert!(marker.starts_with(&format!("{{\"pid\":{},\"opened_at_ms\":", process::id())));
@@ -343,7 +348,7 @@ fn owner_liveness_marker_reports_unclean_exit_and_clears_on_clean_close() {
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
-    let after_crash = resume_session(&fixture.sessions, "owner").unwrap();
+    let after_crash = fixture.resume("owner").unwrap();
     assert!(after_crash.previous_owner_died());
 }
 
@@ -352,12 +357,17 @@ fn a_second_writer_waits_for_the_lock_and_reports_busy() {
     let fixture = Fixture::new();
     let held = fixture.start("busy");
     assert_eq!(
-        resume_session(&fixture.sessions, "busy").err(),
+        resume_session(&fixture.sessions, "busy", Duration::ZERO).err(),
         Some(SessionError::SessionBusy)
     );
     assert!(fixture.dir("busy").join("owner.live").exists());
-    drop(held);
-    assert!(resume_session(&fixture.sessions, "busy").is_ok());
+    let release = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        drop(held);
+    });
+    let resumed = fixture.resume("busy").unwrap();
+    release.join().unwrap();
+    assert!(!resumed.previous_owner_died());
 }
 
 #[test]
@@ -372,7 +382,7 @@ fn conversation_writer_repairs_only_a_partial_final_record_and_continues() {
     let loaded = load_session(&fixture.sessions, "torn").unwrap();
     assert_eq!(prompts(&loaded.history), ["one"]);
     assert_ne!(fs::read(fixture.events("torn")).unwrap(), complete);
-    let mut resumed = resume_session(&fixture.sessions, "torn").unwrap();
+    let mut resumed = fixture.resume("torn").unwrap();
     assert_eq!(fs::read(fixture.events("torn")).unwrap(), complete);
     assert_eq!(prompts(&resumed.take_history()), ["one"]);
     resumed.append(2, &turn("two")).unwrap();
@@ -394,7 +404,7 @@ fn conversation_writer_truncates_a_complete_record_partial_turn() {
     fixture.append_raw("partial", &frame(6, &call("c")));
     let loaded = load_session(&fixture.sessions, "partial").unwrap();
     assert_eq!(prompts(&loaded.history), ["one"]);
-    let mut resumed = resume_session(&fixture.sessions, "partial").unwrap();
+    let mut resumed = fixture.resume("partial").unwrap();
     assert!(!resumed.turn_open());
     assert_eq!(fs::read(fixture.events("partial")).unwrap(), complete);
     assert_eq!(prompts(&resumed.take_history()), ["one"]);
@@ -414,7 +424,7 @@ fn conversation_writer_removes_an_unfinished_turn_before_a_torn_final_record() {
     fixture.append_raw("both", &frame(4, &user("two")));
     let torn = frame(5, &assistant("never finished"));
     fixture.append_raw("both", &torn[..torn.len() - 1]);
-    drop(resume_session(&fixture.sessions, "both").unwrap());
+    drop(fixture.resume("both").unwrap());
     assert_eq!(fs::read(fixture.events("both")).unwrap(), complete);
 }
 
@@ -438,7 +448,7 @@ fn a_mid_turn_checkpoint_survives_restart_and_closes_its_turn() {
     assert!(session.turn_open());
     drop(session);
     fixture.append_raw("mid", &frame(9, &assistant("lost after the checkpoint")));
-    let mut resumed = resume_session(&fixture.sessions, "mid").unwrap();
+    let mut resumed = fixture.resume("mid").unwrap();
     assert!(!resumed.turn_open());
     let history = resumed.take_history();
     assert_eq!(
@@ -489,7 +499,7 @@ fn replay_starts_after_the_latest_checkpoint_and_keeps_retained_turns() {
         })
     );
     assert_eq!(prompts(&loaded.history), ["four", "five"]);
-    let mut resumed = resume_session(&fixture.sessions, "windows").unwrap();
+    let mut resumed = fixture.resume("windows").unwrap();
     assert_eq!(resumed.take_history(), loaded.history);
 }
 
@@ -519,7 +529,7 @@ fn corrupt_records_fail_reads_and_resumes_without_changing_the_log() {
         Some(SessionError::InvalidConversationFrame)
     );
     assert_eq!(
-        resume_session(&fixture.sessions, "corrupt").err(),
+        fixture.resume("corrupt").err(),
         Some(SessionError::InvalidConversationFrame)
     );
     assert_eq!(fs::read(fixture.events("corrupt")).unwrap(), before);
@@ -539,7 +549,7 @@ fn out_of_order_and_orphan_records_are_rejected_on_replay() {
     fixture.append_raw("orphan", &frame(1, &user("x")));
     fixture.append_raw("orphan", &frame(2, &result("never-called")));
     assert_eq!(
-        resume_session(&fixture.sessions, "orphan").err(),
+        fixture.resume("orphan").err(),
         Some(SessionError::OrphanToolResult)
     );
 }
@@ -550,7 +560,7 @@ fn unsafe_session_entries_are_refused() {
     drop(fixture.start("real"));
     symlink(fixture.dir("real"), fixture.dir("linked")).unwrap();
     assert_eq!(
-        resume_session(&fixture.sessions, "linked").err(),
+        fixture.resume("linked").err(),
         Some(SessionError::SessionPathUnsafe)
     );
     assert_eq!(
@@ -562,7 +572,7 @@ fn unsafe_session_entries_are_refused() {
         Some(SessionError::InvalidSessionId)
     );
     assert_eq!(
-        resume_session(&fixture.sessions, "missing").err(),
+        fixture.resume("missing").err(),
         Some(SessionError::SessionNotFound)
     );
 
@@ -572,7 +582,7 @@ fn unsafe_session_entries_are_refused() {
     fs::remove_file(fixture.events("symlinked-log")).unwrap();
     symlink(&outside, fixture.events("symlinked-log")).unwrap();
     assert_eq!(
-        resume_session(&fixture.sessions, "symlinked-log").err(),
+        fixture.resume("symlinked-log").err(),
         Some(SessionError::SessionPathUnsafe)
     );
 
@@ -591,7 +601,7 @@ fn unsafe_session_entries_are_refused() {
     fs::set_permissions(fixture.events("shared"), fs::Permissions::from_mode(0o644)).unwrap();
     assert!(load_session(&fixture.sessions, "shared").is_ok());
     assert_eq!(
-        resume_session(&fixture.sessions, "shared").err(),
+        fixture.resume("shared").err(),
         Some(SessionError::PrivateStatePermissionsUnsupported)
     );
 
@@ -617,7 +627,7 @@ fn writable_opens_restore_private_directory_permissions() {
     fs::set_permissions(fixture.dir("loose"), fs::Permissions::from_mode(0o755)).unwrap();
     assert!(load_session(&fixture.sessions, "loose").is_ok());
     assert_eq!(mode(&fixture.dir("loose")), 0o755);
-    drop(resume_session(&fixture.sessions, "loose").unwrap());
+    drop(fixture.resume("loose").unwrap());
     assert_eq!(mode(&fixture.dir("loose")), 0o700);
 }
 
@@ -721,7 +731,7 @@ fn a_batch_cut_anywhere_by_a_crash_is_removed_as_a_whole() {
             let loaded = load_session(&fixture.sessions, "atomic").unwrap();
             assert!(loaded.history.turns.is_empty(), "cut at {cut}");
             assert_eq!(loaded.history.compacted.unwrap().removed_turn_count, 1);
-            let mut resumed = resume_session(&fixture.sessions, "atomic").unwrap();
+            let mut resumed = fixture.resume("atomic").unwrap();
             let history = resumed.take_history();
             assert_eq!(history.turns.len(), 1, "cut at {cut}");
             assert_eq!(
