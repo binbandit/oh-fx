@@ -51,7 +51,12 @@ impl ApprovalContent {
             }) => Self {
                 kind: COMMAND_KIND,
                 question: COMMAND_QUESTION,
-                reason: None,
+                reason: first_url_host(command).map(|host| {
+                    format!(
+                        "This command may make a network request to {}.",
+                        safe_text(host.as_bytes())
+                    )
+                }),
                 action: vec![ActionBlock::Wrapped {
                     lead: COMMAND_LEAD,
                     text: run_text(
@@ -229,6 +234,26 @@ fn under(head: &str, root: &Path) -> Phrase {
     )
 }
 
+fn first_url_host(text: &str) -> Option<&str> {
+    for scheme in ["https://", "http://"] {
+        let Some(index) = text.find(scheme) else {
+            continue;
+        };
+        let start = index + scheme.len();
+        if start >= text.len() {
+            return None;
+        }
+        let rest = text[start..].trim_start_matches('/');
+        let end = rest
+            .find(['/', ':', '?', '#', ' ', '\t', '\n', '\r', '\'', '"', '`'])
+            .unwrap_or(rest.len());
+        if end > 0 {
+            return Some(&rest[..end]);
+        }
+    }
+    None
+}
+
 fn safe_text(raw: &[u8]) -> String {
     encode_terminal_safe(raw, usize::MAX).text
 }
@@ -300,6 +325,31 @@ mod tests {
             shown.remember,
             Some(Phrase::plain("don't ask again for this exact command"))
         );
+    }
+
+    #[test]
+    fn commands_name_the_first_host_they_may_contact() {
+        let reason =
+            |command: &str| content(run(command, "/ws", CommandProfile::User, false), None).reason;
+        assert_eq!(
+            reason("curl -I https://example.com/path?q=1").as_deref(),
+            Some("This command may make a network request to example.com.")
+        );
+        assert_eq!(
+            reason("wget 'http:///mirror.test:8080/x' https://second.test").as_deref(),
+            Some("This command may make a network request to second.test.")
+        );
+        assert_eq!(
+            reason("curl http://evil\x1b[31m.test/").as_deref(),
+            Some("This command may make a network request to evil\\x1b[31m.test.")
+        );
+        assert_eq!(reason("zig build test"), None);
+        assert_eq!(reason("echo https://"), None);
+        assert_eq!(
+            reason("echo https:// http://later.test").as_deref(),
+            Some("This command may make a network request to later.test.")
+        );
+        assert_eq!(reason("echo http://later.test https://"), None);
     }
 
     #[test]
