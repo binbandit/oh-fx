@@ -477,6 +477,10 @@ impl AgentSetup {
         self.approvals.as_ref()
     }
 
+    pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {
+        self.preferences.as_ref()
+    }
+
     pub(crate) fn permission_runtime(&self, emit: Emit) -> PermissionRuntime {
         PermissionRuntime::new(
             self.permission_mode.clone(),

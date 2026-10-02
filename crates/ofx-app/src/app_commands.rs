@@ -119,6 +119,7 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
 pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
     if state.fast_mode() {
         state.set_fast_mode(false);
+        state.save_model_preference(FAST_TOPIC);
         state.notice(NoticeTone::Neutral, FAST_TOPIC, "off");
         return true;
     }
@@ -127,6 +128,7 @@ pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
         return false;
     }
     state.set_fast_mode(true);
+    state.save_model_preference(FAST_TOPIC);
     state.notice(NoticeTone::Neutral, FAST_TOPIC, "on");
     true
 }

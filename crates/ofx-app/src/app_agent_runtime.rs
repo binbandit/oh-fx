@@ -2,6 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure};
+use ofx_config::save_model_preference;
 use ofx_contract::{
     CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, UiCommand, UiEvent,
 };
@@ -13,10 +14,12 @@ use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::native::NativeClipboard;
+use crate::user_settings::{self, unsaved_notice};
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 const CONTEXT_TOPIC: &str = "context";
+const MODEL_TOPIC: &str = "model";
 const LEGACY_CONTEXT_LINE: &str = "[context]";
 const LEGACY_CONTEXT_PREFIX: &str = "[context] ";
 
@@ -54,6 +57,18 @@ impl ControllerState {
 
     pub(crate) fn set_fast_mode(&mut self, enabled: bool) {
         self.fast_mode = enabled;
+    }
+
+    pub(crate) fn save_model_preference(&self, topic: &str) {
+        let provider = self.setup.provider();
+        let saved = user_settings::save(self.setup.preferences(), |paths| {
+            save_model_preference(paths, &provider, &self.model, self.fast_mode)
+        });
+        if let Err(unsaved) = saved {
+            self.emit(UiEvent::Notice {
+                notice: unsaved_notice(topic, &unsaved),
+            });
+        }
     }
 
     pub(crate) async fn supports_fast_mode(&self) -> bool {
@@ -96,6 +111,7 @@ impl ControllerState {
         self.emit(UiEvent::ModelSelected {
             model: self.model.clone(),
         });
+        self.save_model_preference(MODEL_TOPIC);
     }
 
     fn receive_prompt(&mut self, prompt: String) {
@@ -1379,6 +1395,74 @@ mod tests {
         assert_eq!(requests[1].json()["model"], OTHER_CODEX_MODEL);
         assert_eq!(requests[1].json().get("service_tier"), None);
         assert_eq!(fast_notice(&mut harness).await, "fast|on");
+    }
+
+    fn saved_settings(harness: &Harness) -> Value {
+        let text = fs::read_to_string(harness.home.path().join("config/settings.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    async fn notices_until(harness: &mut Harness, topic: &str) -> Vec<String> {
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == topic))
+            .await;
+        notice_body(shown)
+    }
+
+    #[tokio::test]
+    async fn fast_mode_and_the_model_choice_are_saved_to_user_settings() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["provider"], "codex");
+        assert_eq!(saved["models"]["codex"], CODEX_MODEL);
+        assert_eq!(saved["fast_mode"], true);
+        assert_eq!(saved["fast_mode_model_bound"], true);
+        harness.command(&format!("/model {OTHER_CODEX_MODEL}"));
+        harness.command("/version");
+        assert_eq!(
+            notices_until(&mut harness, "version").await[0],
+            format!("|Switched to {OTHER_CODEX_MODEL}")
+        );
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["models"]["codex"], OTHER_CODEX_MODEL);
+        assert_eq!(saved["fast_mode"], false);
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        assert_eq!(saved_settings(&harness)["fast_mode"], true);
+        assert_eq!(fast_notice(&mut harness).await, "fast|off");
+        assert_eq!(saved_settings(&harness)["fast_mode"], false);
+    }
+
+    #[tokio::test]
+    async fn a_choice_user_settings_cannot_hold_still_applies_and_says_so() {
+        let codex = FakeServer::start([codex_text("fast")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        let settings = harness.home.path().join("config/settings.json");
+        fs::write(&settings, r#"{"workspaces":"legacy"}"#).unwrap();
+        harness.command("/fast");
+        assert_eq!(
+            notices_until(&mut harness, "fast").await,
+            ["fast|active for this process but not saved to user settings (InvalidSettingsFormat)"]
+        );
+        assert_eq!(notices_until(&mut harness, "fast").await, ["fast|on"]);
+        harness.command(&format!("/model {CODEX_MODEL}"));
+        assert_eq!(
+            notices_until(&mut harness, "model").await,
+            [
+                format!("|Switched to {CODEX_MODEL}"),
+                "model|active for this process but not saved to user settings (InvalidSettingsFormat)".to_owned()
+            ]
+        );
+        harness.submit("hurry");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(codex.requests()[0].json()["service_tier"], "priority");
+        assert_eq!(
+            fs::read_to_string(&settings).unwrap(),
+            r#"{"workspaces":"legacy"}"#
+        );
     }
 
     #[tokio::test]
