@@ -9,6 +9,7 @@
 
 mod assistant;
 mod composer;
+mod footer;
 mod input;
 mod output;
 mod render;
