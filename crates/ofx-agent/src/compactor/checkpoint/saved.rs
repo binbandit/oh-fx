@@ -1,7 +1,8 @@
-use serde_json::{Map, Value, json};
+use serde::Serialize;
+use serde_json::{Map, Value};
 
 use super::{
-    ENTRY_KINDS, Entry, OpenTurn, Payload, Tool, Turn, Used, UsedKind, highest_ids, render,
+    ENTRY_KINDS, Entry, Highest, OpenTurn, Payload, Tool, Turn, Used, UsedKind, highest_ids, render,
 };
 
 const MARKER: &str = "fx-compactor-v1\n";
@@ -11,66 +12,121 @@ const DIRECT_RESUME_INSTRUCTION: &str = "Continue the conversation from where it
 
 type Object = Map<String, Value>;
 
+#[derive(Serialize)]
+struct SavedPayload<'a> {
+    entries: Vec<SavedEntry<'a>>,
+    used: Vec<SavedUsed<'a>>,
+    earlier: &'static str,
+    turns: Vec<SavedTurn<'a>>,
+    open: Option<SavedOpenTurn<'a>>,
+    turn_count: usize,
+    tool_count: usize,
+    ledger_count: usize,
+    highest: Highest,
+    saved: bool,
+}
+
+#[derive(Serialize)]
+struct SavedEntry<'a> {
+    id: &'a str,
+    text: &'a str,
+}
+
+#[derive(Serialize)]
+struct SavedUsed<'a> {
+    kind: &'static str,
+    name: &'a str,
+    calls: usize,
+    first_tool: usize,
+    last_tool: usize,
+}
+
+#[derive(Serialize)]
+struct SavedTurn<'a> {
+    number: usize,
+    users: [&'a str; 1],
+    work: &'a str,
+    #[serde(rename = "final")]
+    final_reply: &'a str,
+    first_tool: usize,
+    last_tool: usize,
+    tools: Vec<SavedTool<'a>>,
+}
+
+#[derive(Serialize)]
+struct SavedOpenTurn<'a> {
+    users: [&'a str; 0],
+    work: &'a str,
+    text: &'a str,
+    first_tool: usize,
+    last_tool: usize,
+    tools: Vec<SavedTool<'a>>,
+}
+
+#[derive(Serialize)]
+struct SavedTool<'a> {
+    number: usize,
+    line: &'a str,
+    why: &'a str,
+}
+
 pub(crate) fn encode_checkpoint(payload: &Payload) -> String {
-    let entries: Vec<Value> = payload
-        .entries
-        .iter()
-        .map(|entry| json!({"id": entry.id, "text": entry.text}))
-        .collect();
-    let used: Vec<Value> = payload
-        .used
-        .iter()
-        .map(|used| {
-            json!({
-                "kind": match used.kind {
+    let saved = SavedPayload {
+        entries: payload
+            .entries
+            .iter()
+            .map(|entry| SavedEntry {
+                id: &entry.id,
+                text: &entry.text,
+            })
+            .collect(),
+        used: payload
+            .used
+            .iter()
+            .map(|used| SavedUsed {
+                kind: match used.kind {
                     UsedKind::Skill => "skill",
                     UsedKind::Mcp => "mcp",
                 },
-                "name": used.name,
-                "calls": used.calls,
-                "first_tool": used.first_tool,
-                "last_tool": used.last_tool,
+                name: &used.name,
+                calls: used.calls,
+                first_tool: used.first_tool,
+                last_tool: used.last_tool,
             })
-        })
-        .collect();
-    let turns: Vec<Value> = payload
-        .turns
-        .iter()
-        .map(|turn| {
-            json!({
-                "number": turn.number,
-                "users": [turn.user],
-                "work": turn.work,
-                "final": turn.final_reply,
-                "first_tool": turn.first_tool,
-                "last_tool": turn.last_tool,
-                "tools": tools_json(&turn.tools),
+            .collect(),
+        earlier: "",
+        turns: payload
+            .turns
+            .iter()
+            .map(|turn| SavedTurn {
+                number: turn.number,
+                users: [&turn.user],
+                work: &turn.work,
+                final_reply: &turn.final_reply,
+                first_tool: turn.first_tool,
+                last_tool: turn.last_tool,
+                tools: saved_tools(&turn.tools),
             })
-        })
-        .collect();
-    let open = payload.open.as_ref().map(|open| {
-        json!({
-            "users": [],
-            "work": open.work,
-            "text": open.text,
-            "first_tool": open.first_tool,
-            "last_tool": open.last_tool,
-            "tools": tools_json(&open.tools),
-        })
-    });
-    let saved = json!({
-        "entries": entries,
-        "used": used,
-        "earlier": "",
-        "turns": turns,
-        "open": open,
-        "turn_count": payload.turn_count,
-        "tool_count": payload.tool_count,
-        "ledger_count": 0,
-        "highest": highest_ids(&payload.entries),
-        "saved": false,
-    });
-    format!("{MARKER}{saved}")
+            .collect(),
+        open: payload.open.as_ref().map(|open| SavedOpenTurn {
+            users: [],
+            work: &open.work,
+            text: &open.text,
+            first_tool: open.first_tool,
+            last_tool: open.last_tool,
+            tools: saved_tools(&open.tools),
+        }),
+        turn_count: payload.turn_count,
+        tool_count: payload.tool_count,
+        ledger_count: 0,
+        highest: highest_ids(&payload.entries),
+        saved: false,
+    };
+    let mut encoded = MARKER.to_owned();
+    if let Ok(json) = serde_json::to_string(&saved) {
+        encoded.push_str(&json);
+    }
+    encoded
 }
 
 pub(crate) fn restore_checkpoint(summary: &str) -> (String, Option<Payload>) {
@@ -93,10 +149,14 @@ pub(crate) fn restore_checkpoint(summary: &str) -> (String, Option<Payload>) {
     }
 }
 
-fn tools_json(tools: &[Tool]) -> Vec<Value> {
+fn saved_tools(tools: &[Tool]) -> Vec<SavedTool<'_>> {
     tools
         .iter()
-        .map(|tool| json!({"number": tool.number, "line": tool.line, "why": tool.why}))
+        .map(|tool| SavedTool {
+            number: tool.number,
+            line: &tool.line,
+            why: &tool.why,
+        })
         .collect()
 }
 

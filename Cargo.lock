@@ -664,6 +664,7 @@ version = "0.1.0"
 dependencies = [
  "ofx-contract",
  "ofx-text",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-util",
