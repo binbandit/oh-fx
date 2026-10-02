@@ -352,16 +352,29 @@ fn poll_retrying_interrupts(
 
 fn terminal_output(stdout: BorrowedFd<'_>) -> rustix::io::Result<OwnedFd> {
     let flags = OFlags::WRONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-    let reopen = |path: &CStr| rustix::fs::open(path, flags, Mode::empty());
-    if let Ok(output) = termios::ttyname(stdout, Vec::new()).and_then(|path| reopen(&path)) {
+    let reopen = |path: &CStr| {
+        rustix::fs::open(path, flags, Mode::empty())
+            .ok()
+            .filter(pollable)
+    };
+    if let Some(output) = termios::ttyname(stdout, Vec::new())
+        .ok()
+        .and_then(|path| reopen(&path))
+    {
         return Ok(output);
     }
     if controls_this_session(stdout)
-        && let Ok(output) = reopen(CONTROLLING_TERMINAL)
+        && let Some(output) = reopen(CONTROLLING_TERMINAL)
     {
         return Ok(output);
     }
     rustix::io::fcntl_dupfd_cloexec(stdout, 0)
+}
+
+fn pollable(output: &OwnedFd) -> bool {
+    let mut fds = [PollFd::new(output, PollFlags::OUT)];
+    rustix::event::poll(&mut fds, Some(&Timespec::default())).is_ok()
+        && !fds[0].revents().contains(PollFlags::NVAL)
 }
 
 fn controls_this_session(terminal: BorrowedFd<'_>) -> bool {
@@ -415,12 +428,26 @@ fn wait_until_writable(
             Err(Errno::INTR) => continue,
             Err(errno) => return Err(errno.into()),
         }
-        if abort.is_some() && fds[1].revents().contains(PollFlags::IN) {
-            return Err(std::io::ErrorKind::Interrupted.into());
+        let aborted = if abort.is_some() {
+            fds[1].revents()
+        } else {
+            PollFlags::empty()
+        };
+        if let Some(ready) = write_readiness(fds[0].revents(), aborted) {
+            return ready;
         }
-        if !fds[0].revents().is_empty() {
-            return Ok(());
-        }
+    }
+}
+
+fn write_readiness(output: PollFlags, abort: PollFlags) -> Option<std::io::Result<()>> {
+    if abort.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
+        Some(Err(std::io::ErrorKind::Interrupted.into()))
+    } else if output.union(abort).contains(PollFlags::NVAL) {
+        Some(Err(Errno::BADF.into()))
+    } else if output.is_empty() {
+        None
+    } else {
+        Some(Ok(()))
     }
 }
 
@@ -766,6 +793,25 @@ mod tests {
         });
         terminal.write_all(&vec![b'y'; total]).unwrap();
         assert_eq!(reader.join().unwrap(), total);
+    }
+
+    #[test]
+    fn write_waits_end_on_room_errors_or_an_abort_but_not_on_an_unpollable_descriptor() {
+        let quiet = PollFlags::empty();
+        assert!(write_readiness(quiet, quiet).is_none());
+        for output in [PollFlags::OUT, PollFlags::HUP, PollFlags::ERR] {
+            assert!(matches!(write_readiness(output, quiet), Some(Ok(()))));
+        }
+        for (output, abort) in [(PollFlags::NVAL, quiet), (PollFlags::OUT, PollFlags::NVAL)] {
+            let error = write_readiness(output, abort).unwrap().unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(Errno::BADF.raw_os_error()));
+        }
+        for abort in [PollFlags::IN, PollFlags::HUP, PollFlags::ERR] {
+            for output in [quiet, PollFlags::OUT, PollFlags::NVAL] {
+                let error = write_readiness(output, abort).unwrap().unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+            }
+        }
     }
 
     #[test]
