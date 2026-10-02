@@ -16,6 +16,7 @@ impl GroupTree {
 
 impl CommandTree for GroupTree {
     fn stop_gracefully(&mut self) -> Result<(), &'static str> {
+        let _ = kill_process_group(self.group, Signal::TERM);
         Ok(())
     }
 

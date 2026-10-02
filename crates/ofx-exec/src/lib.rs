@@ -3,6 +3,8 @@ mod command_environment;
 mod command_runner;
 mod managed_execution;
 mod output_echo;
+#[cfg(target_os = "linux")]
+mod process_tree;
 mod shell_resolver;
 
 pub use command_contract::{CommandStatus, StatusProjection};

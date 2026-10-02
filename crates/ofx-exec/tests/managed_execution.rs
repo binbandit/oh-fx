@@ -29,7 +29,7 @@ const ESCAPED_PID: &str = "escaped.pid";
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 20] = [
+const TESTS: [(&str, Test); 21] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -109,6 +109,10 @@ const TESTS: [(&str, Test); 20] = [
     (
         "a_detached_daemon_holding_the_output_ends_the_drain_with_complete_output",
         a_detached_daemon_holding_the_output_ends_the_drain_with_complete_output,
+    ),
+    (
+        "a_deadline_stops_a_descendant_that_left_the_command_session",
+        a_deadline_stops_a_descendant_that_left_the_command_session,
     ),
 ];
 
@@ -909,6 +913,56 @@ fn a_detached_daemon_holding_the_output_ends_the_drain_with_complete_output() {
     assert_eq!(text(&snapshot), "BEFORE-EXIT\n");
     assert!(!snapshot.output_incomplete);
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+}
+
+fn a_deadline_stops_a_descendant_that_left_the_command_session() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("the test step succeeds");
+    let pid_path = directory.path().join("escaped.pid");
+    let script = directory.path().join("escape.py");
+    fs::write(
+        &script,
+        format!(
+            "import os, time\n\
+             if os.fork() == 0:\n\
+             \x20   os.setsid()\n\
+             \x20   if os.fork() > 0: os._exit(0)\n\
+             \x20   with open({pid:?} + '.tmp', 'w') as f: f.write(str(os.getpid()))\n\
+             \x20   os.rename({pid:?} + '.tmp', {pid:?})\n\
+             \x20   time.sleep(60)\n\
+             while True: time.sleep(1)\n",
+            pid = pid_path.display().to_string(),
+        ),
+    )
+    .expect("the test step succeeds");
+    let snapshot = block_on(async {
+        let input = StartCaptured {
+            timeout: Some(Duration::from_secs(3)),
+            ..run(&format!("exec python3 {}", script.display()), LONG)
+        };
+        executions()
+            .start_captured(input, &CancellationToken::new())
+            .await
+            .expect("the test step succeeds")
+    });
+    assert_eq!(snapshot.error_name, Some("TimeoutExpired"));
+    let escaped = fs::read_to_string(&pid_path).expect("the descendant recorded its pid");
+    let stat = format!("/proc/{}/stat", escaped.trim());
+    let begun = Instant::now();
+    while fs::read_to_string(&stat).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, fields)| !fields.trim_start().starts_with('Z'))
+    }) {
+        if begun.elapsed() > LONG {
+            let _ = process::Command::new("kill")
+                .args(["-9", escaped.trim()])
+                .status();
+            panic!("the descendant that left the session outlived the deadline");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn owner_child(directory: &Path) -> ! {

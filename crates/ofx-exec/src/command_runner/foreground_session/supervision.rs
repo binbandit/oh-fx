@@ -65,14 +65,10 @@ impl Requests {
         })
     }
 
-    pub(super) fn graceful_requested(&self) -> bool {
-        self.graceful.load(Ordering::SeqCst)
-    }
-
     fn observed(&self) -> TerminationRequest {
         if self.force.load(Ordering::SeqCst) {
             TerminationRequest::Force
-        } else if self.graceful_requested() {
+        } else if self.graceful.load(Ordering::SeqCst) {
             TerminationRequest::Graceful
         } else {
             TerminationRequest::None
