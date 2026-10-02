@@ -56,11 +56,16 @@ impl SessionGrants {
         self.lock().extend(grants);
     }
 
-    pub(crate) fn allow_path(&self, permission: &str, target: &Path) -> bool {
-        self.lock().iter().any(|grant| {
-            grant.permission == permission
-                && matches!(&grant.scope, Scope::Tree(root) if path_inside(root, target))
-        })
+    pub(crate) fn granted_root(&self, permission: &str, target: &Path) -> Option<PathBuf> {
+        self.lock()
+            .iter()
+            .filter(|grant| grant.permission == permission)
+            .filter_map(|grant| match &grant.scope {
+                Scope::Tree(root) if path_inside(root, target) => Some(root),
+                _ => None,
+            })
+            .min_by_key(|root| root.as_os_str().len())
+            .cloned()
     }
 
     pub(crate) fn allow_command(&self, request: &CommandRequest) -> bool {

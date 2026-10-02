@@ -69,14 +69,12 @@ impl PermissionGate for PermissionPolicy {
             Some(target) if path_inside(&self.workspace_root, &target) => {
                 Admission::Allowed(PathAccess::WorkspaceOnly)
             }
-            Some(target)
-                if self
-                    .session_grants
-                    .allow_path(permission_name(&call.name), &target) =>
-            {
-                Admission::Allowed(PathAccess::WorkspaceOrExternal)
-            }
-            Some(_) => Admission::ApprovalRequired,
+            Some(target) => self
+                .session_grants
+                .granted_root(permission_name(&call.name), &target)
+                .map_or(Admission::ApprovalRequired, |root| {
+                    Admission::Allowed(PathAccess::Within(root))
+                }),
             None => Admission::Allowed(PathAccess::WorkspaceOnly),
         }
     }
@@ -109,7 +107,8 @@ impl PermissionGate for PermissionPolicy {
         let reversible = inside || mutation.state == FileMutationState::Creates;
         if self
             .session_grants
-            .allow_path(EDIT_PERMISSION, &mutation.target)
+            .granted_root(EDIT_PERMISSION, &mutation.target)
+            .is_some()
         {
             return Admission::Allowed(access);
         }
@@ -206,6 +205,8 @@ mod tests {
 
     #[test]
     fn reads_outside_the_workspace_need_approval_unless_full_access_is_on() {
+        const WORKSPACE_ONLY: Admission = Admission::Allowed(PathAccess::WorkspaceOnly);
+
         let temp = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(temp.path()).unwrap();
         let workspace = root.join("workspace");
@@ -226,17 +227,16 @@ mod tests {
             external,
             "../outside/secret.txt",
         ];
-        let workspace_only = Admission::Allowed(PathAccess::WorkspaceOnly);
 
         for mode in [PermissionMode::Ask, PermissionMode::Auto] {
             assert_eq!(
                 admissions(mode, &workspace, &paths),
                 [
-                    workspace_only,
-                    workspace_only,
-                    workspace_only,
-                    workspace_only,
-                    workspace_only,
+                    WORKSPACE_ONLY,
+                    WORKSPACE_ONLY,
+                    WORKSPACE_ONLY,
+                    WORKSPACE_ONLY,
+                    WORKSPACE_ONLY,
                     Admission::ApprovalRequired,
                     Admission::ApprovalRequired,
                 ],
@@ -245,7 +245,7 @@ mod tests {
         }
         assert_eq!(
             admissions(PermissionMode::Yolo, &workspace, &paths),
-            [Admission::Allowed(PathAccess::WorkspaceOrExternal); 7]
+            [const { Admission::Allowed(PathAccess::WorkspaceOrExternal) }; 7]
         );
     }
 
@@ -302,22 +302,22 @@ mod tests {
     fn file_mutations_follow_upstream_admission_for_each_permission_mode() {
         use FileMutationState::{Changes, Creates, Unchanged, Unread};
 
-        let inside = Admission::Allowed(PathAccess::WorkspaceOnly);
-        let outside = Admission::Allowed(PathAccess::WorkspaceOrExternal);
-        let held = Admission::ReviewUnavailable;
+        const INSIDE: Admission = Admission::Allowed(PathAccess::WorkspaceOnly);
+        const OUTSIDE: Admission = Admission::Allowed(PathAccess::WorkspaceOrExternal);
+        const HELD: Admission = Admission::ReviewUnavailable;
         let cases = [
-            ("/workspace/src/main.rs", Changes, inside),
-            ("/workspace/new/file.rs", Creates, inside),
-            ("/workspace/src/main.rs", Unchanged, inside),
-            ("/elsewhere/new.txt", Creates, outside),
-            ("/elsewhere/notes.txt", Unread, held),
-            ("/elsewhere/notes.txt", Unchanged, held),
-            ("/workspace/.git/hooks/pre-commit", Creates, held),
-            ("/workspace/.git/config", Changes, held),
-            ("/home/user/.bashrc", Creates, held),
-            ("/home/user/.zshenv", Creates, held),
-            ("/home/user/.ssh/rc", Creates, held),
-            ("/home/user/.config/systemd/user/a.service", Creates, held),
+            ("/workspace/src/main.rs", Changes, INSIDE),
+            ("/workspace/new/file.rs", Creates, INSIDE),
+            ("/workspace/src/main.rs", Unchanged, INSIDE),
+            ("/elsewhere/new.txt", Creates, OUTSIDE),
+            ("/elsewhere/notes.txt", Unread, HELD),
+            ("/elsewhere/notes.txt", Unchanged, HELD),
+            ("/workspace/.git/hooks/pre-commit", Creates, HELD),
+            ("/workspace/.git/config", Changes, HELD),
+            ("/home/user/.bashrc", Creates, HELD),
+            ("/home/user/.zshenv", Creates, HELD),
+            ("/home/user/.ssh/rc", Creates, HELD),
+            ("/home/user/.config/systemd/user/a.service", Creates, HELD),
         ];
         let policy = |mode| PermissionPolicy::new(mode, "/workspace");
         for (target, state, expected) in cases {
@@ -328,7 +328,7 @@ mod tests {
                 "auto {target} {state:?}"
             );
             let in_ask = if state == Unchanged && target.starts_with("/workspace/") {
-                inside
+                INSIDE
             } else {
                 Admission::ApprovalRequired
             };
@@ -339,7 +339,7 @@ mod tests {
             );
             assert_eq!(
                 policy(PermissionMode::Yolo).admit_file_mutation(&mutation),
-                outside,
+                OUTSIDE,
                 "yolo {target} {state:?}"
             );
         }
@@ -413,12 +413,19 @@ mod tests {
             paths.iter().map(|path| policy.admit(&read(path))).collect()
         };
         let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
-        assert_eq!(admitted(&policy), [Admission::ApprovalRequired; 3]);
-        policy.remember_approval(GatedAction::Call(&read("../notes/a.txt")));
-        let external = Admission::Allowed(PathAccess::WorkspaceOrExternal);
         assert_eq!(
             admitted(&policy),
-            [external, external, Admission::ApprovalRequired]
+            [const { Admission::ApprovalRequired }; 3]
+        );
+        policy.remember_approval(GatedAction::Call(&read("../notes/a.txt")));
+        let within = |tree: &str| Admission::Allowed(PathAccess::Within(root.join(tree)));
+        assert_eq!(
+            admitted(&policy),
+            [
+                within("notes"),
+                within("notes"),
+                Admission::ApprovalRequired
+            ]
         );
         let search = ToolCall {
             name: "grep_files".to_owned(),
@@ -432,8 +439,17 @@ mod tests {
         assert_eq!(
             admitted(&directory_grant),
             [
-                external,
+                within("notes/deep"),
                 Admission::ApprovalRequired,
+                Admission::ApprovalRequired
+            ]
+        );
+        directory_grant.remember_approval(GatedAction::Call(&read("../notes/a.txt")));
+        assert_eq!(
+            admitted(&directory_grant),
+            [
+                within("notes"),
+                within("notes"),
                 Admission::ApprovalRequired
             ]
         );

@@ -1,15 +1,26 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::applicable_target::ApplicableTarget;
 use crate::types::ToolCall;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PathAccess {
     WorkspaceOnly,
     WorkspaceOrExternal,
+    Within(PathBuf),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+impl PathAccess {
+    pub fn confining_root<'a>(&'a self, workspace_root: &'a Path) -> Option<&'a Path> {
+        match self {
+            Self::WorkspaceOnly => Some(workspace_root),
+            Self::WorkspaceOrExternal => None,
+            Self::Within(root) => Some(root),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Admission {
     Allowed(PathAccess),
     ApprovalRequired,
