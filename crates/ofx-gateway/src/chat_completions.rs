@@ -18,7 +18,8 @@ use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat_completions_protocol::{
-    Limits, ProtocolError, Reducer, RequestOptions, build_request, redact_error_detail,
+    Limits, PreparedRequest, ProtocolError, Reducer, RequestOptions, build_request,
+    redact_error_detail, request_selection,
 };
 use crate::gateway_error_format::{
     format_http_error_message, format_http_recovery_diagnostic, sanitize_external_text,
@@ -93,6 +94,33 @@ impl ChatCompletionsProvider {
             return Err(ProviderError::cancelled());
         }
         let prepared = build_request(request, self.options).map_err(protocol_failure)?;
+        self.post(prepared, sink, cancel).await
+    }
+
+    async fn complete_body(
+        &self,
+        request: &ModelRequest<'_>,
+        body: String,
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+    ) -> Result<Completion, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::cancelled());
+        }
+        let selection = request_selection(request).map_err(protocol_failure)?;
+        let prepared = PreparedRequest {
+            body: body.into_bytes(),
+            selection,
+        };
+        self.post(prepared, sink, cancel).await
+    }
+
+    async fn post(
+        &self,
+        prepared: PreparedRequest,
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+    ) -> Result<Completion, ProviderError> {
         let mut builder = self
             .client
             .post(&self.chat_url)
@@ -225,6 +253,16 @@ impl ModelProvider for ChatCompletionsProvider {
     fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
         let prepared = build_request(request, self.options).ok()?;
         String::from_utf8(prepared.body).ok()
+    }
+
+    fn stream_body<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        body: String,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        Box::pin(self.complete_body(request, body, sink, cancel))
     }
 }
 

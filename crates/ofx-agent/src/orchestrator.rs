@@ -367,7 +367,7 @@ impl Agent {
                 max_output_tokens: self.config.max_output_tokens,
                 provider_options: self.provider_options(turn, events),
             };
-            let measured = self.measure(turn, &request);
+            let (measured, body) = self.measure(turn, &request).unzip();
             match self
                 .preflight(&mut turn.compaction, request, measured.as_ref(), cancel)
                 .await
@@ -380,7 +380,7 @@ impl Agent {
                 }
                 Err(error) => return Err(compaction_stop(error, cancel)),
             }
-            let outcome = self.complete(turn, request, events, cancel).await;
+            let outcome = self.complete(turn, request, body, events, cancel).await;
             let completion = match outcome {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
@@ -461,6 +461,7 @@ impl Agent {
         &self,
         turn: &mut Turn,
         mut request: ModelRequest<'_>,
+        mut body: Option<String>,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<Completion, Stop> {
@@ -479,7 +480,15 @@ impl Agent {
                     events(UiEvent::ReasoningText { turn_id, text });
                 }
             };
-            let error = match self.provider.stream(&request, &mut sink, cancel).await {
+            let streamed = match body.take() {
+                Some(body) => {
+                    self.provider
+                        .stream_body(&request, body, &mut sink, cancel)
+                        .await
+                }
+                None => self.provider.stream(&request, &mut sink, cancel).await,
+            };
+            let error = match streamed {
                 Ok(completion) => {
                     if recovering {
                         events(UiEvent::Recovery {

@@ -308,6 +308,7 @@ pub(crate) fn build_request(
     validate_request(request)?;
     validate_history(request.messages)?;
     let functions = select_functions(request.tools, request.tool_choice)?;
+    let selection = Selection::of(request.tool_choice, &functions);
     let projection = Projection::new(request.messages)?;
     let messages: Vec<WireMessage<'_>> = request
         .instructions
@@ -343,13 +344,21 @@ pub(crate) fn build_request(
         write_json(&mut body, &limit)?;
     }
     body.push(b'}');
-    Ok(PreparedRequest {
-        body,
-        selection: Selection {
-            choice: request.tool_choice,
+    Ok(PreparedRequest { body, selection })
+}
+
+pub(crate) fn request_selection(request: &ModelRequest<'_>) -> ProtocolResult<Selection> {
+    let functions = select_functions(request.tools, request.tool_choice)?;
+    Ok(Selection::of(request.tool_choice, &functions))
+}
+
+impl Selection {
+    fn of(choice: ToolChoice, functions: &[&ToolSpec]) -> Self {
+        Self {
+            choice,
             names: functions.iter().map(|tool| tool.name.clone()).collect(),
-        },
-    })
+        }
+    }
 }
 
 fn encode_message<'a>(message: &'a ChatMessage, projection: &'a Projection) -> WireMessage<'a> {

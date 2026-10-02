@@ -37,6 +37,7 @@ struct FakeProvider {
     scripts: Mutex<VecDeque<Script>>,
     requests: Mutex<Vec<SeenRequest>>,
     projections: Mutex<Vec<(String, bool, bool)>>,
+    bodies: Mutex<Vec<String>>,
 }
 
 impl FakeProvider {
@@ -45,7 +46,12 @@ impl FakeProvider {
             scripts: Mutex::new(scripts.into()),
             requests: Mutex::new(Vec::new()),
             projections: Mutex::new(Vec::new()),
+            bodies: Mutex::new(Vec::new()),
         })
+    }
+
+    fn bodies(&self) -> Vec<String> {
+        self.bodies.lock().unwrap().clone()
     }
 
     fn requests(&self) -> Vec<SeenRequest> {
@@ -106,6 +112,17 @@ impl ModelProvider for FakeProvider {
             "{:?} {:?} {:?}",
             request.instructions, request.messages, request.tools
         ))
+    }
+
+    fn stream_body<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        body: String,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        self.bodies.lock().unwrap().push(body);
+        self.stream(request, sink, cancel)
     }
 
     fn project_replay(

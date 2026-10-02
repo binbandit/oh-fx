@@ -85,7 +85,11 @@ impl Agent {
         }
     }
 
-    pub(super) fn measure(&self, turn: &Turn, request: &ModelRequest<'_>) -> Option<Measured> {
+    pub(super) fn measure(
+        &self,
+        turn: &Turn,
+        request: &ModelRequest<'_>,
+    ) -> Option<(Measured, String)> {
         let window_known = self
             .capabilities
             .as_ref()
@@ -97,11 +101,13 @@ impl Agent {
             .calibration
             .as_ref()
             .filter(|calibration| calibration.model == request.model);
-        let measure = |body: String| {
-            let cost = RequestCost::measure(&body);
+        let measure = |body: &str| {
+            let cost = RequestCost::measure(body);
             calibration.map_or(cost, |calibration| cost.calibrated(calibration))
         };
-        let cost = measure(self.provider.request_body(request)?);
+        let body = self.provider.request_body(request)?;
+        let cost = RequestCost::measure(&body);
+        let cost = calibration.map_or(cost, |calibration| cost.calibrated(calibration));
         let fixed = ModelRequest {
             messages: &[],
             ..*request
@@ -109,8 +115,8 @@ impl Agent {
         let fixed_tokens = self
             .provider
             .request_body(&fixed)
-            .map(|body| measure(body).estimated_tokens);
-        Some(Measured { cost, fixed_tokens })
+            .map(|body| measure(&body).estimated_tokens);
+        Some((Measured { cost, fixed_tokens }, body))
     }
 
     pub(super) async fn preflight(

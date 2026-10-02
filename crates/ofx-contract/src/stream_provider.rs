@@ -116,6 +116,16 @@ pub trait ModelProvider: Send + Sync {
         None
     }
 
+    fn stream_body<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        _body: String,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        self.stream(request, sink, cancel)
+    }
+
     fn project_replay(
         &self,
         _replay: &ProviderReplay,

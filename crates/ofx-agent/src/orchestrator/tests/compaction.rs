@@ -587,3 +587,24 @@ async fn compacting_every_step_keeps_the_summary_prompt_that_follows_them() {
         ChatMessage::user("Summarize what you just did.")
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_measured_request_is_sent_as_measured_and_a_retry_builds_it_again() {
+    let provider = FakeProvider::new(vec![
+        unmetered(text_reply("hello")),
+        Script::Fail(
+            Vec::new(),
+            failure(ProviderErrorKind::ServerError, "ServerError"),
+        ),
+        unmetered(text_reply("again")),
+    ]);
+    let (mut agent, _) = windowed(&provider, 45_000, 64);
+    run(&mut agent, "hi").await;
+    assert!(provider.bodies().is_empty());
+    let (report, _) = run(&mut agent, "hi again").await;
+    assert_eq!(report.final_text, "again");
+    assert_eq!(provider.requests().len(), 3);
+    let bodies = provider.bodies();
+    assert_eq!(bodies.len(), 1);
+    assert!(bodies[0].contains("hi again"));
+}

@@ -598,3 +598,23 @@ async fn replay_from_another_model_or_provider_is_omitted() {
         .collect();
     assert_eq!(texts, ["OK", "OK", "OK"]);
 }
+
+#[tokio::test]
+async fn a_measured_body_is_sent_as_it_was_measured() {
+    let server = FakeServer::start([Reply::sse(&text_events("hi"))]);
+    let codex = provider(&server, FakeCredentials::replying([]), FAR_FUTURE_MS);
+    let history = user("Hello.");
+    let body =
+        r#"{"model":"gpt-5.4","store":false,"stream":true,"instructions":"measured","input":[]}"#;
+    let mut sink = |_: StreamEvent| {};
+    let outcome = codex
+        .stream_body(
+            &request(&[], &history, &[]),
+            body.to_owned(),
+            &mut sink,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(outcome.expect("completes").content.as_deref(), Some("hi"));
+    assert_eq!(server.requests()[0].body_text(), body);
+}
