@@ -15,10 +15,13 @@ pub(crate) const BINARY: &str = "oh-fx";
 pub(crate) const ARCHIVE_FILES: [&str; 3] = [BINARY, "LICENSE", "NOTICE"];
 const RELEASE_VERSION: &str = "0.1.0-dev.1";
 
+const HEAD: &str = "head";
+const BASE: &str = "base";
+
 pub(crate) struct Builds {
     repository: PathBuf,
     target_dir: PathBuf,
-    staging: PathBuf,
+    footprint: PathBuf,
     cargo_home: Option<PathBuf>,
 }
 
@@ -29,26 +32,35 @@ impl Builds {
         let repository =
             env::current_dir().map_err(|error| format!("read the current directory: {error}"))?;
         let target_dir = repository.join(target_dir);
-        let staging = target_dir.join("footprint");
-        remove_if_present(&staging)?;
-        create_dir(&staging)?;
-        Ok(Self {
+        Self::at(repository, target_dir, cargo_home())
+    }
+
+    fn at(
+        repository: PathBuf,
+        target_dir: PathBuf,
+        cargo_home: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let builds = Self {
             repository,
+            footprint: target_dir.join("footprint"),
             target_dir,
-            staging,
-            cargo_home: cargo_home(),
-        })
+            cargo_home,
+        };
+        for side in [HEAD, BASE] {
+            remove_if_present(&builds.staged(side))?;
+        }
+        Ok(builds)
     }
 
     pub(crate) fn head(&self) -> Result<PathBuf, String> {
-        let mut command = self.command(Path::new("."), |name| env::var_os(name))?;
+        let mut command = self.command(Path::new("."), HEAD, |name| env::var_os(name))?;
         cargo_build(&mut command, Path::new("."))?;
-        self.stage(Path::new("."), "head")
+        self.stage(Path::new("."), HEAD)
     }
 
     pub(crate) fn base(&self, commit: &str) -> Result<PathBuf, String> {
         let source = base_source(&temp_dir()?, &self.repository, &self.target_dir)?;
-        let mut command = self.command(&source, |name| env::var_os(name))?;
+        let mut command = self.command(&source, BASE, |name| env::var_os(name))?;
         let source_text = source.to_string_lossy().into_owned();
         remove_if_present(&source)?;
         repository::git(&["worktree", "prune"])?;
@@ -61,7 +73,7 @@ impl Builds {
             &source_text,
             commit,
         ])?;
-        let staged = cargo_build(&mut command, &source).and_then(|()| self.stage(&source, "base"));
+        let staged = cargo_build(&mut command, &source).and_then(|()| self.stage(&source, BASE));
         if repository::git(&["worktree", "remove", "--force", &source_text]).is_err() {
             let _ = fs::remove_dir_all(&source);
             let _ = repository::git(&["worktree", "prune"]);
@@ -72,18 +84,31 @@ impl Builds {
     fn command(
         &self,
         source: &Path,
+        side: &str,
         current: impl Fn(&str) -> Option<OsString>,
     ) -> Result<Command, String> {
         let exported = config_variables(&self.repository, self.cargo_home.as_deref())?;
         let hidden = set_by_head(&exported, current);
-        Ok(cargo_command(source, &self.target_dir, &hidden))
+        Ok(cargo_command(source, &self.build_dir(side), &hidden))
     }
 
-    fn stage(&self, source: &Path, name: &str) -> Result<PathBuf, String> {
-        let staged = self.staging.join(name);
+    fn build_dir(&self, side: &str) -> PathBuf {
+        self.footprint.join("targets").join(side)
+    }
+
+    fn staged(&self, side: &str) -> PathBuf {
+        self.footprint.join(side)
+    }
+
+    fn stage(&self, source: &Path, side: &str) -> Result<PathBuf, String> {
+        let staged = self.staged(side);
         create_dir(&staged)?;
         copy(
-            &self.target_dir.join(TARGET).join("release").join(BINARY),
+            &self
+                .build_dir(side)
+                .join(TARGET)
+                .join("release")
+                .join(BINARY),
             &staged.join(BINARY),
         )?;
         for file in &ARCHIVE_FILES[1..] {
@@ -104,13 +129,13 @@ fn cargo_build(command: &mut Command, source: &Path) -> Result<(), String> {
     }
 }
 
-fn cargo_command(source: &Path, target_dir: &Path, hidden: &[String]) -> Command {
+fn cargo_command(source: &Path, build_dir: &Path, hidden: &[String]) -> Command {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(cargo);
     for variable in hidden {
         command.env_remove(variable);
     }
-    command
+    build_in(&mut command, build_dir)
         .args([
             "build",
             "--release",
@@ -121,12 +146,17 @@ fn cargo_command(source: &Path, target_dir: &Path, hidden: &[String]) -> Command
             TARGET,
         ])
         .current_dir(source)
-        .env("CARGO_TARGET_DIR", target_dir)
         .env("OH_FX_RELEASE_VERSION", RELEASE_VERSION);
     for variable in GIT_REPOSITORY_VARIABLES {
         command.env_remove(variable);
     }
     command
+}
+
+fn build_in<'a>(command: &'a mut Command, dir: &Path) -> &'a mut Command {
+    command
+        .env("CARGO_TARGET_DIR", dir)
+        .env("CARGO_BUILD_BUILD_DIR", dir)
 }
 
 fn temp_dir() -> Result<PathBuf, String> {
@@ -182,8 +212,136 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 mod tests {
     use std::ffi::OsStr;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::time::{Duration, SystemTime};
 
     use super::*;
+
+    fn package(name: &str, dependency: Option<&str>) -> String {
+        let dependencies = dependency.map_or_else(String::new, |dependency| {
+            format!("[dependencies]\n{dependency} = {{ path = \"../{dependency}\" }}\n")
+        });
+        format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n{dependencies}"
+        )
+    }
+
+    fn checkout(root: &Path, contract: &str, session: &str) {
+        let checked_out = SystemTime::UNIX_EPOCH + Duration::from_hours(24);
+        let files = [
+            (
+                "Cargo.toml",
+                "[workspace]\nresolver = \"3\"\nmembers = [\"contract\", \"session\", \"app\"]\n"
+                    .to_owned(),
+            ),
+            ("contract/Cargo.toml", package("contract", None)),
+            ("contract/src/lib.rs", contract.to_owned()),
+            ("session/Cargo.toml", package("session", Some("contract"))),
+            (
+                "session/src/lib.rs",
+                format!("pub fn describe() -> u32 {{\n    {session}\n}}\n"),
+            ),
+            ("app/Cargo.toml", package("app", Some("session"))),
+            (
+                "app/src/main.rs",
+                "fn main() {\n    print!(\"{}\", session::describe());\n}\n".to_owned(),
+            ),
+        ];
+        for (path, text) in files {
+            let path = root.join(path);
+            create_dir(path.parent().expect("a parent")).expect("a fixture directory");
+            fs::write(&path, text).expect("a fixture file");
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|file| file.set_modified(checked_out))
+                .expect("a fixed modification time");
+        }
+    }
+
+    fn build_and_run(
+        builds: &Builds,
+        source: &Path,
+        side: &str,
+        shared_build_dir: &Path,
+    ) -> String {
+        let mut command = Command::new(env!("CARGO"));
+        command
+            .args(["run", "--quiet", "--package", "app"])
+            .current_dir(source)
+            .env("CARGO_BUILD_BUILD_DIR", shared_build_dir);
+        let output = build_in(&mut command, &builds.build_dir(side))
+            .output()
+            .expect("cargo runs");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("UTF-8 output")
+    }
+
+    #[test]
+    fn alternating_builds_of_two_trees_each_run_their_own_crates() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let head = scratch.path().join("head");
+        let base = scratch.path().join("base");
+        checkout(
+            &head,
+            "pub fn value() -> u32 {\n    2\n}\n\npub fn added() -> u32 {\n    40\n}\n",
+            "contract::value() + contract::added()",
+        );
+        checkout(
+            &base,
+            "pub fn value() -> u32 {\n    1\n}\n",
+            "contract::value()",
+        );
+        let builds = Builds::at(
+            scratch.path().to_path_buf(),
+            scratch.path().join("target"),
+            None,
+        )
+        .expect("prepared builds");
+        let shared = scratch.path().join("shared-build-dir");
+        let outputs: Vec<_> = [(&head, HEAD), (&base, BASE), (&head, HEAD)]
+            .into_iter()
+            .map(|(source, side)| build_and_run(&builds, source, side, &shared))
+            .collect();
+        assert_eq!(outputs, ["42", "1", "42"]);
+    }
+
+    #[test]
+    fn each_side_builds_in_a_directory_of_its_own_that_outlives_the_staged_releases() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let prepare = || {
+            Builds::at(
+                scratch.path().to_path_buf(),
+                scratch.path().join("target"),
+                None,
+            )
+            .expect("prepared builds")
+        };
+        let builds = prepare();
+        let (head, base) = (builds.build_dir(HEAD), builds.build_dir(BASE));
+        assert!(!head.starts_with(&base) && !base.starts_with(&head));
+        for (side, build_dir) in [(HEAD, &head), (BASE, &base)] {
+            let command = builds
+                .command(Path::new("."), side, |_| None)
+                .expect("a build command");
+            let envs: Vec<_> = command.get_envs().collect();
+            for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"] {
+                assert!(envs.contains(&(OsStr::new(variable), Some(build_dir.as_os_str()))));
+            }
+            for dir in [build_dir.clone(), builds.staged(side)] {
+                create_dir(&dir).expect("a directory");
+                fs::write(dir.join("marker"), side).expect("a marker");
+            }
+        }
+        let builds = prepare();
+        for side in [HEAD, BASE] {
+            assert!(builds.build_dir(side).join("marker").exists(), "{side}");
+            assert!(!builds.staged(side).exists(), "{side}");
+        }
+    }
 
     #[test]
     fn the_base_checkout_sits_in_the_temp_directory_keyed_by_the_target_dir() {
@@ -216,14 +374,17 @@ mod tests {
 
     #[test]
     fn a_build_drops_the_hidden_variables_but_keeps_its_own() {
-        let hidden = vec!["FROM_HEAD".to_owned(), "CARGO_TARGET_DIR".to_owned()];
-        let command = cargo_command(Path::new("/base"), Path::new("/shared/target"), &hidden);
+        let hidden = vec![
+            "FROM_HEAD".to_owned(),
+            "CARGO_TARGET_DIR".to_owned(),
+            "CARGO_BUILD_BUILD_DIR".to_owned(),
+        ];
+        let command = cargo_command(Path::new("/base"), Path::new("/side/target"), &hidden);
         let envs: Vec<_> = command.get_envs().collect();
         assert!(envs.contains(&(OsStr::new("FROM_HEAD"), None)));
-        assert!(envs.contains(&(
-            OsStr::new("CARGO_TARGET_DIR"),
-            Some(OsStr::new("/shared/target"))
-        )));
+        for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"] {
+            assert!(envs.contains(&(OsStr::new(variable), Some(OsStr::new("/side/target")))));
+        }
         assert_eq!(command.get_current_dir(), Some(Path::new("/base")));
     }
 
@@ -236,8 +397,8 @@ mod tests {
             .expect("a config file");
         let builds = Builds {
             repository: repository.path().to_path_buf(),
-            target_dir: PathBuf::from("/shared/target"),
-            staging: PathBuf::from("/shared/target/footprint"),
+            target_dir: PathBuf::from("/work/target"),
+            footprint: PathBuf::from("/work/target/footprint"),
             cargo_home: None,
         };
         let current = |name: &str| match name {
@@ -245,8 +406,10 @@ mod tests {
             "USER_SET" => Some(OsString::from("mine")),
             _ => None,
         };
-        for source in [Path::new("."), Path::new("/base")] {
-            let command = builds.command(source, current).expect("a build command");
+        for (source, side) in [(Path::new("."), HEAD), (Path::new("/base"), BASE)] {
+            let command = builds
+                .command(source, side, current)
+                .expect("a build command");
             let envs: Vec<_> = command.get_envs().collect();
             assert!(envs.contains(&(OsStr::new("EXPORTED"), None)));
             assert!(!envs.iter().any(|(name, _)| *name == "USER_SET"));
