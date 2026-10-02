@@ -23,7 +23,7 @@ A pull request that lands in more than one place has one row per status.
 |---|---|---|---|---|---|
 | #1092 | `7087733` | Keep steering typed after a tool result when a turn is cancelled | `defer:steering` | `ofx-agent` | `buildInterruptedExecutionMemory` keeps steering messages typed right after a tool result when a turn is cancelled. oh-fx has no steering yet; see [Steering](#steering). |
 | #1099 | `07f4e4d` | Keep the FIFO test's reader open until its writer joins | `n/a` | none | This fixes a race in a Zig test's blocked-writer thread. The Rust port of "linked metadata FIFO is rejected before descriptor open" starts no writer thread. |
-| #1072 | `d44cd84` | Add an experimental v2 session store to fx ask | `ported` | `ofx-cli`, `ofx-session`, `oh-fx` | `--sessions-v2`, before any command or inside `ask`, and `OH_FX_SESSIONS_V2` (`1`, or `true` in any letter case) are parsed. `ask` fails as not available yet unless `--no-save` is given. The ask usage and options show the flag. `v2`, in any letter case, is not a valid session id. |
+| #1072 | `d44cd84` | Add an experimental v2 session store to fx ask | `ported` | `ofx-cli`, `ofx-session`, `oh-fx` | `--sessions-v2`, before any command or inside `ask`, and `OH_FX_SESSIONS_V2` (`1`, or `true` in any letter case) are parsed. `ask` fails as not available yet unless `--no-save` is given. The ask usage and options show the flag. `v2`, in any letter case, is not a valid session id, so session listing skips the `v2` folder. |
 | #1072 | `d44cd84` | (same) | `defer:sessions-v2` | future session store | Append-only v2 log (`session_manager/*`, `session_adapter.zig`), saving and resuming `ask` on v2, the per-request `append_turn_piece` hook, usage recovery, and side files under `session-files/<id>`. |
 | #1072 | `d44cd84` | (same) | `n/a` | none | `build.zig` session-manager module, `scripts/pgso` corpus entry, e2e shard weights. |
 | #1082 | `14893f6` | Run session commands and doctor on sessions v2 | `ported` | `ofx-cli` | The top-level `Flags:` list shows `--sessions-v2`. |
@@ -72,7 +72,6 @@ Upstream lets a prompt typed while a turn runs steer that turn. oh-fx has no int
   - Side files live in `session-files/<id>` under the data directory.
   - The terminal store reads v2 side folders.
   - The durable replace can report the error that stopped it before the rename (`pre_rename_cause`).
-  - A v1 store skips the `v2` folder.
 
 ### Compactor
 

@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use rustix::fs::{self, AtFlags, FileType, FlockOperation, Mode, OFlags, Stat};
@@ -87,8 +87,29 @@ impl PrivateDir {
         open_or_create_in(&parent, leaf)
     }
 
-    pub(crate) fn open_or_create_child(&self, name: &str) -> Result<Self, DurableError> {
+    pub fn open_or_create_child(&self, name: &str) -> Result<Self, DurableError> {
         open_or_create_in(&self.fd, name)
+    }
+
+    pub fn open_child(&self, name: &str) -> Result<Option<Self>, DurableError> {
+        let fd = match fs::openat(&self.fd, name, directory_flags(), Mode::empty()) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => return Ok(None),
+            Err(error) => return Err(leaf_error(error)),
+        };
+        let stat = fs::fstat(&fd).map_err(|_| DurableError::Failed)?;
+        if file_type(&stat) != FileType::Directory {
+            return Err(DurableError::PathUnsafe);
+        }
+        Ok(Some(Self { fd }))
+    }
+
+    pub fn open_child_private(&self, name: &str) -> Result<Option<Self>, DurableError> {
+        let Some(directory) = self.open_child(name)? else {
+            return Ok(None);
+        };
+        make_private_directory(&directory.fd)?;
+        Ok(Some(directory))
     }
 
     pub fn owner_writable(&self) -> bool {
@@ -346,6 +367,12 @@ impl PrivateDir {
     }
 }
 
+impl AsFd for PrivateDir {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
 fn split(path: &Path) -> Result<(&Path, &std::ffi::OsStr), DurableError> {
     match (path.parent(), path.file_name()) {
         (Some(parent), Some(leaf)) if !parent.as_os_str().is_empty() => Ok((parent, leaf)),
@@ -496,6 +523,31 @@ mod tests {
             PrivateDir::open_or_create(&root.path().join("oh-fx")).unwrap_err(),
             DurableError::PathUnsafe
         );
+    }
+
+    #[test]
+    fn child_directories_open_without_following_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = PrivateDir::open_or_create(&root.path().join("oh-fx")).unwrap();
+        assert!(parent.open_child("missing").unwrap().is_none());
+        assert!(parent.open_child_private("missing").unwrap().is_none());
+        let child = root.path().join("oh-fx/child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755)).unwrap();
+        parent.open_child("child").unwrap().unwrap();
+        assert_eq!(mode(&child), 0o755);
+        let opened = parent.open_child_private("child").unwrap().unwrap();
+        assert_eq!(mode(&child), 0o700);
+        assert!(fs::fstat(opened.as_fd()).is_ok());
+        symlink(&child, root.path().join("oh-fx/linked")).unwrap();
+        std::fs::write(root.path().join("oh-fx/file"), "").unwrap();
+        for name in ["linked", "file"] {
+            assert_eq!(
+                parent.open_child(name).unwrap_err(),
+                DurableError::PathUnsafe,
+                "{name}"
+            );
+        }
     }
 
     #[test]
