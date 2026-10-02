@@ -17,6 +17,50 @@ pub enum ToolRejection {
     Panicked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NoticeTone {
+    Information,
+    Success,
+    Warning,
+    Error,
+    Cancelled,
+    Neutral,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoticeLink {
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub topic: String,
+    pub tone: NoticeTone,
+    pub body: String,
+    pub link: Option<NoticeLink>,
+}
+
+impl Notice {
+    pub fn new(tone: NoticeTone, topic: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            topic: topic.into(),
+            tone,
+            body: body.into(),
+            link: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_link(mut self, label: impl Into<String>, url: impl Into<String>) -> Self {
+        self.link = Some(NoticeLink {
+            label: label.into(),
+            url: url.into(),
+        });
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     TurnStarted {
@@ -73,4 +117,49 @@ pub enum UiEvent {
         turn_id: TurnId,
         outcome: TurnOutcome,
     },
+    ApiStatus {
+        turn_id: TurnId,
+        text: String,
+    },
+    Notice {
+        notice: Notice,
+    },
+    ModelSelected {
+        model: String,
+    },
+    HelpRequested,
+    ConversationCleared {
+        first_kept_prompt: u64,
+    },
+    ExitRequested,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiCommand {
+    Submit { prompt: String },
+    RunCommand { text: String },
+    Cancel { turn_id: TurnId },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notices_carry_their_tone_topic_and_optional_link() {
+        let plain = Notice::new(NoticeTone::Warning, "model", "unknown model");
+        assert_eq!(plain.topic, "model");
+        assert_eq!(plain.tone, NoticeTone::Warning);
+        assert_eq!(plain.body, "unknown model");
+        assert_eq!(plain.link, None);
+        let linked =
+            Notice::new(NoticeTone::Success, "", "updated").with_link("notes", "https://x");
+        assert_eq!(
+            linked.link,
+            Some(NoticeLink {
+                label: "notes".to_owned(),
+                url: "https://x".to_owned(),
+            })
+        );
+    }
 }
