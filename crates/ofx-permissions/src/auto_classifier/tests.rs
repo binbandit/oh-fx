@@ -265,6 +265,21 @@ fn automatic_review_schema_requires_only_the_authoritative_decision() {
 }
 
 #[test]
+fn automatic_review_model_facing_tool_contract_stays_byte_exact() {
+    let spec = function_spec();
+    let tools = format!(
+        r#"[{{"type":"function","name":{},"description":{},"inputSchema":{}}}]"#,
+        Value::from(spec.name),
+        Value::from(spec.description),
+        spec.input_schema
+    );
+    assert_eq!(
+        lowercase_hex(&Sha256::digest(tools.as_bytes())),
+        "5029829df4ea080a7c21701c0185b777d21fd42d1b79a7a957605e508f73fe03"
+    );
+}
+
+#[test]
 fn automatic_reviewer_defaults_to_the_tested_thirty_second_budget() {
     assert_eq!(DEFAULT_REVIEW_TIMEOUT, Duration::from_secs(30));
 }
