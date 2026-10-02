@@ -1,5 +1,7 @@
 mod composer_deletion;
+mod composer_history;
 mod composer_insertion;
+mod composer_kill_ring;
 mod composer_line_continuation;
 mod composer_replacement;
 mod composer_selection;
@@ -10,6 +12,8 @@ mod entity_spans;
 mod horizontal_navigation;
 mod input_limit_rejection;
 mod input_paste_runtime;
+mod input_reset;
+mod kill_ring;
 mod pasted_blocks;
 mod registered_entities;
 #[cfg(test)]
@@ -20,12 +24,16 @@ mod visual_layout;
 
 use std::borrow::Cow;
 
+pub(crate) use composer_deletion::DeletionKind;
+pub(crate) use composer_history::HistoryNavigation;
 pub(crate) use editor_state::{InsertResult, SelectionRange};
 pub(crate) use visual_layout::VisualLayout;
 
+use composer_history::PromptHistory;
 use edit_history::EditHistory;
 use editor_state::EditorState;
 use input_limit_rejection::LimitRejection;
+use kill_ring::KillRing;
 use registered_entities::Entities;
 use vertical_navigation::VerticalNavigation;
 
@@ -34,6 +42,8 @@ pub(crate) struct Composer {
     edit: EditorState,
     entities: Entities,
     edit_history: EditHistory,
+    kill_ring: KillRing,
+    prompt_history: PromptHistory,
     vertical: VerticalNavigation,
     limit_rejection: LimitRejection,
 }
@@ -45,6 +55,10 @@ impl Composer {
 
     pub(crate) fn text(&self) -> &str {
         &self.edit.input
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.edit.input.is_empty()
     }
 
     #[cfg(test)]
