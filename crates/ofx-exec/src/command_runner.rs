@@ -15,7 +15,9 @@ use std::thread;
 use std::time::Duration;
 
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
+use rustix::process::{
+    Pid, Signal, WaitId, WaitIdOptions, kill_process, kill_process_group, waitid,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::{oneshot, watch};
@@ -25,8 +27,8 @@ pub use foreground_session::{is_foreground_session_invocation, run_foreground_se
 
 use crate::command_contract::CommandStatus;
 use foreground_session::{
-    LAUNCH_FAILURE_EXIT_CODE, LAUNCH_FAILURE_PREFIX, NO_DEADLINE, NONCE_HEX_BYTES, READY_BYTE,
-    RELEASE_BYTE, STATUS_PREFIX, TOKEN,
+    FORCE_SIGNAL, LAUNCH_FAILURE_EXIT_CODE, LAUNCH_FAILURE_PREFIX, NO_DEADLINE, NONCE_HEX_BYTES,
+    READY_BYTE, RELEASE_BYTE, STATUS_PREFIX, TOKEN,
 };
 use launch_probe::LaunchProbe;
 use natural_drain::NaturalDrain;
@@ -100,6 +102,12 @@ impl RunError {
             Self::Failed(name) => name,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalScope {
+    ProcessGroup,
+    Supervisor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,7 +490,7 @@ impl<'a> Collection<'a> {
                 self.settled = true;
                 self.indeterminate = true;
                 self.output_incomplete = true;
-                self.signal(Signal::KILL);
+                self.kill_group();
                 true
             }
         }
@@ -498,7 +506,7 @@ impl<'a> Collection<'a> {
                     forced: None,
                 });
                 match intent {
-                    StopIntent::Graceful => self.signal(Signal::TERM),
+                    StopIntent::Graceful => self.deliver(StopIntent::Graceful),
                     StopIntent::Force => self.escalate(),
                 }
             }
@@ -516,12 +524,22 @@ impl<'a> Collection<'a> {
         if let Some(termination) = &mut self.termination {
             termination.forced.get_or_insert_with(Instant::now);
         }
-        self.signal(Signal::KILL);
+        self.deliver(StopIntent::Force);
     }
 
-    fn signal(&self, signal: Signal) {
+    fn deliver(&self, intent: StopIntent) {
+        if self.exit.is_some() {
+            return;
+        }
+        let _ = match termination_signal(intent) {
+            (SignalScope::ProcessGroup, signal) => kill_process_group(self.group, signal),
+            (SignalScope::Supervisor, signal) => kill_process(self.group, signal),
+        };
+    }
+
+    fn kill_group(&self) {
         if self.exit.is_none() {
-            let _ = kill_process_group(self.group, signal);
+            let _ = kill_process_group(self.group, Signal::KILL);
         }
     }
 
@@ -554,6 +572,13 @@ impl<'a> Collection<'a> {
             output_incomplete: self.output_incomplete || self.indeterminate,
             duration: started.elapsed(),
         })
+    }
+}
+
+fn termination_signal(intent: StopIntent) -> (SignalScope, Signal) {
+    match intent {
+        StopIntent::Graceful => (SignalScope::ProcessGroup, Signal::TERM),
+        StopIntent::Force => (SignalScope::Supervisor, FORCE_SIGNAL),
     }
 }
 
