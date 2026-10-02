@@ -53,7 +53,11 @@ const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_un
 const ASK_MODE_APPROVAL_HINT: &str = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
 const AUTO_MODE_APPROVAL_HINT: &str = "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule";
 const BLANK_TEXT: [char; 4] = [' ', '\t', '\r', '\n'];
-const PROJECT_INSTRUCTION_LIMITS: [ContextLimitName; 2] = [
+const APPLIED_LIMITS: [ContextLimitName; 6] = [
+    ContextLimitName::SkillDescriptionBytes,
+    ContextLimitName::SkillCatalogBytes,
+    ContextLimitName::SkillChunkBytes,
+    ContextLimitName::SkillFileBytes,
     ContextLimitName::ProjectInstructionFileBytes,
     ContextLimitName::ProjectInstructionsTotalBytes,
 ];
@@ -265,7 +269,7 @@ pub(crate) fn unsupported_launch_modifier(modifiers: &LaunchModifiers) -> Option
     let unsupported_limit = modifiers
         .context_limit_overrides()
         .iter()
-        .any(|limit| !PROJECT_INSTRUCTION_LIMITS.contains(&limit.name));
+        .any(|limit| !APPLIED_LIMITS.contains(&limit.name));
     first_requested([
         (unsupported_limit, "--context-limit"),
         (modifiers.adds_directories(), "--add-dir"),

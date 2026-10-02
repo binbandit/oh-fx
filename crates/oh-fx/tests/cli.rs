@@ -152,7 +152,7 @@ fn unknown_commands_print_the_plain_help_on_stderr() {
 fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
     for (args, feature) in [
         (
-            &["--context-limit", "skill_chunk_bytes=1"][..],
+            &["--context-limit", "mcp_description_bytes=1"][..],
             "--context-limit",
         ),
         (&["--add-dir", "/tmp/shared", "-c"], "--add-dir"),
@@ -358,7 +358,7 @@ fn invalid_auth_modes_fail_every_command_except_top_level_help() {
         &["ask", "--help"],
         &["status", "--bogus"],
         &["bogus"],
-        &["--context-limit", "skill_chunk_bytes=1", "help"],
+        &["--context-limit", "mcp_description_bytes=1", "help"],
         &[],
     ] {
         let output = oh_fx(args, &invalid);
@@ -390,7 +390,7 @@ fn full_disk_writes_follow_each_upstream_path() {
         (&["--help"][..], ""),
         (&["help", "--json"], ""),
         (
-            &["--context-limit", "skill_chunk_bytes=1", "help"],
+            &["--context-limit", "mcp_description_bytes=1", "help"],
             "oh-fx: WriteFailed\n",
         ),
         (&["--version"], "oh-fx: WriteFailed\n"),
@@ -473,7 +473,7 @@ fn upgrade_rejects_unknown_arguments_like_upstream() {
 #[test]
 fn launch_modifiers_before_help_select_the_plain_layout() {
     let output = oh_fx(
-        &["--context-limit", "skill_chunk_bytes=1", "help"],
+        &["--context-limit", "mcp_description_bytes=1", "help"],
         &[("COLUMNS", "60")],
     );
     assert!(output.status.success());
@@ -528,7 +528,7 @@ fn invalid_command_arguments_fail_before_the_availability_check() {
 fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
     for (args, feature) in [
         (
-            &["--context-limit", "skill_chunk_bytes=1", "ask", "hi"][..],
+            &["--context-limit", "mcp_description_bytes=1", "ask", "hi"][..],
             "--context-limit",
         ),
         (&["--add-dir", "/tmp", "ask", "hi"], "--add-dir"),
