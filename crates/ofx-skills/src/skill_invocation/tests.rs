@@ -324,3 +324,4 @@ fn ambiguous_skill_failure_lists_locations_until_the_bound_and_counts_the_rest()
 }
 
 mod loading;
+mod whole;
