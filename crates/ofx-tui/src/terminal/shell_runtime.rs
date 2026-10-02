@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::CStr;
 use std::ops::Range;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
@@ -26,6 +27,7 @@ const CURSOR_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const BACKGROUND_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 const ABNORMAL_RESTORE_WAIT: Duration = Duration::from_millis(100);
 const PROBE_REPLY_LIMIT: usize = 64;
+const CONTROLLING_TERMINAL: &CStr = c"/dev/tty";
 const SYNC_UPDATES_ENV: &str = "OH_FX_SYNC_UPDATES";
 const LEGACY_SYNC_UPDATES_ENV: &str = "FLASH_SYNC_UPDATES";
 
@@ -109,10 +111,7 @@ impl Terminal {
         if !termios::isatty(stdin) || !termios::isatty(stdout) {
             return Err(TerminalError::NotATerminal);
         }
-        let output = match nonblocking_output(stdout) {
-            Ok(output) => output,
-            Err(_) => rustix::io::fcntl_dupfd_cloexec(stdout, 0)?,
-        };
+        let output = nonblocking_output(stdout)?;
         Self::from_fds(
             rustix::io::fcntl_dupfd_cloexec(stdin, 0)?,
             output,
@@ -124,7 +123,7 @@ impl Terminal {
         self.write_abort = Some(abort);
     }
 
-    pub(crate) fn from_fds(
+    fn from_fds(
         input: OwnedFd,
         output: OwnedFd,
         capabilities: Capabilities,
@@ -345,10 +344,25 @@ fn poll_retrying_interrupts(
     }
 }
 
-fn nonblocking_output(stdout: BorrowedFd<'_>) -> std::io::Result<OwnedFd> {
-    let path = termios::ttyname(stdout, Vec::new())?;
+fn nonblocking_output(stdout: BorrowedFd<'_>) -> Result<OwnedFd, TerminalError> {
     let flags = OFlags::WRONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-    Ok(rustix::fs::open(path.as_c_str(), flags, Mode::empty())?)
+    termios::ttyname(stdout, Vec::new())
+        .and_then(|path| rustix::fs::open(path.as_c_str(), flags, Mode::empty()))
+        .or_else(|error| {
+            if controls_this_session(stdout) {
+                rustix::fs::open(CONTROLLING_TERMINAL, flags, Mode::empty()).map_err(|_| error)
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| TerminalError::OutputUnavailable(error.into()))
+}
+
+fn controls_this_session(terminal: BorrowedFd<'_>) -> bool {
+    matches!(
+        (termios::tcgetsid(terminal), rustix::process::getsid(None)),
+        (Ok(terminal_session), Ok(session)) if terminal_session == session
+    )
 }
 
 fn write_fully(
@@ -809,6 +823,23 @@ mod tests {
         modes.contains(LocalModes::ICANON | LocalModes::ECHO)
     }
 
+    fn forbid_reopening_by_path() {
+        let stdout = rustix::stdio::stdout();
+        rustix::fs::fchmod(stdout, Mode::empty()).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let mut sets = rustix::thread::capabilities(None).unwrap();
+            sets.effective = rustix::thread::CapabilitySet::empty();
+            rustix::thread::set_capabilities(None, sets).unwrap();
+        }
+        let path = termios::ttyname(stdout, Vec::new()).unwrap();
+        let flags = OFlags::WRONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+        assert_eq!(
+            rustix::fs::open(path.as_c_str(), flags, Mode::empty()).err(),
+            Some(Errno::ACCESS)
+        );
+    }
+
     #[test]
     fn unwinding_with_stalled_output_restores_termios_without_waiting_for_it() {
         if test_pty::in_child() {
@@ -832,6 +863,82 @@ mod tests {
             status.is_some_and(|status| status.success()) && cooked(modes),
             "{status:?} {modes:?}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sigterm_ends_a_stalled_write_when_the_terminal_path_cannot_be_reopened() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::ExitStatusExt;
+        use std::path::Path;
+
+        use rustix::process::{Pid, Signal};
+
+        use super::super::signal_pipe::{SignalPipe, raise_default};
+
+        if test_pty::in_child() {
+            rustix::process::setsid().unwrap();
+            rustix::process::ioctl_tiocsctty(rustix::stdio::stdin()).unwrap();
+            forbid_reopening_by_path();
+            let mut terminal = Terminal::open().unwrap();
+            let output = format!("/proc/self/fd/{}", terminal.output.as_raw_fd());
+            assert_eq!(std::fs::read_link(output).unwrap(), Path::new("/dev/tty"));
+            let mut signals = SignalPipe::install().unwrap();
+            terminal.abort_writes_when_readable(signals.fatal_wakeup().unwrap());
+            terminal.enable_raw_mode().unwrap();
+            assert!(terminal.write_all(&vec![b'x'; 1 << 22]).is_err());
+            let signal = signals.take().fatal.unwrap();
+            terminal.restore_after_signal();
+            drop(terminal);
+            signals.uninstall();
+            raise_default(signal);
+            std::process::exit(1);
+        }
+        let pty = test_pty::open();
+        let mut child = spawn_on(
+            &pty,
+            "terminal::shell_runtime::tests::sigterm_ends_a_stalled_write_when_the_terminal_path_cannot_be_reopened",
+        );
+        let deadline = Instant::now() + test_pty::WAIT;
+        while Instant::now() < deadline
+            && child.try_wait().unwrap().is_none()
+            && termios::tcgetattr(&pty.slave)
+                .unwrap()
+                .local_modes
+                .contains(LocalModes::ICANON)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = rustix::process::kill_process(Pid::from_child(&child), Signal::TERM);
+        let status = exit_within(child, test_pty::WAIT);
+        let modes = termios::tcgetattr(&pty.slave).unwrap().local_modes;
+        assert!(
+            status.and_then(|status| status.signal()) == Some(Signal::TERM.as_raw())
+                && cooked(modes),
+            "{status:?} {modes:?}"
+        );
+    }
+
+    #[test]
+    fn opening_fails_when_no_independent_output_can_be_opened() {
+        if test_pty::in_child() {
+            forbid_reopening_by_path();
+            match Terminal::open() {
+                Ok(_) => println!("opened"),
+                Err(error) => println!("refused: {error}"),
+            }
+            return;
+        }
+        let mut session = test_pty::child_session(
+            "terminal::shell_runtime::tests::opening_fails_when_no_independent_output_can_be_opened",
+            &[],
+        );
+        test_pty::wait_output(
+            &session,
+            b"refused: oh-fx cannot reopen its terminal for nonblocking output: Permission denied",
+        );
+        assert!(session.wait_exit(test_pty::WAIT).unwrap().success());
     }
 
     #[test]

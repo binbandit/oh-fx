@@ -15,5 +15,8 @@ thiserror.workspace = true
 ofx-testkit.workspace = true
 rustix = { workspace = true, features = ["pty"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { workspace = true, features = ["thread"] }
+
 [lints]
 workspace = true
