@@ -85,6 +85,35 @@ fn explicit_skill_requests_report_ambiguous_names_without_selecting_a_source() {
 }
 
 #[test]
+fn explicit_ambiguity_lists_every_location_whose_name_differs_only_in_case() {
+    let discovery = SkillDiscovery {
+        skills: vec![
+            static_skill("Review", "/workspace/review", SkillSource::WorkspaceOhFx),
+            static_skill("review", "/global/review", SkillSource::GlobalOhFx),
+        ],
+        diagnostics: Vec::new(),
+    };
+    let failure = "Skill \"Review\" is ambiguous. Retry with the name and one advertised location: \"/workspace/review\", \"/global/review\".";
+    for prompt in [
+        "$review this patch",
+        "/review this patch",
+        "use the review skill",
+    ] {
+        let section = section(&discovery, prompt, &[]);
+        assert_eq!(section.text.lines().last(), Some(failure), "{prompt}");
+        assert_eq!(
+            section.load_details.as_deref(),
+            Some(format!("Could not load Review: {failure}\n").as_str()),
+            "{prompt}"
+        );
+        assert!(
+            load_body(&section).ends_with("\u{2514} Could not load Review: ambiguous name"),
+            "{prompt}"
+        );
+    }
+}
+
+#[test]
 fn explicit_skills_include_complete_instructions_beyond_the_default_chunk() {
     let (_fixture, discovery) = workflow_fixture(&format!(
         "BEGIN INSTRUCTIONS\n{}COMPLETE TAIL\n",

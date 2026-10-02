@@ -8,7 +8,9 @@ use ofx_text::{encode_terminal_safe, sanitize_model_text_owned};
 use super::failures::format_ambiguous_skill;
 use super::{ExecuteResult, Selected, SkillError, SkillLoader};
 use crate::skill_contract::{SKILL_FILE_NAME, Skill};
-use crate::skill_runtime::{ExplicitSelection, collect_explicit_skill_selections};
+use crate::skill_runtime::{
+    ExplicitSelection, collect_explicit_skill_selections, explicit_name_candidates,
+};
 
 const SECTION_HEADER: &str = "Explicitly invoked skill content for this query:\nUse every successfully loaded skill for this query. Report blocked or ambiguous requests.\nFollow each skill's complete instructions and required resources before substantive work.\nIf a skill cannot be followed, state the blocker instead of silently substituting another workflow.\n";
 const AMBIGUOUS_FAILURE_BYTES: usize = 4096;
@@ -175,7 +177,8 @@ impl SectionBuilder {
     }
 
     fn append_ambiguous(&mut self, skills: &[Skill], name: &str) -> Result<(), SkillError> {
-        let failure = format_ambiguous_skill(skills, name, AMBIGUOUS_FAILURE_BYTES);
+        let candidates = explicit_name_candidates(skills, name);
+        let failure = format_ambiguous_skill(candidates, name, AMBIGUOUS_FAILURE_BYTES);
         self.push_entry(&failure)?;
         append_load_row(&mut self.load_rows, name, Some("ambiguous name"));
         append_load_row(&mut self.load_details, name, Some(&failure));

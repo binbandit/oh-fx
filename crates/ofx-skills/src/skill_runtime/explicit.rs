@@ -78,6 +78,15 @@ pub(crate) fn collect_explicit_skill_selections<'a>(
     selections.ordered
 }
 
+pub(crate) fn explicit_name_candidates<'s>(
+    skills: &'s [Skill],
+    name: &str,
+) -> impl Iterator<Item = &'s Skill> + Clone {
+    skills
+        .iter()
+        .filter(move |skill| skill.name.eq_ignore_ascii_case(name))
+}
+
 #[derive(Default)]
 struct Selections<'a> {
     ordered: Vec<ExplicitSelection<'a>>,

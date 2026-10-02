@@ -32,6 +32,7 @@ use crate::skill_contract::{
 use crate::skill_runtime::{
     CandidateOpen, OpenedSkillCandidate, SkillResolution, SymlinkAuthorities, diagnostic_summary,
     find_skill_at, open_validated_skill_candidate, resolve_skill, resource_is_skill_file,
+    skills_named,
 };
 
 const OFFSET_BOUNDARY_FAILURE: &str =
@@ -121,7 +122,7 @@ pub fn prepare_identity(
     let name = name.unwrap_or_default();
     let model_output = match (resolution, location) {
         (SkillResolution::AmbiguousName, _) => {
-            format_ambiguous_skill(inventory.skills, name, budget)
+            format_ambiguous_skill(skills_named(inventory.skills, name), name, budget)
         }
         (SkillResolution::NameLocationMismatch, Some(location)) => {
             format_skill_location_mismatch(name, location, budget)
@@ -274,7 +275,7 @@ impl<'a> SkillLoader<'a> {
                 }));
             }
             (SkillResolution::AmbiguousName, _, _) => {
-                format_ambiguous_skill(self.inventory.skills, name, budget)
+                format_ambiguous_skill(skills_named(self.inventory.skills, name), name, budget)
             }
             (SkillResolution::NameLocationMismatch, _, Some(location))
             | (_, Some(CandidateOpen::NameMismatch), Some(location)) => {
