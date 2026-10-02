@@ -564,17 +564,21 @@ fn a_group_taller_than_the_screen_reaches_the_scrollback_whole() {
     assert_eq!(written.matches("60 tool calls · 60 read").count(), 1);
 }
 
-#[test]
-fn notices_and_hidden_turns_leave_running_rows_alone() {
-    let mut test = running("go");
-    test.deliver(read("a", "a.txt"));
-    test.deliver(UiEvent::Notice {
+fn rules_changed() -> UiEvent {
+    UiEvent::Notice {
         notice: ofx_contract::Notice::new(
             ofx_contract::NoticeTone::Warning,
             "context",
             "rules changed",
         ),
-    });
+    }
+}
+
+#[test]
+fn notices_and_hidden_turns_leave_running_rows_alone() {
+    let mut test = running("go");
+    test.deliver(read("a", "a.txt"));
+    test.deliver(rules_changed());
     test.deliver(UiEvent::ToolStarted {
         turn_id: TurnId::new(9),
         call_id: ToolCallId::new("stray"),
@@ -588,7 +592,53 @@ fn notices_and_hidden_turns_leave_running_rows_alone() {
     let screen = test.screen();
     assert!(!screen.contains("stray"), "{screen}");
     assert!(
-        screen.contains("● 1 tool call · 1 read\n└ Read a.txt\n\n! context: rules changed\n\n● 1 tool call · 1 read\n└ Read b.txt"),
+        screen.contains(
+            "● 2 tool calls · 2 read\n├ Read a.txt\n└ Read b.txt\n\n! context: rules changed\n"
+        ),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_notice_between_silent_steps_keeps_their_calls_in_one_group() {
+    let mut test = running("go");
+    test.deliver(read("a", "a.txt"));
+    test.deliver(finished("a", "read_file", success()));
+    test.deliver(rules_changed());
+    let screen = test.screen();
+    assert!(
+        screen.contains("└ Read a.txt\n\n! context: rules changed"),
+        "{screen}"
+    );
+    test.deliver(read("b", "b.txt"));
+    test.deliver(finished("b", "read_file", success()));
+    test.deliver(text("Done.\n"));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let written = test.written();
+    assert_eq!(written.matches("tool call").count(), 1, "{written:?}");
+    assert_eq!(written.matches("rules changed").count(), 1, "{written:?}");
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "● 2 tool calls · 2 read\n├ Read a.txt\n└ Read b.txt\n\n! context: rules changed\n\n  Done."
+        ),
+        "{screen}"
+    );
+}
+
+#[test]
+fn whitespace_between_silent_steps_keeps_their_calls_in_one_group() {
+    let mut test = running("go");
+    test.deliver(read("a", "a.txt"));
+    test.deliver(finished("a", "read_file", success()));
+    test.deliver(text("\n\n"));
+    test.deliver(read("b", "b.txt"));
+    test.deliver(finished("b", "read_file", success()));
+    test.deliver(text("Done.\n"));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    assert!(
+        screen.contains("● 2 tool calls · 2 read\n├ Read a.txt\n└ Read b.txt\n\n  Done."),
         "{screen}"
     );
 }

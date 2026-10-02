@@ -16,24 +16,34 @@ pub(crate) struct Transcript {
     pending: Vec<Row>,
     held_blanks: Vec<Row>,
     cols: usize,
-    open_group: bool,
+    open_group: Option<usize>,
     provisional: Option<Vec<Row>>,
 }
 
 impl Transcript {
     pub(crate) fn push(&mut self, entry: Entry) {
-        self.open_group = false;
+        if !matches!(entry, Entry::Notice(_)) {
+            self.open_group = None;
+        }
         self.held_blanks.clear();
         self.entries.push(entry);
         self.provisional = None;
     }
 
-    pub(crate) fn append_assistant(&mut self, events: Vec<Event>, theme: &Theme) {
+    pub(crate) fn append_assistant(&mut self, mut events: Vec<Event>, theme: &Theme) {
+        if !matches!(self.entries.last(), Some(Entry::Assistant { .. })) {
+            let leading = events
+                .iter()
+                .take_while(|event| is_blank_line(event))
+                .count();
+            events.drain(..leading);
+            if events.is_empty() {
+                return;
+            }
+            self.push(Entry::Assistant { events: Vec::new() });
+        }
         if events.is_empty() {
             return;
-        }
-        if !matches!(self.entries.last(), Some(Entry::Assistant { .. })) {
-            self.push(Entry::Assistant { events: Vec::new() });
         }
         if self.rendered == self.entries.len() {
             for event in &events {
@@ -61,12 +71,12 @@ impl Transcript {
             *existing = row;
             return;
         }
-        match self.entries.last_mut() {
-            Some(Entry::ToolGroup(group)) if self.open_group => group.push(row),
-            _ => {
-                self.push(Entry::ToolGroup(ToolGroup::new(row)));
-                self.open_group = true;
-            }
+        if let Some(Entry::ToolGroup(group)) = self.open_group.map(|index| &mut self.entries[index])
+        {
+            group.push(row);
+        } else {
+            self.push(Entry::ToolGroup(ToolGroup::new(row)));
+            self.open_group = Some(self.entries.len() - 1);
         }
         self.provisional = None;
     }
@@ -100,7 +110,7 @@ impl Transcript {
                 settled |= settle(group);
             }
         }
-        self.open_group = false;
+        self.open_group = None;
         self.provisional = None;
         settled
     }
@@ -114,7 +124,7 @@ impl Transcript {
         self.rendered = 0;
         self.pending.clear();
         self.held_blanks.clear();
-        self.open_group = false;
+        self.open_group = None;
         self.provisional = None;
     }
 
@@ -155,9 +165,7 @@ impl Transcript {
 
     fn is_final(&self, index: usize) -> bool {
         match &self.entries[index] {
-            Entry::ToolGroup(group) => {
-                group.is_settled() && !(self.open_group && index + 1 == self.entries.len())
-            }
+            Entry::ToolGroup(group) => group.is_settled() && self.open_group != Some(index),
             _ => true,
         }
     }
