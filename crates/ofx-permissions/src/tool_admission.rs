@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalScope, CommandRequest, FileMutation, FileMutationState,
-    GatedAction, PathAccess, PermissionGate, PermissionMode, SessionGrant, ToolCall,
+    GatedAction, LivePermissionMode, PathAccess, PermissionGate, PermissionMode, SessionGrant,
+    ToolCall,
 };
 use ofx_workspace::path_inside;
 
@@ -42,27 +43,32 @@ const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
 
 #[derive(Debug)]
 pub struct PermissionPolicy {
-    mode: PermissionMode,
+    mode: LivePermissionMode,
     workspace_root: PathBuf,
     session_grants: SessionGrants,
 }
 
 impl PermissionPolicy {
-    pub fn new(mode: PermissionMode, workspace_root: impl Into<PathBuf>) -> Self {
+    pub fn new(mode: impl Into<LivePermissionMode>, workspace_root: impl Into<PathBuf>) -> Self {
         Self {
-            mode,
+            mode: mode.into(),
             workspace_root: workspace_root.into(),
             session_grants: SessionGrants::default(),
         }
+    }
+
+    pub fn session_grants(&self) -> Vec<SessionGrant> {
+        self.session_grants.snapshot()
     }
 }
 
 impl PermissionGate for PermissionPolicy {
     fn admit(&self, call: &ToolCall) -> Admission {
-        if self.mode == PermissionMode::Yolo {
+        let mode = self.mode.get();
+        if mode == PermissionMode::Yolo {
             return Admission::Allowed(PathAccess::WorkspaceOrExternal);
         }
-        if let Some(admission) = undescribed_shell_call_admission(self.mode, call) {
+        if let Some(admission) = undescribed_shell_call_admission(mode, call) {
             return admission;
         }
         match external_path_target(&self.workspace_root, call) {
@@ -85,7 +91,7 @@ impl PermissionGate for PermissionPolicy {
         if self.session_grants.allow_command(request) {
             return Admission::Allowed(PathAccess::WorkspaceOrExternal);
         }
-        command_admission(self.mode, &self.workspace_root, request)
+        command_admission(self.mode.get(), &self.workspace_root, request)
     }
 
     fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
@@ -117,7 +123,8 @@ impl PermissionGate for PermissionPolicy {
     }
 
     fn admit_file_mutation(&self, mutation: &FileMutation) -> Admission {
-        if self.mode == PermissionMode::Yolo {
+        let mode = self.mode.get();
+        if mode == PermissionMode::Yolo {
             return Admission::Allowed(PathAccess::WorkspaceOrExternal);
         }
         let inside = path_inside(&self.workspace_root, &mutation.target);
@@ -136,7 +143,7 @@ impl PermissionGate for PermissionPolicy {
         }
         match mutation.state {
             FileMutationState::Unchanged if inside => Admission::Allowed(access),
-            _ if self.mode == PermissionMode::Ask => Admission::ApprovalRequired,
+            _ if mode == PermissionMode::Ask => Admission::ApprovalRequired,
             FileMutationState::Creates | FileMutationState::Changes
                 if reversible && !sensitive_auto_write_target(&mutation.target) =>
             {
@@ -359,6 +366,68 @@ mod tests {
                 Admission::Allowed(PathAccess::WorkspaceOrExternal)
             );
         }
+    }
+
+    #[test]
+    fn a_mode_switched_while_the_policy_is_shared_decides_the_next_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(root.join("notes.txt"), "notes\n").unwrap();
+        let live = LivePermissionMode::from(PermissionMode::Ask);
+        let policy = PermissionPolicy::new(live.clone(), &workspace);
+        let outside = read("../notes.txt");
+        let change = mutation("/elsewhere/notes.txt", FileMutationState::Unread);
+        let status = CommandRequest::Run {
+            command: "git status".to_owned(),
+            cwd: workspace.clone(),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+        };
+        assert_eq!(policy.admit(&outside), Admission::ApprovalRequired);
+        assert_eq!(policy.admit_command(&status), Admission::ApprovalRequired);
+        live.set(PermissionMode::Yolo);
+        assert_eq!(
+            policy.admit(&outside),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
+        assert_eq!(
+            policy.admit_file_mutation(&change),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
+        live.set(PermissionMode::Auto);
+        assert_eq!(
+            policy.admit_command(&status),
+            Admission::Allowed(PathAccess::WorkspaceOnly)
+        );
+        assert_eq!(
+            policy.admit_file_mutation(&change),
+            Admission::ReviewUnavailable
+        );
+        live.set(PermissionMode::Ask);
+        assert_eq!(policy.admit(&outside), Admission::ApprovalRequired);
+    }
+
+    #[test]
+    fn session_grants_are_listed_in_the_order_they_were_remembered_until_forgotten() {
+        let policy = PermissionPolicy::new(PermissionMode::Ask, "/workspace");
+        assert!(policy.session_grants().is_empty());
+        let reads = SessionGrant::ReadsUnder(PathBuf::from("/elsewhere"));
+        for grant in [
+            &SessionGrant::WorkspaceFiles,
+            &reads,
+            &SessionGrant::WorkspaceFiles,
+        ] {
+            policy.remember_approval(grant);
+        }
+        assert_eq!(
+            policy.session_grants(),
+            [SessionGrant::WorkspaceFiles, reads]
+        );
+        policy.forget_approvals();
+        assert!(policy.session_grants().is_empty());
     }
 
     fn mutation(target: &str, state: FileMutationState) -> FileMutation {

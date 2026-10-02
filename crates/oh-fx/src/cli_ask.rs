@@ -20,8 +20,9 @@ use ofx_config::{
     ConnectionError, ContextLimitName, ContextLimitOverride, SelectionError, Settings,
 };
 use ofx_contract::{
-    ModelRecoveryAction, ModelRecoveryCause, PermissionMode, RouteRecoveryStatus, ToolActivity,
-    ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
+    RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
+    TurnOutcome, UiEvent, Usage,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
@@ -42,7 +43,6 @@ use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
 };
 
-const YOLO_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
 const PERMISSION_REQUIRED_HEADLINE: &str =
@@ -464,9 +464,9 @@ fn announce_settings(
     let mut stderr = io::stderr().lock();
     if permission_mode == PermissionMode::Yolo && !settings.yolo_acknowledged() {
         let warning = if !args.output.no_color && stderr.is_terminal() {
-            format!("\x1b[38;5;252m{YOLO_WARNING}\x1b[0m")
+            format!("\x1b[38;5;252m{FULL_ACCESS_WARNING}\x1b[0m")
         } else {
-            YOLO_WARNING.to_owned()
+            FULL_ACCESS_WARNING.to_owned()
         };
         writeln!(stderr, "{warning}").map_err(|error| Failure::written(&error))?;
     }

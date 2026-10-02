@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use ofx_contract::{CallPresentation, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec};
+use ofx_contract::{
+    CallPresentation, LivePermissionMode, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec,
+};
 
 use super::tool_spec;
 use crate::file_mutation::{MAX_CONTENT_BYTES, MutationInput, path_limit_failure};
@@ -30,14 +32,14 @@ impl WriteFile {
                 tool_name: TOOL_NAME,
                 presentation: PRESENTATION,
                 workspace_root: workspace_root.into(),
-                full_access: false,
+                permission_mode: None,
             },
         }
     }
 
     #[must_use]
-    pub fn with_full_access(mut self, full_access: bool) -> Self {
-        self.request.full_access = full_access;
+    pub fn with_permission_mode(mut self, permission_mode: LivePermissionMode) -> Self {
+        self.request.permission_mode = Some(permission_mode);
         self
     }
 }

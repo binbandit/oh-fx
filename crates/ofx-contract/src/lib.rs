@@ -42,11 +42,11 @@ pub use tool_result_errors::{
 };
 pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 pub use types::{
-    CODEX_ORIGINATOR, ChatMessage, FinishReason, ModelFailureDiagnostic, ModelRecoveryAction,
-    ModelRecoveryCause, PermissionMode, ProviderReplay, ReasoningEffort, ReplaySource,
-    RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolChoice, ToolResultStatus, Usage, is_valid_reasoning_effort,
-    valid_credential_account_id,
+    CODEX_ORIGINATOR, ChatMessage, FULL_ACCESS_WARNING, FinishReason, LivePermissionMode,
+    ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
+    ProviderReplay, ReasoningEffort, ReplaySource, RouteRecoveryKind, RouteRecoveryStatus,
+    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolResultStatus, Usage,
+    is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{
     ApprovalRequest, Notice, NoticeLink, NoticeTone, ToolRejection, TurnOutcome, UiCommand, UiEvent,

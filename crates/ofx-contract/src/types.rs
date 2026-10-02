@@ -1,5 +1,8 @@
 mod tool_argument_integrity;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use ofx_text::mask_secrets;
 
 use crate::ids::ToolCallId;
@@ -141,6 +144,59 @@ impl PermissionMode {
             .iter()
             .any(|spelling| raw.eq_ignore_ascii_case(spelling))
             .then_some(Self::Yolo)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+            Self::Yolo => "yolo",
+        }
+    }
+
+    pub const fn display_label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+            Self::Yolo => "full access",
+        }
+    }
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::Ask => 0,
+            Self::Auto => 1,
+            Self::Yolo => 2,
+        }
+    }
+
+    const fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::Ask,
+            1 => Self::Auto,
+            _ => Self::Yolo,
+        }
+    }
+}
+
+pub const FULL_ACCESS_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
+
+#[derive(Debug, Clone)]
+pub struct LivePermissionMode(Arc<AtomicU8>);
+
+impl LivePermissionMode {
+    pub fn get(&self) -> PermissionMode {
+        PermissionMode::from_code(self.0.load(Ordering::Acquire))
+    }
+
+    pub fn set(&self, mode: PermissionMode) {
+        self.0.store(mode.code(), Ordering::Release);
+    }
+}
+
+impl From<PermissionMode> for LivePermissionMode {
+    fn from(mode: PermissionMode) -> Self {
+        Self(Arc::new(AtomicU8::new(mode.code())))
     }
 }
 
@@ -439,6 +495,37 @@ mod tests {
             assert_eq!(PermissionMode::parse(spelling), Some(PermissionMode::Yolo));
         }
         assert_eq!(PermissionMode::parse("full_access"), None);
+    }
+
+    #[test]
+    fn permission_modes_keep_upstream_labels_and_display_names() {
+        let modes = [
+            PermissionMode::Ask,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ];
+        let labels: Vec<&str> = modes.iter().map(|mode| mode.label()).collect();
+        assert_eq!(labels, ["ask", "auto", "yolo"]);
+        let shown: Vec<&str> = modes.iter().map(|mode| mode.display_label()).collect();
+        assert_eq!(shown, ["ask", "auto", "full access"]);
+        for mode in modes {
+            assert_eq!(PermissionMode::parse(mode.label()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn a_live_permission_mode_is_shared_by_every_clone() {
+        let live = LivePermissionMode::from(PermissionMode::Auto);
+        let reader = live.clone();
+        assert_eq!(reader.get(), PermissionMode::Auto);
+        for mode in [
+            PermissionMode::Yolo,
+            PermissionMode::Ask,
+            PermissionMode::Auto,
+        ] {
+            live.set(mode);
+            assert_eq!(reader.get(), mode);
+        }
     }
 
     #[test]

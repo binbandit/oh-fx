@@ -14,8 +14,8 @@ use ofx_config::{
     ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
-    BoxFuture, CapabilityLookup, CapabilityResolver, ModelCapabilities, ModelProvider,
-    PermissionMode, Tool,
+    BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
+    ModelProvider, PermissionMode, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::ChatCompletionsProvider;
@@ -229,7 +229,7 @@ impl Profile {
             fast_mode: launch.fast_mode,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         };
-        let permission_mode = launch.permission_mode;
+        let permission_mode = LivePermissionMode::from(launch.permission_mode);
         Ok(AgentSetup {
             provider: route.provider,
             configured_model: route.configured_model,
@@ -240,11 +240,11 @@ impl Profile {
                 &self.workspace_root,
                 launch.executions,
                 launch.command_timeout,
-                permission_mode,
+                &permission_mode,
             ),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
-                permission_mode,
+                permission_mode.clone(),
                 interactive,
             )),
             permissions: Arc::new(PermissionPolicy::new(

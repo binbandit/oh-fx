@@ -125,7 +125,7 @@ impl Session {
         let approvals = Approvals::default();
         let agent = Agent::new(
             Arc::clone(&provider) as Arc<dyn ModelProvider>,
-            ask_tools(workspace, &executions, None, PermissionMode::Ask),
+            ask_tools(workspace, &executions, None, &PermissionMode::Ask.into()),
             Arc::new(NoContext),
             gate,
             AgentConfig {

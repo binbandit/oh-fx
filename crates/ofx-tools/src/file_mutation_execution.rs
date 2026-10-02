@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency, FileMutation,
-    FileMutationState, PathAccess, PreparedCall, TargetKind, ToolContext, ToolEffect, ToolOutput,
-    format_tool_execution_error_json,
+    FileMutationState, LivePermissionMode, PathAccess, PermissionMode, PreparedCall, TargetKind,
+    ToolContext, ToolEffect, ToolOutput, format_tool_execution_error_json,
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
@@ -24,7 +24,7 @@ pub(crate) struct MutationRequest {
     pub(crate) tool_name: &'static str,
     pub(crate) presentation: CallPresentation,
     pub(crate) workspace_root: PathBuf,
-    pub(crate) full_access: bool,
+    pub(crate) permission_mode: Option<LivePermissionMode>,
 }
 
 impl MutationRequest {
@@ -60,7 +60,10 @@ impl MutationRequest {
             tool_name: self.tool_name,
             workspace_root: self.workspace_root.clone(),
             requested_path,
-            full_access: self.full_access,
+            full_access: self
+                .permission_mode
+                .as_ref()
+                .is_some_and(|mode| mode.get() == PermissionMode::Yolo),
             input,
             stage: Stage::Deferred(targets),
         })

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use ofx_contract::{
     ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState, PathAccess,
-    TargetKind, ToolCallId, ToolContext, ToolEffect, ToolResultStatus,
+    PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect, ToolResultStatus,
 };
 use ofx_workspace::MAX_PATH_BYTES;
 use tempfile::TempDir;
@@ -352,7 +352,9 @@ fn progress_titles_name_the_prepared_target() {
 #[test]
 fn full_access_writes_name_the_requested_path_and_read_the_target_when_they_run() {
     let workspace = Fixture::new();
-    let tool = workspace.tool().with_full_access(true);
+    let tool = workspace
+        .tool()
+        .with_permission_mode(PermissionMode::Yolo.into());
     fs::write(workspace.workspace.join("note.txt"), "old\n").unwrap();
     let mut prepared = tool.prepare(&arguments("./note.txt", "new\n")).unwrap();
     prepared.complete();
