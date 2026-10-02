@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ofx_config::{ContextLimitName, ContextLimits};
 use ofx_workspace::PathError;
@@ -11,9 +11,10 @@ use super::loading::{
     command_line, failed, in_place_rewrite_cases, in_place_rewrite_fixture, loaded, loader, off,
     rewrite_in_place, workflow_fixture,
 };
+use crate::skill_contract::{Skill, SkillSource};
+use crate::skill_invocation::resource::SkillResourceRead;
 use crate::skill_invocation::{ExecuteResult, Selected, SkillError, SkillInventory, SkillLoader};
 use crate::skill_runtime::{SkillDiscovery, SymlinkAuthorities};
-use crate::test_fixture::Fixture;
 
 fn unbounded_loader<'a>(
     discovery: &'a SkillDiscovery,
@@ -272,20 +273,31 @@ fn whole_skill_content_fits_the_tool_result_budget_exactly() {
 
 #[test]
 fn whole_skill_content_at_a_path_that_is_not_utf_8_is_omitted_with_a_notice() {
-    let fixture = Fixture::new();
-    let directory = fixture.path("skills").join(OsStr::from_bytes(b"caf\xe9"));
-    fs::create_dir_all(&directory).unwrap();
     let content = "---\nname: cafe\n---\nCAFE BODY\n";
-    fs::write(directory.join("SKILL.md"), content).unwrap();
-    let discovery = fixture.managed_discovery("skills");
-    let authorities = SymlinkAuthorities::default();
-    let path = discovery.skills[0].path.as_path();
+    let skill = Skill {
+        name: "cafe".to_owned(),
+        description: String::new(),
+        path: PathBuf::from(OsStr::from_bytes(b"/skills/caf\xe9/SKILL.md")),
+        source: SkillSource::GlobalOhFx,
+        read_authority: None,
+    };
+    let read = SkillResourceRead {
+        text: content.to_owned(),
+        observed_bytes: content.len(),
+    };
     let raw_len = "<skill_content name=\"cafe\" location=\"".len()
-        + path.as_os_str().len()
+        + skill.path.as_os_str().len()
         + format!("\" resource=\"SKILL.md\" complete=\"true\">\n{content}\n</skill_content>").len();
-    let result = unbounded_loader(&discovery, &authorities)
-        .load_whole_by_location(path, None)
-        .unwrap();
+    let authorities = SymlinkAuthorities::default();
+    let loader = SkillLoader::new(
+        SkillInventory {
+            skills: &[],
+            diagnostics: &[],
+        },
+        &authorities,
+        &ContextLimits::default(),
+    );
+    let result = loader.whole(&skill, "SKILL.md", &read, usize::MAX);
     let ExecuteResult::Loaded(output) = result else {
         panic!("expected sanitized content: {result:?}");
     };
