@@ -199,7 +199,7 @@ impl RunSettings<'_> {
     fn describe(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some(cwd) = self.cwd {
-            parts.push(format!("cwd={}", safe_text(cwd.as_os_str().as_bytes())));
+            parts.push(format!("cwd={}", quoted(cwd)));
         }
         if self.profile == CommandProfile::Clean {
             parts.push("profile=clean".to_owned());
@@ -208,9 +208,22 @@ impl RunSettings<'_> {
             parts.push("tty=true".to_owned());
         }
         if let Some(shell) = self.shell {
-            parts.push(format!("shell={}", safe_text(shell.as_os_str().as_bytes())));
+            parts.push(format!("shell={}", quoted(shell)));
         }
         parts
+    }
+}
+
+fn quoted(path: &Path) -> String {
+    let text = safe_text(path.as_os_str().as_bytes());
+    let bare = !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-+,:@%".contains(&byte));
+    if bare {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
     }
 }
 
@@ -565,6 +578,37 @@ mod tests {
     }
 
     #[test]
+    fn header_values_are_quoted_so_a_directory_name_cannot_fake_a_setting() {
+        let header = |cwd: &str, shell: Option<&str>| {
+            let shown = content(
+                CommandRequest::Run {
+                    command: "make".to_owned(),
+                    cwd: PathBuf::from(cwd),
+                    profile: CommandProfile::User,
+                    shell: shell.map(PathBuf::from),
+                    terminal: shell.is_some(),
+                },
+                None,
+            );
+            match &shown.action[0] {
+                ActionBlock::Header { text, .. } => text.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(header("/ws", None), "shell.run cwd=/ws");
+        assert_eq!(
+            header("/tmp/x cwd=/home/u/proj", None),
+            "shell.run cwd='/tmp/x cwd=/home/u/proj'"
+        );
+        assert_eq!(header("/tmp/it's", None), r"shell.run cwd='/tmp/it'\''s'");
+        assert_eq!(
+            header("/ws", Some("/bin/sh tty=false")),
+            "shell.run cwd=/ws tty=true shell='/bin/sh tty=false'"
+        );
+        assert_eq!(header("", None), "shell.run cwd=''");
+    }
+
+    #[test]
     fn commands_name_a_clean_profile_another_directory_a_terminal_and_a_named_shell() {
         let shown = content(
             run("make", "/tmp/a\nb", CommandProfile::Clean, true),
@@ -575,7 +619,7 @@ mod tests {
             [
                 ActionBlock::Header {
                     lead: "# ",
-                    text: "shell.run cwd=/tmp/a\\x0ab profile=clean tty=true".to_owned()
+                    text: "shell.run cwd='/tmp/a\\x0ab' profile=clean tty=true".to_owned()
                 },
                 ActionBlock::Wrapped {
                     lead: "$ ",
@@ -611,7 +655,7 @@ mod tests {
             [
                 ActionBlock::Header {
                     lead: "# ",
-                    text: "shell.run cwd=/ws tty=true shell=/opt/fish\\x1b".to_owned()
+                    text: "shell.run cwd=/ws tty=true shell='/opt/fish\\x1b'".to_owned()
                 },
                 ActionBlock::Wrapped {
                     lead: "$ ",
@@ -624,12 +668,12 @@ mod tests {
             Some(Phrase::with_path(
                 "don't ask again for this exact command in ",
                 PathText::from_raw(b"/ws/sub\x1b"),
-                " (tty=true, shell=/opt/fish\\x1b)"
+                " (tty=true, shell='/opt/fish\\x1b')"
             ))
         );
         assert_eq!(
             shown.remember.unwrap().fit(200).0,
-            "don't ask again for this exact command in /ws/sub\\x1b (tty=true, shell=/opt/fish\\x1b)"
+            "don't ask again for this exact command in /ws/sub\\x1b (tty=true, shell='/opt/fish\\x1b')"
         );
         let plain = content(run("make", "/ws", CommandProfile::User, false), None);
         assert_eq!(plain.remember, None);
