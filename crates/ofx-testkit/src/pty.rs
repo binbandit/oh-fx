@@ -25,12 +25,12 @@ impl PtyPair {
         rustix::pty::grantpt(&master)?;
         rustix::pty::unlockpt(&master)?;
         let name = rustix::pty::ptsname(&master, Vec::new())?;
-        termios::tcsetwinsize(&master, winsize(rows, cols))?;
         let slave = rustix::fs::open(
             name.as_c_str(),
             OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
             Mode::empty(),
         )?;
+        termios::tcsetwinsize(&slave, winsize(rows, cols))?;
         Ok(Self { master, slave })
     }
 }
