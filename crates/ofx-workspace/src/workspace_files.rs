@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::ffi::{CStr, OsStr};
 use std::fs;
 use std::io;
@@ -298,7 +297,7 @@ pub(crate) fn discover_listing_directories(
                 workspace_root,
                 &git_options,
                 WalkTarget::Directories,
-                Some(&ignored),
+                Some(ignored.as_slice()),
             ));
         }
         if has_git_metadata(workspace_root) {
@@ -322,9 +321,10 @@ fn has_git_metadata(workspace_root: &Path) -> bool {
     })
 }
 
-fn parse_ignored_directories(raw: &[u8]) -> HashSet<Vec<u8>> {
+fn parse_ignored_directories(raw: &[u8]) -> Vec<Vec<u8>> {
     let separator = if memchr(0, raw).is_some() { 0 } else { b'\n' };
-    raw.split(|byte| *byte == separator)
+    let mut ignored: Vec<Vec<u8>> = raw
+        .split(|byte| *byte == separator)
         .filter_map(|entry| {
             let entry = if separator == b'\n' {
                 trim_trailing_carriage_returns(entry)
@@ -338,9 +338,12 @@ fn parse_ignored_directories(raw: &[u8]) -> HashSet<Vec<u8>> {
                 .iter()
                 .rposition(|byte| *byte != b'/')
                 .map(|index| index + 1)?;
-            Some(entry[..end].to_vec())
+            entry.get(..end).map(<[u8]>::to_vec)
         })
-        .collect()
+        .collect();
+    ignored.sort_unstable();
+    ignored.dedup();
+    ignored
 }
 
 fn discover_with_git(
@@ -494,7 +497,7 @@ fn walk_workspace_paths(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
     target: WalkTarget,
-    ignored_paths: Option<&HashSet<Vec<u8>>>,
+    ignored_paths: Option<&[Vec<u8>]>,
 ) -> Discovery {
     let mut files = CandidatePaths::default();
     let mut stats = CandidateStats::default();
@@ -544,7 +547,7 @@ fn walk_workspace_paths(
             } else {
                 [&top.prefix[..], b"/", name].concat()
             };
-            if ignored_paths.is_some_and(|ignored| ignored.contains(&prefix)) {
+            if ignored_paths.is_some_and(|ignored| ignored.binary_search(&prefix).is_ok()) {
                 continue;
             }
             if target == WalkTarget::Directories {
@@ -1096,5 +1099,17 @@ pub(crate) mod tests {
         ));
         assert!(!path_contains_hidden_directory_component(b"./file"));
         assert!(!path_contains_hidden_directory_component(b".env"));
+    }
+
+    #[test]
+    fn ignored_directory_listings_keep_each_directory_once_in_byte_order() {
+        assert_eq!(
+            parse_ignored_directories(b"z/\0a/b//\0debug.log\0a/b/\0/\0"),
+            [b"a/b".to_vec(), b"z".to_vec()]
+        );
+        assert_eq!(
+            parse_ignored_directories(b"build/\r\nnotes.txt\n"),
+            [b"build".to_vec()]
+        );
     }
 }

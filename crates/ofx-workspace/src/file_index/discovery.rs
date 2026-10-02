@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,7 +42,6 @@ pub(super) fn discover_scope(
     .map_err(|_| DiscoveryError::Failed)?;
 
     let mut candidates = Vec::new();
-    let mut seen = HashSet::new();
     let mut files = files.files.iter().peekable();
     let mut directories = directories.iter().peekable();
     loop {
@@ -86,7 +84,11 @@ pub(super) fn discover_scope(
             path: path.to_owned(),
             kind,
         };
-        if accepted_candidate(&candidate) && seen.insert(candidate.path.clone()) {
+        if accepted_candidate(&candidate)
+            && candidates
+                .last()
+                .is_none_or(|last: &Candidate| last.path != candidate.path)
+        {
             candidates.push(candidate);
         }
     }
