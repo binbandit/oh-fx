@@ -52,6 +52,8 @@ impl PermissionGate for RememberingGate {
     fn remember_approval(&self, grant: &SessionGrant) {
         self.remembered.lock().unwrap().push(format!("{grant:?}"));
     }
+
+    fn forget_approvals(&self) {}
 }
 
 async fn run_approving(

@@ -539,12 +539,21 @@ async fn a_terminal_run_that_names_its_shell_asks_with_that_shell_and_binds_it()
     }
 }
 
-struct VanishingTarget {
+struct WrappedPolicy {
     policy: PermissionPolicy,
-    target: PathBuf,
+    vanishing: Option<PathBuf>,
 }
 
-impl PermissionGate for VanishingTarget {
+impl WrappedPolicy {
+    fn new(workspace: &Path, vanishing: Option<PathBuf>) -> Arc<Self> {
+        Arc::new(Self {
+            policy: PermissionPolicy::new(PermissionMode::Ask, workspace),
+            vanishing,
+        })
+    }
+}
+
+impl PermissionGate for WrappedPolicy {
     fn admit(&self, call: &ToolCall) -> Admission {
         self.policy.admit(call)
     }
@@ -562,12 +571,18 @@ impl PermissionGate for VanishingTarget {
     }
 
     fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
-        fs::remove_file(&self.target).unwrap();
+        if let Some(target) = &self.vanishing {
+            fs::remove_file(target).unwrap();
+        }
         self.policy.approval_scope(action)
     }
 
     fn remember_approval(&self, grant: &SessionGrant) {
         self.policy.remember_approval(grant);
+    }
+
+    fn forget_approvals(&self) {
+        self.policy.forget_approvals();
     }
 }
 
@@ -577,10 +592,7 @@ async fn a_target_that_vanishes_before_the_prompt_confines_the_approved_call_to_
     let target = fixture.root.join("approved/data.txt");
     let mut session = Session::with_gate(
         &fixture.workspace,
-        Arc::new(VanishingTarget {
-            policy: PermissionPolicy::new(PermissionMode::Ask, &fixture.workspace),
-            target: target.clone(),
-        }),
+        WrappedPolicy::new(&fixture.workspace, Some(target.clone())),
     );
     let read = session
         .call("read_file", r#"{"path":"../approved/data.txt"}"#, |_| {
@@ -603,13 +615,20 @@ async fn a_target_that_vanishes_before_the_prompt_confines_the_approved_call_to_
 #[tokio::test]
 async fn clearing_the_conversation_forgets_the_approvals_remembered_in_it() {
     let fixture = Fixture::new();
-    let mut session = Session::new(&fixture.workspace);
-    let read = r#"{"path":"../approved/data.txt"}"#;
-    session.call("read_file", read, always).await;
-    session.call("read_file", read, unasked).await;
-    session.agent.clear_history();
-    session
-        .call("read_file", read, deny)
-        .await
-        .denied_request("read_file");
+    for mut session in [
+        Session::new(&fixture.workspace),
+        Session::with_gate(
+            &fixture.workspace,
+            WrappedPolicy::new(&fixture.workspace, None),
+        ),
+    ] {
+        let read = r#"{"path":"../approved/data.txt"}"#;
+        session.call("read_file", read, always).await;
+        session.call("read_file", read, unasked).await;
+        session.agent.clear_history();
+        session
+            .call("read_file", read, deny)
+            .await
+            .denied_request("read_file");
+    }
 }

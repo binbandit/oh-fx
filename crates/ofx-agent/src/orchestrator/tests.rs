@@ -168,6 +168,8 @@ impl PermissionGate for ArgumentGate {
     fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
         None
     }
+
+    fn forget_approvals(&self) {}
 }
 
 struct ReadOnlyGate;
@@ -180,6 +182,8 @@ impl PermissionGate for ReadOnlyGate {
     fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
         None
     }
+
+    fn forget_approvals(&self) {}
 }
 
 #[derive(Default)]
@@ -196,6 +200,8 @@ impl PermissionGate for RecordingGate {
     fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
         None
     }
+
+    fn forget_approvals(&self) {}
 }
 
 struct EchoTool {
