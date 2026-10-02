@@ -22,5 +22,9 @@ tempfile.workspace = true
 name = "managed_execution"
 harness = false
 
+[[test]]
+name = "process_tree"
+harness = false
+
 [lints]
 workspace = true
