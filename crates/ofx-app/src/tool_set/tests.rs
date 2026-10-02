@@ -539,6 +539,30 @@ async fn a_terminal_run_that_names_its_shell_asks_with_that_shell_and_binds_it()
     }
 }
 
+#[tokio::test]
+async fn a_run_whose_working_directory_does_not_exist_offers_no_grant() {
+    let fixture = Fixture::new();
+    let mut session = Session::new(&fixture.workspace);
+    let missing = session
+        .call(
+            "shell",
+            &run(serde_json::json!({"cwd": "../missing"})),
+            always,
+        )
+        .await;
+    let [request] = <[ApprovalRequest; 1]>::try_from(missing.requests).unwrap();
+    assert_eq!(request.scope.always, None);
+    assert!(
+        missing.content.starts_with("shell run cwd is invalid: "),
+        "{}",
+        missing.content
+    );
+    session
+        .call("shell", &run(serde_json::json!({})), deny)
+        .await
+        .denied_request("shell");
+}
+
 struct WrappedPolicy {
     policy: PermissionPolicy,
     vanishing: Option<PathBuf>,

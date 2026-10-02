@@ -99,7 +99,7 @@ impl PermissionGate for PermissionPolicy {
             GatedAction::Command(request) => ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOrExternal,
-                always: command_grant(request),
+                always: command_grant(request).filter(|_| runs_in_an_existing_directory(request)),
             },
         }
     }
@@ -175,6 +175,10 @@ impl PermissionPolicy {
             .find(|ancestor| ancestor.is_dir())
             .map(|root| TreePermission::Edit.grant_under(root.to_path_buf()))
     }
+}
+
+fn runs_in_an_existing_directory(request: &CommandRequest) -> bool {
+    matches!(request, CommandRequest::Run { cwd, .. } if cwd.is_absolute() && cwd.is_dir())
 }
 
 fn external_grant_root(target: &Path) -> Option<&Path> {
@@ -750,39 +754,52 @@ mod tests {
 
     #[test]
     fn remembered_commands_run_again_only_with_the_same_text_profile_and_terminal_mode() {
-        let run = |command: &str, cwd: &str, profile, terminal| CommandRequest::Run {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = fs::canonicalize(temp.path()).unwrap();
+        let run = |command: &str, cwd: PathBuf, profile, terminal| CommandRequest::Run {
             command: command.to_owned(),
-            cwd: PathBuf::from(cwd),
+            cwd,
             profile,
             shell: None,
             terminal,
         };
-        let policy = PermissionPolicy::new(PermissionMode::Ask, "/workspace");
+        let cargo_test = |cwd: PathBuf| run("cargo test", cwd, CommandProfile::Clean, false);
+        let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        for unresolved in [workspace.join("missing"), PathBuf::from("../missing")] {
+            let scope = policy.approval_scope(GatedAction::Command(&cargo_test(unresolved)));
+            assert_eq!(scope.always, None);
+        }
         approve_always(
             &policy,
-            GatedAction::Command(&run(
-                "cargo test",
-                "/workspace",
-                CommandProfile::Clean,
-                false,
-            )),
+            GatedAction::Command(&cargo_test(workspace.clone())),
         );
-        for cwd in ["/workspace", "/workspace/sub", "/elsewhere"] {
+        for cwd in [
+            workspace.clone(),
+            workspace.join("sub"),
+            PathBuf::from("/elsewhere"),
+        ] {
             assert_eq!(
-                policy.admit_command(&run("cargo test", cwd, CommandProfile::Clean, false)),
+                policy.admit_command(&cargo_test(cwd.clone())),
                 Admission::Allowed(PathAccess::WorkspaceOrExternal),
-                "{cwd}"
+                "{cwd:?}"
             );
         }
         for different in [
             run(
                 "cargo test --release",
-                "/workspace",
+                workspace.clone(),
                 CommandProfile::Clean,
                 false,
             ),
-            run("cargo test", "/workspace", CommandProfile::User, false),
-            run("cargo test", "/workspace", CommandProfile::Clean, true),
+            run("cargo test", workspace.clone(), CommandProfile::User, false),
+            run("cargo test", workspace.clone(), CommandProfile::Clean, true),
+            CommandRequest::Run {
+                command: "cargo test".to_owned(),
+                cwd: workspace.clone(),
+                profile: CommandProfile::Clean,
+                shell: Some(PathBuf::from("/bin/zsh")),
+                terminal: false,
+            },
         ] {
             assert_eq!(
                 policy.admit_command(&different),
