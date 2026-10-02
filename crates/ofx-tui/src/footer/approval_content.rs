@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -24,10 +25,10 @@ const FOR_THIS_SESSION: &str = " for this session";
 const ARGUMENTS_TOO_LONG: &str =
     "Its arguments are too long to show in full, so it can only be denied.";
 const URL_SCHEMES: [&str; 2] = ["http://", "https://"];
-const AUTHORITY_ENDS: [char; 14] = [
-    '/', '?', '#', ' ', '\t', '\n', '\r', ';', '|', '&', '(', ')', '<', '>',
-];
-const SHELL_QUOTES: [char; 3] = ['\'', '"', '`'];
+const AUTHORITY_ENDS: [char; 3] = ['/', '?', '#'];
+const SHELL_METACHARACTERS: [char; 7] = [';', '&', '|', '(', ')', '<', '>'];
+const UNRESOLVED_AUTHORITY: [char; 3] = ['\\', '$', '`'];
+const NETWORK_REASON: &str = "This command may make a network request to";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApprovalContent {
@@ -61,12 +62,7 @@ impl ApprovalContent {
             }) => Self {
                 kind: COMMAND_KIND,
                 question: COMMAND_QUESTION,
-                reason: first_url_host(command).map(|host| {
-                    format!(
-                        "This command may make a network request to {}.",
-                        safe_text(host.as_bytes())
-                    )
-                }),
+                reason: first_url_destination(command).map(Destination::reason),
                 action: vec![
                     ActionBlock::Header {
                         lead: HEADER_LEAD,
@@ -272,39 +268,105 @@ fn under(head: &str, root: &Path) -> Phrase {
     )
 }
 
-fn first_url_host(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some((start, end)) = URL_SCHEMES
-        .iter()
-        .filter_map(|scheme| {
-            lower[from..]
-                .find(scheme)
-                .map(|index| (from + index, from + index + scheme.len()))
-        })
-        .min()
-    {
-        if let Some(host) = authority_host(&text[end..]) {
-            return Some(host);
+enum Destination {
+    Host(String),
+    Undetermined,
+}
+
+impl Destination {
+    fn reason(self) -> String {
+        match self {
+            Self::Host(host) if host.is_ascii() => {
+                format!("{NETWORK_REASON} {}.", safe_text(host.as_bytes()))
+            }
+            Self::Host(host) => {
+                let mut ascii = String::with_capacity(host.len());
+                for character in host.chars() {
+                    if character.is_ascii() {
+                        ascii.push(character);
+                    } else {
+                        let _ = write!(ascii, "\\u{{{:04x}}}", u32::from(character));
+                    }
+                }
+                format!(
+                    "{NETWORK_REASON} {}, a host name with non-ASCII characters.",
+                    safe_text(ascii.as_bytes())
+                )
+            }
+            Self::Undetermined => {
+                format!("{NETWORK_REASON} a host that cannot be determined.")
+            }
         }
-        from = start + 1;
+    }
+}
+
+fn first_url_destination(text: &str) -> Option<Destination> {
+    let lower = text.to_ascii_lowercase();
+    let mut quote = None;
+    let mut chars = text.char_indices().peekable();
+    let mut word_start = true;
+    while let Some((index, character)) = chars.next() {
+        if quote.is_none() && character == '#' && word_start {
+            while chars.next_if(|&(_, next)| next != '\n').is_some() {}
+            continue;
+        }
+        if quote != Some('\'') && character == '\\' {
+            chars.next();
+            word_start = false;
+            continue;
+        }
+        match (quote, character) {
+            (None, '\'' | '"') => quote = Some(character),
+            (Some(open), _) if character == open => quote = None,
+            _ => {
+                if let Some(scheme) = URL_SCHEMES
+                    .iter()
+                    .find(|scheme| lower[index..].starts_with(*scheme))
+                    && let Some(destination) =
+                        authority_destination(&text[index + scheme.len()..], quote)
+                {
+                    return Some(destination);
+                }
+            }
+        }
+        word_start = quote.is_none() && character.is_whitespace();
     }
     None
 }
 
-fn authority_host(rest: &str) -> Option<String> {
-    let authority: String = rest
-        .trim_start_matches('/')
-        .chars()
-        .take_while(|character| !AUTHORITY_ENDS.contains(character))
-        .filter(|character| !SHELL_QUOTES.contains(character))
-        .collect();
+fn authority_destination(rest: &str, quote: Option<char>) -> Option<Destination> {
+    let mut authority = String::new();
+    let mut chars = rest.trim_start_matches('/').chars().peekable();
+    while let Some(character) = chars.next() {
+        if AUTHORITY_ENDS.contains(&character) || character.is_whitespace() {
+            break;
+        }
+        if UNRESOLVED_AUTHORITY.contains(&character) {
+            return Some(Destination::Undetermined);
+        }
+        match quote {
+            None if SHELL_METACHARACTERS.contains(&character) => break,
+            None if matches!(character, '\'' | '"') => return Some(Destination::Undetermined),
+            Some(open) if character == open => match chars.peek() {
+                None => break,
+                Some(next)
+                    if next.is_whitespace()
+                        || AUTHORITY_ENDS.contains(next)
+                        || SHELL_METACHARACTERS.contains(next) =>
+                {
+                    break;
+                }
+                Some(_) => return Some(Destination::Undetermined),
+            },
+            _ => authority.push(character),
+        }
+    }
     let host = authority.rsplit('@').next().unwrap_or_default();
     let host = match host.find(']') {
         Some(end) if host.starts_with('[') => &host[..=end],
         _ => host.split(':').next().unwrap_or_default(),
     };
-    (!host.is_empty()).then(|| host.to_owned())
+    (!host.is_empty()).then(|| Destination::Host(host.to_owned()))
 }
 
 fn safe_text(raw: &[u8]) -> String {
@@ -443,10 +505,26 @@ mod tests {
                 "evil.example",
             ),
             ("curl https://a@b:c@evil.example:8443/", "evil.example"),
-            ("curl 'https://github.com'@evil.example/x", "evil.example"),
             ("curl HTTP://Evil.example/", "Evil.example"),
             ("curl http://[::1]:8080/", "[::1]"),
             ("$(curl \"https://evil.example\")", "evil.example"),
+            ("curl 'http://good.example;@evil.example/'", "evil.example"),
+            (
+                "curl \"http://good.example|@evil.example/\"",
+                "evil.example",
+            ),
+            (
+                "curl http://good.example;echo @evil.example",
+                "good.example",
+            ),
+            (
+                "echo \"it's\" && curl 'http://good.example&@evil.example'",
+                "evil.example",
+            ),
+            (
+                "# don't\ncurl 'http://good.example(@evil.example'",
+                "evil.example",
+            ),
         ] {
             assert_eq!(
                 reason(command),
@@ -456,6 +534,34 @@ mod tests {
                 "{command}"
             );
         }
+    }
+
+    #[test]
+    fn the_network_reason_says_when_a_urls_host_cannot_be_determined() {
+        let reason =
+            |command: &str| content(run(command, "/ws", CommandProfile::User, false), None).reason;
+        for command in [
+            "curl http://evil.example\\@good.example/",
+            "curl 'http://evil.example\\@good.example/'",
+            "curl 'https://github.com'@evil.example/x",
+            "curl https://github.com'@evil.example'/x",
+            "curl \"http://$HOST/x\"",
+            "curl http://`hostname`/x",
+        ] {
+            assert_eq!(
+                reason(command).as_deref(),
+                Some(
+                    "This command may make a network request to a host that cannot be determined."
+                ),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            reason("curl https://\u{430}pple.com/").as_deref(),
+            Some(
+                "This command may make a network request to \\u{0430}pple.com, a host name with non-ASCII characters."
+            )
+        );
     }
 
     #[test]
