@@ -2322,6 +2322,6 @@ mod turn_log;
 fn unconfigured_hold(tool_name: &str) -> String {
     tool_review_held_json(
         tool_name,
-        ReviewHold::Unavailable(ofx_contract::ReviewFailure::ReviewerUnconfigured),
+        ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured),
     )
 }

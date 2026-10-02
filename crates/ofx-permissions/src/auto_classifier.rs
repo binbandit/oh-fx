@@ -149,12 +149,14 @@ impl Reviewer {
                 ) => outcome.unwrap_or(ReviewTransportOutcome::TimedOut),
             };
             let failure = match outcome {
-                ReviewTransportOutcome::Cancelled => return None,
+                ReviewTransportOutcome::Cancelled if cancel.is_cancelled() => return None,
                 ReviewTransportOutcome::PermanentFailure => {
                     return Some(unavailable(ReviewFailure::TransportPermanent, usage));
                 }
                 ReviewTransportOutcome::TimedOut => ReviewFailure::TransportTimedOut,
-                ReviewTransportOutcome::TransientFailure => ReviewFailure::TransportTransient,
+                ReviewTransportOutcome::Cancelled | ReviewTransportOutcome::TransientFailure => {
+                    ReviewFailure::TransportTransient
+                }
                 ReviewTransportOutcome::Completion(completion) => {
                     usage.accumulate(completion.usage);
                     if cancel.is_cancelled() {

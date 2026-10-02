@@ -21,6 +21,7 @@ struct SeenReview {
 
 enum Answer {
     Verdict(ReviewVerdict),
+    Nothing,
     Cancel,
 }
 
@@ -106,6 +107,7 @@ impl PermissionGate for ReviewingGate {
                         output_tokens: Some(7),
                     },
                 }),
+                Some(Answer::Nothing) => None,
                 Some(Answer::Cancel) | None => {
                     cancel.cancel();
                     std::future::pending().await
@@ -478,6 +480,32 @@ async fn cancelling_a_review_interrupts_the_turn_without_running_the_call() {
     assert_eq!(report.outcome, TurnOutcome::Interrupted);
     assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
     assert_eq!(approvals_requested(&events), 0);
+}
+
+#[tokio::test]
+async fn a_gate_that_returns_no_review_without_a_cancellation_holds_the_call() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", REVIEWED)]),
+        text_reply("done"),
+    ]);
+    let (report, _) = run_reviewed(
+        Arc::clone(&provider),
+        ReviewingGate::new([Answer::Nothing]),
+        None,
+        &["go"],
+    )
+    .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        tool_results(&provider, 1),
+        [tool_message(
+            "call-1",
+            &hold(&ReviewVerdict::Unavailable(
+                ReviewFailure::TransportTransient
+            )),
+            ToolResultStatus::Failure
+        )]
+    );
 }
 
 pub(super) fn previewed_change(arguments: &str) -> Option<FileChange> {

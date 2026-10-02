@@ -11,11 +11,11 @@ use ofx_contract::{
     Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange,
     FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewHold, ReviewRequest,
-    ReviewVerdict, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent, Tool,
-    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext,
-    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
-    TurnStop, UiEvent, Usage, format_unknown_action, malformed_tool_arguments_json,
+    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
+    ReviewRequest, ReviewVerdict, Reviewed, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent,
+    Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice,
+    ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId,
+    TurnOutcome, TurnStop, UiEvent, Usage, format_unknown_action, malformed_tool_arguments_json,
     non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
     tool_permission_denied_json, tool_review_held_json,
 };
@@ -1237,10 +1237,12 @@ async fn review(
         biased;
         () = cancel.cancelled() => None,
         reviewed = gate.permissions.review(request, cancel) => reviewed,
-    }?;
+    };
     if cancel.is_cancelled() {
         return None;
     }
+    let reviewed =
+        reviewed.unwrap_or_else(|| Reviewed::unavailable(ReviewFailure::TransportTransient));
     reviewing.usage.accumulate(reviewed.usage);
     reviewing.reviews.remember(call, &reviewed.verdict);
     Some(reviewed.verdict)

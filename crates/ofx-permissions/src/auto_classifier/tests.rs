@@ -591,6 +591,19 @@ async fn review_response_recovery_is_bounded() {
             ReviewVerdict::Unavailable(ReviewFailure::TransportPermanent),
             1,
         ),
+        (
+            vec![ReviewTransportOutcome::Cancelled, clear()],
+            ReviewVerdict::Clear,
+            2,
+        ),
+        (
+            vec![
+                ReviewTransportOutcome::Cancelled,
+                ReviewTransportOutcome::Cancelled,
+            ],
+            ReviewVerdict::Unavailable(ReviewFailure::TransportTransient),
+            2,
+        ),
     ];
     let batch = [call("pending", "shell", "{}")];
     let subject = command_subject(&batch, ROOT, "printf fixture");
@@ -614,7 +627,7 @@ async fn cancellation_returns_no_verdict_and_never_retries() {
             Step::Reply(prose("No structured decision.")),
             Step::Cancel(decision(r#"{"decision":"clear"}"#)),
         ],
-        vec![Step::Reply(ReviewTransportOutcome::Cancelled)],
+        vec![Step::Cancel(ReviewTransportOutcome::Cancelled)],
     ] {
         let transport = Scripted::new(steps);
         assert_eq!(review(&transport, &subject).await, None);
