@@ -919,6 +919,7 @@ impl Presenter {
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested
+            | UiEvent::CompactionActivity { .. }
             | UiEvent::ConversationCleared { .. }
             | UiEvent::ExitRequested => Ok(()),
         };

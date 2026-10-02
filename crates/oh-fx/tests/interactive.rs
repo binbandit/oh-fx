@@ -526,10 +526,11 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 11");
+    let screen = wait(&session, "Commands 12");
     assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
     assert!(screen.contains("  /quit           exit the interactive shell"));
     assert!(screen.contains("  /reset          reset the current session context"));
+    assert!(screen.contains("Commands 12  [All]  General  Session  Account  Model"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session.send(b"/stats\r");

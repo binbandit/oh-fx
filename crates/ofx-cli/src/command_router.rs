@@ -84,6 +84,7 @@ mod tests {
             ("/stats", SlashKind::Stats),
             ("/status", SlashKind::Status),
             ("/copy", SlashKind::Copy),
+            ("/compact", SlashKind::Compact),
             ("/fast", SlashKind::Fast),
             ("/version", SlashKind::Version),
         ] {

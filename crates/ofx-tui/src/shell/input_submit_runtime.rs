@@ -93,6 +93,7 @@ pub(crate) fn classify(text: &str, commands: &[SlashCommandSpec]) -> Submit {
 
 impl Shell<'_> {
     pub(super) fn submit(&mut self) {
+        self.dismiss_compaction_feedback();
         let text = self.composer.expanded_text().into_owned();
         match classify(&text, &self.options.commands) {
             Submit::Empty => self.composer.clear(),
@@ -131,6 +132,7 @@ mod tests {
             ("/status", &[]),
             ("/model", &[]),
             ("/copy", &[]),
+            ("/compact", &[]),
             ("/fast", &[]),
             ("/version", &[]),
             ("/quit", &["/exit"]),
@@ -183,9 +185,17 @@ mod tests {
         assert_eq!(
             slash_completions(&commands, "/"),
             [
-                "/help", "/clear", "/reset", "/stats", "/status", "/model", "/copy", "/fast",
-                "/version", "/quit"
+                "/help", "/clear", "/reset", "/stats", "/status", "/model", "/copy", "/compact",
+                "/fast", "/version", "/quit"
             ]
+        );
+        assert_eq!(
+            classify("/co", &commands),
+            Submit::Command("/copy".to_owned())
+        );
+        assert_eq!(
+            classify("/com", &commands),
+            Submit::Command("/compact".to_owned())
         );
         assert_eq!(
             classify("/statu", &commands),

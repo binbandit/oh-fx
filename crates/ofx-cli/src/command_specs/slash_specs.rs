@@ -10,6 +10,7 @@ pub enum SlashKind {
     Model,
     Permissions,
     Copy,
+    Compact,
     Fast,
     Version,
     Quit,
@@ -203,6 +204,7 @@ mod tests {
                 "/model",
                 "/permissions",
                 "/copy",
+                "/compact",
                 "/fast",
                 "/version",
                 "/quit",
@@ -241,6 +243,10 @@ mod tests {
             spec(SlashKind::Status).completion_description,
             "show runtime configuration"
         );
+        assert_eq!(
+            spec(SlashKind::Compact).completion_description,
+            "summarize context into a fresh window"
+        );
     }
 
     #[test]
@@ -261,6 +267,7 @@ mod tests {
                 ("/model", "Model"),
                 ("/permissions", "Security"),
                 ("/copy", "Session"),
+                ("/compact", "Session"),
                 ("/fast", "Model"),
                 ("/version", "General"),
                 ("/quit", "General"),

@@ -5,10 +5,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-use ofx_contract::{Notice, NoticeTone, TurnId, TurnOutcome, UiCommand, UiEvent};
+use ofx_contract::{
+    CompactionActivity, Notice, NoticeTone, TurnId, TurnOutcome, UiCommand, UiEvent,
+};
 
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
 use crate::output::activity_status::TurnPhase;
+use crate::output::compaction_activity::CompactionStatus;
 use crate::render_engine::transcript_blocks::{Entry, HelpEntry};
 
 const PARAGRAPH_BREAK: &str = "\n\n";
@@ -133,6 +136,7 @@ impl Shell<'_> {
             } => self.permission_mode_changed(mode, full_access_warning),
             UiEvent::HelpRequested => self.help_requested(),
             UiEvent::StatsRequested => self.stats_requested(),
+            UiEvent::CompactionActivity { activity } => self.compaction_activity(activity),
             UiEvent::ConversationCleared { first_kept_prompt } => {
                 self.conversation_cleared(first_kept_prompt);
             }
@@ -169,6 +173,52 @@ impl Shell<'_> {
         )));
     }
 
+    fn compaction_activity(&mut self, activity: CompactionActivity) {
+        let now_ms = self.now_ms();
+        match activity {
+            CompactionActivity::Preparing => {
+                self.compaction = Some(CompactionStatus::preparing(now_ms));
+            }
+            CompactionActivity::Summarizing => {
+                if let Some(status) = &mut self.compaction {
+                    status.summarizing();
+                }
+            }
+            CompactionActivity::Compacted => {
+                self.compaction = None;
+                self.promote_next();
+            }
+            CompactionActivity::Ended(end) => {
+                self.compaction = Some(CompactionStatus::ended(end, now_ms));
+                self.promote_next();
+            }
+        }
+    }
+
+    pub(super) fn cancel_compaction(&mut self) {
+        let Some(status) = self.compaction.as_mut().filter(|status| status.running()) else {
+            return;
+        };
+        status.stopping();
+        self.send(UiCommand::CancelCompaction);
+    }
+
+    pub(super) fn dismiss_compaction_feedback(&mut self) -> bool {
+        if self.compaction.is_none_or(|status| status.running()) {
+            return false;
+        }
+        self.compaction = None;
+        self.mark_dirty();
+        true
+    }
+
+    pub(super) fn expire_compaction_feedback(&mut self, now_ms: i64) {
+        if self.compaction.is_some_and(|status| status.expired(now_ms)) {
+            self.compaction = None;
+            self.mark_dirty();
+        }
+    }
+
     fn conversation_cleared(&mut self, first_kept_prompt: u64) {
         self.outstanding
             .retain(|submission| submission.sequence >= first_kept_prompt);
@@ -178,6 +228,7 @@ impl Shell<'_> {
             }
         }
         self.turn = None;
+        self.compaction = None;
         self.dismiss_approval();
         self.composer.reset_for_session();
         self.start_fresh_transcript(FreshScreen::KeepScrollback);
@@ -308,7 +359,7 @@ impl Shell<'_> {
     }
 
     pub(super) fn promote_next(&mut self) {
-        if self.turn.is_some() {
+        if self.working() {
             return;
         }
         let now_ms = self.now_ms();
@@ -355,8 +406,8 @@ impl Shell<'_> {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        CallDescription, Concurrency, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome,
-        UiCommand, UiEvent,
+        CallDescription, CompactionActivity, CompactionEnd, Concurrency, ToolActivity, ToolCallId,
+        ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
     };
 
     use super::super::test_shell::TestShell;
@@ -400,6 +451,153 @@ mod tests {
             ),
             "{screen}"
         );
+    }
+
+    fn compaction(activity: CompactionActivity) -> UiEvent {
+        UiEvent::CompactionActivity { activity }
+    }
+
+    #[test]
+    fn manual_compaction_shows_its_phases_and_holds_prompts_until_it_ends() {
+        let mut test = TestShell::start();
+        test.submit("/compact");
+        test.deliver(compaction(CompactionActivity::Preparing));
+        let screen = test.screen();
+        assert!(screen.contains("• Preparing compaction (0s)"), "{screen}");
+        test.deliver(compaction(CompactionActivity::Summarizing));
+        test.advance(2_000);
+        let screen = test.screen();
+        assert!(screen.contains("• Compacting (2s)"), "{screen}");
+        test.submit("after");
+        let screen = test.screen();
+        assert!(screen.contains("┋ after"), "{screen}");
+        assert!(!screen.contains("┃ after"), "{screen}");
+        test.deliver(compaction(CompactionActivity::Compacted));
+        let screen = test.screen();
+        assert!(!screen.contains("compact"), "{screen}");
+        assert!(screen.contains("┃ after"), "{screen}");
+        assert!(screen.contains("• Thinking (0s)"), "{screen}");
+        assert_eq!(
+            test.sent(),
+            [
+                UiCommand::RunCommand {
+                    text: "/compact".to_owned()
+                },
+                UiCommand::Submit {
+                    prompt: "after".to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn transient_compaction_feedback_expires_after_a_moment() {
+        let mut test = TestShell::start();
+        test.deliver(compaction(CompactionActivity::Ended(
+            CompactionEnd::NothingToCompact,
+        )));
+        let screen = test.screen();
+        assert!(screen.contains("No context to compact."), "{screen}");
+        test.advance(1_499);
+        test.draining(|shell| {
+            let now_ms = shell.now_ms();
+            shell.expire_compaction_feedback(now_ms.min(1_499));
+        });
+        assert!(test.screen().contains("No context to compact."));
+        test.advance(1);
+        test.step();
+        let screen = test.screen();
+        assert!(!screen.contains("No context to compact."), "{screen}");
+    }
+
+    #[test]
+    fn busy_feedback_replaces_the_turn_activity_until_it_expires() {
+        let mut test = TestShell::start();
+        test.submit("slow");
+        test.deliver(started(1));
+        test.deliver(compaction(CompactionActivity::Ended(CompactionEnd::Busy)));
+        let screen = test.screen();
+        assert!(
+            screen.contains("Wait for the active work to finish before compacting context."),
+            "{screen}"
+        );
+        assert!(!screen.contains("Thinking"), "{screen}");
+        test.advance(1_500);
+        test.step();
+        let screen = test.screen();
+        assert!(!screen.contains("Wait for the active work"), "{screen}");
+        assert!(screen.contains("Thinking (1s)"), "{screen}");
+    }
+
+    #[test]
+    fn lasting_compaction_feedback_stays_until_the_next_submission_or_escape() {
+        for (end, label) in [
+            (
+                CompactionEnd::Failed,
+                "Compaction failed. Try /compact again.",
+            ),
+            (
+                CompactionEnd::Cancelled,
+                "Compaction cancelled. Try /compact again when ready.",
+            ),
+            (
+                CompactionEnd::ContextTooLarge,
+                "Context is too large to compact. Choose a model with a larger context window.",
+            ),
+        ] {
+            let mut test = TestShell::start();
+            test.deliver(compaction(CompactionActivity::Ended(end)));
+            test.advance(60_000);
+            test.draining(|shell| {
+                let now_ms = shell.now_ms();
+                shell.expire_compaction_feedback(now_ms);
+            });
+            let screen = test.screen();
+            assert!(screen.contains(label), "{screen}");
+            test.submit("next");
+            assert!(!test.screen().contains(label));
+            test.deliver(compaction(CompactionActivity::Ended(end)));
+            assert!(test.screen().contains(label));
+            test.type_bytes(b"\x1b[27u");
+            test.step();
+            let screen = test.screen();
+            assert!(!screen.contains(label), "{screen}");
+        }
+    }
+
+    #[test]
+    fn interrupting_a_compaction_asks_the_agent_to_stop_it() {
+        for keys in [&b"\x03"[..], b"\x1b[27u\x1b[27u"] {
+            let mut test = TestShell::start();
+            test.deliver(compaction(CompactionActivity::Preparing));
+            test.deliver(compaction(CompactionActivity::Summarizing));
+            test.type_bytes(keys);
+            test.step();
+            assert_eq!(test.sent(), [UiCommand::CancelCompaction], "{keys:?}");
+            let screen = test.screen();
+            assert!(screen.contains("• Stopping compaction (0s)"), "{screen}");
+            test.deliver(compaction(CompactionActivity::Summarizing));
+            assert!(test.screen().contains("Stopping compaction"));
+            test.deliver(compaction(CompactionActivity::Ended(
+                CompactionEnd::Cancelled,
+            )));
+            let screen = test.screen();
+            assert!(
+                screen.contains("Compaction cancelled. Try /compact again when ready."),
+                "{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn clearing_the_conversation_dismisses_compaction_feedback() {
+        let mut test = TestShell::start();
+        test.deliver(compaction(CompactionActivity::Ended(CompactionEnd::Failed)));
+        test.deliver(UiEvent::ConversationCleared {
+            first_kept_prompt: 0,
+        });
+        let screen = test.screen();
+        assert!(!screen.contains("Compaction failed"), "{screen}");
     }
 
     #[test]

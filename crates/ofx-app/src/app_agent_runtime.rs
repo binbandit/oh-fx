@@ -1,14 +1,16 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ofx_agent::{Agent, TurnFailure};
-use ofx_contract::{Notice, NoticeTone, ProviderError, UiCommand, UiEvent};
+use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure};
+use ofx_contract::{
+    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, UiCommand, UiEvent,
+};
 use ofx_tui::Clipboard;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
-use crate::app_commands::{CommandEffect, handle_command, toggle_fast};
+use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::native::NativeClipboard;
 
@@ -74,6 +76,10 @@ impl ControllerState {
 
     pub(crate) fn emit(&self, event: UiEvent) {
         (self.emit)(event);
+    }
+
+    pub(crate) fn compaction(&self, activity: CompactionActivity) {
+        self.emit(UiEvent::CompactionActivity { activity });
     }
 
     pub(crate) fn notice(&self, tone: NoticeTone, topic: &str, body: &str) {
@@ -185,18 +191,28 @@ impl Controller {
             };
             match command {
                 UiCommand::Submit { prompt } => self.state.receive_prompt(prompt),
-                UiCommand::RunCommand { text } => self.run_idle_command(&text).await,
+                UiCommand::RunCommand { text } => {
+                    if !self.run_idle_command(&text, &mut commands).await {
+                        return;
+                    }
+                }
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
                 }
-                UiCommand::Cancel { .. } | UiCommand::Approval { .. } => {}
+                UiCommand::Cancel { .. }
+                | UiCommand::Approval { .. }
+                | UiCommand::CancelCompaction => {}
             }
         }
     }
 
-    async fn run_idle_command(&mut self, text: &str) {
-        match handle_command(&self.state, text, false) {
+    async fn run_idle_command(
+        &mut self,
+        text: &str,
+        commands: &mut UnboundedReceiver<UiCommand>,
+    ) -> bool {
+        match handle_command(&self.state, text, Work::Idle) {
             CommandEffect::None => {}
             CommandEffect::SwitchModel(model) => {
                 self.state.select_model(model);
@@ -208,7 +224,55 @@ impl Controller {
                     self.reconfigure();
                 }
             }
+            CommandEffect::Compact => return self.compact(commands).await,
         }
+        true
+    }
+
+    async fn compact(&mut self, commands: &mut UnboundedReceiver<UiCommand>) -> bool {
+        if !self.agent.has_context_to_compact() {
+            self.state
+                .compaction(CompactionActivity::Ended(CompactionEnd::NothingToCompact));
+            return true;
+        }
+        self.state.compaction(CompactionActivity::Preparing);
+        let cancel = CancellationToken::new();
+        let emit = Arc::clone(&self.state.emit);
+        let state = &mut self.state;
+        let mut open = true;
+        let result = {
+            let mut summarizing = move || {
+                emit(UiEvent::CompactionActivity {
+                    activity: CompactionActivity::Summarizing,
+                });
+            };
+            let compaction = self.agent.compact(&mut summarizing, &cancel);
+            tokio::pin!(compaction);
+            loop {
+                tokio::select! {
+                    result = &mut compaction => break result,
+                    command = commands.recv(), if open => match command {
+                        None => {
+                            open = false;
+                            cancel.cancel();
+                        }
+                        Some(UiCommand::Submit { prompt }) => state.receive_prompt(prompt),
+                        Some(UiCommand::CancelCompaction) => cancel.cancel(),
+                        Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
+                        Some(UiCommand::FullAccessWarningShown) => {
+                            state.permissions.full_access_warning_shown();
+                        }
+                        Some(UiCommand::Cancel { .. } | UiCommand::Approval { .. }) => {}
+                        Some(UiCommand::RunCommand { text }) => {
+                            run_deferred_command(state, &text, Work::Compaction, &cancel).await;
+                        }
+                    },
+                }
+            }
+        };
+        self.state.compaction(compaction_activity(result));
+        self.settle_deferred_commands();
+        open
     }
 
     fn reconfigure(&mut self) {
@@ -290,24 +354,9 @@ impl Controller {
                             state.permissions.full_access_warning_shown();
                         }
                         Some(UiCommand::RunCommand { text }) => {
-                            match handle_command(state, &text, true) {
-                                CommandEffect::None => {}
-                                CommandEffect::SwitchModel(model) => {
-                                    state.config_pending = true;
-                                    state.select_model(model);
-                                }
-                                CommandEffect::Clear => {
-                                    state.pending_clear = Some(state.received_prompts);
-                                    state.queue.clear();
-                                    cancel.cancel();
-                                }
-                                CommandEffect::ToggleFast => {
-                                    if toggle_fast(state).await {
-                                        state.config_pending = true;
-                                    }
-                                }
-                            }
+                            run_deferred_command(state, &text, Work::Turn, &cancel).await;
                         }
+                        Some(UiCommand::CancelCompaction) => {}
                     },
                 }
             }
@@ -326,6 +375,11 @@ impl Controller {
                 outcome: report.outcome,
             });
         }
+        self.settle_deferred_commands();
+        open
+    }
+
+    fn settle_deferred_commands(&mut self) {
         self.remember_agent_facts();
         if std::mem::take(&mut self.state.config_pending) {
             self.reconfigure();
@@ -333,8 +387,50 @@ impl Controller {
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
             self.clear(first_kept_prompt);
         }
-        open
     }
+}
+
+async fn run_deferred_command(
+    state: &mut ControllerState,
+    text: &str,
+    work: Work,
+    cancel: &CancellationToken,
+) {
+    match handle_command(state, text, work) {
+        CommandEffect::None | CommandEffect::Compact => {}
+        CommandEffect::SwitchModel(model) => {
+            state.config_pending = true;
+            state.select_model(model);
+        }
+        CommandEffect::Clear => {
+            state.pending_clear = Some(state.received_prompts);
+            state.queue.clear();
+            cancel.cancel();
+        }
+        CommandEffect::ToggleFast => {
+            if toggle_fast(state).await {
+                state.config_pending = true;
+            }
+        }
+    }
+}
+
+fn compaction_activity(result: Result<Compaction, CompactionError>) -> CompactionActivity {
+    let end = match result {
+        Ok(Compaction::Compacted) => return CompactionActivity::Compacted,
+        Ok(Compaction::Unchanged) | Err(CompactionError::NothingToCompact) => {
+            CompactionEnd::NothingToCompact
+        }
+        Err(CompactionError::Cancelled) => CompactionEnd::Cancelled,
+        Err(CompactionError::ContextCapacityExceeded) => CompactionEnd::ContextTooLarge,
+        Err(
+            CompactionError::ModelFailed
+            | CompactionError::SummaryIncomplete
+            | CompactionError::EmptySummary
+            | CompactionError::InvalidCheckpoint,
+        ) => CompactionEnd::Failed,
+    };
+    CompactionActivity::Ended(end)
 }
 
 fn failure_status(failure: &TurnFailure, source: CredentialSource) -> Option<String> {
@@ -944,6 +1040,246 @@ mod tests {
             )),
             "{status}"
         );
+    }
+
+    fn activities(events: &[UiEvent]) -> Vec<CompactionActivity> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::CompactionActivity { activity } => Some(*activity),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn compaction_settled(event: &UiEvent) -> bool {
+        matches!(
+            event,
+            UiEvent::CompactionActivity {
+                activity: CompactionActivity::Compacted | CompactionActivity::Ended(_)
+            }
+        )
+    }
+
+    async fn chat(harness: &mut Harness, prompts: &[&str]) {
+        for prompt in prompts {
+            harness.submit(prompt);
+            harness.until(finished(TurnOutcome::Completed)).await;
+        }
+    }
+
+    fn tool_work_then_chat(summary: Reply, after: &[&str]) -> FakeServer {
+        let mut replies = vec![
+            Reply::sse(&chat_tool_call_events(
+                "call-1",
+                "read_file",
+                r#"{"path":"notes.md"}"#,
+            )),
+            Reply::sse(&chat_text_events(&["Read the notes."])),
+        ];
+        replies.extend(
+            (1..=4).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))),
+        );
+        replies.push(summary);
+        replies.extend(
+            after
+                .iter()
+                .map(|text| Reply::sse(&chat_text_events(&[text]))),
+        );
+        FakeServer::start(replies)
+    }
+
+    fn first_user_message(body: &Value) -> &str {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap()
+    }
+
+    fn held_summary() -> Reply {
+        Reply::held_sse(&chat_text_events(&["Turn 1\n"])[..1])
+    }
+
+    async fn summary_requested(server: &FakeServer) {
+        timeout(Duration::from_secs(10), async {
+            while server.requests().len() < 7 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the summary request reaches the provider");
+        let body = server.requests()[6].json();
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("You write compaction notes"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_reports_when_there_is_nothing_to_compact() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/compact");
+        let empty = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(empty),
+            [CompactionActivity::Ended(CompactionEnd::NothingToCompact)]
+        );
+        chat(&mut harness, &["first"]).await;
+        harness.command("/compact");
+        let fits = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(fits),
+            [
+                CompactionActivity::Preparing,
+                CompactionActivity::Ended(CompactionEnd::NothingToCompact)
+            ]
+        );
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compact_replaces_older_turns_with_a_checkpoint_for_the_next_request() {
+        let server = FakeServer::start(
+            (1..=6).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))),
+        );
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["one", "two", "three", "four", "five"]).await;
+        harness.command("/compact");
+        let compacted = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(compacted),
+            [
+                CompactionActivity::Preparing,
+                CompactionActivity::Summarizing,
+                CompactionActivity::Compacted
+            ]
+        );
+        let status = status_notice(&mut harness).await;
+        assert!(status.contains("\nhistory_turns=5\n"), "{status}");
+        let copied = copy_notice(&mut harness).await;
+        assert_eq!(copied.body, "Copied to clipboard.");
+        assert_eq!(harness.clipboard.copied(), ["answer 5"]);
+        chat(&mut harness, &["six"]).await;
+        let body = server.requests()[5].json();
+        let checkpoint = first_user_message(&body);
+        assert!(
+            checkpoint.starts_with("<compacted_conversation>\n"),
+            "{checkpoint}"
+        );
+        assert!(checkpoint.contains("one"), "{checkpoint}");
+        assert_eq!(user_messages(&body), 1 + 4 + 1);
+    }
+
+    #[tokio::test]
+    async fn compact_during_a_turn_asks_to_wait_for_it() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.command("/compact");
+        let busy = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(busy),
+            [CompactionActivity::Ended(CompactionEnd::Busy)]
+        );
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_compaction_keeps_the_history_and_runs_the_prompts_sent_meanwhile() {
+        let server = tool_work_then_chat(held_summary(), &["after"]);
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.command("/compact");
+        let summarizing = harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::CompactionActivity {
+                        activity: CompactionActivity::Summarizing
+                    }
+                )
+            })
+            .await;
+        assert_eq!(
+            activities(summarizing),
+            [
+                CompactionActivity::Preparing,
+                CompactionActivity::Summarizing
+            ]
+        );
+        summary_requested(&server).await;
+        harness.submit("queued");
+        harness.command("/compact");
+        harness.send(UiCommand::CancelCompaction);
+        let cancelled = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(cancelled),
+            [CompactionActivity::Ended(CompactionEnd::Cancelled)]
+        );
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = server.requests();
+        assert_eq!(requests.len(), 8);
+        let body = requests[7].json();
+        assert_eq!(user_messages(&body), 6);
+        assert_eq!(first_user_message(&body), "read the notes");
+    }
+
+    #[tokio::test]
+    async fn clear_during_a_compaction_cancels_it_and_starts_over() {
+        let server = tool_work_then_chat(held_summary(), &["fresh"]);
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.command("/compact");
+        harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::CompactionActivity {
+                        activity: CompactionActivity::Summarizing
+                    }
+                )
+            })
+            .await;
+        summary_requested(&server).await;
+        harness.command("/clear");
+        let cleared = harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        assert_eq!(
+            activities(cleared),
+            [CompactionActivity::Ended(CompactionEnd::Cancelled)]
+        );
+        chat(&mut harness, &["start over"]).await;
+        assert_eq!(user_messages(&server.requests()[7].json()), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_summary_reports_the_failure_and_keeps_the_history() {
+        let failure = Reply::status(400, r#"{"error":{"message":"summary rejected"}}"#);
+        let server = tool_work_then_chat(failure, &["after"]);
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.command("/compact");
+        let failed = harness.until(compaction_settled).await;
+        assert_eq!(
+            activities(failed).last(),
+            Some(&CompactionActivity::Ended(CompactionEnd::Failed))
+        );
+        chat(&mut harness, &["after"]).await;
+        assert_eq!(user_messages(&server.requests()[7].json()), 6);
     }
 
     async fn fast_notice(harness: &mut Harness) -> String {

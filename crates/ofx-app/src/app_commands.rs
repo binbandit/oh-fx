@@ -1,5 +1,5 @@
 use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
-use ofx_contract::{NoticeTone, UiEvent};
+use ofx_contract::{CompactionActivity, CompactionEnd, NoticeTone, UiEvent};
 use ofx_session::resolve_model_query_from_ids;
 use ofx_tui::SlashCommandSpec;
 
@@ -19,6 +19,14 @@ pub(crate) enum CommandEffect {
     SwitchModel(String),
     Clear,
     ToggleFast,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Work {
+    Idle,
+    Turn,
+    Compaction,
 }
 
 pub(crate) fn slash_command_specs() -> Vec<SlashCommandSpec> {
@@ -45,11 +53,7 @@ pub(crate) fn slash_command_categories() -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn handle_command(
-    state: &ControllerState,
-    text: &str,
-    turn_active: bool,
-) -> CommandEffect {
+pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) -> CommandEffect {
     let Some(command) = SLASH_REGISTRY.parse_command(text) else {
         state.notice(NoticeTone::Error, "command", UNKNOWN_COMMAND);
         return CommandEffect::None;
@@ -73,6 +77,16 @@ pub(crate) fn handle_command(
             CommandEffect::None
         }
         SlashKind::Fast => CommandEffect::ToggleFast,
+        SlashKind::Compact => match work {
+            Work::Idle => CommandEffect::Compact,
+            Work::Turn => {
+                state.emit(UiEvent::CompactionActivity {
+                    activity: CompactionActivity::Ended(CompactionEnd::Busy),
+                });
+                CommandEffect::None
+            }
+            Work::Compaction => CommandEffect::None,
+        },
         SlashKind::Copy => {
             copy_last_reply(state);
             CommandEffect::None
@@ -91,7 +105,7 @@ pub(crate) fn handle_command(
         }
         SlashKind::Model => {
             let resolved = resolve_model_query(state.models(), command.payload);
-            let prefix = if turn_active {
+            let prefix = if work == Work::Turn {
                 "Next turn will use "
             } else {
                 "Switched to "
@@ -162,13 +176,14 @@ mod tests {
                 "/model",
                 "/permissions",
                 "/copy",
+                "/compact",
                 "/fast",
                 "/version",
                 "/quit",
             ]
         );
-        assert_eq!(specs[10].aliases, ["/exit"]);
-        assert_eq!(specs[10].description, "exit the interactive shell");
+        assert_eq!(specs[11].aliases, ["/exit"]);
+        assert_eq!(specs[11].description, "exit the interactive shell");
     }
 
     #[test]
@@ -190,6 +205,7 @@ mod tests {
                 ("/model", "Model"),
                 ("/permissions", "Security"),
                 ("/copy", "Session"),
+                ("/compact", "Session"),
                 ("/fast", "Model"),
                 ("/version", "General"),
                 ("/quit", "General"),

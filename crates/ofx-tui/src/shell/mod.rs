@@ -34,6 +34,7 @@ use crate::output::activity_status::{
     ACTIVITY_BLINK_HALF_PERIOD_MS, TurnPhase, TurnTokens, activity_phase, clip_with_ellipsis,
     turn_activity_row,
 };
+use crate::output::compaction_activity::CompactionStatus;
 use crate::render::hint_line;
 use crate::render_engine::frame_layout::{LiveParts, solve};
 use crate::render_engine::frame_sink::{Frame, FrameSink, LiveRegionRenderer};
@@ -126,6 +127,7 @@ pub(crate) struct Shell<'a> {
     outstanding: VecDeque<Submission>,
     submitted_prompts: u64,
     turn: Option<ActiveTurn>,
+    compaction: Option<CompactionStatus>,
     approval: Option<ApprovalPrompt>,
     yolo_warning: YoloWarning,
     events: UiEventReceiver,
@@ -274,6 +276,7 @@ impl<'a> Shell<'a> {
             outstanding: VecDeque::new(),
             submitted_prompts: 0,
             turn: None,
+            compaction: None,
             approval: None,
             yolo_warning,
             events,
@@ -334,10 +337,23 @@ impl<'a> Shell<'a> {
         self.forget_approval_review();
     }
 
+    fn compaction_running(&self) -> bool {
+        self.compaction.is_some_and(|status| status.running())
+    }
+
+    fn working(&self) -> bool {
+        self.turn.is_some() || self.compaction_running()
+    }
+
+    fn activity_clock_ms(&self) -> Option<i64> {
+        self.compaction
+            .and_then(|status| status.clock_ms())
+            .or_else(|| self.turn.as_ref().map(|turn| turn.started_ms))
+    }
+
     fn activity_phase(&self, now_ms: i64) -> Option<i64> {
-        self.turn
-            .as_ref()
-            .map(|turn| activity_phase(turn.started_ms, now_ms))
+        self.activity_clock_ms()
+            .map(|started_ms| activity_phase(started_ms, now_ms))
     }
 
     fn frame_due(&self, now_ms: i64) -> bool {
@@ -345,6 +361,9 @@ impl<'a> Shell<'a> {
     }
 
     fn activity_rows(&self, now_ms: i64) -> Vec<Row> {
+        if let Some(status) = &self.compaction {
+            return status.rows(&self.theme, now_ms, self.cols());
+        }
         self.turn
             .iter()
             .map(|turn| {
@@ -591,9 +610,8 @@ impl<'a> Shell<'a> {
 
     fn next_deadline_ms(&self, now_ms: i64) -> Option<i64> {
         let pending_input = self.input.has_pending_input().then_some(now_ms + 10);
-        let blink = self.turn.as_ref().map(|turn| {
-            turn.started_ms
-                + (activity_phase(turn.started_ms, now_ms) + 1) * ACTIVITY_BLINK_HALF_PERIOD_MS
+        let blink = self.activity_clock_ms().map(|started_ms| {
+            started_ms + (activity_phase(started_ms, now_ms) + 1) * ACTIVITY_BLINK_HALF_PERIOD_MS
         });
         [
             pending_input,
@@ -601,6 +619,7 @@ impl<'a> Shell<'a> {
             self.gestures.next_expiry_ms(),
             self.yolo_warning.deadline_ms(),
             self.resize_due_ms,
+            self.compaction.and_then(|status| status.expires_ms()),
         ]
         .into_iter()
         .flatten()

@@ -540,6 +540,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Compact,
+        "/compact",
+        "summarize context into a fresh window",
+        SlashPresentationCategory::Session,
+    ),
+    SlashSpec::new(
         SlashKind::Fast,
         "/fast",
         "toggle Fast mode when supported",
