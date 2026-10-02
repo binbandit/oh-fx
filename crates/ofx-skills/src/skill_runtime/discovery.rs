@@ -237,7 +237,7 @@ impl DiscoveryScan<'_> {
             return;
         }
         let cause = match inspect_skill_file(&file, name.as_bytes()) {
-            Inspection::Valid(metadata) => {
+            Inspection::Valid(metadata, _) => {
                 self.discovery.skills.push(Skill {
                     name: metadata.name,
                     description: metadata.description,

@@ -11,6 +11,7 @@ pub(crate) use metadata_prefix::{MetadataPrefixError, read_metadata_prefix};
 
 pub(crate) const MAX_FRONTMATTER_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_NAME_BYTES: usize = 256;
+pub(crate) const SKILL_FILE_NAME: &str = "SKILL.md";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {

@@ -1,6 +1,7 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+use ofx_config::ContextLimit;
 use ofx_contract::prepare_model_output;
 use ofx_text::sanitize_model_text_owned;
 
@@ -10,6 +11,8 @@ use crate::skill_contract::{ExecuteOutput, MAX_NAME_BYTES, Skill};
 pub(crate) const DISCOVERY_MODEL_NOTICE: &str =
     "<skill_discovery_warning details=\"context_notice\" />\n";
 const IDENTITY_PREFIX: &str = "Skill \"";
+const CHUNK_OVERRIDE: &str = "--context-limit skill_chunk_bytes=BYTES|off";
+const FILE_OVERRIDE: &str = "--context-limit skill_file_bytes=BYTES|off";
 const ELLIPSIS: &str = "...";
 
 pub(crate) fn execute_primary_budget(max_tool_result_bytes: usize, include_notice: bool) -> usize {
@@ -194,5 +197,83 @@ fn ambiguous_suffix(omitted_count: usize, max_bytes: usize) -> String {
     let plural = if omitted_count == 1 { "" } else { "s" };
     format!(
         "; {omitted_count} additional advertised location{plural} omitted by the {max_bytes}-byte tool-result limit. Refresh available skills and retry with an advertised name and location."
+    )
+}
+
+pub(crate) fn skill_chunk_blocked_marker(
+    skill_name: &str,
+    resource: &str,
+    observed_bytes: usize,
+    limit: ContextLimit,
+    offset: usize,
+) -> String {
+    format!(
+        "<context_limit name=\"skill_chunk_bytes\" action=\"blocked\" skill=\"{}\" resource=\"{}\" observed_bytes=\"{observed_bytes}\" effective_bytes=\"{}\" source=\"{}\" offset=\"{offset}\" override=\"{CHUNK_OVERRIDE}\" />",
+        encoded_scalar(skill_name),
+        encoded_scalar(resource),
+        limit.effective_bytes(),
+        limit.source.label()
+    )
+}
+
+pub(crate) fn skill_chunk_truncated_marker(
+    observed_bytes: usize,
+    limit: ContextLimit,
+    next_offset: usize,
+) -> String {
+    format!(
+        "<context_limit name=\"skill_chunk_bytes\" action=\"truncated\" observed_bytes=\"{observed_bytes}\" effective_bytes=\"{}\" source=\"{}\" next_offset=\"{next_offset}\" override=\"{CHUNK_OVERRIDE}\" />",
+        limit.effective_bytes(),
+        limit.source.label()
+    )
+}
+
+pub(crate) fn skill_file_blocked_marker(
+    resource: &str,
+    observed_bytes: usize,
+    limit: ContextLimit,
+) -> String {
+    format!(
+        "<context_limit name=\"skill_file_bytes\" action=\"blocked_remainder\" observed_bytes=\"{observed_bytes}\" effective_bytes=\"{}\" source=\"{}\" resource=\"{}\" override=\"{FILE_OVERRIDE}\" />",
+        limit.effective_bytes(),
+        limit.source.label(),
+        encoded_scalar(resource)
+    )
+}
+
+pub(crate) fn skill_chunk_notice(
+    skill_name: &str,
+    resource: &str,
+    observed_bytes: usize,
+    limit: ContextLimit,
+    next_offset: usize,
+) -> String {
+    format!(
+        "{}\" truncated: observed={observed_bytes} bytes effective={} bytes source={}; continue with offset={next_offset} or override with {CHUNK_OVERRIDE}",
+        resource_notice_prefix(skill_name, resource),
+        limit.effective_bytes(),
+        limit.source.label()
+    )
+}
+
+pub(crate) fn skill_file_blocked_notice(
+    skill_name: &str,
+    resource: &str,
+    observed_bytes: usize,
+    limit: ContextLimit,
+) -> String {
+    format!(
+        "{}\" remainder blocked: observed={observed_bytes} bytes effective={} bytes source={}; override with {FILE_OVERRIDE}",
+        resource_notice_prefix(skill_name, resource),
+        limit.effective_bytes(),
+        limit.source.label()
+    )
+}
+
+fn resource_notice_prefix(skill_name: &str, resource: &str) -> String {
+    format!(
+        "[context] skill resource \"{}/{}",
+        encoded_scalar(skill_name),
+        encoded_scalar(resource)
     )
 }

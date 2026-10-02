@@ -1,11 +1,14 @@
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::symlink;
 use std::process::Command;
 
 use super::*;
 use crate::skill_contract::InvalidMetadataCause;
 use crate::skill_runtime::skill_file::LinkedSkillFile;
-use crate::skill_runtime::{SkillResolution, resolve_skill};
+use crate::skill_runtime::{
+    CandidateOpen, SkillResolution, open_validated_skill_candidate, resolve_skill,
+};
 use crate::test_fixture::Fixture;
 
 const TEST_WORKSPACE_ROOTS: [RootSpec; 3] = [
@@ -610,8 +613,14 @@ fn open_linked_metadata(fixture: &Fixture, sub_path: &str) -> PrimarySkillFile {
     open_primary_skill_file(&candidate, &SymlinkAuthorities::default())
 }
 
+fn read_to_string(mut file: &fs::File) -> String {
+    let mut content = String::new();
+    file.read_to_string(&mut content).unwrap();
+    content
+}
+
 #[test]
-fn load_visible_skills_discovers_contained_linked_metadata() {
+fn load_visible_skills_discovers_and_reopens_contained_linked_metadata() {
     let fixture = Fixture::new();
     fixture.write(
         "home/workspace/skill-source/linked-leaf/SKILL.md",
@@ -632,6 +641,12 @@ fn load_visible_skills_discovers_contained_linked_metadata() {
             .real("home/workspace")
             .join(".codex/skills/linked-leaf")
     );
+    let CandidateOpen::Current(candidate) =
+        open_validated_skill_candidate(&discovery.skills[0], &SymlinkAuthorities::default())
+    else {
+        panic!("expected the current skill");
+    };
+    assert!(read_to_string(candidate.skill_file()).contains("LINKED_LEAF_BODY"));
 }
 
 #[test]
@@ -728,7 +743,7 @@ fn linked_metadata_fifo_is_rejected_before_descriptor_open() {
 }
 
 #[test]
-fn load_visible_skills_discovers_a_contained_linked_workspace_candidate() {
+fn load_visible_skills_discovers_and_reopens_a_contained_linked_workspace_candidate() {
     let fixture = Fixture::new();
     fixture.write(
         "home/workspace/skill-source/linked-skill/SKILL.md",
@@ -750,6 +765,25 @@ fn load_visible_skills_discovers_a_contained_linked_workspace_candidate() {
     );
     assert_eq!(discovery.skills[0].source, SkillSource::WorkspaceCodex);
     assert!(discovery.diagnostics.is_empty());
+    let authorities = SymlinkAuthorities::default();
+    assert!(matches!(
+        open_validated_skill_candidate(&discovery.skills[0], &authorities),
+        CandidateOpen::Current(_)
+    ));
+
+    fixture.write(
+        "home/outside-skill/SKILL.md",
+        "---\nname: linked-skill\ndescription: outside\n---\n\nOUTSIDE_BODY_MUST_NOT_LOAD\n",
+    );
+    fs::remove_file(fixture.path("home/workspace/.codex/skills/linked-skill")).unwrap();
+    fixture.symlink(
+        "../../../outside-skill",
+        "home/workspace/.codex/skills/linked-skill",
+    );
+    assert!(matches!(
+        open_validated_skill_candidate(&discovery.skills[0], &authorities),
+        CandidateOpen::Skipped(SkillDiagnosticCause::Unreadable)
+    ));
 }
 
 #[test]
