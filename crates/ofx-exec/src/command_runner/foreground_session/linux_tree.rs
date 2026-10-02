@@ -3,7 +3,7 @@ use std::time::Instant;
 use rustix::process::Pid;
 
 use super::group_tree::GroupTree;
-use super::supervision::CommandTree;
+use super::supervision::{CommandTree, Escalation};
 use super::tracked_tree::TrackedTree;
 use crate::process_tree::proc_shows_own_pid_namespace;
 
@@ -37,11 +37,15 @@ impl CommandTree for LinuxTree {
         self.tree().force()
     }
 
-    fn settle_termination(&mut self, started: Instant, forced: bool) -> Result<(), &'static str> {
-        self.tree().settle_termination(started, forced)
+    fn settle_termination(
+        &mut self,
+        started: Instant,
+        escalation: &mut dyn Escalation,
+    ) -> Result<(), &'static str> {
+        self.tree().settle_termination(started, escalation)
     }
 
-    fn settle_completion(&mut self) -> Result<(), &'static str> {
-        self.tree().settle_completion()
+    fn settle_completion(&mut self, escalation: &mut dyn Escalation) -> Result<(), &'static str> {
+        self.tree().settle_completion(escalation)
     }
 }

@@ -1,9 +1,8 @@
-use std::thread;
 use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process_group};
 
-use super::supervision::CommandTree;
+use super::supervision::{CommandTree, Escalation};
 use crate::command_runner::TERMINATION_GRACE;
 use crate::process_tree::{InspectionError, Tracker};
 
@@ -53,13 +52,13 @@ impl CommandTree for TrackedTree {
     fn settle_termination(
         &mut self,
         started: Instant,
-        mut forced: bool,
+        escalation: &mut dyn Escalation,
     ) -> Result<(), &'static str> {
         let mut empty_scans = 0;
         loop {
             self.refresh()?;
             let elapsed = started.elapsed();
-            forced |= elapsed >= TERMINATION_GRACE;
+            let forced = elapsed >= TERMINATION_GRACE || escalation.forced();
             if forced {
                 self.tracker.signal_all(Signal::KILL);
             }
@@ -74,11 +73,11 @@ impl CommandTree for TrackedTree {
             if forced && elapsed >= TERMINATION_GRACE + CLEANUP_WAIT {
                 return Ok(());
             }
-            thread::sleep(RESCAN_PAUSE);
+            escalation.pause(RESCAN_PAUSE);
         }
     }
 
-    fn settle_completion(&mut self) -> Result<(), &'static str> {
+    fn settle_completion(&mut self, _: &mut dyn Escalation) -> Result<(), &'static str> {
         Ok(())
     }
 }

@@ -26,6 +26,8 @@ const SUPERVISOR_RELEASE: &[u8] = b"0123456789abcdef0123456789abcdef\x06";
 const NO_SUPERVISOR_DEADLINE: &str = "none";
 const SUPERVISOR_DEADLINE_MILLISECONDS: &str = "3000";
 const ESCAPED_PID: &str = "escaped.pid";
+const STATUS_FRAME: &[u8] = b"\0OH_FX_FOREGROUND_STATUS:";
+const PROMPT: Duration = Duration::from_millis(350);
 const LEFT_SESSION: &str = "import os, sys, time
 os.setsid()
 with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))
@@ -44,6 +46,16 @@ if os.fork() == 0:
     os.setsid()
     threading.Thread(target=publish).start()
     ctypes.CDLL(None).pthread_exit(None)
+while True: time.sleep(1)
+";
+const IGNORES_SIGTERM: &str = "import os, signal, sys, time
+signal.signal(signal.SIGTERM, lambda signum, frame: os._exit(0))
+if os.fork() == 0:
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))
+    os.rename(sys.argv[1] + '.tmp', sys.argv[1])
+    while True: time.sleep(1)
 while True: time.sleep(1)
 ";
 const FOREIGN_PROC: &str = r#"import os, signal, subprocess, sys, time
@@ -97,7 +109,7 @@ for victim in victims:
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 25] = [
+const TESTS: [(&str, Test); 27] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -197,6 +209,14 @@ const TESTS: [(&str, Test); 25] = [
     (
         "a_forced_stop_through_another_namespaces_proc_spares_unrelated_processes",
         a_forced_stop_through_another_namespaces_proc_spares_unrelated_processes,
+    ),
+    (
+        "forcing_a_graceful_stop_after_the_command_exited_kills_what_ignores_sigterm",
+        forcing_a_graceful_stop_after_the_command_exited_kills_what_ignores_sigterm,
+    ),
+    (
+        "losing_the_owner_after_the_command_exited_kills_what_ignores_sigterm",
+        losing_the_owner_after_the_command_exited_kills_what_ignores_sigterm,
     ),
 ];
 
@@ -828,6 +848,34 @@ fn losing_the_owner_kills_a_descendant_whose_main_thread_exited() {
     assert_killed(pid, "the loss of its owner");
 }
 
+fn forcing_a_graceful_stop_after_the_command_exited_kills_what_ignores_sigterm() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let mut settling = EscapedCommand::start(NO_SUPERVISOR_DEADLINE, IGNORES_SIGTERM);
+    let pid = settling.await_pid();
+    kill_process(settling.supervisor(), Signal::TERM).expect("the test step succeeds");
+    settling.await_status();
+    let begun = Instant::now();
+    kill_process(settling.supervisor(), Signal::USR1).expect("the test step succeeds");
+    assert_killed(pid, "a forced stop");
+    assert!(begun.elapsed() < PROMPT, "{:?}", begun.elapsed());
+}
+
+fn losing_the_owner_after_the_command_exited_kills_what_ignores_sigterm() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let mut settling = EscapedCommand::start(NO_SUPERVISOR_DEADLINE, IGNORES_SIGTERM);
+    let pid = settling.await_pid();
+    kill_process(settling.supervisor(), Signal::TERM).expect("the test step succeeds");
+    settling.await_status();
+    let begun = Instant::now();
+    drop(settling.owner.take());
+    assert_killed(pid, "the loss of its owner");
+    assert!(begun.elapsed() < PROMPT, "{:?}", begun.elapsed());
+}
+
 fn a_forced_stop_through_another_namespaces_proc_spares_unrelated_processes() {
     if !cfg!(target_os = "linux") {
         return;
@@ -882,7 +930,7 @@ impl EscapedCommand {
                 .arg(directory.path().join(ESCAPED_PID))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
                 .expect("the test step succeeds");
         let owner = supervisor.stdin.take();
@@ -920,6 +968,32 @@ impl EscapedCommand {
             assert!(begun.elapsed() < LONG, "the command never recorded its pid");
             thread::sleep(POLL);
         }
+    }
+
+    fn await_status(&mut self) {
+        let mut stderr = self
+            .supervisor
+            .stderr
+            .take()
+            .expect("the test step succeeds");
+        let (sender, reported) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut buffer = [0; 256];
+            while let Ok(length @ 1..) = stderr.read(&mut buffer) {
+                seen.extend_from_slice(&buffer[..length]);
+                let framed = seen
+                    .windows(STATUS_FRAME.len())
+                    .position(|window| window == STATUS_FRAME)
+                    .is_some_and(|start| seen[start..].contains(&b'\n'));
+                if framed {
+                    let _ = sender.send(());
+                }
+            }
+        });
+        reported
+            .recv_timeout(LONG)
+            .expect("the supervisor reported the command's status");
     }
 }
 
