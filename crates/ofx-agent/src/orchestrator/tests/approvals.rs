@@ -39,7 +39,7 @@ impl PermissionGate for RememberingGate {
     fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
         let tree = approved_tree(self.scopes.fetch_add(1, Ordering::SeqCst) + 1);
         let always = match action {
-            GatedAction::Call(_) => return tree,
+            GatedAction::Call(_) | GatedAction::McpTool(_) => return tree,
             GatedAction::FileMutation(mutation) => mutation
                 .target
                 .parent()

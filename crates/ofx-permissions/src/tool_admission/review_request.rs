@@ -38,7 +38,8 @@ pub(super) fn review_subject<'a>(
             (file_action(&call.name, file), file_targets(mutation, file))
         }
         GatedAction::Command(CommandRequest::Observe | CommandRequest::Stop)
-        | GatedAction::Call(_) => (
+        | GatedAction::Call(_)
+        | GatedAction::McpTool(_) => (
             Action::Tool {
                 tool_name: &call.name,
                 arguments_json: &call.arguments,
