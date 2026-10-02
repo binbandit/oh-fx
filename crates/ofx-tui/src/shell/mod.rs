@@ -6,9 +6,11 @@ mod directory_completion_job;
 mod event_loop;
 mod input_completion_runtime;
 mod input_history_runtime;
+mod input_question_runtime;
 mod input_selection_runtime;
 mod input_submit_runtime;
 mod leading_whitespace;
+pub(crate) mod question_prompt;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
 #[cfg(test)]
@@ -33,6 +35,7 @@ use input_completion_runtime::FilePicker;
 use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
 use leading_whitespace::LeadingWhitespace;
+use question_prompt::QuestionPrompt;
 use skills_menu::SkillsMenu;
 
 use crate::composer::Composer;
@@ -40,6 +43,7 @@ use crate::footer::input_presentation::ComposerView;
 use crate::footer::input_presentation::{
     DangerStatus, HintState, compose_hint_row, composer_view, danger_status_text, input_row_limit,
 };
+use crate::footer::question_ui::question_hint_row;
 use crate::footer::skills_menu_presentation::{skills_menu_band, skills_menu_hint_row};
 use crate::host::Clipboard;
 use crate::input::TerminalInput;
@@ -152,6 +156,8 @@ pub(crate) struct Shell<'a> {
     turn: Option<ActiveTurn>,
     compaction: Option<CompactionStatus>,
     approval: Option<ApprovalPrompt>,
+    question: Option<QuestionPrompt>,
+    question_limit_rejected: bool,
     skills_menu: Option<SkillsMenu>,
     yolo_warning: YoloWarning,
     events: UiEventReceiver,
@@ -310,6 +316,8 @@ impl<'a> Shell<'a> {
             turn: None,
             compaction: None,
             approval: None,
+            question: None,
+            question_limit_rejected: false,
             skills_menu: None,
             yolo_warning,
             events,
@@ -436,8 +444,8 @@ impl<'a> Shell<'a> {
         self.frame.stale = false;
         self.frame.drawn_activity = self.activity_phase(now_ms);
         let appended = self.transcript.take_new_rows(&self.theme);
-        let skills_menu = match (&self.skills_menu, &self.approval) {
-            (Some(menu), None) => Some(skills_menu_band(
+        let skills_menu = match (&self.skills_menu, &self.approval, &self.question) {
+            (Some(menu), None, None) => Some(skills_menu_band(
                 menu,
                 self.skills_menu_budget(),
                 self.cols(),
@@ -454,19 +462,20 @@ impl<'a> Shell<'a> {
             banner.len() + 1
         };
         let tail_gap = self.transcript.tail_wants_footer_gap();
-        let composer = self
-            .frame
-            .composer
-            .take()
-            .unwrap_or_else(|| match &self.approval {
-                Some(prompt) => prompt.view(&self.theme, self.layout, banner_rows),
-                None => composer_view(
-                    &self.composer,
-                    self.layout.cols,
-                    input_row_limit(usize::from(self.layout.content_bottom)),
-                    &self.theme,
-                ),
-            });
+        let composer =
+            self.frame
+                .composer
+                .take()
+                .unwrap_or_else(|| match (&self.approval, &self.question) {
+                    (Some(prompt), _) => prompt.view(&self.theme, self.layout, banner_rows),
+                    (None, Some(prompt)) => prompt.composer_view(&self.theme, self.layout.cols),
+                    (None, None) => composer_view(
+                        &self.composer,
+                        self.layout.cols,
+                        input_row_limit(usize::from(self.layout.content_bottom)),
+                        &self.theme,
+                    ),
+                });
         let picker = self.file_picker_band(composer.rows.len().saturating_sub(1), banner_rows);
         let review = composer.review.clone();
         let banner = if review.as_ref().is_some_and(|review| review.screen) {
@@ -519,7 +528,10 @@ impl<'a> Shell<'a> {
             ctrl_c_pending: self.gestures.ctrl_c_exit_armed(),
             esc_clear_armed: self.gestures.escape_clear_armed(),
             esc_interrupt_armed: self.gestures.escape_interrupt_armed(),
-            danger: if self.yolo_warning.active() && self.approval.is_none() {
+            danger: if self.yolo_warning.active()
+                && self.approval.is_none()
+                && self.question.is_none()
+            {
                 DangerStatus::FullAccess
             } else {
                 DangerStatus::None
@@ -529,12 +541,15 @@ impl<'a> Shell<'a> {
             let hint = skills_menu_hint_row(&self.theme, self.cols(), hint_state.ctrl_c_pending);
             return (hint, false);
         }
-        let base_hint = hint_line(
-            &self.theme,
-            &self.options.model,
-            self.options.permission_mode,
-            self.cols(),
-        );
+        let base_hint = match &self.question {
+            Some(prompt) => question_hint_row(&self.theme, &prompt.view(), self.cols()),
+            None => hint_line(
+                &self.theme,
+                &self.options.model,
+                self.options.permission_mode,
+                self.cols(),
+            ),
+        };
         let warning_included = !danger_status_text(hint_state, self.cols()).is_empty();
         let hint = compose_hint_row(&self.theme, &base_hint, hint_state, self.cols());
         (hint, warning_included)

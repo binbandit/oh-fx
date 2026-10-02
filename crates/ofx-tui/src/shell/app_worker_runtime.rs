@@ -109,6 +109,10 @@ impl Shell<'_> {
                 self.end_assistant_step(turn_id);
                 self.approval_requested(turn_id, *request);
             }
+            UiEvent::QuestionRequested { turn_id, request } => {
+                self.end_assistant_step(turn_id);
+                self.question_requested(turn_id, request);
+            }
             event @ (UiEvent::ToolStarted { .. }
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
@@ -304,6 +308,7 @@ impl Shell<'_> {
         self.turn = None;
         self.compaction = None;
         self.dismiss_approval();
+        self.dismiss_question();
         self.composer.reset_for_session();
         self.start_fresh_transcript(FreshScreen::KeepScrollback);
         self.promote_next();
@@ -409,6 +414,7 @@ impl Shell<'_> {
             .is_some_and(|submission| submission.state == SubmissionState::Active);
         if was_visible && let Some(turn) = self.turn.take() {
             self.dismiss_approval();
+            self.dismiss_question();
             self.finish_visible_turn(turn, outcome);
         }
         self.promote_next();
@@ -463,11 +469,16 @@ impl Shell<'_> {
     }
 
     pub(super) fn cancel_visible_turn(&mut self) {
+        self.cancel_visible_turn_noting(Entry::Cancellation);
+    }
+
+    pub(super) fn cancel_visible_turn_noting(&mut self, entry: Entry) {
         if self.turn.take().is_none() {
             return;
         }
         self.reveal_pending_approval_call();
         self.dismiss_approval();
+        self.dismiss_question();
         let mut started = None;
         if let Some(submission) = self
             .outstanding
@@ -481,7 +492,7 @@ impl Shell<'_> {
             self.send(UiCommand::Cancel { turn_id });
         }
         if !self.transcript.cancel_active_tools() {
-            self.push_entry(Entry::Cancellation);
+            self.push_entry(entry);
         }
         self.promote_next();
     }
