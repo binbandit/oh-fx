@@ -1,3 +1,4 @@
+use ofx_contract::CommandProcessPresentation;
 use ofx_exec::{CommandStatus, Snapshot, SnapshotState, StatusProjection};
 use ofx_text::{
     HeadRounding, contains_ignore_case, encode_terminal_safe, is_model_safe_text,
@@ -143,6 +144,21 @@ pub(super) fn command_result(snapshot: &Snapshot) -> Option<String> {
         object.insert(name.to_owned(), Value::Null);
     }
     Some(Value::Object(object).to_string())
+}
+
+pub(super) fn process_presentation(snapshot: &Snapshot) -> Option<CommandProcessPresentation> {
+    if snapshot.error_name == Some(TIMEOUT_EXPIRED) {
+        return Some(CommandProcessPresentation::TimedOut);
+    }
+    let SnapshotState::Completed(status) = snapshot.state else {
+        return None;
+    };
+    let projection = status.project();
+    match (projection.signal, projection.exit_code) {
+        (Some(signal), _) => Some(CommandProcessPresentation::Signal(signal)),
+        (None, Some(code)) if code != 0 => Some(CommandProcessPresentation::ExitCode(code)),
+        _ => None,
+    }
 }
 
 pub(super) fn projection(state: SnapshotState) -> StatusProjection {

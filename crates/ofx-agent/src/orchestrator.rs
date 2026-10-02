@@ -1437,14 +1437,7 @@ async fn run_group<'c>(
                 description,
                 output,
             }) => {
-                events(UiEvent::ToolRejected {
-                    turn_id,
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                    reason,
-                    description: description.map(|description| *description),
-                });
+                events(tool_rejected(turn_id, call, reason, description, &output));
                 dispatched.push((call, Dispatched::Rejected(output, reason)));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
@@ -1564,6 +1557,24 @@ async fn settle_group<'c>(
     outcomes
 }
 
+fn tool_rejected(
+    turn_id: TurnId,
+    call: &ToolCall,
+    reason: ToolRejection,
+    description: Option<Box<CallDescription>>,
+    output: &ToolOutput,
+) -> UiEvent {
+    UiEvent::ToolRejected {
+        turn_id,
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        reason,
+        description: description.map(|description| *description),
+        content: output.content.clone(),
+    }
+}
+
 fn tool_started(turn_id: TurnId, call: &ToolCall, description: CallDescription) -> UiEvent {
     UiEvent::ToolStarted {
         turn_id,
@@ -1593,6 +1604,7 @@ fn tool_finished(turn_id: TurnId, call: &ToolCall, output: Option<&ToolOutput>) 
             .map(|output| output.content.clone())
             .unwrap_or_default(),
         command_result: output.and_then(|output| output.command_result.clone()),
+        process: output.and_then(|output| output.process),
         status_detail: output.and_then(|output| output.status_detail),
         file_change: output.and_then(|output| output.file_change),
     }

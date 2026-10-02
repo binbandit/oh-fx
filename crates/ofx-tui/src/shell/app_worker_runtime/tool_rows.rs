@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ActionLabel, ApprovalRequest, ApprovalScope, CallDescription, Concurrency, FileChangeStats,
-    FileMutation, FileMutationState, PathAccess, RequestId, ToolActivity, ToolCallId, ToolDeferral,
-    ToolEffect, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnId, TurnOutcome, UiCommand,
-    UiEvent, tool_permission_denied_json,
+    ActionLabel, ApprovalRequest, ApprovalScope, CallDescription, CommandProcessPresentation,
+    Concurrency, FileChangeStats, FileMutation, FileMutationState, PathAccess, RequestId,
+    ToolActivity, ToolCallId, ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus,
+    ToolStatusDetail, TurnId, TurnOutcome, UiCommand, UiEvent, tool_permission_denied_json,
 };
 
 use super::super::test_shell::TestShell;
@@ -67,6 +67,7 @@ fn command(call: &str, text: &str) -> UiEvent {
 struct Outcome {
     status: ToolResultStatus,
     content: String,
+    process: Option<CommandProcessPresentation>,
     status_detail: Option<ToolStatusDetail>,
     file_change: Option<FileChangeStats>,
 }
@@ -75,6 +76,7 @@ fn success() -> Outcome {
     Outcome {
         status: ToolResultStatus::Success,
         content: String::new(),
+        process: None,
         status_detail: None,
         file_change: None,
     }
@@ -97,6 +99,7 @@ fn finished(call: &str, tool: &str, outcome: Outcome) -> UiEvent {
         status: outcome.status,
         content: outcome.content,
         command_result: None,
+        process: outcome.process,
         status_detail: outcome.status_detail,
         file_change: outcome.file_change,
     }
@@ -152,7 +155,14 @@ fn each_call_adds_a_row_to_one_group_until_prose_follows() {
     test.deliver(command("c", "printf 'one\\ntwo'; echo err >&2"));
     test.deliver(finished("c", "shell", success()));
     test.deliver(command("d", "exit 7"));
-    test.deliver(finished("d", "shell", failure("")));
+    test.deliver(finished(
+        "d",
+        "shell",
+        Outcome {
+            process: Some(CommandProcessPresentation::ExitCode(7)),
+            ..failure("")
+        },
+    ));
     test.deliver(started(
         "e",
         "grep_files",
@@ -172,7 +182,7 @@ fn each_call_adds_a_row_to_one_group_until_prose_follows() {
             "├ Read README.md",
             "├ Matched *.rs",
             "├ Ran printf 'one\\ntwo'; echo err >&2",
-            "├ Failed exit 7",
+            "├ Exited 7 exit 7",
             "└ Searched beta",
             "",
             "  It describes a service.",
@@ -372,6 +382,7 @@ fn failures_rejections_and_deferrals_name_their_outcome() {
         arguments: "{\"path\":".to_owned(),
         reason: ToolRejection::MalformedArguments,
         description: None,
+        content: String::new(),
     });
     test.deliver(UiEvent::ToolRejected {
         turn_id: turn(),
@@ -380,6 +391,7 @@ fn failures_rejections_and_deferrals_name_their_outcome() {
         arguments: "{}".to_owned(),
         reason: ToolRejection::Unsupported,
         description: None,
+        content: "Unsupported tool: no_such_tool".to_owned(),
     });
     test.deliver(started(
         "d",
@@ -416,24 +428,31 @@ fn failures_rejections_and_deferrals_name_their_outcome() {
         deferral: ToolDeferral::ProjectInstructions,
     });
     test.deliver(command("g", "sleep 5"));
-    test.deliver(finished("g", "shell", failure("")));
+    test.deliver(finished(
+        "g",
+        "shell",
+        Outcome {
+            process: Some(CommandProcessPresentation::TimedOut),
+            ..failure("")
+        },
+    ));
     test.deliver(turn_finished(TurnOutcome::Completed));
     let screen = test.screen();
     assert_eq!(
         block(
             &screen,
-            "● 7 tool calls · 2 read · 1 write · 1 edit · 1 command · 4 failed · 1 denied",
+            "● 7 tool calls · 2 read · 1 write · 1 edit · 1 command · 1 timed out · 3 failed…",
             8
         ),
         [
-            "● 7 tool calls · 2 read · 1 write · 1 edit · 1 command · 4 failed · 1 denied",
+            "● 7 tool calls · 2 read · 1 write · 1 edit · 1 command · 1 timed out · 3 failed…",
             "├ Failed missing.txt: Path not found: missing.txt",
             "├ Failed tool call: invalid JSON arguments",
             "├ Failed no_such_tool",
             "├ Edited README.md +2 / -1",
             "├ Not executed file",
             "├ Reading project instructions before continuing: runtime.zig",
-            "└ Failed sleep 5",
+            "└ Timed out sleep 5",
         ],
         "{screen}"
     );

@@ -242,6 +242,20 @@ pub fn tool_permission_denial_reason(output: &str) -> Option<ToolPermissionDenia
     (held == (reason == ToolPermissionDenialReason::ReviewUnavailable)).then_some(reason)
 }
 
+pub fn shell_request_invalid_field_count(output: &str) -> Option<usize> {
+    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(output) else {
+        return None;
+    };
+    let error = root.get("error")?.as_object()?;
+    if error.get("code")?.as_str()? != "invalid_shell_request"
+        || error.get("executed")?.as_bool()?
+    {
+        return None;
+    }
+    let problems = error.get("problems")?.as_array()?;
+    (!problems.is_empty() && problems.iter().all(Value::is_string)).then_some(problems.len())
+}
+
 fn masked(text: &str) -> Value {
     Value::from(mask_secrets(text).into_owned())
 }
@@ -336,6 +350,45 @@ mod tests {
             r#"{"error":{"type":"tool_permission_denied","reason":7}}"#,
         ] {
             assert_eq!(tool_permission_denial_reason(output), None, "{output}");
+        }
+    }
+
+    #[test]
+    fn shell_request_corrections_count_their_problems() {
+        let cases = [
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a","b"]}}"#,
+                Some(2),
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a"]}}"#,
+                Some(1),
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":true,"problems":["a"]}}"#,
+                None,
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":[]}}"#,
+                None,
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":[1]}}"#,
+                None,
+            ),
+            (
+                r#"{"error":{"code":"other","executed":false,"problems":["a"]}}"#,
+                None,
+            ),
+            (r#"{"error":{"code":"invalid_shell_request"}}"#, None),
+            ("not json", None),
+        ];
+        for (output, expected) in cases {
+            assert_eq!(
+                shell_request_invalid_field_count(output),
+                expected,
+                "{output}"
+            );
         }
     }
 

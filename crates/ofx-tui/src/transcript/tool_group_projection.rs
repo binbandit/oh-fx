@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use ofx_contract::{ToolActivity, ToolCallId, TurnOutcome};
+use ofx_contract::{CommandProcessPresentation, ToolActivity, ToolCallId, TurnOutcome};
 use ofx_markdown::{highlight, resolve};
 use ofx_text::{prefix_by_width, visible_width};
 
@@ -38,6 +38,7 @@ struct Summary {
     total: usize,
     categories: [usize; CATEGORY_LABELS.len()],
     unreported: usize,
+    timed_out: usize,
     failed: usize,
     denied: usize,
     cancelled: usize,
@@ -124,15 +125,27 @@ impl Summary {
         if let Some(index) = row.activity.and_then(category_index) {
             self.categories[index] += 1;
         }
+        let command = row.activity == Some(ToolActivity::Command);
+        let process = row.status.process.filter(|_| command);
+        let timed_out = process == Some(CommandProcessPresentation::TimedOut);
+        let process_failed = matches!(
+            process,
+            Some(CommandProcessPresentation::Signal(_) | CommandProcessPresentation::TimedOut)
+        ) || matches!(process, Some(CommandProcessPresentation::ExitCode(code)) if code != 0);
         let Some(outcome) = row.status.outcome else {
             return;
         };
         match outcome {
             ToolOutcome::Unreported => self.unreported += 1,
-            ToolOutcome::Failed => self.failed += 1,
             ToolOutcome::Denied => self.denied += 1,
             ToolOutcome::Cancelled => self.cancelled += 1,
-            ToolOutcome::Completed | ToolOutcome::Deferred => {}
+            ToolOutcome::Completed | ToolOutcome::Failed if timed_out => self.timed_out += 1,
+            ToolOutcome::Completed | ToolOutcome::Failed
+                if outcome == ToolOutcome::Failed || process_failed =>
+            {
+                self.failed += 1;
+            }
+            ToolOutcome::Completed | ToolOutcome::Failed | ToolOutcome::Deferred => {}
         }
     }
 
@@ -156,6 +169,7 @@ impl Summary {
             append_segment(&mut text, count, label);
         }
         append_segment(&mut text, self.unreported, "unreported");
+        append_segment(&mut text, self.timed_out, "timed out");
         append_segment(&mut text, self.failed, "failed");
         append_segment(&mut text, self.denied, "denied");
         append_segment(&mut text, self.cancelled, "cancelled");
@@ -537,10 +551,12 @@ mod tests {
         mut row: ToolActivityRow,
         status: ToolResultStatus,
         content: &str,
+        process: Option<CommandProcessPresentation>,
     ) -> ToolActivityRow {
         row.finish(&Finished {
             status,
             content,
+            process,
             status_detail: None,
             file_change: None,
         });
@@ -557,10 +573,15 @@ mod tests {
             ),
             ToolResultStatus::Success,
             "",
+            None,
         )
     }
 
-    fn command(id: &str, target: &str) -> ToolActivityRow {
+    fn command(
+        id: &str,
+        target: &str,
+        process: Option<CommandProcessPresentation>,
+    ) -> ToolActivityRow {
         settled(
             started(
                 id,
@@ -570,6 +591,7 @@ mod tests {
             ),
             ToolResultStatus::Success,
             "",
+            process,
         )
     }
 
@@ -604,11 +626,12 @@ mod tests {
             ),
             ToolResultStatus::Failure,
             "edit_file failed: boom",
+            None,
         );
         let rendered = group(vec![
             read("1", "runtime.zig"),
             edit,
-            command("3", "zig build"),
+            command("3", "zig build", None),
         ])
         .render(120, &theme());
         assert_eq!(
@@ -638,9 +661,9 @@ mod tests {
     #[test]
     fn the_largest_categories_lead_and_commands_pluralize() {
         let rows = vec![
-            command("1", "a"),
+            command("1", "a", None),
             read("2", "x"),
-            command("3", "b"),
+            command("3", "b", Some(CommandProcessPresentation::ExitCode(1))),
             settled(
                 started(
                     "4",
@@ -650,15 +673,16 @@ mod tests {
                 ),
                 ToolResultStatus::Success,
                 "",
+                None,
             ),
-            command("5", "sleep 5"),
+            command("5", "sleep 5", Some(CommandProcessPresentation::TimedOut)),
         ];
         assert_eq!(
             group(rows).render(120, &theme())[0].text(),
-            "● 5 tool calls · 3 commands · 1 read · 1 list"
+            "● 5 tool calls · 3 commands · 1 read · 1 list · 1 timed out · 1 failed"
         );
         assert_eq!(
-            group(vec![command("1", "a")]).render(120, &theme())[0].text(),
+            group(vec![command("1", "a", None)]).render(120, &theme())[0].text(),
             "● 1 tool call · 1 command"
         );
     }
@@ -672,19 +696,23 @@ mod tests {
                 ToolActivity::Command,
                 ("Running", "Ran", "rg snapshot"),
             ),
-            command("2", "cat log.txt | head -80"),
-            command("3", "printf 'hello world'"),
-            command("4", "sleep 5"),
+            command("2", "cat log.txt | head -80", None),
+            command(
+                "3",
+                "printf 'hello world'",
+                Some(CommandProcessPresentation::ExitCode(7)),
+            ),
+            command("4", "sleep 5", Some(CommandProcessPresentation::TimedOut)),
         ])
         .render(120, &theme());
         assert_eq!(
             texts(&rendered),
             [
-                "● 4 tool calls · 4 commands",
+                "● 4 tool calls · 4 commands · 1 timed out · 1 failed",
                 "├ Running rg snapshot",
                 "├ Ran cat log.txt | head -80",
-                "├ Ran printf 'hello world'",
-                "└ Ran sleep 5",
+                "├ Exited 7 printf 'hello world'",
+                "└ Timed out sleep 5",
             ]
         );
         assert_eq!(painted(&rendered[1], "├ Running "), Paint::fg(245));
@@ -692,9 +720,9 @@ mod tests {
         assert_eq!(painted(&rendered[2], "|"), Paint::fg(252));
         assert_eq!(painted(&rendered[2], "head"), Paint::fg(252));
         assert_eq!(painted(&rendered[2], "-80"), Paint::fg(250));
-        assert_eq!(painted(&rendered[3], "├ Ran "), Paint::fg(245));
+        assert_eq!(painted(&rendered[3], "├ Exited 7 "), Paint::fg(245));
         assert_eq!(painted(&rendered[3], "'hello world'"), Paint::fg(250));
-        assert_eq!(painted(&rendered[4], "└ Ran "), Paint::fg(245));
+        assert_eq!(painted(&rendered[4], "└ Timed out "), Paint::fg(245));
         assert_eq!(painted(&rendered[4], "sleep"), Paint::fg(252));
     }
 
@@ -723,7 +751,7 @@ mod tests {
     #[test]
     fn rows_clip_to_the_width_with_an_ellipsis_in_the_style_at_the_cut() {
         let long = format!("printf {}", "alpha-beta-gamma-delta-".repeat(8));
-        let rows = group(vec![read("1", &"a".repeat(200)), command("2", &long)]);
+        let rows = group(vec![read("1", &"a".repeat(200)), command("2", &long, None)]);
         for cols in [1, 2, 10, 24, 80] {
             let rendered = rows.render(cols, &theme());
             assert_eq!(rendered.len(), 3, "{cols}");
@@ -746,7 +774,11 @@ mod tests {
                 .iter()
                 .all(String::is_empty)
         );
-        let token_cut = group(vec![command("1", "printf 'a quoted string that runs on'")]);
+        let token_cut = group(vec![command(
+            "1",
+            "printf 'a quoted string that runs on'",
+            None,
+        )]);
         let cut = &token_cut.render(20, &theme())[1];
         assert_eq!(cut.text(), "└ Ran printf 'a quo…");
         assert_eq!(painted(cut, "'a quo…"), Paint::fg(250));
@@ -870,6 +902,7 @@ mod tests {
         row.finish(&Finished {
             status: ToolResultStatus::Success,
             content: "",
+            process: None,
             status_detail: None,
             file_change: Some(FileChangeStats {
                 additions: change.0,
@@ -948,6 +981,7 @@ mod tests {
             ),
             ToolResultStatus::Failure,
             &tool_permission_denied_json("shell"),
+            None,
         );
         let rendered = group(vec![read("2", "README.md"), denied]).render(100, &theme());
         assert_eq!(
@@ -964,7 +998,7 @@ mod tests {
     fn hostile_targets_render_as_visible_escapes() {
         let rows = group(vec![
             read("1", "a\x1b]2;owned\x07b"),
-            command("2", "printf '\x1b[2J\x1b[31mred'"),
+            command("2", "printf '\x1b[2J\x1b[31mred'", None),
         ]);
         for row in rows.render(200, &theme()) {
             let encoded = row.encode();
@@ -1033,8 +1067,12 @@ mod tests {
         let rows: Vec<ToolActivityRow> = (0..20)
             .map(|index| match index {
                 0..10 => read(&index.to_string(), "file.zig"),
-                10..17 => command(&index.to_string(), "zig build"),
-                17 => command(&index.to_string(), "rg snapshot"),
+                10..17 => command(&index.to_string(), "zig build", None),
+                17 => command(
+                    &index.to_string(),
+                    "rg snapshot",
+                    Some(CommandProcessPresentation::ExitCode(1)),
+                ),
                 _ => started(
                     &index.to_string(),
                     "edit_file",
@@ -1047,9 +1085,9 @@ mod tests {
         assert_eq!(rendered.len(), 21);
         assert_eq!(
             rendered[0].text(),
-            "● 20 tool calls · 10 read · 8 commands · 2 edit"
+            "● 20 tool calls · 10 read · 8 commands · 2 edit · 1 failed"
         );
-        assert_eq!(rendered[18].text(), "├ Ran rg snapshot");
+        assert_eq!(rendered[18].text(), "├ Exited 1 rg snapshot");
         assert_eq!(rendered[20].text(), "└ Editing runtime.zig");
         assert!(rendered.iter().all(|row| row.width() <= 100));
     }

@@ -4,7 +4,9 @@ use crate::applicable_target::ApplicableTarget;
 use crate::ids::ToolCallId;
 use crate::permission_gate::{CommandRequest, FileChange, FileMutation, PathAccess};
 use crate::stream_provider::BoxFuture;
-use crate::types::{FileChangeStats, ToolResultStatus, ToolStatusDetail};
+use crate::types::{
+    CommandProcessPresentation, FileChangeStats, ToolResultStatus, ToolStatusDetail,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolSpec {
@@ -93,6 +95,7 @@ pub struct ToolOutput {
     pub content: String,
     pub command_result: Option<String>,
     pub context_notices: Vec<String>,
+    pub process: Option<CommandProcessPresentation>,
     pub status_detail: Option<ToolStatusDetail>,
     pub file_change: Option<FileChangeStats>,
 }
@@ -104,6 +107,7 @@ impl ToolOutput {
             content: content.into(),
             command_result: None,
             context_notices: Vec::new(),
+            process: None,
             status_detail: None,
             file_change: None,
         }
@@ -115,6 +119,7 @@ impl ToolOutput {
             content: content.into(),
             command_result: None,
             context_notices: Vec::new(),
+            process: None,
             status_detail: None,
             file_change: None,
         }
@@ -129,6 +134,12 @@ impl ToolOutput {
     #[must_use]
     pub fn with_context_notices(mut self, notices: impl IntoIterator<Item = String>) -> Self {
         self.context_notices.extend(notices);
+        self
+    }
+
+    #[must_use]
+    pub fn with_process(mut self, process: Option<CommandProcessPresentation>) -> Self {
+        self.process = process;
         self
     }
 

@@ -312,6 +312,7 @@ fn failed_gate(turn_id: TurnId, calls: &[ToolCall], events: EventSink<'_>) -> St
             arguments: call.arguments.clone(),
             reason: ToolRejection::Panicked,
             description: None,
+            content: String::new(),
         });
     }
     Stop::failed(TurnFailure::ProjectContext)

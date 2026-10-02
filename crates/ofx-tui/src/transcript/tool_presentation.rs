@@ -1,7 +1,8 @@
 use ofx_contract::{
-    ActionLabel, CallDescription, FileChangeStats, ToolActivity, ToolArgsError, ToolCallId,
-    ToolDeferral, ToolPermissionDenialReason, ToolRejection, ToolResultStatus, ToolStatusDetail,
-    TurnOutcome, parse_tool_args_object, tool_permission_denial_reason,
+    ActionLabel, CallDescription, CommandProcessPresentation, FileChangeStats, ToolActivity,
+    ToolArgsError, ToolCallId, ToolDeferral, ToolPermissionDenialReason, ToolRejection,
+    ToolResultStatus, ToolStatusDetail, TurnOutcome, parse_tool_args_object,
+    shell_request_invalid_field_count, tool_permission_denial_reason,
 };
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_inline, mask_secrets};
 
@@ -34,6 +35,7 @@ pub(crate) struct ToolStatus {
     pub(crate) outcome: Option<ToolOutcome>,
     pub(crate) phrase: String,
     pub(crate) label_len: usize,
+    pub(crate) process: Option<CommandProcessPresentation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +51,7 @@ pub(crate) struct ToolActivityRow {
 pub(crate) struct Finished<'a> {
     pub(crate) status: ToolResultStatus,
     pub(crate) content: &'a str,
+    pub(crate) process: Option<CommandProcessPresentation>,
     pub(crate) status_detail: Option<ToolStatusDetail>,
     pub(crate) file_change: Option<FileChangeStats>,
 }
@@ -57,6 +60,7 @@ pub(crate) struct Rejected<'a> {
     pub(crate) reason: ToolRejection,
     pub(crate) arguments: &'a str,
     pub(crate) description: Option<CallDescription>,
+    pub(crate) content: &'a str,
 }
 
 impl ToolActivityRow {
@@ -92,6 +96,7 @@ impl ToolActivityRow {
                 outcome: None,
                 phrase: String::new(),
                 label_len: 0,
+                process: None,
             },
         }
     }
@@ -105,16 +110,18 @@ impl ToolActivityRow {
         let mut row = Self::new(call_id, tool_name, rejected.description);
         let suffix = match rejected.reason {
             ToolRejection::MalformedArguments => Some(malformed_suffix(rejected.arguments)),
-            ToolRejection::Invalid | ToolRejection::Unsupported | ToolRejection::Panicked => None,
+            ToolRejection::Invalid => row.correction_suffix(rejected.content),
+            ToolRejection::Unsupported | ToolRejection::Panicked => None,
         };
         row.status = if known {
-            row.settled(ToolOutcome::Failed, FAILED, suffix.as_deref())
+            row.settled(ToolOutcome::Failed, FAILED, suffix.as_deref(), None)
         } else {
             let phrase = format!("{FAILED} {}", row.tool_name);
             ToolStatus {
                 outcome: Some(ToolOutcome::Failed),
                 phrase,
                 label_len: FAILED.len(),
+                process: None,
             }
         };
         row
@@ -133,13 +140,16 @@ impl ToolActivityRow {
                 ToolPermissionDenialReason::UserDenied => "Denied",
                 ToolPermissionDenialReason::ReviewUnavailable => "Review unavailable",
             };
-            self.settled(ToolOutcome::Denied, label, None)
+            self.settled(ToolOutcome::Denied, label, None, None)
+        } else if let Some((outcome, label)) = self.process_outcome(finished.process) {
+            self.settled(outcome, &label, None, finished.process)
         } else if finished.status == ToolResultStatus::Success {
             if self.is_file_mutation() && finished.content.starts_with(NOOP_RESULT_PREFIX) {
                 ToolStatus {
                     outcome: Some(ToolOutcome::Completed),
                     phrase: encoded_target(finished.content),
                     label_len: 0,
+                    process: None,
                 }
             } else {
                 let completed = self
@@ -147,11 +157,13 @@ impl ToolActivityRow {
                     .as_ref()
                     .map_or("Completed", |label| label.completed);
                 let stats = finished.file_change.and_then(stats_suffix);
-                self.settled(ToolOutcome::Completed, completed, stats.as_deref())
+                self.settled(ToolOutcome::Completed, completed, stats.as_deref(), None)
             }
         } else {
-            let suffix = failure_detail(&self.tool_name, finished.status_detail, finished.content);
-            self.settled(ToolOutcome::Failed, FAILED, suffix.as_deref())
+            let suffix = self.correction_suffix(finished.content).or_else(|| {
+                failure_detail(&self.tool_name, finished.status_detail, finished.content)
+            });
+            self.settled(ToolOutcome::Failed, FAILED, suffix.as_deref(), None)
         };
     }
 
@@ -159,10 +171,10 @@ impl ToolActivityRow {
         if self.is_active() {
             self.status = match deferral {
                 ToolDeferral::ProjectInstructions => {
-                    self.settled(ToolOutcome::Deferred, READING_INSTRUCTIONS, None)
+                    self.settled(ToolOutcome::Deferred, READING_INSTRUCTIONS, None, None)
                 }
                 ToolDeferral::TargetChanged => {
-                    self.settled(ToolOutcome::Denied, NOT_EXECUTED, None)
+                    self.settled(ToolOutcome::Denied, NOT_EXECUTED, None, None)
                 }
             };
         }
@@ -170,7 +182,7 @@ impl ToolActivityRow {
 
     pub(crate) fn cancel(&mut self) {
         if self.is_active() {
-            self.status = self.settled(ToolOutcome::Cancelled, CANCELLED, None);
+            self.status = self.settled(ToolOutcome::Cancelled, CANCELLED, None, None);
         }
     }
 
@@ -187,6 +199,7 @@ impl ToolActivityRow {
             outcome: Some(outcome),
             phrase: phrase.to_owned(),
             label_len: phrase.len(),
+            process: None,
         };
     }
 
@@ -231,10 +244,17 @@ impl ToolActivityRow {
             outcome: None,
             phrase,
             label_len,
+            process: None,
         }
     }
 
-    fn settled(&self, outcome: ToolOutcome, label: &str, suffix: Option<&str>) -> ToolStatus {
+    fn settled(
+        &self,
+        outcome: ToolOutcome,
+        label: &str,
+        suffix: Option<&str>,
+        process: Option<CommandProcessPresentation>,
+    ) -> ToolStatus {
         let target = match (&self.label, suffix) {
             (Some(action), Some(_)) => self.bounded_target(action),
             (Some(action), None) => action.target.clone(),
@@ -245,6 +265,7 @@ impl ToolActivityRow {
             outcome: Some(outcome),
             phrase: format!("{label} {target}{}", suffix.unwrap_or_default()),
             label_len: label.len(),
+            process,
         }
     }
 
@@ -255,6 +276,36 @@ impl ToolActivityRow {
             .and_then(|rest| rest.strip_prefix(' '))
             .filter(|_| self.activity == Some(ToolActivity::Command));
         bounded.unwrap_or(&action.target).to_owned()
+    }
+
+    fn process_outcome(
+        &self,
+        process: Option<CommandProcessPresentation>,
+    ) -> Option<(ToolOutcome, String)> {
+        if self.activity != Some(ToolActivity::Command) {
+            return None;
+        }
+        Some(match process? {
+            CommandProcessPresentation::ExitCode(0) => (ToolOutcome::Completed, "Ran".to_owned()),
+            CommandProcessPresentation::ExitCode(code) => {
+                (ToolOutcome::Failed, format!("Exited {code}"))
+            }
+            CommandProcessPresentation::Signal(signal) => {
+                (ToolOutcome::Failed, format!("Signaled {signal}"))
+            }
+            CommandProcessPresentation::TimedOut => (ToolOutcome::Failed, "Timed out".to_owned()),
+        })
+    }
+
+    fn correction_suffix(&self, content: &str) -> Option<String> {
+        if self.tool_name != SHELL_TOOL {
+            return None;
+        }
+        let count = shell_request_invalid_field_count(content)?;
+        Some(format!(
+            " · {count} invalid field{}",
+            if count == 1 { "" } else { "s" }
+        ))
     }
 }
 
@@ -350,18 +401,20 @@ mod tests {
     }
 
     fn finished(row: &mut ToolActivityRow, status: ToolResultStatus, content: &str) -> String {
-        finish_with(row, status, content, None)
+        finish_with(row, status, content, None, None)
     }
 
     fn finish_with(
         row: &mut ToolActivityRow,
         status: ToolResultStatus,
         content: &str,
+        process: Option<CommandProcessPresentation>,
         status_detail: Option<ToolStatusDetail>,
     ) -> String {
         row.finish(&Finished {
             status,
             content,
+            process,
             status_detail,
             file_change: None,
         });
@@ -441,6 +494,7 @@ mod tests {
             write.finish(&Finished {
                 status: ToolResultStatus::Success,
                 content: "wrote new.txt (4 bytes)",
+                process: None,
                 status_detail: None,
                 file_change: Some(FileChangeStats {
                     additions,
@@ -508,6 +562,67 @@ mod tests {
     }
 
     #[test]
+    fn command_process_outcomes_replace_the_completed_label() {
+        let cases = [
+            (
+                CommandProcessPresentation::ExitCode(7),
+                "Exited 7 exit 7",
+                ToolOutcome::Failed,
+            ),
+            (
+                CommandProcessPresentation::ExitCode(0),
+                "Ran exit 7",
+                ToolOutcome::Completed,
+            ),
+            (
+                CommandProcessPresentation::Signal(9),
+                "Signaled 9 exit 7",
+                ToolOutcome::Failed,
+            ),
+            (
+                CommandProcessPresentation::TimedOut,
+                "Timed out exit 7",
+                ToolOutcome::Failed,
+            ),
+        ];
+        for (process, phrase, outcome) in cases {
+            let mut shell = row("shell", ToolActivity::Command, ("Running", "Ran", "exit 7"));
+            assert_eq!(
+                finish_with(
+                    &mut shell,
+                    ToolResultStatus::Success,
+                    "",
+                    Some(process),
+                    None
+                ),
+                phrase
+            );
+            assert_eq!(shell.status.outcome, Some(outcome));
+            assert_eq!(shell.status.process, Some(process));
+        }
+        let mut observe = row(
+            "shell",
+            ToolActivity::Command,
+            ("Waiting for", "Observed", "sleep 3"),
+        );
+        assert_eq!(
+            finished(&mut observe, ToolResultStatus::Success, ""),
+            "Observed sleep 3"
+        );
+        let mut read = row("read_file", ToolActivity::Read, ("Reading", "Read", "a"));
+        assert_eq!(
+            finish_with(
+                &mut read,
+                ToolResultStatus::Success,
+                "",
+                Some(CommandProcessPresentation::ExitCode(3)),
+                None
+            ),
+            "Read a"
+        );
+    }
+
+    #[test]
     fn failures_show_preflight_details_and_shell_corrections() {
         let mut grep = row(
             "grep_files",
@@ -519,6 +634,7 @@ mod tests {
                 &mut grep,
                 ToolResultStatus::Failure,
                 "Path not found: nope",
+                None,
                 Some(ToolStatusDetail::PreflightFailed)
             ),
             "Failed zzz: Path not found: nope"
@@ -546,6 +662,7 @@ mod tests {
                 &mut edit,
                 ToolResultStatus::Failure,
                 "edit_file failed: old_string not found in file.",
+                None,
                 Some(ToolStatusDetail::PreflightFailed)
             ),
             "Failed README.md: old_string not found in file."
@@ -560,6 +677,7 @@ mod tests {
                 &mut stale,
                 ToolResultStatus::Failure,
                 "changed",
+                None,
                 Some(ToolStatusDetail::StalePreview)
             ),
             "Failed a.txt: stale preview"
@@ -574,6 +692,7 @@ mod tests {
                 &mut multiline,
                 ToolResultStatus::Failure,
                 "edit_file failed: one\ntwo\x1b[2J",
+                None,
                 Some(ToolStatusDetail::PreflightFailed)
             ),
             "Failed a: edit_file failed: one two\\x1b[2J"
@@ -584,6 +703,7 @@ mod tests {
                 &mut empty,
                 ToolResultStatus::Failure,
                 "",
+                None,
                 Some(ToolStatusDetail::PreflightFailed)
             ),
             "Failed a: preflight failed"
@@ -593,6 +713,7 @@ mod tests {
             &mut secret,
             ToolResultStatus::Failure,
             "Path not found: sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+            None,
             Some(ToolStatusDetail::PreflightFailed),
         );
         assert!(phrase.contains("[redacted]"), "{phrase}");
@@ -602,9 +723,21 @@ mod tests {
             &mut bounded,
             ToolResultStatus::Failure,
             &long,
+            None,
             Some(ToolStatusDetail::PreflightFailed),
         );
         assert_eq!(phrase.len(), "Failed a: ".len() + MAX_FAILURE_DETAIL_BYTES);
+        let correction =
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a"]}}"#;
+        let mut shell = row(
+            "shell",
+            ToolActivity::Command,
+            ("Running", "Ran", "echo hi"),
+        );
+        assert_eq!(
+            finished(&mut shell, ToolResultStatus::Failure, correction),
+            "Failed echo hi · 1 invalid field"
+        );
     }
 
     #[test]
@@ -621,14 +754,11 @@ mod tests {
             ),
         );
         assert_eq!(shell.status.phrase, format!("Running {command}"));
+        let correction =
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a","b"]}}"#;
         assert_eq!(
-            finish_with(
-                &mut shell,
-                ToolResultStatus::Failure,
-                "changed",
-                Some(ToolStatusDetail::StalePreview)
-            ),
-            format!("Failed {bounded}: stale preview")
+            finished(&mut shell, ToolResultStatus::Failure, correction),
+            format!("Failed {bounded} · 2 invalid fields")
         );
         let mut failed = ToolActivityRow::started(
             ToolCallId::new("call"),
@@ -647,7 +777,7 @@ mod tests {
 
     #[test]
     fn rejections_fail_their_call_with_the_known_target() {
-        let rejected = |reason, tool: &str, arguments, description| {
+        let rejected = |reason, tool: &str, arguments, description, content| {
             ToolActivityRow::rejected(
                 ToolCallId::new("call"),
                 tool,
@@ -655,21 +785,22 @@ mod tests {
                     reason,
                     arguments,
                     description,
+                    content,
                 },
             )
             .status
             .phrase
         };
         assert_eq!(
-            rejected(ToolRejection::Unsupported, "no_such_tool", "{}", None),
+            rejected(ToolRejection::Unsupported, "no_such_tool", "{}", None, ""),
             "Failed no_such_tool"
         );
         assert_eq!(
-            rejected(ToolRejection::Unsupported, "evil\x1b[2J", "{}", None),
+            rejected(ToolRejection::Unsupported, "evil\x1b[2J", "{}", None, ""),
             "Failed evil\\x1b[2J"
         );
         assert_eq!(
-            rejected(ToolRejection::Panicked, "read_file", "{}", None),
+            rejected(ToolRejection::Panicked, "read_file", "{}", None, ""),
             "Failed read_file"
         );
         assert_eq!(
@@ -677,18 +808,33 @@ mod tests {
                 ToolRejection::MalformedArguments,
                 "read_file",
                 "{\"path\":",
-                None
+                None,
+                ""
             ),
             "Failed tool call: invalid JSON arguments"
         );
         assert_eq!(
-            rejected(ToolRejection::MalformedArguments, "glob_files", "[1]", None),
+            rejected(
+                ToolRejection::MalformedArguments,
+                "glob_files",
+                "[1]",
+                None,
+                ""
+            ),
             "Failed tool call: non-object arguments"
         );
         assert_eq!(
-            rejected(ToolRejection::MalformedArguments, "write_file", "[1]", None),
+            rejected(
+                ToolRejection::MalformedArguments,
+                "write_file",
+                "[1]",
+                None,
+                ""
+            ),
             "Failed file: non-object arguments"
         );
+        let correction =
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a"]}}"#;
         assert_eq!(
             rejected(
                 ToolRejection::Invalid,
@@ -698,9 +844,10 @@ mod tests {
                     ToolActivity::Command,
                     Some(("Running", "Ran", "echo hi")),
                     "Running echo hi"
-                ))
+                )),
+                correction
             ),
-            "Failed echo hi"
+            "Failed echo hi · 1 invalid field"
         );
         assert_eq!(
             rejected(
@@ -711,7 +858,8 @@ mod tests {
                     ToolActivity::Read,
                     Some(("Loading skill", "Loaded skill", "x")),
                     "Loading skill x"
-                ))
+                )),
+                "nope"
             ),
             "Failed x"
         );

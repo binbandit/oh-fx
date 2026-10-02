@@ -26,6 +26,13 @@ pub enum ToolResultStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommandProcessPresentation {
+    ExitCode(i64),
+    Signal(u32),
+    TimedOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileChangeStats {
     pub additions: u32,
     pub deletions: u32,

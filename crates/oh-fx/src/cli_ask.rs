@@ -1792,6 +1792,7 @@ mod tests {
             status: ToolResultStatus::Success,
             content: String::new(),
             command_result: None,
+            process: None,
             status_detail: None,
             file_change: None,
         }
@@ -1819,6 +1820,7 @@ mod tests {
                     effect: ToolEffect::None,
                     concurrency: Concurrency::Parallel,
                 }),
+            content: String::new(),
         }
     }
 

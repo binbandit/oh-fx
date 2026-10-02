@@ -241,6 +241,7 @@ impl Shell<'_> {
                 arguments,
                 reason,
                 description,
+                content,
             } => {
                 self.end_assistant_step(turn_id);
                 if self.is_visible_turn(turn_id) {
@@ -248,6 +249,7 @@ impl Shell<'_> {
                         reason,
                         arguments: &arguments,
                         description,
+                        content: &content,
                     };
                     self.transcript
                         .add_tool_row(ToolActivityRow::rejected(call_id, &tool_name, rejected));
@@ -258,6 +260,7 @@ impl Shell<'_> {
                 call_id,
                 status,
                 content,
+                process,
                 status_detail,
                 file_change,
                 ..
@@ -268,6 +271,7 @@ impl Shell<'_> {
                     row.finish(&Finished {
                         status,
                         content: &content,
+                        process,
                         status_detail,
                         file_change,
                     });
@@ -878,6 +882,7 @@ mod tests {
             status: ToolResultStatus::Success,
             content: String::new(),
             command_result: None,
+            process: None,
             status_detail: None,
             file_change: None,
         }

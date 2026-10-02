@@ -3,7 +3,8 @@ use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, Fi
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::tool_dispatch::CallDescription;
 use crate::types::{
-    FileChangeStats, PermissionMode, RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, Usage,
+    CommandProcessPresentation, FileChangeStats, PermissionMode, RouteRecoveryStatus,
+    ToolResultStatus, ToolStatusDetail, Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -144,6 +145,7 @@ pub enum UiEvent {
         status: ToolResultStatus,
         content: String,
         command_result: Option<String>,
+        process: Option<CommandProcessPresentation>,
         status_detail: Option<ToolStatusDetail>,
         file_change: Option<FileChangeStats>,
     },
@@ -159,6 +161,7 @@ pub enum UiEvent {
         arguments: String,
         reason: ToolRejection,
         description: Option<CallDescription>,
+        content: String,
     },
     ContextNotice {
         turn_id: TurnId,
