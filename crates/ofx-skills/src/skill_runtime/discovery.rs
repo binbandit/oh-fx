@@ -111,7 +111,10 @@ fn push_root(
     source: SkillSource,
     read_authority: Option<PathBuf>,
 ) {
-    if roots.iter().any(|root| root.path == path) {
+    if roots
+        .iter()
+        .any(|root| root.path.as_os_str() == path.as_os_str())
+    {
         return;
     }
     roots.push(SkillRoot {
