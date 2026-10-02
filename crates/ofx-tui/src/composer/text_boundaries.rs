@@ -45,6 +45,11 @@ pub(crate) fn is_word_character_at(text: &str, index: usize) -> bool {
     char_at(text, index).is_some_and(is_word_character)
 }
 
+pub(crate) fn is_whitespace_character_at(text: &str, index: usize) -> bool {
+    char_at(text, index)
+        .is_some_and(|character| character.is_ascii_whitespace() || character == '\u{b}')
+}
+
 pub(crate) fn logical_line_start(text: &str, cursor: usize) -> usize {
     let start = cursor.min(text.len());
     text.as_bytes()[..start]
