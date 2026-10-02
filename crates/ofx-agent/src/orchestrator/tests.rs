@@ -359,6 +359,10 @@ impl PreparedCall for EchoCall {
         self.command.as_ref()
     }
 
+    fn mcp_tool(&self) -> bool {
+        self.arguments.contains("mcp_call")
+    }
+
     fn refusal(&self) -> Option<&ToolOutput> {
         assert!(
             !self.arguments.contains("refusal_panic"),
