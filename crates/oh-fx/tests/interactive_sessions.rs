@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use ofx_testkit::{FakeServer, PtySession, RecordedRequest, Reply, chat_text_events};
+use ofx_testkit::{
+    FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -638,4 +640,80 @@ fn a_long_session_reopens_with_its_latest_turns_on_screen() {
     assert_eq!(messages.len(), 2 * 1501 + 1);
     assert_eq!(messages[3000].1, "prompt 1500");
     assert_eq!(home.frames(&id).len(), 3 * 1502);
+}
+
+#[test]
+fn a_turn_whose_tool_result_cannot_be_saved_after_a_checkpoint_blocks_the_next_prompt() {
+    let big = format!("{}LAST_SENTINEL", "word ".repeat(30_000));
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&[&big])),
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"small.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Read it."])),
+        Reply::sse(&chat_text_events(&["Fourth."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let mut windowed = settings(&server.base_url());
+    windowed["providers"]["local"]["model_metadata"] =
+        json!({"model-a": {"context_window": 40000, "max_output_tokens": 1000}});
+    fs::write(
+        home.root.join("config/oh-fx/settings.json"),
+        windowed.to_string(),
+    )
+    .expect("rewrite settings.json");
+    fs::write(home.workspace.join("small.txt"), "alpha\n").expect("write small.txt");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "LAST_SENTINEL");
+    session
+        .wait_for(WAIT, |_| {
+            home.session_ids().len() == 1 && home.frames(&home.only_session()).len() == 3
+        })
+        .unwrap_or_else(|screen| panic!("the first turn was not saved:\n{screen}"));
+    let id = home.only_session();
+    fs::write(home.sessions().join(&id).join("tool-results"), "blocked")
+        .expect("block the tool results");
+    session.send(b"second\r");
+    wait(
+        &session,
+        "could not save it (SessionPathUnsafe). New messages are blocked",
+    );
+    let saved = kinds(&home.frames(&id));
+    assert_eq!(
+        saved,
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "context_checkpoint"
+        ]
+    );
+    fs::remove_file(home.sessions().join(&id).join("tool-results"))
+        .expect("unblock the tool results");
+    session.send(b"third\r");
+    wait(&session, "SessionCommitFailed");
+    exit(session);
+    assert_eq!(server.requests().len(), 3);
+    assert_eq!(kinds(&home.frames(&id)), saved);
+    let session = home.shell(&["-c"], "┃ second\n\n✗ system: failed");
+    session.send(b"fourth\r");
+    wait(&session, "Fourth.");
+    exit(session);
+    assert_eq!(
+        kinds(&home.frames(&id))[5..],
+        ["interrupted", "user", "assistant", "turn_completed"]
+    );
+    let resumed = chat(&server.requests()[3]);
+    assert!(
+        resumed.iter().all(|(_, text)| text != "third"),
+        "{resumed:?}"
+    );
+    assert_eq!(
+        resumed.last(),
+        Some(&("user".to_owned(), "fourth".to_owned()))
+    );
 }

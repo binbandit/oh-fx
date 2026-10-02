@@ -789,6 +789,55 @@ fn a_turn_left_open_by_a_failed_save_blocks_every_later_save() {
 }
 
 #[test]
+fn a_turn_whose_results_cannot_be_stored_after_a_checkpoint_blocks_every_later_save() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("first", "one"), &gateway())
+        .unwrap();
+    let cut = HistoryCut {
+        turns: 1,
+        tool_steps: 0,
+    };
+    session
+        .record_compaction("S", cut, &simple_turn("second", ""), &gateway())
+        .unwrap();
+    let results = fixture.dir().join("tool-results");
+    fs::write(&results, "not a directory").unwrap();
+    let calls = [call("c1", "read_file")];
+    let second = HistoryTurn {
+        user: "second",
+        steps: vec![step(
+            "",
+            &calls,
+            vec![result(&calls[0], "contents", ToolResultStatus::Success)],
+        )],
+        end: replied("two"),
+    };
+    assert!(session.record_turn(&second, &gateway()).is_err());
+    assert!(session.turn_open());
+    assert_eq!(
+        session.require_writable(),
+        Err(SessionError::SessionCommitFailed)
+    );
+    fs::remove_file(&results).unwrap();
+    assert_eq!(
+        session.record_turn(&simple_turn("third", "three"), &gateway()),
+        Err(SessionError::SessionCommitFailed)
+    );
+    assert_eq!(
+        fixture.events(),
+        [
+            (1, "user".to_owned()),
+            (2, "assistant".to_owned()),
+            (3, "turn_completed".to_owned()),
+            (4, "user".to_owned()),
+            (5, "context_checkpoint".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn a_failed_save_of_a_closed_log_leaves_later_saves_allowed() {
     let fixture = Fixture::new();
     let mut session = fixture.start();

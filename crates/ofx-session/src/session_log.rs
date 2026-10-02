@@ -155,15 +155,23 @@ impl WritableSession {
         if nothing_done && !open {
             return Ok(());
         }
-        let timestamp_ms = now_ms();
-        let written = self.written_steps()?;
-        let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
-        let unwritten = &events[usize::from(open)..];
-        let saved = self.append(timestamp_ms, unwritten);
+        let saved = self.append_turn(turn, provider, open);
         if saved.is_err() && self.writer.turn_open() {
             self.writer.block_open_turn();
         }
         saved
+    }
+
+    fn append_turn(
+        &mut self,
+        turn: &HistoryTurn<'_>,
+        provider: &SavedProvider,
+        open: bool,
+    ) -> Result<(), SessionError> {
+        let timestamp_ms = now_ms();
+        let written = self.written_steps()?;
+        let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
+        self.append(timestamp_ms, &events[usize::from(open)..])
     }
 
     pub fn record_compaction(
