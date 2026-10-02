@@ -7,6 +7,7 @@ pub(crate) struct LiveParts<'a> {
     pub(crate) activity: Vec<Row>,
     pub(crate) banner: Vec<Row>,
     pub(crate) composer: &'a ComposerView,
+    pub(crate) menu: Vec<Row>,
     pub(crate) hint: Row,
 }
 
@@ -26,6 +27,10 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
     let banner_rows = footer.len();
     let composer_rows = parts.composer.rows.len();
     footer.extend(parts.composer.rows.iter().cloned());
+    if !parts.menu.is_empty() {
+        footer.push(Row::new());
+        footer.extend(parts.menu);
+    }
     footer.push(Row::new());
     footer.push(parts.hint);
     let mut body = Vec::new();
@@ -91,6 +96,7 @@ mod tests {
             activity: activity.iter().map(|text| Row::plain(text)).collect(),
             banner: banner.iter().map(|text| Row::plain(text)).collect(),
             composer,
+            menu: Vec::new(),
             hint: Row::plain("auto · m"),
         }
     }

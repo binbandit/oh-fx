@@ -69,6 +69,7 @@ impl Shell<'_> {
             InputEvent::Paste(outcome) => self.handle_paste(outcome),
             InputEvent::TextDropped(_) => {}
         }
+        self.sync_skills_menu();
         Ok(())
     }
 
@@ -86,11 +87,16 @@ impl Shell<'_> {
             3 => self.handle_ctrl_c(),
             4 => self.handle_ctrl_d(),
             b'\r' => {
-                if !self.composer.replace_backslash_before_cursor_with_newline() {
+                if !self.submit_skills_menu_selection()
+                    && !self.composer.replace_backslash_before_cursor_with_newline()
+                {
                     self.submit();
                 }
             }
-            b'\t' | 7 | 22 | 24 => {}
+            b'\t' => {
+                self.cycle_skills_menu_source(1);
+            }
+            7 | 22 | 24 => {}
             _ => {
                 if let Some(action) = raw.composer_shortcut {
                     self.route_shortcut(action);
@@ -124,7 +130,9 @@ impl Shell<'_> {
         self.gestures.disarm_escape_interrupt();
         self.gestures.disarm_escape_clear();
         if decoded.action == Action::TogglePermissionMode {
-            self.send(UiCommand::TogglePermissionMode);
+            if !self.cycle_skills_menu_source(-1) {
+                self.send(UiCommand::TogglePermissionMode);
+            }
             return;
         }
         if let Some(action) = decoded.composer_shortcut {
@@ -154,7 +162,7 @@ impl Shell<'_> {
         self.push_entry(Entry::Notice(Notice::new(NoticeTone::Error, "input", body)));
     }
 
-    fn report_limit(&mut self) {
+    pub(super) fn report_limit(&mut self) {
         if self.composer.note_limit_rejection(TextOwner::Composer) {
             self.input_notice(LIMIT_REJECTED);
         }
@@ -169,6 +177,11 @@ impl Shell<'_> {
     }
 
     fn resolve_escape(&mut self, cancel_pending: bool) {
+        if self.cancel_skills_menu() {
+            self.gestures.disarm_escape_clear();
+            self.gestures.disarm_escape_interrupt();
+            return;
+        }
         let now_ms = self.now_ms();
         if self.dismiss_compaction_feedback() {
             self.gestures.disarm_escape_clear();
@@ -230,6 +243,8 @@ impl Shell<'_> {
         let limit = COMPOSER_INPUT_LIMIT_BYTES;
         match action {
             ShortcutAction::Move(intent) => match intent.kind {
+                MoveKind::VisualUp if self.move_skills_menu(-1) => {}
+                MoveKind::VisualDown if self.move_skills_menu(1) => {}
                 MoveKind::VisualUp
                 | MoveKind::VisualDown
                 | MoveKind::PageUp
@@ -275,7 +290,11 @@ impl Shell<'_> {
                 self.composer.yank(limit);
             }
             ShortcutAction::Redraw => self.start_fresh_transcript(FreshScreen::Erase),
-            ShortcutAction::InsertNewline => self.insert("\n"),
+            ShortcutAction::InsertNewline => {
+                if self.skills_menu.is_none() {
+                    self.insert("\n");
+                }
+            }
             ShortcutAction::CopySelection => self.copy_selection(),
             ShortcutAction::CutSelection => self.cut_selection(),
         }

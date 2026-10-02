@@ -3,3 +3,4 @@ pub(crate) mod approval_panel;
 mod command_text;
 pub(crate) mod input_presentation;
 mod phrase;
+pub(crate) mod skills_menu_presentation;
