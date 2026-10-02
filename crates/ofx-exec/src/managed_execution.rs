@@ -13,6 +13,7 @@ use crate::command_runner::{
     CapturedCommand, CapturedOutcome, OutputStream, RunError, SessionSupervisor, StopIntent,
     TERMINATION_SETTLE_TIMEOUT, run_captured,
 };
+use crate::held_directory::HeldDirectory;
 use crate::output_echo::{LineEcho, OutputEcho};
 use crate::shell_resolver::captured_invocation;
 
@@ -34,10 +35,11 @@ pub enum ExecutionError {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct StartCaptured {
     pub command: String,
     pub cwd: PathBuf,
+    pub cwd_directory: HeldDirectory,
     pub environment: Environment,
     pub max_output_bytes: usize,
     pub timeout: Option<Duration>,
@@ -277,10 +279,10 @@ impl ManagedExecutions {
         let invocation = captured_invocation(&input.environment, &input.command);
         if input.yield_time.is_zero() {
             let snapshot = self.deliver(&entry, true);
-            self.spawn_driver(&entry, invocation, input.timeout);
+            self.spawn_driver(&entry, invocation, input.cwd_directory, input.timeout);
             return Ok(snapshot);
         }
-        self.spawn_driver(&entry, invocation, input.timeout);
+        self.spawn_driver(&entry, invocation, input.cwd_directory, input.timeout);
         let unpublished = UnpublishedRun {
             shared: Arc::clone(&self.shared),
             entry: Arc::clone(&entry),
@@ -405,7 +407,13 @@ impl ManagedExecutions {
         Ok(entry)
     }
 
-    fn spawn_driver(&self, entry: &Arc<Entry>, invocation: Vec<OsString>, limit: Option<Duration>) {
+    fn spawn_driver(
+        &self,
+        entry: &Arc<Entry>,
+        invocation: Vec<OsString>,
+        cwd_directory: HeldDirectory,
+        limit: Option<Duration>,
+    ) {
         let entry = Arc::clone(entry);
         let shared = Arc::downgrade(&self.shared);
         let supervisor = self.shared.supervisor.clone();
@@ -422,6 +430,7 @@ impl ManagedExecutions {
             let command = CapturedCommand {
                 argv: &invocation,
                 cwd: &entry.cwd,
+                cwd_directory,
                 deadline,
                 supervisor: &supervisor,
             };

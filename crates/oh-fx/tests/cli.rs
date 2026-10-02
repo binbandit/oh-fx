@@ -7,6 +7,7 @@ use std::io::Read;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -660,16 +661,27 @@ fn top_level_help_on_a_terminal_follows_its_width_and_color_settings() {
     }
 }
 
+fn working_directory_identity() -> String {
+    let metadata = std::fs::metadata(env::temp_dir()).expect("read the temporary directory");
+    format!("{}:{}", metadata.dev(), metadata.ino())
+}
+
 fn run_released_session(script: &str) -> Output {
+    run_released_session_in(&working_directory_identity(), script)
+}
+
+fn run_released_session_in(cwd_identity: &str, script: &str) -> Output {
     let mut supervisor = spawn(
         Command::new(env!("CARGO_BIN_EXE_oh-fx"))
             .args([
                 "__oh_fx_foreground_session__",
                 "none",
+                cwd_identity,
                 "/bin/sh",
                 "-c",
                 script,
             ])
+            .current_dir(env::temp_dir())
             .env_clear()
             .env("PATH", env::var_os("PATH").unwrap_or_default())
             .stdin(Stdio::piped())
@@ -717,16 +729,29 @@ fn the_hidden_session_supervisor_kills_leftover_jobs_when_the_command_exits() {
 }
 
 #[test]
+fn the_hidden_session_supervisor_launches_nothing_outside_the_directory_it_was_given() {
+    let output = run_released_session_in("0:0", "printf ran");
+    assert_eq!(output.status.code(), Some(125));
+    assert_eq!(stdout(&output), "");
+    let mut expected = b"\x1e\0OH_FX_FOREGROUND_EXEC_FAILED:".to_vec();
+    expected.extend_from_slice(&[b'a'; 32]);
+    expected.extend_from_slice(b":CommandAuthorityContextMismatch\n");
+    assert_eq!(output.stderr, expected);
+}
+
+#[test]
 fn the_hidden_session_supervisor_runs_nothing_without_a_release() {
     let output = spawn(
         Command::new(env!("CARGO_BIN_EXE_oh-fx"))
             .args([
                 "__oh_fx_foreground_session__",
                 "none",
+                &working_directory_identity(),
                 "/bin/sh",
                 "-c",
                 "printf ran",
             ])
+            .current_dir(env::temp_dir())
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

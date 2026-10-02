@@ -666,6 +666,7 @@ dependencies = [
  "ofx-text",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-util",
 ]
@@ -822,10 +823,16 @@ name = "ofx-permissions"
 version = "0.1.0"
 dependencies = [
  "ofx-contract",
+ "ofx-exec",
+ "ofx-markdown",
  "ofx-shell",
  "ofx-text",
  "ofx-workspace",
+ "serde_json",
+ "sha2",
  "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

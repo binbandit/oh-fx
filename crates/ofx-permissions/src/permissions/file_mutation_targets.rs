@@ -1,5 +1,5 @@
 use std::os::fd::OwnedFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ofx_workspace::{
     FileIdentity, FileKind, FileMutationTarget, PathError, TargetMode, descriptor_identity,
@@ -61,6 +61,25 @@ impl From<PathError> for FileTargetFailure {
             | PathError::SystemFdQuotaExceeded
             | PathError::Unexpected => return Self::Operational(error),
         })
+    }
+}
+
+impl FileMutationTargets {
+    pub fn review_parents(&self) -> Vec<PathBuf> {
+        let mut directory = self.target.anchor.clone();
+        let mut created = Vec::with_capacity(self.traversal.len());
+        for (component, entry) in self.target.components.iter().zip(&self.traversal) {
+            directory.push(component);
+            created.push((directory.clone(), *entry == TraversalDirectory::Create));
+        }
+        let Some((immediate, _)) = created.pop() else {
+            return vec![self.target.anchor.clone()];
+        };
+        let deeper_first = created
+            .into_iter()
+            .rev()
+            .filter_map(|(directory, create)| create.then_some(directory));
+        [immediate].into_iter().chain(deeper_first).collect()
     }
 }
 
@@ -179,6 +198,32 @@ mod tests {
             Some(FileKind::RegularFile)
         );
         assert_ne!(targets.traversal[0], TraversalDirectory::Create);
+    }
+
+    #[test]
+    fn review_parents_name_the_immediate_parent_then_every_created_one_deepest_first() {
+        let fixture = Fixture::new();
+        let at_root = fixture
+            .prepare("root.txt", FileMutationKind::Write)
+            .unwrap();
+        assert_eq!(
+            at_root.review_parents(),
+            std::slice::from_ref(&fixture.workspace)
+        );
+        let existing = fixture
+            .prepare("src/main.rs", FileMutationKind::Edit)
+            .unwrap();
+        assert_eq!(existing.review_parents(), [fixture.workspace.join("src")]);
+        let nested = fixture
+            .prepare("src/new/deeper/file.rs", FileMutationKind::Write)
+            .unwrap();
+        assert_eq!(
+            nested.review_parents(),
+            [
+                fixture.workspace.join("src/new/deeper"),
+                fixture.workspace.join("src/new"),
+            ]
+        );
     }
 
     #[test]

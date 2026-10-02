@@ -1,6 +1,7 @@
 mod command_contract;
 mod command_environment;
 mod command_runner;
+mod held_directory;
 mod managed_execution;
 mod output_echo;
 #[cfg(target_os = "linux")]
@@ -12,6 +13,7 @@ pub use command_environment::{Environment, Profile};
 pub use command_runner::{
     SessionSupervisor, is_foreground_session_invocation, run_foreground_session,
 };
+pub use held_directory::HeldDirectory;
 pub use managed_execution::{
     ExecutionError, ManagedExecutions, Snapshot, SnapshotState, StartCaptured,
 };

@@ -6,6 +6,7 @@ mod gateway_error_format;
 mod model_catalog;
 mod openai_codex;
 mod openai_codex_models;
+mod permission_reviewer;
 mod provider_failure;
 mod provider_versions;
 mod responses_protocol;
@@ -20,4 +21,5 @@ pub use openai_codex::{
 pub use openai_codex_models::{
     CatalogCredential, CodexModel, CodexModelCatalog, CodexModelsEndpoints,
 };
+pub use permission_reviewer::{ChatCompletionsReviewTransport, CodexReviewTransport};
 pub use provider_failure::{HttpFailure, http_failure};

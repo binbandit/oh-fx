@@ -1,7 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use tokio_util::sync::CancellationToken;
+
 use crate::applicable_target::ApplicableTarget;
-use crate::types::ToolCall;
+use crate::auto_classifier::ReviewFailure;
+use crate::ids::ToolCallId;
+use crate::stream_provider::BoxFuture;
+use crate::types::{ChatMessage, ToolCall, Usage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PathAccess {
@@ -24,7 +29,7 @@ impl PathAccess {
 pub enum Admission {
     Allowed(PathAccess),
     ApprovalRequired,
-    ReviewUnavailable,
+    ReviewRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,6 +98,52 @@ pub struct ApprovalScope {
     pub always: Option<SessionGrant>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange<'a> {
+    pub display_path: String,
+    pub before: Option<&'a [u8]>,
+    pub after: &'a [u8],
+    pub parents: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewRequest<'a> {
+    pub model: &'a str,
+    pub current_request: &'a str,
+    pub earlier_requests: &'a [&'a str],
+    pub compacted_turns: Option<usize>,
+    pub turn: &'a [ChatMessage],
+    pub held: &'a [(ToolCallId, String)],
+    pub batch: &'a [ToolCall],
+    pub call: &'a ToolCall,
+    pub action: GatedAction<'a>,
+    pub file: Option<&'a FileChange<'a>>,
+    pub attempt_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewVerdict {
+    Clear,
+    Caution(String),
+    EvidenceIncomplete,
+    Unavailable(ReviewFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reviewed {
+    pub verdict: ReviewVerdict,
+    pub usage: Usage,
+}
+
+impl Reviewed {
+    pub fn unavailable(failure: ReviewFailure) -> Self {
+        Self {
+            verdict: ReviewVerdict::Unavailable(failure),
+            usage: Usage::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApprovalDecision {
     Once,
@@ -124,4 +175,12 @@ pub trait PermissionGate: Send + Sync {
     fn remember_approval(&self, _grant: &SessionGrant) {}
 
     fn forget_approvals(&self);
+
+    fn review<'a>(
+        &'a self,
+        _request: ReviewRequest<'a>,
+        _cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Option<Reviewed>> {
+        Box::pin(async { Some(Reviewed::unavailable(ReviewFailure::ReviewerUnconfigured)) })
+    }
 }

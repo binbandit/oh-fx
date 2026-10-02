@@ -3,9 +3,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
-    ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency, FileMutation,
-    FileMutationState, LivePermissionMode, PathAccess, PermissionMode, PreparedCall, TargetKind,
-    ToolContext, ToolEffect, ToolOutput, format_tool_execution_error_json,
+    ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency, FileChange,
+    FileMutation, FileMutationState, LivePermissionMode, PathAccess, PermissionMode, PreparedCall,
+    TargetKind, ToolContext, ToolEffect, ToolOutput, format_tool_execution_error_json,
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
@@ -104,6 +104,14 @@ impl PreparedCall for MutationCall {
         self.mutation.as_ref()
     }
 
+    fn file_change(&self) -> Option<FileChange<'_>> {
+        let plan = self.plan.as_ref().ok()?;
+        match &plan.stage {
+            Stage::Prepared(prepared) => Some(prepared.file_change()),
+            Stage::Deferred(targets) => plan.new_file_change(targets),
+        }
+    }
+
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         run_blocking(move || match self.plan {
             Ok(plan) => plan.execute(&context),
@@ -189,6 +197,24 @@ impl Plan {
                 MAX_ENCODED_PATH_BYTES,
             ),
         }
+    }
+
+    fn new_file_change<'p>(&'p self, targets: &FileMutationTargets) -> Option<FileChange<'p>> {
+        let MutationInput::Write(content) = &self.input else {
+            return None;
+        };
+        if targets.target_identity.is_some() {
+            return None;
+        }
+        Some(FileChange {
+            display_path: encode_terminal_safe_path_tail(
+                targets.target.path().as_os_str().as_bytes(),
+                MAX_ENCODED_PATH_BYTES,
+            )?,
+            before: None,
+            after: content.as_bytes(),
+            parents: targets.review_parents(),
+        })
     }
 
     fn file_mutation(&self) -> FileMutation {
