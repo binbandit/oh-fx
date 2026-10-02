@@ -154,6 +154,10 @@ impl Tracker {
         )
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.processes.is_empty()
+    }
+
     pub(crate) fn signal_all(&self, signal: Signal) -> usize {
         self.signal_processes_with(signal, None, &SystemEffects)
     }
