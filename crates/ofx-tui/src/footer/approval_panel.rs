@@ -986,4 +986,31 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn mcp_tool_choices_use_the_allow_and_deny_wording() {
+        let content = ApprovalContent {
+            kind: MCP_KIND,
+            question: "Allow this MCP tool call?",
+            reason: None,
+            action: Vec::new(),
+            remember: None,
+        };
+        let labels: Vec<_> = choices_for(&content)
+            .into_iter()
+            .map(|choice| (choice.key, choice.label.fit(usize::MAX).0, choice.decision))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                (b'1', "1. Allow once".to_owned(), ApprovalDecision::Once),
+                (
+                    b'2',
+                    "2. Allow this MCP tool for this session".to_owned(),
+                    ApprovalDecision::Always
+                ),
+                (b'3', "3. Deny".to_owned(), ApprovalDecision::Deny),
+            ]
+        );
+    }
 }

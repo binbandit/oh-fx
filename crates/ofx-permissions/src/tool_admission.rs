@@ -1022,4 +1022,46 @@ mod tests {
             Admission::Allowed(PathAccess::WorkspaceOnly)
         );
     }
+
+    #[test]
+    fn mcp_tools_follow_the_mode_and_an_always_grant_covers_one_tool() {
+        let call = |name: &str| ToolCall {
+            id: ToolCallId::new("call-1"),
+            name: name.to_owned(),
+            arguments: "{}".to_owned(),
+        };
+        let mode = LivePermissionMode::from(PermissionMode::Ask);
+        let policy = PermissionPolicy::new(mode.clone(), "/ws");
+        let send = call("mcp_mail_send");
+        assert_eq!(policy.admit_mcp_tool(&send), Admission::ApprovalRequired);
+        let scope = policy.approval_scope(GatedAction::McpTool(&send));
+        assert_eq!(
+            scope.always,
+            Some(SessionGrant::McpTool("mcp_mail_send".to_owned()))
+        );
+        approve_always(&policy, GatedAction::McpTool(&send));
+        assert_eq!(
+            policy.admit_mcp_tool(&send),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
+        assert_eq!(
+            policy.admit_mcp_tool(&call("mcp_mail_delete")),
+            Admission::ApprovalRequired
+        );
+        assert!(
+            policy
+                .notice_body()
+                .contains(" - mcp_mail_send -> mcp_mail_send")
+        );
+        mode.set(PermissionMode::Auto);
+        assert_eq!(
+            policy.admit_mcp_tool(&call("mcp_mail_delete")),
+            Admission::ReviewRequired
+        );
+        mode.set(PermissionMode::Yolo);
+        assert_eq!(
+            policy.admit_mcp_tool(&call("mcp_mail_delete")),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
+    }
 }

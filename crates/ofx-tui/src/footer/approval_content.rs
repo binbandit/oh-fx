@@ -928,4 +928,33 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn mcp_tools_are_named_with_their_arguments_and_the_session_choice() {
+        let mut request = request(
+            CommandRequest::Stop,
+            Some(SessionGrant::McpTool("mcp_mail_send".to_owned())),
+        );
+        request.command = None;
+        request.tool_name = "mcp_mail_send".to_owned();
+        request.description.title = "MCP: mcp_mail_send".to_owned();
+        request.tool_arguments_preview = r#"{"to":"a\x1b"}"#.to_owned();
+        let shown = ApprovalContent::from_request(&request, Path::new("/ws"));
+        assert_eq!(shown.kind, MCP_KIND);
+        assert_eq!(shown.question, "Allow this MCP tool call?");
+        assert_eq!(
+            shown.reason.as_deref(),
+            Some("This MCP tool needs approval before oh-fx can send the request.")
+        );
+        assert_eq!(
+            shown.action,
+            vec![ActionBlock::Arguments {
+                target: "mcp_mail_send".to_owned(),
+                preview: r#"{"to":"a\x1b"}"#.to_owned(),
+            }]
+        );
+        request.tool_arguments_truncated = true;
+        let truncated = ApprovalContent::from_request(&request, Path::new("/ws"));
+        assert!(truncated.deny_only());
+    }
 }
