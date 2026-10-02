@@ -1,10 +1,9 @@
-use std::any::Any;
 use std::fmt;
 use std::io::{self, IsTerminal};
-use std::panic::{self, PanicHookInfo};
+use std::panic;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -18,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app_agent_runtime::Controller;
 use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
 use crate::app_commands::slash_command_specs;
+use crate::app_panic_runtime::PanicCapture;
 use crate::app_upgrade_runtime;
 use crate::codex_provider::SubscriptionEndpoints;
 
@@ -175,7 +175,10 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         commands: slash_command_specs(),
     };
     let (commands, worker_commands) = tokio::sync::mpsc::unbounded_channel();
-    let panics = PanicCapture::install();
+    let notices = sender.clone();
+    let panics = PanicCapture::install(WORKER_THREAD, move |notice| {
+        notices.send(UiEvent::Notice { notice });
+    });
     let worker = spawn_worker(
         session.setup,
         session.executions,
@@ -183,9 +186,13 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         worker_commands,
         runtime,
     )?;
-    let result = run_shell(options, receiver, move |command| {
-        let _ = commands.send(command);
-    });
+    let result = panics
+        .contain_shell(|| {
+            run_shell(options, receiver, move |command| {
+                let _ = commands.send(command);
+            })
+        })
+        .unwrap_or_else(|payload| panic::resume_unwind(payload));
     worker.finish(WORKER_SHUTDOWN_GRACE, &panics)?;
     Ok(result?)
 }
@@ -233,76 +240,24 @@ impl Worker {
     fn finish(self, grace: Duration, panics: &PanicCapture) -> Result<(), SessionError> {
         match self.finished.recv_timeout(grace) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => Ok(()),
-            Err(RecvTimeoutError::Disconnected) => Err(SessionError::AgentStopped(panics.take())),
-        }
-    }
-}
-
-type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
-
-struct PanicCapture {
-    report: Arc<Mutex<Option<String>>>,
-    previous: Arc<PanicHook>,
-}
-
-impl PanicCapture {
-    fn install() -> Self {
-        let report = Arc::new(Mutex::new(None));
-        let previous: Arc<PanicHook> = Arc::new(panic::take_hook());
-        let slot = Arc::clone(&report);
-        let fallback = Arc::clone(&previous);
-        panic::set_hook(Box::new(move |info| {
-            if thread::current().name() == Some(WORKER_THREAD) {
-                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(panic_report(info));
-            } else {
-                fallback(info);
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(SessionError::AgentStopped(panics.take_worker_report()))
             }
-        }));
-        Self { report, previous }
-    }
-
-    fn take(&self) -> Option<String> {
-        self.report
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-    }
-}
-
-impl Drop for PanicCapture {
-    fn drop(&mut self) {
-        if thread::panicking() {
-            return;
         }
-        let previous = Arc::clone(&self.previous);
-        drop(panic::take_hook());
-        panic::set_hook(Box::new(move |info| previous(info)));
     }
-}
-
-fn panic_report(info: &PanicHookInfo<'_>) -> String {
-    let message = payload_text(info.payload());
-    match info.location() {
-        Some(location) => format!("panicked at {location}: {message}"),
-        None => format!("panicked: {message}"),
-    }
-}
-
-fn payload_text(payload: &(dyn Any + Send)) -> &str {
-    payload
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("Box<dyn Any>")
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::PoisonError;
+
     use super::*;
+    use crate::app_panic_runtime::HOOK_TESTS;
 
     #[test]
     fn worker_panics_are_reported_instead_of_printed_and_clean_exits_are_quiet() {
-        let panics = PanicCapture::install();
+        let _serial = HOOK_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
+        let panics = PanicCapture::install(WORKER_THREAD, drop);
         let finished = Worker::spawn(|| {}).unwrap();
         assert!(finished.finish(Duration::from_secs(10), &panics).is_ok());
         let crashed = Worker::spawn(|| panic!("worker exploded")).unwrap();
@@ -315,6 +270,6 @@ mod tests {
             "{message}"
         );
         assert!(message.ends_with(": worker exploded"), "{message}");
-        assert_eq!(panics.take(), None);
+        assert_eq!(panics.take_worker_report(), None);
     }
 }
