@@ -36,6 +36,7 @@ pub(crate) enum ActionBlock {
     Line(Phrase),
     Note(&'static str),
     Wrapped { lead: &'static str, text: String },
+    Arguments { target: String, preview: String },
 }
 
 impl ApprovalContent {
@@ -89,6 +90,13 @@ impl ApprovalContent {
                 (None, Some(target)) => {
                     Self::generic(vec![labelled_path(request, target)], remember)
                 }
+                (None, None) if !request.tool_arguments_preview.is_empty() => Self::generic(
+                    vec![ActionBlock::Arguments {
+                        target: safe_text(request.title.as_bytes()),
+                        preview: request.tool_arguments_preview.clone(),
+                    }],
+                    remember,
+                ),
                 (None, None) => Self::generic(vec![title_line(request)], remember),
             },
         }
@@ -520,6 +528,31 @@ mod tests {
                 PathText::from_raw(b"/etc"),
                 " for this session"
             )
+        );
+    }
+
+    #[test]
+    fn other_requests_show_their_arguments_preview_as_given() {
+        let request = ApprovalRequest {
+            id: RequestId::new(1),
+            tool_name: "mcp_fixture_echo".to_owned(),
+            title: "Calling mcp_fixture_echo".to_owned(),
+            tool_arguments_preview: r#"{"text":"\x1b\x0a\xff sentinel"}"#.to_owned(),
+            scope: ApprovalScope {
+                target: None,
+                access: PathAccess::WorkspaceOrExternal,
+                always: None,
+            },
+            command: None,
+            file: None,
+        };
+        let shown = ApprovalContent::from_request(&request, Path::new("/ws"));
+        assert_eq!(
+            shown.action,
+            [ActionBlock::Arguments {
+                target: "Calling mcp_fixture_echo".to_owned(),
+                preview: r#"{"text":"\x1b\x0a\xff sentinel"}"#.to_owned(),
+            }]
         );
     }
 

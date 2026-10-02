@@ -4,7 +4,7 @@ use ofx_contract::ApprovalDecision;
 use ofx_text::visible_width;
 
 use super::approval_content::{ActionBlock, ApprovalContent};
-use super::command_text::command_segments;
+use super::command_text::{command_segments, prefix_terminal_safe_by_width};
 use super::phrase::Phrase;
 use crate::row_text::{Paint, Row};
 use crate::theme::Theme;
@@ -27,6 +27,10 @@ const RESIZE_TO_REVIEW: &str = " · resize to review";
 const SCROLL_TO_REVIEW: &str = " · scroll to review";
 const BLOCKED_MARKER: &str = "! ";
 const INLINE_FIXED_ROWS: usize = 4;
+const ARGUMENTS_SEPARATOR: &str = " · ";
+const ARGUMENTS_LABEL: &str = "Arguments for this request: ";
+const ARGUMENTS_MIN_ROOM: usize = 16;
+const TRAILING_ELLIPSIS: &str = "…";
 const SCREEN_SPACED_FIXED_ROWS: usize = 7;
 const SCREEN_SPACED_MIN_WINDOW: usize = 2;
 const INSET: usize = 2;
@@ -303,6 +307,23 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bo
             let complete = row.width() <= cols;
             (vec![row], complete)
         }
+        ActionBlock::Arguments { target, preview } => {
+            let verbose_prefix =
+                INSET + target.len() + ARGUMENTS_SEPARATOR.len() + ARGUMENTS_LABEL.len();
+            let text = if cols < verbose_prefix + ARGUMENTS_MIN_ROOM {
+                format!("{target}{ARGUMENTS_SEPARATOR}{preview}")
+            } else {
+                format!("{target}{ARGUMENTS_SEPARATOR}{ARGUMENTS_LABEL}{preview}")
+            };
+            let complete = INSET + visible_width(target) <= cols;
+            (
+                vec![inset(
+                    &ellipsized(&text, cols.saturating_sub(INSET)),
+                    Paint::PLAIN,
+                )],
+                complete,
+            )
+        }
         ActionBlock::Wrapped { lead, text } => {
             let lead_width = visible_width(lead);
             let continuation = " ".repeat(lead_width);
@@ -324,6 +345,15 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bo
             (rows, complete)
         }
     }
+}
+
+fn ellipsized(text: &str, width: usize) -> String {
+    if visible_width(text) <= width {
+        return text.to_owned();
+    }
+    let kept =
+        prefix_terminal_safe_by_width(text, width.saturating_sub(visible_width(TRAILING_ELLIPSIS)));
+    format!("{kept}{TRAILING_ELLIPSIS}")
 }
 
 fn choice_row(theme: &Theme, label: &str, selected: bool, blocked: Option<&str>) -> Row {
@@ -699,5 +729,29 @@ mod tests {
                 "  ❯ ! 1. Yes · scroll to review"
             ]
         );
+    }
+
+    fn arguments(cols: usize) -> String {
+        let content = ApprovalContent {
+            action: vec![ActionBlock::Arguments {
+                target: "mcp_fixture_echo".to_owned(),
+                preview: r#"{"text":"\x1b\x0a\xff sentinel"}"#.to_owned(),
+            }],
+            ..titled("unused")
+        };
+        let rows = approval_panel_rows(&theme(), &content, &choices(None), 0, frame(cols, 34)).rows;
+        rows[4].text()
+    }
+
+    #[test]
+    fn approval_panel_shows_bounded_terminal_safe_tool_arguments_with_ellipsis() {
+        assert_eq!(
+            arguments(120),
+            r#"  mcp_fixture_echo · Arguments for this request: {"text":"\x1b\x0a\xff sentinel"}"#
+        );
+        let narrow = arguments(24);
+        assert_eq!(visible_width(&narrow), 24);
+        assert!(narrow.ends_with('…'), "{narrow}");
+        assert!(narrow.starts_with("  mcp_fixture_echo · {"), "{narrow}");
     }
 }
