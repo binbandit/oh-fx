@@ -128,7 +128,7 @@ impl Shell<'_> {
         }
     }
 
-    fn handle_paste(&mut self, outcome: PasteOutcome) {
+    pub(super) fn handle_paste(&mut self, outcome: PasteOutcome) {
         match outcome {
             PasteOutcome::Text { text, .. } => {
                 if self
