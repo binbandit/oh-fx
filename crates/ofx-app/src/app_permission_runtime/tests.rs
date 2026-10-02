@@ -95,8 +95,8 @@ impl Fixture {
     }
 }
 
-fn saved_mode(label: &str) -> Option<String> {
-    Some(format!("{{\"permission_mode\":\"{label}\"}}\n"))
+fn saved_mode(label: &str) -> String {
+    format!("{{\"permission_mode\":\"{label}\"}}\n")
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn toggling_cycles_ask_auto_and_full_access_and_saves_each_mode() {
         runtime.toggle_mode();
         assert_eq!(fixture.mode.get(), mode);
         assert_eq!(fixture.take(), [format!("mode {label} warn={warn}")]);
-        assert_eq!(fixture.saved(), saved_mode(label));
+        assert_eq!(fixture.saved(), Some(saved_mode(label)));
     }
 }
 
@@ -166,7 +166,7 @@ fn the_command_sets_each_mode_and_names_it_with_upstreams_tones() {
             [format!("mode {label} warn={warn}"), notice.to_owned()],
             "{argument}"
         );
-        assert_eq!(fixture.saved(), saved_mode(label), "{argument}");
+        assert_eq!(fixture.saved(), Some(saved_mode(label)), "{argument}");
     }
 }
 
@@ -186,7 +186,7 @@ fn reset_returns_to_ask_and_forgets_every_session_grant() {
             "neutral|permissions|permissions reset to ask, session grants cleared",
         ]
     );
-    assert_eq!(fixture.saved(), saved_mode("ask"));
+    assert_eq!(fixture.saved(), Some(saved_mode("ask")));
     assert!(
         fixture
             .policy
