@@ -9,7 +9,7 @@ use ofx_contract::{
 use ofx_workspace::path_inside;
 
 use crate::command_admission::{command_admission, undescribed_shell_call_admission};
-use crate::permissions::{applicable_target, external_path_target};
+use crate::permissions::{applicable_target, external_path_target, interactive_body};
 use crate::session_permission_state::{SessionGrants, TreePermission, command_grant};
 
 const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
@@ -57,8 +57,12 @@ impl PermissionPolicy {
         }
     }
 
-    pub fn session_grants(&self) -> Vec<SessionGrant> {
-        self.session_grants.snapshot()
+    pub fn notice_body(&self) -> String {
+        interactive_body(
+            &self.workspace_root,
+            self.mode.get(),
+            &self.session_grants.snapshot(),
+        )
     }
 }
 
@@ -411,23 +415,26 @@ mod tests {
     }
 
     #[test]
-    fn session_grants_are_listed_in_the_order_they_were_remembered_until_forgotten() {
-        let policy = PermissionPolicy::new(PermissionMode::Ask, "/workspace");
-        assert!(policy.session_grants().is_empty());
+    fn the_notice_body_follows_the_live_mode_and_lists_grants_once_until_forgotten() {
+        let live = LivePermissionMode::from(PermissionMode::Ask);
+        let policy = PermissionPolicy::new(live.clone(), "/workspace");
+        let empty = "configured rules: (none)\nsession grants: (none)";
+        assert_eq!(policy.notice_body(), format!("mode=ask\n{empty}"));
         let reads = SessionGrant::ReadsUnder(PathBuf::from("/elsewhere"));
         for grant in [
-            &SessionGrant::WorkspaceFiles,
             &reads,
-            &SessionGrant::WorkspaceFiles,
+            &SessionGrant::GrepsUnder(PathBuf::from("/elsewhere")),
+            &reads,
         ] {
             policy.remember_approval(grant);
         }
+        live.set(PermissionMode::Yolo);
         assert_eq!(
-            policy.session_grants(),
-            [SessionGrant::WorkspaceFiles, reads]
+            policy.notice_body(),
+            "mode=full access\nconfigured rules: (none)\nsession grants:\n - read -> ../elsewhere/**\n - grep -> ../elsewhere/**"
         );
         policy.forget_approvals();
-        assert!(policy.session_grants().is_empty());
+        assert_eq!(policy.notice_body(), format!("mode=full access\n{empty}"));
     }
 
     fn mutation(target: &str, state: FileMutationState) -> FileMutation {

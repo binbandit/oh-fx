@@ -1,0 +1,148 @@
+use std::fmt::Write as _;
+use std::path::{Component, Path};
+
+use ofx_contract::{CommandProfile, PermissionMode, SessionGrant};
+
+const WORKSPACE_FILE_PERMISSIONS: [&str; 4] = ["edit", "read", "glob", "grep"];
+
+pub(crate) fn interactive_body(
+    workspace_root: &Path,
+    mode: PermissionMode,
+    grants: &[SessionGrant],
+) -> String {
+    let mut body = format!("mode={}\nconfigured rules: (none)\n", mode.display_label());
+    let lines: Vec<String> = grants
+        .iter()
+        .flat_map(|grant| grant_lines(workspace_root, grant))
+        .collect();
+    if lines.is_empty() {
+        body.push_str("session grants: (none)");
+        return body;
+    }
+    body.push_str("session grants:\n");
+    body.push_str(&lines.join("\n"));
+    body
+}
+
+fn grant_lines(workspace_root: &Path, grant: &SessionGrant) -> Vec<String> {
+    let tree = |permission: &str, root: &Path| {
+        format!(" - {permission} -> {}", tree_pattern(workspace_root, root))
+    };
+    match grant {
+        SessionGrant::WorkspaceFiles => WORKSPACE_FILE_PERMISSIONS
+            .iter()
+            .map(|permission| tree(permission, workspace_root))
+            .collect(),
+        SessionGrant::FileChangesUnder(root) => vec![tree("edit", root)],
+        SessionGrant::ReadsUnder(root) => vec![tree("read", root)],
+        SessionGrant::GlobsUnder(root) => vec![tree("glob", root)],
+        SessionGrant::GrepsUnder(root) => vec![tree("grep", root)],
+        SessionGrant::Command {
+            command,
+            cwd,
+            profile,
+            shell,
+            terminal,
+        } => {
+            let mut line = format!(" - bash -> {command} (cwd={}", cwd.display());
+            if *profile == CommandProfile::Clean {
+                line.push_str(", profile=clean");
+            }
+            if *terminal {
+                line.push_str(", tty=true");
+            }
+            if let Some(shell) = shell {
+                let _ = write!(line, ", shell={}", shell.display());
+            }
+            line.push(')');
+            vec![line]
+        }
+    }
+}
+
+fn tree_pattern(workspace_root: &Path, root: &Path) -> String {
+    let relative = relative_path(workspace_root, root);
+    if relative.is_empty() {
+        "**".to_owned()
+    } else {
+        format!("{relative}/**")
+    }
+}
+
+fn relative_path(from: &Path, to: &Path) -> String {
+    let named = |path: &Path| -> Vec<String> {
+        path.components()
+            .filter_map(|component| match component {
+                Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    let from = named(from);
+    let to = named(to);
+    let shared = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut parts = vec!["..".to_owned(); from.len() - shared];
+    parts.extend_from_slice(&to[shared..]);
+    parts.join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn the_interactive_body_names_the_mode_and_reports_no_rules_or_grants() {
+        assert_eq!(
+            interactive_body(Path::new("/ws"), PermissionMode::Auto, &[]),
+            "mode=auto\nconfigured rules: (none)\nsession grants: (none)"
+        );
+        assert_eq!(
+            interactive_body(Path::new("/ws"), PermissionMode::Yolo, &[]),
+            "mode=full access\nconfigured rules: (none)\nsession grants: (none)"
+        );
+    }
+
+    #[test]
+    fn session_grants_are_listed_as_upstream_permission_patterns_relative_to_the_workspace() {
+        let grants = [
+            SessionGrant::WorkspaceFiles,
+            SessionGrant::ReadsUnder(PathBuf::from("/home/me/notes")),
+            SessionGrant::FileChangesUnder(PathBuf::from("/")),
+            SessionGrant::GlobsUnder(PathBuf::from("/home/me/ws/src")),
+            SessionGrant::GrepsUnder(PathBuf::from("/home/me")),
+            SessionGrant::Command {
+                command: "git status".to_owned(),
+                cwd: PathBuf::from("/home/me/ws"),
+                profile: CommandProfile::User,
+                shell: None,
+                terminal: false,
+            },
+            SessionGrant::Command {
+                command: "npm test".to_owned(),
+                cwd: PathBuf::from("/home/me/ws/app"),
+                profile: CommandProfile::Clean,
+                shell: Some(PathBuf::from("/bin/sh")),
+                terminal: true,
+            },
+        ];
+        assert_eq!(
+            interactive_body(Path::new("/home/me/ws"), PermissionMode::Ask, &grants),
+            concat!(
+                "mode=ask\nconfigured rules: (none)\nsession grants:\n",
+                " - edit -> **\n - read -> **\n - glob -> **\n - grep -> **\n",
+                " - read -> ../notes/**\n",
+                " - edit -> ../../../**\n",
+                " - glob -> src/**\n",
+                " - grep -> ../**\n",
+                " - bash -> git status (cwd=/home/me/ws)\n",
+                " - bash -> npm test (cwd=/home/me/ws/app, profile=clean, tty=true, shell=/bin/sh)",
+            )
+        );
+    }
+}

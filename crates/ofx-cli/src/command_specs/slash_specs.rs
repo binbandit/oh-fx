@@ -5,6 +5,7 @@ pub enum SlashKind {
     Help,
     ClearScreen,
     Model,
+    Permissions,
     Quit,
 }
 
@@ -135,8 +136,15 @@ mod tests {
             .iter()
             .map(|spec| spec.command)
             .collect();
-        assert_eq!(commands, ["/help", "/clear", "/model", "/quit"]);
+        assert_eq!(
+            commands,
+            ["/help", "/clear", "/model", "/permissions", "/quit"]
+        );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
+        assert_eq!(
+            spec(SlashKind::Permissions).completion_description,
+            "choose what oh-fx is allowed to do"
+        );
         assert_eq!(
             spec(SlashKind::ClearScreen).completion_description,
             "start a fresh conversation while keeping managed processes"

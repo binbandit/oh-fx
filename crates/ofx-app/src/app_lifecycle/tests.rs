@@ -283,6 +283,7 @@ fn run_a_worker_that_panics() -> ! {
         version: "0.1.0".to_owned(),
         model: "model-a".to_owned(),
         permission_mode: PermissionMode::Auto,
+        full_access_warning: false,
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
         commands: Vec::new(),

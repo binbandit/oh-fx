@@ -64,6 +64,12 @@ impl Clipboard for TestClipboard {
 
 impl TestShell {
     pub(super) fn start() -> Self {
+        Self::start_with(|_| {})
+    }
+
+    pub(super) fn start_with(configure: impl FnOnce(&mut ShellOptions)) -> Self {
+        let mut options = options();
+        configure(&mut options);
         let pty = PtyPair::open(ROWS, COLS).unwrap();
         let mut terminal = test_pty::terminal(&pty);
         terminal.enable_raw_mode().unwrap();
@@ -83,7 +89,7 @@ impl TestShell {
         };
         let shell = Shell::assemble(
             setup,
-            options(),
+            options,
             receiver,
             Arc::clone(&clipboard) as Arc<dyn Clipboard>,
             Box::new(move |command| sink.borrow_mut().push(command)),
@@ -170,7 +176,7 @@ impl TestShell {
     }
 
     pub(super) fn step(&mut self) {
-        assert!(self.shell.step().unwrap().is_none());
+        assert!(self.draining(|shell| shell.step().unwrap().is_none()));
     }
 
     pub(super) fn submit(&mut self, text: &str) {
@@ -240,6 +246,7 @@ fn options() -> ShellOptions {
         version: "0.1.0".to_owned(),
         model: "model-a".to_owned(),
         permission_mode: PermissionMode::Auto,
+        full_access_warning: false,
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
         commands: vec![

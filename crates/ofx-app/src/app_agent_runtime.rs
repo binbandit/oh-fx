@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{CommandEffect, handle_command};
+use crate::app_permission_runtime::PermissionRuntime;
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
@@ -22,6 +23,7 @@ pub(crate) struct ControllerState {
     pending_clear: Option<u64>,
     received_prompts: u64,
     queue: VecDeque<String>,
+    permissions: PermissionRuntime,
     emit: Emit,
 }
 
@@ -32,6 +34,10 @@ impl ControllerState {
 
     pub(crate) fn models(&self) -> &[String] {
         self.setup.models()
+    }
+
+    pub(crate) fn permissions(&self) -> &PermissionRuntime {
+        &self.permissions
     }
 
     pub(crate) fn emit(&self, event: UiEvent) {
@@ -108,6 +114,7 @@ impl Controller {
         };
         let state = ControllerState {
             model: setup.model().to_owned(),
+            permissions: setup.permission_runtime(Arc::clone(&emit)),
             setup,
             model_pending: false,
             pending_clear: None,
@@ -137,6 +144,10 @@ impl Controller {
             match command {
                 UiCommand::Submit { prompt } => self.state.receive_prompt(prompt),
                 UiCommand::RunCommand { text } => self.run_idle_command(&text),
+                UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
+                UiCommand::FullAccessWarningShown => {
+                    self.state.permissions.full_access_warning_shown();
+                }
                 UiCommand::Cancel { .. } | UiCommand::Approval { .. } => {}
             }
         }
@@ -202,6 +213,7 @@ impl Controller {
             tokio::pin!(turn);
             loop {
                 tokio::select! {
+                    biased;
                     report = &mut turn => break report,
                     command = commands.recv(), if open => match command {
                         None => {
@@ -218,6 +230,10 @@ impl Controller {
                             if let Some(approvals) = state.setup.approvals() {
                                 approvals.resolve(request_id, decision);
                             }
+                        }
+                        Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
+                        Some(UiCommand::FullAccessWarningShown) => {
+                            state.permissions.full_access_warning_shown();
                         }
                         Some(UiCommand::RunCommand { text }) => {
                             match handle_command(state, &text, true) {
@@ -688,6 +704,126 @@ mod tests {
                 "{tool_result}"
             );
         }
+    }
+
+    fn outside_read() -> Reply {
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "read_file",
+            r#"{"path":"../outside.txt"}"#,
+        ))
+    }
+
+    fn mode_changed(mode: PermissionMode) -> impl Fn(&UiEvent) -> bool {
+        move |event| matches!(event, UiEvent::PermissionModeChanged { mode: seen, .. } if *seen == mode)
+    }
+
+    fn approval_requested(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::ApprovalRequested { .. })
+    }
+
+    fn saved_permission_mode(harness: &Harness) -> Value {
+        let settings =
+            fs::read_to_string(harness.home.path().join("config/settings.json")).unwrap();
+        serde_json::from_str::<Value>(&settings).unwrap()["permission_mode"].clone()
+    }
+
+    #[tokio::test]
+    async fn toggling_the_mode_decides_the_next_tool_call_and_saves_the_mode() {
+        let server = FakeServer::start([outside_read(), Reply::sse(&chat_text_events(&["done"]))]);
+        let mut harness = Harness::start(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "secret notes\n").unwrap();
+        harness.send(UiCommand::TogglePermissionMode);
+        let changed = harness.until(mode_changed(PermissionMode::Yolo)).await;
+        assert_eq!(
+            changed.last(),
+            Some(&UiEvent::PermissionModeChanged {
+                mode: PermissionMode::Yolo,
+                full_access_warning: true
+            })
+        );
+        assert_eq!(saved_permission_mode(&harness), "yolo");
+        harness.submit("read it");
+        let events = harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(!events.iter().any(approval_requested), "{events:?}");
+        let body = server.requests()[1].json();
+        assert!(body.to_string().contains("secret notes"), "{body}");
+        harness.send(UiCommand::TogglePermissionMode);
+        harness.until(mode_changed(PermissionMode::Ask)).await;
+        assert_eq!(saved_permission_mode(&harness), "ask");
+    }
+
+    #[tokio::test]
+    async fn a_mode_switched_while_an_approval_is_held_applies_from_the_next_call() {
+        let server = FakeServer::start([
+            outside_read(),
+            outside_read(),
+            Reply::sse(&chat_text_events(&["done"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "secret notes\n").unwrap();
+        harness.submit("read it twice");
+        let Some(UiEvent::ApprovalRequested { request, .. }) =
+            harness.until(approval_requested).await.last().cloned()
+        else {
+            unreachable!()
+        };
+        harness.command("/permissions full-access");
+        let switched = harness.until(mode_changed(PermissionMode::Yolo)).await;
+        assert!(
+            !switched
+                .iter()
+                .any(|event| matches!(event, UiEvent::ToolFinished { .. }))
+        );
+        harness.send(UiCommand::Approval {
+            request_id: request.id,
+            decision: ApprovalDecision::Once,
+        });
+        let rest = harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(!rest.iter().any(approval_requested), "{rest:?}");
+        let finished_reads = rest
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    UiEvent::ToolFinished {
+                        status: ToolResultStatus::Success,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(finished_reads, 2);
+        assert_eq!(notice_body(rest), ["permissions|mode set to full access"]);
+    }
+
+    #[tokio::test]
+    async fn a_reset_sent_right_after_an_always_answer_forgets_the_grant_it_recorded() {
+        let server = FakeServer::start([
+            outside_read(),
+            outside_read(),
+            Reply::sse(&chat_text_events(&["done"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "secret notes\n").unwrap();
+        harness.submit("read it twice");
+        let Some(UiEvent::ApprovalRequested { request, .. }) =
+            harness.until(approval_requested).await.last().cloned()
+        else {
+            unreachable!()
+        };
+        harness.send(UiCommand::Approval {
+            request_id: request.id,
+            decision: ApprovalDecision::Always,
+        });
+        harness.command("/permissions reset");
+        let asked = harness
+            .until(|event| {
+                approval_requested(event) || matches!(event, UiEvent::TurnFinished { .. })
+            })
+            .await;
+        assert!(asked.last().is_some_and(approval_requested), "{asked:?}");
+        assert_eq!(saved_permission_mode(&harness), "ask");
     }
 
     #[tokio::test]

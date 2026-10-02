@@ -127,6 +127,10 @@ impl Shell<'_> {
             }
             UiEvent::Notice { notice } => self.push_entry(Entry::Notice(notice)),
             UiEvent::ModelSelected { model } => self.options.model = model,
+            UiEvent::PermissionModeChanged {
+                mode,
+                full_access_warning,
+            } => self.permission_mode_changed(mode, full_access_warning),
             UiEvent::HelpRequested => {
                 let commands = self
                     .options

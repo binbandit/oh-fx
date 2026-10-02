@@ -177,6 +177,8 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
         permission_mode: session.permission_mode,
+        full_access_warning: session.permission_mode == PermissionMode::Yolo
+            && !session.profile.settings().yolo_acknowledged(),
         workspace_label: session
             .profile
             .workspace_root()

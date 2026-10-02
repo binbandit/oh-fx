@@ -53,6 +53,10 @@ pub(crate) fn handle_command(
             state.notice(NoticeTone::Neutral, "model", &model_status(state));
             CommandEffect::None
         }
+        SlashKind::Permissions => {
+            state.permissions().handle_command(command.payload);
+            CommandEffect::None
+        }
         SlashKind::Model => {
             let resolved = resolve_model_query(state.models(), command.payload);
             let prefix = if turn_active {
@@ -88,9 +92,12 @@ mod tests {
     fn the_shell_lists_the_registry_commands_with_their_aliases() {
         let specs = slash_command_specs();
         let commands: Vec<&str> = specs.iter().map(|spec| spec.command.as_str()).collect();
-        assert_eq!(commands, ["/help", "/clear", "/model", "/quit"]);
-        assert_eq!(specs[3].aliases, ["/exit"]);
-        assert_eq!(specs[3].description, "exit the interactive shell");
+        assert_eq!(
+            commands,
+            ["/help", "/clear", "/model", "/permissions", "/quit"]
+        );
+        assert_eq!(specs[4].aliases, ["/exit"]);
+        assert_eq!(specs[4].description, "exit the interactive shell");
     }
 
     #[test]

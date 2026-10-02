@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use ofx_contract::FULL_ACCESS_WARNING;
 use ofx_text::{prefix_by_width, visible_width};
 
 use super::approval_panel::Review;
@@ -11,6 +12,7 @@ const CTRL_C_EXIT_HINT: &str = "press ctrl+c again to exit";
 const ESC_CLEAR_HINT: &str = "esc again to clear";
 const ESC_INTERRUPT_HINTS: [&str; 3] = ["esc again to interrupt", "esc esc interrupt", "esc esc"];
 const ESC_INTERRUPT_FALLBACK: &str = "esc esc to interrupt";
+const FULL_ACCESS_WARNING_COMPACT: &str = "Full access";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposerView {
@@ -131,13 +133,42 @@ fn start_row(theme: &Theme, width: usize, hidden_above: bool) -> (Row, usize) {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DangerStatus {
+    None,
+    FullAccess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HintState {
     pub(crate) ctrl_c_pending: bool,
     pub(crate) esc_clear_armed: bool,
     pub(crate) esc_interrupt_armed: bool,
+    pub(crate) danger: DangerStatus,
+}
+
+pub(crate) fn danger_status_text(state: HintState, width: usize) -> &'static str {
+    if state.danger == DangerStatus::None
+        || state.esc_clear_armed
+        || state.esc_interrupt_armed
+        || state.ctrl_c_pending
+    {
+        return "";
+    }
+    [FULL_ACCESS_WARNING, FULL_ACCESS_WARNING_COMPACT]
+        .into_iter()
+        .find(|text| visible_width(text) <= width)
+        .unwrap_or_default()
 }
 
 pub(crate) fn compose_hint_row(theme: &Theme, base: &Row, state: HintState, width: usize) -> Row {
+    let danger = danger_status_text(state, width);
+    if !danger.is_empty() {
+        let tag_col = width - visible_width(danger);
+        let mut row = base.clipped(tag_col);
+        row.push_spaces(tag_col - row.width());
+        row.push(danger, theme.red);
+        return row;
+    }
     let mut left = if state.ctrl_c_pending {
         Row::styled(CTRL_C_EXIT_HINT, theme.statusline)
     } else {
@@ -253,6 +284,7 @@ mod tests {
             ctrl_c_pending: false,
             esc_clear_armed: false,
             esc_interrupt_armed: false,
+            danger: DangerStatus::None,
         };
         assert_eq!(
             compose_hint_row(&theme(), &base, idle, 100).text(),
@@ -297,6 +329,69 @@ mod tests {
                 ..idle
             },
             100,
+        );
+        assert_eq!(ctrl_c.text(), "press ctrl+c again to exit");
+    }
+
+    #[test]
+    fn the_hint_row_puts_the_full_access_warning_at_the_right_edge_with_a_compact_fallback() {
+        let base = Row::styled("full access · fake-model", Paint::fg(245));
+        let warning = HintState {
+            ctrl_c_pending: false,
+            esc_clear_armed: false,
+            esc_interrupt_armed: false,
+            danger: DangerStatus::FullAccess,
+        };
+        let full = compose_hint_row(&theme(), &base, warning, 80);
+        assert_eq!(full.width(), 80);
+        assert_eq!(
+            full.text(),
+            "full access · fake-model   Full access enabled: oh-fx permission checks disabled"
+        );
+        assert_eq!(full.segments().last().unwrap().paint, theme().red);
+        let compact = compose_hint_row(&theme(), &base, warning, 40);
+        assert_eq!(compact.text(), "full access · fake-model     Full access");
+        let overlapping = compose_hint_row(&theme(), &base, warning, 30);
+        assert_eq!(overlapping.text(), "full access · fake-Full access");
+        assert_eq!(danger_status_text(warning, 10), "");
+        assert_eq!(
+            compose_hint_row(&theme(), &base, warning, 10).text(),
+            "full acces"
+        );
+        for suppressed in [
+            HintState {
+                esc_clear_armed: true,
+                ..warning
+            },
+            HintState {
+                esc_interrupt_armed: true,
+                ..warning
+            },
+            HintState {
+                ctrl_c_pending: true,
+                ..warning
+            },
+            HintState {
+                danger: DangerStatus::None,
+                ..warning
+            },
+        ] {
+            assert_eq!(danger_status_text(suppressed, 80), "", "{suppressed:?}");
+            assert!(
+                !compose_hint_row(&theme(), &base, suppressed, 80)
+                    .text()
+                    .contains("Full access"),
+                "{suppressed:?}"
+            );
+        }
+        let ctrl_c = compose_hint_row(
+            &theme(),
+            &base,
+            HintState {
+                ctrl_c_pending: true,
+                ..warning
+            },
+            80,
         );
         assert_eq!(ctrl_c.text(), "press ctrl+c again to exit");
     }

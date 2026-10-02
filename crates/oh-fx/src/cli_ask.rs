@@ -900,6 +900,7 @@ impl Presenter {
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }
+            | UiEvent::PermissionModeChanged { .. }
             | UiEvent::HelpRequested
             | UiEvent::ConversationCleared { .. }
             | UiEvent::ExitRequested => Ok(()),
