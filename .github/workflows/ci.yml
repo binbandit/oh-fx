@@ -131,7 +131,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         with:
-          key: footprint
+          key: footprint-per-side
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Resolve the comparison base
         if: env.MEASURE == 'true'
