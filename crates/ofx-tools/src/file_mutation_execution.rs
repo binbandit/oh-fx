@@ -169,8 +169,8 @@ impl Plan {
         (
             Some(target),
             stage.map(|stage| Self {
-                stage,
                 full_access,
+                stage,
                 ..self
             }),
         )
