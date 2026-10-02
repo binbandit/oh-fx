@@ -1,8 +1,11 @@
 use std::env;
 use std::fmt;
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 use std::time::Duration;
 
 use ofx_http::ConnectionOptions;
+use ofx_text::{HeadRounding, encode_terminal_safe, mask_secrets, write_head_tail_bounded};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout_at};
@@ -25,7 +28,9 @@ use crate::protocol_negotiation::{
     decide_legacy_initialize_transition, validate_startup_mode,
 };
 use crate::server_auth::resolve_headers;
-use crate::stdio_dispatcher::{ChildDiagnostics, StdioDispatcher, StdioLaunch, StopMode};
+use crate::stdio_dispatcher::{
+    ChildDiagnostics, StderrCapture, StdioDispatcher, StdioLaunch, StopMode,
+};
 use crate::streamable_http::validate_endpoint;
 use crate::transport::{McpTransport, ShutdownMode, TransportRequest};
 
@@ -48,7 +53,7 @@ impl Default for ConnectOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerInfo {
+pub(crate) struct ServerInfo {
     pub protocol_version: &'static str,
     pub name: Option<String>,
     pub version: Option<String>,
@@ -57,7 +62,7 @@ pub struct ServerInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct StartupFailure {
+pub(crate) struct StartupFailure {
     pub error: McpError,
     pub diagnostics: Option<ChildDiagnostics>,
 }
@@ -370,7 +375,7 @@ pub(crate) async fn connect_http(
             })
         }
         Err(error) => {
-            Box::new(client).shutdown(ShutdownMode::Graceful).await;
+            client.shutdown(ShutdownMode::Graceful).await;
             Err(error.into())
         }
     }
@@ -427,7 +432,7 @@ pub(crate) async fn connect_sse(
             notifications,
         }),
         Err(error) => {
-            Box::new(client).shutdown(ShutdownMode::Graceful).await;
+            client.shutdown(ShutdownMode::Graceful).await;
             Err(error.into())
         }
     }
@@ -518,6 +523,180 @@ pub(crate) async fn discover_tools(
         if builder.append_response(&response, Limits::default())? {
             return builder.finish();
         }
+    }
+}
+
+const STDERR_DISPLAY_BYTES: usize = 400;
+const WORD_SEPARATORS: [char; 4] = [' ', '\t', '\r', '\n'];
+
+pub(crate) fn startup_failure_message(failure: &StartupFailure, startup_timeout_ms: u32) -> String {
+    let diagnostics = failure.diagnostics.as_ref();
+    if let Some(diagnostics) = diagnostics
+        && let Some(rejected) = &diagnostics.rejected_output
+    {
+        let mut message = String::from(
+            "MCP server wrote output that is not an MCP message before completing startup",
+        );
+        let mut line = without_ansi(&rejected.bytes);
+        if rejected.truncated {
+            line = without_trailing_word(&line).to_owned();
+        }
+        let text = display_plain(&line);
+        if !text.is_empty() {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        let stderr = display_stderr(&diagnostics.stderr);
+        if !stderr.is_empty() {
+            message.push_str("; stderr: ");
+            message.push_str(&stderr);
+        }
+        return message;
+    }
+    match failure.error {
+        McpError::McpServerExitedDuringStartup | McpError::McpConnectionClosed => {
+            let mut message = format!(
+                "MCP server {} before completing startup",
+                term_phrase(diagnostics.and_then(|diagnostics| diagnostics.status))
+            );
+            push_stderr_suffix(&mut message, diagnostics);
+            message
+        }
+        McpError::McpRequestTimedOut => {
+            let mut message = format!(
+                "MCP server did not complete startup within {startup_timeout_ms} ms (startup_timeout_ms)"
+            );
+            match diagnostics {
+                Some(earlier) if earlier.status.is_some() => {
+                    message.push_str("; an earlier launch ");
+                    message.push_str(&term_phrase(earlier.status));
+                    push_stderr_suffix(&mut message, Some(earlier));
+                }
+                Some(live) => {
+                    let stderr = display_stderr(&live.stderr);
+                    if !stderr.is_empty() {
+                        message.push_str("; last stderr: ");
+                        message.push_str(&stderr);
+                    }
+                }
+                None => {}
+            }
+            message
+        }
+        ref error => error.to_string(),
+    }
+}
+
+fn push_stderr_suffix(message: &mut String, diagnostics: Option<&ChildDiagnostics>) {
+    let Some(diagnostics) = diagnostics else {
+        return;
+    };
+    let stderr = display_stderr(&diagnostics.stderr);
+    if !stderr.is_empty() {
+        message.push_str(": ");
+        message.push_str(&stderr);
+    }
+}
+
+fn term_phrase(status: Option<ExitStatus>) -> String {
+    let Some(status) = status else {
+        return "closed its connection".to_owned();
+    };
+    if let Some(code) = status.code() {
+        format!("exited with code {code}")
+    } else if let Some(signal) = status.signal() {
+        format!("was killed by signal {signal}")
+    } else if let Some(signal) = status.stopped_signal() {
+        format!("was stopped by signal {signal}")
+    } else {
+        format!("ended with status {}", status.into_raw())
+    }
+}
+
+fn display_stderr(capture: &StderrCapture) -> String {
+    if !capture.omitted() {
+        let mut joined = capture.head().to_vec();
+        joined.extend_from_slice(capture.tail());
+        return display_plain(&without_ansi(&joined));
+    }
+    let head = without_ansi(capture.head());
+    let tail = without_ansi(capture.tail());
+    let joined = format!(
+        "{} ... {}",
+        without_trailing_word(&head),
+        without_leading_word(&tail)
+    );
+    display_plain(&joined)
+}
+
+fn display_plain(plain: &str) -> String {
+    let masked = mask_secrets(plain);
+    let mut flattened = String::with_capacity(masked.len());
+    for word in masked.split_ascii_whitespace() {
+        if !flattened.is_empty() {
+            flattened.push(' ');
+        }
+        flattened.push_str(word);
+    }
+    let encoded = encode_terminal_safe(flattened.as_bytes(), usize::MAX).text;
+    String::from_utf8_lossy(&write_head_tail_bounded(
+        encoded.as_bytes(),
+        STDERR_DISPLAY_BYTES,
+        " ... ",
+        HeadRounding::Down,
+    ))
+    .into_owned()
+}
+
+fn without_trailing_word(text: &str) -> &str {
+    text.rfind(WORD_SEPARATORS).map_or("", |end| &text[..=end])
+}
+
+fn without_leading_word(text: &str) -> &str {
+    text.find(WORD_SEPARATORS)
+        .map_or("", |start| &text[start..])
+}
+
+fn without_ansi(raw: &[u8]) -> String {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut index = 0;
+    while index < raw.len() {
+        let escape = raw[index..]
+            .iter()
+            .position(|byte| *byte == 0x1b)
+            .map_or(raw.len(), |offset| index + offset);
+        out.extend_from_slice(&raw[index..escape]);
+        if escape == raw.len() {
+            break;
+        }
+        index = ansi_sequence_end(raw, escape);
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn ansi_sequence_end(text: &[u8], index: usize) -> usize {
+    let Some(kind) = text.get(index + 1) else {
+        return text.len();
+    };
+    match kind {
+        b'[' => text[index + 2..]
+            .iter()
+            .position(|byte| (b'@'..=b'~').contains(byte))
+            .map_or(text.len(), |offset| index + 2 + offset + 1),
+        b']' => {
+            let mut position = index + 2;
+            while position < text.len() {
+                if text[position] == 0x07 {
+                    return position + 1;
+                }
+                if text[position] == 0x1b && text.get(position + 1) == Some(&b'\\') {
+                    return position + 2;
+                }
+                position += 1;
+            }
+            text.len()
+        }
+        _ => (index + 2).min(text.len()),
     }
 }
 

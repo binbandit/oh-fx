@@ -7,25 +7,25 @@ use tokio::time::Instant;
 
 use crate::error::McpError;
 
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Progress {
+pub(crate) struct ProgressNotification {
     pub progress: f64,
     pub total: Option<f64>,
     pub message: Option<String>,
 }
 
-pub type ProgressSink = Arc<dyn Fn(Progress) + Send + Sync>;
+pub(crate) type ProgressSink = Arc<dyn Fn(ProgressNotification) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerRequestPolicy {
+pub(crate) enum ServerRequestPolicy {
     Reject,
     RefuseElicitation,
 }
 
 #[derive(Clone)]
-pub struct TransportRequest {
+pub(crate) struct TransportRequest {
     pub id: u64,
     pub body: String,
     pub max_response_bytes: usize,
@@ -36,7 +36,7 @@ pub struct TransportRequest {
 }
 
 impl TransportRequest {
-    pub fn new(id: u64, body: String, max_response_bytes: usize, deadline: Instant) -> Self {
+    pub(crate) fn new(id: u64, body: String, max_response_bytes: usize, deadline: Instant) -> Self {
         Self {
             id,
             body,
@@ -71,7 +71,7 @@ pub enum ShutdownMode {
     ProcessExit,
 }
 
-pub trait McpTransport: Send + Sync {
+pub(crate) trait McpTransport: Send + Sync {
     fn next_request_id(&self) -> Result<u64, McpError>;
 
     fn request(&self, request: TransportRequest) -> BoxFuture<'_, Result<String, McpError>>;
@@ -80,5 +80,5 @@ pub trait McpTransport: Send + Sync {
 
     fn is_running(&self) -> bool;
 
-    fn shutdown(self: Box<Self>, mode: ShutdownMode) -> BoxFuture<'static, ()>;
+    fn shutdown(&self, mode: ShutdownMode) -> BoxFuture<'_, ()>;
 }

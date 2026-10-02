@@ -207,7 +207,7 @@ impl McpTransport for LegacySseClient {
         matches!(&*self.shared.state.borrow(), ConnectionState::Running(_))
     }
 
-    fn shutdown(self: Box<Self>, _: ShutdownMode) -> BoxFuture<'static, ()> {
+    fn shutdown(&self, _: ShutdownMode) -> BoxFuture<'_, ()> {
         Box::pin(async move { self.stop() })
     }
 }
