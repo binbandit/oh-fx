@@ -48,13 +48,13 @@ pub(crate) fn list_picker_rows(
 }
 
 pub(crate) fn file_picker_band(theme: &Theme, frame: &FilePickerFrame<'_>) -> Vec<Row> {
-    let mut band = vec![divider(theme, frame.cols)];
+    let mut band = vec![picker_divider(theme, frame.cols)];
     band.extend(file_picker_rows(theme, frame));
-    band.push(divider(theme, frame.cols));
+    band.push(picker_divider(theme, frame.cols));
     band
 }
 
-fn divider(theme: &Theme, cols: usize) -> Row {
+pub(crate) fn picker_divider(theme: &Theme, cols: usize) -> Row {
     Row::styled(&"\u{2500}".repeat(cols), theme.divider)
 }
 
@@ -70,12 +70,12 @@ fn file_picker_rows(theme: &Theme, frame: &FilePickerFrame<'_>) -> Vec<Row> {
             FilePickerStatus::Loading => "indexing files...",
             FilePickerStatus::Rows | FilePickerStatus::Empty => "no matching files",
         };
-        rows.push(text_row(theme, frame.start_col, label, frame.cols));
+        rows.push(picker_status_row(theme, frame.start_col, label, frame.cols));
     } else {
         let count = frame.items.len();
         let selected = frame.selected.unwrap_or(0) % count;
         if let Some(text) = notice.filter(|_| frame.rows > 1) {
-            rows.push(text_row(theme, frame.start_col, text, frame.cols));
+            rows.push(picker_status_row(theme, frame.start_col, text, frame.cols));
         }
         let visible = frame.rows.saturating_sub(rows.len());
         let start = update_edge_start(frame.window_start, count, selected, visible);
@@ -102,7 +102,7 @@ fn file_picker_rows(theme: &Theme, frame: &FilePickerFrame<'_>) -> Vec<Row> {
     rows
 }
 
-fn start_row(start_col: usize, cols: usize) -> Option<(Row, usize)> {
+pub(crate) fn picker_row_at(start_col: usize, cols: usize) -> Option<(Row, usize)> {
     if cols == 0 || start_col == 0 || start_col > cols {
         return None;
     }
@@ -111,8 +111,8 @@ fn start_row(start_col: usize, cols: usize) -> Option<(Row, usize)> {
     Some((row, cols - (start_col - 1)))
 }
 
-fn text_row(theme: &Theme, start_col: usize, text: &str, cols: usize) -> Row {
-    let Some((mut row, width)) = start_row(start_col, cols) else {
+pub(crate) fn picker_status_row(theme: &Theme, start_col: usize, text: &str, cols: usize) -> Row {
+    let Some((mut row, width)) = picker_row_at(start_col, cols) else {
         return Row::new();
     };
     row.push(prefix_by_width(text, width), theme.dim);
@@ -120,7 +120,7 @@ fn text_row(theme: &Theme, start_col: usize, text: &str, cols: usize) -> Row {
 }
 
 fn file_row(theme: &Theme, start_col: usize, item: &FileMatch, selected: bool, cols: usize) -> Row {
-    let Some((mut row, width)) = start_row(start_col, cols) else {
+    let Some((mut row, width)) = picker_row_at(start_col, cols) else {
         return Row::new();
     };
     let base = if selected {
