@@ -106,7 +106,14 @@ fn wait(session: &PtySession, needle: &str) -> String {
 fn the_picker_alias_and_launch_models_open_the_shell() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Chosen."]))]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    let mut session = home.shell_with(&["-r"], 24, 80, "auto · model-a");
+    let mut command = home.command();
+    command.arg("-r");
+    let mut session = PtySession::spawn(command, 24, 80).expect("spawn oh-fx in a pty");
+    let screen = wait(&session, "No sessions found.");
+    assert!(
+        screen.contains("Sessions 0  [Current workspace]  All workspaces"),
+        "{screen}"
+    );
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
     let mut session = home.shell_with(
