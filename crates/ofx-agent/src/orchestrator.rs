@@ -31,6 +31,7 @@ use crate::model_response_recovery::{
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
+use crate::skill_context::{SkillContext, SkillContextProvider};
 use crate::turn_reviews::TurnReviews;
 
 mod compaction;
@@ -187,6 +188,7 @@ pub struct Agent {
     capability_resolver: Option<Arc<dyn CapabilityResolver>>,
     capabilities: Option<KnownCapabilities>,
     project: Option<ProjectInstructions>,
+    skills: Option<Arc<dyn SkillContextProvider>>,
     history: Vec<ChatMessage>,
     turn_starts: Vec<usize>,
     compacted: Option<Payload>,
@@ -218,6 +220,7 @@ impl Agent {
             capability_resolver: None,
             capabilities: None,
             project: None,
+            skills: None,
             history: Vec::new(),
             turn_starts: Vec::new(),
             compacted: None,
@@ -256,6 +259,12 @@ impl Agent {
             snapshot: snapshot.content,
             deltas: Vec::new(),
         });
+        self
+    }
+
+    #[must_use]
+    pub fn with_skills(mut self, skills: Arc<dyn SkillContextProvider>) -> Self {
+        self.skills = Some(skills);
         self
     }
 
@@ -309,7 +318,7 @@ impl Agent {
         };
         self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
-        let result = self.drive(&mut turn, events, cancel).await;
+        let result = self.drive(&mut turn, prompt, events, cancel).await;
         let (mut outcome, final_text, mut failure, ending) = match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
             Err(Stop::Interrupted { partial }) => {
@@ -378,12 +387,14 @@ impl Agent {
     async fn drive(
         &mut self,
         turn: &mut Turn,
+        prompt: &str,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<String, Stop> {
         if self.config.reasoning_effort.is_some() || self.config.fast_mode {
             self.resolve_capabilities(cancel).await?;
         }
+        let skills = self.prepare_skills(turn.id, prompt, events, cancel).await?;
         let mut step = 0;
         loop {
             if self.config.step_limit != 0 && step >= self.config.step_limit {
@@ -405,13 +416,19 @@ impl Agent {
                 .project
                 .as_ref()
                 .map_or(0, |project| project.deltas.len());
-            let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 3);
+            let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 5);
             if !self.config.system_prompt.is_empty() {
                 instructions.push(&self.config.system_prompt);
+            }
+            if !skills.catalog.is_empty() {
+                instructions.push(&skills.catalog);
             }
             if let Some(project) = &self.project {
                 instructions.extend(project.snapshot.as_deref());
                 instructions.extend(project.deltas.iter().map(String::as_str));
+            }
+            if !skills.explicit.is_empty() {
+                instructions.push(&skills.explicit);
             }
             instructions.extend(context.iter().map(String::as_str));
             instructions.push(RESPONSE_LANGUAGE_CONTROL);
@@ -474,6 +491,35 @@ impl Agent {
                 _ => return Err(Stop::failed(TurnFailure::InvalidCompletion)),
             }
         }
+    }
+
+    async fn prepare_skills(
+        &mut self,
+        turn_id: TurnId,
+        prompt: &str,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<SkillContext, Stop> {
+        let Some(skills) = self.skills.clone() else {
+            return Ok(SkillContext::default());
+        };
+        if skills.uses_context_window() {
+            self.resolve_capabilities(cancel).await?;
+        }
+        let context_window = self
+            .capabilities
+            .as_ref()
+            .and_then(|known| known.model.context_window);
+        let Some(mut prepared) = skills.prepare(prompt, context_window, cancel).await else {
+            return Err(Stop::interrupted());
+        };
+        for text in mem::take(&mut prepared.context_notices) {
+            events(UiEvent::ContextNotice { turn_id, text });
+        }
+        if let Some(notice) = prepared.load_notice.take() {
+            events(UiEvent::Notice { notice });
+        }
+        Ok(prepared)
     }
 
     async fn resolve_capabilities(&mut self, cancel: &CancellationToken) -> Result<(), Stop> {
@@ -1433,17 +1479,23 @@ async fn settle_group<'c>(
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched) in dispatched {
         let (output, escalates, review_hold) = match dispatched {
-            Dispatched::Rejected(output, reason) => (
-                Some(output),
-                reason != ToolRejection::MalformedArguments,
-                false,
-            ),
+            Dispatched::Rejected(output, reason) => {
+                report_context_notices(turn_id, &output, events);
+                (
+                    Some(output),
+                    reason != ToolRejection::MalformedArguments,
+                    false,
+                )
+            }
             Dispatched::Held(output, review_hold) => {
                 events(tool_finished(turn_id, call, Some(&output)));
                 (Some(output), true, review_hold)
             }
             Dispatched::Running(mut task) => {
                 let output = settle(call, &mut task, cancel, &mut grace_deadline).await;
+                if let Some(output) = &output {
+                    report_context_notices(turn_id, output, events);
+                }
                 events(tool_finished(turn_id, call, output.as_ref()));
                 (output, true, false)
             }
@@ -1464,6 +1516,15 @@ fn tool_started(turn_id: TurnId, call: &ToolCall, description: CallDescription) 
         call_id: call.id.clone(),
         tool_name: call.name.clone(),
         description,
+    }
+}
+
+fn report_context_notices(turn_id: TurnId, output: &ToolOutput, events: EventSink<'_>) {
+    for text in &output.context_notices {
+        events(UiEvent::ContextNotice {
+            turn_id,
+            text: text.clone(),
+        });
     }
 }
 

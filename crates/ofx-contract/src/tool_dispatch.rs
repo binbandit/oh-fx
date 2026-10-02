@@ -66,6 +66,7 @@ pub struct ToolOutput {
     pub status: ToolResultStatus,
     pub content: String,
     pub command_result: Option<String>,
+    pub context_notices: Vec<String>,
 }
 
 impl ToolOutput {
@@ -74,6 +75,7 @@ impl ToolOutput {
             status: ToolResultStatus::Success,
             content: content.into(),
             command_result: None,
+            context_notices: Vec::new(),
         }
     }
 
@@ -82,12 +84,19 @@ impl ToolOutput {
             status: ToolResultStatus::Failure,
             content: content.into(),
             command_result: None,
+            context_notices: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn with_command_result(mut self, command_result: Option<String>) -> Self {
         self.command_result = command_result;
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_notices(mut self, notices: impl IntoIterator<Item = String>) -> Self {
+        self.context_notices.extend(notices);
         self
     }
 }

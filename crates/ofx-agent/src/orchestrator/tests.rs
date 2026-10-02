@@ -289,9 +289,13 @@ impl Tool for EchoTool {
             arguments: arguments.to_owned(),
             mutation,
             command,
-            refusal: arguments
-                .contains("refused")
-                .then(|| ToolOutput::failure("refused arguments")),
+            refusal: arguments.contains("refused").then(|| {
+                ToolOutput::failure("refused arguments").with_context_notices(
+                    arguments
+                        .contains("noticed")
+                        .then(|| "refusal notice".to_owned()),
+                )
+            }),
             cleaned_up: Arc::clone(&self.cleaned_up),
             meeting: Arc::clone(&self.meeting),
         }))
@@ -393,6 +397,10 @@ impl PreparedCall for EchoCall {
             }
             if self.arguments.contains("access") {
                 return ToolOutput::success(format!("{:?}", context.path_access));
+            }
+            if self.arguments.contains("noticed") {
+                return ToolOutput::success(format!("echo {}", self.arguments))
+                    .with_context_notices(["echo notice".to_owned()]);
             }
             if self.arguments.contains("fail") {
                 ToolOutput::failure("echo failed")
@@ -2317,6 +2325,7 @@ mod compaction;
 mod malformed_arguments;
 mod project_context;
 mod reviews;
+mod skills;
 mod turn_log;
 
 fn unconfigured_hold(tool_name: &str) -> String {
