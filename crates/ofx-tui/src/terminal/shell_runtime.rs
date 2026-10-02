@@ -273,18 +273,19 @@ impl Terminal {
     }
 
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
-        self.write_before(bytes, None)
+        let abort = self.write_abort.as_ref().map(AsFd::as_fd);
+        write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
     }
 
     pub(crate) fn write_abnormal_restore(&self) {
         let sequence = app_lifecycle::abnormal_exit_restore_sequence(self.capabilities.tmux);
         let deadline = Instant::now() + ABNORMAL_RESTORE_WAIT;
-        let _ = self.write_before(sequence.as_bytes(), Some(deadline));
-    }
-
-    fn write_before(&self, bytes: &[u8], deadline: Option<Instant>) -> Result<(), TerminalError> {
-        let abort = self.write_abort.as_ref().map(AsFd::as_fd);
-        write_fully(self.output.as_fd(), bytes, abort, deadline).map_err(TerminalError::from)
+        let _ = write_fully(
+            self.output.as_fd(),
+            sequence.as_bytes(),
+            None,
+            Some(deadline),
+        );
     }
 
     fn read_reply(
@@ -632,6 +633,62 @@ mod tests {
         ));
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(!read_master(&pty).is_empty());
+    }
+
+    fn drain_until(master: &OwnedFd, needle: &[u8]) -> Vec<u8> {
+        let deadline = Instant::now() + test_pty::WAIT;
+        let mut collected = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        while Instant::now() < deadline
+            && !collected
+                .windows(needle.len())
+                .any(|window| window == needle)
+        {
+            let mut fds = [PollFd::new(master, PollFlags::IN)];
+            let timeout = Timespec::try_from(Duration::from_millis(50)).unwrap();
+            if rustix::event::poll(&mut fds, Some(&timeout)).unwrap() > 0 {
+                let count = rustix::io::read(master, &mut buffer).unwrap();
+                collected.extend_from_slice(&buffer[..count]);
+            }
+        }
+        collected
+    }
+
+    fn fill_output_queue(terminal: &Terminal) {
+        let chunk = [b'x'; 4096];
+        loop {
+            while rustix::io::write(&terminal.output, &chunk).is_ok() {}
+            let mut fds = [PollFd::new(&terminal.output, PollFlags::OUT)];
+            let settle = Timespec::try_from(Duration::from_millis(50)).unwrap();
+            if rustix::event::poll(&mut fds, Some(&settle)).unwrap() == 0 {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn the_signal_restore_waits_for_a_full_queue_after_the_abort_descriptor_wakes() {
+        let pty = test_pty::open();
+        let mut terminal = nonblocking_terminal(&pty);
+        let (abort, wake) = std::os::unix::net::UnixStream::pair().unwrap();
+        terminal.abort_writes_when_readable(abort.into());
+        rustix::io::write(&wake, &[1]).unwrap();
+        terminal.enable_raw_mode().unwrap();
+        fill_output_queue(&terminal);
+        let restore = app_lifecycle::abnormal_exit_restore_sequence(false).replace('\n', "\r\n");
+        let master = pty.master.try_clone().unwrap();
+        let needle = restore.clone().into_bytes();
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            drain_until(&master, &needle)
+        });
+        terminal.restore_after_signal();
+        let written = reader.join().unwrap();
+        assert!(
+            written.ends_with(restore.as_bytes()),
+            "{:?}",
+            String::from_utf8_lossy(&written[written.len().saturating_sub(200)..])
+        );
     }
 
     #[test]
