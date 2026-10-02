@@ -1,6 +1,7 @@
 mod display_width;
 mod fmt;
 mod model_context_encoding;
+mod sorted_lines;
 mod text_utils;
 mod token_estimate;
 mod unicode_display_data;
