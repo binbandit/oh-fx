@@ -323,29 +323,44 @@ fn latest_resume_reports_a_busy_session_instead_of_skipping_it() {
 }
 
 #[test]
-fn resuming_without_waiting_reports_a_held_session_busy_at_once() {
+fn opening_without_waiting_reports_a_held_session_busy_at_once_and_moves_nothing() {
     let fixture = Fixture::new();
     fixture.seed("held", "/w", 1, 10);
     let store = fixture.store("/w");
     let held = store.resume("held").unwrap();
     let started = std::time::Instant::now();
     assert_eq!(
-        store.resume_without_waiting("held").err(),
+        store.open_without_waiting("held").err(),
         Some(SessionError::SessionBusy)
     );
     assert!(started.elapsed() < LOCK_DEADLINE);
     drop(held);
-    let reopened = store.resume_without_waiting("held").unwrap();
+    let reopened = store.open_without_waiting("held").unwrap();
     assert_eq!(reopened.id(), "held");
-    let elsewhere = fixture.store("/elsewhere");
     drop(reopened);
+    let elsewhere = fixture.store("/elsewhere");
+    let mut opened = elsewhere.open_without_waiting("held").unwrap();
+    assert_eq!(opened.metadata().workspace_root, "/w");
+    drop(opened);
     assert_eq!(
-        elsewhere
-            .resume_without_waiting("held")
+        store
+            .resumable_page(ListScope::CurrentWorkspace, None, None, 10)
             .unwrap()
-            .metadata()
-            .workspace_root,
-        "/elsewhere"
+            .summaries
+            .len(),
+        1
+    );
+    opened = elsewhere.open_without_waiting("held").unwrap();
+    elsewhere.move_here(&mut opened).unwrap();
+    assert_eq!(opened.metadata().workspace_root, "/elsewhere");
+    elsewhere.move_here(&mut opened).unwrap();
+    drop(opened);
+    assert!(
+        store
+            .resumable_page(ListScope::CurrentWorkspace, None, None, 10)
+            .unwrap()
+            .summaries
+            .is_empty()
     );
 }
 

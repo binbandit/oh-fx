@@ -52,7 +52,7 @@ impl Persistence {
         id: &str,
         agent: &mut Agent,
     ) -> Result<Switched, Refused> {
-        let session = self.store.resume_without_waiting(id).map_err(refused)?;
+        let mut session = self.store.open_without_waiting(id).map_err(refused)?;
         if session.metadata().preferences.provider != self.provider {
             return Err(Refused {
                 refusal: ResumeRefusal::Unavailable,
@@ -65,6 +65,7 @@ impl Persistence {
                 )),
             });
         }
+        self.store.move_here(&mut session).map_err(refused)?;
         let resumed = ResumedSession::load(session).map_err(refused)?;
         let history = resumed.transcript().map_err(refused)?;
         let model = resumed.preferences().model.clone();

@@ -108,22 +108,27 @@ impl SessionStore {
     }
 
     pub fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
-        self.resume_within(id, self.lock_deadline)
+        let mut session = self.open_within(id, self.lock_deadline)?;
+        self.move_here(&mut session)?;
+        Ok(session)
     }
 
-    pub fn resume_without_waiting(&self, id: &str) -> Result<WritableSession, SessionError> {
-        self.resume_within(id, Duration::ZERO)
+    pub fn open_without_waiting(&self, id: &str) -> Result<WritableSession, SessionError> {
+        self.open_within(id, Duration::ZERO)
     }
 
-    fn resume_within(&self, id: &str, deadline: Duration) -> Result<WritableSession, SessionError> {
+    pub fn move_here(&self, session: &mut WritableSession) -> Result<(), SessionError> {
+        if session.metadata().workspace_root == self.workspace_root {
+            return Ok(());
+        }
+        session.rebind_workspace(&self.workspace_root)
+    }
+
+    fn open_within(&self, id: &str, deadline: Duration) -> Result<WritableSession, SessionError> {
         let sessions = self
             .writable_sessions()
             .map_err(|_| SessionError::SessionNotFound)?;
-        let mut session = resume_session(sessions, id, deadline)?;
-        if session.metadata().workspace_root != self.workspace_root {
-            session.rebind_workspace(&self.workspace_root)?;
-        }
-        Ok(session)
+        resume_session(sessions, id, deadline)
     }
 
     pub fn resume_latest(&self) -> Result<WritableSession, SessionError> {

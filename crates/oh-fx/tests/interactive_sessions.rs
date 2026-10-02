@@ -1310,11 +1310,15 @@ fn a_picked_session_brings_back_its_model_and_one_from_another_provider_is_refus
         renamed.to_string(),
     )
     .expect("rewrite settings.json");
-    let session = home.shell(&[], WELCOME);
+    let elsewhere = home.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("create another workspace");
+    let session = home.spawn_in(&elsewhere, &[]);
+    wait(&session, WELCOME);
     session.send(b"elsewhere\r");
     wait(&session, "Elsewhere.");
     exit(session);
     let other = session_with_prompt(&home, &home.session_ids(), "elsewhere");
+    let other_workspace = home.metadata(&other)["workspace_root"].clone();
     renamed["provider"] = json!("local");
     fs::write(
         home.root.join("config/oh-fx/settings.json"),
@@ -1323,7 +1327,9 @@ fn a_picked_session_brings_back_its_model_and_one_from_another_provider_is_refus
     .expect("restore the provider");
     let session = home.shell(&[], WELCOME);
     session.send(b"/resume\r");
-    wait(&session, "Sessions 2  [Current workspace]  All workspaces");
+    wait(&session, PICKER_HEADER);
+    session.send(b"\x1b[Z");
+    wait(&session, "Sessions 2  Current workspace  [All workspaces]");
     session.send(b"\r");
     let screen = wait(&session, "  Unable to resume this session.");
     assert!(
@@ -1346,4 +1352,5 @@ fn a_picked_session_brings_back_its_model_and_one_from_another_provider_is_refus
     assert_eq!(models, ["vendor/model-b", "model-a", "vendor/model-b"]);
     assert_eq!(home.metadata(&on_b)["model"], "vendor/model-b");
     assert_eq!(home.metadata(&other)["provider"]["name"], "other");
+    assert_eq!(home.metadata(&other)["workspace_root"], other_workspace);
 }
