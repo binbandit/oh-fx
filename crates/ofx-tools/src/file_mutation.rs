@@ -7,7 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use memchr::memmem;
-use ofx_contract::ToolOutput;
+use ofx_contract::{FileChange, ToolOutput};
 use ofx_permissions::{FileMutationKind, FileMutationTargets, TraversalDirectory};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
 use ofx_workspace::{
@@ -200,6 +200,18 @@ impl PreparedMutation {
 
     pub(crate) fn targets(&self) -> &FileMutationTargets {
         &self.targets
+    }
+
+    pub(crate) fn file_change(&self) -> FileChange {
+        FileChange {
+            display_path: self.display_path.clone(),
+            before: match &self.preimage {
+                Preimage::Absent => None,
+                Preimage::Present { content, .. } => Some(content.clone()),
+            },
+            after: self.after.clone(),
+            parents: self.targets.review_parents(),
+        }
     }
 
     pub(crate) fn display_path(&self) -> &str {

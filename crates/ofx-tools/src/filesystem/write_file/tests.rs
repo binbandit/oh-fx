@@ -3,9 +3,9 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 
 use ofx_contract::{
-    Admission, ApplicableTarget, CallDescription, Concurrency, FileMutation, FileMutationState,
-    PathAccess, PermissionGate, PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect,
-    ToolResultStatus,
+    Admission, ApplicableTarget, CallDescription, Concurrency, FileChange, FileMutation,
+    FileMutationState, PathAccess, PermissionGate, PermissionMode, TargetKind, ToolCallId,
+    ToolContext, ToolEffect, ToolResultStatus,
 };
 use ofx_permissions::PermissionPolicy;
 use ofx_workspace::MAX_PATH_BYTES;
@@ -655,4 +655,55 @@ fn cancelled_writes_report_cancellation_and_leave_no_file() {
     );
     assert_eq!(output.status, ToolResultStatus::Failure);
     assert!(!workspace.workspace.join("new.txt").exists());
+}
+
+#[test]
+fn prepared_workspace_changes_show_the_reviewer_their_exact_content_and_external_ones_do_not() {
+    let workspace = Fixture::new();
+    fs::create_dir_all(workspace.workspace.join(".git")).unwrap();
+    fs::write(workspace.workspace.join(".git/config"), "[core]\n").unwrap();
+    let mut changed = workspace
+        .tool()
+        .prepare(&arguments(".git/config", "[core]\n\thooksPath = /tmp/x\n"))
+        .unwrap();
+    assert_eq!(changed.file_change(), None);
+    changed.complete();
+    assert_eq!(
+        changed.file_change(),
+        Some(FileChange {
+            display_path: ".git/config".to_owned(),
+            before: Some(b"[core]\n".to_vec()),
+            after: b"[core]\n\thooksPath = /tmp/x\n".to_vec(),
+            parents: vec![workspace.workspace.join(".git")],
+        })
+    );
+    let mut created = workspace
+        .tool()
+        .prepare(&arguments("a/b/new.txt", "new\n"))
+        .unwrap();
+    created.complete();
+    assert_eq!(
+        created.file_change(),
+        Some(FileChange {
+            display_path: "a/b/new.txt".to_owned(),
+            before: None,
+            after: b"new\n".to_vec(),
+            parents: vec![
+                workspace.workspace.join("a/b"),
+                workspace.workspace.join("a")
+            ],
+        })
+    );
+    let external = workspace.root.join("outside.txt");
+    fs::write(&external, "outside secret\n").unwrap();
+    let mut outside = workspace
+        .tool()
+        .prepare(&arguments(external.to_str().unwrap(), "replaced\n"))
+        .unwrap();
+    outside.complete();
+    assert_eq!(
+        outside.file_mutation().map(|mutation| mutation.state),
+        Some(FileMutationState::Unread)
+    );
+    assert_eq!(outside.file_change(), None);
 }

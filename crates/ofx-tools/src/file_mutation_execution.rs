@@ -3,9 +3,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
-    ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency, FileMutation,
-    FileMutationState, LivePermissionMode, PathAccess, PermissionMode, PreparedCall, TargetKind,
-    ToolContext, ToolEffect, ToolOutput, format_tool_execution_error_json,
+    ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency, FileChange,
+    FileMutation, FileMutationState, LivePermissionMode, PathAccess, PermissionMode, PreparedCall,
+    TargetKind, ToolContext, ToolEffect, ToolOutput, format_tool_execution_error_json,
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
@@ -102,6 +102,16 @@ impl PreparedCall for MutationCall {
 
     fn file_mutation(&self) -> Option<&FileMutation> {
         self.mutation.as_ref()
+    }
+
+    fn file_change(&self) -> Option<FileChange> {
+        match &self.plan {
+            Ok(Plan {
+                stage: Stage::Prepared(prepared),
+                ..
+            }) => Some(prepared.file_change()),
+            _ => None,
+        }
     }
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
