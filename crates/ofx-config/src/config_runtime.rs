@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
-use ofx_contract::{PermissionMode, ReasoningEffort};
+use ofx_contract::{AutoCompactPercent, PermissionMode, ReasoningEffort};
 use serde_json::{Map, Value};
 
 use crate::configured_provider::{
@@ -24,6 +24,7 @@ const MAX_MODEL_PREFERENCES: usize = 35;
 const PROVIDER_VARIABLE: &str = "OH_FX_PROVIDER";
 const MODEL_VARIABLE: &str = "OH_FX_MODEL";
 const MAX_AGENT_STEPS_VARIABLE: &str = "OH_FX_MAX_AGENT_STEPS";
+const AUTO_COMPACT_PERCENT_VARIABLE: &str = "OH_FX_AUTO_COMPACT_PERCENT";
 pub(crate) const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const PROFILE_ONLY_KEYS: [&str; 29] = [
@@ -158,6 +159,10 @@ pub enum LayerError {
     InvalidFastModeType,
     #[error("InvalidFastModeBindingType")]
     InvalidFastModeBindingType,
+    #[error("InvalidAutoCompactPercentType")]
+    InvalidAutoCompactPercentType,
+    #[error("InvalidAutoCompactPercentValue")]
+    InvalidAutoCompactPercentValue,
     #[error("{0}")]
     ContextLimits(ContextLimitError),
     #[error("InvalidContextType")]
@@ -201,6 +206,7 @@ struct Layer {
     permission_mode: Option<PermissionMode>,
     yolo_acknowledged: Option<bool>,
     max_agent_steps: Option<u64>,
+    auto_compact_percent: Option<AutoCompactPercent>,
     effort: Option<ReasoningEffort>,
     fast_mode: Option<bool>,
     context_limits: ContextLimitOverrides,
@@ -407,6 +413,15 @@ impl Settings {
             .unwrap_or(0)
     }
 
+    pub fn auto_compact_percent(&self, lookup: EnvironmentLookup<'_>) -> AutoCompactPercent {
+        AutoCompactPercent::resolve(
+            self.workspace
+                .auto_compact_percent
+                .or(self.global.auto_compact_percent),
+            lookup(AUTO_COMPACT_PERCENT_VARIABLE).as_deref(),
+        )
+    }
+
     fn load_project(&mut self, path: &Path) {
         let Some(project) = self.read_object(path, ConfigLayer::Project) else {
             return;
@@ -572,6 +587,10 @@ fn parse_layer(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         .map_err(LayerError::ContextLimits)?
         .unwrap_or_default();
     layer.max_agent_steps = parse_steps(object)?;
+    layer.auto_compact_percent = object
+        .get("auto_compact_percent")
+        .map(parse_auto_compact_percent)
+        .transpose()?;
     layer.effort = object.get("effort").map(parse_effort).transpose()?;
     layer.fast_mode = parse_switch(object, "fast_mode", LayerError::InvalidFastModeType)?;
     parse_switch(
@@ -660,6 +679,19 @@ fn parse_steps(object: &Map<String, Value>) -> Result<Option<u64>, LayerError> {
             _ => Err(LayerError::InvalidMaxAgentStepsType),
         })
         .transpose()
+}
+
+fn parse_auto_compact_percent(value: &Value) -> Result<AutoCompactPercent, LayerError> {
+    let Value::Number(number) = value else {
+        return Err(LayerError::InvalidAutoCompactPercentType);
+    };
+    let integer = number
+        .as_i64()
+        .ok_or(LayerError::InvalidAutoCompactPercentType)?;
+    u64::try_from(integer)
+        .ok()
+        .and_then(AutoCompactPercent::new)
+        .ok_or(LayerError::InvalidAutoCompactPercentValue)
 }
 
 #[cfg(test)]
@@ -810,6 +842,68 @@ mod tests {
             Ok("local-model".to_owned())
         );
         assert_eq!(settings.max_agent_steps(&no_environment), 4);
+    }
+
+    #[test]
+    fn auto_compaction_percent_is_a_profile_setting_between_10_and_80() {
+        let global = fixture_settings(r#"{"auto_compact_percent":50}"#);
+        assert_eq!(global.auto_compact_percent(&no_environment).get(), 50);
+        let environment = |value: &'static str| {
+            move |name: &str| (name == AUTO_COMPACT_PERCENT_VARIABLE).then(|| value.to_owned())
+        };
+        assert_eq!(global.auto_compact_percent(&environment(" 25 ")).get(), 25);
+        assert_eq!(global.auto_compact_percent(&environment("95")).get(), 50);
+        for (json, error) in [
+            (
+                r#"{"auto_compact_percent":90}"#,
+                LayerError::InvalidAutoCompactPercentValue,
+            ),
+            (
+                r#"{"auto_compact_percent":5}"#,
+                LayerError::InvalidAutoCompactPercentValue,
+            ),
+            (
+                r#"{"auto_compact_percent":-1}"#,
+                LayerError::InvalidAutoCompactPercentValue,
+            ),
+            (
+                r#"{"auto_compact_percent":"50"}"#,
+                LayerError::InvalidAutoCompactPercentType,
+            ),
+            (
+                r#"{"auto_compact_percent":50.0}"#,
+                LayerError::InvalidAutoCompactPercentType,
+            ),
+            (
+                r#"{"auto_compact_percent":9223372036854775808}"#,
+                LayerError::InvalidAutoCompactPercentType,
+            ),
+        ] {
+            let object: Map<String, Value> = serde_json::from_str(json).unwrap();
+            assert_eq!(parse_layer(&object), Err(error), "{json}");
+            let settings = fixture_settings(json);
+            assert_eq!(
+                settings.diagnostics()[0].cause,
+                DiagnosticCause::MalformedSettings
+            );
+            assert!(settings.profile_is_unusable());
+        }
+        let project = load(&fixture(None, Some(r#"{"auto_compact_percent":50}"#))).unwrap();
+        assert!(project.diagnostics().is_empty());
+        assert_eq!(project.auto_compact_percent(&no_environment).get(), 80);
+    }
+
+    #[test]
+    fn workspace_auto_compaction_percent_wins_over_the_global_one() {
+        let fixture = fixture(None, None);
+        let workspace_key = fixture.workspace.to_string_lossy().into_owned();
+        let json = format!(
+            r#"{{"auto_compact_percent":60,"workspaces":{{{}:{{"auto_compact_percent":30}}}}}}"#,
+            serde_json::to_string(&workspace_key).unwrap()
+        );
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+        let settings = load(&fixture).unwrap();
+        assert_eq!(settings.auto_compact_percent(&no_environment).get(), 30);
     }
 
     #[test]

@@ -164,6 +164,7 @@ fn settings_that_cannot_hold_the_selection_are_refused_unchanged() {
         r#"{"models":{"CODEX":"gpt-5.6-terra"}}"#,
         r#"{"permission_mode":"sometimes"}"#,
         r#"{"max_agent_steps":-1}"#,
+        r#"{"auto_compact_percent":90}"#,
     ] {
         let fixture = Fixture::with_settings(original);
         assert_eq!(
