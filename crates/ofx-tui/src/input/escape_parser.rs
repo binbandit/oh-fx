@@ -4,6 +4,8 @@ use super::input_action::{
 
 const SGR_MOUSE_MAX_BYTES: u8 = 18;
 const CONTROL_SEQUENCE_DISCARD_MAX_BYTES: u16 = 32;
+const CONTROL_STRING_MAX_BYTES: u16 = 4096;
+const STRING_TERMINATOR_FINAL: u8 = b'\\';
 const KITTY_UP_KEY: u16 = 57352;
 const KITTY_DOWN_KEY: u16 = 57353;
 const KP_0: u16 = 57399;
@@ -51,6 +53,8 @@ pub(crate) enum Stage {
     DiscardedX10Mouse,
     ControlSequenceDiscard,
     KittyEventType,
+    ControlString,
+    ControlStringEscape,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +128,13 @@ impl EscapeParser {
         self.stage == Stage::ControlSequenceDiscard
     }
 
+    pub(crate) fn is_control_string(&self) -> bool {
+        matches!(
+            self.stage,
+            Stage::ControlString | Stage::ControlStringEscape
+        )
+    }
+
     pub(crate) fn begin_mouse_report_discard(&mut self) -> bool {
         let remaining = match self.stage {
             Stage::SgrMouseButton | Stage::SgrMouseColumn | Stage::SgrMouseRow => {
@@ -175,6 +186,9 @@ impl EscapeParser {
         if self.stage == Stage::Idle {
             return None;
         }
+        if self.is_control_string() {
+            return self.consume_control_string(byte);
+        }
         if byte == 0x1b && self.stage != Stage::Escape && !self.is_legacy_x10_payload() {
             self.begin();
             return None;
@@ -207,6 +221,7 @@ impl EscapeParser {
                 self.reset_decode();
                 Some(x10_mouse_action(button))
             }
+            Stage::ControlString | Stage::ControlStringEscape => self.consume_control_string(byte),
             Stage::DiscardedSgrMouse | Stage::DiscardedX10Mouse => {
                 self.stage = Stage::Idle;
                 self.meta = false;
@@ -228,6 +243,12 @@ impl EscapeParser {
             }
             b'O' => {
                 self.stage = Stage::Ss3;
+                self.param = 0;
+                self.param2 = 0;
+                None
+            }
+            b']' | b'P' => {
+                self.stage = Stage::ControlString;
                 self.param = 0;
                 self.param2 = 0;
                 None
@@ -481,6 +502,35 @@ impl EscapeParser {
             return Some(Action::Ignore);
         }
         None
+    }
+
+    fn consume_control_string(&mut self, byte: u8) -> Option<Action> {
+        if self.stage == Stage::ControlStringEscape {
+            if byte == STRING_TERMINATOR_FINAL || byte < 0x20 {
+                self.reset_decode();
+                return Some(Action::Ignore);
+            }
+            self.begin();
+            return self.consume_escape(byte);
+        }
+        match byte {
+            0x1b => {
+                self.stage = Stage::ControlStringEscape;
+                None
+            }
+            0x00..=0x1f => {
+                self.reset_decode();
+                Some(Action::Ignore)
+            }
+            _ => {
+                self.param = self.param.saturating_add(1);
+                if self.param >= CONTROL_STRING_MAX_BYTES {
+                    self.reset_decode();
+                    return Some(Action::Ignore);
+                }
+                None
+            }
+        }
     }
 
     fn begin_control_sequence_discard(&mut self, byte: u8) -> Option<Action> {

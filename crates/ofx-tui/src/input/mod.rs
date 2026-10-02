@@ -125,6 +125,10 @@ impl TerminalInput {
             || !self.events.is_empty()
     }
 
+    pub(crate) fn awaiting_terminal_reply(&self) -> bool {
+        self.theme_monitor.owns_input() || self.decoder.in_control_string()
+    }
+
     pub(crate) fn start_theme_monitor(&mut self) {
         self.theme_monitor.start();
     }
@@ -638,6 +642,72 @@ mod tests {
         input.push_bytes(b"A");
         assert_eq!(drain(&mut input, 75), vec![action(Action::CursorUp)]);
         assert!(!input.has_pending_input());
+    }
+
+    const TERMINAL_STRINGS: [&[u8]; 5] = [
+        b"\x1b]11;rgb:2828/2c2c/3434\x1b\\",
+        b"\x1b]11;rgba:2828/2c2c/3434/ffff\x1b\\",
+        b"\x1b]11;rgb:1111/2222/3333\x07",
+        b"\x1b]10;rgb:1/2/3\x07",
+        b"\x1bP1+r544e=787465726d\x1b\\",
+    ];
+
+    fn only_ignored(events: &[InputEvent]) -> bool {
+        events.iter().all(|event| {
+            matches!(
+                event,
+                InputEvent::Action(DecodedTerminalAction {
+                    action: Action::Ignore,
+                    ..
+                })
+            )
+        })
+    }
+
+    #[test]
+    fn terminal_strings_split_anywhere_never_decode_to_keys() {
+        for monitored in [false, true] {
+            for reply in TERMINAL_STRINGS {
+                for split in (0..=reply.len()).filter(|split| *split != 1) {
+                    let mut input = TerminalInput::new();
+                    if monitored {
+                        input.start_theme_monitor();
+                    }
+                    input.push_bytes(&reply[..split]);
+                    let mut events = drain(&mut input, 0);
+                    input.poll_theme_monitor(1_000);
+                    events.extend(drain(&mut input, 1_000));
+                    events.extend(input.flush_escape(1_000));
+                    input.push_bytes(&reply[split..]);
+                    events.extend(drain(&mut input, 2_000));
+                    input.poll_theme_monitor(3_000);
+                    events.extend(drain(&mut input, 3_000));
+                    events.extend(input.flush_escape(3_000));
+                    assert!(
+                        only_ignored(&events),
+                        "{monitored} {:?} | {:?}: {events:?}",
+                        String::from_utf8_lossy(&reply[..split]),
+                        String::from_utf8_lossy(&reply[split..])
+                    );
+                    input.push_bytes(b"1");
+                    assert_eq!(drain(&mut input, 4_000), vec![raw(b'1')]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_control_byte_ends_an_unterminated_terminal_string_and_still_counts() {
+        let mut input = TerminalInput::new();
+        input.push_bytes(b"\x1b]draft");
+        assert!(only_ignored(&drain(&mut input, 0)));
+        assert_eq!(input.flush_escape(10_000), None);
+        assert!(!input.has_pending_input());
+        input.push_bytes(b"\x03x");
+        assert_eq!(
+            drain(&mut input, 10_000),
+            vec![action(Action::Ignore), raw(3), raw(b'x')]
+        );
     }
 
     #[test]
