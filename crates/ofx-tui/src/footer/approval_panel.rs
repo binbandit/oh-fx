@@ -137,6 +137,11 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bo
             let (text, complete) = phrase.fit(cols.saturating_sub(INSET));
             (vec![inset(&text, Paint::PLAIN)], complete)
         }
+        ActionBlock::Note(note) => {
+            let row = inset(note, theme.dim);
+            let complete = row.width() <= cols;
+            (vec![row], complete)
+        }
         ActionBlock::Wrapped { lead, text } => {
             let lead_width = visible_width(lead);
             let continuation = " ".repeat(lead_width);

@@ -217,7 +217,8 @@ mod tests {
 
     use ofx_contract::{
         ApprovalDecision, ApprovalRequest, ApprovalScope, CommandProfile, CommandRequest,
-        PathAccess, RequestId, SessionGrant, TurnId, TurnOutcome, UiCommand, UiEvent,
+        FileMutation, FileMutationState, PathAccess, RequestId, SessionGrant, TurnId, TurnOutcome,
+        UiCommand, UiEvent,
     };
 
     use super::super::test_shell::TestShell;
@@ -361,6 +362,45 @@ mod tests {
             assert!(screen.contains(line), "{line}\n{screen}");
         }
         assert!(!screen.contains("../workspace"), "{screen}");
+    }
+
+    #[test]
+    fn a_file_change_names_its_target_and_says_it_is_not_previewed() {
+        let mut test = TestShell::start();
+        test.submit("write it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.deliver(UiEvent::ApprovalRequested {
+            turn_id: TurnId::new(1),
+            request: ApprovalRequest {
+                id: RequestId::new(4),
+                tool_name: "write_file".to_owned(),
+                title: "Writing notes.md".to_owned(),
+                tool_arguments_preview: String::new(),
+                scope: ApprovalScope {
+                    target: None,
+                    access: PathAccess::WorkspaceOnly,
+                    always: Some(SessionGrant::WorkspaceFiles),
+                },
+                command: None,
+                file: Some(FileMutation {
+                    target: PathBuf::from("/workspace/docs/notes.md"),
+                    state: FileMutationState::Changes,
+                }),
+            },
+        });
+        let screen = test.screen();
+        for line in [
+            "Write file",
+            "Would you like to create or update this file?",
+            "Reason: This action changes files in your workspace.",
+            "write_file /workspace/docs/notes.md",
+            "Changes this file. The change is not previewed here.",
+            "2. Yes, and allow workspace file access for this session",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
     }
 
     #[test]
