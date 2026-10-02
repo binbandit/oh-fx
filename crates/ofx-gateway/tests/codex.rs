@@ -99,6 +99,7 @@ fn request<'a>(
         tool_choice: ToolChoice::Auto,
         max_output_tokens: Some(4096),
         provider_options: ProviderOptions::default(),
+        session_id: None,
     }
 }
 
@@ -204,6 +205,40 @@ fn assert_codex_headers(request: &RecordedRequest, token: &str) {
     assert_eq!(request.header("accept"), Some("text/event-stream"));
     assert_eq!(request.header("content-type"), Some("application/json"));
     assert_eq!(request.header("user-agent"), Some("oh-fx/test"));
+    assert_eq!(request.header("session-id"), None);
+    assert_eq!(request.header("x-client-request-id"), None);
+}
+
+#[tokio::test]
+async fn saved_sessions_name_themselves_on_every_request_and_its_replay() {
+    let server = FakeServer::start([
+        Reply::status(
+            401,
+            r#"{"error":{"code":"token_expired","message":"expired"}}"#,
+        ),
+        Reply::sse(&text_events("after refresh")),
+        Reply::sse(&text_events("unsaved")),
+    ]);
+    let credentials = FakeCredentials::replying([Some((FRESH_TOKEN, FAR_FUTURE_MS))]);
+    let codex = provider(&server, credentials, FAR_FUTURE_MS);
+    let messages = user("Hello.");
+    for session_id in [Some("abcdefghijkl"), Some("")] {
+        let request = ModelRequest {
+            session_id,
+            ..request(&[], &messages, &[])
+        };
+        codex
+            .stream(&request, &mut |_| {}, &CancellationToken::new())
+            .await
+            .expect("completes");
+    }
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    for request in &requests[..2] {
+        assert_eq!(request.header("session-id"), Some("abcdefghijkl"));
+        assert_eq!(request.header("x-client-request-id"), Some("abcdefghijkl"));
+    }
+    assert_codex_headers(&requests[2], FRESH_TOKEN);
 }
 
 #[tokio::test]
@@ -498,6 +533,7 @@ async fn invalid_models_fail_before_any_request() {
         tool_choice: ToolChoice::Auto,
         max_output_tokens: None,
         provider_options: ProviderOptions::default(),
+        session_id: None,
     };
     let error = codex
         .stream(&request, &mut |_| {}, &CancellationToken::new())

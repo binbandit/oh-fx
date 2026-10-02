@@ -11,7 +11,7 @@ use ofx_agent::{Agent, AgentConfig, Approvals, ProjectContext, RuntimeContext};
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
     ConfigDiagnostic, ConnectionError, ContextLimitOverride, ProfilePaths, ProviderDefinition,
-    SelectionError, Settings, SettingsError, request_output_tokens,
+    ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, ModelCapabilities, ModelProvider,
@@ -108,6 +108,7 @@ pub struct Launch<'a> {
 
 pub struct AgentSetup {
     provider: Arc<dyn ModelProvider>,
+    configured_model: Option<String>,
     capabilities: Option<Arc<dyn CapabilityResolver>>,
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
@@ -126,6 +127,7 @@ struct Route {
     capabilities: Option<Arc<dyn CapabilityResolver>>,
     connection: Option<ProviderDefinition>,
     model: String,
+    configured_model: Option<String>,
     source: CredentialSource,
     uses_tls: bool,
 }
@@ -162,8 +164,23 @@ impl Profile {
         &self.settings
     }
 
-    pub(crate) fn workspace_root(&self) -> &Path {
+    pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.paths.as_ref().map(|paths| paths.data.as_path())
+    }
+
+    pub fn resume_selection(
+        &mut self,
+        provider: &ProviderId,
+        binding: Option<[u8; 32]>,
+        model: &str,
+    ) -> Result<(), SelectionError> {
+        let lookup = |name: &str| env::var(name).ok();
+        self.settings
+            .resume_selection(provider, binding, model, &lookup)
     }
 
     pub async fn connect(
@@ -215,6 +232,7 @@ impl Profile {
         let permission_mode = launch.permission_mode;
         Ok(AgentSetup {
             provider: route.provider,
+            configured_model: route.configured_model,
             capabilities: route.capabilities,
             connection: route.connection,
             source: route.source,
@@ -258,6 +276,7 @@ impl Profile {
         let model = select_model(requested, |model| {
             self.settings.selected_model(connection, model, &lookup)
         })?;
+        let configured_model = self.settings.selected_model(connection, None, &lookup).ok();
         let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
         let uses_tls = uses_tls(&resolved.chat_url);
         let provider = ChatCompletionsProvider::new(resolved, &user_agent())
@@ -267,6 +286,7 @@ impl Profile {
             capabilities: Some(Arc::new(ConnectionCapabilities(connection.clone()))),
             connection: Some(connection.clone()),
             model: model.map_err(ConnectError::InvalidModel)?,
+            configured_model,
             source: CredentialSource::Configured,
             uses_tls,
         })
@@ -284,6 +304,7 @@ impl Profile {
             self.settings.selected_codex_model(model, lookup)
         })?
         .map_err(ConnectError::InvalidModel)?;
+        let configured_model = self.settings.selected_codex_model(None, lookup).ok();
         let uses_tls = uses_tls(&endpoints.codex.responses);
         let subscription = codex_subscription(
             self.paths.as_ref(),
@@ -298,6 +319,7 @@ impl Profile {
             capabilities: Some(Arc::new(subscription.capabilities)),
             connection: None,
             model,
+            configured_model,
             source: CredentialSource::Codex,
             uses_tls,
         })
@@ -373,6 +395,26 @@ impl AgentSetup {
 
     pub fn source(&self) -> CredentialSource {
         self.source
+    }
+
+    pub fn provider(&self) -> ProviderId {
+        self.connection
+            .as_ref()
+            .map_or(ProviderId::Codex, |connection| {
+                ProviderId::Configured(connection.id().to_owned())
+            })
+    }
+
+    pub fn provider_binding(&self) -> Option<[u8; 32]> {
+        self.connection
+            .as_ref()
+            .map(ProviderDefinition::binding_identity)
+    }
+
+    pub fn configured_model(&self) -> &str {
+        self.configured_model
+            .as_deref()
+            .unwrap_or(&self.config.model)
     }
 
     pub fn context_notices(&self) -> &[String] {

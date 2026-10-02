@@ -161,11 +161,15 @@ impl CodexProvider {
         }
         self.refresh_if_due(cancel).await;
         let mut sent = Vec::new();
-        let mut response = self.post(&body, &mut sent, cancel).await?;
+        let mut response = self
+            .post(&body, request.session_id, &mut sent, cancel)
+            .await?;
         if response.status() == StatusCode::UNAUTHORIZED
             && self.replace_access(CodexRefresh::Force, cancel).await
         {
-            response = self.post(&body, &mut sent, cancel).await?;
+            response = self
+                .post(&body, request.session_id, &mut sent, cancel)
+                .await?;
         }
         self.receive(response, &sent, sink, cancel, request.model)
             .await
@@ -221,6 +225,7 @@ impl CodexProvider {
     async fn post(
         &self,
         body: &str,
+        session_id: Option<&str>,
         sent: &mut Vec<Zeroizing<String>>,
         cancel: &CancellationToken,
     ) -> Result<Response, ProviderError> {
@@ -237,7 +242,7 @@ impl CodexProvider {
                 "InvalidChatGptSubscriptionAccount",
             ));
         }
-        let builder = self
+        let mut builder = self
             .client
             .post(&self.responses_url)
             .header(CONTENT_TYPE, "application/json")
@@ -245,8 +250,13 @@ impl CodexProvider {
             .header("chatgpt-account-id", account_id)
             .header("originator", CODEX_ORIGINATOR)
             .header("OpenAI-Beta", "responses=experimental")
-            .header(ACCEPT, EVENT_STREAM)
-            .body(body.to_owned());
+            .header(ACCEPT, EVENT_STREAM);
+        if let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) {
+            builder = builder
+                .header("session-id", session_id)
+                .header("x-client-request-id", session_id);
+        }
+        let builder = builder.body(body.to_owned());
         sent.push(token);
         match send(builder, cancel).await {
             Ok(response) => Ok(response),

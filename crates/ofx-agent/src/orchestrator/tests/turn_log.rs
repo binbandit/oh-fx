@@ -1,0 +1,358 @@
+use ofx_contract::{HistoryCut, HistoryTurn, RestoredHistory, TurnEnd};
+
+use super::*;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Logged {
+    Turn {
+        user: String,
+        steps: Vec<String>,
+        end: String,
+    },
+    Compaction {
+        checkpoint: String,
+        cut: HistoryCut,
+        user: String,
+        steps: Vec<String>,
+    },
+}
+
+#[derive(Default)]
+pub(super) struct MemoryLog {
+    pub(super) entries: Arc<Mutex<Vec<Logged>>>,
+    pub(super) failing: Option<&'static str>,
+}
+
+impl MemoryLog {
+    pub(super) fn shared() -> (Box<Self>, Arc<Mutex<Vec<Logged>>>) {
+        let log = Box::<Self>::default();
+        let entries = Arc::clone(&log.entries);
+        (log, entries)
+    }
+
+    pub(super) fn failing(code: &'static str) -> Self {
+        Self {
+            failing: Some(code),
+            ..Self::default()
+        }
+    }
+
+    fn outcome(&self) -> Result<(), LogFailure> {
+        match self.failing {
+            Some(code) => Err(LogFailure {
+                code: code.to_owned(),
+            }),
+            None => Ok(()),
+        }
+    }
+}
+
+fn described_steps(turn: &HistoryTurn<'_>) -> Vec<String> {
+    turn.steps
+        .iter()
+        .map(|step| {
+            let calls: Vec<&str> = step
+                .tool_calls
+                .iter()
+                .map(|call| call.id.as_str())
+                .collect();
+            let results: Vec<String> = step
+                .tool_results
+                .iter()
+                .map(|result| {
+                    let raw = if result.output_bytes == result.output.len() {
+                        String::new()
+                    } else {
+                        format!(" raw={}", result.output_bytes)
+                    };
+                    format!(
+                        "{}={}:{:?}{raw}",
+                        result.call_id, result.output, result.status
+                    )
+                })
+                .collect();
+            format!(
+                "{:?} replay={} calls={calls:?} results={results:?}",
+                step.assistant,
+                step.provider_replay.is_some()
+            )
+        })
+        .collect()
+}
+
+fn described_end(end: TurnEnd<'_>) -> String {
+    match end {
+        TurnEnd::Replied {
+            text,
+            provider_replay,
+        } => format!("replied {text:?} replay={}", provider_replay.is_some()),
+        TurnEnd::Stopped { reason, partial } => format!("{reason:?} {partial:?}"),
+    }
+}
+
+impl ConversationLog for MemoryLog {
+    fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure> {
+        self.outcome()?;
+        self.entries.lock().unwrap().push(Logged::Turn {
+            user: turn.user.to_owned(),
+            steps: described_steps(turn),
+            end: described_end(turn.end),
+        });
+        Ok(())
+    }
+
+    fn record_compaction(
+        &mut self,
+        checkpoint: &str,
+        cut: HistoryCut,
+        active: &HistoryTurn<'_>,
+    ) -> Result<(), LogFailure> {
+        self.outcome()?;
+        assert_eq!(
+            active.end,
+            TurnEnd::Replied {
+                text: "",
+                provider_replay: None
+            }
+        );
+        self.entries.lock().unwrap().push(Logged::Compaction {
+            checkpoint: checkpoint.to_owned(),
+            cut,
+            user: active.user.to_owned(),
+            steps: described_steps(active),
+        });
+        Ok(())
+    }
+}
+
+fn logged_turn(user: &str, steps: &[&str], end: &str) -> Logged {
+    Logged::Turn {
+        user: user.to_owned(),
+        steps: steps.iter().map(|step| (*step).to_owned()).collect(),
+        end: end.to_owned(),
+    }
+}
+
+fn logging_agent(provider: &Arc<FakeProvider>) -> (Agent, Arc<Mutex<Vec<Logged>>>) {
+    let (log, entries) = MemoryLog::shared();
+    let shared: Arc<FakeProvider> = Arc::clone(provider);
+    let agent = new_agent(shared, vec![echo_tool()]).with_conversation_log(log);
+    (agent, entries)
+}
+
+#[tokio::test]
+async fn finished_turns_are_logged_with_their_tool_steps_and_reply() {
+    let provider = FakeProvider::new(vec![
+        with_replay(
+            tool_reply(&[("call-1", "{}"), ("call-2", r#"{"fail":1}"#)]),
+            "p1",
+        ),
+        with_replay(text_reply("done"), "p2"),
+    ]);
+    let (agent, entries) = logging_agent(&provider);
+    let mut agent = agent.with_session_id("abcdefghijkl");
+    let (report, _) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        *entries.lock().unwrap(),
+        [logged_turn(
+            "read",
+            &[
+                r#""" replay=true calls=["call-1", "call-2"] results=["call-1=echo {}:Success", "call-2=echo failed:Failure"]"#
+            ],
+            r#"replied "done" replay=true"#
+        )]
+    );
+    assert_eq!(
+        provider.sessions(),
+        [
+            Some("abcdefghijkl".to_owned()),
+            Some("abcdefghijkl".to_owned())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn requests_without_a_session_carry_no_session_id() {
+    let provider = FakeProvider::new(vec![text_reply("hello")]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    run(&mut agent, "hi").await;
+    assert_eq!(provider.sessions(), [None]);
+}
+
+#[tokio::test]
+async fn interrupted_and_failed_turns_are_logged_as_upstream_saves_them() {
+    let partial = |text: &str| {
+        vec![StreamEvent::TextDelta {
+            text: text.to_owned(),
+        }]
+    };
+    let refused = || failure(ProviderErrorKind::Unauthorized, "unauthorized");
+    let provider = FakeProvider::new(vec![
+        Script::Fail(partial("half"), ProviderError::cancelled()),
+        Script::Fail(Vec::new(), refused()),
+        Script::Fail(
+            partial("Partial answer"),
+            failure(ProviderErrorKind::TransportInterrupted, "ReadFailed"),
+        ),
+        tool_reply(&[("call-1", "{}")]),
+        Script::Fail(Vec::new(), refused()),
+        tool_reply(&[("call-2", "{}")]),
+        Script::Fail(partial(" \n"), refused()),
+    ]);
+    let (mut agent, entries) = logging_agent(&provider);
+    for prompt in ["stop", "empty", "partial", "worked", "blank"] {
+        run(&mut agent, prompt).await;
+    }
+    assert_eq!(
+        *entries.lock().unwrap(),
+        [
+            logged_turn("stop", &[], r#"Cancelled "half""#),
+            logged_turn("empty", &[], r#"Failed """#),
+            logged_turn("partial", &[], r#"Failed "Partial answer""#),
+            logged_turn(
+                "worked",
+                &[r#""" replay=false calls=["call-1"] results=["call-1=echo {}:Success"]"#],
+                r#"replied "" replay=false"#
+            ),
+            logged_turn(
+                "blank",
+                &[r#""" replay=false calls=["call-2"] results=["call-2=echo {}:Success"]"#],
+                r#"replied "" replay=false"#
+            ),
+        ]
+    );
+    assert!(!agent.history.iter().any(|message| matches!(
+        message,
+        ChatMessage::Assistant { content: Some(text), .. } if text.trim().is_empty() && !text.is_empty()
+    )));
+}
+
+#[tokio::test]
+async fn step_limits_are_logged_as_the_notice_reply() {
+    let provider = FakeProvider::new(vec![tool_reply(&[("call-1", "{}")])]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = Agent::new(
+        provider,
+        vec![echo_tool()],
+        Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
+        AgentConfig {
+            step_limit: 1,
+            ..config()
+        },
+    )
+    .with_conversation_log(log);
+    let (report, _) = run(&mut agent, "loop").await;
+    assert_eq!(report.failure, Some(TurnFailure::StepLimitReached));
+    assert_eq!(
+        *entries.lock().unwrap(),
+        [logged_turn(
+            "loop",
+            &[r#""" replay=false calls=["call-1"] results=["call-1=echo {}:Success"]"#],
+            &format!("replied {STEP_LIMIT_NOTICE:?} replay=false")
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_turn_that_cannot_be_saved_fails_with_the_log_error() {
+    let provider = FakeProvider::new(vec![text_reply("hello")]);
+    let mut agent = new_agent(provider, Vec::new())
+        .with_conversation_log(Box::new(MemoryLog::failing("SessionPersistenceUncertain")));
+    let (report, events) = run(&mut agent, "hi").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(
+        report.failure.map(|failure| failure.code().to_owned()),
+        Some("SessionPersistenceUncertain".to_owned())
+    );
+    assert!(matches!(
+        events.last(),
+        Some(UiEvent::TurnFinished {
+            outcome: TurnOutcome::Failed,
+            ..
+        })
+    ));
+    let provider = FakeProvider::new(vec![Script::Fail(
+        Vec::new(),
+        failure(ProviderErrorKind::Unauthorized, "unauthorized"),
+    )]);
+    let mut agent = new_agent(provider, Vec::new())
+        .with_conversation_log(Box::new(MemoryLog::failing("SessionPersistenceUncertain")));
+    let (report, _) = run(&mut agent, "hi").await;
+    assert_eq!(report.failure.unwrap().code(), "unauthorized");
+}
+
+#[tokio::test]
+async fn restored_history_is_sent_ahead_of_the_next_prompt() {
+    let provider = FakeProvider::new(vec![text_reply("again")]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let restored = vec![
+        ChatMessage::user("first"),
+        ChatMessage::Assistant {
+            content: Some("one".to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        },
+    ];
+    agent.restore(RestoredHistory {
+        checkpoint: Some("older work".to_owned()),
+        messages: restored.clone(),
+        turn_starts: vec![0],
+    });
+    assert_eq!(agent.turn_starts, [1]);
+    assert_eq!(agent.compacted, None);
+    run(&mut agent, "second").await;
+    let messages = &provider.requests()[0].messages;
+    assert_eq!(messages.len(), 4);
+    assert_eq!(
+        messages[0],
+        ChatMessage::user(
+            "This session is being continued from earlier compacted context. The summary below covers the earlier portion of the conversation.\n\nolder work\n\nRecent conversation turns are preserved verbatim.\nContinue the conversation from where it left off without asking the user to repeat context. Resume directly."
+        )
+    );
+    assert_eq!(messages[1..3], restored[..]);
+    assert_eq!(messages[3], ChatMessage::user("second"));
+    assert_eq!(agent.turn_starts, [1, 3]);
+
+    let payload = Payload {
+        turn_count: 1,
+        ..Payload::default()
+    };
+    agent.restore(RestoredHistory {
+        checkpoint: Some(crate::compactor::encode_checkpoint(&payload)),
+        messages: Vec::new(),
+        turn_starts: Vec::new(),
+    });
+    assert_eq!(agent.compacted, Some(payload));
+    assert_eq!(agent.history.len(), 1);
+    assert!(agent.turn_starts.is_empty());
+    agent.restore(RestoredHistory::default());
+    assert!(agent.history.is_empty());
+    assert_eq!(agent.compacted, None);
+}
+
+#[tokio::test]
+async fn results_cut_for_the_model_are_logged_with_the_length_the_tool_returned() {
+    let arguments = format!(r#"{{"value":"{}"}}"#, "x".repeat(70_000));
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", &arguments), ("call-2", "{}")]),
+        text_reply("done"),
+    ]);
+    let (mut agent, entries) = logging_agent(&provider);
+    let (report, _) = run(&mut agent, "big").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let entries = entries.lock().unwrap().clone();
+    let Logged::Turn { steps, .. } = &entries[0] else {
+        panic!("{entries:?}");
+    };
+    let raw = format!("echo {arguments}").len();
+    assert!(raw > DEFAULT_MAX_TOOL_RESULT_BYTES);
+    assert!(
+        steps[0].contains(&format!(
+            ":Success raw={raw}\", \"call-2=echo {{}}:Success\"]"
+        )),
+        "{}",
+        &steps[0][steps[0].len() - 200..]
+    );
+}

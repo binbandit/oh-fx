@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read};
 
 use ofx_contract::{PermissionMode, ReasoningEffort};
+use ofx_session::ResumeTarget;
 use ofx_text::parse_unsigned;
 
 use crate::cli_surface::{
@@ -42,7 +43,7 @@ pub struct AskPermissions {
 
 #[derive(Debug, Default)]
 pub struct AskSession {
-    pub resume_flag: Option<&'static str>,
+    pub resume: Option<ResumeTarget>,
     pub continue_recovery: bool,
     pub no_save: bool,
     pub sessions_v2: bool,
@@ -157,7 +158,7 @@ impl AskArgs {
     }
 
     fn check_no_save_conflict(&self) -> Result<(), AskError> {
-        if self.session.no_save && self.session.resume_flag.is_some() {
+        if self.session.no_save && self.session.resume.is_some() {
             Err(self.error(AskErrorKind::NoSaveResumeConflict))
         } else {
             Ok(())
@@ -275,10 +276,14 @@ impl AskParser {
                 return Err(invalid);
             }
         } else if let Some((flag, value)) = self.take_resume() {
-            if self.args.session.resume_flag.replace(flag).is_some() {
+            let target = value.as_deref().and_then(non_blank).ok_or(invalid)?;
+            let target = match target.to_string_lossy() {
+                last if last == "last" && flag == "--resume" => ResumeTarget::Last,
+                id => ResumeTarget::Id(id.into_owned()),
+            };
+            if self.args.session.resume.replace(target).is_some() {
                 return Err(invalid);
             }
-            value.as_deref().and_then(non_blank).ok_or(invalid)?;
         } else if let Some(value) = self.stream.take_option("image", ValueForm::Separate) {
             value.map_err(|_| missing)?;
             self.args.images = true;
@@ -342,7 +347,7 @@ impl AskParser {
         self.args.fast = self.model_overrides.fast;
         if self.args.session.continue_recovery {
             let session = &self.args.session;
-            if session.resume_flag.is_none()
+            if session.resume.is_none()
                 || session.no_save
                 || !self.prompt_parts.is_empty()
                 || self.args.images

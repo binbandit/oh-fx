@@ -2,6 +2,7 @@ use std::fmt;
 use std::net::Ipv6Addr;
 
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::connection::REDACTED;
 use crate::header_template::HeaderTemplate;
@@ -15,6 +16,8 @@ const MAX_URL_BYTES: usize = 2048;
 pub(crate) const MAX_ENV_BYTES: usize = 128;
 const MAX_HEADERS: usize = 64;
 const MAX_PATH_BYTES: usize = 4096;
+const BINDING_IDENTITY_DOMAIN: &str = "fx-configured-provider-v1";
+const CHAT_COMPLETIONS_PROTOCOL: &str = "openai-chat-completions";
 const RESERVED_PROVIDER_IDS: [&str; 3] = ["gateway", "codex", "grok"];
 const DEFINITION_FIELDS: [&str; 11] = [
     "protocol",
@@ -158,6 +161,26 @@ impl ProviderDefinition {
         &self.models
     }
 
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn binding_identity(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(BINDING_IDENTITY_DOMAIN);
+        hash_part(&mut hash, &self.id);
+        hash_part(&mut hash, CHAT_COMPLETIONS_PROTOCOL);
+        hash_part(&mut hash, &self.base_url);
+        match &self.auth {
+            ProviderAuth::None => hash_part(&mut hash, "none"),
+            ProviderAuth::Bearer { env } => {
+                hash_part(&mut hash, "bearer");
+                hash_part(&mut hash, env);
+            }
+        }
+        hash.finalize().into()
+    }
+
     pub fn capabilities(&self, model: &str) -> Capabilities {
         self.model_metadata
             .iter()
@@ -167,6 +190,11 @@ impl ProviderDefinition {
                 max_output_tokens: metadata.max_output_tokens,
             })
     }
+}
+
+fn hash_part(hash: &mut Sha256, part: &str) {
+    hash.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hash.update(part);
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -632,6 +660,47 @@ fn validate_path(path: &str) -> ParseResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_provider_binding_identity_separates_name_endpoint_and_auth_slot() {
+        let registry = ProviderRegistry::parse_json(TEST_JSON.as_bytes()).unwrap();
+        let original = registry.get("router").unwrap().clone();
+        let identity = original.binding_identity();
+        assert_eq!(identity, original.binding_identity());
+        let changed = |change: &dyn Fn(&mut ProviderDefinition)| {
+            let mut definition = original.clone();
+            change(&mut definition);
+            definition.binding_identity()
+        };
+        assert_ne!(
+            changed(&|definition| definition.id = "other".to_owned()),
+            identity
+        );
+        assert_ne!(
+            changed(&|definition| definition.base_url = "https://example.com/api/v1".to_owned()),
+            identity
+        );
+        assert_ne!(
+            changed(&|definition| definition.auth = ProviderAuth::Bearer {
+                env: "OTHER_KEY".to_owned()
+            }),
+            identity
+        );
+        assert_ne!(
+            changed(&|definition| definition.auth = ProviderAuth::None),
+            identity
+        );
+        assert_eq!(
+            changed(&|definition| {
+                definition.base_url = validate_url("https://openrouter.ai/api/v1/")
+                    .unwrap()
+                    .to_owned();
+                definition.headers.clear();
+                definition.models = vec!["other".to_owned()];
+            }),
+            identity
+        );
+    }
 
     #[test]
     fn debug_output_redacts_literal_headers_and_proxy_credentials() {

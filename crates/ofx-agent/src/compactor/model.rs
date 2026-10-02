@@ -16,6 +16,7 @@ pub(crate) struct Summarizer<'a> {
     pub(crate) options: ProviderOptions<'a>,
     pub(crate) reasoning_efforts: &'a [String],
     pub(crate) conversation: Option<ModelRequest<'a>>,
+    pub(crate) session_id: Option<&'a str>,
     pub(crate) cancel: &'a CancellationToken,
 }
 
@@ -51,6 +52,7 @@ impl SummaryModel for Summarizer<'_> {
                         reasoning_effort: lowest_reasoning_effort(self.reasoning_efforts),
                         ..self.options
                     },
+                    session_id: self.session_id,
                 };
                 text_completion::complete(self.provider, &request, MAX_SUMMARY_BYTES, self.cancel)
                     .await

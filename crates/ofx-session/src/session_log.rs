@@ -1,29 +1,39 @@
 mod conversation_history;
+mod conversation_progress;
 mod conversation_writer;
 pub(crate) mod managed_file;
+mod turn_events;
+mod turn_restore;
 
-use std::fmt::Write as _;
 use std::mem;
 use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
+use ofx_contract::{HistoryCut, HistoryTurn, RestoredHistory, TurnEnd, TurnStop};
+use ofx_text::lowercase_hex;
 
 use crate::session_codec::{
-    MAX_SESSION_METADATA_BYTES, SessionMetadata, SessionPreferences, decode_session_metadata,
-    encode_session_metadata,
+    MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
+    decode_session_metadata, encode_session_metadata,
 };
 use crate::session_error::SessionError;
-use crate::session_event::{ConversationEvent, InterruptReason, InterruptedEvent};
+use crate::session_event::{
+    ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent,
+};
 use crate::session_layout::is_valid_session_id;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history};
+use conversation_progress::ProgressPoint;
 use conversation_writer::{ConversationWriter, scan_log};
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
-    open_managed_file, publish_dir, read_managed_file, remove_created_dir, sync_dir,
+    open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
+    same_directory, sync_dir,
 };
+use turn_events::{TurnArtifacts, turn_events};
+use turn_restore::restored_history;
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
 const MANIFEST_FILE: &str = "session.json";
@@ -32,6 +42,13 @@ const OWNER_LIVE_FILE: &str = "owner.live";
 const STAGING_PREFIX: &str = "creating+";
 const STAGING_RANDOM_BYTES: usize = 16;
 pub(crate) const LOCK_DEADLINE: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionDisposal {
+    Discarded,
+    Retained,
+    Indeterminate,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedSession {
@@ -74,6 +91,7 @@ pub struct WritableSession {
     writer: ConversationWriter,
     metadata: SessionMetadata,
     history: SavedHistory,
+    started: bool,
 }
 
 impl WritableSession {
@@ -95,6 +113,87 @@ impl WritableSession {
 
     pub fn take_history(&mut self) -> SavedHistory {
         mem::take(&mut self.history)
+    }
+
+    pub fn restored_history(&mut self) -> Result<RestoredHistory, SessionError> {
+        restored_history(mem::take(&mut self.history), &self.owned.dir)
+    }
+
+    pub fn record_turn(
+        &mut self,
+        turn: &HistoryTurn<'_>,
+        provider: &SavedProvider,
+    ) -> Result<(), SessionError> {
+        let open = self.writer.turn_open();
+        let nothing_done = turn.steps.is_empty()
+            && turn.end
+                == TurnEnd::Stopped {
+                    reason: TurnStop::Failed,
+                    partial: "",
+                };
+        if nothing_done && !open {
+            return Ok(());
+        }
+        let timestamp_ms = now_ms();
+        let written = self.written_steps()?;
+        let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
+        let unwritten = &events[usize::from(open)..];
+        self.append(timestamp_ms, unwritten)
+    }
+
+    pub fn record_compaction(
+        &mut self,
+        summary: &str,
+        cut: HistoryCut,
+        active: &HistoryTurn<'_>,
+        provider: &SavedProvider,
+    ) -> Result<(), SessionError> {
+        let replied_nothing = TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        };
+        if active.end != replied_nothing {
+            return Err(SessionError::InvalidConversationEvent);
+        }
+        let open = self.writer.turn_open();
+        let timestamp_ms = now_ms();
+        let written = self.written_steps()?;
+        let mut events = turn_events(&self.artifacts(provider, timestamp_ms), active, written)?;
+        events.pop();
+        events.drain(..usize::from(open));
+        let covers_through_seq = self
+            .writer
+            .context_coverage(ProgressPoint::from(cut), &events)?;
+        events.push(ConversationEvent::ContextCheckpoint(
+            ContextCheckpointEvent {
+                covers_through_seq,
+                summary: summary.to_owned(),
+            },
+        ));
+        self.append(timestamp_ms, &events)
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.started && self.writer.last_seq() == 0 && !self.writer.turn_open()
+    }
+
+    fn written_steps(&self) -> Result<usize, SessionError> {
+        if !self.writer.turn_open() {
+            return Ok(0);
+        }
+        Ok(self.writer.context_progress(None)?.point.tool_steps)
+    }
+
+    fn artifacts<'a>(
+        &'a self,
+        provider: &'a SavedProvider,
+        timestamp_ms: i64,
+    ) -> TurnArtifacts<'a> {
+        TurnArtifacts {
+            dir: &self.owned.dir,
+            provider,
+            timestamp_ms,
+        }
     }
 
     pub fn append(
@@ -162,6 +261,7 @@ pub(crate) fn start_session(
             writer,
             metadata,
             history: SavedHistory::default(),
+            started: true,
         });
     let session = match prepared {
         Ok(session) => session,
@@ -228,6 +328,7 @@ pub(crate) fn resume_session(
         writer,
         metadata,
         history,
+        started: false,
     })
 }
 
@@ -247,6 +348,27 @@ pub(crate) fn load_session(sessions: &PrivateDir, id: &str) -> Result<SavedSessi
     let window = replay.finish(&file, scan.complete_bytes)?;
     let history = replay_history(&file, scan.complete_bytes, &window)?;
     Ok(SavedSession { metadata, history })
+}
+
+pub(crate) fn delete_session(sessions: &PrivateDir, session: WritableSession) -> SessionDisposal {
+    let id = session.metadata.id.clone();
+    let named = match sessions.open_child(&id) {
+        Ok(Some(named)) => named,
+        Ok(None) => return SessionDisposal::Retained,
+        Err(_) => return SessionDisposal::Indeterminate,
+    };
+    match same_directory(&named, &session.owned.dir) {
+        Ok(true) => {}
+        Ok(false) => return SessionDisposal::Retained,
+        Err(_) => return SessionDisposal::Indeterminate,
+    }
+    drop(named);
+    let removed = remove_session_dir(sessions, &id);
+    drop(session);
+    match removed {
+        Ok(()) => SessionDisposal::Discarded,
+        Err(_) => SessionDisposal::Indeterminate,
+    }
 }
 
 pub(crate) fn read_metadata(dir: &PrivateDir, id: &str) -> Result<SessionMetadata, SessionError> {
@@ -273,11 +395,7 @@ pub(crate) fn now_ms() -> i64 {
 fn staging_name() -> Result<String, SessionError> {
     let mut random = [0_u8; STAGING_RANDOM_BYTES];
     getrandom::fill(&mut random).map_err(|_| SessionError::SessionStartFailed)?;
-    let mut name = String::from(STAGING_PREFIX);
-    for byte in random {
-        let _ = write!(name, "{byte:02x}");
-    }
-    Ok(name)
+    Ok(format!("{STAGING_PREFIX}{}", lowercase_hex(&random)))
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 mod applicable_target;
 mod compactor_settings;
+mod history_turn;
 mod ids;
 mod model_capabilities;
 mod permission_gate;
@@ -14,6 +15,10 @@ mod ui;
 
 pub use applicable_target::{ApplicableTarget, TargetKind};
 pub use compactor_settings::AutoCompactPercent;
+pub use history_turn::{
+    ConversationLog, HistoryCut, HistoryStep, HistoryTurn, LogFailure, RestoredHistory, StepResult,
+    TurnEnd, TurnStop,
+};
 pub use ids::{RequestId, ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use permission_gate::{

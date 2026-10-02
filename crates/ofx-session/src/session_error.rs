@@ -32,6 +32,8 @@ pub enum SessionError {
     ToolIdentityMismatch,
     #[error("InvalidCheckpointCoverage")]
     InvalidCheckpointCoverage,
+    #[error("InvalidContextHistoryStart")]
+    InvalidContextHistoryStart,
     #[error("UnresolvedToolCall")]
     UnresolvedToolCall,
     #[error("EventFrameTooLarge")]

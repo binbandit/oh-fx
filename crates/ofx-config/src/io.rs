@@ -1,9 +1,9 @@
-use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
+use ofx_text::lowercase_hex;
 use rustix::fs::{self, AtFlags, FileType, FlockOperation, Mode, OFlags, Stat};
 use rustix::io::Errno;
 use zeroize::Zeroizing;
@@ -470,11 +470,7 @@ fn permissions(stat: &Stat) -> Mode {
 fn temp_name(name: &str) -> Result<String, DurableError> {
     let mut suffix = [0_u8; TEMP_SUFFIX_BYTES];
     getrandom::fill(&mut suffix).map_err(|_| DurableError::PreRenameFailed)?;
-    let mut temp = format!(".{name}.tmp.");
-    for byte in suffix {
-        let _ = write!(temp, "{byte:02x}");
-    }
-    Ok(temp)
+    Ok(format!(".{name}.tmp.{}", lowercase_hex(&suffix)))
 }
 
 #[cfg(test)]

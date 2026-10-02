@@ -1,10 +1,10 @@
-use std::fmt::Write as _;
 use std::io::Read;
 use std::os::fd::AsFd;
 use std::path::Path;
 use std::time::Duration;
 
 use ofx_config::PrivateDir;
+use ofx_text::lowercase_hex;
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
@@ -17,8 +17,8 @@ use crate::session_log::managed_file::{
     file_type, has_private_dir_mode, permissions, private_file_mode, session_directory_names,
 };
 use crate::session_log::{
-    LOCK_DEADLINE, SavedSession, WritableSession, load_session, now_ms, resume_session,
-    start_session,
+    LOCK_DEADLINE, SavedSession, SessionDisposal, WritableSession, delete_session, load_session,
+    now_ms, resume_session, start_session,
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
 use crate::session_summary_codec::{
@@ -30,6 +30,12 @@ const SESSIONS_DIR: &str = "sessions";
 const CONTINUE_DIR: &str = "continue";
 const MAX_REMEMBERED_SESSION_BYTES: usize = 256;
 const MAX_LATEST_SELECTION_RETRIES: usize = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeTarget {
+    Last,
+    Id(String),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListScope {
@@ -148,6 +154,23 @@ impl SessionStore {
         }
     }
 
+    pub fn resume_target(&self, target: &ResumeTarget) -> Result<WritableSession, SessionError> {
+        match target {
+            ResumeTarget::Last => self.resume_latest(),
+            ResumeTarget::Id(id) => self.resume(id),
+        }
+    }
+
+    pub fn discard_pristine(&self, session: WritableSession) -> SessionDisposal {
+        let owned_here = session.metadata().workspace_root == self.workspace_root;
+        match self.writable_sessions() {
+            Ok(sessions) if owned_here && session.is_pristine() => {
+                delete_session(sessions, session)
+            }
+            _ => SessionDisposal::Retained,
+        }
+    }
+
     pub fn load(&self, id: &str) -> Result<SavedSession, SessionError> {
         let sessions = self
             .sessions
@@ -258,12 +281,7 @@ fn layout_error(error: ofx_config::DurableError) -> SessionError {
 }
 
 fn remembered_file_name(workspace_root: &str) -> String {
-    let digest = Sha256::digest(workspace_root.as_bytes());
-    let mut name = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = write!(name, "{byte:02x}");
-    }
-    name
+    lowercase_hex(&Sha256::digest(workspace_root.as_bytes()))
 }
 
 fn read_remembered_session(

@@ -12,7 +12,7 @@ use crate::session_codec::SavedProvider;
 use crate::session_event::{
     AssistantEvent, ContextCheckpointEvent, ConversationEvent, TurnCompletedEvent, UserEvent,
 };
-use crate::session_log::start_session;
+use crate::session_log::{SessionDisposal, start_session};
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -480,4 +480,83 @@ fn remembered_session_selection_is_private_per_workspace_and_read_only_lookup_cr
         store.remember_session_id("third"),
         Err(SessionError::SessionPathUnsafe)
     );
+}
+
+#[test]
+fn resume_targets_pick_the_latest_session_or_an_exact_id() {
+    let fixture = Fixture::new();
+    fixture.seed("older", "/workspace", 1, 100);
+    fixture.seed("newer", "/workspace", 1, 200);
+    let store = fixture.store("/workspace");
+    assert_eq!(
+        store.resume_target(&ResumeTarget::Last).unwrap().id(),
+        "newer"
+    );
+    assert_eq!(
+        store
+            .resume_target(&ResumeTarget::Id("older".to_owned()))
+            .unwrap()
+            .id(),
+        "older"
+    );
+    assert_eq!(
+        store
+            .resume_target(&ResumeTarget::Id("missing".to_owned()))
+            .err(),
+        Some(SessionError::SessionNotFound)
+    );
+    assert_eq!(
+        fixture
+            .store("/elsewhere")
+            .resume_target(&ResumeTarget::Last)
+            .err(),
+        Some(SessionError::NoSavedSessions)
+    );
+}
+
+#[test]
+fn only_a_session_started_here_with_nothing_saved_is_discarded() {
+    let fixture = Fixture::new();
+    let store = fixture.store("/workspace");
+    let fresh = store.start(preferences()).unwrap();
+    let id = fresh.id().to_owned();
+    fs::create_dir(fixture.session_dir(&id).join("tool-results")).unwrap();
+    fs::write(
+        fixture.session_dir(&id).join("tool-results/result-x.txt"),
+        "x",
+    )
+    .unwrap();
+    assert_eq!(store.discard_pristine(fresh), SessionDisposal::Discarded);
+    assert!(!fixture.session_dir(&id).exists());
+
+    let mut saved = store.start(preferences()).unwrap();
+    saved.append(3, &turn("kept")).unwrap();
+    let id = saved.id().to_owned();
+    assert_eq!(store.discard_pristine(saved), SessionDisposal::Retained);
+    assert!(fixture.session_dir(&id).join("events.jsonl").exists());
+
+    fixture.seed("empty", "/workspace", 0, 100);
+    let resumed = store.resume("empty").unwrap();
+    assert_eq!(store.discard_pristine(resumed), SessionDisposal::Retained);
+    assert!(fixture.session_dir("empty").exists());
+
+    let elsewhere = fixture.store("/elsewhere").start(preferences()).unwrap();
+    let id = elsewhere.id().to_owned();
+    assert_eq!(store.discard_pristine(elsewhere), SessionDisposal::Retained);
+    assert!(fixture.session_dir(&id).exists());
+}
+
+#[test]
+fn a_session_whose_folder_was_replaced_is_never_deleted() {
+    let fixture = Fixture::new();
+    let store = fixture.store("/workspace");
+    let fresh = store.start(preferences()).unwrap();
+    let id = fresh.id().to_owned();
+    let moved = fixture.data().join("sessions/moved");
+    fs::rename(fixture.session_dir(&id), &moved).unwrap();
+    fs::create_dir(fixture.session_dir(&id)).unwrap();
+    fs::write(fixture.session_dir(&id).join("keep"), "x").unwrap();
+    assert_eq!(store.discard_pristine(fresh), SessionDisposal::Retained);
+    assert!(fixture.session_dir(&id).join("keep").exists());
+    assert!(moved.join("session.json").exists());
 }

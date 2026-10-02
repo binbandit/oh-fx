@@ -1,17 +1,19 @@
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_config::{AdvisoryLock, PrivateDir};
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags, RenameFlags, Stat};
 use rustix::io::Errno;
+use rustix::path::Arg;
 
 use crate::session_error::SessionError;
 use crate::session_layout::is_valid_session_id;
 
 const LOCK_RETRY: Duration = Duration::from_millis(10);
+const MAX_TREE_DEPTH: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
@@ -117,17 +119,53 @@ pub(crate) fn publish_dir(
 }
 
 pub(crate) fn remove_created_dir(parent: &PrivateDir, name: &str) {
-    if let Ok(Some(dir)) = parent.open_child(name)
-        && let Ok(entries) = fs::Dir::read_from(dir.as_fd())
-    {
-        for entry in entries.flatten() {
-            let entry_name = entry.file_name().to_bytes();
-            if entry_name != b"." && entry_name != b".." {
-                let _ = fs::unlinkat(dir.as_fd(), entry.file_name(), AtFlags::empty());
-            }
+    let _ = remove_tree(parent.as_fd(), name, MAX_TREE_DEPTH);
+}
+
+pub(crate) fn remove_session_dir(parent: &PrivateDir, name: &str) -> Result<(), SessionError> {
+    remove_tree(parent.as_fd(), name, MAX_TREE_DEPTH)?;
+    sync_dir(parent)
+}
+
+pub(crate) fn same_directory(
+    first: &PrivateDir,
+    second: &PrivateDir,
+) -> Result<bool, SessionError> {
+    let (first, second) = (fs::fstat(first.as_fd())?, fs::fstat(second.as_fd())?);
+    Ok(first.st_dev == second.st_dev && first.st_ino == second.st_ino)
+}
+
+fn remove_tree<P: Arg + Copy>(parent: BorrowedFd<'_>, name: P, depth: usize) -> Result<(), Errno> {
+    let dir = fs::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let mut names = Vec::new();
+    for entry in fs::Dir::read_from(&dir)? {
+        let entry = entry?;
+        let entry_name = entry.file_name();
+        if entry_name.to_bytes() == b"." || entry_name.to_bytes() == b".." {
+            continue;
+        }
+        let directory = match entry.file_type() {
+            FileType::Directory => true,
+            FileType::Unknown => fs::statat(&dir, entry_name, AtFlags::SYMLINK_NOFOLLOW)
+                .is_ok_and(|stat| file_type(&stat) == FileType::Directory),
+            _ => false,
+        };
+        names.push((entry_name.to_owned(), directory));
+    }
+    for (entry_name, directory) in names {
+        if directory {
+            let depth = depth.checked_sub(1).ok_or(Errno::NOTEMPTY)?;
+            remove_tree(dir.as_fd(), entry_name.as_c_str(), depth)?;
+        } else {
+            fs::unlinkat(&dir, entry_name.as_c_str(), AtFlags::empty())?;
         }
     }
-    let _ = fs::unlinkat(parent.as_fd(), name, AtFlags::REMOVEDIR);
+    fs::unlinkat(parent, name, AtFlags::REMOVEDIR)
 }
 
 pub(crate) fn session_directory_names(dir: &PrivateDir) -> Result<Vec<String>, SessionError> {
