@@ -471,6 +471,7 @@ fn replay_comes_only_from_assistant_messages_of_the_same_codex_model() {
             source: ReplaySource {
                 provider: provider.to_owned(),
                 model: model.to_owned(),
+                binding: None,
             },
             parts_json: parts.to_owned(),
         }),

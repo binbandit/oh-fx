@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use ofx_config::{PrivateDir, ProviderId};
 use ofx_contract::{
     HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, ToolArgumentIntegrity, TurnEnd,
@@ -11,7 +9,7 @@ use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{
     ArtifactCompleteness, AssistantEvent, ConversationEvent, InterruptReason, InterruptedEvent,
-    KeptReplay, SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
+    SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
     TurnCompletedEvent, UserEvent,
 };
 use crate::session_log::conversation_progress::ProgressPoint;
@@ -20,7 +18,6 @@ pub(crate) struct TurnArtifacts<'a> {
     pub(crate) dir: &'a PrivateDir,
     pub(crate) provider: &'a SavedProvider,
     pub(crate) timestamp_ms: i64,
-    pub(crate) kept: KeptReplays<'a>,
 }
 
 pub(crate) fn turn_events(
@@ -50,7 +47,7 @@ pub(crate) fn turn_events(
             steering_events(entry, &mut events);
         }
         let follows_standalone = index > 0 && steps[index - 1].tool_calls.is_empty();
-        step_events(artifacts, step, position, follows_standalone, &mut events)?;
+        step_events(artifacts, step, follows_standalone, &mut events)?;
     }
     for entry in steering {
         steering_events(entry, &mut events);
@@ -105,19 +102,15 @@ fn steering_events(steering: &HistorySteering<'_>, events: &mut Vec<Conversation
 fn step_events(
     artifacts: &TurnArtifacts<'_>,
     step: &HistoryStep<'_>,
-    position: usize,
     follows_standalone: bool,
     events: &mut Vec<ConversationEvent>,
 ) -> Result<(), SessionError> {
     if !step.assistant.is_empty() || step.provider_replay.is_some() || follows_standalone {
         events.push(ConversationEvent::Assistant(AssistantEvent {
             text: step.assistant.to_owned(),
-            provider_replay: step.provider_replay.and_then(|replay| {
-                artifacts
-                    .kept
-                    .take(step, replay, position)
-                    .or_else(|| saved_replay(replay, artifacts.provider))
-            }),
+            provider_replay: step
+                .provider_replay
+                .and_then(|replay| saved_replay(replay, artifacts.provider)),
             standalone_response: step.tool_calls.is_empty(),
         }));
     }
@@ -152,42 +145,12 @@ fn step_events(
     Ok(())
 }
 
-pub(crate) enum KeptReplays<'a> {
-    ByPosition(&'a [Option<SavedReplay>]),
-    ByStep(&'a RefCell<Vec<KeptReplay>>),
-}
-
-impl KeptReplays<'_> {
-    fn take(
-        &self,
-        step: &HistoryStep<'_>,
-        projected: &ProviderReplay,
-        position: usize,
-    ) -> Option<SavedReplay> {
-        match self {
-            Self::ByPosition(replays) => replays.get(position).cloned().flatten(),
-            Self::ByStep(kept) => {
-                let call_ids: Vec<&str> = step
-                    .tool_calls
-                    .iter()
-                    .map(|call| call.id.as_str())
-                    .collect();
-                let mut kept = kept.borrow_mut();
-                let index = kept
-                    .iter()
-                    .position(|kept| kept.belongs_to(step.assistant, &call_ids, projected))?;
-                Some(kept.remove(index).replay)
-            }
-        }
-    }
-}
-
 fn saved_replay(replay: &ProviderReplay, running: &SavedProvider) -> Option<SavedReplay> {
     let id = ProviderId::parse(&replay.source.provider)?;
-    let provider = if id == *running.id() {
-        running.clone()
-    } else {
-        SavedProvider::new(id, None)?
+    let provider = match replay.source.binding {
+        Some(binding) => SavedProvider::new(id, Some(binding))?,
+        None if id == *running.id() => running.clone(),
+        None => SavedProvider::new(id, None)?,
     };
     Some(SavedReplay {
         source: SavedReplaySource {

@@ -285,6 +285,7 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
         Some(&ReplaySource {
             provider: "codex".to_owned(),
             model: "gpt-5.4".to_owned(),
+            binding: None,
         })
     );
     history.push(answered(&first));
@@ -605,6 +606,7 @@ async fn replay_from_another_model_or_provider_is_omitted() {
             source: ReplaySource {
                 provider: provider.to_owned(),
                 model: model.to_owned(),
+                binding: None,
             },
             parts_json: json!([{"type": "reasoning", "encrypted_content": cipher}]).to_string(),
         }),

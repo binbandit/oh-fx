@@ -6,7 +6,6 @@ mod turn_events;
 mod turn_recovery;
 mod turn_restore;
 
-use std::cell::RefCell;
 use std::fs::File;
 use std::mem;
 use std::process;
@@ -23,9 +22,7 @@ use crate::session_codec::{
 };
 use crate::session_display_metadata::{derive_display_title, prompt_title};
 use crate::session_error::SessionError;
-use crate::session_event::{
-    ContextCheckpointEvent, ConversationEvent, KeptReplay, ToolResultEvent,
-};
+use crate::session_event::{ContextCheckpointEvent, ConversationEvent, ToolResultEvent};
 use crate::session_layout::is_valid_session_id;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
@@ -37,7 +34,7 @@ use managed_file::{
     open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
     same_directory, sync_dir,
 };
-use turn_events::{KeptReplays, TurnArtifacts, turn_events};
+use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
 use turn_recovery::{Recovery, clear_recovery, commit_checkpoint, open_unfinished_turn};
 use turn_restore::{complete_result_output, restored_history};
@@ -263,7 +260,7 @@ impl WritableSession {
     pub fn take_recovery(&mut self) -> Option<PendingRecovery> {
         match mem::take(&mut self.recovery) {
             Recovery::Pending(checkpoint) => {
-                self.recovery = Recovery::Continuing(checkpoint.saved_replays());
+                self.recovery = Recovery::Continuing;
                 Some(PendingRecovery::new(checkpoint, &self.owned.dir))
             }
             other => {
@@ -281,15 +278,8 @@ impl WritableSession {
     ) -> Result<(), SessionError> {
         let timestamp_ms = now_ms();
         let written = self.written()?;
-        let kept = self.kept_replays();
-        let events = turn_events(
-            &self.artifacts(provider, timestamp_ms, &kept),
-            turn,
-            written,
-        )?;
-        self.append(timestamp_ms, &events[usize::from(open)..])?;
-        self.keep_replays(kept);
-        Ok(())
+        let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
+        self.append(timestamp_ms, &events[usize::from(open)..])
     }
 
     pub fn record_compaction(
@@ -302,9 +292,8 @@ impl WritableSession {
         self.require_writable()?;
         let fresh = self.started;
         let timestamp_ms = now_ms();
-        let kept = self.kept_replays();
         let mut events = match active {
-            Some(active) => self.active_prefix(active, provider, timestamp_ms, &kept)?,
+            Some(active) => self.active_prefix(active, provider, timestamp_ms)?,
             None => Vec::new(),
         };
         let covers_through_seq = self
@@ -317,7 +306,6 @@ impl WritableSession {
             },
         ));
         self.append(timestamp_ms, &events)?;
-        self.keep_replays(kept);
         match active {
             Some(active) => self.write_first_title(fresh, active.user),
             None => Ok(()),
@@ -340,7 +328,6 @@ impl WritableSession {
         active: &HistoryTurn<'_>,
         provider: &SavedProvider,
         timestamp_ms: i64,
-        kept: &RefCell<Vec<KeptReplay>>,
     ) -> Result<Vec<ConversationEvent>, SessionError> {
         let replied_nothing = TurnEnd::Replied {
             text: "",
@@ -350,11 +337,7 @@ impl WritableSession {
             return Err(SessionError::InvalidConversationEvent);
         }
         let written = self.written()?;
-        let mut events = turn_events(
-            &self.artifacts(provider, timestamp_ms, kept),
-            active,
-            written,
-        )?;
+        let mut events = turn_events(&self.artifacts(provider, timestamp_ms), active, written)?;
         events.pop();
         events.drain(..usize::from(self.writer.turn_open()));
         Ok(events)
@@ -375,26 +358,11 @@ impl WritableSession {
         &'a self,
         provider: &'a SavedProvider,
         timestamp_ms: i64,
-        kept: &'a RefCell<Vec<KeptReplay>>,
     ) -> TurnArtifacts<'a> {
         TurnArtifacts {
             dir: &self.owned.dir,
             provider,
             timestamp_ms,
-            kept: KeptReplays::ByStep(kept),
-        }
-    }
-
-    fn kept_replays(&self) -> RefCell<Vec<KeptReplay>> {
-        RefCell::new(match &self.recovery {
-            Recovery::Continuing(kept) => kept.clone(),
-            Recovery::Absent | Recovery::Pending(_) => Vec::new(),
-        })
-    }
-
-    fn keep_replays(&mut self, kept: RefCell<Vec<KeptReplay>>) {
-        if let Recovery::Continuing(saved) = &mut self.recovery {
-            *saved = kept.into_inner();
         }
     }
 

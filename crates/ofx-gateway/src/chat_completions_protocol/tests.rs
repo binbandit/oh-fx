@@ -779,6 +779,7 @@ fn chat_completions_requests_ignore_provider_replay_state() {
         source: ReplaySource {
             provider: "codex".to_owned(),
             model: "model".to_owned(),
+            binding: None,
         },
         parts_json: r#"[{"type":"reasoning","encrypted_content":"cipher"}]"#.to_owned(),
     }));

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use ofx_config::ProviderId;
 use ofx_contract::{
     ChatMessage, HistoryCut, HistoryStep, HistoryTurn, ProviderReplay, ReasoningEffort,
-    RecoveryStrategy, ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall, ToolCallId,
-    ToolResultStatus, TurnEnd,
+    RecoveredTurn, RecoveryStrategy, ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall,
+    ToolCallId, ToolResultStatus, TurnEnd,
 };
 
 use super::*;
@@ -527,6 +527,7 @@ fn projected_replay() -> ProviderReplay {
         source: ReplaySource {
             provider: "portkey".to_owned(),
             model: "claude".to_owned(),
+            binding: None,
         },
         parts_json: "[1]".to_owned(),
     }
@@ -550,17 +551,16 @@ fn a_continued_turn_saves_each_recovered_step_with_its_own_replay_binding() {
             ),
         );
         let mut resumed = fixture.resume().unwrap();
-        assert!(resumed.take_recovery().is_some());
-        let calls = shell_calls(&["c1", "c2", "c3"]);
+        let continued = resumed
+            .take_recovery()
+            .unwrap()
+            .into_turn(&running, "claude", false);
         let replay = projected_replay();
-        let finished = continued_turn(
-            &calls,
-            &replay,
-            TurnEnd::Replied {
-                text: "fixed",
-                provider_replay: None,
-            },
-        );
+        let new_calls = shell_calls(&["c3"]);
+        let mut finished = continued_history(&continued, replied("fixed"));
+        finished
+            .steps
+            .extend(continued_turn(&new_calls, &replay, replied("")).steps);
         resumed.record_turn(&finished, &running).unwrap();
         let running_replay = format!(
             "{{\"source\":{{\"provider\":{},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
@@ -588,18 +588,28 @@ fn a_compaction_during_a_continued_turn_keeps_the_recovered_replay_bindings() {
             "",
         ),
     );
-    let mut resumed = fixture.resume().unwrap();
-    assert!(resumed.take_recovery().is_some());
-    let replay = projected_replay();
-    let prefix_calls = shell_calls(&["c1"]);
-    let prefix = continued_turn(
-        &prefix_calls,
-        &replay,
-        TurnEnd::Replied {
-            text: "",
-            provider_replay: None,
-        },
+    compact_then_finish(&fixture, &running);
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22")]
     );
+}
+
+fn replied(text: &str) -> TurnEnd<'_> {
+    TurnEnd::Replied {
+        text,
+        provider_replay: None,
+    }
+}
+
+fn compact_then_finish(fixture: &Fixture, running: &SavedProvider) {
+    let mut resumed = fixture.resume().unwrap();
+    let continued = resumed
+        .take_recovery()
+        .unwrap()
+        .into_turn(running, "claude", false);
+    let mut prefix = continued_history(&continued, replied(""));
+    let rest_steps = prefix.steps.split_off(1);
     resumed
         .record_compaction(
             "<summary>first step</summary>",
@@ -609,23 +619,12 @@ fn a_compaction_during_a_continued_turn_keeps_the_recovered_replay_bindings() {
                 steering: 0,
             },
             Some(&prefix),
-            &running,
+            running,
         )
         .unwrap();
-    let rest_calls = shell_calls(&["c2"]);
-    let rest = continued_turn(
-        &rest_calls,
-        &replay,
-        TurnEnd::Replied {
-            text: "fixed",
-            provider_replay: None,
-        },
-    );
-    resumed.record_turn(&rest, &running).unwrap();
-    assert_eq!(
-        replays_in(&fixture.log()),
-        [bound_replay("11"), bound_replay("22")]
-    );
+    let mut rest = continued_history(&continued, replied("fixed"));
+    rest.steps = rest_steps;
+    resumed.record_turn(&rest, running).unwrap();
 }
 
 fn standalone_step(binding: &str) -> String {
@@ -686,16 +685,15 @@ fn recovered_steps_with_the_same_text_keep_their_own_replays_when_continued() {
     fixture.start_under(running.clone(), &finished_turn());
     standalone_checkpoint(&fixture);
     let mut resumed = fixture.resume().unwrap();
-    assert!(resumed.take_recovery().is_some());
+    let continued = resumed
+        .take_recovery()
+        .unwrap()
+        .into_turn(&running, "claude", false);
     let replay = projected_replay();
-    let finished = standalone_turn(
-        3,
-        &replay,
-        TurnEnd::Replied {
-            text: "fixed",
-            provider_replay: None,
-        },
-    );
+    let mut finished = continued_history(&continued, replied("fixed"));
+    finished
+        .steps
+        .extend(standalone_turn(1, &replay, replied("")).steps);
     resumed.record_turn(&finished, &running).unwrap();
     let running_replay = format!(
         "{{\"source\":{{\"provider\":{},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
@@ -713,40 +711,124 @@ fn a_compaction_that_saves_an_earlier_recovered_step_leaves_the_later_one_its_re
     let running = portkey(0x33);
     fixture.start_under(running.clone(), &finished_turn());
     standalone_checkpoint(&fixture);
-    let mut resumed = fixture.resume().unwrap();
-    assert!(resumed.take_recovery().is_some());
-    let replay = projected_replay();
-    let prefix = standalone_turn(
-        1,
-        &replay,
-        TurnEnd::Replied {
-            text: "",
-            provider_replay: None,
-        },
+    compact_then_finish(&fixture, &running);
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22")]
     );
-    resumed
-        .record_compaction(
-            "<summary>first step</summary>",
-            HistoryCut {
-                turns: 1,
-                tool_steps: 1,
-                steering: 0,
-            },
-            Some(&prefix),
-            &running,
-        )
-        .unwrap();
-    let rest = standalone_turn(
-        1,
-        &replay,
+}
+
+#[test]
+fn a_continued_turn_reopened_after_its_compaction_keeps_the_later_steps_replay() {
+    let fixture = Fixture::new();
+    let running = portkey(0x33);
+    fixture.start_under(
+        running.clone(),
+        &[
+            user("fix the build"),
+            ConversationEvent::Assistant(AssistantEvent {
+                text: "Checking.".to_owned(),
+                provider_replay: None,
+                standalone_response: true,
+            }),
+            ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
+                covers_through_seq: 1,
+                summary: "<summary>started</summary>".to_owned(),
+            }),
+        ],
+    );
+    fixture.save_checkpoint(
+        3,
+        &checkpoint(
+            "fix the build",
+            &[standalone_step("11"), standalone_step("22")],
+            "",
+            "",
+        ),
+    );
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.turn_open());
+    let pending = resumed.take_recovery().unwrap();
+    let continued = pending.into_turn(&running, "claude", false);
+    let finished = continued_history(
+        &continued,
         TurnEnd::Replied {
             text: "fixed",
             provider_replay: None,
         },
     );
-    resumed.record_turn(&rest, &running).unwrap();
-    assert_eq!(
-        replays_in(&fixture.log()),
-        [bound_replay("11"), bound_replay("22")]
+    resumed.record_turn(&finished, &running).unwrap();
+    assert_eq!(replays_in(&fixture.log()[3..]), [bound_replay("22")]);
+}
+
+#[test]
+fn a_partly_answered_step_keeps_its_replay_when_continued() {
+    let fixture = Fixture::new();
+    let running = portkey(0x33);
+    fixture.start_under(running.clone(), &finished_turn());
+    let partly = replayed_step("c1", "22").replace(
+        "\"tool_calls\":[{\"id\":\"c1\",\"name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\",\"provider_result\":null}]",
+        "\"tool_calls\":[{\"id\":\"c1\",\"name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\",\"provider_result\":null},{\"id\":\"c2\",\"name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\",\"provider_result\":null}]",
     );
+    assert!(partly.contains("\"id\":\"c2\""), "{partly}");
+    fixture.save_checkpoint(3, &checkpoint("fix the build", &[partly], "", ""));
+    let mut resumed = fixture.resume().unwrap();
+    let continued = resumed
+        .take_recovery()
+        .unwrap()
+        .into_turn(&running, "claude", false);
+    let finished = continued_history(
+        &continued,
+        TurnEnd::Replied {
+            text: "fixed",
+            provider_replay: None,
+        },
+    );
+    assert_eq!(finished.steps[0].tool_calls.len(), 1);
+    resumed.record_turn(&finished, &running).unwrap();
+    assert_eq!(replays_in(&fixture.log()), [bound_replay("22")]);
+}
+
+fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> HistoryTurn<'a> {
+    let mut steps = Vec::new();
+    let mut messages = continued.messages.iter().peekable();
+    while let Some(message) = messages.next() {
+        let ChatMessage::Assistant {
+            content,
+            tool_calls,
+            provider_replay,
+        } = message
+        else {
+            continue;
+        };
+        let mut tool_results = Vec::new();
+        while let Some(ChatMessage::Tool {
+            call_id,
+            tool_name,
+            content,
+            status,
+        }) = messages.peek()
+        {
+            tool_results.push(StepResult {
+                call_id: call_id.as_str(),
+                tool_name,
+                output: content,
+                output_bytes: content.len(),
+                status: *status,
+            });
+            messages.next();
+        }
+        steps.push(HistoryStep {
+            assistant: content.as_deref().unwrap_or_default(),
+            provider_replay: provider_replay.as_ref(),
+            tool_calls,
+            tool_results,
+        });
+    }
+    HistoryTurn {
+        user: &continued.prompt,
+        steps,
+        steering: Vec::new(),
+        end,
+    }
 }

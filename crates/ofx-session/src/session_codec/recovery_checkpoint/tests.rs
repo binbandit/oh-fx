@@ -13,7 +13,6 @@ fn checkpoint() -> RecoveryCheckpoint {
         execution: SavedExecution {
             tool_steps: vec![SavedToolStep {
                 assistant: Some("Reading.".to_owned()),
-                durable_replay: None,
                 provider_replay: None,
                 tool_calls: vec![ToolCall::new("call_1", "read_file", "{\"path\":\"a.rs\"}")],
                 tool_results: vec![SavedToolResult {
@@ -150,6 +149,7 @@ fn durable_bytes_steering_prefixes_renames_and_replays_read_back() {
             source: ReplaySource {
                 provider: "codex".to_owned(),
                 model: "gpt-5.4".to_owned(),
+                binding: None,
             },
             parts_json: "[]".to_owned(),
         })

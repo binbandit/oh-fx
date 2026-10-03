@@ -556,6 +556,7 @@ fn replay(parts: &str) -> ProviderReplay {
         source: ReplaySource {
             provider: "fake".to_owned(),
             model: "test-model".to_owned(),
+            binding: None,
         },
         parts_json: parts.to_owned(),
     }

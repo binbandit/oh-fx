@@ -325,6 +325,7 @@ fn replay_source(model: &str) -> ReplaySource {
     ReplaySource {
         provider: REPLAY_PROVIDER.to_owned(),
         model: model.to_owned(),
+        binding: None,
     }
 }
 
