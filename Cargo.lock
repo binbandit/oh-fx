@@ -983,6 +983,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-vt"
+version = "0.1.0"
+dependencies = [
+ "ofx-text",
+ "thiserror",
+]
+
+[[package]]
 name = "ofx-workspace"
 version = "0.1.0"
 dependencies = [
