@@ -1,7 +1,7 @@
 use ofx_contract::{AutoCompactPercent, ProviderReplay};
 
 use super::{CompactionError, text_tokens};
-use crate::execution_memory::{Cut, HistoryTurn, ToolStep};
+use crate::execution_memory::{Cut, HistoryTurn, Steering, ToolStep};
 
 const AFTER_PERCENT: usize = 20;
 const KEPT_PERCENT: usize = 40;
@@ -146,7 +146,7 @@ fn select_recent_context(
     let mut selected = Recent {
         cut: Cut {
             turns: raw_count,
-            tool_steps: 0,
+            ..Cut::default()
         },
         tokens: 0,
     };
@@ -163,7 +163,11 @@ fn select_recent_context(
             .saturating_add(text_tokens(turn.reply))
             .saturating_add(replay_tokens(turn.reply_replay, model))
             .saturating_add(8);
+        let steering: Vec<Steering<'_>> = turn.steering().collect();
         if turn.steps.is_empty() {
+            base = steering.iter().fold(base, |cost, entry| {
+                cost.saturating_add(steering_tokens(entry))
+            });
             if !selected_any && over_capacity(base) {
                 break;
             }
@@ -174,7 +178,7 @@ fn select_recent_context(
             selected = Recent {
                 cut: Cut {
                     turns: raw_count,
-                    tool_steps: 0,
+                    ..Cut::default()
                 },
                 tokens: total,
             };
@@ -183,8 +187,16 @@ fn select_recent_context(
             continue;
         }
         let mut turn_counted = false;
+        let mut steering_index = steering.len();
         for (step_index, step) in turn.steps.iter().enumerate().rev() {
-            let cost = base.saturating_add(step_tokens(step, model));
+            let mut cost = base.saturating_add(step_tokens(step, model));
+            let mut next_steering = steering_index;
+            while next_steering > 0
+                && steering[next_steering - 1].after_tool_step_count >= step_index
+            {
+                next_steering -= 1;
+                cost = cost.saturating_add(steering_tokens(&steering[next_steering]));
+            }
             if !selected_any && (cost > target || over_capacity(cost)) {
                 return selected;
             }
@@ -198,6 +210,7 @@ fn select_recent_context(
                 cut: Cut {
                     turns: raw_count,
                     tool_steps: step_index,
+                    steering: next_steering,
                 },
                 tokens: total,
             };
@@ -206,10 +219,15 @@ fn select_recent_context(
                 turns_used += 1;
             }
             turn_counted = true;
+            steering_index = next_steering;
             base = 0;
         }
     }
     selected
+}
+
+fn steering_tokens(steering: &Steering<'_>) -> usize {
+    text_tokens(steering.text).saturating_add(text_tokens(steering.assistant_prefix))
 }
 
 fn replay_tokens(replay: Option<&ProviderReplay>, model: &str) -> usize {
@@ -247,11 +265,11 @@ pub(crate) struct Window {
 
 impl Window {
     pub(crate) fn has_older(self) -> bool {
-        self.cut.turns > 0 || self.cut.tool_steps > 0
+        self.cut.turns > 0 || self.cut.splits_turn()
     }
 
     pub(crate) fn splits_last_turn(self) -> bool {
-        self.cut.tool_steps > 0
+        self.cut.splits_turn()
     }
 }
 
@@ -288,7 +306,7 @@ fn split(
         Recent {
             cut: Cut {
                 turns: turns.len(),
-                tool_steps: 0,
+                ..Cut::default()
             },
             tokens: 0,
         }
@@ -302,6 +320,7 @@ fn split(
             cut = Cut {
                 turns: active_index,
                 tool_steps: running.steps.len(),
+                steering: running.steering().count(),
             };
         }
     }

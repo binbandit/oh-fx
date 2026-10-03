@@ -44,7 +44,7 @@ struct SavedUsed<'a> {
 #[derive(Serialize)]
 struct SavedTurn<'a> {
     number: usize,
-    users: [&'a str; 1],
+    users: &'a [String],
     work: &'a str,
     #[serde(rename = "final")]
     final_reply: &'a str,
@@ -55,7 +55,7 @@ struct SavedTurn<'a> {
 
 #[derive(Serialize)]
 struct SavedOpenTurn<'a> {
-    users: [&'a str; 0],
+    users: &'a [String],
     work: &'a str,
     text: &'a str,
     first_tool: usize,
@@ -100,7 +100,7 @@ pub(crate) fn encode_checkpoint(payload: &Payload) -> String {
             .iter()
             .map(|turn| SavedTurn {
                 number: turn.number,
-                users: [&turn.user],
+                users: &turn.users,
                 work: &turn.work,
                 final_reply: &turn.final_reply,
                 first_tool: turn.first_tool,
@@ -109,7 +109,7 @@ pub(crate) fn encode_checkpoint(payload: &Payload) -> String {
             })
             .collect(),
         open: payload.open.as_ref().map(|open| SavedOpenTurn {
-            users: [],
+            users: &open.users,
             work: &open.work,
             text: &open.text,
             first_tool: open.first_tool,
@@ -211,16 +211,20 @@ fn used_from(object: &Object) -> Option<Used> {
     })
 }
 
+fn users_from(object: &Object) -> Option<Vec<String>> {
+    list(object, "users")?
+        .iter()
+        .map(|user| user.as_str().map(str::to_owned))
+        .collect()
+}
+
 fn turn_from(object: &Object) -> Option<Turn> {
-    let mut users = list(object, "users")?.iter();
-    let (Some(user), None) = (users.next(), users.next()) else {
-        return None;
-    };
+    let users = users_from(object)?;
     let number = count(object, "number")?;
-    (number > 0).then_some(())?;
+    (number > 0 && !users.is_empty()).then_some(())?;
     Some(Turn {
         number,
-        user: user.as_str()?.to_owned(),
+        users,
         work: text(object, "work")?.to_owned(),
         final_reply: text(object, "final")?.to_owned(),
         first_tool: count(object, "first_tool")?,
@@ -230,10 +234,8 @@ fn turn_from(object: &Object) -> Option<Turn> {
 }
 
 fn open_from(object: &Object) -> Option<OpenTurn> {
-    if !list(object, "users")?.is_empty() {
-        return None;
-    }
     Some(OpenTurn {
+        users: users_from(object)?,
         work: text(object, "work")?.to_owned(),
         text: text(object, "text")?.to_owned(),
         first_tool: count(object, "first_tool")?,

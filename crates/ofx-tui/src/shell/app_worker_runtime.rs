@@ -119,7 +119,9 @@ impl Shell<'_> {
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
             | UiEvent::ToolDeferred { .. }) => self.tool_event(event),
-            UiEvent::ContextNotice { .. } | UiEvent::Recovery { .. } => {}
+            UiEvent::ContextNotice { .. }
+            | UiEvent::SteeringApplied { .. }
+            | UiEvent::Recovery { .. } => {}
             UiEvent::UsageReported { turn_id, usage } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
                     turn.tokens.settle(usage.output_tokens);

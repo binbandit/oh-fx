@@ -13,6 +13,7 @@ mod skill_context;
 mod subagent;
 mod text_completion;
 mod turn_reviews;
+mod worker_runtime;
 
 pub use approvals::Approvals;
 pub use assistant_stream::{normalize_assistant_text_for_display, text_for_completed_presentation};
@@ -24,3 +25,4 @@ pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider}
 pub use questions::{QuestionRequests, Questions};
 pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 pub use subagent::{ChildAgents, ChildDefaults, ChildSettings, SubagentHost};
+pub use worker_runtime::{QueuedPrompt, WorkerRuntime};

@@ -903,6 +903,7 @@ impl Presenter {
             }
             UiEvent::TurnStarted { .. }
             | UiEvent::ToolDeferred { .. }
+            | UiEvent::SteeringApplied { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
             | UiEvent::TurnFinished { .. }
