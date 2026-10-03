@@ -1926,7 +1926,24 @@ impl Prepared {
 enum Dispatched {
     Rejected(ToolOutput, ToolRejection),
     Held(ToolOutput, bool),
+    Admitted(Box<dyn PreparedCall>, ToolContext),
     Running(JoinHandle<ToolOutput>),
+    Unstarted,
+}
+
+impl Dispatched {
+    fn start(self, cancel: &CancellationToken) -> Self {
+        match self {
+            Self::Admitted(prepared, _) if cancel.is_cancelled() => {
+                discard(prepared);
+                Self::Unstarted
+            }
+            Self::Admitted(prepared, context) => {
+                Self::Running(tokio::spawn(async move { prepared.execute(context).await }))
+            }
+            other => other,
+        }
+    }
 }
 
 struct Settled<'c> {
@@ -2325,8 +2342,7 @@ async fn run_group<'c>(
                         let delegation = delegates.then_some(&statuses);
                         let context =
                             reviewing.tool_context(turn_id, call, delegation, path_access, cancel);
-                        let task = tokio::spawn(async move { prepared.execute(context).await });
-                        dispatched.push((call, Dispatched::Running(task), feedback));
+                        dispatched.push((call, Dispatched::Admitted(prepared, context), feedback));
                         continue;
                     }
                     Verdict::Held(output) => (output, true),
@@ -2349,6 +2365,10 @@ async fn run_group<'c>(
         }
     }
     group.for_each(discard);
+    let dispatched = dispatched
+        .into_iter()
+        .map(|(call, dispatched, feedback)| (call, dispatched.start(cancel), feedback))
+        .collect();
     SettledGroup {
         outcomes: {
             drop(statuses);
@@ -2390,6 +2410,15 @@ async fn settle_group<'c>(
                 }
                 events(tool_finished(turn_id, call, output.as_ref()));
                 (output, true, true, false)
+            }
+            Dispatched::Admitted(prepared, _) => {
+                discard(prepared);
+                events(tool_finished(turn_id, call, None));
+                (None, true, false, false)
+            }
+            Dispatched::Unstarted => {
+                events(tool_finished(turn_id, call, None));
+                (None, true, false, false)
             }
         };
         if let Some(text) = &feedback {
