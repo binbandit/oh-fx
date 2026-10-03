@@ -37,6 +37,10 @@ impl RecoveryStatus {
         self.status.is_terminal()
     }
 
+    pub(crate) fn is_recovered(&self) -> bool {
+        self.status.is_recovered()
+    }
+
     pub(crate) fn expired(&self, now_ms: i64) -> bool {
         self.expires_ms.is_some_and(|expiry| now_ms >= expiry)
     }

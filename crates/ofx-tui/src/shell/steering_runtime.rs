@@ -27,6 +27,13 @@ impl Shell<'_> {
         turn.markdown.flush(&mut events);
         turn.step_break = None;
         turn.phase = TurnPhase::Thinking;
+        if turn
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| !recovery.is_recovered())
+        {
+            turn.recovery = None;
+        }
         self.transcript.append_assistant(events, &self.theme);
         self.push_entry(Entry::UserTurn { text });
     }
