@@ -224,3 +224,136 @@ fn line_counts_match_upstream_file_change_stats() {
     assert_eq!(counts(&forward, &reversed), (9000, 9000));
     assert_eq!(counts(&forward, forward.trim_end_matches('\n')), (0, 1));
 }
+
+fn upstream_compute(old_text: &[u8], new_text: &[u8]) -> Vec<(LineOp, Vec<u8>)> {
+    let old_marker = trailing_newline_marker(old_text, new_text, true);
+    let new_marker = trailing_newline_marker(old_text, new_text, false);
+    let old_lines: Vec<&[u8]> = text_lines(old_text).chain(old_marker).collect();
+    let new_lines: Vec<&[u8]> = text_lines(new_text).chain(new_marker).collect();
+    let stride = new_lines.len() + 1;
+    let mut table = vec![0_u32; (old_lines.len() + 1) * stride];
+    for old_index in 1..=old_lines.len() {
+        for new_index in 1..=new_lines.len() {
+            table[old_index * stride + new_index] =
+                if old_lines[old_index - 1] == new_lines[new_index - 1] {
+                    table[(old_index - 1) * stride + new_index - 1] + 1
+                } else {
+                    table[old_index * stride + new_index - 1]
+                        .max(table[(old_index - 1) * stride + new_index])
+                };
+        }
+    }
+    let mut result = Vec::new();
+    let mut old_cursor = old_lines.len();
+    let mut new_cursor = new_lines.len();
+    while old_cursor > 0 || new_cursor > 0 {
+        if old_cursor > 0
+            && new_cursor > 0
+            && old_lines[old_cursor - 1] == new_lines[new_cursor - 1]
+        {
+            result.push((LineOp::Equal, old_lines[old_cursor - 1].to_vec()));
+            old_cursor -= 1;
+            new_cursor -= 1;
+        } else if new_cursor > 0
+            && (old_cursor == 0
+                || table[old_cursor * stride + new_cursor - 1]
+                    >= table[(old_cursor - 1) * stride + new_cursor])
+        {
+            result.push((LineOp::Add, new_lines[new_cursor - 1].to_vec()));
+            new_cursor -= 1;
+        } else {
+            result.push((LineOp::Remove, old_lines[old_cursor - 1].to_vec()));
+            old_cursor -= 1;
+        }
+    }
+    result.reverse();
+    result
+}
+
+struct Lines(u64);
+
+impl Lines {
+    fn next(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % bound
+    }
+
+    fn text(&mut self, alphabet: u64) -> Vec<u8> {
+        let count = self.next(24);
+        let mut text = Vec::new();
+        for _ in 0..count {
+            match self.next(alphabet + 1) {
+                0 => {}
+                letter => text.push(b'a' + u8::try_from(letter).unwrap()),
+            }
+            text.push(b'\n');
+        }
+        if self.next(4) == 0 {
+            text.pop();
+        }
+        text
+    }
+}
+
+#[test]
+fn compute_keeps_upstream_operations_for_any_line_sequences() {
+    let mut lines = Lines(0x5eed);
+    for round in 0..4_000 {
+        let alphabet = [1, 2, 3, 5, 9][round % 5];
+        let old = lines.text(alphabet);
+        let new = match round % 4 {
+            0 => old.clone(),
+            1 => {
+                let mut edited = old.clone();
+                let tail = lines.text(alphabet);
+                edited.extend_from_slice(&tail);
+                edited
+            }
+            _ => lines.text(alphabet),
+        };
+        let fast: Vec<(LineOp, Vec<u8>)> = compute(
+            &old,
+            &new,
+            trailing_newline_marker(&old, &new, true),
+            trailing_newline_marker(&old, &new, false),
+        )
+        .iter()
+        .map(|line| (line.op, line.text.to_vec()))
+        .collect();
+        assert_eq!(
+            fast,
+            upstream_compute(&old, &new),
+            "{:?} -> {:?}",
+            String::from_utf8_lossy(&old),
+            String::from_utf8_lossy(&new)
+        );
+    }
+}
+
+#[test]
+fn compute_keeps_upstream_operations_around_shared_prefixes_and_suffixes() {
+    for (old, new) in [
+        ("a\n", "a\na\n"),
+        ("a\na\n", "a\n"),
+        ("a\nb\na\n", "a\na\nb\na\n"),
+        ("x\na\nb\n", "x\nb\na\nb\n"),
+        ("a\nb\nc\nd\n", "a\nc\nb\nd\n"),
+        ("p\nq\np\nq\n", "p\nq\n"),
+        ("same\nsame\nsame\n", "same\nother\nsame\n"),
+        ("a\nb", "a\nb\n"),
+        ("a\nb\n", "a\nc"),
+    ] {
+        let fast: Vec<(LineOp, Vec<u8>)> = computed(old, new)
+            .into_iter()
+            .map(|(op, text)| (op, text.into_bytes()))
+            .collect();
+        assert_eq!(
+            fast,
+            upstream_compute(old.as_bytes(), new.as_bytes()),
+            "{old:?} -> {new:?}"
+        );
+    }
+}
