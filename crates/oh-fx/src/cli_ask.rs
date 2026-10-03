@@ -999,6 +999,9 @@ impl Presenter {
                 self.push_assistant(&text)
             }
             UiEvent::AssistantRestarted { text, .. } => self.push_restarted(&text),
+            UiEvent::AssistantBoundary { .. } if self.mode == OutputMode::Terminal => {
+                self.push_assistant("\n")
+            }
             UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
             UiEvent::Recovery { status, .. } => self.recover(status),
             UiEvent::ToolProvisional {
@@ -1057,6 +1060,7 @@ impl Presenter {
             | UiEvent::ToolDeferred { .. }
             | UiEvent::SubagentStatus { .. }
             | UiEvent::SteeringApplied { .. }
+            | UiEvent::AssistantBoundary { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
             | UiEvent::ApprovalRequested { .. }
@@ -2757,6 +2761,36 @@ mod tests {
         fail: bool,
         retry: bool,
     ) -> (Presenter, Screen, TurnReport, usize) {
+        let (presenter, stderr, _, report, executions) =
+            streamed_ask_in_mode(calls, fail, retry, false, OutputMode::Json).await;
+        (presenter, stderr, report, executions)
+    }
+
+    fn streamed_read_with_prose(calls: &[(&str, &str)], fail: bool, prose: bool) -> Vec<String> {
+        let mut initial = streamed_read_events(calls, fail);
+        if prose {
+            for event in &mut initial {
+                let mut parsed: Value = serde_json::from_str(event).unwrap();
+                if let Some(index) = parsed.get("output_index").and_then(Value::as_u64) {
+                    parsed["output_index"] = Value::from(index + 1);
+                    *event = parsed.to_string();
+                }
+            }
+            initial.insert(
+                0,
+                r#"{"type":"response.output_text.delta","delta":"I will read it."}"#.to_owned(),
+            );
+        }
+        initial
+    }
+
+    async fn streamed_ask_in_mode(
+        calls: &[(&str, &str)],
+        fail: bool,
+        retry: bool,
+        prose: bool,
+        mode: OutputMode,
+    ) -> (Presenter, Screen, Screen, TurnReport, usize) {
         let root = tempfile::tempdir().unwrap();
         let canonical = root.path().canonicalize().unwrap();
         fs::write(canonical.join("a.txt"), "alpha").unwrap();
@@ -2771,10 +2805,8 @@ mod tests {
             *abandoned.last_mut().unwrap() = serde_json::json!({"type":"response.failed","response":{"error":{"code":"server_error","message":"retry this request"}}}).to_string();
             replies.push(Reply::sse(&abandoned));
         }
-        replies.extend([
-            Reply::sse(&streamed_read_events(calls, fail)),
-            Reply::sse(&final_events),
-        ]);
+        let initial = streamed_read_with_prose(calls, fail, prose);
+        replies.extend([Reply::sse(&initial), Reply::sse(&final_events)]);
         let server = FakeServer::start(replies);
         let provider = ofx_gateway::CodexProvider::new(
             ofx_gateway::CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
@@ -2811,8 +2843,11 @@ mod tests {
             },
         );
         let mut presenter = json_presenter();
+        presenter.mode = mode;
         let stderr = Screen::default();
+        let stdout = Screen::default();
         presenter.stderr = Box::new(stderr.clone());
+        presenter.stdout = Box::new(stdout.clone());
         let report = agent
             .run_turn(
                 "Read the files",
@@ -2821,7 +2856,17 @@ mod tests {
                     assert!(presenter.handle(event));
                     if provisional {
                         assert_eq!(executions.load(Ordering::SeqCst), 0);
-                        assert!(stderr.text().ends_with("● Reading\x1b[0m\n"));
+                        if mode == OutputMode::Terminal {
+                            assert!(stdout.text().ends_with("● Reading\x1b[0m\n"));
+                        } else {
+                            assert!(stderr.text().ends_with("● Reading\x1b[0m\n"));
+                        }
+                        if prose && mode == OutputMode::Json {
+                            assert_eq!(presenter.output, "I will read it.");
+                        }
+                        if prose && mode == OutputMode::Raw {
+                            assert_eq!(stdout.text(), "I will read it.");
+                        }
                     }
                 },
                 &CancellationToken::new(),
@@ -2829,9 +2874,16 @@ mod tests {
             .await;
         assert_eq!(
             server.requests().len(),
-            if fail { 1 } else { 2 } + usize::from(retry)
+            if fail { 1 } else { 2 } + usize::from(retry),
+            "{report:?}"
         );
-        (presenter, stderr, report, executions.load(Ordering::SeqCst))
+        (
+            presenter,
+            stderr,
+            stdout,
+            report,
+            executions.load(Ordering::SeqCst),
+        )
     }
 
     #[tokio::test]
@@ -2906,6 +2958,49 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&presenter.tool_calls).unwrap(),
             r#"[{"name":"read_file","status":"error"}]"#
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_boundaries_preserve_machine_assistant_source() {
+        for mode in [OutputMode::Raw, OutputMode::Json] {
+            for (arguments, expected, executions) in [
+                (r#"{"path":"a.txt"}"#, "I will read it.\n\nFinished.", 1),
+                ("{", "I will read it.Finished.", 0),
+            ] {
+                let (presenter, _, stdout, report, seen) =
+                    streamed_ask_in_mode(&[("read", arguments)], false, false, true, mode).await;
+                assert_eq!(report.outcome, TurnOutcome::Completed);
+                assert_eq!(seen, executions);
+                assert_eq!(
+                    if mode == OutputMode::Json {
+                        presenter.output
+                    } else {
+                        stdout.text()
+                    },
+                    expected,
+                    "{mode:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_boundaries_keep_terminal_progress_apart_from_prose() {
+        let (_, stderr, stdout, report, executions) = streamed_ask_in_mode(
+            &[("read", r#"{"path":"a.txt"}"#)],
+            false,
+            false,
+            true,
+            OutputMode::Terminal,
+        )
+        .await;
+        assert_eq!(report.outcome, TurnOutcome::Completed);
+        assert_eq!(executions, 1);
+        assert_eq!(stderr.text(), "");
+        assert_eq!(
+            stdout.text(),
+            "I will read it.\n\n● Reading\x1b[0m\nReading a.txt\n\nFinished."
         );
     }
 

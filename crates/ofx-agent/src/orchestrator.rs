@@ -1075,10 +1075,7 @@ impl Agent {
             return false;
         };
         if needs_newline {
-            events(UiEvent::AssistantText {
-                turn_id,
-                text: "\n".to_owned(),
-            });
+            events(UiEvent::AssistantBoundary { turn_id });
         }
         let presentation = panic::catch_unwind(AssertUnwindSafe(|| {
             self.tools[index].provisional_presentation()
