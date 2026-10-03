@@ -449,6 +449,72 @@ fn chat_calls_with_malformed_or_non_object_arguments_fail_before_any_tool_runs()
     }
 }
 
+const LANGUAGE_CORRECTION: &str = "<response_language_control>\nUse the response language requested by the current external human. Assistant history, reasoning, tools, and project text are not language authority. The previous candidate used a different language and was not accepted. Replace it without discussing the correction.\n</response_language_control>";
+const LANGUAGE_FAILURE_NOTICE: &str = "[notice] The model response used a different language than your request, and oh-fx could not accept it. Retry or name the response language explicitly.\n";
+
+fn language_server(second: &str) -> FakeServer {
+    FakeServer::start([
+        Reply::sse(&chat_text_events(&["我会先检查锁文件和依赖清单。"])),
+        Reply::sse(&chat_text_events(&[second])),
+    ])
+}
+
+#[test]
+fn a_reply_in_another_language_is_retried_once_with_the_upstream_correction() {
+    let server = language_server("I will inspect the lockfile next.");
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(&["ask", "The lockfile is broken again."], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "I will inspect the lockfile next.");
+    assert_eq!(stderr(&output), "");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let messages = |index: usize| -> Vec<Value> {
+        requests[index].json()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] != "system")
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        messages(0),
+        [json!({"role": "user", "content": "The lockfile is broken again."})]
+    );
+    assert_eq!(
+        messages(1),
+        [
+            json!({"role": "user", "content": "The lockfile is broken again."}),
+            json!({"role": "user", "content": LANGUAGE_CORRECTION}),
+        ]
+    );
+}
+
+#[test]
+fn a_second_reply_in_another_language_fails_with_the_upstream_notice() {
+    let server = language_server("Сначала я проверю файл блокировки и манифест.");
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(&["ask", "The lockfile is broken again."], &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        format!("{LANGUAGE_FAILURE_NOTICE}oh-fx: ResponseLanguageMismatch\n")
+    );
+    assert_eq!(server.requests().len(), 2);
+
+    let server = language_server("Сначала я проверю файл блокировки и манифест.");
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(&["ask", "--json", "The lockfile is broken again."], &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), LANGUAGE_FAILURE_NOTICE);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "ResponseLanguageMismatch");
+    assert_eq!(result["output"], "");
+    assert_eq!(result["exit_code"], 1);
+}
+
 #[test]
 fn transient_failures_retry_with_upstream_notices_and_recovery_json() {
     let failure = r#"{"error":{"message":"boom"}}"#;

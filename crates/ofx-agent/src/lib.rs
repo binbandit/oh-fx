@@ -8,6 +8,7 @@ mod project_context;
 mod prompt_context;
 mod questions;
 mod recovery_pause;
+mod response_language;
 #[cfg(test)]
 mod scripted_provider;
 mod skill_context;

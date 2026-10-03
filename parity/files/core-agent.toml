@@ -92,7 +92,7 @@ note = "History, usage and request calibration exist; inline images and kernel c
 upstream = "src/core/agent/runtime/assistant_stream.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/assistant_stream.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Assistant normalization and text deltas exist; streamed tool provisional statuses, language-script staging and semantic lifecycle publication are absent on main."
+note = "Assistant normalization, text deltas and response language staging exist; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
 
 [[file]]
 upstream = "src/core/agent/runtime/checkpoint.zig"
@@ -157,8 +157,8 @@ note = "Backoff and retry causes are implemented; partial-output restart, uncert
 [[file]]
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering and the pending recovery status published at provider admission exist; vision, dynamic tool advertisement and durable recovery remain absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs"]
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, and the root-only response language control with its correction request exist; vision, dynamic tool advertisement and durable recovery remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
@@ -174,9 +174,9 @@ note = "Prompt separation and request calibration exist; request image accountin
 
 [[file]]
 upstream = "src/core/agent/runtime/response_language.zig"
-status = "todo"
-modules = []
-note = "Language-script evidence, expectation inference and mismatch staging decisions are unimplemented."
+status = "ported"
+modules = ["crates/ofx-agent/src/response_language.rs"]
+note = "The decision leaves out upstream's cancelled input, which upstream's caller never sets; a cancelled reply is settled before the decision."
 
 [[file]]
 upstream = "src/core/agent/runtime/telemetry.zig"

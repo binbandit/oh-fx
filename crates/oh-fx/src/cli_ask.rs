@@ -1200,6 +1200,7 @@ impl Presenter {
                 }
             }
             TurnFailure::InvalidCompletion
+            | TurnFailure::ResponseLanguageMismatch
             | TurnFailure::PermissionRequired(_)
             | TurnFailure::ProjectContext
             | TurnFailure::SkillContext(_)
