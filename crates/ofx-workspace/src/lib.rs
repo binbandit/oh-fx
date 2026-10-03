@@ -10,6 +10,7 @@ mod ignored_dirs;
 mod path_completion;
 mod path_error;
 mod pathing;
+mod record_tape;
 mod regular_file;
 mod staging;
 mod unicode_simple_fold;
@@ -39,6 +40,10 @@ pub use pathing::{
     descriptor_identity, entry_identity, open_child_directory, open_directory, path_inside,
     resolve_file_mutation_target, resolve_workspace_or_external_path, resolve_workspace_path,
     workspace_relative_path,
+};
+pub use record_tape::{
+    CaptureStatus, RecordingDestination, RecordingPolicy, TAPE_MAGIC, TapeError, TapeFrame,
+    TapeHeader, TapeKind, TapeParser, TapeRecorder, recording_policy,
 };
 pub use regular_file::{
     RegularFileError, open_regular_file, open_regular_file_at, open_regular_file_following_at,
