@@ -249,8 +249,11 @@ impl Controller {
             history_turns: 0,
             context_to_compact: false,
         };
+        if let Some(approvals) = state.setup.approvals() {
+            approvals.attach(Arc::clone(&state.emit));
+        }
         Self {
-            agent: state.setup.agent(false),
+            agent: state.setup.agent(true),
             state,
             persistence,
             questions,
@@ -498,6 +501,7 @@ impl Controller {
     fn reconfigure(&mut self) {
         let mut config = self.state.setup.config(&self.state.model);
         config.fast_mode = self.state.fast_mode;
+        self.state.setup.delegate_as(&config);
         self.agent.set_config(config);
     }
 
@@ -521,6 +525,7 @@ impl Controller {
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
         self.forget_tracked_changes();
+        self.state.setup.forget_children();
         let started = self
             .persistence
             .as_mut()
@@ -570,6 +575,7 @@ impl Controller {
         let started = Arc::clone(&running);
         let running_turn = || *running.lock().unwrap_or_else(PoisonError::into_inner);
         let notices = Arc::clone(&self.state.context_notices);
+        let approvals = self.state.setup.approvals().cloned();
         let state = &mut self.state;
         let persistence = &mut self.persistence;
         let questions = &mut self.questions;
@@ -579,8 +585,15 @@ impl Controller {
                 UiEvent::TurnFinished { .. } => {}
                 UiEvent::TurnStarted { turn_id } => {
                     *started.lock().unwrap_or_else(PoisonError::into_inner) = Some(turn_id);
+                    if let Some(approvals) = &approvals {
+                        approvals.turn_started(turn_id);
+                    }
                     emit(event);
                 }
+                UiEvent::ApprovalRequested { turn_id, request } => match &approvals {
+                    Some(approvals) => approvals.own(turn_id, *request),
+                    None => emit(UiEvent::ApprovalRequested { turn_id, request }),
+                },
                 UiEvent::ContextNotice { text, .. } => {
                     let claimed = notices
                         .lock()
@@ -615,9 +628,7 @@ impl Controller {
                             }
                         }
                         Some(UiCommand::Approval { request_id, decision }) => {
-                            if let Some(approvals) = state.setup.approvals() {
-                                approvals.resolve(request_id, decision);
-                            }
+                            state.setup.answer_approval(request_id, decision);
                         }
                         Some(UiCommand::QuestionAnswered { request_id, answers }) => {
                             if let Some(questions) = state.setup.questions() {
@@ -644,6 +655,7 @@ impl Controller {
                 }
             }
         };
+        self.state.setup.end_turn_approvals();
         if let Some(turn_id) = running_turn() {
             self.announce_turn_end(turn_id, &report);
         }
@@ -833,8 +845,8 @@ mod tests {
 
     use ofx_config::{ProfilePaths, Settings};
     use ofx_contract::{
-        ApprovalDecision, PermissionMode, ProviderErrorKind, SkillMenuFocus, ToolResultStatus,
-        TurnId, TurnOutcome,
+        ApprovalDecision, ApprovalOrigin, ApprovalRequest, PermissionMode, ProviderErrorKind,
+        SkillMenuFocus, ToolResultStatus, TurnId, TurnOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -3007,6 +3019,119 @@ mod tests {
                 claude.display()
             )),
             "{system}"
+        );
+    }
+
+    fn delegate(task: &str) -> Reply {
+        Reply::sse(&chat_tool_call_events(
+            "call-delegate",
+            "subagent",
+            &json!({"request": {"action": "run", "task": task}}).to_string(),
+        ))
+    }
+
+    fn read_outside() -> Reply {
+        Reply::sse(&chat_tool_call_events(
+            "call-read",
+            "read_file",
+            r#"{"path":"../outside.txt"}"#,
+        ))
+    }
+
+    fn approval_requests(events: &[UiEvent]) -> Vec<(TurnId, ApprovalRequest)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::ApprovalRequested { turn_id, request } => {
+                    Some((*turn_id, (**request).clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn last_tool_result(body: &Value) -> String {
+        let messages = body["messages"].as_array().unwrap();
+        let last = messages.last().unwrap();
+        assert_eq!(last["role"], "tool", "{last}");
+        last["content"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn a_childs_approval_is_asked_under_the_parents_turn_and_its_grant_stays_with_the_child()
+    {
+        let server = FakeServer::start([
+            delegate("read the notes"),
+            read_outside(),
+            Reply::sse(&chat_text_events(&["the notes say hi"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "hi\n").unwrap();
+        harness.submit("delegate the reading");
+        let requested = harness
+            .until(|event| matches!(event, UiEvent::ApprovalRequested { .. }))
+            .await
+            .to_vec();
+        let turn = harness.running_turn();
+        let [(turn_id, request)] = approval_requests(&requested).try_into().unwrap();
+        assert_eq!(turn_id, turn);
+        assert_eq!(request.origin, ApprovalOrigin::Subagent("1".to_owned()));
+        assert_eq!(request.tool_name, "read_file");
+        harness.send(UiCommand::Approval {
+            request_id: request.id,
+            decision: ApprovalDecision::Always,
+        });
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = server.requests();
+        assert_eq!(requests.len(), 4);
+        assert!(last_tool_result(&requests[2].json()).contains("hi"));
+        assert_eq!(
+            last_tool_result(&requests[3].json()),
+            r#"{"ok":true,"result":"the notes say hi","error_code":null}"#
+        );
+        let status = status_notice(&mut harness).await;
+        assert!(
+            status.contains("\nsession_permission_grants=0\n"),
+            "{status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn children_follow_the_sessions_model_and_its_remembered_grants() {
+        let server = FakeServer::start([
+            read_outside(),
+            delegate("read the notes again"),
+            read_outside(),
+            Reply::sse(&chat_text_events(&["read again"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "hi\n").unwrap();
+        harness.command("/model model-b");
+        harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        harness.submit("read the notes, then delegate");
+        let requested = harness
+            .until(|event| matches!(event, UiEvent::ApprovalRequested { .. }))
+            .await
+            .to_vec();
+        let [(_, request)] = approval_requests(&requested).try_into().unwrap();
+        assert_eq!(request.origin, ApprovalOrigin::ActiveSession);
+        harness.send(UiCommand::Approval {
+            request_id: request.id,
+            decision: ApprovalDecision::Always,
+        });
+        let rest = harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(approval_requests(rest).is_empty());
+        let requests = server.requests();
+        assert_eq!(requests.len(), 5);
+        assert!(last_tool_result(&requests[3].json()).contains("hi"));
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.json()["model"] == "vendor/model-b")
         );
     }
 

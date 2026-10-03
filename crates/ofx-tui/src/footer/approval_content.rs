@@ -3,7 +3,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use ofx_contract::{
-    ApprovalRequest, CommandProfile, CommandRequest, FileMutation, FileMutationState, SessionGrant,
+    ApprovalOrigin, ApprovalRequest, CommandProfile, CommandRequest, FileMutation,
+    FileMutationState, SessionGrant,
 };
 use ofx_text::shell_word;
 
@@ -40,6 +41,7 @@ pub(crate) struct ApprovalContent {
     pub(crate) reason: Option<String>,
     pub(crate) action: Vec<ActionBlock>,
     pub(crate) remember: Option<Phrase>,
+    pub(crate) requester: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,16 @@ pub(crate) enum ActionBlock {
 
 impl ApprovalContent {
     pub(crate) fn from_request(request: &ApprovalRequest, workspace_root: &Path) -> Self {
+        Self {
+            requester: match &request.origin {
+                ApprovalOrigin::ActiveSession => None,
+                ApprovalOrigin::Subagent(child) => Some(safe_text(child.as_bytes())),
+            },
+            ..Self::for_action(request, workspace_root)
+        }
+    }
+
+    fn for_action(request: &ApprovalRequest, workspace_root: &Path) -> Self {
         let remember = request.scope.always.as_ref().map(remember_label);
         match &request.command {
             Some(CommandRequest::Run {
@@ -82,6 +94,7 @@ impl ApprovalContent {
                     },
                 ],
                 remember,
+                requester: None,
             },
             Some(CommandRequest::SendInput { input }) => Self::generic(
                 vec![
@@ -159,6 +172,7 @@ impl ApprovalContent {
                 }),
             ],
             remember,
+            requester: None,
         }
     }
 
@@ -175,6 +189,7 @@ impl ApprovalContent {
             reason: Some(GENERIC_REASON.to_owned()),
             action,
             remember,
+            requester: None,
         }
     }
 }
@@ -392,8 +407,8 @@ mod tests {
     use std::path::PathBuf;
 
     use ofx_contract::{
-        ApprovalScope, CallDescription, Concurrency, PathAccess, RequestId, ToolActivity,
-        ToolCallId, ToolEffect,
+        ApprovalOrigin, ApprovalScope, CallDescription, Concurrency, PathAccess, RequestId,
+        ToolActivity, ToolCallId, ToolEffect,
     };
 
     use super::*;
@@ -419,6 +434,7 @@ mod tests {
             },
             command: Some(command),
             file: None,
+            origin: ApprovalOrigin::ActiveSession,
         }
     }
 
@@ -731,6 +747,7 @@ mod tests {
             },
             command: None,
             file: None,
+            origin: ApprovalOrigin::ActiveSession,
         };
         let root = || PathBuf::from("/home/me");
         for (tool, grant, label) in [
@@ -795,6 +812,7 @@ mod tests {
                 target: PathBuf::from(target),
                 state,
             }),
+            origin: ApprovalOrigin::ActiveSession,
         };
         let shown = ApprovalContent::from_request(
             &change("write_file", "/ws/notes.md", FileMutationState::Creates),
@@ -868,6 +886,7 @@ mod tests {
             },
             command: None,
             file: None,
+            origin: ApprovalOrigin::ActiveSession,
         };
         let shown = ApprovalContent::from_request(&request, Path::new("/ws"));
         assert_eq!(

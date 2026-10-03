@@ -50,6 +50,10 @@ impl SubagentHost {
             owner: Arc::new(Owner::new(agents)),
         }
     }
+
+    pub fn clear(&self) {
+        self.owner.clear();
+    }
 }
 
 impl SubagentProvider for SubagentHost {
