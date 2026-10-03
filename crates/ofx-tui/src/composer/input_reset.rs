@@ -8,7 +8,7 @@ impl Composer {
         self.edit.discard_selection();
         self.limit_rejection.clear();
         self.edit.clear();
-        self.entities.pasted_blocks.clear();
+        self.entities.clear();
         self.prompt_history.reset_navigation();
         self.edit_history.reset();
     }
@@ -61,8 +61,8 @@ mod tests {
     #[test]
     fn session_input_reset_clears_transient_state_and_preserves_prompt_history() {
         let mut composer = Composer::new();
-        composer.prompt_history.record(usize::MAX, "one", &[]);
-        composer.prompt_history.record(usize::MAX, "two", &[]);
+        composer.prompt_history.record_text(usize::MAX, "one");
+        composer.prompt_history.record_text(usize::MAX, "two");
         replace_text(&mut composer, "draft");
         assert_eq!(
             composer.navigate_history(-1, 4096),

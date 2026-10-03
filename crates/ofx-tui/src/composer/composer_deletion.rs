@@ -1,6 +1,6 @@
 use super::Composer;
 use super::composer_replacement::EditRange;
-use super::registered_entities::Entities;
+use super::registered_entities::{Entities, Entity};
 use super::text_boundaries::{
     char_at, is_word_character, is_word_character_at, next_character_end, previous_character_start,
 };
@@ -45,6 +45,18 @@ fn entity_range(start: usize, end: usize) -> EditRange {
     EditRange { start, end }
 }
 
+fn atomic_forward_range(
+    input: &str,
+    cursor: usize,
+    entities: &Entities,
+    entity: Entity,
+) -> EditRange {
+    entity_range(
+        entity.span.raw_start,
+        entities.atomic_forward_delete_end(input, cursor, entity),
+    )
+}
+
 fn character_left_range(input: &str, cursor: usize, entities: &Entities) -> Option<EditRange> {
     if cursor == 0 {
         return None;
@@ -63,7 +75,7 @@ fn character_right_range(input: &str, cursor: usize, entities: &Entities) -> Opt
         return None;
     }
     if let Some(entity) = entities.entity_starting_at_or_containing(input, cursor) {
-        return Some(entity_range(entity.span.raw_start, entity.span.raw_end));
+        return Some(atomic_forward_range(input, cursor, entities, entity));
     }
     Some(entity_range(cursor, next_character_end(input, cursor)))
 }
@@ -100,7 +112,7 @@ fn word_right_range(input: &str, cursor: usize, entities: &Entities) -> Option<E
         return None;
     }
     if let Some(entity) = entities.entity_starting_at_or_containing(input, cursor) {
-        return Some(entity_range(entity.span.raw_start, entity.span.raw_end));
+        return Some(atomic_forward_range(input, cursor, entities, entity));
     }
     let mut end = cursor;
     while let Some(character) = char_at(input, end) {

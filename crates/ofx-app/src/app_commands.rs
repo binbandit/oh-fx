@@ -4,6 +4,7 @@ use ofx_session::resolve_model_query_from_ids;
 use ofx_tui::SlashCommandSpec;
 
 use crate::app_agent_runtime::ControllerState;
+use crate::skill_commands::handle_skills;
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
 const CLIPBOARD_TOPIC: &str = "clipboard";
@@ -106,6 +107,10 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             state.permissions().handle_command(command.payload);
             CommandEffect::None
         }
+        SlashKind::Skills => {
+            handle_skills(state, command.payload);
+            CommandEffect::None
+        }
         SlashKind::Model => {
             let resolved = resolve_model_query(state.models(), command.payload);
             let prefix = if work == Work::Turn {
@@ -179,6 +184,7 @@ mod tests {
                 "/status",
                 "/model",
                 "/permissions",
+                "/skills",
                 "/copy",
                 "/compact",
                 "/fast",
@@ -192,8 +198,9 @@ mod tests {
             .map(|spec| spec.command.as_str())
             .collect();
         assert_eq!(compacting, ["/compact"]);
-        assert_eq!(specs[11].aliases, ["/exit"]);
-        assert_eq!(specs[11].description, "exit the interactive shell");
+        assert_eq!(specs[7].description, "browse and manage skills");
+        assert_eq!(specs[12].aliases, ["/exit"]);
+        assert_eq!(specs[12].description, "exit the interactive shell");
     }
 
     #[test]
@@ -214,6 +221,7 @@ mod tests {
                 ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),
                 ("/fast", "Model"),

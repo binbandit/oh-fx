@@ -154,7 +154,8 @@ mod tests {
             test.sent(),
             [
                 UiCommand::Submit {
-                    prompt: "spaced prompt".to_owned()
+                    prompt: "spaced prompt".to_owned(),
+                    skills: Vec::new(),
                 },
                 UiCommand::RunCommand {
                     text: "/help".to_owned()

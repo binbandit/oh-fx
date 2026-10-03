@@ -1,4 +1,5 @@
 use super::pasted_blocks::{PastedBlock, registered_placeholder_span_starting_at};
+use super::registered_entities::SkillToken;
 use ofx_text::{display_unit_at, next_tab_stop_column, should_wrap_at, visible_width};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,7 @@ pub(crate) enum UnitKind {
     Text,
     Tab,
     PastePlaceholder,
+    SkillToken(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +89,7 @@ pub(crate) struct VisualLayout<'a> {
     cursor: usize,
     terminal_cols: u16,
     pasted_blocks: &'a [PastedBlock],
+    skill_tokens: &'a [SkillToken],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -123,7 +126,24 @@ impl<'a> VisualLayout<'a> {
             cursor,
             terminal_cols,
             pasted_blocks,
+            skill_tokens: &[],
         }
+    }
+
+    pub(crate) fn with_skill_tokens(self, skill_tokens: &'a [SkillToken]) -> Self {
+        Self {
+            skill_tokens,
+            ..self
+        }
+    }
+
+    fn skill_token_starting_at(&self, raw_start: usize) -> Option<usize> {
+        self.skill_tokens
+            .iter()
+            .take_while(|token| token.span.raw_start <= raw_start)
+            .position(|token| {
+                token.span.raw_start == raw_start && token.span.is_valid(self.input.len())
+            })
     }
 
     pub(crate) fn events(&self) -> LayoutEvents<'a> {
@@ -408,6 +428,15 @@ impl LayoutEvents<'_> {
                 kind: UnitKind::PastePlaceholder,
             };
         }
+        if let Some(index) = self.layout.skill_token_starting_at(start) {
+            let token = &self.layout.skill_tokens[index];
+            return RawUnit {
+                raw_start: token.span.raw_start,
+                raw_end: token.span.raw_end,
+                cell_width: visible_width(&token.name),
+                kind: UnitKind::SkillToken(index),
+            };
+        }
         if input.as_bytes()[start] == b'\t' {
             return RawUnit {
                 raw_start: start,
@@ -443,7 +472,7 @@ impl LayoutEvents<'_> {
         self.last_cursor_offset = raw.raw_end;
         self.at_word_start = match raw.kind {
             UnitKind::Text => is_word_break_byte(self.layout.input.as_bytes()[raw.raw_start]),
-            UnitKind::Tab | UnitKind::PastePlaceholder => true,
+            UnitKind::Tab | UnitKind::PastePlaceholder | UnitKind::SkillToken(_) => true,
         };
         let available = self.available_content_cells();
         let oversized_empty_row =
@@ -499,6 +528,7 @@ impl LayoutEvents<'_> {
                 self.layout.pasted_blocks,
             )
             .is_some()
+            || self.layout.skill_token_starting_at(index).is_some()
     }
 
     fn should_soft_wrap(&self, cell_width: usize) -> bool {

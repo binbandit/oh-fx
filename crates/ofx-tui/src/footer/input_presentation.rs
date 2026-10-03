@@ -86,6 +86,17 @@ pub(crate) fn composer_view(
                         row.push(&visible, paint);
                         *remaining -= visible_width(&visible);
                     }
+                    UnitKind::SkillToken(index) => {
+                        let paint = if selected {
+                            theme.tag.with_reverse()
+                        } else {
+                            theme.tag
+                        };
+                        let name = composer.skill_token_name(index);
+                        let visible = drawable(prefix_by_width(name, *remaining));
+                        row.push(&visible, paint);
+                        *remaining -= visible_width(&visible);
+                    }
                 }
             }
             LayoutEvent::RowEnd(_) => {

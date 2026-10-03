@@ -19,6 +19,7 @@ impl Composer {
         if !self.edit.replace_char_before_cursor('\\', '\n') {
             return false;
         }
+        self.entities.discard_pending_separator();
         self.edit_history
             .commit(EditHistory::prepare(index, "\\", "\n", cursor, cursor));
         true

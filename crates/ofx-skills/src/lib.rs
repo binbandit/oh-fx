@@ -19,4 +19,5 @@ pub use skill_invocation::{
 };
 pub use skill_runtime::{
     SkillCatalog, SkillDiscovery, SkillDiscoveryContext, SymlinkAuthorities, build_skill_prompt,
+    diagnostic_summary,
 };

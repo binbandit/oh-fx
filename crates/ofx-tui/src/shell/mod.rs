@@ -6,6 +6,8 @@ mod event_loop;
 mod input_history_runtime;
 mod input_selection_runtime;
 mod input_submit_runtime;
+pub(crate) mod skills_menu;
+mod skills_menu_runtime;
 #[cfg(test)]
 mod test_shell;
 
@@ -24,12 +26,14 @@ use app_permission_runtime::YoloWarning;
 use approval_runtime::ApprovalPrompt;
 use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
+use skills_menu::SkillsMenu;
 
 use crate::composer::Composer;
 use crate::footer::input_presentation::ComposerView;
 use crate::footer::input_presentation::{
     DangerStatus, HintState, compose_hint_row, composer_view, danger_status_text, input_row_limit,
 };
+use crate::footer::skills_menu_presentation::{skills_menu_hint_row, skills_menu_rows};
 use crate::host::Clipboard;
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
@@ -134,6 +138,7 @@ pub(crate) struct Shell<'a> {
     turn: Option<ActiveTurn>,
     compaction: Option<CompactionStatus>,
     approval: Option<ApprovalPrompt>,
+    skills_menu: Option<SkillsMenu>,
     yolo_warning: YoloWarning,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
@@ -286,6 +291,7 @@ impl<'a> Shell<'a> {
             turn: None,
             compaction: None,
             approval: None,
+            skills_menu: None,
             yolo_warning,
             events,
             send,
@@ -424,8 +430,22 @@ impl<'a> Shell<'a> {
                 DangerStatus::None
             },
         };
-        let warning_included = !danger_status_text(hint_state, self.cols()).is_empty();
-        let hint = compose_hint_row(&self.theme, &base_hint, hint_state, self.cols());
+        let menu = match (&self.skills_menu, &self.approval) {
+            (Some(menu), None) => Some(skills_menu_rows(
+                menu,
+                self.skills_menu_budget(),
+                self.cols(),
+                &self.theme,
+            )),
+            _ => None,
+        };
+        let warning_included =
+            menu.is_none() && !danger_status_text(hint_state, self.cols()).is_empty();
+        let hint = if menu.is_some() {
+            skills_menu_hint_row(&self.theme, self.cols(), hint_state.ctrl_c_pending)
+        } else {
+            compose_hint_row(&self.theme, &base_hint, hint_state, self.cols())
+        };
         let activity = self.activity_rows(now_ms);
         let banner = self.banner_rows();
         let banner_rows = if banner.is_empty() {
@@ -458,6 +478,7 @@ impl<'a> Shell<'a> {
                 activity,
                 banner,
                 composer,
+                menu: menu.unwrap_or_default(),
                 hint,
             },
             usize::from(self.layout.rows),

@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_agent::{SkillContext, SkillContextFailure, SkillContextProvider};
 use ofx_config::{ContextLimitName, ContextLimitSource, ContextLimits, ProfilePaths, Settings};
-use ofx_contract::{BoxFuture, Notice, NoticeTone};
+use ofx_contract::{BoxFuture, Notice, NoticeTone, SkillBinding};
 use ofx_skills::{
-    LoadNotice, RootPolicy, RootSpec, SkillDiscovery, SkillDiscoveryContext, SkillError,
-    SkillInventory, SkillLoader, SkillSource, SymlinkAuthorities, build_skill_prompt,
+    ExplicitBinding, LoadNotice, RootPolicy, RootSpec, SkillCatalog, SkillDiscovery,
+    SkillDiscoveryContext, SkillError, SkillInventory, SkillLoader, SkillSource,
+    SymlinkAuthorities, build_skill_prompt,
 };
 use ofx_tools::SkillTool;
 use tokio_util::sync::CancellationToken;
@@ -134,6 +135,14 @@ impl HostSkills {
         Arc::clone(&self.shared.tool)
     }
 
+    pub(crate) fn current(&self) -> Arc<SkillDiscovery> {
+        self.shared.snapshot()
+    }
+
+    pub(crate) fn managed_root(&self) -> &Path {
+        &self.shared.discovery.managed_root
+    }
+
     pub(crate) fn refresh(&self) {
         let found = self
             .shared
@@ -155,21 +164,34 @@ impl Shared {
     fn prepare(
         &self,
         prompt: &str,
+        bindings: &[SkillBinding],
         context_window: Option<u32>,
         cancel: &CancellationToken,
     ) -> Result<SkillContext, SkillContextFailure> {
         let found = self.snapshot();
-        if !renders(&found) {
+        let rendered = renders(&found);
+        if !rendered && bindings.is_empty() {
             self.tool.advertise(ofx_skills::Locations::default());
             return Ok(SkillContext::default());
         }
-        let catalog = build_skill_prompt(
-            &found.skills,
-            &found.diagnostics,
-            &self.limits,
-            context_window,
-        );
+        let catalog = if rendered {
+            build_skill_prompt(
+                &found.skills,
+                &found.diagnostics,
+                &self.limits,
+                context_window,
+            )
+        } else {
+            SkillCatalog::default()
+        };
         self.tool.advertise(catalog.locations);
+        let bindings: Vec<ExplicitBinding<'_>> = bindings
+            .iter()
+            .map(|binding| ExplicitBinding {
+                name: &binding.name,
+                path: &binding.path,
+            })
+            .collect();
         let explicit = SkillLoader::new(
             SkillInventory {
                 skills: &found.skills,
@@ -179,7 +201,7 @@ impl Shared {
             &self.limits,
         )
         .with_cancellation(cancel)
-        .build_explicit_prompt_section(prompt, &[]);
+        .build_explicit_prompt_section(prompt, &bindings);
         let explicit = match explicit {
             Ok(explicit) => explicit,
             Err(SkillError::Cancelled) if cancel.is_cancelled() => {
@@ -227,22 +249,25 @@ impl SkillContextProvider for HostSkills {
     fn prepare<'a>(
         &'a self,
         prompt: &'a str,
+        bindings: &'a [SkillBinding],
         context_window: Option<u32>,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<SkillContext, SkillContextFailure>> {
-        if !renders(&self.shared.snapshot()) {
+        if bindings.is_empty() && !renders(&self.shared.snapshot()) {
             return Box::pin(future::ready(self.shared.prepare(
                 prompt,
+                bindings,
                 context_window,
                 cancel,
             )));
         }
         let shared = Arc::clone(&self.shared);
         let prompt = prompt.to_owned();
+        let bindings = bindings.to_vec();
         let cancel = cancel.clone();
         Box::pin(async move {
             let prepared = tokio::task::spawn_blocking(move || {
-                shared.prepare(&prompt, context_window, &cancel)
+                shared.prepare(&prompt, &bindings, context_window, &cancel)
             })
             .await;
             match prepared {

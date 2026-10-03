@@ -5,6 +5,7 @@ mod composer_kill_ring;
 mod composer_line_continuation;
 mod composer_replacement;
 mod composer_selection;
+mod composer_skill_binding;
 mod composer_undo;
 mod edit_history;
 mod editor_state;
@@ -99,5 +100,6 @@ impl Composer {
             terminal_cols,
             &self.entities.pasted_blocks,
         )
+        .with_skill_tokens(&self.entities.skill_tokens)
     }
 }

@@ -1,5 +1,6 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
 use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
+use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::tool_dispatch::CallDescription;
 use crate::types::{PermissionMode, RouteRecoveryStatus, ToolResultStatus, Usage};
 
@@ -170,6 +171,10 @@ pub enum UiEvent {
     CompactionActivity {
         activity: CompactionActivity,
     },
+    SkillsMenu {
+        items: Vec<SkillMenuItem>,
+        focus: SkillMenuFocus,
+    },
     ConversationCleared {
         first_kept_prompt: u64,
     },
@@ -180,6 +185,7 @@ pub enum UiEvent {
 pub enum UiCommand {
     Submit {
         prompt: String,
+        skills: Vec<SkillBinding>,
     },
     RunCommand {
         text: String,

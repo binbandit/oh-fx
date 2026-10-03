@@ -120,6 +120,7 @@ impl Composer {
         if start >= end || end > self.edit.input.len() {
             return;
         }
+        self.entities.discard_pending_separator();
         self.entities.adjust_for_delete(start, end);
         self.edit.delete_text_range(start, end);
     }
