@@ -568,6 +568,7 @@ mod tests {
         process: Option<CommandProcessPresentation>,
     ) -> ToolActivityRow {
         row.finish(&Finished {
+            arguments: "{}",
             status,
             content,
             process,
@@ -914,6 +915,7 @@ mod tests {
     ) -> ToolActivityRow {
         let mut row = started(id, tool, activity, label);
         row.finish(&Finished {
+            arguments: "{}",
             status: ToolResultStatus::Success,
             content: "",
             process: None,
@@ -1118,6 +1120,7 @@ mod tests {
         rows.row_mut(&ToolCallId::new("2"))
             .unwrap()
             .finish(&Finished {
+                arguments: "{}",
                 status: ToolResultStatus::Failure,
                 content: "",
                 process: None,

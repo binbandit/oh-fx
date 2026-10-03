@@ -1,8 +1,9 @@
 use ofx_contract::{
-    ActionLabel, CallDescription, CommandProcessPresentation, FileChangeStats, ToolActivity,
-    ToolArgsError, ToolCallId, ToolDeferral, ToolPermissionDenialReason, ToolRejection,
-    ToolResultStatus, ToolStatusDetail, TurnOutcome, parse_tool_args_object,
-    shell_request_invalid_field_count, tool_permission_denial_reason,
+    ActionLabel, CallDescription, CommandProcessPresentation, FileChangeStats, SubagentActionState,
+    ToolActivity, ToolArgsError, ToolCallId, ToolDeferral, ToolPermissionDenialReason,
+    ToolRejection, ToolResultStatus, ToolStatusDetail, TurnOutcome, parse_tool_args_object,
+    shell_request_invalid_field_count, subagent_action, subagent_failure_label,
+    tool_permission_denial_reason,
 };
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_inline, mask_secrets};
 
@@ -10,6 +11,8 @@ const MAX_RUN_COMMAND_ACTIVITY_BYTES: usize = 120;
 const MAX_TARGET_BYTES: usize = MAX_RUN_COMMAND_ACTIVITY_BYTES * MAX_RUN_COMMAND_ACTIVITY_BYTES - 1;
 const MAX_FAILURE_DETAIL_BYTES: usize = 256;
 const SHELL_TOOL: &str = "shell";
+const SUBAGENT_TOOL: &str = "subagent";
+const SUBAGENT_ACTIVE_VERB: &str = " working";
 const FILE_MUTATION_TOOLS: [&str; 2] = ["write_file", "edit_file"];
 pub(crate) const FILE_MUTATION_TARGET: &str = "file";
 const INVALID_ARGUMENTS_TARGET: &str = "tool call";
@@ -49,6 +52,7 @@ pub(crate) struct ToolActivityRow {
 }
 
 pub(crate) struct Finished<'a> {
+    pub(crate) arguments: &'a str,
     pub(crate) status: ToolResultStatus,
     pub(crate) content: &'a str,
     pub(crate) process: Option<CommandProcessPresentation>,
@@ -135,6 +139,10 @@ impl ToolActivityRow {
         let denial = (finished.status == ToolResultStatus::Failure)
             .then(|| tool_permission_denial_reason(finished.content))
             .flatten();
+        if let Some(status) = self.subagent_outcome(finished, denial) {
+            self.status = status;
+            return;
+        }
         self.status = if let Some(reason) = denial {
             self.settled(ToolOutcome::Denied, denial_label(reason), None, None)
         } else if let Some((outcome, label)) = self.process_outcome(finished.process) {
@@ -227,6 +235,56 @@ impl ToolActivityRow {
         FILE_MUTATION_TOOLS.contains(&self.tool_name.as_str())
     }
 
+    fn delegates(&self) -> bool {
+        self.tool_name == SUBAGENT_TOOL && self.activity == Some(ToolActivity::Subagent)
+    }
+
+    fn subagent_outcome(
+        &self,
+        finished: &Finished<'_>,
+        denial: Option<ToolPermissionDenialReason>,
+    ) -> Option<ToolStatus> {
+        if !self.delegates() {
+            return None;
+        }
+        let (outcome, state) = match denial {
+            Some(reason) => (
+                ToolOutcome::Denied,
+                SubagentActionState::Stopped(denial_label(reason)),
+            ),
+            None if finished.status == ToolResultStatus::Success => {
+                (ToolOutcome::Completed, SubagentActionState::Completed)
+            }
+            None => (
+                ToolOutcome::Failed,
+                SubagentActionState::Stopped(subagent_failure_label(
+                    SUBAGENT_TOOL,
+                    finished.content,
+                )),
+            ),
+        };
+        let action = subagent_action(SUBAGENT_TOOL, finished.arguments, state)?;
+        let phrase = if action.detail.is_empty() {
+            action.label.clone()
+        } else {
+            format!("{} {}", action.label, action.detail)
+        };
+        Some(ToolStatus {
+            outcome: Some(outcome),
+            phrase,
+            label_len: action.label.len(),
+            process: None,
+        })
+    }
+
+    fn subagent_identity(&self) -> Option<String> {
+        let (name, rest) = self
+            .delegates()
+            .then(|| self.title.split_once(SUBAGENT_ACTIVE_VERB))
+            .flatten()?;
+        (!name.is_empty() && !name.contains(' ')).then(|| format!("{name}{rest}"))
+    }
+
     fn active_status(&self) -> ToolStatus {
         let (phrase, label_len) = if let Some(label) = &self.label {
             (
@@ -255,7 +313,9 @@ impl ToolActivityRow {
             (Some(action), Some(_)) => self.bounded_target(action),
             (Some(action), None) => action.target.clone(),
             (None, _) if self.is_file_mutation() => FILE_MUTATION_TARGET.to_owned(),
-            (None, _) => INVALID_ARGUMENTS_TARGET.to_owned(),
+            (None, _) => self
+                .subagent_identity()
+                .unwrap_or_else(|| INVALID_ARGUMENTS_TARGET.to_owned()),
         };
         ToolStatus {
             outcome: Some(outcome),
@@ -372,8 +432,8 @@ fn encoded_target(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        Concurrency, ReviewFailure, ReviewHold, ToolEffect, tool_permission_denied_json,
-        tool_review_held_json,
+        Concurrency, ReviewFailure, ReviewHold, SubagentActionState, ToolEffect,
+        format_subagent_plain_action, tool_permission_denied_json, tool_review_held_json,
     };
 
     use super::*;
@@ -421,6 +481,7 @@ mod tests {
         status_detail: Option<ToolStatusDetail>,
     ) -> String {
         row.finish(&Finished {
+            arguments: "{}",
             status,
             content,
             process,
@@ -428,6 +489,27 @@ mod tests {
             file_change: None,
         });
         row.status.phrase.clone()
+    }
+
+    const RUN_CHILD: &str = r#"{"request":{"action":"run","task":"inspect auth"}}"#;
+    const MESSAGE_CHILD: &str =
+        r#"{"request":{"action":"message","agent":"reviewer","message":"check this"}}"#;
+
+    fn subagent_row(arguments: &str) -> ToolActivityRow {
+        let title =
+            format_subagent_plain_action("subagent", arguments, SubagentActionState::Active)
+                .unwrap();
+        ToolActivityRow::started(
+            ToolCallId::new("call"),
+            "subagent",
+            CallDescription {
+                title,
+                label: None,
+                activity: ToolActivity::Subagent,
+                effect: ToolEffect::Mutating,
+                concurrency: Concurrency::Parallel,
+            },
+        )
     }
 
     #[test]
@@ -501,6 +583,7 @@ mod tests {
                 ("Writing", "Wrote", "new.txt"),
             );
             write.finish(&Finished {
+                arguments: "{}",
                 status: ToolResultStatus::Success,
                 content: "wrote new.txt (4 bytes)",
                 process: None,
@@ -597,6 +680,103 @@ mod tests {
                 phrase
             );
             assert_eq!(shell.status.outcome, Some(ToolOutcome::Denied));
+        }
+    }
+
+    #[test]
+    fn subagent_rows_settle_with_the_childs_identity_and_outcome() {
+        let failure = |code: &str| format!(r#"{{"ok":false,"result":null,"error_code":"{code}"}}"#);
+        let done = r#"{"ok":true,"result":"done","error_code":null}"#.to_owned();
+        let cases = [
+            (
+                RUN_CHILD,
+                ToolResultStatus::Success,
+                done.clone(),
+                "Subagent finished · inspect auth",
+                "Subagent finished",
+                ToolOutcome::Completed,
+            ),
+            (
+                MESSAGE_CHILD,
+                ToolResultStatus::Success,
+                done,
+                "reviewer replied · check this",
+                "reviewer replied",
+                ToolOutcome::Completed,
+            ),
+            (
+                RUN_CHILD,
+                ToolResultStatus::Failure,
+                failure("child_failed"),
+                "Subagent failed · inspect auth",
+                "Subagent failed",
+                ToolOutcome::Failed,
+            ),
+            (
+                MESSAGE_CHILD,
+                ToolResultStatus::Failure,
+                failure("child_busy"),
+                "reviewer busy; message not sent · check this",
+                "reviewer busy; message not sent",
+                ToolOutcome::Failed,
+            ),
+            (
+                MESSAGE_CHILD,
+                ToolResultStatus::Failure,
+                failure("override_after_create"),
+                "Message not sent to reviewer · check this",
+                "Message not sent to reviewer",
+                ToolOutcome::Failed,
+            ),
+            (
+                RUN_CHILD,
+                ToolResultStatus::Failure,
+                failure("child_cancelled"),
+                "Subagent interrupted · inspect auth",
+                "Subagent interrupted",
+                ToolOutcome::Failed,
+            ),
+            (
+                RUN_CHILD,
+                ToolResultStatus::Failure,
+                tool_permission_denied_json("subagent"),
+                "Denied Subagent · inspect auth",
+                "Denied Subagent",
+                ToolOutcome::Denied,
+            ),
+        ];
+        for (arguments, status, content, phrase, label, outcome) in cases {
+            let mut child = subagent_row(arguments);
+            assert!(child.is_active());
+            child.finish(&Finished {
+                arguments,
+                status,
+                content: &content,
+                process: None,
+                status_detail: None,
+                file_change: None,
+            });
+            assert_eq!(child.status.phrase, phrase, "{content}");
+            assert_eq!(child.status.label_len, label.len(), "{content}");
+            assert_eq!(child.status.outcome, Some(outcome), "{content}");
+        }
+    }
+
+    #[test]
+    fn a_cancelled_subagent_row_names_the_child() {
+        for (arguments, target) in [
+            (RUN_CHILD, "Subagent · inspect auth"),
+            (MESSAGE_CHILD, "reviewer · check this"),
+        ] {
+            let mut child = subagent_row(arguments);
+            assert_eq!(child.status.phrase, target.replacen(" ·", " working ·", 1));
+            child.cancel();
+            assert_eq!(child.status.phrase, format!("Cancelled {target}"));
+            assert_eq!(child.status.outcome, Some(ToolOutcome::Cancelled));
+            assert_eq!(
+                child.cancellation_target(),
+                Some((target.to_owned(), false))
+            );
         }
     }
 
