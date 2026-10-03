@@ -1,0 +1,29 @@
+[[file]]
+upstream = "src/core/hooks/common.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hooks/definitions.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hooks/hooks.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hooks/prompt.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hooks/runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hooks/tool.zig"
+status = "todo"
+modules = []

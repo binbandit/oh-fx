@@ -1,0 +1,137 @@
+[[file]]
+upstream = "src/core/shared/collections.zig"
+status = "not-applicable"
+modules = []
+note = "Zig-specific owned string-list destruction is replaced by Rust Vec/String Drop; no product behavior is excluded."
+
+[[file]]
+upstream = "src/core/shared/darwin_process_spawn.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/command_runner.rs", "crates/ofx-exec/src/command_environment.rs"]
+note = "Rust subprocess spawning handles environment/stdin/stdout; upstream explicit high borrowed-descriptor inheritance adapter is absent."
+
+[[file]]
+upstream = "src/core/shared/debug_trace.zig"
+status = "todo"
+modules = []
+note = "Opt-in trace file/ring lifecycle and contextual turn/step/subagent event logging are unimplemented."
+
+[[file]]
+upstream = "src/core/shared/display_width.zig"
+status = "ported"
+modules = ["crates/ofx-text/src/display_width.rs"]
+note = "Unicode/emoji width, grapheme-safe prefixes/suffixes and wrapping are implemented; lone-modifier/unassigned emoji width corrections are documented, and data equivalence is tested."
+
+[[file]]
+upstream = "src/core/shared/entity_spans.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/entity_spans.rs"]
+note = "Half-open entity relationships and insert/delete span transformations are implemented with matching edit regression tests."
+
+[[file]]
+upstream = "src/core/shared/gateway_error_format.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/gateway_error_format.rs"]
+note = "HTTP diagnostic/error formatting and secret masking exist; schema-specific guidance and all terminal marked-line wrapping helpers are absent."
+
+[[file]]
+upstream = "src/core/shared/http_pool.zig"
+status = "partial"
+modules = ["crates/ofx-http/src/client.rs"]
+note = "Reqwest owns reusable HTTP connections; explicit warmAsync, never-active/TTL drain and pool health lifecycle are absent."
+
+[[file]]
+upstream = "src/core/shared/io.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/io.rs", "crates/ofx-skills/src/io.rs"]
+note = "Private no-follow directories and durable IO exist; shared process IO backend injection and Darwin descriptor adapter are absent."
+
+[[file]]
+upstream = "src/core/shared/json_comparison.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/responses_protocol.rs"]
+note = "Semantic JSON comparison is used for repeated provider items; standalone typed serialized comparison including upstream number distinctions is absent."
+
+[[file]]
+upstream = "src/core/shared/language_script.zig"
+status = "todo"
+modules = []
+note = "Unicode script/prose profiles and code/quoted-data exclusion for response language checks are unimplemented."
+
+[[file]]
+upstream = "src/core/shared/lexical_relevance.zig"
+status = "todo"
+modules = []
+note = "Bounded query token preparation, corpus relevance scoring and strong-primary/secondary evidence ordering are unimplemented."
+
+[[file]]
+upstream = "src/core/shared/list_window.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/list_window.rs"]
+note = "edgeFromStart, updateEdgeStart and selection advancement exist; centered and edgeFromSelection window policies are absent."
+
+[[file]]
+upstream = "src/core/shared/mem_utils.zig"
+status = "not-applicable"
+modules = []
+note = "Zig allocator free/list/arena thunks have no Rust allocator API counterpart; Rust ownership/Drop performs cleanup."
+
+[[file]]
+upstream = "src/core/shared/message.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/types.rs"]
+note = "Text roles, tool calls and replay messages exist; request images and complete upstream message context ownership fields are absent."
+
+[[file]]
+upstream = "src/core/shared/model_context_encoding.zig"
+status = "partial"
+modules = ["crates/ofx-text/src/model_context_encoding.rs", "crates/ofx-skills/src/encoded_scalar.rs"]
+note = "Scalar delimiter/control escaping and allocated scalar encoding exist; writeJsonScalar encoded-then-JSON serialization is absent."
+
+[[file]]
+upstream = "src/core/shared/profile_paths.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/paths.rs"]
+note = "Native XDG profile/config/data/cache paths exist; dedicated deferred-provider and session/artifact path accessors are incomplete. Browser profile projection is outside the native host."
+
+[[file]]
+upstream = "src/core/shared/self_exe.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/command_runner.rs", "crates/ofx-upgrade/src/upgrade.rs"]
+note = "Rust current_exe supplies supervisor/upgrade paths; live-inode reexecution and replaced-binary peer identity fallback are absent."
+
+[[file]]
+upstream = "src/core/shared/sort_utils.zig"
+status = "not-applicable"
+modules = []
+note = "Zig type-erased allocation-free sort implementation is replaced by Rust slice stable sorting; generic allocator/code-size machinery is language-specific."
+
+[[file]]
+upstream = "src/core/shared/text_utils.zig"
+status = "partial"
+modules = ["crates/ofx-text/src/text_utils.rs"]
+note = "Terminal encoding, masking, whitespace and bounded text helpers exist; suffixTerminalSafeByWidth, prefixTerminalSafeByWidth and terminalSafeVisibleWidth are absent as dedicated equivalent helpers."
+
+[[file]]
+upstream = "src/core/shared/theme.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/theme.rs"]
+note = "Built-in dark/light palettes and terminal activation exist; custom native/VS Code theme parsing, named theme loading and source-name/pinned-variant state are absent."
+
+[[file]]
+upstream = "src/core/shared/token_estimate.zig"
+status = "ported"
+modules = ["crates/ofx-text/src/token_estimate.rs", "crates/ofx-agent/src/compactor.rs"]
+note = "Both implementations saturate byte counters, split spans on ASCII whitespace and round each span upward by four; the compactor supplies the one-shot form and chunk-boundary tests cover the estimator."
+
+[[file]]
+upstream = "src/core/shared/types.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/types.rs", "crates/ofx-contract/src/ui.rs"]
+note = "Core messages, permission/review/events and usage contracts exist; image attachments, provider executed tools, rich persisted presentations and diagnostic metrics are absent."
+
+[[file]]
+upstream = "src/core/shared/unicode_display_data.zig"
+status = "ported"
+modules = ["crates/ofx-text/src/unicode_display_data.rs"]
+note = "Width intervals, emoji properties and RGI sequences are translated with generated table/RGI equivalence checks; documented display-width corrections govern interpretation."

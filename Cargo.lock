@@ -2064,6 +2064,9 @@ version = "0.1.0"
 dependencies = [
  "ra-ap-rustc_lexer",
  "regex",
+ "serde",
+ "tempfile",
+ "toml",
  "unicode-ident",
 ]
 

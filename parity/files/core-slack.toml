@@ -1,0 +1,4 @@
+[[file]]
+upstream = "src/core/slack/install.zig"
+status = "todo"
+modules = []

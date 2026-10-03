@@ -1,0 +1,47 @@
+[[file]]
+upstream = "src/tools/web/content.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/web/content.rs"]
+note = "MIME/sniff classification, conversion dispatch and content caps exist; Classification.declared provenance distinguishing declared and sniffed kinds is absent."
+
+[[file]]
+upstream = "src/tools/web/fetch.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/web/fetch.rs"]
+note = "URL fetch, converted-text cache/progress and result envelopes exist; binary artifact storage/reference publication, quota settlement and stale artifact refetch are absent. These are pending port gaps."
+
+[[file]]
+upstream = "src/tools/web/fetch_args.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/web/fetch_args.rs"]
+note = "URL-required object validation, nonempty URL handling and ordered argument errors match the source argument tests; URL safety policy is handled separately."
+
+[[file]]
+upstream = "src/tools/web/html_to_markdown.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/web/html_to_markdown.rs"]
+note = "HTML tag/entity handling, links/images, lists/tables/code and bounded Markdown conversion are implemented with conversion regressions; documented unsafe-text handling applies."
+
+[[file]]
+upstream = "src/tools/web/http_fetch.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/web/http_fetch.rs"]
+note = "Bounded HTTP fetch, status/encoding settlement and redirect policy are implemented with transport regressions; TLS/public-address/redirection safety differences are documented in architecture.md."
+
+[[file]]
+upstream = "src/tools/web/search.zig"
+status = "todo"
+modules = []
+note = "Web search backend execution tool are unimplemented."
+
+[[file]]
+upstream = "src/tools/web/search_args.zig"
+status = "todo"
+modules = []
+note = "Web search argument/domain-filter validation are unimplemented."
+
+[[file]]
+upstream = "src/tools/web/url_policy.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/web/url_policy.rs"]
+note = "URL parsing, target validation and ordered error reasons are implemented; documented public-address/TLS/credential-redaction safety differences apply."

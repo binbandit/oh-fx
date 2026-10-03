@@ -1,0 +1,80 @@
+[[file]]
+upstream = "src/core/terminal/action_executor.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/client.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/contracts.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/engine.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/host.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/host_policy.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/identity.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/managed_observer.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/native_session.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/operation.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/protocol.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/recovery.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/shell_resolver.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/shell_resolver.rs"]
+note = "Captured invocation, login-shell fallback and clean/user environment selection exist; interactive resolve and bootstrap/source command construction are missing."
+
+[[file]]
+upstream = "src/core/terminal/store.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/tmux_session.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/terminal/ui_projection.zig"
+status = "todo"
+modules = []

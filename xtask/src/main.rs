@@ -2,13 +2,14 @@ mod attribution;
 mod comments;
 mod commit_message;
 mod conventional;
+mod parity;
 mod pipeline;
 mod workspace_files;
 
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask <style | lint | test | ci | attribution <file> | commit-msg <file> | subjects <file> | title <file> | hooks | footprint [--base <commit>] [--summary <file>] [--pr-body <file>]>";
+const USAGE: &str = "usage: cargo xtask <style | lint | test | ci | attribution <file> | commit-msg <file> | subjects <file> | title <file> | hooks | parity [--upstream PATH] | footprint [--base <commit>] [--summary <file>] [--pr-body <file>]>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -22,6 +23,7 @@ fn main() -> ExitCode {
         ["commit-msg", path] => commit_message::check(Path::new(path)),
         ["subjects", path] => conventional::check_subjects_file(Path::new(path)),
         ["title", path] => conventional::check_title_file(Path::new(path)),
+        ["parity", options @ ..] => parity::run(options),
         ["hooks"] => pipeline::install_hooks(),
         ["footprint", options @ ..] => pipeline::footprint(options),
         _ => Err(USAGE.to_owned()),

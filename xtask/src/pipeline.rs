@@ -38,6 +38,7 @@ pub(crate) fn style() -> Result<(), String> {
 
 pub(crate) fn lint() -> Result<(), String> {
     style()?;
+    crate::parity::check_local(std::path::Path::new("."))?;
     cargo(CLIPPY)
 }
 

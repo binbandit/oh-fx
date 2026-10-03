@@ -1,0 +1,29 @@
+[[file]]
+upstream = "src/tools/filesystem/edit_file.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/filesystem/edit_file.rs"]
+note = "Required-field decoding, preparation bounds and mutation-input delegation match the leaf source; Rust PreparedCall/ownership replaces canonical-runtime input handoff as documented. Freshness/execution gaps belong to file_mutation sources."
+
+[[file]]
+upstream = "src/tools/filesystem/glob_files.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/filesystem/glob_files.rs"]
+note = "Filesystem glob files schema, ordering, output caps and literal/path filtering are implemented with matching boundary regression tests; external-path permission differences are documented."
+
+[[file]]
+upstream = "src/tools/filesystem/grep_files.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/filesystem/grep_files.rs"]
+note = "Filesystem grep files schema, ordering, output caps and literal/path filtering are implemented with matching boundary regression tests; external-path permission differences are documented."
+
+[[file]]
+upstream = "src/tools/filesystem/read_file.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/filesystem/read_file.rs"]
+note = "Bounded text reads and line selection exist; image attachment results and session ReadTracker snapshots are absent."
+
+[[file]]
+upstream = "src/tools/filesystem/write_file.zig"
+status = "ported"
+modules = ["crates/ofx-tools/src/filesystem/write_file.rs"]
+note = "Required-field decoding, preparation bounds and mutation-input delegation match the leaf source; Rust PreparedCall/ownership replaces canonical-runtime input handoff as documented. Freshness/execution gaps belong to file_mutation sources."

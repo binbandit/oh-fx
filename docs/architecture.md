@@ -7,12 +7,14 @@ oh-fx is a behavior-faithful Rust port of [vercel-labs/fx](https://github.com/ve
 - **A complete port.** Every upstream feature is ported. A feature is left out only for a concrete reason recorded under deliberate differences, such as the Slack app, which depends on credentials that belong to Vercel. Being hard to port is not a reason.
 - **Upstream's footprint.** oh-fx is as fast, as small, and as frugal as upstream. Its release builds are held to upstream's on binary size, startup time, time to first request, memory use, and rendering cost, and a change that regresses any of them needs a stated reason.
 
+The shipping target is the native terminal binary. Upstream WASM, Node-API addons, browser runtimes and other JavaScript-host surfaces are outside this target. The parity inventory includes their source files and marks them as not applicable with this reason. Upstream Zig build machinery, benchmark programs and test-only harness files are also not shipped; excluding those harnesses does not mark the product behavior they exercise as ported. Implementation rows track that behavior independently.
+
 ## Principles
 
 - **Port leaf behavior, not upstream coupling.** Escape parsing, markdown, syntax highlighting, glob matching, git-backed file listing, the frame renderer, and MCP transports are ported from upstream, and their upstream tests become ours. Upstream's large shared structs (`DispatchContext`, `AgentRuntimeDeps`) are replaced by narrow traits and constructor injection.
 - **Contracts first.** The agent and the TUI depend only on `ofx-contract`, so they can be built and tested with fakes while transports and tools land in parallel.
 - **Module names follow upstream files.** A Rust module that ports `src/core/tooling/tool_dispatch.zig` is named `tool_dispatch.rs`, which keeps the parity ledger mechanical.
-- **Every boundary is a compile-time fact.** Crates are layered and acyclic. The UI cannot reach sessions or config, and transports cannot reach product state.
+- **Every boundary is a compile-time fact.** Crates are layered and acyclic. Crate dependencies remain acyclic: composition owns sessions and configuration, and transports cannot reach product state.
 
 ## Crates
 
@@ -289,7 +291,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 
 ## Parity tracking
 
-[Upstream parity](upstream-parity.md) records the upstream commit oh-fx is synced to, where each upstream pull request since the previous sync point lands in oh-fx, and how to run the next parity pass. `parity/` will separately map every upstream source file to its Rust module, with a per-file status of `todo`, `partial`, `ported`, or `not-applicable`. CI will fail when an upstream file has no entry. Goldens dumped from upstream (tool schemas, help text, prompts) will be compared byte for byte.
+[Upstream parity](upstream-parity.md) records the upstream commit oh-fx is synced to, where each upstream pull request since the previous sync point lands in oh-fx, and how to run the next parity pass. `parity/files/` maps every upstream Zig source file to its Rust modules, with a per-file status of `todo`, `partial`, `ported`, or `not-applicable` and concrete notes for partial ports and exclusions. `parity/UPSTREAM` pins the checkout used by `cargo xtask parity --upstream <path>` and the upstream parity CI job. The checker fetches nothing, verifies the checkout's commit, rejects missing or stale source entries and invalid Rust module paths, and prints the counts per status. The job feeds the required Repository checks gate. Structural coverage does not establish behavioral parity; each `ported` classification still rests on source and test review or a documented deliberate difference. Goldens dumped from upstream (tool schemas, help text, prompts) will be compared byte for byte in a separate change.
 
 ## Delivery order
 

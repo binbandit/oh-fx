@@ -1,0 +1,17 @@
+[[file]]
+upstream = "src/tools/shell/browser_shell.zig"
+status = "not-applicable"
+modules = []
+note = "Browser-host completion-only shell adapter; the native product does not ship this browser workspace backend."
+
+[[file]]
+upstream = "src/tools/shell/process_provider.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/managed_execution.rs"]
+note = "Managed process handles exist; provider-bound process-instance token capture/matching and unavailable-provider contract are absent."
+
+[[file]]
+upstream = "src/tools/shell/shell.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/shell.rs", "crates/ofx-tools/src/shell/request.rs", "crates/ofx-tools/src/shell/snapshot_format.rs"]
+note = "Run/interact/stop/list request validation and captured snapshots exist; TTY execution, direct read-only routes and persisted command replay are absent."

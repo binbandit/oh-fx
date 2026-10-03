@@ -1,0 +1,5 @@
+[[file]]
+upstream = "src/tools/capabilities/capability_search.zig"
+status = "todo"
+modules = []
+note = "Capability discovery source/cursor/search tool are unimplemented."

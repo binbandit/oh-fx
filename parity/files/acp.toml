@@ -1,0 +1,66 @@
+[[file]]
+upstream = "src/acp/client_instructions.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/jsonrpc.zig"
+status = "partial"
+modules = ["crates/ofx-jsonrpc/src/jsonrpc.rs", "crates/ofx-jsonrpc/src/line_reader.rs"]
+note = "Request IDs, frame encoding and bounded line reading exist; parseMessage envelope decoding and callback Writer response/error dispatch are missing."
+
+[[file]]
+upstream = "src/acp/libfx_steering.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/mcp_carrier.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/mcp_servers.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/prompt.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/prompt_test_controls.zig"
+status = "not-applicable"
+modules = []
+note = "Deterministic Zig ACP test harness: environment-selected terminal-write pause and reap-before-join markers; not shipped in the native Rust runtime."
+
+[[file]]
+upstream = "src/acp/server.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/sessions.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/tool_call_identities.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/tool_call_presentation.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/types.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/acp/workspace_binding.zig"
+status = "todo"
+modules = []

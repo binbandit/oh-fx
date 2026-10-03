@@ -1,0 +1,17 @@
+[[file]]
+upstream = "src/tools/agent/ask_user_question.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/ask_user_question.rs"]
+note = "Batch validation, exact sentinels, terminal-safe prompts and ordered answer forwarding exist; ignored overflowing-number fields such as extra:1e400 are rejected by native JSON parsing but accepted upstream."
+
+[[file]]
+upstream = "src/tools/agent/subagent.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/subagent.rs", "crates/ofx-agent/src/subagent/tool_host.rs"]
+note = "Subagent decoding and a managed child host run Agent turns; production composition does not register the tool, and durable child sessions, model catalog override resolution and live status feedback are absent."
+
+[[file]]
+upstream = "src/tools/agent/vision.zig"
+status = "todo"
+modules = []
+note = "Vision image inspection tool are unimplemented."

@@ -1,0 +1,203 @@
+[[file]]
+upstream = "src/core/app/app_agent_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/tool_set.rs"]
+note = "Native turn/tool dispatch and a reusable child-agent host exist; composition does not install the child host, and full terminal presentation and shared runtime hooks remain incomplete."
+
+[[file]]
+upstream = "src/core/app/app_auth_runtime.zig"
+status = "partial"
+modules = ["crates/oh-fx/src/login_command.rs", "crates/oh-fx/src/provider_command.rs"]
+note = "CLI Codex login/logout/provider commands exist; interactive source inventory, login/provider pickers and Vercel/Grok flows are absent."
+
+[[file]]
+upstream = "src/core/app/app_bootstrap_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_bootstrap_runtime.rs"]
+note = "Native provider/tool bootstrap exists; Vercel/Grok routes, extra workspace roots and hosted-runtime bootstrap are absent."
+
+[[file]]
+upstream = "src/core/app/app_callbacks.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_agent_runtime.rs"]
+note = "Native event callbacks and authoritative tool rows exist; provisional lifecycle reconciliation, MCP progress/question callbacks and child-agent presentation callbacks remain absent."
+
+[[file]]
+upstream = "src/core/app/app_commands.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_commands.rs"]
+note = "Supported slash commands including saved allowlist management are routed; MCP/usage/settings/workspace menus and the remaining upstream command handlers are absent."
+
+[[file]]
+upstream = "src/core/app/app_entry_runtime.zig"
+status = "partial"
+modules = ["crates/oh-fx/src/main.rs", "crates/ofx-app/src/app_lifecycle.rs"]
+note = "Native command and interactive entry exist; cooperative embedded-host execution is absent."
+
+[[file]]
+upstream = "src/core/app/app_host_config_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/user_settings.rs", "crates/ofx-config/src/settings_store.rs"]
+note = "Native model and permission preferences persist; host-owned configuration restoration/persistence is absent."
+
+[[file]]
+upstream = "src/core/app/app_input_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
+note = "Terminal input routing exists; image ingress, deferred session-transition input and all interactive picker routes are absent."
+
+[[file]]
+upstream = "src/core/app/app_lifecycle.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_lifecycle.rs", "crates/ofx-tui/src/terminal/app_lifecycle.rs"]
+note = "Native startup/shutdown/job control exist; full-transcript and catalog alternate-screen ownership and embedded-host lifecycle are absent."
+
+[[file]]
+upstream = "src/core/app/app_mcp_menu_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/app/app_mcp_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/app/app_notification_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/app/app_permission_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_permission_runtime.rs", "crates/ofx-tui/src/shell/app_permission_runtime.rs"]
+note = "Permission mode, approval prompts and review gating exist; upstream approval diff preview and full settings/menu integration are absent."
+
+[[file]]
+upstream = "src/core/app/app_process_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_lifecycle.rs", "crates/ofx-app/src/app_agent_runtime.rs"]
+note = "Native worker thread and error handling exist; cooperative host prompt processing is absent."
+
+[[file]]
+upstream = "src/core/app/app_render_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/event_loop.rs", "crates/ofx-tui/src/shell/mod.rs"]
+note = "Native render event-loop wiring exists; full transcript/catalog surfaces, recording and complete frame invalidation metrics are absent."
+
+[[file]]
+upstream = "src/core/app/app_runtime_setup.zig"
+status = "ported"
+modules = ["crates/ofx-app/src/skills.rs"]
+note = "Native HOME resolution and visible-skill discovery are implemented by HostSkills, with the managed XDG skill directory difference documented in architecture.md."
+
+[[file]]
+upstream = "src/core/app/app_session_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_session_runtime.rs"]
+note = "V1 session save/resume exists; session-v2, resume/rename pickers and catalog/cache management are absent."
+
+[[file]]
+upstream = "src/core/app/app_upgrade_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_upgrade_runtime.rs"]
+note = "Upgrade status and application exist; upstream process-relaunch handoff preserving full session/launch state is incomplete."
+
+[[file]]
+upstream = "src/core/app/app_worker_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/app_worker_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs"]
+note = "Worker event delivery, authoritative tool rows and compaction persistence exist; provisional lifecycle reconciliation, table/code semantic events and complete child-event propagation remain absent."
+
+[[file]]
+upstream = "src/core/app/app_workspace_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/file_mention_runtime.rs", "crates/ofx-tui/src/shell/directory_completion_job.rs"]
+note = "Native workspace file mentions/completion exist; additional roots, scope adoption and workspace transition support are absent."
+
+[[file]]
+upstream = "src/core/app/input_approval_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/approval_runtime.rs"]
+note = "Approval keyboard actions exist with documented safety gating; upstream file-diff preview and queued submission integration are incomplete."
+
+[[file]]
+upstream = "src/core/app/input_completion_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs"]
+note = "Slash/file completion and history routes exist; model/session/provider picker routing is absent."
+
+[[file]]
+upstream = "src/core/app/input_full_transcript_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/app/input_history_runtime.zig"
+status = "ported"
+modules = ["crates/ofx-app/src/prompt_history_runtime.rs", "crates/ofx-tui/src/shell/input_history_runtime.rs"]
+note = "The startup runtime loads 100 workspace-scoped recent entries and installs their text in composer history; persistent encoding differences are documented in architecture.md."
+
+[[file]]
+upstream = "src/core/app/input_interrupt_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
+note = "Turn cancellation and compaction cancellation exist; upstream paused route recovery/connectivity wait and trace interrupt actions are absent."
+
+[[file]]
+upstream = "src/core/app/input_limit_feedback.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
+note = "Composer input rejection notices exist; question-freeform and approval-amendment owner-specific rejection transitions, modal invalidation and trace fields are absent."
+
+[[file]]
+upstream = "src/core/app/input_paste_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
+note = "Bracketed text paste is decoded with documented safety differences; image paste and picker-borrowed composer handling are absent."
+
+[[file]]
+upstream = "src/core/app/input_question_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/input_question_runtime.rs"]
+note = "Question choice/freeform input, cancellation, submission and resolution transcript handling exist; route-recovery and MCP-elicitation source-specific submission and cancellation paths are absent."
+
+[[file]]
+upstream = "src/core/app/input_selection_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/input_selection_runtime.rs"]
+note = "Selection copy/cut exists; documented asynchronous clipboard and timeout behavior differs from upstream."
+
+[[file]]
+upstream = "src/core/app/input_submit_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/input_submit_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs"]
+note = "Prompt submission and compaction requests exist; steering, image ownership and auth-retry submission transitions are absent."
+
+[[file]]
+upstream = "src/core/app/model_cache_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/openai_codex_models.rs"]
+note = "Codex catalog caching exists; interactive multi-provider model-picker cache/navigation and Vercel/Grok catalogs are absent."
+
+[[file]]
+upstream = "src/core/app/prompt_history_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/prompt_history_runtime.rs"]
+note = "Durable text history is implemented; invalid-UTF8 base64 records, settings-menu toggles and trace diagnostics are omitted as documented."
+
+[[file]]
+upstream = "src/core/app/provider_picker_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/app/provider_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_bootstrap_runtime.rs", "crates/ofx-app/src/codex_provider.rs"]
+note = "Native custom/Codex selection exists; Vercel shared HTTP pool, Grok selection and full credential-authority transfer are absent."
+
+[[file]]
+upstream = "src/core/app/usage_dashboard_runtime.zig"
+status = "todo"
+modules = []

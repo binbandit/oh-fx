@@ -1,0 +1,143 @@
+[[file]]
+upstream = "src/core/workspace/change_tracker.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/change_tracker.rs", "crates/ofx-workspace/src/change_tracker/reversal.rs"]
+note = "Bounded 100-operation LIFO history, clear, atomic preimage restoration, created-file deletion and consumed unavailable outcomes are implemented. Architecture documents verified no-follow parent identities, permission/staging safety and omission of trace-only kind/timestamps."
+
+[[file]]
+upstream = "src/core/workspace/context_contract.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/applicable_target.rs", "crates/ofx-agent/src/project_context.rs"]
+note = "Tool targets and project-context delivery exist; upstream extra-root scope and file-evidence freshness context are absent."
+
+[[file]]
+upstream = "src/core/workspace/current_branch.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/current_branch.rs"]
+note = "Symbolic branch and gitdir/worktree metadata reads, absent detached/malformed HEAD and metadata bounds match the source; stricter no-follow metadata path checks are documented."
+
+[[file]]
+upstream = "src/core/workspace/diagnostics.zig"
+status = "todo"
+modules = []
+note = "Trace-report network/tool/render/compactor diagnostic aggregation are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/directory_completion_job.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/directory_completion_job.rs"]
+note = "Background scheduling, cancellation, episode/request matching and harvesting exist; request scope_epoch identity and workspace-scope-change reconciliation are absent."
+
+[[file]]
+upstream = "src/core/workspace/file_index.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/file_index.rs"]
+note = "Ranking and revisions exist for one workspace root; additional-root indexing, scope-change rebuilding and cancellable scan behavior are absent."
+
+[[file]]
+upstream = "src/core/workspace/file_index_cache.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/file_index_cache.rs"]
+note = "Private bounded index caching exists; multi-root scope identity and trace failure publication are absent."
+
+[[file]]
+upstream = "src/core/workspace/glob_pattern.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/glob_pattern.rs"]
+note = "Glob-star, single-star and question-mark basename/path matching, separator handling and literal braces/brackets match the bounded-pattern regressions; documented path safety applies."
+
+[[file]]
+upstream = "src/core/workspace/grep_search.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/grep_search.rs"]
+note = "Fixed-string git-grep/fallback search, path filtering, deterministic ordering and file/result/output limits are implemented; documented discovery/path safety differences apply."
+
+[[file]]
+upstream = "src/core/workspace/ignored_dirs.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/ignored_dirs.rs", "crates/ofx-workspace/src/workspace_files.rs"]
+note = "Ignored-directory names are used by workspace discovery; the whole-path pathContainsIgnoredDirectory component predicate is absent."
+
+[[file]]
+upstream = "src/core/workspace/model_catalog_metrics.zig"
+status = "todo"
+modules = []
+note = "Bounded model-catalog diagnostic metrics are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/network_metrics.zig"
+status = "todo"
+modules = []
+note = "Network diagnostic rings and per-turn rollups are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/path_completion.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/path_completion.rs"]
+note = "Explicit directory queries, captured HOME, cooperative cancellation, ranked bounded candidates, match-span offsets and candidate-kind validation match the native source. Multi-root indexing belongs to separate files."
+
+[[file]]
+upstream = "src/core/workspace/pathing.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/pathing.rs"]
+note = "Workspace/external path resolution and mutation targets exist; complete workspace-access scope and additional-root identity operations are absent."
+
+[[file]]
+upstream = "src/core/workspace/read_tracker.zig"
+status = "todo"
+modules = []
+note = "Session read snapshots with content hash and separate model/snapshot full-file coverage are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/record_tape.zig"
+status = "todo"
+modules = []
+note = "Input/render event recording tape are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/render_metrics.zig"
+status = "todo"
+modules = []
+note = "Bounded rendering diagnostic event ring are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/statusline_identity.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/current_branch.rs", "crates/ofx-tui/src/footer/mod.rs"]
+note = "Current branch identity is displayed; independently cached/disabled refresh state and complete statusline identity snapshot are absent."
+
+[[file]]
+upstream = "src/core/workspace/tool_call_metrics.zig"
+status = "todo"
+modules = []
+note = "Tool-call payload diagnostic ring and lifetime rollups are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/unicode_simple_fold.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/unicode_simple_fold.rs"]
+note = "Simple Unicode case folding and ASCII comparison behavior match the translated ranges and generated table-equivalence tests."
+
+[[file]]
+upstream = "src/core/workspace/workspace_access.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/pathing.rs"]
+note = "Primary workspace containment and external paths exist; saved additional roots, merged sources and mutable access scopes are absent."
+
+[[file]]
+upstream = "src/core/workspace/workspace_commands.zig"
+status = "todo"
+modules = []
+note = "Durable additional workspace-root mutations are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/workspace_files.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/workspace_files.rs"]
+note = "Bounded git/fallback file and directory discovery, sorting and path filtering exist; discoverCancellable and discoverDirectoriesCancellable cancellation are absent."
+
+[[file]]
+upstream = "src/core/workspace/workspace_menu.zig"
+status = "todo"
+modules = []
+note = "Additional-root workspace picker/menu are unimplemented."

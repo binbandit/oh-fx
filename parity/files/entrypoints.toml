@@ -1,0 +1,47 @@
+[[file]]
+upstream = "src/benchmark_exports.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig benchmark or test fixture entrypoint; not part of the shipped native binary. Product behavior is tracked by its implementation rows."
+
+[[file]]
+upstream = "src/main.zig"
+status = "partial"
+modules = ["crates/oh-fx/src/main.rs", "crates/ofx-app/src/app_bootstrap_runtime.rs"]
+note = "Native command dispatch and shell bootstrap exist; the full native command set and application composition remain incomplete. JavaScript-host entrypoints are excluded separately."
+
+[[file]]
+upstream = "src/mcp_test_exports.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig benchmark or test fixture entrypoint; not part of the shipped native binary. Product behavior is tracked by its implementation rows."
+
+[[file]]
+upstream = "src/napi_core_main.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream JavaScript-host surface; WASM, Node-API and browser hosts are outside the native binary target described in docs/architecture.md."
+
+[[file]]
+upstream = "src/napi_fetch_state.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream JavaScript-host surface; WASM, Node-API and browser hosts are outside the native binary target described in docs/architecture.md."
+
+[[file]]
+upstream = "src/terminal_client_fixture.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig benchmark or test fixture entrypoint; not part of the shipped native binary. Product behavior is tracked by its implementation rows."
+
+[[file]]
+upstream = "src/wasm_core_main.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream JavaScript-host surface; WASM, Node-API and browser hosts are outside the native binary target described in docs/architecture.md."
+
+[[file]]
+upstream = "src/wasm_term_main.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream JavaScript-host surface; WASM, Node-API and browser hosts are outside the native binary target described in docs/architecture.md."

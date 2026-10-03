@@ -1,0 +1,71 @@
+[[file]]
+upstream = "src/core/permissions/approval_amendment.zig"
+status = "todo"
+modules = []
+note = "Independent permission feedback drafts and amendment editing are unimplemented."
+
+[[file]]
+upstream = "src/core/permissions/approval_decision.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/approval_runtime.rs"]
+note = "Approval choices, denial and guarded submission exist; independent amendment drafts and tab-to-feedback actions are absent."
+
+[[file]]
+upstream = "src/core/permissions/approval_prompt.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/approval_runtime.rs", "crates/ofx-contract/src/permission_gate.rs"]
+note = "Structured request replacement/clearing and review display exist; full file diff authority and amendment content are absent."
+
+[[file]]
+upstream = "src/core/permissions/auto_classifier.zig"
+status = "partial"
+modules = ["crates/ofx-permissions/src/auto_classifier.rs"]
+note = "Automatic reviews, failure holds and prior-result context exist; native subagent-origin authority policy and terminal receiver evidence are absent."
+
+[[file]]
+upstream = "src/core/permissions/auto_classifier_context.zig"
+status = "partial"
+modules = ["crates/ofx-permissions/src/auto_classifier_context.rs"]
+note = "Bounded canonical root-user context is built; child-origin root authority and queued steering request refresh are absent."
+
+[[file]]
+upstream = "src/core/permissions/command_admission.zig"
+status = "partial"
+modules = ["crates/ofx-permissions/src/command_admission.rs"]
+note = "Ask/Auto/Yolo and reversible-command admission exist; defaultForRunCommand, AdmissionFingerprint and typed command/tool execution authority with human approval provenance are absent."
+
+[[file]]
+upstream = "src/core/permissions/direct_command.zig"
+status = "todo"
+modules = []
+note = "Direct read-only argv/pipeline executor and its output budget are unimplemented."
+
+[[file]]
+upstream = "src/core/permissions/permission_gate.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-permissions/src/tool_admission.rs"]
+note = "Permission traits and ordinary tool admission exist; saved configured rules are parsed but not applied by the gate, and dynamic tool invocation policy remains absent."
+
+[[file]]
+upstream = "src/core/permissions/permission_prompter.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/approvals.rs", "crates/ofx-tui/src/shell/approval_runtime.rs"]
+note = "Approval request/response prompting exists; amendment feedback and complete permission explanation projections are absent."
+
+[[file]]
+upstream = "src/core/permissions/permission_request.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-contract/src/ui.rs"]
+note = "Owned ApprovalRequest fields, argument previews, command/file intents and scoped grants exist; upstream request-origin identity/equality, bounded fileRequestFootprint and amendment capability are absent."
+
+[[file]]
+upstream = "src/core/permissions/permissions.zig"
+status = "partial"
+modules = ["crates/ofx-permissions/src/permissions.rs", "crates/ofx-permissions/src/permissions/permission_rules.rs", "crates/ofx-permissions/src/tool_admission.rs"]
+note = "External targets, in-memory grants, permission-category names and canonical web-fetch domain helpers exist; configured-rule evaluation, extra workspace roots and complete tool-mode policy are absent."
+
+[[file]]
+upstream = "src/core/permissions/session_permission_state.zig"
+status = "partial"
+modules = ["crates/ofx-permissions/src/session_permission_state.rs"]
+note = "In-memory deduplicated session grants exist; schema validation, event generations, stable rule IDs and v1/v2 persisted migration are absent."

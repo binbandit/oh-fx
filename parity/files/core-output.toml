@@ -1,0 +1,54 @@
+[[file]]
+upstream = "src/core/output/activity_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/output/activity_status.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/output/activity_status.rs"]
+note = "Turn clocks, blinking and token suffixes exist; upstream compaction-origin clock projections and completed-turn/progress label builders are missing."
+
+[[file]]
+upstream = "src/core/output/compaction_activity.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/output/compaction_activity.rs"]
+note = "Manual compaction phases and feedback exist; identity-scoped operations, automatic/provider-overflow origins and publication provenance are absent."
+
+[[file]]
+upstream = "src/core/output/diff.zig"
+status = "partial"
+modules = ["crates/ofx-markdown/src/diff.rs"]
+note = "Canonical file review operations, line counts and bounded context/elision exist; terminal diff previews, deferred full-diff storage and OSC review publication are missing."
+
+[[file]]
+upstream = "src/core/output/full_transcript_metadata.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/output/full_transcript_page.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/output/output_contracts.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/output_contracts.rs"]
+note = "Interactive status is rendered; doctor/usage, MCP-health and sessions-v2 output snapshots remain missing."
+
+[[file]]
+upstream = "src/core/output/transcript_presentation.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/output/transcript_release.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/output/worker_status.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/types.rs", "crates/oh-fx/src/cli_ask.rs"]
+note = "Route-recovery labels exist for ask; interactive recovery/API projections, recovered-state expiry and awake-deadline countdown refresh are absent."

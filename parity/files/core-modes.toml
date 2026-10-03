@@ -1,0 +1,9 @@
+[[file]]
+upstream = "src/core/modes/mode_contract.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/modes/mode_registry.zig"
+status = "todo"
+modules = []

@@ -9,7 +9,12 @@ publish.workspace = true
 [dependencies]
 ra-ap-rustc_lexer.workspace = true
 regex.workspace = true
+serde.workspace = true
+toml.workspace = true
 unicode-ident = ">=1.0.22, <1.0.25"
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["unicode-ident"]
