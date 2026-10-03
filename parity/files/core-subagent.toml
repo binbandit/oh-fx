@@ -1,7 +1,8 @@
 [[file]]
 upstream = "src/core/subagent/agent_adapter.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-agent/src/subagent/execution.rs"]
+note = "Child turns run through Agent with inherited root-user review context and forwarded approval requests; provider credential/capability routing, MCP authority views, child steering and durable session callbacks are absent."
 
 [[file]]
 upstream = "src/core/subagent/approval_registry.zig"
@@ -15,8 +16,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/subagent/child_state.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-agent/src/subagent/child_state.rs"]
+note = "In-memory registry tracks bounded children, work fingerprints, phases and outcomes; persistent registry codecs, v2 child-line folding, managed-session markers and Lost outcome are absent."
 
 [[file]]
 upstream = "src/core/subagent/domain.zig"
@@ -26,8 +28,9 @@ note = "Name/instruction/text validators exist; admission authority snapshots, i
 
 [[file]]
 upstream = "src/core/subagent/execution.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-agent/src/subagent/execution.rs"]
+note = "Child turns preserve final or partial text, cancellation and bounded failure diagnostics; durable child session commits, recovery admission and compaction work-identity persistence are absent."
 
 [[file]]
 upstream = "src/core/subagent/live_metrics.zig"
@@ -36,8 +39,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/subagent/managed_owner.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-agent/src/subagent/managed_owner.rs"]
+note = "Native owner starts and observes children, retains results, forwards approval requests and cancels abandoned waits; feedback queues, approval route pinning, durable registry publication and live metrics are absent."
 
 [[file]]
 upstream = "src/core/subagent/model_contract.zig"
@@ -52,11 +56,12 @@ modules = []
 
 [[file]]
 upstream = "src/core/subagent/tool_host.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-agent/src/subagent/tool_host.rs", "crates/ofx-agent/src/subagent/managed_owner.rs"]
+note = "Managed request admission, invocation identity, inherited defaults and terminal result projection exist; catalog override resolution, host authority snapshots, child feedback and throttled status presentation are absent."
 
 [[file]]
 upstream = "src/core/subagent/tool_provider.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/subagent/tool_provider.rs"]
-note = "Provider trait exists; concrete host callback forwarding and cancelled-result mapping have no matching implementation or behavioral regression."
+modules = ["crates/ofx-contract/src/subagent/tool_provider.rs", "crates/ofx-agent/src/subagent/tool_host.rs"]
+note = "Provider forwarding has a concrete managed host with cancellation-to-child_cancelled mapping; production composition does not yet install that host."

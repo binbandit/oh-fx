@@ -2,7 +2,7 @@
 upstream = "src/core/app/app_agent_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/tool_set.rs"]
-note = "Native turn/tool dispatch exists; terminal presentation callbacks, child-agent hosts and upstream full shared runtime hooks remain incomplete."
+note = "Native turn/tool dispatch and a reusable child-agent host exist; composition does not install the child host, and full terminal presentation and shared runtime hooks remain incomplete."
 
 [[file]]
 upstream = "src/core/app/app_auth_runtime.zig"
@@ -158,8 +158,9 @@ note = "Bracketed text paste is decoded with documented safety differences; imag
 
 [[file]]
 upstream = "src/core/app/input_question_runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/input_question_runtime.rs"]
+note = "Question choice/freeform input, cancellation, submission and resolution transcript handling exist; route-recovery and MCP-elicitation source-specific submission and cancellation paths are absent."
 
 [[file]]
 upstream = "src/core/app/input_selection_runtime.zig"

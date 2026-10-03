@@ -25,7 +25,7 @@ Syntax-highlighting profile storage uses pointerless tables as recorded in [arch
 
 The full checkout commit is read from `parity/UPSTREAM`. With that checkout available locally, run `cargo xtask parity --upstream <path>` or set `OH_FX_UPSTREAM` and run `cargo xtask parity`. The command fetches nothing and rejects a different checkout commit, missing or stale entries, duplicate entries, invalid statuses, missing required notes and nonexistent or escaping Rust module paths. It prints a count for each status. `cargo xtask lint` validates the local schema, statuses, notes and module paths without an upstream checkout, so pre-push CI includes that validation. Full coverage reads the pinned Git tree rather than dirty or untracked files. CI fetches that tree without checking out source blobs and requires coverage through Repository checks.
 
-The file map measures structural coverage. Byte-exact schema, help and prompt goldens remain a separate follow-up.
+The file map measures structural coverage. Re-audit entries and missing-behavior notes when main gains an implementation. The question tool and answer codec remain partial because ignored out-of-range JSON numbers and duplicate result keys differ from upstream. Byte-exact schema, help and prompt goldens remain a separate follow-up.
 
 ## d9f7766..34f1ed1
 

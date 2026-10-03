@@ -2,7 +2,7 @@
 upstream = "src/core/agent/agent_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/lib.rs"]
-note = "Runtime facade exposes the turn loop, but image/question execution and durable recovery-checkpoint effects are absent."
+note = "Runtime facade exposes turn execution and question requests; image execution and durable recovery-checkpoint effects remain absent."
 
 [[file]]
 upstream = "src/core/agent/assistant_presentation.zig"
@@ -72,15 +72,15 @@ note = "CommonMark ASCII flanking predicates and Unicode 17 punctuation/symbol/s
 
 [[file]]
 upstream = "src/core/agent/question_answer.zig"
-status = "todo"
-modules = []
-note = "Question answer ordered JSON codec and structural error validation are unimplemented."
+status = "partial"
+modules = ["crates/ofx-tools/src/ask_user_question.rs"]
+note = "Ordered JSON encoding, answer-count mismatch handling and result decoding exist; the decoder accepts duplicate question/answer keys and rejects ignored overflowing-number fields that upstream handles differently."
 
 [[file]]
 upstream = "src/core/agent/question_prompt.zig"
-status = "todo"
-modules = []
-note = "Interactive question choices, freeform editing and result projection are unimplemented."
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/question_prompt.rs"]
+note = "Choice navigation, per-entry freeform drafts, bounded grapheme editing and ordered answer projection exist; upstream compact-input submissions and discarded-draft trace diagnostics are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/agent.zig"
@@ -158,13 +158,13 @@ note = "Backoff and retry causes are implemented; partial-output restart, uncert
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Sequential/parallel tools, review, compaction and requests are implemented; steering, vision, questions, dynamic tool advertisement and durable recovery are absent."
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests and compaction exist; steering, vision, dynamic tool advertisement and durable recovery remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Read-only parallel groups execute and settle independently; dedicated parallel subagent groups and provider publication evidence are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/project_gate.rs"]
+note = "Read-only and subagent leading groups execute separately in plain and project-gated paths; provider-executed publication evidence and upstream parallel attempt settlement remain incomplete."
 
 [[file]]
 upstream = "src/core/agent/runtime/prompt_context.zig"

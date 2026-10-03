@@ -157,7 +157,7 @@ note = "Composer text runtime exists; upstream image, complete picker and compos
 upstream = "src/core/input/text_boundaries.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/composer/text_boundaries.rs"]
-note = "Character, logical-line and paragraph boundaries exist; upstream previousWordStart, nextWordEnd, nextWordDeleteEnd and previousWhitespaceDelimitedTokenStart helpers are absent."
+note = "Character, word, whitespace-token, logical-line and paragraph boundary helpers are implemented; upstream arbitrary byte-slice handling of malformed UTF-8 cannot be represented by the Rust str interface."
 
 [[file]]
 upstream = "src/core/input/text_scalar.zig"

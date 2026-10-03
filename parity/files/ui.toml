@@ -56,7 +56,7 @@ note = "No Rust implementation of upstream max_visible_items, max_inline_rows, m
 upstream = "src/ui/footer/input_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs"]
-note = "Composer rows, selection and warning hints are implemented; image badges and complete picker/question footer projections are absent."
+note = "Composer rows, selection and warning hints are implemented; image badges and complete model/provider/login picker footer projections are absent."
 
 [[file]]
 upstream = "src/ui/footer/interaction_state.zig"
@@ -90,15 +90,15 @@ note = "Basic file and command picker rows are implemented; model/provider/login
 
 [[file]]
 upstream = "src/ui/footer/question_freeform_layout.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream Direction, Line, CursorMove behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/question_freeform_layout.rs"]
+note = "Freeform wrapping, cursor normalization and vertical movement are implemented; upstream lineCount for cursor-position layout measurement is absent."
 
 [[file]]
 upstream = "src/ui/footer/question_ui.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream questionPanelRowsForLayout, nextPanelLine, composeQuestionPanelText behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/question_ui.rs"]
+note = "Question option/freeform panels, hints and resolution rows are implemented; upstream footer-planner row-count projection and shared text-panel iteration pipeline are absent."
 
 [[file]]
 upstream = "src/ui/footer/render_input.zig"
@@ -122,7 +122,7 @@ note = "Styled rows, clipping and spaces exist; upstream single-line middle/pref
 upstream = "src/ui/footer/runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/mod.rs", "crates/ofx-tui/src/render_engine/frame_layout.rs"]
-note = "Compact composer/footer arrangement exists; upstream surface measurement, invalidation and complete picker/question lifecycle are absent."
+note = "Composer and question footer rows are arranged; upstream surface measurement, invalidation and complete model/provider/login picker lifecycle are absent."
 
 [[file]]
 upstream = "src/ui/footer/settings_menu_presentation.zig"
@@ -174,8 +174,8 @@ note = "Native clear-probe capture, 4096-byte retained input bound, disable stat
 [[file]]
 upstream = "src/ui/input/runtime.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/input/mod.rs", "crates/ofx-tui/src/shell/app_input_runtime.rs"]
-note = "Native terminal input routing exists; image attachment, question and full model/provider picker ownership are absent."
+modules = ["crates/ofx-tui/src/input/mod.rs", "crates/ofx-tui/src/shell/app_input_runtime.rs", "crates/ofx-tui/src/shell/input_question_runtime.rs"]
+note = "Native composer and question input routing exists; image attachment and full model/provider picker ownership are absent."
 
 [[file]]
 upstream = "src/ui/input/shortcuts.zig"
