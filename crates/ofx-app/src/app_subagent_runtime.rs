@@ -4,15 +4,16 @@ use std::time::Duration;
 
 use ofx_agent::{
     Agent, AgentConfig, ChildAgents, ChildDefaults, ChildSettings, ProjectContext,
-    SkillContextProvider, WorkTools,
+    SkillContextProvider, SubagentHost, WorkTools,
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
     ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider, ReasoningEffort,
-    ReviewTransport,
+    ReviewTransport, SubagentProvider, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
+use ofx_tools::SubagentTool;
 
 use crate::app_bootstrap_runtime::output_tokens;
 use crate::approval_queue::ApprovalQueue;
@@ -34,6 +35,28 @@ pub(crate) struct ChildFactory {
     pub(crate) workspace_root: PathBuf,
     pub(crate) permission_mode: LivePermissionMode,
     pub(crate) parent: Mutex<AgentConfig>,
+}
+
+pub(crate) struct Delegation {
+    pub(crate) tool: Arc<dyn Tool>,
+    pub(crate) host: Arc<SubagentHost>,
+    pub(crate) children: Arc<ChildFactory>,
+}
+
+impl Delegation {
+    pub(crate) fn new(children: ChildFactory) -> Self {
+        let children = Arc::new(children);
+        let host = Arc::new(SubagentHost::new(
+            Arc::clone(&children) as Arc<dyn ChildAgents>
+        ));
+        Self {
+            tool: Arc::new(SubagentTool::new(
+                Arc::clone(&host) as Arc<dyn SubagentProvider>
+            )),
+            host,
+            children,
+        }
+    }
 }
 
 impl ChildFactory {

@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, ChildAgents, ProjectContext, QuestionRequests, Questions, RuntimeContext,
-    SkillContextProvider, SubagentHost,
+    Agent, AgentConfig, ProjectContext, QuestionRequests, Questions, RuntimeContext,
+    SkillContextProvider,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
@@ -19,7 +19,7 @@ use ofx_config::{
 use ofx_contract::{
     ApprovalDecision, BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode,
     ModelCapabilities, ModelProvider, PermissionMode, QuestionAsker, RequestId, ReviewTransport,
-    SubagentProvider, Tool,
+    Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -28,13 +28,13 @@ use ofx_gateway::{
 };
 use ofx_http::ClientError;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
-use ofx_tools::{SubagentTool, WebFetchProgress};
+use ofx_tools::WebFetchProgress;
 use ofx_workspace::ChangeTracker;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_subagent_runtime::ChildFactory;
+use crate::app_subagent_runtime::{ChildFactory, Delegation};
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
@@ -136,9 +136,7 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     tools: Vec<Arc<dyn Tool>>,
-    subagent: Arc<dyn Tool>,
-    host: Arc<SubagentHost>,
-    children: Arc<ChildFactory>,
+    delegation: Delegation,
     context: Arc<dyn RuntimeContext>,
     permission_mode: LivePermissionMode,
     workspace_root: PathBuf,
@@ -295,15 +293,9 @@ impl Profile {
                 change_tracker: change_tracker.as_ref(),
             },
         );
-        let permissions = Arc::new(
-            PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
-                .with_reviewer(Reviewer::new(
-                    Arc::clone(&route.reviewer),
-                    DEFAULT_REVIEW_TIMEOUT,
-                )),
-        );
+        let permissions = self.reviewed_policy(&permission_mode, &route.reviewer);
         let approvals = interactive.then(Arc::<ApprovalQueue>::default);
-        let children = Arc::new(ChildFactory {
+        let children = ChildFactory {
             provider: Arc::clone(&route.provider),
             executions: launch.executions.clone(),
             command_timeout: launch.command_timeout,
@@ -317,10 +309,7 @@ impl Profile {
             workspace_root: self.workspace_root.clone(),
             permission_mode: permission_mode.clone(),
             parent: Mutex::new(config.clone()),
-        });
-        let host = Arc::new(SubagentHost::new(
-            Arc::clone(&children) as Arc<dyn ChildAgents>
-        ));
+        };
         Ok(AgentSetup {
             provider: route.provider,
             title_model: route.title_model,
@@ -330,11 +319,7 @@ impl Profile {
             connection: route.connection,
             source: route.source,
             tools,
-            subagent: Arc::new(SubagentTool::new(
-                Arc::clone(&host) as Arc<dyn SubagentProvider>
-            )),
-            host,
-            children,
+            delegation: Delegation::new(children),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
                 permission_mode.clone(),
@@ -379,6 +364,17 @@ impl Profile {
             }),
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         }
+    }
+
+    fn reviewed_policy(
+        &self,
+        permission_mode: &LivePermissionMode,
+        reviewer: &Arc<dyn ReviewTransport>,
+    ) -> Arc<PermissionPolicy> {
+        Arc::new(
+            PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
+                .with_reviewer(Reviewer::new(Arc::clone(reviewer), DEFAULT_REVIEW_TIMEOUT)),
+        )
     }
 
     async fn route(
@@ -684,16 +680,16 @@ impl AgentSetup {
     }
 
     pub(crate) fn delegate_as(&self, config: &AgentConfig) {
-        self.children.follow(config);
+        self.delegation.children.follow(config);
     }
 
     pub(crate) fn forget_children(&self) {
-        self.host.clear();
+        self.delegation.host.clear();
     }
 
     pub fn agent(&self, delegation: bool) -> Agent {
         let tools = if delegation {
-            tool_set::with_subagent(&self.tools, &self.subagent)
+            tool_set::with_subagent(&self.tools, &self.delegation.tool)
         } else {
             self.tools.clone()
         };
