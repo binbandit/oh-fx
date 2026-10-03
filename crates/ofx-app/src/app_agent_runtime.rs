@@ -3181,6 +3181,26 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn undo_leaves_a_childs_file_changes_alone() {
+        let server = FakeServer::start([
+            delegate("write the note"),
+            write_call("call-write", "child.md", "from the child\n"),
+            Reply::sse(&chat_text_events(&["wrote it"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let mut harness = Harness::start_saved(&server).await;
+        let workspace = fs::canonicalize(harness.home.path().join("workspace")).unwrap();
+        harness.submit("delegate the note");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            fs::read_to_string(workspace.join("child.md")).unwrap(),
+            "from the child\n"
+        );
+        assert_eq!(undo_notice(&mut harness).await, "undo|Nothing to undo.");
+        assert!(workspace.join("child.md").exists());
+    }
+
     #[test]
     fn failure_status_names_provider_and_model_errors_but_not_step_limits() {
         let mut error = ProviderError::new(ProviderErrorKind::ConnectionFailed, "ConnectionFailed");
