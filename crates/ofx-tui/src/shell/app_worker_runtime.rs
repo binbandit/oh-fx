@@ -1137,8 +1137,14 @@ mod tests {
 #[cfg(test)]
 mod wake_tests {
     use std::io::Read;
+    use std::path::PathBuf;
+    use std::sync::Arc;
 
-    use ofx_contract::UiEvent;
+    use ofx_contract::{
+        ApprovalRequest, ApprovalScope, CallDescription, Concurrency, FileMutation,
+        FileMutationState, PathAccess, ProposedFileChange, RequestId, ToolActivity, ToolCallId,
+        ToolEffect, TurnId, UiEvent,
+    };
 
     use super::ui_channel;
 
@@ -1158,6 +1164,51 @@ mod wake_tests {
         assert_eq!(receiver.events.try_iter().count(), 100);
         sender.send(UiEvent::HelpRequested);
         assert_eq!(pending_wake_bytes(&receiver), 1);
+    }
+
+    #[test]
+    fn a_file_approval_is_reviewed_by_the_sender_and_reaches_the_ui_without_its_copy() {
+        let (sender, receiver) = ui_channel().unwrap();
+        sender.send(UiEvent::ApprovalRequested {
+            turn_id: TurnId::new(1),
+            request: Box::new(ApprovalRequest {
+                id: RequestId::new(1),
+                tool_name: "edit_file".to_owned(),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: "Editing notes.md".to_owned(),
+                    label: None,
+                    activity: ToolActivity::Edit,
+                    effect: ToolEffect::Irreversible,
+                    concurrency: Concurrency::Serial,
+                },
+                tool_arguments_preview: String::new(),
+                tool_arguments_truncated: false,
+                scope: ApprovalScope {
+                    target: None,
+                    access: PathAccess::WorkspaceOnly,
+                    always: None,
+                },
+                command: None,
+                file: Some(FileMutation {
+                    target: PathBuf::from("/workspace/notes.md"),
+                    state: FileMutationState::Changes,
+                }),
+                change: Some(ProposedFileChange {
+                    display_path: "notes.md".to_owned(),
+                    before: Some(Arc::from(&b"old\n"[..])),
+                    after: Arc::from(&b"new\n"[..]),
+                }),
+            }),
+        });
+        sender.send(UiEvent::HelpRequested);
+        let deliveries: Vec<_> = receiver.events.try_iter().collect();
+        assert!(deliveries[0].file.is_some());
+        assert!(matches!(
+            &deliveries[0].event,
+            UiEvent::ApprovalRequested { request, .. } if request.change.is_none()
+        ));
+        assert!(deliveries[1].file.is_none());
     }
 }
 
