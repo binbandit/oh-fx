@@ -224,6 +224,10 @@ pub trait Tool: Send + Sync {
     fn history_arguments(&self, _arguments: &str) -> Option<String> {
         None
     }
+
+    fn describe_saved(&self, _arguments: &str) -> Option<CallDescription> {
+        None
+    }
 }
 
 pub trait PreparedCall: Send {

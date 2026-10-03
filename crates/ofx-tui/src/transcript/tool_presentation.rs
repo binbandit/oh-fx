@@ -1,9 +1,10 @@
 use ofx_contract::{
-    ActionLabel, CallDescription, CommandProcessPresentation, FileChangeStats, ReasoningEffort,
-    SubagentActionState, SubagentStatus, ToolActivity, ToolArgsError, ToolCallId, ToolDeferral,
+    ActionLabel, CONTEXT_DEFERRED_TOOL_OUTPUT, CallDescription, CommandProcessPresentation,
+    DEFERRED_TOOL_OUTPUT, FileChangeStats, ReasoningEffort, SavedToolCall, SubagentActionState,
+    SubagentStatus, ToolActivity, ToolArgsError, ToolCallId, ToolDeferral,
     ToolPermissionDenialReason, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnOutcome,
-    parse_tool_args_object, shell_request_invalid_field_count, subagent_action,
-    subagent_failure_label, tool_permission_denial_reason,
+    format_unknown_action, parse_tool_args_object, shell_request_invalid_field_count,
+    subagent_action, subagent_failure_label, tool_permission_denial_reason,
 };
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_inline, mask_secrets};
 
@@ -107,6 +108,35 @@ impl ToolActivityRow {
                 process: None,
             },
             child_status: None,
+        }
+    }
+
+    pub(crate) fn saved(call: SavedToolCall) -> Self {
+        let mut row = Self::new(call.call_id, &call.tool_name, call.description);
+        if row.title.is_empty() {
+            row.title = encoded_target(&format_unknown_action(&call.tool_name));
+        }
+        let (outcome, label) = row.saved_outcome(call.status, &call.output);
+        row.status = row.settled(outcome, label, None, None);
+        row
+    }
+
+    fn saved_outcome(&self, status: ToolResultStatus, output: &str) -> (ToolOutcome, &'static str) {
+        let failed = status == ToolResultStatus::Failure;
+        if failed && output == CONTEXT_DEFERRED_TOOL_OUTPUT {
+            (ToolOutcome::Deferred, READING_INSTRUCTIONS)
+        } else if failed && output == DEFERRED_TOOL_OUTPUT {
+            (ToolOutcome::Denied, NOT_EXECUTED)
+        } else if let Some(reason) = tool_permission_denial_reason(output) {
+            (ToolOutcome::Denied, denial_label(reason))
+        } else if failed {
+            (ToolOutcome::Failed, FAILED)
+        } else {
+            let completed = self
+                .label
+                .as_ref()
+                .map_or("Completed", |label| label.completed);
+            (ToolOutcome::Completed, completed)
         }
     }
 
@@ -1174,6 +1204,112 @@ mod tests {
             "Reading project instructions before continuing: runtime.zig"
         );
         assert_eq!(read.status.outcome, Some(ToolOutcome::Deferred));
+    }
+
+    fn saved(
+        tool: &str,
+        description: Option<CallDescription>,
+        status: ToolResultStatus,
+        output: &str,
+    ) -> ToolStatus {
+        ToolActivityRow::saved(SavedToolCall {
+            call_id: ToolCallId::new("call"),
+            tool_name: tool.to_owned(),
+            description,
+            status,
+            output: output.to_owned(),
+        })
+        .status
+    }
+
+    #[test]
+    fn saved_calls_settle_with_upstream_resume_labels_and_no_details() {
+        let read = || {
+            Some(description(
+                ToolActivity::Read,
+                Some(("Reading", "Read", "a.md")),
+                "Reading a.md",
+            ))
+        };
+        let shell = Some(description(
+            ToolActivity::Command,
+            Some(("Running", "Ran", "ls")),
+            "Running ls",
+        ));
+        let invalid_fields =
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a"]}}"#;
+        let cases = [
+            (
+                saved("read_file", read(), ToolResultStatus::Success, "hello"),
+                "Read a.md",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    "Path not found: a.md",
+                ),
+                "Failed a.md",
+                ToolOutcome::Failed,
+            ),
+            (
+                saved("shell", shell, ToolResultStatus::Failure, invalid_fields),
+                "Failed ls",
+                ToolOutcome::Failed,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    &tool_permission_denied_json("read_file"),
+                ),
+                "Denied a.md",
+                ToolOutcome::Denied,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    DEFERRED_TOOL_OUTPUT,
+                ),
+                "Not executed a.md",
+                ToolOutcome::Denied,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    CONTEXT_DEFERRED_TOOL_OUTPUT,
+                ),
+                "Reading project instructions before continuing: a.md",
+                ToolOutcome::Deferred,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Success,
+                    DEFERRED_TOOL_OUTPUT,
+                ),
+                "Read a.md",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved("gone_tool", None, ToolResultStatus::Failure, "boom"),
+                "Failed tool call",
+                ToolOutcome::Failed,
+            ),
+        ];
+        for (status, phrase, outcome) in cases {
+            assert_eq!(status.phrase, phrase);
+            assert_eq!(status.outcome, Some(outcome));
+            assert_eq!(status.process, None);
+        }
     }
 
     #[test]

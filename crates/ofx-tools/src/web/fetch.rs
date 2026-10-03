@@ -101,6 +101,10 @@ impl Tool for WebFetch {
             state: Arc::clone(&self.state),
         }))
     }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        self.prepare(arguments).ok().map(|call| call.describe())
+    }
 }
 
 struct WebFetchCall {

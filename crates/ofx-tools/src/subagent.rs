@@ -66,6 +66,10 @@ impl Tool for SubagentTool {
             provider: Arc::clone(&self.provider),
         }))
     }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        self.prepare(arguments).ok().map(|call| call.describe())
+    }
 }
 
 struct SubagentCall {

@@ -97,6 +97,17 @@ impl Tool for SkillTool {
             context: Arc::clone(&self.context),
         }))
     }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        let label = label(arguments, None);
+        Some(CallDescription {
+            title: format_plain_action(TOOL_NAME, label.as_ref()),
+            label,
+            activity: ToolActivity::Read,
+            effect: ToolEffect::None,
+            concurrency: Concurrency::Parallel,
+        })
+    }
 }
 
 struct SkillCall {

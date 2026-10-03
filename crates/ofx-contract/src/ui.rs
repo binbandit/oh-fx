@@ -154,6 +154,16 @@ pub enum HistoryEntry {
     QuestionsAnswered(Vec<(String, String)>),
     Cancelled,
     Notice(Notice),
+    Tool(SavedToolCall),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedToolCall {
+    pub call_id: ToolCallId,
+    pub tool_name: String,
+    pub description: Option<CallDescription>,
+    pub status: ToolResultStatus,
+    pub output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
