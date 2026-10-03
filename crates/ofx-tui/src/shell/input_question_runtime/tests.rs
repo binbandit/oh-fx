@@ -415,3 +415,21 @@ fn a_paste_meant_for_an_answer_never_reaches_the_composer() {
         test.shell.composer.text()
     );
 }
+
+#[test]
+fn an_armed_clear_survives_cursor_keys_until_the_second_escape() {
+    let mut test = asking(proceed());
+    press(&mut test, b"4typed");
+    press(&mut test, b"\x1b");
+    test.advance(50);
+    test.step();
+    press(&mut test, b"\x1b[D");
+    assert!(test.screen().contains("esc again to clear"));
+    press(&mut test, b"\x1b");
+    test.advance(50);
+    test.step();
+    assert!(answers(&test).is_empty());
+    let screen = test.screen();
+    assert!(!screen.contains("typed"), "{screen}");
+    assert!(!screen.contains("esc again to clear"), "{screen}");
+}

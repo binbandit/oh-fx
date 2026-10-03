@@ -50,13 +50,15 @@ impl Shell<'_> {
     }
 
     pub(super) fn handle_question_input(&mut self, event: InputEvent) -> Result<(), TerminalError> {
-        if !matches!(
+        if matches!(
             event,
-            InputEvent::Action(DecodedTerminalAction {
-                action: Action::Escape,
-                ..
-            })
-        ) {
+            InputEvent::Text(_)
+                | InputEvent::Action(DecodedTerminalAction {
+                    action: Action::PasteStart,
+                    ..
+                })
+        ) || matches!(&event, InputEvent::Raw(raw) if raw.byte != 0x1b)
+        {
             self.gestures.disarm_escape_clear();
         }
         self.gestures.disarm_ctrl_c_exit();
