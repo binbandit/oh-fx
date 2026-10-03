@@ -363,6 +363,7 @@ async fn a_steered_reply_is_logged_with_its_partial_text_as_the_steering_prefix(
             user: "go".to_owned(),
             steps: Vec::new(),
             steering: vec!["use the new API|Looking|0".to_owned()],
+            files: Vec::new(),
             end: r#"replied "Done." replay=false"#.to_owned(),
         }
     );

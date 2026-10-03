@@ -60,6 +60,12 @@ pub(crate) struct HistoryTurn<'a> {
     start: usize,
 }
 
+impl ToolStep<'_> {
+    pub(crate) fn end(&self) -> usize {
+        self.end
+    }
+}
+
 impl<'a> HistoryTurn<'a> {
     pub(crate) fn logged_steering(&self) -> Vec<HistorySteering<'a>> {
         self.steering()
@@ -347,5 +353,8 @@ fn covered_end(turn: &HistoryTurn<'_>, cut: Cut) -> Option<usize> {
     steps.max(steering)
 }
 
+mod file_evidence;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use file_evidence::EarlierEvidence;

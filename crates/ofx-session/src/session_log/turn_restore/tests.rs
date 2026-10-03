@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use ofx_config::ProviderId;
 use ofx_contract::{
-    HistoryCut, HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, ReasoningEffort,
-    ReplaySource, StepResult, ToolArgumentIntegrity, ToolExecutionProvenance, TurnEnd, TurnStop,
+    FileEvidence, FileEvidenceAction, HistoryCut, HistorySteering, HistoryStep, HistoryTurn,
+    ProviderReplay, ReasoningEffort, ReplaySource, StepResult, ToolArgumentIntegrity,
+    ToolExecutionProvenance, TurnEnd, TurnStop,
 };
 use serde_json::Value;
 
@@ -153,6 +154,7 @@ fn simple_turn<'a>(user: &'a str, reply: &'a str) -> HistoryTurn<'a> {
         user,
         steps: Vec::new(),
         steering: Vec::new(),
+        files: &[],
         end: replied(reply),
     }
 }
@@ -186,6 +188,7 @@ fn recorded_turns_restore_the_messages_the_model_saw() {
             ),
         ],
         steering: Vec::new(),
+        files: &[],
         end: TurnEnd::Replied {
             text: "done",
             provider_replay: Some(&codex),
@@ -271,6 +274,7 @@ fn standalone_steps_and_empty_replies_follow_upstream_boundaries() {
             ..step("", &[], Vec::new())
         }],
         steering: Vec::new(),
+        files: &[],
         end: replied(""),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -306,6 +310,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
                 user: "stop",
                 steps: Vec::new(),
                 steering: Vec::new(),
+                files: &[],
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Cancelled,
                     partial: "half",
@@ -320,6 +325,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
                 user: "nothing",
                 steps: Vec::new(),
                 steering: Vec::new(),
+                files: &[],
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "",
@@ -338,6 +344,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
                     vec![result(&read[0], "ok", ToolResultStatus::Success)],
                 )],
                 steering: Vec::new(),
+                files: &[],
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "",
@@ -397,6 +404,7 @@ fn a_mid_turn_checkpoint_covers_the_cut_and_the_rest_of_the_turn_follows_it() {
             ),
         ],
         steering: Vec::new(),
+        files: &[],
         end: replied(""),
     };
     let cut = HistoryCut {
@@ -422,6 +430,7 @@ fn a_mid_turn_checkpoint_covers_the_cut_and_the_rest_of_the_turn_follows_it() {
             vec![result(&second[0], "b", ToolResultStatus::Success)],
         )],
         steering: Vec::new(),
+        files: &[],
         end: replied("done"),
     };
     session.record_turn(&rest, &gateway()).unwrap();
@@ -556,6 +565,7 @@ fn a_crash_after_a_mid_turn_checkpoint_closes_the_turn_on_resume() {
             ),
         ],
         steering: Vec::new(),
+        files: &[],
         end: replied(""),
     };
     let cut = HistoryCut {
@@ -623,6 +633,7 @@ fn restored_results_fall_back_when_their_artifact_is_missing_or_changed() {
             ],
         )],
         steering: Vec::new(),
+        files: &[],
         end: replied("ok"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -656,6 +667,7 @@ fn replays_are_saved_only_with_a_provider_identity_that_reads_back() {
             user: "q",
             steps: Vec::new(),
             steering: Vec::new(),
+            files: &[],
             end: TurnEnd::Replied {
                 text: "a",
                 provider_replay: Some(replay),
@@ -812,6 +824,7 @@ fn provider_executed_calls_are_saved_and_restored_with_their_provenance() {
             vec![result(&search[0], found, ToolResultStatus::Success)],
         )],
         steering: Vec::new(),
+        files: &[],
         end: replied("found"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -950,6 +963,7 @@ fn a_turn_whose_results_cannot_be_stored_after_a_checkpoint_blocks_every_later_s
             vec![result(&calls[0], "contents", ToolResultStatus::Success)],
         )],
         steering: Vec::new(),
+        files: &[],
         end: replied("two"),
     };
     assert!(session.record_turn(&second, &gateway()).is_err());
@@ -1013,6 +1027,7 @@ fn saved_tool_results_read_back_whole_from_their_preview_or_their_artifact() {
             ],
         )],
         steering: Vec::new(),
+        files: &[],
         end: replied("done"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -1055,6 +1070,7 @@ fn saved_results_larger_than_replay_limit_keep_the_complete_sidecar() {
             vec![result(&calls[0], &output, ToolResultStatus::Success)],
         )],
         steering: Vec::new(),
+        files: &[],
         end: replied("done"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -1234,6 +1250,7 @@ fn steering_is_saved_at_its_step_boundary_and_restored_as_plain_user_text() {
             vec![result(&read[0], "a", ToolResultStatus::Success)],
         )],
         steering: vec![steering("first", "Looking", 0), steering("second", "", 1)],
+        files: &[],
         end: replied("done"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -1283,6 +1300,7 @@ fn a_turn_that_only_took_steering_is_saved() {
         user: "go",
         steps: Vec::new(),
         steering: vec![steering("change course", "partial", 0)],
+        files: &[],
         end: TurnEnd::Stopped {
             reason: TurnStop::Failed,
             partial: "",
@@ -1333,6 +1351,7 @@ fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
             ),
         ],
         steering: vec![steering("between", "", 1), steering("after", "", 2)],
+        files: &[],
         end: replied(""),
     };
     for (cut, kept) in [
@@ -1368,6 +1387,7 @@ fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
             user: "work",
             steps: Vec::new(),
             steering: Vec::new(),
+            files: &[],
             end: replied("done"),
         };
         let retained_steps = active.steps[cut.tool_steps..].to_vec();
@@ -1392,94 +1412,47 @@ fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
     }
 }
 
-fn whole(result: StepResult<'_>) -> StepResult<'_> {
-    StepResult {
-        model_view_covers_full_file: true,
-        ..result
+fn file(path: &str, id: &str, tool: &str, action: FileEvidenceAction) -> FileEvidence {
+    FileEvidence {
+        path: path.to_owned(),
+        new_path: None,
+        tool_call_id: id.to_owned(),
+        tool_name: tool.to_owned(),
+        action,
+        status: ToolResultStatus::Success,
+        model_view_covers_full_file: false,
+        stale: false,
     }
 }
 
-fn evidence(
-    path: &str,
-    id: &str,
-    tool: &str,
-    action: &str,
-    status: &str,
-    flags: [bool; 2],
-) -> String {
-    let [whole, stale] = flags;
-    format!(
-        "{{\"path\":\"{path}\",\"new_path\":null,\"tool_call_id\":\"{id}\",\"tool_name\":\"{tool}\",\"action\":\"{action}\",\"status\":\"{status}\",\"model_view_covers_full_file\":{whole},\"stale\":{stale}}}"
-    )
-}
-
-fn tidying_calls() -> [ToolCall; 9] {
-    [
-        ToolCall::new("call_read", "read_file", r#"{"path":"src/lib.rs"}"#),
-        ToolCall::new(
-            "call_part",
-            "read_file",
-            r#"{"path":"README.md","start_line":5}"#,
-        ),
-        ToolCall::new(
-            "call_grep",
-            "grep_files",
-            r#"{"pattern":"fn","path":"src"}"#,
-        ),
-        ToolCall::new("call_glob", "glob_files", r#"{"pattern":"*.rs","path":""}"#),
-        ToolCall::new("call_shell", "shell", r#"{"command":"ls"}"#),
-        ToolCall::new("call_missing", "read_file", r#"{"path":"gone.rs"}"#),
-        ToolCall::new("call_bad", "read_file", "not json"),
-        ToolCall::new(
-            "call_edit",
-            "edit_file",
-            r#"{"path":"src/lib.rs","old_string":"a","new_string":"b"}"#,
-        ),
-        ToolCall::new(
-            "sk-proj-0123456789abcdefghij",
-            "write_file",
-            r#"{"path":"README.md","content":"x"}"#,
-        ),
-    ]
-}
-
-fn tidying_steps(calls: &[ToolCall]) -> Vec<HistoryStep<'_>> {
-    let (first, second) = calls.split_at(7);
+fn gathered_files() -> Vec<FileEvidence> {
     vec![
-        step(
-            "",
-            first,
-            vec![
-                whole(result(&first[0], "lib", ToolResultStatus::Success)),
-                result(&first[1], "part", ToolResultStatus::Success),
-                whole(result(&first[2], "hits", ToolResultStatus::Success)),
-                result(&first[3], "files", ToolResultStatus::Success),
-                result(&first[4], "listing", ToolResultStatus::Success),
-                whole(result(&first[5], "missing", ToolResultStatus::Failure)),
-                result(&first[6], "bad", ToolResultStatus::Failure),
-            ],
-        ),
-        step(
-            "",
-            second,
-            vec![
-                result(&second[0], "edited", ToolResultStatus::Success),
-                result(&second[1], "refused", ToolResultStatus::Failure),
-            ],
-        ),
+        FileEvidence {
+            model_view_covers_full_file: true,
+            stale: true,
+            ..file("a.rs", "call-1", "read_file", FileEvidenceAction::Read)
+        },
+        FileEvidence {
+            new_path: Some("b.rs".to_owned()),
+            status: ToolResultStatus::Failure,
+            ..file("a.rs", "call-2", "move_file", FileEvidenceAction::Rename)
+        },
     ]
 }
+
+const GATHERED_JSON: &str = r#"[{"path":"a.rs","new_path":null,"tool_call_id":"call-1","tool_name":"read_file","action":"read","status":"success","model_view_covers_full_file":true,"stale":true},{"path":"a.rs","new_path":"b.rs","tool_call_id":"call-2","tool_name":"move_file","action":"rename","status":"failure","model_view_covers_full_file":false,"stale":false}]"#;
+
+const GATHERED_CONTEXT: &str = "Session file evidence from previous tool execution. Re-read stale paths before relying on exact contents:\n\
+    - action=read status=success path=a.rs model_view=full stale=true tool=read_file\n\
+    - action=rename status=failure path=a.rs new_path=b.rs tool=move_file";
 
 #[test]
-fn a_saved_turn_keeps_upstreams_file_evidence_for_its_file_tools() {
+fn a_saved_turn_writes_the_file_evidence_it_carries() {
     let fixture = Fixture::new();
     let mut session = fixture.start();
-    let calls = tidying_calls();
     let turn = HistoryTurn {
-        user: "tidy the crate",
-        steps: tidying_steps(&calls),
-        steering: Vec::new(),
-        end: replied("done"),
+        files: &gathered_files(),
+        ..simple_turn("tidy the crate", "done")
     };
     session.record_turn(&turn, &gateway()).unwrap();
     let completed = fs::read_to_string(fixture.dir().join("events.jsonl"))
@@ -1488,94 +1461,25 @@ fn a_saved_turn_keeps_upstreams_file_evidence_for_its_file_tools() {
         .find(|line| line.contains("\"turn_completed\""))
         .unwrap()
         .to_owned();
-    let files = [
-        evidence(
-            "src/lib.rs",
-            "call_read",
-            "read_file",
-            "read",
-            "success",
-            [true, true],
-        ),
-        evidence(
-            "README.md",
-            "call_part",
-            "read_file",
-            "read",
-            "success",
-            [false, false],
-        ),
-        evidence(
-            "src",
-            "call_grep",
-            "grep_files",
-            "search",
-            "success",
-            [false, false],
-        ),
-        evidence(
-            ".",
-            "call_glob",
-            "glob_files",
-            "search",
-            "success",
-            [false, false],
-        ),
-        evidence(
-            "gone.rs",
-            "call_missing",
-            "read_file",
-            "read",
-            "failure",
-            [false, false],
-        ),
-        evidence(
-            "src/lib.rs",
-            "call_edit",
-            "edit_file",
-            "edit",
-            "success",
-            [false, false],
-        ),
-        evidence(
-            "README.md",
-            "redacted-94ef11c05501c8117ead8adf",
-            "write_file",
-            "write",
-            "failure",
-            [false, false],
-        ),
-    ]
-    .join(",");
     assert!(
         completed.ends_with(&format!(
-            "\"event\":{{\"turn_completed\":{{\"files\":[{files}],\"turn_summary\":null}}}}}}"
+            "\"event\":{{\"turn_completed\":{{\"files\":{GATHERED_JSON},\"turn_summary\":null}}}}}}"
         )),
         "{completed}"
     );
 }
 
 #[test]
-fn an_interrupted_turn_keeps_the_file_evidence_it_gathered() {
+fn an_interrupted_turn_writes_the_file_evidence_it_carries() {
     let fixture = Fixture::new();
     let mut session = fixture.start();
-    let calls = [ToolCall::new(
-        "call_read",
-        "read_file",
-        r#"{"path":"a.rs"}"#,
-    )];
     let turn = HistoryTurn {
-        user: "look",
-        steps: vec![step(
-            "",
-            &calls,
-            vec![whole(result(&calls[0], "a", ToolResultStatus::Success))],
-        )],
-        steering: Vec::new(),
+        files: &gathered_files(),
         end: TurnEnd::Stopped {
             reason: TurnStop::Cancelled,
             partial: "",
         },
+        ..simple_turn("look", "")
     };
     session.record_turn(&turn, &gateway()).unwrap();
     let interrupted = fixture
@@ -1583,108 +1487,74 @@ fn an_interrupted_turn_keeps_the_file_evidence_it_gathered() {
         .into_iter()
         .find_map(|frame| frame["event"].get("interrupted").cloned())
         .unwrap();
-    assert_eq!(interrupted["files"][0]["path"], "a.rs");
-    assert_eq!(interrupted["files"][0]["model_view_covers_full_file"], true);
-    assert_eq!(interrupted["files"][0]["stale"], false);
-}
-
-fn saved_files(fixture: &Fixture, kind: &str) -> Vec<(String, String, bool, bool)> {
-    let frames = fixture.frames();
-    let event = frames
-        .iter()
-        .rev()
-        .find_map(|frame| frame["event"].get(kind))
-        .unwrap();
-    event["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|file| {
-            (
-                file["path"].as_str().unwrap().to_owned(),
-                file["action"].as_str().unwrap().to_owned(),
-                file["model_view_covers_full_file"].as_bool().unwrap(),
-                file["stale"].as_bool().unwrap(),
-            )
-        })
-        .collect()
-}
-
-fn compacted_reads(end: TurnEnd<'static>, kind: &str) -> Vec<(String, String, bool, bool)> {
-    let fixture = Fixture::new();
-    let mut session = fixture.start();
-    session
-        .record_turn(&simple_turn("first", "one"), &gateway())
-        .unwrap();
-    let first = [ToolCall::new("call-1", "read_file", r#"{"path":"a.rs"}"#)];
-    let second = [ToolCall::new("call-2", "read_file", r#"{"path":"b.rs"}"#)];
-    let third = [ToolCall::new(
-        "call-3",
-        "write_file",
-        r#"{"path":"a.rs","content":"x"}"#,
-    )];
-    let active = HistoryTurn {
-        user: "second",
-        steps: vec![
-            step(
-                "",
-                &first,
-                vec![whole(result(&first[0], "a", ToolResultStatus::Success))],
-            ),
-            step(
-                "",
-                &second,
-                vec![result(&second[0], "b", ToolResultStatus::Success)],
-            ),
-        ],
-        steering: Vec::new(),
-        end: replied(""),
-    };
-    let cut = HistoryCut {
-        turns: 1,
-        tool_steps: 1,
-        ..HistoryCut::default()
-    };
-    session
-        .record_compaction("SUMMARY", cut, Some(&active), &gateway())
-        .unwrap();
-    let rest = HistoryTurn {
-        user: "second",
-        steps: vec![
-            step(
-                "",
-                &second,
-                vec![result(&second[0], "b", ToolResultStatus::Success)],
-            ),
-            step(
-                "",
-                &third,
-                vec![result(&third[0], "written", ToolResultStatus::Success)],
-            ),
-        ],
-        steering: Vec::new(),
-        end,
-    };
-    session.record_turn(&rest, &gateway()).unwrap();
-    saved_files(&fixture, kind)
+    assert_eq!(
+        interrupted["files"],
+        serde_json::from_str::<Value>(GATHERED_JSON).unwrap()
+    );
 }
 
 #[test]
-fn file_evidence_from_steps_a_mid_turn_compaction_cut_reaches_the_saved_turn() {
-    let expected = [
-        ("a.rs".to_owned(), "read".to_owned(), true, true),
-        ("b.rs".to_owned(), "read".to_owned(), false, false),
-        ("a.rs".to_owned(), "write".to_owned(), false, false),
-    ];
-    assert_eq!(compacted_reads(replied("done"), "turn_completed"), expected);
+fn a_restored_turn_sends_its_file_evidence_after_its_steps_and_before_later_steering() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let read = [call("call-1", "read_file")];
+    let turn = HistoryTurn {
+        user: "go",
+        steps: vec![step(
+            "",
+            &read,
+            vec![result(&read[0], "a", ToolResultStatus::Success)],
+        )],
+        steering: vec![steering("first", "", 0), steering("second", "", 1)],
+        files: &gathered_files(),
+        end: replied("done"),
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
     assert_eq!(
-        compacted_reads(
-            TurnEnd::Stopped {
-                reason: TurnStop::Failed,
-                partial: "",
-            },
-            "interrupted"
-        ),
-        expected
+        fixture.resumed().messages,
+        [
+            ChatMessage::user("go"),
+            ChatMessage::restored_steering("first"),
+            assistant(None, &read),
+            tool(&read[0], "a", ToolResultStatus::Success),
+            ChatMessage::user(GATHERED_CONTEXT),
+            ChatMessage::restored_steering("second"),
+            assistant(Some("done"), &[]),
+        ]
+    );
+}
+
+#[test]
+fn an_interrupted_turn_restores_its_file_evidence_before_its_closing_messages() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let read = [call("call-1", "read_file")];
+    let turn = HistoryTurn {
+        user: "go",
+        steps: vec![step(
+            "",
+            &read,
+            vec![result(&read[0], "a", ToolResultStatus::Success)],
+        )],
+        steering: Vec::new(),
+        files: &gathered_files(),
+        end: TurnEnd::Stopped {
+            reason: TurnStop::Failed,
+            partial: "",
+        },
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
+    assert_eq!(
+        fixture.resumed().messages,
+        [
+            ChatMessage::user("go"),
+            assistant(None, &read),
+            tool(&read[0], "a", ToolResultStatus::Success),
+            ChatMessage::user(GATHERED_CONTEXT),
+            assistant(Some(INTERRUPTED_BEFORE_COMPLETION), &[]),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+        ]
     );
 }

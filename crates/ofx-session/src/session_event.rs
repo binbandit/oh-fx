@@ -1,6 +1,7 @@
 mod frame_decode;
 
 use ofx_config::EMERGENCY_CEILING_BYTES;
+pub(crate) use ofx_contract::FileEvidenceAction;
 use ofx_contract::{
     ProviderReplay, ReplaySource, ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus,
 };
@@ -227,22 +228,6 @@ pub struct SteeringEvent {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum FileEvidenceAction {
-    Read,
-    Write,
-    Edit,
-    Delete,
-    Rename,
-    Copy,
-    Search,
-    List,
-    #[default]
-    Unknown,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
@@ -252,7 +237,7 @@ pub(crate) struct FileEvidence {
     pub(crate) new_path: Option<String>,
     pub(crate) tool_call_id: String,
     pub(crate) tool_name: String,
-    #[serde(default)]
+    #[serde(default, with = "wire_tag")]
     pub(crate) action: FileEvidenceAction,
     #[serde(with = "wire_tag")]
     #[cfg_attr(test, serde(default = "succeeded"))]
@@ -261,6 +246,36 @@ pub(crate) struct FileEvidence {
     pub(crate) model_view_covers_full_file: bool,
     #[serde(default)]
     pub(crate) stale: bool,
+}
+
+impl From<&ofx_contract::FileEvidence> for FileEvidence {
+    fn from(file: &ofx_contract::FileEvidence) -> Self {
+        Self {
+            path: file.path.clone(),
+            new_path: file.new_path.clone(),
+            tool_call_id: file.tool_call_id.clone(),
+            tool_name: file.tool_name.clone(),
+            action: file.action,
+            status: file.status,
+            model_view_covers_full_file: file.model_view_covers_full_file,
+            stale: file.stale,
+        }
+    }
+}
+
+impl From<FileEvidence> for ofx_contract::FileEvidence {
+    fn from(file: FileEvidence) -> Self {
+        Self {
+            path: file.path,
+            new_path: file.new_path,
+            tool_call_id: file.tool_call_id,
+            tool_name: file.tool_name,
+            action: file.action,
+            status: file.status,
+            model_view_covers_full_file: file.model_view_covers_full_file,
+            stale: file.stale,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -733,30 +748,10 @@ impl WireTag for InterruptReason {
 }
 
 impl WireTag for FileEvidenceAction {
-    const ALL: &'static [Self] = &[
-        Self::Read,
-        Self::Write,
-        Self::Edit,
-        Self::Delete,
-        Self::Rename,
-        Self::Copy,
-        Self::Search,
-        Self::List,
-        Self::Unknown,
-    ];
+    const ALL: &'static [Self] = &Self::ALL;
 
     fn tag(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Write => "write",
-            Self::Edit => "edit",
-            Self::Delete => "delete",
-            Self::Rename => "rename",
-            Self::Copy => "copy",
-            Self::Search => "search",
-            Self::List => "list",
-            Self::Unknown => "unknown",
-        }
+        self.label()
     }
 }
 

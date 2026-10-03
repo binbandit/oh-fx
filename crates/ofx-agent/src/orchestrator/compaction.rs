@@ -214,8 +214,11 @@ impl Agent {
         self.record_compaction(Some(turn), &compacted)
             .map_err(|failure| Stop::failed(TurnFailure::Persistence(failure)))?;
         let active = self.turn_starts.len().saturating_sub(1);
-        turn.compaction.compacted_steps |=
-            compacted.cut.turns == active && compacted.cut.splits_turn();
+        let splits_active = compacted.cut.turns == active && compacted.cut.splits_turn();
+        if splits_active {
+            self.keep_compacted_files(turn, compacted.cut.tool_steps);
+        }
+        turn.compaction.compacted_steps |= splits_active;
         self.install_compaction(compacted);
         turn.start = self.turn_starts.last().copied().unwrap_or(turn.start);
         turn.compaction.compacted_len = Some(self.history.len());
