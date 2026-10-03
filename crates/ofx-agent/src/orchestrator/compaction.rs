@@ -42,6 +42,12 @@ pub(super) struct TurnCompaction {
     pub(super) compacted_steps: bool,
 }
 
+impl TurnCompaction {
+    pub(super) fn checkpointed(&self) -> bool {
+        self.compacted_len.is_some()
+    }
+}
+
 pub(super) struct Measured {
     cost: RequestCost,
     fixed_tokens: Option<usize>,
@@ -285,6 +291,7 @@ impl Agent {
                 .checked_sub(compacted.cut.turns)
                 .map(|turn| LastReply { turn, ..reply })
         });
+        self.ledger.compact(compacted.cut);
         retain(
             &mut self.history,
             &mut self.turn_starts,

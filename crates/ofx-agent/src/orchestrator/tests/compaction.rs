@@ -93,6 +93,40 @@ async fn manual_compaction_logs_its_checkpoint_without_an_active_turn() {
 }
 
 #[tokio::test]
+async fn a_checkpoint_counts_only_the_turns_the_log_saved() {
+    let mut scripts = chat_replies(6);
+    scripts.push(text_reply("answer 7"));
+    let provider = FakeProvider::new(scripts);
+    let entries = Arc::new(Mutex::new(Vec::new()));
+    let log = Box::new(turn_log::MemoryLog {
+        entries: Arc::clone(&entries),
+        refused_turn: Some("Io(Other)"),
+        ..turn_log::MemoryLog::default()
+    });
+    let mut agent = turn_log::logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    chat(&mut agent, 6).await;
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 6);
+    let turn_log::Logged::Compaction { cut, .. } = &entries[5] else {
+        panic!("{entries:?}");
+    };
+    assert_eq!(
+        *cut,
+        HistoryCut {
+            turns: 1,
+            tool_steps: 0
+        }
+    );
+    run(&mut agent, "question 7").await;
+    let requests = provider.requests();
+    assert_eq!(user_text(&requests[6].messages[1]), "question 3");
+}
+
+#[tokio::test]
 async fn a_manual_compaction_that_cannot_be_saved_keeps_the_whole_history() {
     let mut scripts = chat_replies(6);
     scripts.push(text_reply("answer 7"));
@@ -773,6 +807,45 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
             user: "read the notes".to_owned(),
             steps: Vec::new(),
             end: r#"replied "done" replay=false"#.to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_turn_dropped_after_its_checkpoint_stays_counted_as_a_logged_turn() {
+    let big_reply = format!("HISTORY_SENTINEL {}", "h".repeat(150_000));
+    let provider = FakeProvider::new(vec![
+        spoken_tool_reply("Reading first.", "call-1", r#"{"value":"first.txt"}"#),
+        unmetered(text_reply(&big_reply)),
+        unmetered(text_reply(
+            "Turn 1\nIn between: Read the file.\nT1: echoed first.txt",
+        )),
+        Script::Fail(
+            Vec::new(),
+            failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
+        ),
+    ]);
+    let (agent, _) = windowed(&provider, 45_000, 64);
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = turn_log::logged(agent, log);
+    run(&mut agent, "first").await;
+    let (second, _) = run(&mut agent, "second").await;
+    assert_eq!(second.outcome, TurnOutcome::Failed);
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 3, "{entries:?}");
+    assert!(matches!(
+        &entries[1],
+        turn_log::Logged::Compaction { user: Some(user), .. } if user == "second"
+    ));
+    assert!(agent.turn_starts.is_empty());
+    assert_eq!(agent.ledger.records, [turn_ledger::TurnRecord::LogOnly]);
+    assert_eq!(
+        agent
+            .ledger
+            .logged_cut(crate::execution_memory::Cut::default()),
+        HistoryCut {
+            turns: 1,
+            tool_steps: 0
         }
     );
 }

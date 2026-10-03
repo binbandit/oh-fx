@@ -36,6 +36,7 @@ use crate::turn_reviews::TurnReviews;
 
 mod compaction;
 mod project_gate;
+mod turn_ledger;
 mod turn_log;
 
 pub use compaction::Compaction;
@@ -43,6 +44,7 @@ use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
 #[cfg(test)]
 use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
+use turn_ledger::TurnLedger;
 use turn_log::Ending;
 
 const STEP_LIMIT_NOTICE: &str =
@@ -193,6 +195,7 @@ pub struct Agent {
     skills: Option<Arc<dyn SkillContextProvider>>,
     history: Vec<ChatMessage>,
     turn_starts: Vec<usize>,
+    ledger: TurnLedger,
     compacted: Option<Payload>,
     calibration: Option<Calibration>,
     session_id: Option<String>,
@@ -225,6 +228,7 @@ impl Agent {
             skills: None,
             history: Vec::new(),
             turn_starts: Vec::new(),
+            ledger: TurnLedger::default(),
             compacted: None,
             calibration: None,
             session_id: None,
@@ -285,6 +289,7 @@ impl Agent {
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.turn_starts.clear();
+        self.ledger.reset(0);
         self.compacted = None;
         self.calibration = None;
         self.last_reply = None;
@@ -374,7 +379,9 @@ impl Agent {
                 (TurnOutcome::Failed, String::new(), Some(failure), ending)
             }
         };
-        if let Err(error) = self.record_turn(prompt, &turn, ending)
+        let recorded = self.record_turn(prompt, &turn, ending);
+        self.note_recorded(&turn, ending, recorded.is_ok());
+        if let Err(error) = recorded
             && failure.is_none()
         {
             failure = Some(TurnFailure::Persistence(error));

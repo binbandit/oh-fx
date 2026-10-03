@@ -775,3 +775,73 @@ fn a_manual_compaction_is_saved_and_a_resumed_session_continues_from_its_checkpo
         .concat()
     );
 }
+
+#[test]
+fn a_manual_compaction_after_an_unsaved_turn_covers_only_the_saved_turns_it_summarized() {
+    let replies = [
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"small.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["answer 1"])),
+    ]
+    .into_iter()
+    .chain((2..=6).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))))
+    .chain([
+        Reply::sse(&chat_text_events(&[
+            "Turn 1\nIn between: Read the file.\nT1: read small.txt",
+        ])),
+        Reply::sse(&chat_text_events(&["answer 7"])),
+        Reply::sse(&chat_text_events(&["answer 8"])),
+    ]);
+    let server = FakeServer::start(replies);
+    let home = Home::new(&server.base_url());
+    fs::write(home.workspace.join("small.txt"), "alpha\n").expect("write small.txt");
+    let session = home.shell(&[], WELCOME);
+    session
+        .wait_for(WAIT, |_| home.session_ids().len() == 1)
+        .unwrap_or_else(|screen| panic!("the session was not started:\n{screen}"));
+    let id = home.only_session();
+    let results = home.sessions().join(&id).join("tool-results");
+    fs::write(&results, "blocked").expect("block the tool results");
+    session.send(b"question 1\r");
+    wait(&session, "could not save it (SessionPathUnsafe)");
+    fs::remove_file(&results).expect("unblock the tool results");
+    for turn in 2..=6 {
+        session.send(format!("question {turn}\r").as_bytes());
+        wait(&session, &format!("answer {turn}"));
+    }
+    session.send(b"/compact\r");
+    session.send(b"question 7\r");
+    wait(&session, "answer 7");
+    exit(session);
+    let frames = home.frames(&id);
+    assert_eq!(kinds(&frames)[15], "context_checkpoint");
+    assert_eq!(
+        frames[15]["event"]["context_checkpoint"]["covers_through_seq"],
+        3
+    );
+    let live = chat(&server.requests()[8]);
+    assert!(
+        live[0].1.starts_with("<compacted_conversation>\n"),
+        "{live:?}"
+    );
+    assert_eq!(live[1], ("user".to_owned(), "question 3".to_owned()));
+
+    let session = home.shell(&["-c"], "session resumed");
+    session.send(b"question 8\r");
+    wait(&session, "answer 8");
+    exit(session);
+    assert_eq!(
+        chat(&server.requests()[9]),
+        [
+            live,
+            vec![
+                ("assistant".to_owned(), "answer 7".to_owned()),
+                ("user".to_owned(), "question 8".to_owned())
+            ]
+        ]
+        .concat()
+    );
+}

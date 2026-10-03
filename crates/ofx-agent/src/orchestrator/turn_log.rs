@@ -1,8 +1,8 @@
 use ofx_contract::{
-    ChatMessage, ConversationLog, HistoryCut, HistoryTurn, LogFailure, RestoredHistory, TurnEnd,
-    TurnStop,
+    ChatMessage, ConversationLog, HistoryTurn, LogFailure, RestoredHistory, TurnEnd, TurnStop,
 };
 
+use super::turn_ledger::TurnRecord;
 use super::{Agent, Turn};
 use crate::compactor::{Compacted, encode_checkpoint, restore_checkpoint};
 use crate::execution_memory::{history_turn, logged_steps};
@@ -41,6 +41,7 @@ impl Agent {
             self.compacted = payload;
         }
         self.history = messages;
+        self.ledger.reset(turn_starts.len());
         self.turn_starts = turn_starts;
         self.calibration = None;
     }
@@ -49,6 +50,16 @@ impl Agent {
         self.log
             .as_ref()
             .map_or(Ok(()), |log| log.require_writable())
+    }
+
+    pub(super) fn note_recorded(&mut self, turn: &Turn, ending: Ending, saved: bool) {
+        let record = match ending {
+            Ending::Discarded if saved && turn.compaction.checkpointed() => TurnRecord::LogOnly,
+            Ending::Discarded => return,
+            _ if saved => TurnRecord::Saved,
+            _ => TurnRecord::Unsaved,
+        };
+        self.ledger.push(record);
     }
 
     pub(super) fn record_turn(
@@ -111,10 +122,7 @@ impl Agent {
                 },
             }
         });
-        let cut = HistoryCut {
-            turns: compacted.cut.turns,
-            tool_steps: compacted.cut.tool_steps,
-        };
+        let cut = self.ledger.logged_cut(compacted.cut);
         log.record_compaction(&encode_checkpoint(&compacted.payload), cut, active.as_ref())
     }
 }

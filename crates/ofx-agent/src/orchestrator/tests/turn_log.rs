@@ -23,6 +23,7 @@ pub(super) struct MemoryLog {
     pub(super) failing: Option<&'static str>,
     pub(super) blocked: Option<&'static str>,
     pub(super) refused_checkpoint: Option<&'static str>,
+    pub(super) refused_turn: Option<&'static str>,
 }
 
 impl MemoryLog {
@@ -104,6 +105,11 @@ impl ConversationLog for MemoryLog {
 
     fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure> {
         self.outcome()?;
+        if let Some(code) = self.refused_turn.take() {
+            return Err(LogFailure {
+                code: code.to_owned(),
+            });
+        }
         self.entries.lock().unwrap().push(Logged::Turn {
             user: turn.user.to_owned(),
             steps: described_steps(turn),
