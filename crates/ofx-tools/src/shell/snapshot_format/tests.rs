@@ -418,3 +418,35 @@ fn finished_snapshots_report_upstream_command_results_byte_for_byte() {
         None
     );
 }
+
+#[test]
+fn process_presentations_name_only_settled_failures_and_timeouts() {
+    let presented = |state| process_presentation(&snapshot(state, b""));
+    assert_eq!(presented(completed(0)), None);
+    assert_eq!(
+        presented(completed(7)),
+        Some(CommandProcessPresentation::ExitCode(7))
+    );
+    assert_eq!(
+        presented(SnapshotState::Completed(CommandStatus::Signal(9))),
+        Some(CommandProcessPresentation::Signal(9))
+    );
+    assert_eq!(
+        presented(SnapshotState::Completed(CommandStatus::Indeterminate)),
+        None
+    );
+    assert_eq!(
+        presented(SnapshotState::Stopped(Some(CommandStatus::Signal(15)))),
+        None
+    );
+    assert_eq!(presented(SnapshotState::Running), None);
+    assert_eq!(presented(SnapshotState::Lost), None);
+    let timed_out = Snapshot {
+        error_name: Some(TIMEOUT_EXPIRED),
+        ..snapshot(SnapshotState::Stopped(Some(CommandStatus::Signal(15))), b"")
+    };
+    assert_eq!(
+        process_presentation(&timed_out),
+        Some(CommandProcessPresentation::TimedOut)
+    );
+}

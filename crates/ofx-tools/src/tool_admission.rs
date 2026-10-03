@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ofx_contract::{ToolOutput, format_tool_execution_error_json};
+use ofx_contract::{ToolOutput, ToolStatusDetail, format_tool_execution_error_json};
 use ofx_permissions::FileTargetFailure;
 use ofx_workspace::{PathError, resolve_workspace_or_external_path};
 
@@ -13,6 +13,7 @@ pub(crate) fn admit_existing_path(
         .map(drop)
         .map_err(|error| {
             ToolOutput::failure(target_resolution_failure(tool_name, requested, error))
+                .with_status_detail(ToolStatusDetail::PreflightFailed)
         })
 }
 
@@ -143,23 +144,27 @@ mod tests {
         );
         assert_eq!(
             admit_existing_path("read_file", &workspace, "link/x.txt"),
-            Err(ToolOutput::failure(
-                "Path is outside the workspace: link/x.txt"
-            ))
+            Err(
+                ToolOutput::failure("Path is outside the workspace: link/x.txt")
+                    .with_status_detail(ToolStatusDetail::PreflightFailed)
+            )
         );
         assert_eq!(
             admit_existing_path("read_file", &workspace, "a.txt/x"),
-            Err(ToolOutput::failure("Path is not a directory: a.txt/x"))
+            Err(ToolOutput::failure("Path is not a directory: a.txt/x")
+                .with_status_detail(ToolStatusDetail::PreflightFailed))
         );
         assert_eq!(
             admit_existing_path("read_file", &workspace, "../missing.txt"),
-            Err(ToolOutput::failure("Path not found: ../missing.txt"))
+            Err(ToolOutput::failure("Path not found: ../missing.txt")
+                .with_status_detail(ToolStatusDetail::PreflightFailed))
         );
         assert_eq!(
             admit_existing_path("read_file", &workspace, "a.txt\0x"),
-            Err(ToolOutput::failure(
-                "Cannot resolve path \"a.txt\\u0000x\": InvalidPath"
-            ))
+            Err(
+                ToolOutput::failure("Cannot resolve path \"a.txt\\u0000x\": InvalidPath")
+                    .with_status_detail(ToolStatusDetail::PreflightFailed)
+            )
         );
     }
 }

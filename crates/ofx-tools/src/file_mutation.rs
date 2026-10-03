@@ -5,9 +5,11 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use memchr::memmem;
-use ofx_contract::{FileChange, ToolOutput};
+use ofx_contract::{FileChange, FileChangeStats, ToolOutput, ToolStatusDetail};
+use ofx_markdown::FileReview;
 use ofx_permissions::{FileMutationKind, FileMutationTargets, TraversalDirectory};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
 use ofx_workspace::{
@@ -168,6 +170,7 @@ pub(crate) struct PreparedMutation {
     preimage: Preimage,
     after: Vec<u8>,
     display_path: String,
+    line_counts: OnceLock<FileChangeStats>,
 }
 
 impl PreparedMutation {
@@ -195,6 +198,7 @@ impl PreparedMutation {
             preimage,
             after,
             display_path,
+            line_counts: OnceLock::new(),
         })
     }
 
@@ -211,6 +215,7 @@ impl PreparedMutation {
             },
             after: &self.after,
             parents: self.targets.review_parents(),
+            line_counts: Some(&self.line_counts),
         }
     }
 
@@ -245,6 +250,17 @@ impl PreparedMutation {
         let parent = reopen_parent(self, &expected)?;
         check_preimage(&parent, self.target_name(), self, |_| Ok(()))?;
         Ok(())
+    }
+
+    pub(crate) fn change_stats(&self) -> FileChangeStats {
+        let before = match &self.preimage {
+            Preimage::Absent => &[][..],
+            Preimage::Present { content, .. } => content.as_slice(),
+        };
+        *self.line_counts.get_or_init(|| {
+            let review = FileReview::new(before, &self.after);
+            FileChangeStats::from_lines(review.additions(), review.deletions())
+        })
     }
 
     pub(crate) fn noop_message(&self) -> String {
@@ -472,6 +488,17 @@ impl Rejection {
             );
         }
         message
+    }
+
+    pub(crate) fn output(&self) -> ToolOutput {
+        let detail = match self.reason {
+            RejectReason::StalePreimage => ToolStatusDetail::StalePreview,
+            RejectReason::Cancelled => ToolStatusDetail::Cancelled,
+            RejectReason::TraversalChanged
+            | RejectReason::StagedSourceChanged
+            | RejectReason::IoFailure => ToolStatusDetail::Rejected,
+        };
+        ToolOutput::failure(self.message()).with_status_detail(detail)
     }
 }
 

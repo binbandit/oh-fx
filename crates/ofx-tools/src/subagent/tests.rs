@@ -232,6 +232,7 @@ fn built_in_subagent_owns_product_metadata_and_schema() {
         described,
         CallDescription {
             title: "reviewer working · check auth".to_owned(),
+            label: None,
             activity: ToolActivity::Subagent,
             effect: ToolEffect::Mutating,
             concurrency: Concurrency::Parallel,

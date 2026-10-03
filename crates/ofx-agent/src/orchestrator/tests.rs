@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile, CommandRequest,
-    Concurrency, FileMutation, FileMutationState, ModelRecoveryAction, PreparedCall,
-    ProviderReplay, ReplaySource, StreamSink, ToolActivity, ToolCallId, ToolEffect,
+    ActionLabel, ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile,
+    CommandRequest, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
+    PreparedCall, ProviderReplay, ReplaySource, StreamSink, ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -313,12 +313,16 @@ impl Tool for EchoTool {
 }
 
 impl PreparedCall for EchoCall {
-    fn untargeted_title(&self) -> String {
+    fn untargeted_label(&self) -> Option<ActionLabel> {
         assert!(
             !self.arguments.contains("untargeted_panic"),
             "untargeted title panicked"
         );
-        "Echoing file".to_owned()
+        Some(ActionLabel {
+            active: "Echoing",
+            completed: "Echoed",
+            target: "file".to_owned(),
+        })
     }
 
     fn file_mutation(&self) -> Option<&FileMutation> {
@@ -359,6 +363,7 @@ impl PreparedCall for EchoCall {
         }
         CallDescription {
             title: format!("Echoing {}", self.arguments),
+            label: None,
             activity: ToolActivity::Read,
             effect: if self.arguments.contains("inert") {
                 ToolEffect::None
@@ -738,13 +743,7 @@ async fn unknown_tools_and_rejected_arguments_are_reported_and_panics_become_fai
     assert_eq!(
         rejections(&events),
         [
-            (
-                "call-0",
-                "missing",
-                "{}",
-                ToolRejection::Unsupported,
-                Some("Working: missing")
-            ),
+            ("call-0", "missing", "{}", ToolRejection::Unsupported, None),
             (
                 "call-1",
                 "echo",
@@ -839,7 +838,7 @@ async fn modern_mixed_batch_materializes_unsupported_terminal_before_admission()
             "missing_tool",
             "{}",
             ToolRejection::Unsupported,
-            Some("Working: missing_tool")
+            None
         )]
     );
     assert_eq!(
@@ -1154,14 +1153,16 @@ fn rejections(events: &[UiEvent]) -> Vec<Rejected<'_>> {
                 tool_name,
                 arguments,
                 reason,
-                title,
+                description,
                 ..
             } => Some((
                 call_id.as_str(),
                 tool_name.as_str(),
                 arguments.as_str(),
                 *reason,
-                title.as_deref(),
+                description
+                    .as_ref()
+                    .map(|description| description.title.as_str()),
             )),
             _ => None,
         })

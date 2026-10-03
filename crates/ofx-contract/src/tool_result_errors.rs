@@ -2,6 +2,7 @@ use ofx_text::mask_secrets;
 use serde_json::{Map, Value};
 
 use crate::auto_classifier::ReviewFailure;
+use crate::tool_args::parse_json_value;
 use crate::types::{ToolArgumentDiagnostic, ToolArgumentFailure};
 
 #[cfg(target_os = "macos")]
@@ -11,6 +12,36 @@ const FILESYSTEM_ACCESS_DENIED_SUGGESTION: &str = "Do not retry this path unchan
 
 const USER_DENIED_MESSAGE: &str = "Permission denied by user";
 const USER_DENIED_SUGGESTION: &str = "The tool did not run. Do not retry unchanged; explain the denial or use a safer allowed alternative.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolPermissionDenialReason {
+    UserDenied,
+    AutoDenied,
+    ReviewCaution,
+    ReviewEvidenceIncomplete,
+    ReviewUnavailable,
+    PolicyDenied,
+    PermissionRequired,
+}
+
+impl ToolPermissionDenialReason {
+    const ALL: [(Self, &'static str); 7] = [
+        (Self::UserDenied, "user_denied"),
+        (Self::AutoDenied, "auto_denied"),
+        (Self::ReviewCaution, "review_caution"),
+        (Self::ReviewEvidenceIncomplete, "review_evidence_incomplete"),
+        (Self::ReviewUnavailable, "review_unavailable"),
+        (Self::PolicyDenied, "policy_denied"),
+        (Self::PermissionRequired, "permission_required"),
+    ];
+
+    fn is_review_hold(self) -> bool {
+        matches!(
+            self,
+            Self::ReviewCaution | Self::ReviewEvidenceIncomplete | Self::ReviewUnavailable
+        )
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionFailure<'a> {
@@ -218,6 +249,37 @@ pub fn tool_permission_denied_json(tool_name: &str) -> String {
     Value::Object(envelope).to_string()
 }
 
+pub fn tool_permission_denial_reason(output: &str) -> Option<ToolPermissionDenialReason> {
+    let Some(Value::Object(root)) = parse_json_value(output) else {
+        return None;
+    };
+    let error = root.get("error")?.as_object()?;
+    let held = match error.get("type")?.as_str()? {
+        "tool_review_held" => true,
+        "tool_permission_denied" => false,
+        _ => return None,
+    };
+    let name = error.get("reason")?.as_str()?;
+    let (reason, _) = ToolPermissionDenialReason::ALL
+        .into_iter()
+        .find(|(_, candidate)| *candidate == name)?;
+    (held == reason.is_review_hold()).then_some(reason)
+}
+
+pub fn shell_request_invalid_field_count(output: &str) -> Option<usize> {
+    let Some(Value::Object(root)) = parse_json_value(output) else {
+        return None;
+    };
+    let error = root.get("error")?.as_object()?;
+    if error.get("code")?.as_str()? != "invalid_shell_request"
+        || error.get("executed")?.as_bool()?
+    {
+        return None;
+    }
+    let problems = error.get("problems")?.as_array()?;
+    (!problems.is_empty() && problems.iter().all(Value::is_string)).then_some(problems.len())
+}
+
 fn masked(text: &str) -> Value {
     Value::from(mask_secrets(text).into_owned())
 }
@@ -285,6 +347,88 @@ mod tests {
             tool_permission_denied_json("read_file"),
             "{\"error\":{\"type\":\"tool_permission_denied\",\"tool_name\":\"read_file\",\"message\":\"Permission denied by user\",\"reason\":\"user_denied\",\"denied\":true,\"suggestion\":\"The tool did not run. Do not retry unchanged; explain the denial or use a safer allowed alternative.\"}}"
         );
+    }
+
+    #[test]
+    fn permission_denial_reasons_come_only_from_matching_denial_envelopes() {
+        assert_eq!(
+            tool_permission_denial_reason(&tool_permission_denied_json("read_file")),
+            Some(ToolPermissionDenialReason::UserDenied)
+        );
+        assert_eq!(
+            tool_permission_denial_reason(&tool_review_held_json(
+                "edit_file",
+                ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured)
+            )),
+            Some(ToolPermissionDenialReason::ReviewUnavailable)
+        );
+        for (reason, name) in ToolPermissionDenialReason::ALL {
+            let kind = if reason.is_review_hold() {
+                "tool_review_held"
+            } else {
+                "tool_permission_denied"
+            };
+            let output = format!(r#"{{"error":{{"type":"{kind}","reason":"{name}"}}}}"#);
+            assert_eq!(
+                tool_permission_denial_reason(&output),
+                Some(reason),
+                "{name}"
+            );
+        }
+        for output in [
+            "",
+            "user_denied",
+            "[]",
+            r#"{"error":"user_denied"}"#,
+            r#"{"error":{"type":"tool_review_held","reason":"user_denied"}}"#,
+            r#"{"error":{"type":"tool_review_held","reason":"auto_denied"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":"review_unavailable"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":"review_caution"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":"unknown"}}"#,
+            r#"{"error":{"type":"tool_execution_failed","reason":"user_denied"}}"#,
+            r#"{"error":{"type":"tool_permission_denied","reason":7}}"#,
+        ] {
+            assert_eq!(tool_permission_denial_reason(output), None, "{output}");
+        }
+    }
+
+    #[test]
+    fn shell_request_corrections_count_their_problems() {
+        let cases = [
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a","b"]}}"#,
+                Some(2),
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a"]}}"#,
+                Some(1),
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":true,"problems":["a"]}}"#,
+                None,
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":[]}}"#,
+                None,
+            ),
+            (
+                r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":[1]}}"#,
+                None,
+            ),
+            (
+                r#"{"error":{"code":"other","executed":false,"problems":["a"]}}"#,
+                None,
+            ),
+            (r#"{"error":{"code":"invalid_shell_request"}}"#, None),
+            ("not json", None),
+        ];
+        for (output, expected) in cases {
+            assert_eq!(
+                shell_request_invalid_field_count(output),
+                expected,
+                "{output}"
+            );
+        }
     }
 
     #[test]

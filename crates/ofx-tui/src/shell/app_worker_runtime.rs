@@ -9,10 +9,12 @@ use ofx_contract::{
     CompactionActivity, Notice, NoticeTone, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
+use super::leading_whitespace::LeadingWhitespace;
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
 use crate::render_engine::transcript_blocks::{Entry, HelpEntry};
+use crate::transcript::tool_presentation::{Finished, Rejected, ToolActivityRow};
 
 const PARAGRAPH_BREAK: &str = "\n\n";
 
@@ -103,20 +105,15 @@ impl Shell<'_> {
                     turn.tokens.consume_reasoning(&text);
                 }
             }
-            UiEvent::ToolStarted { turn_id, .. } => {
-                self.end_assistant_step(turn_id);
-                if let Some(turn) = self.visible_turn(turn_id) {
-                    turn.phase = TurnPhase::Running;
-                }
-            }
             UiEvent::ApprovalRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
                 self.approval_requested(turn_id, *request);
             }
-            UiEvent::ToolRejected { turn_id, .. } => self.end_assistant_step(turn_id),
-            UiEvent::ToolFinished { .. }
-            | UiEvent::ContextNotice { .. }
-            | UiEvent::Recovery { .. } => {}
+            event @ (UiEvent::ToolStarted { .. }
+            | UiEvent::ToolRejected { .. }
+            | UiEvent::ToolFinished { .. }
+            | UiEvent::ToolDeferred { .. }) => self.tool_event(event),
+            UiEvent::ContextNotice { .. } | UiEvent::Recovery { .. } => {}
             UiEvent::UsageReported { turn_id, usage } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
                     turn.tokens.settle(usage.output_tokens);
@@ -220,6 +217,82 @@ impl Shell<'_> {
         }
     }
 
+    fn tool_event(&mut self, event: UiEvent) {
+        match event {
+            UiEvent::ToolStarted {
+                turn_id,
+                call_id,
+                tool_name,
+                description,
+            } => {
+                self.end_assistant_step(turn_id);
+                if let Some(turn) = self.visible_turn(turn_id) {
+                    turn.phase = TurnPhase::Running;
+                    self.transcript.add_tool_row(ToolActivityRow::started(
+                        call_id,
+                        &tool_name,
+                        description,
+                    ));
+                }
+            }
+            UiEvent::ToolRejected {
+                turn_id,
+                call_id,
+                tool_name,
+                arguments,
+                reason,
+                description,
+                content,
+            } => {
+                self.end_assistant_step(turn_id);
+                if self.is_visible_turn(turn_id) {
+                    let rejected = Rejected {
+                        reason,
+                        arguments: &arguments,
+                        description,
+                        content: &content,
+                    };
+                    self.transcript
+                        .add_tool_row(ToolActivityRow::rejected(call_id, &tool_name, rejected));
+                }
+            }
+            UiEvent::ToolFinished {
+                turn_id,
+                call_id,
+                status,
+                content,
+                process,
+                status_detail,
+                file_change,
+                ..
+            } => {
+                if self.is_visible_turn(turn_id)
+                    && let Some(row) = self.transcript.tool_row_mut(&call_id)
+                {
+                    row.finish(&Finished {
+                        status,
+                        content: &content,
+                        process,
+                        status_detail,
+                        file_change,
+                    });
+                }
+            }
+            UiEvent::ToolDeferred {
+                turn_id,
+                call_id,
+                deferral,
+            } => {
+                if self.is_visible_turn(turn_id)
+                    && let Some(row) = self.transcript.tool_row_mut(&call_id)
+                {
+                    row.defer(deferral);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn conversation_cleared(&mut self, first_kept_prompt: u64) {
         self.outstanding
             .retain(|submission| submission.sequence >= first_kept_prompt);
@@ -276,6 +349,9 @@ impl Shell<'_> {
         };
         turn.phase = TurnPhase::Generating;
         turn.tokens.consume_content(text);
+        let Some(text) = turn.leading_whitespace.release(text) else {
+            return;
+        };
         let trailing = text.len() - text.trim_end_matches('\n').len();
         turn.step_break = if trailing == text.len() {
             turn.step_break
@@ -284,7 +360,7 @@ impl Shell<'_> {
             Some(PARAGRAPH_BREAK.len().saturating_sub(trailing))
         };
         let mut events = Vec::new();
-        turn.markdown.push(text, &mut events);
+        turn.markdown.push(&text, &mut events);
         self.transcript.append_assistant(events, &self.theme);
     }
 
@@ -296,10 +372,12 @@ impl Shell<'_> {
         else {
             return;
         };
+        turn.leading_whitespace = LeadingWhitespace::default();
         let Some(missing) = turn.step_break.take() else {
             return;
         };
         let mut events = Vec::new();
+        turn.markdown.flush(&mut events);
         turn.markdown.push(&PARAGRAPH_BREAK[..missing], &mut events);
         self.transcript.append_assistant(events, &self.theme);
     }
@@ -342,6 +420,7 @@ impl Shell<'_> {
             turn.markdown.flush(&mut events);
             self.transcript.append_assistant(events, &self.theme);
         }
+        let tools_settled = self.transcript.abandon_active_tools(outcome);
         match outcome {
             TurnOutcome::Completed => {
                 let duration_ms = u64::try_from(self.now_ms() - turn.started_ms).unwrap_or(0);
@@ -350,6 +429,7 @@ impl Shell<'_> {
                     progress: turn.tokens.progress(),
                 });
             }
+            TurnOutcome::Interrupted if tools_settled => {}
             TurnOutcome::Interrupted => self.push_entry(Entry::Cancellation),
             TurnOutcome::Failed => {
                 if let Some(text) = turn.failure {
@@ -386,6 +466,7 @@ impl Shell<'_> {
         if self.turn.take().is_none() {
             return;
         }
+        self.reveal_pending_approval_call();
         self.dismiss_approval();
         let mut started = None;
         if let Some(submission) = self
@@ -399,16 +480,22 @@ impl Shell<'_> {
         if let Some(turn_id) = started {
             self.send(UiCommand::Cancel { turn_id });
         }
-        self.push_entry(Entry::Cancellation);
+        if !self.transcript.cancel_active_tools() {
+            self.push_entry(Entry::Cancellation);
+        }
         self.promote_next();
     }
 }
 
 #[cfg(test)]
+mod tool_rows;
+
+#[cfg(test)]
 mod tests {
     use ofx_contract::{
-        CallDescription, CompactionActivity, CompactionEnd, Concurrency, HistoryEntry, Notice,
-        NoticeTone, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
+        ActionLabel, CallDescription, CompactionActivity, CompactionEnd, Concurrency, HistoryEntry,
+        Notice, NoticeTone, ToolActivity, ToolCallId, ToolEffect, ToolResultStatus, TurnId,
+        TurnOutcome, UiCommand, UiEvent,
     };
 
     use super::super::SlashCommandSpec;
@@ -773,17 +860,37 @@ mod tests {
         assert!(prompt < notice && notice < reply, "{screen}");
     }
 
-    fn tool_started(turn: u64) -> UiEvent {
+    fn tool_started(turn: u64, call: &str) -> UiEvent {
         UiEvent::ToolStarted {
             turn_id: TurnId::new(turn),
-            call_id: ToolCallId::new("call-1"),
+            call_id: ToolCallId::new(call),
             tool_name: "read_file".to_owned(),
             description: CallDescription {
                 title: "Reading README.md".to_owned(),
+                label: Some(ActionLabel {
+                    active: "Reading",
+                    completed: "Read",
+                    target: "README.md".to_owned(),
+                }),
                 activity: ToolActivity::Read,
                 effect: ToolEffect::ReadOnly,
                 concurrency: Concurrency::Parallel,
             },
+        }
+    }
+
+    fn tool_finished(turn: u64, call: &str) -> UiEvent {
+        UiEvent::ToolFinished {
+            turn_id: TurnId::new(turn),
+            call_id: ToolCallId::new(call),
+            tool_name: "read_file".to_owned(),
+            arguments: "{}".to_owned(),
+            status: ToolResultStatus::Success,
+            content: String::new(),
+            command_result: None,
+            process: None,
+            status_detail: None,
+            file_change: None,
         }
     }
 
@@ -798,13 +905,17 @@ mod tests {
             test.submit("one");
             test.deliver(started(1));
             test.deliver(text(1, before));
-            test.deliver(tool_started(1));
-            test.deliver(tool_started(1));
+            test.deliver(tool_started(1, "call-1"));
+            test.deliver(tool_started(1, "call-2"));
+            test.deliver(tool_finished(1, "call-1"));
+            test.deliver(tool_finished(1, "call-2"));
             test.deliver(text(1, after));
             test.deliver(finished(1, TurnOutcome::Completed));
             let screen = test.screen();
             assert!(
-                screen.contains("  I will read it.\n\n  It describes a service.\n"),
+                screen.contains(
+                    "  I will read it.\n\n● 2 tool calls · 2 read\n├ Read README.md\n└ Read README.md\n\n  It describes a service.\n"
+                ),
                 "{before:?}\n{screen}"
             );
         }
@@ -815,13 +926,15 @@ mod tests {
         let mut test = TestShell::start();
         test.submit("one");
         test.deliver(started(1));
-        test.deliver(tool_started(1));
-        test.deliver(tool_started(1));
+        test.deliver(tool_started(1, "call-1"));
+        test.deliver(tool_finished(1, "call-1"));
         test.deliver(text(1, "It describes a service."));
         test.deliver(finished(1, TurnOutcome::Completed));
         let screen = test.screen();
         assert!(
-            screen.contains("┃ one\n\n  It describes a service.\n"),
+            screen.contains(
+                "┃ one\n\n● 1 tool call · 1 read\n└ Read README.md\n\n  It describes a service.\n"
+            ),
             "{screen}"
         );
     }

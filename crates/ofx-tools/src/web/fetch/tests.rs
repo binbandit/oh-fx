@@ -2,7 +2,7 @@ use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
-use ofx_contract::{PathAccess, ToolCallId, ToolResultStatus};
+use ofx_contract::{ActionLabel, PathAccess, ToolCallId, ToolResultStatus};
 use ofx_testkit::WEB_CA_PEM;
 #[cfg(target_os = "linux")]
 use ofx_testkit::{ConnectProxy, FakeServer, Reply};
@@ -109,6 +109,11 @@ fn advertises_upstream_schema_description_and_progress_title() {
         prepared.describe(),
         CallDescription {
             title: "Fetching https://example.com/docs".to_owned(),
+            label: Some(ActionLabel {
+                active: "Fetching",
+                completed: "Fetched",
+                target: "https://example.com/docs".to_owned(),
+            }),
             activity: ToolActivity::Read,
             effect: ToolEffect::ReadOnly,
             concurrency: Concurrency::Parallel,

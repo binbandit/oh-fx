@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use serde_json::Value;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolArgValue {
     String(String),
@@ -50,6 +52,10 @@ impl ToolArgs {
             _ => None,
         }
     }
+}
+
+pub fn parse_json_value(text: &str) -> Option<Value> {
+    serde_json::from_str(text).ok()
 }
 
 pub fn parse_tool_args_object(args_json: &str) -> Result<ToolArgs, ToolArgsError> {

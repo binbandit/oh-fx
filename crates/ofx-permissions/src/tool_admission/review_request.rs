@@ -2,7 +2,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use ofx_contract::{
-    CommandProfile, CommandRequest, FileChange, FileMutation, GatedAction, ReviewRequest,
+    CommandProfile, CommandRequest, FileChange, FileChangeStats, FileMutation, GatedAction,
+    ReviewRequest,
 };
 use ofx_exec::{Environment, Profile, configured_login_shell, environment};
 use ofx_markdown::FileReview;
@@ -112,11 +113,18 @@ fn named_target(name: &str) -> Target {
 }
 
 fn file_action<'a>(tool_name: &'a str, file: &'a FileChange<'a>) -> Action<'a> {
+    let review = FileReview::new(file.before.unwrap_or_default(), file.after);
+    if let Some(line_counts) = file.line_counts {
+        let _ = line_counts.set(FileChangeStats::from_lines(
+            review.additions(),
+            review.deletions(),
+        ));
+    }
     Action::FileMutation {
         tool_name,
         display_path: &file.display_path,
         preimage_present: file.before.is_some(),
-        review: FileReview::new(file.before.unwrap_or_default(), file.after),
+        review,
     }
 }
 
@@ -184,6 +192,37 @@ fn literal_shell_token(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_reviews_record_their_line_counts_for_the_change_they_review() {
+        let line_counts = std::sync::OnceLock::new();
+        let change = FileChange {
+            display_path: "note.txt".to_owned(),
+            before: Some(b"a\nb\nc\n"),
+            after: b"a\nx\nc\nd\n",
+            parents: Vec::new(),
+            line_counts: Some(&line_counts),
+        };
+        let Action::FileMutation { review, .. } = file_action("edit_file", &change) else {
+            unreachable!()
+        };
+        assert_eq!(
+            line_counts.get(),
+            Some(&FileChangeStats {
+                additions: 2,
+                deletions: 1,
+            })
+        );
+        assert_eq!((review.additions(), review.deletions()), (2, 1));
+        let unshared = FileChange {
+            line_counts: None,
+            ..change
+        };
+        assert!(matches!(
+            file_action("edit_file", &unshared),
+            Action::FileMutation { .. }
+        ));
+    }
 
     #[test]
     fn direct_git_push_branch_proof_accepts_only_explicit_literal_operands() {

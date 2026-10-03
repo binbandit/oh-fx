@@ -15,9 +15,9 @@ use ofx_contract::{
     ReviewRequest, ReviewVerdict, Reviewed, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding,
     StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
     ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec,
-    TurnId, TurnOutcome, TurnStop, UiEvent, Usage, format_unknown_action,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
-    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
+    TurnId, TurnOutcome, TurnStop, UiEvent, Usage, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
+    tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -938,14 +938,14 @@ impl Agent {
         if let Some(output) = malformed {
             return Err(Rejection {
                 reason: ToolRejection::MalformedArguments,
-                title: None,
+                description: None,
                 output,
             });
         }
         let Some(tool) = self.tool(&call.name) else {
             return Err(Rejection {
                 reason: ToolRejection::Unsupported,
-                title: Some(format_unknown_action(&call.name)),
+                description: None,
                 output: ToolOutput::failure(format!("Unsupported tool: {}", call.name)),
             });
         };
@@ -953,7 +953,7 @@ impl Agent {
             Some(Ok(prepared)) => Ok(prepared),
             Some(Err(output)) => Err(Rejection {
                 reason: ToolRejection::Invalid,
-                title: None,
+                description: None,
                 output,
             }),
             None => Err(Rejection::panicked(&call.name)),
@@ -1089,7 +1089,7 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
 
 struct Rejection {
     reason: ToolRejection,
-    title: Option<String>,
+    description: Option<Box<CallDescription>>,
     output: ToolOutput,
 }
 
@@ -1097,7 +1097,7 @@ impl Rejection {
     fn panicked(tool_name: &str) -> Self {
         Self {
             reason: ToolRejection::Panicked,
-            title: None,
+            description: None,
             output: panicked(tool_name),
         }
     }
@@ -1124,7 +1124,7 @@ fn inspected(prepared: Box<dyn PreparedCall>, tool_name: &str) -> Prepared {
         discard(prepared);
         return Prepared::Rejected(Rejection {
             reason: ToolRejection::Invalid,
-            title: Some(description.title),
+            description: Some(Box::new(description)),
             output,
         });
     }
@@ -1404,8 +1404,9 @@ fn approval_request(
     let preview = encode_terminal_safe(call.arguments.as_bytes(), MAX_TOOL_ARGUMENTS_PREVIEW_BYTES);
     ApprovalRequest {
         id,
+        call_id: call.id.clone(),
         tool_name: call.name.clone(),
-        title: description.title.clone(),
+        description: description.clone(),
         tool_arguments_preview: preview.text,
         tool_arguments_truncated: preview.truncated,
         scope: scope.clone(),
@@ -1433,17 +1434,10 @@ async fn run_group<'c>(
         match prepared {
             Prepared::Rejected(Rejection {
                 reason,
-                title,
+                description,
                 output,
             }) => {
-                events(UiEvent::ToolRejected {
-                    turn_id,
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                    reason,
-                    title,
-                });
+                events(tool_rejected(turn_id, call, reason, description, &output));
                 dispatched.push((call, Dispatched::Rejected(output, reason)));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
@@ -1472,9 +1466,9 @@ async fn run_group<'c>(
                 .await;
                 if mutation.is_some()
                     && !matches!(verdict, Verdict::Run(_))
-                    && let Some(title) = contained(|| prepared.untargeted_title())
+                    && let Some(Some(label)) = contained(|| prepared.untargeted_label())
                 {
-                    description.title = title;
+                    description.relabel(label);
                 }
                 if verdict == Verdict::Blocked {
                     blocked = Some(BlockedCall {
@@ -1563,6 +1557,24 @@ async fn settle_group<'c>(
     outcomes
 }
 
+fn tool_rejected(
+    turn_id: TurnId,
+    call: &ToolCall,
+    reason: ToolRejection,
+    description: Option<Box<CallDescription>>,
+    output: &ToolOutput,
+) -> UiEvent {
+    UiEvent::ToolRejected {
+        turn_id,
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        reason,
+        description: description.map(|description| *description),
+        content: output.content.clone(),
+    }
+}
+
 fn tool_started(turn_id: TurnId, call: &ToolCall, description: CallDescription) -> UiEvent {
     UiEvent::ToolStarted {
         turn_id,
@@ -1592,6 +1604,9 @@ fn tool_finished(turn_id: TurnId, call: &ToolCall, output: Option<&ToolOutput>) 
             .map(|output| output.content.clone())
             .unwrap_or_default(),
         command_result: output.and_then(|output| output.command_result.clone()),
+        process: output.and_then(|output| output.process),
+        status_detail: output.and_then(|output| output.status_detail),
+        file_change: output.and_then(|output| output.file_change),
     }
 }
 

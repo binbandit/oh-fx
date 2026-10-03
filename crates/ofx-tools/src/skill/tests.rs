@@ -241,7 +241,20 @@ fn skill_presentation_distinguishes_the_initial_document_from_resource_reads() {
         ),
         ("[]", None, "Working: skill"),
     ] {
-        assert_eq!(title(arguments, resolved), expected, "{arguments}");
+        let label = label(arguments, resolved);
+        assert_eq!(
+            format_plain_action(TOOL_NAME, label.as_ref()),
+            expected,
+            "{arguments}"
+        );
+        if let Some(label) = label {
+            let completed = if label.active == "Loading skill" {
+                "Loaded skill"
+            } else {
+                "Read skill resource"
+            };
+            assert_eq!(label.completed, completed, "{arguments}");
+        }
     }
 }
 

@@ -15,6 +15,7 @@ const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"str
 const PRESENTATION: CallPresentation = CallPresentation {
     activity: ToolActivity::Edit,
     action_label: "Editing",
+    completed_label: "Edited",
     label_argument: "path",
     label_default: "file",
 };

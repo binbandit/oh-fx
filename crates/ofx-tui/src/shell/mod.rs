@@ -8,6 +8,7 @@ mod input_completion_runtime;
 mod input_history_runtime;
 mod input_selection_runtime;
 mod input_submit_runtime;
+mod leading_whitespace;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
 #[cfg(test)]
@@ -31,6 +32,7 @@ use approval_runtime::ApprovalPrompt;
 use input_completion_runtime::FilePicker;
 use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
+use leading_whitespace::LeadingWhitespace;
 use skills_menu::SkillsMenu;
 
 use crate::composer::Composer;
@@ -111,6 +113,7 @@ struct ActiveTurn {
     phase: TurnPhase,
     tokens: TurnTokens,
     markdown: MarkdownProcessor,
+    leading_whitespace: LeadingWhitespace,
     step_break: Option<usize>,
     failure: Option<String>,
 }
@@ -123,6 +126,7 @@ impl ActiveTurn {
             phase: TurnPhase::Thinking,
             tokens: TurnTokens::for_prompt(prompt),
             markdown: MarkdownProcessor::with_completions(Completions::ALL),
+            leading_whitespace: LeadingWhitespace::default(),
             step_break: None,
             failure: None,
         }
@@ -470,8 +474,10 @@ impl<'a> Shell<'a> {
         } else {
             banner
         };
+        let provisional = self.transcript.provisional_rows(&self.theme);
         let live = solve(
             LiveParts {
+                provisional,
                 tail_gap,
                 activity,
                 banner,

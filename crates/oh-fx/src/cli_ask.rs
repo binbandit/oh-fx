@@ -24,7 +24,7 @@ use ofx_config::{
 use ofx_contract::{
     CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
     RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
-    TurnOutcome, UiEvent, Usage,
+    TurnOutcome, UiEvent, Usage, format_unknown_action,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
@@ -891,30 +891,14 @@ impl Presenter {
                 tool_name,
                 arguments,
                 reason,
-                title,
+                description,
                 ..
-            } => {
-                self.start_step();
-                match reason {
-                    ToolRejection::Unsupported => {}
-                    ToolRejection::MalformedArguments | ToolRejection::Invalid => {
-                        self.tool_calls
-                            .push(ToolRecord::rejected(tool_name, &arguments));
-                    }
-                    ToolRejection::Panicked => {
-                        self.tool_calls
-                            .push(ToolRecord::preflight_failed(tool_name, &arguments));
-                    }
-                }
-                title.map_or(Ok(()), |title| {
-                    let line = self.progress_line(&title);
-                    self.write_status(StatusBlock::Progress, &line)
-                })
-            }
+            } => self.tool_rejected(tool_name, &arguments, reason, description),
             UiEvent::ContextNotice { text, .. } => {
                 return self.context_notice(&text);
             }
             UiEvent::TurnStarted { .. }
+            | UiEvent::ToolDeferred { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
             | UiEvent::TurnFinished { .. }
@@ -959,6 +943,35 @@ impl Presenter {
         } else {
             self.write_status(StatusBlock::Progress, &line)
         }
+    }
+
+    fn tool_rejected(
+        &mut self,
+        tool_name: String,
+        arguments: &str,
+        reason: ToolRejection,
+        description: Option<CallDescription>,
+    ) -> io::Result<()> {
+        self.start_step();
+        let title = match reason {
+            ToolRejection::Unsupported => Some(format_unknown_action(&tool_name)),
+            _ => description.map(|description| description.title),
+        };
+        match reason {
+            ToolRejection::Unsupported => {}
+            ToolRejection::MalformedArguments | ToolRejection::Invalid => {
+                self.tool_calls
+                    .push(ToolRecord::rejected(tool_name, arguments));
+            }
+            ToolRejection::Panicked => {
+                self.tool_calls
+                    .push(ToolRecord::preflight_failed(tool_name, arguments));
+            }
+        }
+        title.map_or(Ok(()), |title| {
+            let line = self.progress_line(&title);
+            self.write_status(StatusBlock::Progress, &line)
+        })
     }
 
     fn context_notice(&mut self, notice: &str) -> bool {
@@ -1762,6 +1775,7 @@ mod tests {
             tool_name: "read_file".to_owned(),
             description: CallDescription {
                 title: title.to_owned(),
+                label: None,
                 activity: ToolActivity::Read,
                 effect,
                 concurrency: Concurrency::Parallel,
@@ -1778,6 +1792,9 @@ mod tests {
             status: ToolResultStatus::Success,
             content: String::new(),
             command_result: None,
+            process: None,
+            status_detail: None,
+            file_change: None,
         }
     }
 
@@ -1794,7 +1811,16 @@ mod tests {
             tool_name: tool_name.to_owned(),
             arguments: arguments.to_owned(),
             reason,
-            title: title.map(str::to_owned),
+            description: title
+                .filter(|_| reason != ToolRejection::Unsupported)
+                .map(|title| CallDescription {
+                    title: title.to_owned(),
+                    label: None,
+                    activity: ToolActivity::Read,
+                    effect: ToolEffect::None,
+                    concurrency: Concurrency::Parallel,
+                }),
+            content: String::new(),
         }
     }
 
