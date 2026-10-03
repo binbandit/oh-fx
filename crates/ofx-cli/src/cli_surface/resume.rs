@@ -6,7 +6,7 @@ use ofx_upgrade::is_valid_revision;
 use super::arg_stream::non_blank;
 use crate::command_specs::TopLevelKind;
 
-pub(crate) const UPGRADE_RELAUNCH_ARG: &str = "--upgrade-relaunch";
+pub const UPGRADE_RELAUNCH_ARG: &str = "--upgrade-relaunch";
 pub(crate) const RESUME_ID_ALIAS_PREFIX: &str = "--resume-";
 
 const RESUME_PICKER_ALIAS: &str = "-r";
