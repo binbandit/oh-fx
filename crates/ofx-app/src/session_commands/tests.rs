@@ -584,3 +584,153 @@ fn settings_reports_usage_load_and_save_failures() {
         ["Error|startup-scrollback|not saved to user settings (InvalidSettingsFormat)"]
     );
 }
+
+fn run_statusline(
+    access: &SettingsAccess<'_>,
+    toggles: &mut StatuslineToggles,
+    rest: &str,
+) -> Vec<String> {
+    handle_statusline(access, toggles, rest)
+        .into_iter()
+        .map(|event| match event {
+            UiEvent::Notice { notice } => {
+                format!("{:?}|{}|{}", notice.tone, notice.topic, notice.body)
+            }
+            UiEvent::StatuslineChanged { item, enabled } => {
+                format!("changed|{}|{}", item.label(), on_off(enabled))
+            }
+            other => panic!("unexpected event {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn statusline_lists_the_segments_and_rejects_unknown_items() {
+    let fixture = Fixture::new();
+    let mut toggles = StatuslineToggles::default();
+    toggles.set(StatuslineItem::Session, true);
+    assert_eq!(
+        run_statusline(&fixture.access(), &mut toggles, " \t"),
+        ["Neutral|statusline|context: off\nsession: on\nworkspace: off"]
+    );
+    for rest in ["bogus", "Context", "context on", "--context", "contexts"] {
+        assert_eq!(
+            run_statusline(&fixture.access(), &mut toggles, rest),
+            ["Error||usage: /statusline [context|session|workspace]"],
+            "{rest}"
+        );
+    }
+    assert!(!fixture.paths.config.join("settings.json").exists());
+}
+
+#[test]
+fn statusline_toggles_each_item_and_saves_it_to_user_settings() {
+    let fixture = Fixture::new();
+    let access = fixture.access();
+    let mut toggles = StatuslineToggles::default();
+    assert_eq!(
+        run_statusline(&access, &mut toggles, "context"),
+        [
+            "changed|context|on",
+            "Neutral|statusline|saved to user settings (scope=user)",
+            "Neutral|statusline|context: on",
+        ]
+    );
+    assert!(toggles.enabled(StatuslineItem::Context));
+    assert_eq!(
+        run_statusline(&access, &mut toggles, "\tworkspace "),
+        [
+            "changed|workspace|on",
+            "Neutral|statusline|saved to user settings (scope=user)",
+            "Neutral|statusline|workspace: on",
+        ]
+    );
+    assert_eq!(
+        run_statusline(&access, &mut toggles, "context"),
+        [
+            "changed|context|off",
+            "Neutral|statusline|saved to user settings (scope=user)",
+            "Neutral|statusline|context: off",
+        ]
+    );
+    assert_eq!(
+        fixture.saved(),
+        json!({"statusLine": {"context": false, "workspace": true}})
+    );
+    let saved = fixture.settings().statusline();
+    assert!(!saved.enabled(StatuslineItem::Context));
+    assert!(saved.enabled(StatuslineItem::Workspace));
+}
+
+#[test]
+fn statusline_moves_workspace_copies_of_the_item_into_user_settings() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace.to_string_lossy().into_owned();
+    fixture.write_settings(&json!({
+        "statusLine": {"session": false},
+        "workspaces": {workspace.clone(): {"statusLine": {"session": true, "context": true}}},
+    }));
+    let mut toggles = fixture.settings().statusline();
+    assert!(toggles.enabled(StatuslineItem::Session));
+    let recovery = fixture
+        .paths
+        .config
+        .join("backups/settings.json.preference-migration.statusline_session.json");
+    assert_eq!(
+        run_statusline(&fixture.access(), &mut toggles, "session"),
+        [
+            "changed|session|off".to_owned(),
+            format!(
+                "Neutral|statusline|saved to user settings (scope=user); normalized 1 legacy value across 1 workspace; recovery={}",
+                recovery.display()
+            ),
+            "Neutral|statusline|session: off".to_owned(),
+        ]
+    );
+    assert_eq!(
+        fixture.saved(),
+        json!({
+            "statusLine": {"session": false},
+            "workspaces": {workspace: {"statusLine": {"context": true}}},
+        })
+    );
+    assert!(recovery.exists());
+}
+
+#[test]
+fn statusline_keeps_the_runtime_change_when_it_cannot_be_saved() {
+    let fixture = Fixture::new();
+    let homeless = SettingsAccess {
+        paths: None,
+        workspace_root: &fixture.workspace,
+        tool_names: Vec::new(),
+    };
+    let mut toggles = StatuslineToggles::default();
+    assert_eq!(
+        run_statusline(&homeless, &mut toggles, "session"),
+        [
+            "changed|session|on",
+            "Error|statusline|active for this process but not saved to user settings (HomeNotSet)",
+            "Neutral|statusline|session: on",
+        ]
+    );
+    assert!(toggles.enabled(StatuslineItem::Session));
+    fixture.write_settings(&json!({"permission": 5}));
+    assert_eq!(
+        run_statusline(&fixture.access(), &mut toggles, "session"),
+        [
+            "changed|session|off",
+            "Error|statusline|active for this process but not saved to user settings (InvalidSettingsFormat)",
+            "Neutral|statusline|session: off",
+        ]
+    );
+    fixture.write_settings(&json!({"providers": 5}));
+    assert_eq!(
+        run_statusline(&fixture.access(), &mut toggles, "context"),
+        [
+            "changed|context|on",
+            "Warning|statusline|saved to user settings (scope=user); next-startup source unknown (InvalidObject)",
+            "Neutral|statusline|context: on",
+        ]
+    );
+}

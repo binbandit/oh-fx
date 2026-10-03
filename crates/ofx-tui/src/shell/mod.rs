@@ -22,7 +22,10 @@ use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ofx_contract::{HistoryEntry, PermissionMode, SessionScope, TurnId, UiCommand};
+use ofx_contract::{
+    HistoryEntry, PermissionMode, SessionScope, StatuslineToggles, TurnId, UiCommand,
+    WorkspaceIdentitySource,
+};
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
@@ -48,6 +51,7 @@ use crate::footer::input_presentation::{
 };
 use crate::footer::question_ui::question_hint_row;
 use crate::footer::skills_menu_presentation::{skills_menu_band, skills_menu_hint_row};
+use crate::footer::statusline::Statusline;
 use crate::host::Clipboard;
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
@@ -100,6 +104,8 @@ pub struct ShellOptions {
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
     pub skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     pub opening: Opening,
+    pub statusline: StatuslineToggles,
+    pub workspace_identity: Option<Box<dyn WorkspaceIdentitySource>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +210,7 @@ pub(crate) struct Shell<'a> {
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     kept_recovery: Option<RecoveryStatus>,
     session_title: Option<String>,
+    statusline: Statusline,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
     events: UiEventReceiver,
@@ -356,6 +363,7 @@ impl<'a> Shell<'a> {
         let history = HistoryRecorder::install(options.prompt_history.take(), &mut composer);
         let file_picker = FilePicker::new(options.file_mentions.take());
         let skill_catalog = options.skill_catalog.take();
+        let statusline = Statusline::new(options.statusline, options.workspace_identity.take());
         let mut shell = Self {
             terminal: setup.terminal,
             input: setup.input,
@@ -380,6 +388,7 @@ impl<'a> Shell<'a> {
             skill_catalog,
             kept_recovery: None,
             session_title: None,
+            statusline,
             yolo_warning,
             picker: None,
             events,
@@ -539,6 +548,7 @@ impl<'a> Shell<'a> {
             )),
             _ => None,
         };
+        self.statusline.refresh();
         let (hint, warning_included) = self.hint_row(skills_menu.is_some());
         let activity = if self.question.is_some() {
             Vec::new()
@@ -641,6 +651,7 @@ impl<'a> Shell<'a> {
                 &self.theme,
                 &self.options.model,
                 self.options.permission_mode,
+                self.statusline.view(),
                 self.cols(),
             ),
         };
@@ -990,6 +1001,8 @@ mod tests {
             file_mentions: None,
             skill_catalog: None,
             opening: Opening::Welcome,
+            statusline: StatuslineToggles::default(),
+            workspace_identity: None,
         }
     }
 

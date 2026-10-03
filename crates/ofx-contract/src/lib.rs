@@ -78,6 +78,6 @@ pub use types::{
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CompactionActivity, CompactionEnd, HistoryEntry, Notice,
-    NoticeLink, NoticeTone, QuestionRequest, ToolDeferral, ToolRejection, TurnOutcome, UiCommand,
-    UiEvent,
+    NoticeLink, NoticeTone, QuestionRequest, StatuslineItem, StatuslineToggles, ToolDeferral,
+    ToolRejection, TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity, WorkspaceIdentitySource,
 };

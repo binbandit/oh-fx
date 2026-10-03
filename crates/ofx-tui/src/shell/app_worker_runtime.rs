@@ -151,7 +151,13 @@ impl Shell<'_> {
                     turn.recovery = Some(RecoveryStatus::new(status, now_ms));
                 }
             }
-            UiEvent::UsageReported { turn_id, usage } => {
+            UiEvent::UsageReported {
+                turn_id,
+                usage,
+                context_window,
+            } => {
+                self.statusline
+                    .usage_reported(usage.input_tokens, context_window);
                 if let Some(turn) = self.visible_turn(turn_id) {
                     turn.tokens.settle(usage.output_tokens);
                 }
@@ -168,8 +174,14 @@ impl Shell<'_> {
                 SYSTEM_NOTICE_TOPIC,
                 text,
             ))),
-            UiEvent::ModelSelected { model } => self.options.model = model,
+            UiEvent::ModelSelected { model } => {
+                if model != self.options.model {
+                    self.statusline.model_changed();
+                }
+                self.options.model = model;
+            }
             UiEvent::SessionTitleChanged { title } => self.session_title_changed(title),
+            UiEvent::StatuslineChanged { item, enabled } => self.statusline.set(item, enabled),
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,
@@ -395,6 +407,7 @@ impl Shell<'_> {
         self.turn = None;
         self.compaction = None;
         self.kept_recovery = None;
+        self.statusline.conversation_cleared();
         self.dismiss_approval();
         self.dismiss_question();
         self.composer.reset_for_session();
