@@ -97,29 +97,31 @@ pub fn render_command_help(kind: TopLevelKind) -> String {
     let spec = kind.spec();
     let mut out = format!(
         "{PRODUCT_NAME} {}\n\n{}\n\nUsage:\n  {PRODUCT_NAME} {}\n",
-        spec.token, spec.summary, spec.usage
+        spec.token(),
+        spec.summary(),
+        spec.usage()
     );
-    if !spec.options.is_empty() {
+    if !spec.options().is_empty() {
         let flag_width = spec
-            .options
+            .options()
             .iter()
-            .map(|option| option.flag.len())
+            .map(|option| option.flag().len())
             .max()
             .unwrap_or(0);
         out.push_str("\nOptions:\n");
-        for option in spec.options {
+        for option in spec.options() {
             let _ = writeln!(
                 out,
                 "  {:<width$}{}",
-                option.flag,
-                option.description,
+                option.flag(),
+                option.description(),
                 width = flag_width + 2
             );
         }
     }
-    if !spec.details.is_empty() {
+    if spec.details().next().is_some() {
         out.push('\n');
-        for line in spec.details {
+        for line in spec.details() {
             out.push_str(line);
             out.push('\n');
         }
@@ -571,9 +573,13 @@ mod tests {
     #[test]
     fn top_level_help_renders_every_visible_command_token() {
         let text = help_text(TOP_LEVEL_HELP_DEFAULT_WIDTH);
-        for spec in TOP_LEVEL_SPECS {
-            if !spec.hidden_from_top_level_help {
-                assert!(contains_command_token(&text, spec.token), "{}", spec.token);
+        for spec in &TOP_LEVEL_SPECS {
+            if !spec.hidden_from_top_level_help() {
+                assert!(
+                    contains_command_token(&text, spec.token()),
+                    "{}",
+                    spec.token()
+                );
             }
         }
         for note in TOP_LEVEL_HELP.notes {

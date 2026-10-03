@@ -443,7 +443,7 @@ fn json_errors_follow_flags_before_the_delimiter() {
 
 #[test]
 fn ask_errors_render_upstream_text_reports_and_error_names() {
-    let usage = format!("usage: oh-fx {}\n", TopLevelKind::Ask.spec().usage);
+    let usage = format!("usage: oh-fx {}\n", TopLevelKind::Ask.spec().usage());
     let report = |kind| AskError { kind, json: false }.report();
 
     assert_eq!(
