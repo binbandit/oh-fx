@@ -40,6 +40,7 @@ struct Provider {
     scripts: Mutex<VecDeque<Script>>,
     seen: Mutex<Vec<Seen>>,
     holding: Notify,
+    released: Notify,
 }
 
 impl Provider {
@@ -104,6 +105,7 @@ impl ModelProvider for Provider {
                 Some(Script::Hold) => {
                     self.holding.notify_one();
                     cancel.cancelled().await;
+                    self.released.notify_one();
                     Err(ProviderError::cancelled())
                 }
                 None => Err(ProviderError::new(ProviderErrorKind::Protocol, "NoScript")),
@@ -518,6 +520,35 @@ async fn a_cancelled_parent_cancels_its_child_and_a_busy_child_refuses_new_work(
             .await,
         succeeded("after cancel")
     );
+    assert_eq!(harness.provider.seen().len(), 2);
+}
+
+#[tokio::test]
+async fn abandoning_the_wait_cancels_the_child() {
+    let harness = Harness::new(vec![Script::Hold, Script::Reply("after abandon")]);
+    let cancel = CancellationToken::new();
+    let first = tokio::spawn(harness.call("call-1", message("reviewer", None, "slow"), &cancel));
+    harness.provider.holding.notified().await;
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(Duration::from_secs(5), harness.provider.released.notified())
+        .await
+        .expect("the abandoned child is cancelled");
+    cancel.cancel();
+    let after = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let output = harness
+                .run("call-2", message("reviewer", None, "next"))
+                .await;
+            if output != rejected("child_busy") {
+                break output;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(after, succeeded("after abandon"));
     assert_eq!(harness.provider.seen().len(), 2);
 }
 

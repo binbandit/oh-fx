@@ -6,7 +6,7 @@ use ofx_contract::{
     ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest,
 };
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, DropGuard};
 
 use super::child_state::{ActiveWork, Child, Outcome, Registry};
 use super::execution::{ChildRuntime, WorkOutcome};
@@ -33,7 +33,7 @@ pub(crate) enum Admitted {
 }
 
 pub(crate) struct Waiter {
-    cancel: CancellationToken,
+    abandoned: DropGuard,
     finished: watch::Receiver<Option<Finished>>,
 }
 
@@ -51,7 +51,7 @@ struct Slot {
 impl Slot {
     fn waiter(&self) -> Waiter {
         Waiter {
-            cancel: self.cancel.clone(),
+            abandoned: self.cancel.clone().drop_guard(),
             finished: self.finished.clone(),
         }
     }
@@ -141,20 +141,19 @@ impl Owner {
 
     pub(crate) async fn observe(waiter: Waiter, parent: &CancellationToken) -> Observed {
         let Waiter {
-            cancel,
+            abandoned,
             mut finished,
         } = waiter;
-        tokio::select! {
+        let observed = tokio::select! {
             biased;
-            () = parent.cancelled() => {
-                cancel.cancel();
-                Observed::Cancelled
-            }
+            () = parent.cancelled() => return Observed::Cancelled,
             value = finished.wait_for(Option::is_some) => match value {
                 Ok(value) => value.clone().map_or(Observed::Unavailable, Observed::Finished),
                 Err(_) => Observed::Unavailable,
             },
-        }
+        };
+        abandoned.disarm();
+        observed
     }
 
     fn create(
