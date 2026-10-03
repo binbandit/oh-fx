@@ -74,13 +74,13 @@ pub(super) struct Stamp {
 impl Stamp {
     fn of(stat: &Stat) -> Self {
         Self {
-            inode: stat.st_ino,
-            nlink: u64::from(stat.st_nlink),
+            inode: widened(stat.st_ino),
+            nlink: widened(stat.st_nlink),
             size: u64::from_ne_bytes(stat.st_size.to_ne_bytes()),
             kind: Kind::of(stat),
-            mode: u32::from(stat.st_mode),
-            mtime_ns: nanoseconds(stat.st_mtime.into(), stat.st_mtime_nsec.into()),
-            ctime_ns: nanoseconds(stat.st_ctime.into(), stat.st_ctime_nsec.into()),
+            mode: widened(stat.st_mode),
+            mtime_ns: nanoseconds(widened(stat.st_mtime), widened(stat.st_mtime_nsec)),
+            ctime_ns: nanoseconds(widened(stat.st_ctime), widened(stat.st_ctime_nsec)),
         }
     }
 
@@ -182,6 +182,10 @@ fn stamp(sessions: &PrivateDir, path: &str) -> Result<Option<Stamp>, Errno> {
         Err(Errno::NOENT | Errno::NOTDIR) => Ok(None),
         Err(errno) => Err(errno),
     }
+}
+
+fn widened<Field: Into<Wide>, Wide>(value: Field) -> Wide {
+    value.into()
 }
 
 fn nanoseconds(seconds: i128, nanoseconds: i128) -> i128 {
