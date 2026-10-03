@@ -1,0 +1,62 @@
+name: Guard maintainer approval
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # No concurrency group: cancelling a superseded run could skip a removal the earlier push needs.
+  guard:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'codex-approved') && (
+        contains(github.event.pull_request.labels.*.name, 'codex') ||
+        startsWith(github.event.pull_request.head.ref, 'codex/')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # No checkout: pushed commits are fetched as data and never executed.
+      # A rebase keeps every commit's patch, so it keeps the approval; anything else, or any failure, drops it.
+      - name: Compare the reviewed patches
+        id: compare
+        shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          patches() {
+            local fork merges
+            fork="$(git merge-base refs/base "$1")" || return 1
+            merges="$(git rev-list --merges "$fork..$1")" || return 1
+            [ -z "$merges" ] || return 1
+            git log -p --full-index --no-renames --format='commit %H' "$fork..$1" |
+              git patch-id --verbatim | cut -d ' ' -f 1 | sort
+          }
+          export GIT_DIR="$RUNNER_TEMP/approval.git"
+          git init -q --bare
+          reviewed=changed
+          if git fetch -q --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "+refs/heads/$BASE_REF:refs/base" "$BEFORE" "$AFTER" &&
+            before="$(patches "$BEFORE")" && after="$(patches "$AFTER")" && [ "$before" = "$after" ]; then
+            reviewed=unchanged
+          fi
+          echo "Reviewed patches: $reviewed"
+          echo "reviewed=$reviewed" >> "$GITHUB_OUTPUT"
+      - name: Remove the approval
+        if: ${{ !cancelled() && steps.compare.outputs.reviewed != 'unchanged' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          COMMENT: New commits since approval; `codex-approved` removed until the maintainer re-reviews.
+        run: |
+          issue="repos/$GITHUB_REPOSITORY/issues/$PULL_REQUEST"
+          approved="$(gh api --paginate "$issue/labels" --jq '.[] | select(.name == "codex-approved") | .name')"
+          if [ -n "$approved" ]; then
+            gh api --method DELETE "$issue/labels/codex-approved" --silent
+            gh api "$issue/comments" --silent -f body="$COMMENT"
+          fi
