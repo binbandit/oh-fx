@@ -11,20 +11,20 @@ use crate::theme::Theme;
 
 const HEADER: &str = "Permission needed · Choose one";
 const REASON_LABEL: &str = "Reason:";
-const HINTS: [&str; 3] = [
+pub(super) const HINTS: [&str; 3] = [
     "1–3 choose now    ↑↓ or tab options    enter confirm    esc cancel",
     "1–3 choose now    enter confirm    esc cancel",
     "enter confirm    esc cancel",
 ];
-const SCREEN_HINTS: [&str; 5] = [
+pub(super) const SCREEN_HINTS: [&str; 5] = [
     "1–3 choose now    ↑↓ or tab options    pgup/pgdn scroll    enter confirm    esc cancel",
     "1–3 choose now    ↑↓ options    pgup/pgdn scroll    enter confirm    esc cancel",
     "1–3 choose    pgup/pgdn scroll    enter confirm    esc cancel",
     "1–3 choose now    enter confirm    esc cancel",
     "enter confirm    esc cancel",
 ];
-const RESIZE_TO_REVIEW: &str = " · resize to review";
-const SCROLL_TO_REVIEW: &str = " · scroll to review";
+pub(super) const RESIZE_TO_REVIEW: &str = " · resize to review";
+pub(super) const SCROLL_TO_REVIEW: &str = " · scroll to review";
 const BLOCKED_MARKER: &str = "! ";
 const INLINE_FIXED_ROWS: usize = 4;
 const ARGUMENTS_SEPARATOR: &str = " · ";
@@ -39,12 +39,12 @@ const SPACIOUS_MIN_TERMINAL_ROWS: u16 = 34;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Choice {
     pub(crate) key: u8,
-    label: Phrase,
+    pub(super) label: Phrase,
     pub(crate) decision: ApprovalDecision,
 }
 
 impl Choice {
-    fn new(key: u8, label: Phrase, decision: ApprovalDecision) -> Self {
+    pub(super) fn new(key: u8, label: Phrase, decision: ApprovalDecision) -> Self {
         Self {
             key,
             label,
@@ -93,6 +93,7 @@ pub(crate) struct Review {
     pub(crate) action_rows: usize,
     pub(crate) complete: bool,
     pub(crate) screen: bool,
+    pub(crate) change_shown: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -195,6 +196,7 @@ fn inline_panel(
             action_rows,
             complete: choices.blocked.is_none(),
             screen: false,
+            change_shown: None,
         },
     }
 }
@@ -257,6 +259,7 @@ fn screen_panel(
             action_rows,
             complete: window_rows > 0 && drawable,
             screen: true,
+            change_shown: None,
         },
     }
 }
@@ -311,11 +314,6 @@ fn action_rows(theme: &Theme, block: &ActionBlock, cols: usize) -> (Vec<Row>, bo
         ActionBlock::Line(phrase) => {
             let (text, complete) = phrase.fit(cols.saturating_sub(INSET));
             (vec![inset(&text, Paint::PLAIN)], complete)
-        }
-        ActionBlock::Note(note) => {
-            let row = inset(note, theme.dim);
-            let complete = row.width() <= cols;
-            (vec![row], complete)
         }
         ActionBlock::Refusal(refusal) => wrapped_rows("", refusal, theme.statusline, cols),
         ActionBlock::Arguments { target, preview } => {
@@ -380,7 +378,7 @@ fn choice_row(theme: &Theme, label: &str, selected: bool, blocked: Option<&str>)
     row
 }
 
-fn hint_for(hints: &[&'static str], width: usize) -> &'static str {
+pub(super) fn hint_for(hints: &[&'static str], width: usize) -> &'static str {
     hints
         .iter()
         .find(|hint| visible_width(hint) <= width)
@@ -480,8 +478,9 @@ mod tests {
                 terminal: false,
             }),
             file: None,
+            change: None,
         };
-        ApprovalContent::from_request(&request, Path::new("/ws"))
+        ApprovalContent::from_request(&request)
     }
 
     #[test]
@@ -812,8 +811,9 @@ mod tests {
             },
             command: None,
             file: None,
+            change: None,
         };
-        ApprovalContent::from_request(&request, Path::new("/ws"))
+        ApprovalContent::from_request(&request)
     }
 
     fn arguments_content(raw: &str) -> ApprovalContent {
@@ -841,8 +841,9 @@ mod tests {
             },
             command: None,
             file: None,
+            change: None,
         };
-        ApprovalContent::from_request(&request, Path::new("/ws"))
+        ApprovalContent::from_request(&request)
     }
 
     #[test]

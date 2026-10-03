@@ -222,6 +222,7 @@ mod tests {
                 },
                 command: None,
                 file: None,
+                change: None,
             }),
         });
         test.screen();

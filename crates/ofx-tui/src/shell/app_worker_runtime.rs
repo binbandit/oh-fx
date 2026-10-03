@@ -12,6 +12,7 @@ use ofx_contract::{
 
 use super::leading_whitespace::LeadingWhitespace;
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
+use crate::footer::file_approval::FileApproval;
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
 use crate::render_engine::transcript_blocks::{Entry, HelpEntry};
@@ -22,21 +23,43 @@ const ASK_USER_QUESTION: &str = "ask_user_question";
 
 #[derive(Clone)]
 pub struct UiEventSender {
-    events: Sender<UiEvent>,
+    events: Sender<Delivery>,
     wake: Arc<UnixStream>,
     woken: Arc<AtomicBool>,
 }
 
 impl UiEventSender {
     pub fn send(&self, event: UiEvent) {
-        if self.events.send(event).is_ok() && !self.woken.swap(true, Ordering::AcqRel) {
+        let delivery = Delivery::prepare(event);
+        if self.events.send(delivery).is_ok() && !self.woken.swap(true, Ordering::AcqRel) {
             let _ = (&*self.wake).write(&[1]);
         }
     }
 }
 
+struct Delivery {
+    event: UiEvent,
+    file: Option<Box<FileApproval>>,
+}
+
+impl Delivery {
+    fn prepare(mut event: UiEvent) -> Self {
+        let file = match &mut event {
+            UiEvent::ApprovalRequested { request, .. } => {
+                let change = request.change.take();
+                request
+                    .file
+                    .as_ref()
+                    .map(|file| Box::new(FileApproval::new(request, file, change.as_ref())))
+            }
+            _ => None,
+        };
+        Self { event, file }
+    }
+}
+
 pub struct UiEventReceiver {
-    events: Receiver<UiEvent>,
+    events: Receiver<Delivery>,
     wake: UnixStream,
     woken: Arc<AtomicBool>,
 }
@@ -78,7 +101,7 @@ impl Shell<'_> {
         self.events.drain_wake();
         loop {
             match self.events.events.try_recv() {
-                Ok(event) => self.handle_ui_event(event),
+                Ok(delivery) => self.handle_ui_event(delivery),
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
                     self.should_exit = true;
@@ -88,9 +111,9 @@ impl Shell<'_> {
         }
     }
 
-    fn handle_ui_event(&mut self, event: UiEvent) {
+    fn handle_ui_event(&mut self, delivery: Delivery) {
         self.mark_dirty();
-        match event {
+        match delivery.event {
             UiEvent::TurnStarted { turn_id } => self.turn_started(turn_id),
             UiEvent::AssistantText { turn_id, text } => {
                 if self.is_visible_turn(turn_id) {
@@ -109,7 +132,7 @@ impl Shell<'_> {
             }
             UiEvent::ApprovalRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
-                self.approval_requested(turn_id, *request);
+                self.approval_requested(turn_id, *request, delivery.file);
             }
             UiEvent::QuestionRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);

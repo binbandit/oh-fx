@@ -1,5 +1,6 @@
 use ofx_contract::{
-    ApprovalDecision, ApprovalRequest, ApprovalScope, GatedAction, RequestId, SessionGrant,
+    ApprovalDecision, ApprovalRequest, ApprovalScope, GatedAction, ProposedFileChange, RequestId,
+    SessionGrant,
 };
 
 use super::*;
@@ -152,6 +153,7 @@ async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remem
                 scope: approved_tree(1),
                 command: None,
                 file: None,
+                change: None,
             }]
         );
         assert_eq!(
@@ -276,6 +278,37 @@ async fn file_changes_and_commands_ask_with_their_target_and_always_remembers_on
             ("call-1", ToolResultStatus::Success),
             ("call-2", ToolResultStatus::Success),
             ("call-3", ToolResultStatus::Failure),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn file_change_requests_carry_a_copy_of_the_prepared_change_they_would_apply() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"changes":1,"previewed":1,"serial":true}"#),
+            ("call-2", r#"{"changes":2,"serial":true}"#),
+            ("call-3", r#"{"path":"outside","previewed":1}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let (_, events, _) = run_approving(provider, Arc::new(RememberingGate::default()), |_| {
+        Some(ApprovalDecision::Deny)
+    })
+    .await;
+    assert_eq!(
+        approval_requests(&events)
+            .into_iter()
+            .map(|request| request.change)
+            .collect::<Vec<_>>(),
+        [
+            Some(ProposedFileChange {
+                display_path: "note.txt".to_owned(),
+                before: Some(Arc::from(&b"before\n"[..])),
+                after: Arc::from(&b"after\n"[..]),
+            }),
+            None,
+            None,
         ]
     );
 }

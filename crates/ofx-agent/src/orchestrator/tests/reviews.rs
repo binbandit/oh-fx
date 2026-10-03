@@ -1,6 +1,6 @@
 use ofx_contract::{
-    ApprovalDecision, FileChange, GatedAction, ReviewFailure, ReviewRequest, ReviewVerdict,
-    Reviewed, RootUserRequests, tool_permission_denied_json,
+    ApprovalDecision, FileChange, GatedAction, ProposedFileChange, ReviewFailure, ReviewRequest,
+    ReviewVerdict, Reviewed, RootUserRequests, tool_permission_denied_json,
 };
 
 use super::*;
@@ -488,6 +488,31 @@ async fn file_mutation_reviews_carry_the_prepared_change() {
         ))
     );
     assert!(!seen[0].command);
+}
+
+#[tokio::test]
+async fn a_file_change_asked_about_after_its_review_carries_the_prepared_change() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"unread":1,"previewed":1}"#)]),
+        text_reply("done"),
+    ]);
+    let gate = ReviewingGate::answering([ReviewVerdict::EvidenceIncomplete]);
+    let (_, events) = run_reviewed(provider, gate, Some(ApprovalDecision::Deny), &["go"]).await;
+    let changes: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ApprovalRequested { request, .. } => Some(request.change.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        [Some(ProposedFileChange {
+            display_path: "note.txt".to_owned(),
+            before: Some(Arc::from(&b"before\n"[..])),
+            after: Arc::from(&b"after\n"[..]),
+        })]
+    );
 }
 
 #[tokio::test]
