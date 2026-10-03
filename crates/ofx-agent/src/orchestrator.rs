@@ -11,12 +11,12 @@ use ofx_contract::{
     ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
     DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange, FileMutation, FinishReason,
     GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
-    ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError,
-    ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold, ReviewRequest,
-    ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus,
-    SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection,
-    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    ModelRecoveryAction, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate,
+    PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure,
+    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
+    RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
+    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
     malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
     tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
@@ -33,6 +33,7 @@ use crate::model_response_recovery::{
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
+use crate::recovery_pause::RecoveryPause;
 use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
@@ -101,6 +102,7 @@ pub enum TurnFailure {
     SkillContext(String),
     Compaction(CompactionError),
     Persistence(LogFailure),
+    RecoveryPaused,
 }
 
 impl TurnFailure {
@@ -115,6 +117,7 @@ impl TurnFailure {
             Self::SkillContext(code) => code,
             Self::Compaction(error) => error.code(),
             Self::Persistence(failure) => &failure.code,
+            Self::RecoveryPaused => "RecoveryPaused",
         }
     }
 }
@@ -226,6 +229,7 @@ pub struct Agent {
     turns: u64,
     last_reply: Option<LastReply>,
     steering: Option<Arc<WorkerRuntime>>,
+    recovery_pause: RecoveryPause,
 }
 
 impl Agent {
@@ -263,6 +267,7 @@ impl Agent {
             turns: 0,
             last_reply: None,
             steering: None,
+            recovery_pause: RecoveryPause::default(),
         }
     }
 
@@ -367,6 +372,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> TurnReport {
         self.turns += 1;
+        self.recovery_pause.reset();
         let id = TurnId::new(self.turns);
         events(UiEvent::TurnStarted { turn_id: id });
         if let Err(failure) = self.require_writable() {
@@ -411,7 +417,10 @@ impl Agent {
             }
             Err(Stop::Failed { failure, partial }) => {
                 let spoke = !partial.trim_matches(TRIMMED).is_empty();
-                let ending = if !spoke
+                let ending = if failure == TurnFailure::RecoveryPaused && self.log.is_some() {
+                    self.keep_partial_turn(turn.start, &partial);
+                    Ending::Stopped(TurnStop::Failed)
+                } else if !spoke
                     && !self.has_turn_progress(turn.start)
                     && !turn.compaction.compacted_steps
                     && failure != TurnFailure::StepLimitReached
@@ -724,6 +733,9 @@ impl Agent {
                 Err(error) => error,
             };
             if error.kind == ProviderErrorKind::Cancelled || cancel.is_cancelled() {
+                if let Some(cause) = recovering_from.filter(|_| self.recovery_pause.requested()) {
+                    return Err(Self::pause(turn_id, cause, attempt, &error, events));
+                }
                 return Err(Stop::Interrupted { partial });
             }
             let cause = recovery_cause(error.kind).filter(|_| partial.is_empty());
@@ -761,7 +773,12 @@ impl Agent {
             });
             tokio::select! {
                 biased;
-                () = cancel.cancelled() => return Err(Stop::interrupted()),
+                () = cancel.cancelled() => {
+                    if self.recovery_pause.requested() {
+                        return Err(Self::pause(turn_id, cause, attempt, &error, events));
+                    }
+                    return Err(Stop::interrupted());
+                }
                 () = tokio::time::sleep(decision.delay) => {}
             }
             attempt += 1;
@@ -771,6 +788,34 @@ impl Agent {
             pacing = decision.next_pacing;
             recovering_from = Some(cause);
         }
+    }
+
+    pub fn recovery_pause(&self) -> RecoveryPause {
+        self.recovery_pause.clone()
+    }
+
+    fn pause(
+        turn_id: TurnId,
+        cause: ModelRecoveryCause,
+        attempt: usize,
+        error: &ProviderError,
+        events: EventSink<'_>,
+    ) -> Stop {
+        events(UiEvent::Recovery {
+            turn_id,
+            status: RouteRecoveryStatus {
+                kind: RouteRecoveryKind::TerminalProviderError,
+                failed_attempt: attempt,
+                succeeded_attempt: 0,
+                attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
+                cause: Some(cause),
+                action: Some(ModelRecoveryAction::Paused),
+                delay_seconds: 0,
+                diagnostic: Some(failure_diagnostic(error)),
+                retry_wait: None,
+            },
+        });
+        Stop::failed(TurnFailure::RecoveryPaused)
     }
 
     async fn run_batch(

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use ofx_contract::{
     ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause, RouteRecoveryKind,
-    RouteRecoveryStatus, TurnId, TurnOutcome, UiEvent,
+    RouteRecoveryStatus, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
 use super::super::test_shell::TestShell;
@@ -163,39 +163,108 @@ fn a_retried_request_in_flight_keeps_its_label() {
     assert!(!screen.contains("Thinking"), "{screen}");
 }
 
+fn connectivity_wait() -> RouteRecoveryStatus {
+    retrying(
+        ModelRecoveryCause::ConnectivityLost,
+        ModelRecoveryAction::WaitingForConnectivity,
+        2,
+        Some(Duration::from_secs(2)),
+    )
+}
+
 #[test]
-fn a_connectivity_wait_counts_down_after_its_action() {
+fn a_connectivity_wait_counts_down_and_offers_escape_to_pause() {
     let mut test = running();
-    test.deliver(recovery(
-        TURN,
-        retrying(
-            ModelRecoveryCause::ConnectivityLost,
-            ModelRecoveryAction::WaitingForConnectivity,
-            2,
-            Some(Duration::from_secs(2)),
-        ),
-    ));
+    test.deliver(recovery(TURN, connectivity_wait()));
     let screen = test.screen();
     assert!(
-        screen.contains("⚠ Connection lost · waiting for connection · 2s"),
+        screen.contains("⚠ Connection lost · waiting for connection · 2s · esc to pause"),
         "{screen}"
     );
     let screen = after(&mut test, 500);
     assert!(
-        screen.contains("⚠ Connection lost · waiting for connection · 2s"),
+        screen.contains("waiting for connection · 2s · esc to pause"),
         "{screen}"
     );
     let screen = after(&mut test, 1_000);
     assert!(
-        screen.contains("⚠ Connection lost · waiting for connection · 1s"),
+        screen.contains("⚠ Connection lost · waiting for connection · 1s · esc to pause"),
         "{screen}"
     );
     let screen = after(&mut test, 1_000);
     assert!(
-        screen.contains("⚠ Connection lost · waiting for connection"),
+        screen.contains("⚠ Connection lost · waiting for connection · esc to pause"),
         "{screen}"
     );
-    assert!(!screen.contains("connection · "), "{screen}");
+}
+
+fn escape(test: &mut TestShell) {
+    test.type_bytes(b"\x1b");
+    test.step();
+    test.advance(40);
+    test.draining(|shell| shell.flush_pending_input().unwrap());
+}
+
+fn pauses(test: &TestShell) -> usize {
+    test.sent()
+        .iter()
+        .filter(|command| {
+            **command
+                == UiCommand::PauseRecovery {
+                    turn_id: TurnId::new(TURN),
+                }
+        })
+        .count()
+}
+
+#[test]
+fn one_escape_pauses_a_connectivity_wait() {
+    let mut test = running();
+    test.deliver(recovery(TURN, connectivity_wait()));
+    escape(&mut test);
+    assert_eq!(pauses(&test), 1);
+    escape(&mut test);
+    escape(&mut test);
+    assert_eq!(pauses(&test), 1);
+    assert!(
+        !test
+            .sent()
+            .iter()
+            .any(|command| matches!(command, UiCommand::Cancel { .. }))
+    );
+    let screen = test.screen();
+    assert!(!screen.contains("Cancelled"), "{screen}");
+}
+
+#[test]
+fn escape_during_an_http_retry_wait_only_arms_the_interrupt() {
+    let mut test = running();
+    test.deliver(recovery(
+        TURN,
+        rate_limited(3, Some(Duration::from_secs(3))),
+    ));
+    escape(&mut test);
+    assert_eq!(pauses(&test), 0);
+    assert!(test.shell.gestures.escape_interrupt_armed());
+}
+
+#[test]
+fn a_paused_turn_keeps_its_label_until_the_next_prompt() {
+    let mut test = running();
+    test.resize(24, 140);
+    let mut paused = stopped(1);
+    paused.cause = Some(ModelRecoveryCause::ConnectivityLost);
+    paused.action = Some(ModelRecoveryAction::Paused);
+    paused.diagnostic = Some(ModelFailureDiagnostic::new("ConnectionFailed"));
+    test.deliver(recovery(TURN, paused));
+    test.deliver(finished(TurnOutcome::Failed));
+    let label = "⚠ Connection lost · ConnectionFailed · recovery paused after 1 attempt · send a new message when you're ready";
+    let screen = test.screen();
+    assert!(screen.contains(label), "{screen}");
+    assert!(!screen.contains("Cancelled"), "{screen}");
+    test.submit("again");
+    let screen = test.screen();
+    assert!(!screen.contains("recovery paused"), "{screen}");
 }
 
 #[test]

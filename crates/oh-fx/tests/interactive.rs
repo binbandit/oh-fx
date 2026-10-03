@@ -7,7 +7,9 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, Gate, PtySession, Reply, chat_text_events, chat_tool_call_events};
+use ofx_testkit::{
+    FakeServer, Gate, PtySession, RefusedPort, Reply, chat_text_events, chat_tool_call_events,
+};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -1044,6 +1046,33 @@ fn a_retried_request_counts_down_in_the_footer_until_its_reply_arrives() {
             !screen.contains("⚠ Provider unavailable") && !screen.contains("✓ recovered")
         })
         .unwrap_or_else(|screen| panic!("the recovery status stayed:\n{screen}"));
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn escape_pauses_a_connectivity_wait_until_the_next_prompt() {
+    let port = RefusedPort::reserve();
+    let home = Home::with_settings(&settings(&port.base_url()));
+    let mut session = home.shell(24, 140);
+    session.send(b"hi\r");
+    wait(&session, "waiting for connection");
+    wait(&session, " · esc to pause");
+    session.send(b"\x1b");
+    let screen = wait(&session, " · send a new message when you're ready");
+    assert!(
+        screen.contains("⚠ Connection lost · ConnectionFailed · recovery paused after"),
+        "{screen}"
+    );
+    assert!(!screen.contains("Cancelled"), "{screen}");
+    session.send(b"again\r");
+    session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("recovery paused") && screen.contains("waiting for connection")
+        })
+        .unwrap_or_else(|screen| panic!("the next prompt kept the paused label:\n{screen}"));
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }

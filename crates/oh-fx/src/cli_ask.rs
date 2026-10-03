@@ -1201,7 +1201,8 @@ impl Presenter {
             | TurnFailure::ProjectContext
             | TurnFailure::SkillContext(_)
             | TurnFailure::Compaction(_)
-            | TurnFailure::Persistence(_) => self.describe_error(failure.code(), None),
+            | TurnFailure::Persistence(_)
+            | TurnFailure::RecoveryPaused => self.describe_error(failure.code(), None),
             TurnFailure::StepLimitReached | TurnFailure::RepeatedMalformedArguments => {
                 Ok(FailureSummary {
                     error: None,

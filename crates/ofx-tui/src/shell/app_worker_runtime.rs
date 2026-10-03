@@ -231,6 +231,25 @@ impl Shell<'_> {
         true
     }
 
+    pub(super) fn pause_connectivity_wait(&mut self) -> bool {
+        let Some(turn) = self.turn.as_mut() else {
+            return false;
+        };
+        if turn.pause_requested {
+            return true;
+        }
+        let waiting = turn
+            .recovery
+            .as_ref()
+            .is_some_and(RecoveryStatus::is_connectivity_wait);
+        let Some(turn_id) = turn.turn_id.filter(|_| waiting) else {
+            return false;
+        };
+        turn.pause_requested = true;
+        self.send(UiCommand::PauseRecovery { turn_id });
+        true
+    }
+
     pub(super) fn refresh_recovery_status(&mut self, now_ms: i64) {
         let Some(turn) = self.turn.as_mut() else {
             return;

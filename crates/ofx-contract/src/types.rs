@@ -355,6 +355,7 @@ impl ModelRecoveryCause {
 pub enum ModelRecoveryAction {
     RetryingRequest,
     WaitingForConnectivity,
+    Paused,
 }
 
 impl ModelRecoveryAction {
@@ -362,6 +363,7 @@ impl ModelRecoveryAction {
         match self {
             Self::RetryingRequest => "retrying_request",
             Self::WaitingForConnectivity => "waiting_for_connectivity",
+            Self::Paused => "paused",
         }
     }
 
@@ -369,6 +371,7 @@ impl ModelRecoveryAction {
         match self {
             Self::RetryingRequest => "retrying request",
             Self::WaitingForConnectivity => "waiting for connection",
+            Self::Paused => "recovery paused",
         }
     }
 }
@@ -457,6 +460,10 @@ impl RouteRecoveryStatus {
         self.kind == RouteRecoveryKind::TerminalProviderError
     }
 
+    pub fn is_paused(&self) -> bool {
+        self.is_terminal() && self.action == Some(ModelRecoveryAction::Paused)
+    }
+
     pub fn reported_attempt(&self) -> usize {
         if self.is_recovered() && self.succeeded_attempt != 0 {
             self.succeeded_attempt
@@ -498,12 +505,17 @@ impl RouteRecoveryStatus {
     fn stopped_cause_label(&self, name: &str) -> String {
         let attempt = self.failed_attempt;
         let plural = if attempt == 1 { "" } else { "s" };
+        let state = if self.action == Some(ModelRecoveryAction::Paused) {
+            "recovery paused"
+        } else {
+            "stopped"
+        };
         match &self.diagnostic {
             Some(diagnostic) => format!(
-                "⚠ {name} · {} · stopped after {attempt} attempt{plural}",
+                "⚠ {name} · {} · {state} after {attempt} attempt{plural}",
                 diagnostic.human_text()
             ),
-            None => format!("⚠ {name} · stopped after {attempt} attempt{plural}"),
+            None => format!("⚠ {name} · {state} after {attempt} attempt{plural}"),
         }
     }
 
@@ -829,6 +841,29 @@ mod tests {
         assert!(terminal.is_terminal());
         assert_eq!(terminal.kind.as_str(), "terminal_provider_error");
         assert!(!stopped(unavailable, 10, None).is_recovered());
+    }
+
+    #[test]
+    fn a_paused_recovery_says_how_many_attempts_it_made() {
+        let mut paused = stopped(
+            Some(ModelRecoveryCause::ConnectivityLost),
+            1,
+            Some("ConnectionFailed"),
+        );
+        paused.action = Some(ModelRecoveryAction::Paused);
+        assert_eq!(
+            paused.label(),
+            "⚠ Connection lost · ConnectionFailed · recovery paused after 1 attempt"
+        );
+        paused.failed_attempt = 3;
+        paused.diagnostic = None;
+        assert_eq!(
+            paused.label(),
+            "⚠ Connection lost · recovery paused after 3 attempts"
+        );
+        assert_eq!(ModelRecoveryAction::Paused.as_str(), "paused");
+        assert!(paused.is_paused());
+        assert!(!stopped(None, 3, None).is_paused());
     }
 
     #[test]

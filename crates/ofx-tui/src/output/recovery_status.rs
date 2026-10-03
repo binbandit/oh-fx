@@ -1,4 +1,4 @@
-use ofx_contract::RouteRecoveryStatus;
+use ofx_contract::{ModelRecoveryAction, RouteRecoveryKind, RouteRecoveryStatus};
 
 use super::activity_status::static_status_rows;
 use crate::row_text::Row;
@@ -6,6 +6,8 @@ use crate::theme::Theme;
 
 const RECOVERED_VISIBLE_MS: i64 = 1_500;
 const SECOND_MS: i64 = 1_000;
+const ESC_TO_PAUSE: &str = " · esc to pause";
+const CONTINUE_LATER: &str = " · send a new message when you're ready";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryStatus {
@@ -78,9 +80,22 @@ impl RecoveryStatus {
                 attempt => format!("✓ recovered · attempt {attempt}"),
             };
         }
+        if self.status.is_paused() {
+            return format!("{}{CONTINUE_LATER}", self.status.label());
+        }
         let mut projected = self.status.clone();
         projected.delay_seconds = self.shown_seconds;
-        projected.label()
+        let label = projected.label();
+        if self.is_connectivity_wait() {
+            format!("{label}{ESC_TO_PAUSE}")
+        } else {
+            label
+        }
+    }
+
+    pub(crate) fn is_connectivity_wait(&self) -> bool {
+        self.status.kind == RouteRecoveryKind::AutoRetry
+            && self.status.action == Some(ModelRecoveryAction::WaitingForConnectivity)
     }
 }
 

@@ -2540,6 +2540,7 @@ mod capabilities;
 mod compaction;
 mod malformed_arguments;
 mod project_context;
+mod recovery_pause;
 mod reviews;
 mod skills;
 mod steering;

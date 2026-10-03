@@ -137,6 +137,7 @@ struct ActiveTurn {
     step_break: Option<usize>,
     failure: Option<String>,
     recovery: Option<RecoveryStatus>,
+    pause_requested: bool,
 }
 
 impl ActiveTurn {
@@ -151,6 +152,7 @@ impl ActiveTurn {
             step_break: None,
             failure: None,
             recovery: None,
+            pause_requested: false,
         }
     }
 }

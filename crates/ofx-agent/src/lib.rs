@@ -7,6 +7,7 @@ mod orchestrator;
 mod project_context;
 mod prompt_context;
 mod questions;
+mod recovery_pause;
 #[cfg(test)]
 mod scripted_provider;
 mod skill_context;
@@ -23,6 +24,7 @@ pub use orchestrator::{
 };
 pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 pub use questions::{QuestionRequests, Questions};
+pub use recovery_pause::RecoveryPause;
 pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 pub use subagent::{ChildAgents, ChildDefaults, ChildSettings, SubagentHost, WorkTools};
 pub use worker_runtime::{QueuedPrompt, WorkerRuntime};
