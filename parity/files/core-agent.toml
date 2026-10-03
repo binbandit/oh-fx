@@ -80,7 +80,7 @@ note = "Ordered JSON encoding, answer-count mismatch handling and result decodin
 upstream = "src/core/agent/question_prompt.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/question_prompt.rs"]
-note = "Choice navigation, per-entry freeform drafts, bounded grapheme editing and ordered answer projection exist; upstream compact-input submissions and discarded-draft trace diagnostics are absent."
+note = "Choice navigation, per-entry freeform drafts, bounded grapheme editing and ordered answer projection exist; compact input submissions serve MCP elicitation (OH-25), and the discarded-draft trace lines arrive with the debug trace (OH-11)."
 
 [[file]]
 upstream = "src/core/agent/runtime/agent.zig"

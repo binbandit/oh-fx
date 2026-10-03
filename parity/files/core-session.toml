@@ -183,7 +183,7 @@ note = "Modern create/resume/list storage exists; legacy migration, doctor, imag
 upstream = "src/core/session/session_store_paths.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store_paths.rs"]
-note = "Workspace normalization and root validation exist; upstream sessionJsonPath/sessionDirPath path-builder facade is missing."
+note = "Workspace normalization and root validation exist; sessions open through directory handles, and the sessionJsonPath and sessionDirPath builders serve the web_fetch artifact directory (OH-18) and the session_dir line of the trace report (OH-11)."
 
 [[file]]
 upstream = "src/core/session/session_store_types.zig"
