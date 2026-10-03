@@ -6,6 +6,7 @@ mod legacy_elicitation_runtime;
 mod legacy_http_sse;
 mod legacy_sse;
 mod legacy_streamable_http;
+mod local_inspection;
 mod mcp_contract;
 mod native_config;
 mod profile_store;
@@ -31,6 +32,9 @@ pub use error::McpError;
 pub use features::tools::{
     ResourceContents, Tool, ToolCallOutcome, ToolCallResult, ToolCatalog, ToolContent,
 };
+pub use local_inspection::{
+    ConfiguredServer, LocalConfigInspection, ProfileConfigDiagnostic, inspect_local_config,
+};
 pub use mcp_contract::{
     ConfigScope, ConfigSource, DEFAULT_OPERATION_TIMEOUT_MS, DEFAULT_RESTART_LIMIT,
     DEFAULT_STARTUP_TIMEOUT_MS, EnvVar, HttpHeader, HttpHeaderEnv, InvalidServerConfig,
@@ -47,7 +51,7 @@ pub use project_config::{
     McpConfigError, ProfileParseResult, ProjectMcpAction, ProjectMcpChoices, ProjectMcpTransition,
     WorkspaceDiagnostic, WorkspaceDiagnosticCause, WorkspaceEnvironmentField, WorkspaceParseResult,
     expand_approved_workspace_configs, merge_native, parse_profile_document,
-    parse_workspace_document,
+    parse_workspace_document, render_workspace_diagnostic,
 };
 pub use protocol_messages::{PromptCapabilities, ResourceCapabilities, ServerCapabilities};
 pub use server_connection::{McpClient, ServerNotification};

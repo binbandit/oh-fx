@@ -10,6 +10,7 @@ mod provider_activation;
 mod provider_command;
 mod question_call_record;
 mod shell_call_record;
+mod status_command;
 mod upgrade_command;
 
 use std::env;
@@ -92,6 +93,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Models(format) => models_command::run(format),
             Command::Permissions(format) => permissions_command::run(format),
             Command::Provider(target) => provider_command::run(target),
+            Command::Status(format) => status_command::run(format),
             other => unavailable_command(&other),
         },
     }
