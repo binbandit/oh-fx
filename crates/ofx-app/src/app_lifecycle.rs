@@ -9,7 +9,9 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_cli::{LaunchModifiers, RequestedResume};
-use ofx_contract::{BoxFuture, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
+use ofx_contract::{
+    BoxFuture, DynamicTools, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent,
+};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ServerStatus, ShutdownMode, StartupPhase, render_workspace_diagnostic};
 use ofx_text::encode_terminal_safe;
@@ -338,7 +340,7 @@ async fn discover_mcp(mcp: Arc<McpRuntime>, events: UiEventSender) {
             warn(format!("MCP server '{name}' failed to start: {failure}"));
         }
     }
-    let _ = ofx_contract::DynamicTools::tools(mcp.as_ref());
+    let _ = mcp.tools();
     for notice in mcp.take_notices() {
         warn(notice);
     }
