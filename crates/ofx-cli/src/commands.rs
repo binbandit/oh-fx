@@ -561,6 +561,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Mcp,
+        "/mcp",
+        "manage local and remote MCP servers, resources, prompts, and project trust",
+        SlashPresentationCategory::Extensions,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Skills,
         "/skills",
         "browse and manage skills",

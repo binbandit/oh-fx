@@ -13,6 +13,7 @@ pub enum SlashKind {
     Permissions,
     Allowlist,
     Undo,
+    Mcp,
     Skills,
     Copy,
     Compact,
@@ -212,6 +213,7 @@ mod tests {
                 "/permissions",
                 "/allowlist",
                 "/undo",
+                "/mcp",
                 "/skills",
                 "/copy",
                 "/compact",
@@ -265,6 +267,10 @@ mod tests {
             spec(SlashKind::Undo).completion_description,
             "undo the latest tracked file operation"
         );
+        assert_eq!(
+            spec(SlashKind::Mcp).completion_description,
+            "manage local and remote MCP servers, resources, prompts, and project trust"
+        );
     }
 
     #[test]
@@ -288,6 +294,7 @@ mod tests {
                 ("/permissions", "Security"),
                 ("/allowlist", "Security"),
                 ("/undo", "Session"),
+                ("/mcp", "Extensions"),
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),

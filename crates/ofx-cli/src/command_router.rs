@@ -98,6 +98,17 @@ mod tests {
     #[test]
     fn parse_returns_empty_payload_for_bare_prefix_commands() {
         assert_eq!(parse("/model"), Some((SlashKind::Model, "")));
+        assert_eq!(parse("/mcp"), Some((SlashKind::Mcp, "")));
+    }
+
+    #[test]
+    fn parse_hands_the_mcp_subcommand_through_as_its_payload() {
+        assert_eq!(parse("/mcp list"), Some((SlashKind::Mcp, "list")));
+        assert_eq!(
+            parse("/mcp\ttrust approve docs "),
+            Some((SlashKind::Mcp, "trust approve docs"))
+        );
+        assert_eq!(parse("/mcps"), None);
     }
 
     #[test]

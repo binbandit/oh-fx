@@ -209,6 +209,12 @@ impl LegacyHttpClient {
         self.version
     }
 
+    pub(crate) fn listening(&self) -> bool {
+        lock(&self.listener)
+            .as_ref()
+            .is_some_and(|listener| !listener.is_finished())
+    }
+
     pub(crate) fn start_notification_listener(&self) {
         let shared = Arc::clone(&self.shared);
         *lock(&self.listener) = Some(spawn(listener_main(shared)));

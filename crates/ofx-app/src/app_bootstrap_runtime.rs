@@ -24,16 +24,14 @@ use ofx_contract::{
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{ChatCompletionsProvider, ChatCompletionsReviewTransport, CodexReviewTransport};
 use ofx_http::ClientError;
-use ofx_mcp::{
-    ConnectOptions, McpRuntime, ProfileStoreError, ProjectMcpChoices, SchemaLimits,
-    load_native_configs, profile_config_path,
-};
+use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError, SchemaLimits};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_tools::WebFetchProgress;
 use ofx_workspace::ChangeTracker;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
+use crate::app_mcp_runtime::{McpHost, McpSources};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
@@ -303,7 +301,7 @@ impl Profile {
                 change_tracker: change_tracker.as_ref(),
             },
         );
-        let mcp = self.mcp_runtime(&tools, &limits)?;
+        let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
         Ok(AgentSetup {
             provider: route.provider,
             configured_model: route.configured_model,
@@ -419,18 +417,11 @@ impl Profile {
         &self,
         tools: &[Arc<dyn Tool>],
         limits: &ContextLimits,
+        interactive: bool,
     ) -> Result<Option<Arc<McpRuntime>>, ProfileStoreError> {
-        let profile = self.paths.as_ref().map(profile_config_path);
-        let choices =
-            ProjectMcpChoices::parse(self.settings.workspace_entry(), &mut Vec::new()).ok();
-        let lookup = |name: &str| env::var(name).ok();
-        let load = load_native_configs(
-            profile.as_deref(),
-            &self.workspace_root,
-            choices.as_ref(),
-            &lookup,
-        )?;
-        if load.configs.is_empty() && load.workspace_diagnostics.is_empty() {
+        let sources = McpSources::new(self.paths.clone(), self.workspace_root.clone());
+        let load = sources.load_with(&self.settings)?;
+        if !interactive && load.configs.is_empty() && load.workspace_diagnostics.is_empty() {
             return Ok(None);
         }
         let options = ConnectOptions {
@@ -443,7 +434,7 @@ impl Profile {
             selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
         };
         Ok(Some(Arc::new(McpRuntime::new(
-            load, &options, reserved, limits,
+            load, options, reserved, limits,
         ))))
     }
 
@@ -608,6 +599,18 @@ impl AgentSetup {
 
     pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {
         self.preferences.as_ref()
+    }
+
+    pub(crate) fn mcp_host(&self, emit: Emit) -> Option<McpHost> {
+        let runtime = Arc::clone(self.mcp.as_ref()?);
+        let sources = McpSources::new(self.preferences.clone(), self.workspace_root.clone());
+        Some(McpHost::new(runtime, sources, emit))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn without_preferences(mut self) -> Self {
+        self.preferences = None;
+        self
     }
 
     pub(crate) fn permission_runtime(&self, emit: Emit) -> PermissionRuntime {

@@ -13,13 +13,11 @@ use crate::timing::spawn;
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerStatus {
-    Waiting,
+pub(crate) enum Lifecycle {
+    Idle,
     Starting,
-    Ready { tools: usize },
+    Ready(Arc<McpClient>),
     Failed(String),
-    Stopped,
 }
 
 enum State {
@@ -77,16 +75,17 @@ impl Server {
         }
     }
 
-    pub(crate) fn status(&self) -> ServerStatus {
+    pub(crate) fn lifecycle(&self) -> Lifecycle {
         match &*lock(&self.state) {
-            State::Waiting => ServerStatus::Waiting,
-            State::Starting => ServerStatus::Starting,
-            State::Ready(connection) => ServerStatus::Ready {
-                tools: connection.client.tool_catalog().tools.len(),
-            },
-            State::Failed(message) => ServerStatus::Failed(message.clone()),
-            State::Stopped => ServerStatus::Stopped,
+            State::Waiting | State::Stopped => Lifecycle::Idle,
+            State::Starting => Lifecycle::Starting,
+            State::Ready(connection) => Lifecycle::Ready(Arc::clone(&connection.client)),
+            State::Failed(message) => Lifecycle::Failed(message.clone()),
         }
+    }
+
+    pub(crate) fn restarts(&self) -> u8 {
+        *lock(&self.restarts)
     }
 
     pub(crate) fn catalog(&self) -> Option<(Arc<ToolCatalog>, Option<String>)> {
@@ -206,11 +205,18 @@ impl Server {
     }
 
     pub(crate) async fn stop(&self, mode: ShutdownMode) {
-        let previous = std::mem::replace(&mut *lock(&self.state), State::Stopped);
-        if let State::Ready(connection) = previous {
-            connection.stop.cancel();
-            connection.client.shutdown(mode).await;
+        if let Some(client) = self.retire() {
+            client.shutdown(mode).await;
         }
+    }
+
+    pub(crate) fn retire(&self) -> Option<Arc<McpClient>> {
+        let previous = std::mem::replace(&mut *lock(&self.state), State::Stopped);
+        let State::Ready(connection) = previous else {
+            return None;
+        };
+        connection.stop.cancel();
+        Some(connection.client)
     }
 }
 

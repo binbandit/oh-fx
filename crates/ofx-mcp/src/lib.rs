@@ -2,6 +2,7 @@ mod command_provider;
 mod docker_run;
 mod error;
 mod features;
+mod health;
 mod legacy_elicitation_runtime;
 mod legacy_http_sse;
 mod legacy_sse;
@@ -17,6 +18,7 @@ mod server_auth;
 mod server_connection;
 mod server_lifecycle;
 mod server_transport;
+mod server_views;
 mod settings_choices;
 mod startup_admission;
 mod stdio_dispatcher;
@@ -40,8 +42,8 @@ pub use mcp_contract::{
     McpAuthConfig, McpServerConfig, ProfileConfigWarning, ProfileConfigWarningCause, TransportType,
     WorkspaceAdmission,
 };
-pub use mcp_runtime::{McpRuntime, ServerView, Settling};
-pub use native_config::{NativeConfigLoad, load_native_configs};
+pub use mcp_runtime::{McpRuntime, ReloadCancelled, ReloadOutcome, Settling};
+pub use native_config::{NativeConfigLoad, load_native_configs, preview_workspace_authority};
 pub use profile_store::{
     PROFILE_CONFIG_FILE_NAME, ProfileRemoveOutcome, ProfileStoreError, add_profile_server,
     load_profile_document, profile_config_path, remove_profile_server, render_profile_config,
@@ -53,9 +55,8 @@ pub use project_config::{
     expand_approved_workspace_configs, merge_native, parse_profile_document,
     parse_workspace_document, render_workspace_diagnostic,
 };
-pub use server_lifecycle::ServerStatus;
 pub use server_transport::ConnectOptions;
-pub use settings_choices::{ProjectMcpSettingsChange, apply_project_mcp_action};
+pub use settings_choices::{ProjectMcpSettingsChange, apply_project_mcp_action_to_entry};
 pub use startup_admission::{StartupDecision, StartupPhase, decide_startup};
 pub use streamable_http::{EndpointError, HeaderError, validate_endpoint, validate_static_headers};
 pub use tool_mcp_registry::SchemaLimits;

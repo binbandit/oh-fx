@@ -97,6 +97,16 @@ pub(crate) enum Transport {
     Sse(LegacySseClient),
 }
 
+impl Transport {
+    pub(crate) fn listening(&self) -> bool {
+        match self {
+            Self::Stdio(transport) => transport.is_running(),
+            Self::Http(transport) => transport.listening(),
+            Self::Sse(transport) => transport.is_running(),
+        }
+    }
+}
+
 impl McpTransport for Transport {
     fn next_request_id(&self) -> Result<u64, McpError> {
         match self {

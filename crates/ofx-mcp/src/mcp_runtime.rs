@@ -6,27 +6,33 @@ use std::task::{Context, Poll};
 
 use ofx_contract::{DynamicTools, Tool};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
-use crate::mcp_contract::{ConfigSource, ProfileConfigWarning, WorkspaceAdmission};
+use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
+use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
 use crate::native_config::NativeConfigLoad;
-use crate::project_config::WorkspaceDiagnostic;
-use crate::server_lifecycle::{Server, ServerStatus};
+use crate::project_config::{WorkspaceDiagnostic, render_workspace_diagnostic};
+use crate::server_lifecycle::{Lifecycle, Server};
 use crate::server_transport::ConnectOptions;
+use crate::server_views::{health_failure, snapshot_server};
 use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
 use crate::timing::spawn;
 use crate::tool_mcp_registry::{SchemaLimits, publish_tools};
 use crate::tool_names::ToolNames;
 use crate::transport::ShutdownMode;
 
+const REQUIRED_FALLBACK: &str = "Check the trusted profile configuration and retry.";
+
 pub struct McpRuntime {
-    servers: Vec<Arc<Server>>,
+    servers: Mutex<Vec<Arc<Server>>>,
+    options: ConnectOptions,
     names: Mutex<ToolNames>,
     reserved: Vec<String>,
     limits: SchemaLimits,
     catalog_generation: Arc<AtomicU64>,
     published: Mutex<Published>,
-    workspace_diagnostics: Vec<WorkspaceDiagnostic>,
-    profile_warning: Option<ProfileConfigWarning>,
+    workspace_diagnostics: Mutex<Vec<WorkspaceDiagnostic>>,
+    reloading: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -37,18 +43,22 @@ struct Published {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerView {
-    pub name: String,
-    pub required: bool,
-    pub workspace_admission: Option<WorkspaceAdmission>,
-    pub enabled: bool,
-    pub status: ServerStatus,
+pub enum ReloadOutcome {
+    Published {
+        configured: usize,
+        unavailable: Vec<String>,
+        healthy: bool,
+    },
+    RetainedRequiredFailure(String),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReloadCancelled;
 
 impl McpRuntime {
     pub fn new(
         load: NativeConfigLoad,
-        options: &ConnectOptions,
+        options: ConnectOptions,
         reserved: Vec<String>,
         limits: SchemaLimits,
     ) -> Self {
@@ -65,45 +75,29 @@ impl McpRuntime {
             })
             .collect();
         Self {
-            servers,
+            servers: Mutex::new(servers),
+            options,
             names: Mutex::new(ToolNames::default()),
             reserved,
             limits,
             catalog_generation,
             published: Mutex::new(Published::default()),
-            workspace_diagnostics: load.workspace_diagnostics,
-            profile_warning: load.profile_warning,
+            workspace_diagnostics: Mutex::new(load.workspace_diagnostics),
+            reloading: tokio::sync::Mutex::new(()),
         }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.servers.is_empty()
     }
 
     pub fn connect(&self, phase: StartupPhase) -> Settling {
         Settling::all(
-            self.servers
-                .iter()
+            self.current()
+                .into_iter()
                 .filter(|server| decide_startup(&server.config, phase) == StartupDecision::Connect)
-                .map(|server| (Arc::clone(server), Step::Start)),
+                .map(|server| (server, Step::Start)),
         )
     }
 
-    pub fn servers(&self) -> Vec<ServerView> {
-        self.servers
-            .iter()
-            .map(|server| ServerView {
-                name: server.config.name.clone(),
-                required: server.config.required,
-                workspace_admission: server.config.workspace_admission,
-                enabled: server.config.enabled,
-                status: server.status(),
-            })
-            .collect()
-    }
-
     pub fn pending_workspace_names(&self) -> Vec<String> {
-        self.servers
+        self.current()
             .iter()
             .filter(|server| {
                 server.config.source == ConfigSource::Workspace
@@ -115,36 +109,236 @@ impl McpRuntime {
     }
 
     pub fn required_startup_failure(&self) -> Option<String> {
-        let unavailable = self
+        let snapshot = self.snapshot_health();
+        if health::startup_decision(&snapshot.servers) != Health::Blocked {
+            return None;
+        }
+        let failure = snapshot
             .servers
             .iter()
-            .filter(|server| server.config.required && server.config.enabled)
-            .find(|server| !matches!(server.status(), ServerStatus::Ready { .. }))?;
-        let failure = match unavailable.status() {
-            ServerStatus::Failed(message) => message,
-            _ => "Check the trusted profile configuration and retry.".to_owned(),
-        };
-        Some(format!(
-            "Required MCP server '{}' failed to start: {failure}",
-            unavailable.config.name
-        ))
+            .find(|server| server.required && server.connection != ConnectionState::Ready)
+            .map_or_else(
+                || "A required MCP server is unavailable.".to_owned(),
+                |server| {
+                    format!(
+                        "Required MCP server '{}' failed to start: {}",
+                        server.configured_name,
+                        server.failure.as_deref().unwrap_or(REQUIRED_FALLBACK)
+                    )
+                },
+            );
+        Some(failure)
     }
 
-    pub fn workspace_diagnostics(&self) -> &[WorkspaceDiagnostic] {
-        &self.workspace_diagnostics
+    pub fn workspace_diagnostics(&self) -> Vec<WorkspaceDiagnostic> {
+        lock(&self.workspace_diagnostics).clone()
     }
 
-    pub fn profile_warning(&self) -> Option<&ProfileConfigWarning> {
-        self.profile_warning.as_ref()
+    pub fn render_health(&self) -> String {
+        health::render(&self.snapshot_health())
+    }
+
+    pub fn render_summary(&self) -> String {
+        health::render_summary(&self.snapshot_health())
+    }
+
+    pub fn startup_notice(&self) -> Option<String> {
+        health::render_startup_notice(&self.snapshot_health())
     }
 
     pub fn shutdown(&self, mode: ShutdownMode) -> Settling {
         Settling::all(
-            self.servers
-                .iter()
-                .map(|server| (Arc::clone(server), Step::Stop(mode))),
+            self.current()
+                .into_iter()
+                .map(|server| (server, Step::Stop(mode))),
         )
     }
+
+    pub fn revoke_workspace_except(&self, names: &[String]) -> bool {
+        let revoked: Vec<Arc<Server>> = {
+            let mut servers = lock(&self.servers);
+            let (revoked, kept) = std::mem::take(&mut *servers)
+                .into_iter()
+                .partition(|server| {
+                    approved_workspace(&server.config) && !names.contains(&server.config.name)
+                });
+            *servers = kept;
+            revoked
+        };
+        if revoked.is_empty() {
+            return false;
+        }
+        for server in revoked {
+            if let Some(client) = server.retire() {
+                spawn(async move { client.shutdown(ShutdownMode::Immediate).await });
+            }
+        }
+        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        true
+    }
+
+    pub fn current_outcome(&self) -> ReloadOutcome {
+        published_outcome(&self.snapshot_health())
+    }
+
+    pub async fn reconcile(
+        &self,
+        candidate: NativeConfigLoad,
+        retain_on_required_failure: bool,
+        refresh_catalogs: bool,
+        cancel: &CancellationToken,
+    ) -> Result<ReloadOutcome, ReloadCancelled> {
+        let _reloading = self.reloading.lock().await;
+        if cancel.is_cancelled() {
+            return Err(ReloadCancelled);
+        }
+        let retained_authority: Vec<String> = candidate
+            .configs
+            .iter()
+            .filter(|config| config.enabled && approved_workspace(config))
+            .map(|config| config.name.clone())
+            .collect();
+        let authority_reduced = self.revoke_workspace_except(&retained_authority);
+        let current = self.current();
+        let mut desired = Vec::with_capacity(candidate.configs.len());
+        let mut reused = Vec::new();
+        let mut fresh = Vec::new();
+        for config in candidate.configs {
+            if let Some(existing) = current
+                .iter()
+                .find(|server| server.config == config && running(server))
+            {
+                desired.push(Arc::clone(existing));
+                reused.push(Arc::clone(existing));
+                continue;
+            }
+            let server = Arc::new(Server::new(
+                config,
+                self.options.clone(),
+                Arc::clone(&self.catalog_generation),
+            ));
+            desired.push(Arc::clone(&server));
+            fresh.push(server);
+        }
+        let starting = Settling::all(
+            fresh
+                .iter()
+                .filter(|server| {
+                    decide_startup(&server.config, StartupPhase::All) == StartupDecision::Connect
+                })
+                .map(|server| (Arc::clone(server), Step::Start)),
+        );
+        if cancel.run_until_cancelled(starting).await.is_none() {
+            stop_all(&fresh).await;
+            return Err(ReloadCancelled);
+        }
+        if retain_on_required_failure
+            && !authority_reduced
+            && let Some(failure) = required_failure(&desired)
+        {
+            stop_all(&fresh).await;
+            return Ok(ReloadOutcome::RetainedRequiredFailure(failure));
+        }
+        if cancel.is_cancelled() {
+            stop_all(&fresh).await;
+            return Err(ReloadCancelled);
+        }
+        let previous = std::mem::replace(&mut *lock(&self.servers), desired.clone());
+        *lock(&self.workspace_diagnostics) = candidate.workspace_diagnostics;
+        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        let removed: Vec<Arc<Server>> = previous
+            .into_iter()
+            .filter(|server| !desired.iter().any(|kept| Arc::ptr_eq(kept, server)))
+            .collect();
+        stop_all(&removed).await;
+        if refresh_catalogs
+            && cancel
+                .run_until_cancelled(self.refresh_catalogs(&reused))
+                .await
+                .is_none()
+        {
+            return Err(ReloadCancelled);
+        }
+        Ok(self.current_outcome())
+    }
+
+    async fn refresh_catalogs(&self, servers: &[Arc<Server>]) {
+        for server in servers {
+            if let Lifecycle::Ready(client) = server.lifecycle()
+                && client.list_tools().await.is_ok()
+            {
+                self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
+
+    fn snapshot_health(&self) -> Snapshot {
+        Snapshot {
+            servers: self
+                .current()
+                .iter()
+                .map(|server| snapshot_server(server))
+                .collect(),
+            configuration_issues: lock(&self.workspace_diagnostics)
+                .iter()
+                .map(render_workspace_diagnostic)
+                .collect(),
+        }
+    }
+
+    fn current(&self) -> Vec<Arc<Server>> {
+        lock(&self.servers).clone()
+    }
+}
+
+fn approved_workspace(config: &McpServerConfig) -> bool {
+    config.source == ConfigSource::Workspace
+        && config.workspace_admission == Some(WorkspaceAdmission::Approved)
+}
+
+fn running(server: &Server) -> bool {
+    matches!(server.lifecycle(), Lifecycle::Ready(client) if client.is_running())
+}
+
+fn required_failure(servers: &[Arc<Server>]) -> Option<String> {
+    servers
+        .iter()
+        .filter(|server| server.config.required)
+        .map(|server| snapshot_server(server))
+        .find(|snapshot| snapshot.connection != ConnectionState::Ready)
+        .map(|snapshot| {
+            let failure = health_failure(true, snapshot.connection, snapshot.failure);
+            format!(
+                "Required MCP server '{}' failed to start: {}",
+                snapshot.configured_name,
+                failure.as_deref().unwrap_or(REQUIRED_FALLBACK)
+            )
+        })
+}
+
+fn published_outcome(snapshot: &Snapshot) -> ReloadOutcome {
+    ReloadOutcome::Published {
+        configured: snapshot.servers.len(),
+        unavailable: snapshot
+            .servers
+            .iter()
+            .filter(|server| {
+                server.connection != ConnectionState::Ready
+                    && (server.connection != ConnectionState::Disabled || server.required)
+            })
+            .map(|server| server.configured_name.clone())
+            .collect(),
+        healthy: health::startup_decision(&snapshot.servers) == Health::Ready,
+    }
+}
+
+async fn stop_all(servers: &[Arc<Server>]) {
+    Settling::all(
+        servers
+            .iter()
+            .map(|server| (Arc::clone(server), Step::Stop(ShutdownMode::Immediate))),
+    )
+    .await;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -213,9 +407,9 @@ impl DynamicTools for McpRuntime {
         let generation = self.generation();
         let mut published = lock(&self.published);
         if published.generation != Some(generation) {
+            let servers = self.current();
             let mut names = lock(&self.names);
-            let (tools, notices) =
-                publish_tools(&self.servers, &mut names, &self.reserved, self.limits);
+            let (tools, notices) = publish_tools(&servers, &mut names, &self.reserved, self.limits);
             published.generation = Some(generation);
             published.tools = tools;
             published.notices.extend(notices);
@@ -244,6 +438,7 @@ mod tests {
 
     use super::*;
     use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
+    use crate::project_config::WorkspaceDiagnosticCause;
 
     const SERVER: &str = r#"
 echo $$ >> "$STATE/pids"
@@ -255,6 +450,7 @@ while IFS= read -r line; do
       version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
       reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"},\"instructions\":\"Prefer alpha.\"}" ;;
     *'"method":"tools/list"'*)
+      echo list >> "$STATE/lists"
       if [ -f "$STATE/changed" ]; then
         reply "$id" '{"tools":[{"name":"alpha","description":"Rewritten","inputSchema":{"type":"object"}},{"name":"change","inputSchema":{"type":"object"}},{"name":"crash","inputSchema":{"type":"object"}},{"name":"beta","inputSchema":{"type":"object"}}]}'
       else
@@ -296,7 +492,7 @@ done
                 configs,
                 ..NativeConfigLoad::default()
             },
-            &ConnectOptions::default(),
+            ConnectOptions::default(),
             vec!["read_file".to_owned()],
             limits(),
         ))
@@ -378,14 +574,18 @@ done
                 r#"{"type":"function","name":"mcp_fixture_alpha","description":"First\n\nServer instructions: Prefer alpha.","inputSchema":{"type":"object"}}"#
             )
         );
-        let statuses: Vec<_> = runtime
-            .servers()
+        let states: Vec<_> = runtime
+            .snapshot_health()
+            .servers
             .into_iter()
-            .map(|server| server.status)
+            .map(|server| (server.connection, server.counts.tools))
             .collect();
         assert_eq!(
-            statuses,
-            [ServerStatus::Ready { tools: 3 }, ServerStatus::Waiting]
+            states,
+            [
+                (ConnectionState::Ready, Some(3)),
+                (ConnectionState::Disabled, None)
+            ]
         );
         let output = call(&runtime, "mcp_fixture_alpha", "{}").await;
         assert_eq!(output.status, ToolResultStatus::Success);
@@ -475,10 +675,9 @@ done
             "{}",
             output.content
         );
-        assert_eq!(
-            runtime.servers()[0].status,
-            ServerStatus::Failed("MCP restart limit reached".to_owned())
-        );
+        let failed = &runtime.snapshot_health().servers[0];
+        assert_eq!(failed.connection, ConnectionState::Failed);
+        assert_eq!(failed.failure.as_deref(), Some("MCP restart limit reached"));
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 
@@ -511,7 +710,10 @@ done
         runtime.connect(StartupPhase::All).await;
         assert_eq!(runtime.pending_workspace_names(), ["project"]);
         assert!(!state.path().join("pids").exists());
-        assert_eq!(runtime.servers()[0].status, ServerStatus::Waiting);
+        assert_eq!(
+            runtime.snapshot_health().servers[0].connection,
+            ConnectionState::Disabled
+        );
     }
 
     #[tokio::test]
@@ -540,7 +742,7 @@ done
                 configs: vec![config("fixture", SERVER, state.path())],
                 ..NativeConfigLoad::default()
             },
-            &ConnectOptions::default(),
+            ConnectOptions::default(),
             Vec::new(),
             SchemaLimits {
                 selected_schema: ofx_config::ContextLimit {
@@ -561,6 +763,243 @@ done
         assert!(notices[0].ends_with(
             "effective=16 bytes source=command line; override with --context-limit mcp_selected_schema_bytes=BYTES|off"
         ));
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    fn lines(path: &Path) -> usize {
+        std::fs::read_to_string(path).map_or(0, |text| text.lines().count())
+    }
+
+    fn load(configs: Vec<McpServerConfig>) -> NativeConfigLoad {
+        NativeConfigLoad {
+            configs,
+            ..NativeConfigLoad::default()
+        }
+    }
+
+    fn approved(config: McpServerConfig) -> McpServerConfig {
+        McpServerConfig {
+            source: ConfigSource::Workspace,
+            scope: ConfigScope::Workspace,
+            workspace_admission: Some(WorkspaceAdmission::Approved),
+            ..config
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reload_keeps_unchanged_servers_refreshes_them_and_starts_new_ones() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let kept = config("kept", SERVER, first.path());
+        let runtime = runtime(vec![kept.clone()]);
+        runtime.connect(StartupPhase::All).await;
+        let generation = runtime.generation();
+        let outcome = runtime
+            .reconcile(
+                load(vec![kept, config("added", SERVER, second.path())]),
+                true,
+                true,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(
+            outcome,
+            Ok(ReloadOutcome::Published {
+                configured: 2,
+                unavailable: Vec::new(),
+                healthy: true
+            })
+        );
+        assert_eq!(lines(&first.path().join("pids")), 1);
+        assert_eq!(lines(&first.path().join("lists")), 2);
+        assert_eq!(lines(&second.path().join("pids")), 1);
+        assert!(runtime.generation() > generation);
+        assert!(names(&runtime).contains(&"mcp_added_alpha".to_owned()));
+        assert!(names(&runtime).contains(&"mcp_kept_alpha".to_owned()));
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_reload_replaces_a_changed_server_and_drops_a_removed_one() {
+        let state = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![
+            config("one", SERVER, state.path()),
+            config("gone", SERVER, other.path()),
+        ]);
+        runtime.connect(StartupPhase::All).await;
+        let changed = McpServerConfig {
+            required: true,
+            ..config("one", SERVER, state.path())
+        };
+        let outcome = runtime
+            .reconcile(load(vec![changed]), true, true, &CancellationToken::new())
+            .await;
+        assert!(matches!(
+            outcome,
+            Ok(ReloadOutcome::Published { configured: 1, .. })
+        ));
+        assert_eq!(lines(&state.path().join("pids")), 2);
+        let snapshot = runtime.snapshot_health();
+        assert_eq!(snapshot.servers.len(), 1);
+        assert!(snapshot.servers[0].required);
+        assert!(
+            !names(&runtime)
+                .iter()
+                .any(|name| name.starts_with("mcp_gone"))
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_required_server_that_fails_keeps_the_current_servers() {
+        let state = tempfile::tempdir().unwrap();
+        let kept = config("kept", SERVER, state.path());
+        let runtime = runtime(vec![kept.clone()]);
+        runtime.connect(StartupPhase::All).await;
+        let broken = McpServerConfig {
+            required: true,
+            restart_limit: 0,
+            ..config("broken", "echo 'boom' >&2; exit 3", state.path())
+        };
+        let outcome = runtime
+            .reconcile(
+                load(vec![kept.clone(), broken.clone()]),
+                true,
+                true,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(
+            outcome,
+            Ok(ReloadOutcome::RetainedRequiredFailure(
+                "Required MCP server 'broken' failed to start: MCP server exited with code 3 before completing startup: boom".to_owned()
+            ))
+        );
+        assert_eq!(runtime.snapshot_health().servers.len(), 1);
+        assert!(names(&runtime).contains(&"mcp_kept_alpha".to_owned()));
+        let outcome = runtime
+            .reconcile(
+                load(vec![kept, broken]),
+                false,
+                false,
+                &CancellationToken::new(),
+            )
+            .await;
+        let Ok(ReloadOutcome::Published {
+            configured,
+            unavailable,
+            healthy,
+        }) = outcome
+        else {
+            panic!("expected the candidate to be published");
+        };
+        assert_eq!((configured, healthy), (2, false));
+        assert_eq!(unavailable, ["broken"]);
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn revoked_workspace_servers_stop_at_once_and_leave_profile_servers() {
+        let state = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![
+            approved(config("project", SERVER, state.path())),
+            config("profile", SERVER, other.path()),
+        ]);
+        runtime.connect(StartupPhase::All).await;
+        assert!(!runtime.revoke_workspace_except(&["project".to_owned()]));
+        assert!(runtime.revoke_workspace_except(&[]));
+        let remaining: Vec<_> = runtime
+            .snapshot_health()
+            .servers
+            .into_iter()
+            .map(|server| server.configured_name)
+            .collect();
+        assert_eq!(remaining, ["profile"]);
+        assert!(
+            !names(&runtime)
+                .iter()
+                .any(|name| name.starts_with("mcp_project"))
+        );
+        assert_eq!(
+            runtime.current_outcome(),
+            ReloadOutcome::Published {
+                configured: 1,
+                unavailable: Vec::new(),
+                healthy: true
+            }
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_drops_project_approval_publishes_even_with_a_required_failure() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![approved(config("project", SERVER, state.path()))]);
+        runtime.connect(StartupPhase::All).await;
+        let broken = McpServerConfig {
+            required: true,
+            restart_limit: 0,
+            ..config("broken", "exit 3", state.path())
+        };
+        let outcome = runtime
+            .reconcile(load(vec![broken]), true, true, &CancellationToken::new())
+            .await;
+        assert!(matches!(
+            outcome,
+            Ok(ReloadOutcome::Published { healthy: false, .. })
+        ));
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_reload_changes_nothing() {
+        let state = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("kept", SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let outcome = runtime
+            .reconcile(
+                load(vec![config("added", SERVER, other.path())]),
+                true,
+                true,
+                &cancel,
+            )
+            .await;
+        assert_eq!(outcome, Err(ReloadCancelled));
+        assert_eq!(lines(&other.path().join("pids")), 0);
+        assert_eq!(runtime.snapshot_health().servers[0].configured_name, "kept");
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn health_reports_connected_servers_and_project_configuration_errors() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(Vec::new());
+        assert_eq!(runtime.render_health(), "No MCP servers configured.\n");
+        assert_eq!(
+            runtime.render_summary(),
+            "MCP: no servers configured. Use /mcp add <name> <command> [args...]."
+        );
+        let mut candidate = load(vec![config("fixture", SERVER, state.path())]);
+        candidate.workspace_diagnostics = vec![WorkspaceDiagnostic::new(
+            WorkspaceDiagnosticCause::InvalidJson,
+        )];
+        runtime
+            .reconcile(candidate, true, true, &CancellationToken::new())
+            .await
+            .unwrap();
+        let health = runtime.render_health();
+        assert!(health.starts_with(
+            "MCP health (1 server):\n  fixture source=profile scope=profile policy=optional transport=stdio state=ready auth=none status=ready\n    negotiated_name=fixture negotiated_version=1.0 protocol=2025-11-25\n    tools=3 resources=0 templates=0 prompts=0 cache=fresh subscription=active\n    retry_attempt=0 retry_in_ms=none discovery=completed\nProject MCP configuration errors:\n"
+        ), "{health}");
+        assert_eq!(
+            runtime.render_summary(),
+            "MCP: 1 server — 1 ready, 0 connecting, 0 needs auth, 0 failed. Project .mcp.json errors: 1. Use /mcp list for details."
+        );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 }

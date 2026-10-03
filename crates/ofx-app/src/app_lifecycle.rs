@@ -13,7 +13,7 @@ use ofx_contract::{
     BoxFuture, DynamicTools, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
-use ofx_mcp::{McpRuntime, ServerStatus, ShutdownMode, StartupPhase, render_workspace_diagnostic};
+use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
 use ofx_text::encode_terminal_safe;
 use ofx_tui::{
     Opening, ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel,
@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app_agent_runtime::Controller;
 use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
 use crate::app_commands::{slash_command_categories, slash_command_specs};
+use crate::app_mcp_runtime;
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_session_runtime::{
     LaunchOverrides, Persistence, configured_preferences, open_store, running_provider,
@@ -320,7 +321,7 @@ async fn discover_mcp(mcp: Arc<McpRuntime>, events: UiEventSender) {
         });
     };
     for diagnostic in mcp.workspace_diagnostics() {
-        warn(render_workspace_diagnostic(diagnostic));
+        warn(render_workspace_diagnostic(&diagnostic));
     }
     let pending = mcp.pending_workspace_names();
     if !pending.is_empty() {
@@ -329,16 +330,15 @@ async fn discover_mcp(mcp: Arc<McpRuntime>, events: UiEventSender) {
             .map(|name| encode_terminal_safe(name.as_bytes(), usize::MAX).text)
             .collect();
         warn(format!(
-            "Skipped unapproved project MCP servers: {}.",
+            "Skipped unapproved project MCP servers: {}. Approve with /mcp trust approve <name>.",
             names.join(", ")
         ));
     }
     mcp.connect(StartupPhase::All).await;
-    for server in mcp.servers() {
-        if let ServerStatus::Failed(failure) = server.status {
-            let name = encode_terminal_safe(server.name.as_bytes(), usize::MAX).text;
-            warn(format!("MCP server '{name}' failed to start: {failure}"));
-        }
+    if let Some(body) = mcp.startup_notice() {
+        events.send(UiEvent::Notice {
+            notice: Notice::new(NoticeTone::Warning, app_mcp_runtime::TOPIC, body),
+        });
     }
     let _ = mcp.tools();
     for notice in mcp.take_notices() {

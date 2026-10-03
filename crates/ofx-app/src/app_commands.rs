@@ -9,6 +9,7 @@ use ofx_tui::SlashCommandSpec;
 use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 
 use crate::app_agent_runtime::ControllerState;
+use crate::mcp_commands::handle_mcp;
 use crate::session_commands::handle_allowlist;
 use crate::skill_commands::handle_skills;
 
@@ -141,6 +142,10 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             state.permissions().handle_command(command.payload);
             CommandEffect::None
         }
+        SlashKind::Mcp => {
+            handle_mcp(state, command.payload);
+            CommandEffect::None
+        }
         SlashKind::Skills => {
             handle_skills(state, command.payload);
             CommandEffect::None
@@ -239,6 +244,7 @@ mod tests {
                 "/permissions",
                 "/allowlist",
                 "/undo",
+                "/mcp",
                 "/skills",
                 "/copy",
                 "/compact",
@@ -255,9 +261,13 @@ mod tests {
         assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[2].description, "start a fresh session");
         assert_eq!(specs[4].description, "resume a saved session");
-        assert_eq!(specs[11].description, "browse and manage skills");
-        assert_eq!(specs[16].aliases, ["/exit"]);
-        assert_eq!(specs[16].description, "exit the interactive shell");
+        assert_eq!(
+            specs[11].description,
+            "manage local and remote MCP servers, resources, prompts, and project trust"
+        );
+        assert_eq!(specs[12].description, "browse and manage skills");
+        assert_eq!(specs[17].aliases, ["/exit"]);
+        assert_eq!(specs[17].description, "exit the interactive shell");
     }
 
     #[test]
@@ -282,6 +292,7 @@ mod tests {
                 ("/permissions", "Security"),
                 ("/allowlist", "Security"),
                 ("/undo", "Session"),
+                ("/mcp", "Extensions"),
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),
