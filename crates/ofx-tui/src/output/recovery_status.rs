@@ -31,6 +31,10 @@ impl RecoveryStatus {
         recovery
     }
 
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.status.is_terminal()
+    }
+
     pub(crate) fn expired(&self, now_ms: i64) -> bool {
         self.expires_ms.is_some_and(|expiry| now_ms >= expiry)
     }
@@ -59,6 +63,8 @@ impl RecoveryStatus {
     pub(crate) fn rows(&self, theme: &Theme, cols: usize) -> Vec<Row> {
         let paint = if self.status.is_recovered() {
             theme.green
+        } else if self.status.is_terminal() {
+            theme.red
         } else {
             theme.warning
         };

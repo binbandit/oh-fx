@@ -52,6 +52,20 @@ fn recovered(attempt: usize) -> RouteRecoveryStatus {
     }
 }
 
+fn stopped(failed_attempt: usize) -> RouteRecoveryStatus {
+    RouteRecoveryStatus {
+        kind: RouteRecoveryKind::TerminalProviderError,
+        failed_attempt,
+        succeeded_attempt: 0,
+        attempt_limit: 10,
+        cause: Some(ModelRecoveryCause::ProviderUnavailable),
+        action: None,
+        delay_seconds: 0,
+        diagnostic: Some(ModelFailureDiagnostic::new("HTTP 503 · overloaded")),
+        retry_wait: None,
+    }
+}
+
 fn recovery(turn: u64, status: RouteRecoveryStatus) -> UiEvent {
     UiEvent::Recovery {
         turn_id: TurnId::new(turn),
@@ -272,4 +286,47 @@ fn status_rows(screen: &str) -> Vec<&str> {
         .take_while(|row| !row.trim().is_empty())
         .map(|row| row.trim())
         .collect()
+}
+
+const STOPPED: &str = "⚠ Provider unavailable · HTTP 503 · overloaded · stopped after 10 attempts";
+
+fn stop_the_turn(test: &mut TestShell) {
+    test.deliver(recovery(TURN, stopped(10)));
+    test.deliver(UiEvent::ApiStatus {
+        turn_id: TurnId::new(TURN),
+        text: "⚠ API request failed · HTTP 503 · overloaded".to_owned(),
+    });
+    test.deliver(finished(TurnOutcome::Failed));
+}
+
+#[test]
+fn a_stopped_turn_keeps_its_label_until_the_next_prompt_begins() {
+    let mut test = running();
+    test.resize(24, 100);
+    stop_the_turn(&mut test);
+    let screen = test.screen();
+    assert!(screen.contains(STOPPED), "{screen}");
+    assert!(
+        screen.contains("⚠ API request failed · HTTP 503 · overloaded"),
+        "{screen}"
+    );
+    let screen = after(&mut test, 60_000);
+    assert!(screen.contains(STOPPED), "{screen}");
+    test.submit("again");
+    let screen = test.screen();
+    assert!(!screen.contains(STOPPED), "{screen}");
+    assert!(screen.contains("Thinking"), "{screen}");
+}
+
+#[test]
+fn clearing_the_conversation_drops_a_kept_label() {
+    let mut test = running();
+    test.resize(24, 100);
+    stop_the_turn(&mut test);
+    assert!(test.screen().contains(STOPPED));
+    test.deliver(UiEvent::ConversationCleared {
+        first_kept_prompt: 1,
+    });
+    let screen = test.screen();
+    assert!(!screen.contains(STOPPED), "{screen}");
 }

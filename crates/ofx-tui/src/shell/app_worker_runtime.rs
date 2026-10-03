@@ -344,6 +344,7 @@ impl Shell<'_> {
         }
         self.turn = None;
         self.compaction = None;
+        self.kept_recovery = None;
         self.dismiss_approval();
         self.dismiss_question();
         self.composer.reset_for_session();
@@ -458,6 +459,7 @@ impl Shell<'_> {
     }
 
     fn finish_visible_turn(&mut self, mut turn: ActiveTurn, outcome: TurnOutcome) {
+        self.kept_recovery = turn.recovery.take().filter(RecoveryStatus::is_terminal);
         if outcome != TurnOutcome::Interrupted {
             let mut events = Vec::new();
             turn.markdown.flush(&mut events);
@@ -502,6 +504,7 @@ impl Shell<'_> {
         turn.turn_id = submission.turn_id;
         let text = submission.prompt.clone();
         self.turn = Some(turn);
+        self.kept_recovery = None;
         self.push_entry(Entry::UserTurn { text });
     }
 

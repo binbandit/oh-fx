@@ -56,6 +56,8 @@ const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_un
 const ASK_MODE_APPROVAL_HINT: &str = "rerun with --auto to review this exact action automatically, or use the interactive shell to approve it";
 const AUTO_MODE_APPROVAL_HINT: &str = "human approval is required for this action; use the interactive shell to approve it, or add a narrow matching permission rule";
 const BLANK_TEXT: [char; 4] = [' ', '\t', '\r', '\n'];
+const UNSAVED_RECOVERY: &str =
+    "This run was started with --no-save, so its recovery context cannot be resumed after exit.";
 const APPLIED_LIMITS: [ContextLimitName; 6] = [
     ContextLimitName::SkillDescriptionBytes,
     ContextLimitName::SkillCatalogBytes,
@@ -384,7 +386,9 @@ async fn answer(
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
     };
-    let mut presenter = Presenter::new(args.output, permission_mode, source).echoing(echo);
+    let mut presenter = Presenter::new(args.output, permission_mode, source)
+        .echoing(echo)
+        .saving(saved.is_some());
     for notice in &context_notices {
         if !presenter.context_notice(notice) {
             cancel.cancel();
@@ -719,7 +723,9 @@ struct RecoveryRecord {
 impl RecoveryRecord {
     fn new(status: &RouteRecoveryStatus) -> Self {
         Self {
-            state: if status.is_recovered() {
+            state: if status.is_terminal() {
+                "failed"
+            } else if status.is_recovered() {
                 "recovered"
             } else {
                 "active"
@@ -835,6 +841,7 @@ struct Presenter {
     tool_calls: Vec<ToolRecord>,
     settling_progress: Vec<(ToolCallId, String)>,
     recovery: Option<RouteRecoveryStatus>,
+    saving: bool,
     write_error: Option<&'static str>,
     command_echo: Option<Arc<CommandEcho>>,
     command_calls: Vec<ToolCallId>,
@@ -863,6 +870,7 @@ impl Presenter {
             tool_calls: Vec::new(),
             settling_progress: Vec::new(),
             recovery: None,
+            saving: false,
             write_error: None,
             command_echo: None,
             command_calls: Vec::new(),
@@ -874,15 +882,33 @@ impl Presenter {
         self
     }
 
+    fn saving(mut self, saving: bool) -> Self {
+        self.saving = saving;
+        self
+    }
+
+    fn recovery_notices(&self, status: &RouteRecoveryStatus) -> Vec<String> {
+        let terminal = status.is_terminal();
+        if self.mode == OutputMode::Quiet && !terminal {
+            return Vec::new();
+        }
+        let mut notices = vec![format!("[notice] {}\n", status.label())];
+        if terminal && !self.saving {
+            notices.push(format!("[notice] {UNSAVED_RECOVERY}\n"));
+        }
+        notices
+    }
+
     fn handle(&mut self, event: UiEvent) -> bool {
         let written = match event {
             UiEvent::AssistantText { text, .. } => self.push_assistant(&text),
             UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
             UiEvent::Recovery { status, .. } => {
-                let notice = (self.mode != OutputMode::Quiet)
-                    .then(|| format!("[notice] {}\n", status.label()));
+                let notices = self.recovery_notices(&status);
                 self.recovery = Some(status);
-                notice.map_or(Ok(()), |line| self.write_status(StatusBlock::Notice, &line))
+                notices
+                    .iter()
+                    .try_for_each(|line| self.write_status(StatusBlock::Notice, line))
             }
             UiEvent::ToolStarted {
                 call_id,
@@ -1825,6 +1851,44 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&RecoveryRecord::new(&retrying)).unwrap(),
             r#"{"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":2,"durable":false,"message":"⚠ Rate limited · HTTP 429 · slow · retrying request in 2s"}"#
+        );
+    }
+
+    #[test]
+    fn a_stopped_recovery_is_reported_in_every_mode_and_names_an_unsaved_run() {
+        let stopped = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::TerminalProviderError,
+            failed_attempt: 2,
+            succeeded_attempt: 0,
+            attempt_limit: 10,
+            cause: Some(ModelRecoveryCause::ProviderUnavailable),
+            action: None,
+            delay_seconds: 0,
+            diagnostic: Some(ModelFailureDiagnostic::new("ConnectionFailed")),
+            retry_wait: None,
+        };
+        let retrying = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::AutoRetry,
+            action: Some(ModelRecoveryAction::RetryingRequest),
+            ..stopped.clone()
+        };
+        let label =
+            "[notice] ⚠ Provider unavailable · ConnectionFailed · stopped after 2 attempts\n";
+        let unsaved = "[notice] This run was started with --no-save, so its recovery context cannot be resumed after exit.\n";
+        let mut presenter = json_presenter();
+        presenter.mode = OutputMode::Quiet;
+        assert!(presenter.recovery_notices(&retrying).is_empty());
+        assert_eq!(presenter.recovery_notices(&stopped), [label, unsaved]);
+        let mut presenter = json_presenter().saving(true);
+        assert_eq!(presenter.recovery_notices(&stopped), [label]);
+        presenter.mode = OutputMode::Terminal;
+        assert_eq!(
+            presenter.recovery_notices(&retrying),
+            ["[notice] ⚠ Provider unavailable · ConnectionFailed · retrying request\n"]
+        );
+        assert_eq!(
+            serde_json::to_string(&RecoveryRecord::new(&stopped)).unwrap(),
+            r#"{"state":"failed","kind":"terminal_provider_error","cause":"provider_unavailable","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"⚠ Provider unavailable · ConnectionFailed · stopped after 2 attempts"}"#
         );
     }
 

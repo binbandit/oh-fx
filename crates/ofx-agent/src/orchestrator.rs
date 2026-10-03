@@ -691,7 +691,7 @@ impl Agent {
         let turn_id = turn.id;
         let mut attempt = 1;
         let mut pacing = RetryPacing::Idle;
-        let mut recovering = false;
+        let mut recovering_from = None;
         loop {
             let mut partial = String::new();
             let mut sink = |event: StreamEvent| match event {
@@ -713,7 +713,7 @@ impl Agent {
             };
             let error = match streamed {
                 Ok(completion) => {
-                    if recovering {
+                    if recovering_from.is_some() {
                         events(UiEvent::Recovery {
                             turn_id,
                             status: recovered_status(attempt),
@@ -728,6 +728,11 @@ impl Agent {
             }
             let cause = recovery_cause(error.kind).filter(|_| partial.is_empty());
             let Some(cause) = cause.filter(|_| attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS) else {
+                if let Some(status) =
+                    stopped_status(cause.or(recovering_from), attempt, &error, &partial)
+                {
+                    events(UiEvent::Recovery { turn_id, status });
+                }
                 return Err(Stop::Failed {
                     failure: TurnFailure::Provider(error),
                     partial,
@@ -747,9 +752,7 @@ impl Agent {
                 cause: Some(cause),
                 action: Some(decision.action),
                 delay_seconds: decision.delay.as_secs(),
-                diagnostic: Some(ModelFailureDiagnostic::new(
-                    error.diagnostic.as_deref().unwrap_or(&error.code),
-                )),
+                diagnostic: Some(failure_diagnostic(&error)),
                 retry_wait: Some(decision.delay),
             };
             events(UiEvent::Recovery {
@@ -766,7 +769,7 @@ impl Agent {
             status.retry_wait = None;
             events(UiEvent::Recovery { turn_id, status });
             pacing = decision.next_pacing;
-            recovering = true;
+            recovering_from = Some(cause);
         }
     }
 
@@ -1163,6 +1166,32 @@ fn argument_rejection(call: &ToolCall) -> Option<ToolOutput> {
         ),
     };
     Some(ToolOutput::failure(content))
+}
+
+fn stopped_status(
+    cause: Option<ModelRecoveryCause>,
+    attempt: usize,
+    error: &ProviderError,
+    partial: &str,
+) -> Option<RouteRecoveryStatus> {
+    let exhausted =
+        attempt >= DEFAULT_MAX_PROVIDER_ATTEMPTS && recovery_cause(error.kind).is_some();
+    let unanswered = attempt > 1 && error.status.is_none();
+    (partial.is_empty() && (exhausted || unanswered)).then(|| RouteRecoveryStatus {
+        kind: RouteRecoveryKind::TerminalProviderError,
+        failed_attempt: attempt,
+        succeeded_attempt: 0,
+        attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
+        cause,
+        action: None,
+        delay_seconds: 0,
+        diagnostic: Some(failure_diagnostic(error)),
+        retry_wait: None,
+    })
+}
+
+fn failure_diagnostic(error: &ProviderError) -> ModelFailureDiagnostic {
+    ModelFailureDiagnostic::new(error.diagnostic.as_deref().unwrap_or(&error.code))
 }
 
 fn recovered_status(attempt: usize) -> RouteRecoveryStatus {

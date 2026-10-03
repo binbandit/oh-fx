@@ -2192,7 +2192,8 @@ async fn retries_stop_after_the_attempt_budget_and_skip_permanent_failures() {
     let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.failure.unwrap().code(), "ConnectionFailed");
     assert_eq!(provider.requests().len(), DEFAULT_MAX_PROVIDER_ATTEMPTS);
-    let statuses = recoveries(&events);
+    let mut statuses = recoveries(&events);
+    let stop = statuses.pop().unwrap();
     assert!(
         statuses
             .iter()
@@ -2201,6 +2202,12 @@ async fn retries_stop_after_the_attempt_budget_and_skip_permanent_failures() {
     assert_eq!(
         statuses[0].label(),
         "⚠ Connection lost · waiting for connection · 1s"
+    );
+    assert!(stop.is_terminal());
+    assert_eq!(stop.failed_attempt, DEFAULT_MAX_PROVIDER_ATTEMPTS);
+    assert_eq!(
+        stop.label(),
+        "⚠ Connection lost · ConnectionFailed · stopped after 10 attempts"
     );
     let provider = FakeProvider::new(vec![Script::Fail(
         Vec::new(),
@@ -2211,6 +2218,44 @@ async fn retries_stop_after_the_attempt_budget_and_skip_permanent_failures() {
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(provider.requests().len(), 1);
     assert!(recoveries(&events).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retried_request_that_fails_without_a_status_stops_the_recovery() {
+    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    unavailable.diagnostic = Some("HTTP 503 · overloaded".to_owned());
+    let provider = FakeProvider::new(vec![
+        Script::Fail(Vec::new(), unavailable.clone()),
+        Script::Fail(
+            Vec::new(),
+            failure(ProviderErrorKind::ConnectionFailed, "ConnectionFailed"),
+        ),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    let labels: Vec<String> = recoveries(&events)
+        .iter()
+        .map(RouteRecoveryStatus::label)
+        .collect();
+    assert_eq!(
+        labels.last().map(String::as_str),
+        Some("⚠ Provider unavailable · ConnectionFailed · stopped after 2 attempts")
+    );
+    let mut rejected = failure(ProviderErrorKind::InvalidRequest, "invalid_request");
+    rejected.status = Some(400);
+    let provider = FakeProvider::new(vec![
+        Script::Fail(Vec::new(), unavailable),
+        Script::Fail(Vec::new(), rejected),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert!(
+        recoveries(&events)
+            .iter()
+            .all(|status| !status.is_terminal())
+    );
 }
 
 #[tokio::test(start_paused = true)]
