@@ -2,12 +2,7 @@ use super::Composer;
 use super::editor_state::EditorState;
 
 pub(super) fn replace_text(composer: &mut Composer, text: &str) {
-    composer.vertical.reset();
-    composer.edit.discard_selection();
-    composer.entities.pasted_blocks.clear();
-    composer.edit.swap_input(&mut text.to_owned());
-    composer.edit_history.reset();
-    composer.limit_rejection.clear();
+    composer.replace_text(text);
 }
 
 pub(super) fn select(composer: &mut Composer, anchor: usize, cursor: usize) {
