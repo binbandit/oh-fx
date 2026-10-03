@@ -2237,6 +2237,32 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn workspace_reports_that_workspace_access_is_unavailable_for_every_form() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        for command in [
+            "/workspace",
+            "/workspace list",
+            "/workspace add ../other",
+            "/workspace clear",
+        ] {
+            harness.command(command);
+            let shown = harness
+                .until(|event| matches!(event, UiEvent::Notice { .. }))
+                .await;
+            assert_eq!(
+                notice_body(shown),
+                ["workspace|Workspace access is unavailable in this runtime."],
+                "{command}"
+            );
+            let Some(UiEvent::Notice { notice }) = shown.last() else {
+                unreachable!()
+            };
+            assert_eq!(notice.tone, NoticeTone::Error);
+        }
+    }
+
     async fn undo_notice(harness: &mut Harness) -> String {
         harness.command("/undo");
         let shown = harness

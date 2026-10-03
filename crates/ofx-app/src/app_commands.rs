@@ -22,6 +22,8 @@ const FAST_TOPIC: &str = "fast";
 const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
 const USAGE_TOPIC: &str = "usage";
+const WORKSPACE_TOPIC: &str = "workspace";
+const WORKSPACE_ACCESS_UNAVAILABLE: &str = "Workspace access is unavailable in this runtime.";
 const PROFILE_USAGE_UNAVAILABLE: &str =
     "Durable profile usage is unavailable in this host; active session usage remains in memory.";
 const NOTHING_TO_UNDO: &str = "Nothing to undo.";
@@ -139,6 +141,14 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
         }
         SlashKind::Copy => {
             copy_last_reply(state);
+            CommandEffect::None
+        }
+        SlashKind::Workspace => {
+            state.notice(
+                NoticeTone::Error,
+                WORKSPACE_TOPIC,
+                WORKSPACE_ACCESS_UNAVAILABLE,
+            );
             CommandEffect::None
         }
         SlashKind::Version => {
@@ -291,6 +301,7 @@ mod tests {
                 "/copy",
                 "/compact",
                 "/fast",
+                "/workspace",
                 "/version",
                 "/quit",
             ]
@@ -305,8 +316,8 @@ mod tests {
         assert_eq!(specs[4].description, "resume a saved session");
         assert_eq!(specs[5].description, "rename the current session");
         assert_eq!(specs[13].description, "browse and manage skills");
-        assert_eq!(specs[18].aliases, ["/exit"]);
-        assert_eq!(specs[18].description, "exit the interactive shell");
+        assert_eq!(specs[19].aliases, ["/exit"]);
+        assert_eq!(specs[19].description, "exit the interactive shell");
     }
 
     #[test]
@@ -337,6 +348,7 @@ mod tests {
                 ("/copy", "Session"),
                 ("/compact", "Session"),
                 ("/fast", "Model"),
+                ("/workspace", "Workspace"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]
