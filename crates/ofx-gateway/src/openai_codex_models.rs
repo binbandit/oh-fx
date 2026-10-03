@@ -121,7 +121,9 @@ impl CodexModelCatalog {
             }
             Ok((status, _)) => Err(failure_for_http_status(status.as_u16())),
             Err(BoundedFailure::Cancelled) => Err(CatalogFailure::Cancellation),
-            Err(BoundedFailure::Failed) => Err(CatalogFailure::Transport),
+            Err(BoundedFailure::Failed | BoundedFailure::TooLarge) => {
+                Err(CatalogFailure::Transport)
+            }
         }
     }
 

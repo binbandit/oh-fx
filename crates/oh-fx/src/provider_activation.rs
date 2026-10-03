@@ -19,6 +19,7 @@ pub(crate) struct Profile {
     pub(crate) workspace: io::Result<PathBuf>,
     pub(crate) endpoints: SubscriptionEndpoints,
     pub(crate) lookup: fn(&str) -> Option<String>,
+    pub(crate) grok: ofx_auth::GrokEndpoints,
 }
 
 impl Profile {
@@ -28,6 +29,7 @@ impl Profile {
             workspace: env::current_dir().and_then(fs::canonicalize),
             endpoints: SubscriptionEndpoints::default(),
             lookup: |name| env::var(name).ok(),
+            grok: ofx_auth::GrokEndpoints::default(),
         }
     }
 
@@ -40,6 +42,17 @@ impl Profile {
             paths.data.clone(),
             &ofx_app::user_agent(),
             self.endpoints.chatgpt.clone(),
+        )
+    }
+    pub(crate) fn grok_oauth(&self) -> Result<ofx_auth::GrokOAuth, ofx_auth::GrokError> {
+        let paths = self
+            .paths
+            .as_ref()
+            .ok_or(ofx_auth::GrokError::CredentialStorageUnavailable)?;
+        ofx_auth::GrokOAuth::new(
+            paths.data.clone(),
+            &ofx_app::user_agent(),
+            self.grok.clone(),
         )
     }
 }

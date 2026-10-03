@@ -676,6 +676,8 @@ fn put_model(
     changed |= put_string(models, provider.label(), model);
     if *provider == ProviderId::Codex {
         changed |= root.shift_remove(LEGACY_CODEX_MODEL).is_some();
+    } else if *provider == ProviderId::Grok {
+        changed |= root.shift_remove("grok_model").is_some();
     }
     Ok(changed)
 }

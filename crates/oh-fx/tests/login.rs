@@ -103,7 +103,7 @@ fn other_provider_logins_are_not_available_yet() {
     for (args, command) in [
         (&["login"][..], "login"),
         (&["login", "vercel"], "login"),
-        (&["logout", "grok"], "logout"),
+        (&["logout", "vercel"], "logout"),
     ] {
         let output = home.run(args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -120,7 +120,13 @@ fn other_provider_logins_are_not_available_yet() {
 fn host_managed_authentication_skips_sign_in_and_sign_out() {
     let home = Home::new();
     home.write_credentials();
-    for args in [&["login", "codex"][..], &["logout", "codex"], &["login"]] {
+    for args in [
+        &["login", "codex"][..],
+        &["logout", "codex"],
+        &["login", "grok"],
+        &["logout", "grok"],
+        &["login"],
+    ] {
         let output = home.run_with(args, &[("OH_FX_AUTH_MODE", "host-managed")]);
         assert!(output.status.success(), "{args:?}");
         assert_eq!(stdout(&output), "Authentication is managed by the host.\n");
@@ -130,19 +136,33 @@ fn host_managed_authentication_skips_sign_in_and_sign_out() {
 }
 
 #[test]
-fn login_refuses_unwritable_credential_storage_before_listening() {
+fn logout_grok_without_a_session_succeeds_without_output_on_stderr() {
     let home = Home::new();
-    let data = home.root.join("data");
-    fs::create_dir_all(&data).expect("create the data root");
-    fs::set_permissions(&data, fs::Permissions::from_mode(0o500)).expect("make it read-only");
-    let output = home.run(&["login", "codex"]);
-    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("restore access");
-    assert!(!output.status.success());
-    assert_eq!(stdout(&output), "");
-    assert_eq!(
-        stderr(&output),
-        "oh-fx login: Codex subscription: Saved credential storage is unavailable. Check the saved credential, then retry.\n"
-    );
+    let output = home.run(&["logout", "grok"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "No Grok login session found.\n");
+    assert_eq!(stderr(&output), "");
+    assert!(!home.data().join("grok-auth.json").exists());
+}
+
+#[test]
+fn login_refuses_unwritable_credential_storage_before_listening() {
+    for (provider, label) in [("codex", "Codex"), ("grok", "Grok")] {
+        let home = Home::new();
+        let data = home.root.join("data");
+        fs::create_dir_all(&data).expect("create the data root");
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o500)).expect("make it read-only");
+        let output = home.run(&["login", provider]);
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("restore access");
+        assert!(!output.status.success());
+        assert_eq!(stdout(&output), "");
+        assert_eq!(
+            stderr(&output),
+            format!(
+                "oh-fx login: {label} subscription: Saved credential storage is unavailable. Check the saved credential, then retry.\n"
+            )
+        );
+    }
 }
 
 #[test]
