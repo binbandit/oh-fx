@@ -118,8 +118,9 @@ note = "Text and registered paste kill/yank are implemented; image block ownersh
 
 [[file]]
 upstream = "src/core/input/paste_framing.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/input/paste_framing.rs"]
+note = "Composer, decision, question and authorization paste capture exist; approval amendment paste ownership and owner-specific capture handling are absent."
 
 [[file]]
 upstream = "src/core/input/pasted_blocks.zig"
