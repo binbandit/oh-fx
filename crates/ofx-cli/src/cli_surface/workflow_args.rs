@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use crate::cli_ask::{AskArgs, drafting_ask};
+use crate::cli_ask::{AskArgs, AskLayout, drafting_ask};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowArgs {
@@ -11,7 +11,12 @@ pub struct WorkflowArgs {
 
 impl WorkflowArgs {
     pub fn ask_args(&self, prompt: String) -> AskArgs {
-        drafting_ask(prompt, self.auto)
+        let layout = if self.create {
+            AskLayout::Captured
+        } else {
+            AskLayout::Raw
+        };
+        drafting_ask(prompt, self.auto, layout)
     }
 }
 
@@ -39,8 +44,6 @@ mod tests {
     use std::os::unix::ffi::OsStringExt;
 
     use ofx_contract::PermissionMode;
-
-    use crate::cli_ask::AskLayout;
 
     use super::*;
 
@@ -86,6 +89,12 @@ mod tests {
             assert!(!ask.output.json && !ask.output.quiet);
             assert!(!ask.session.no_save);
         }
+        let created = WorkflowArgs {
+            create: true,
+            ..WorkflowArgs::default()
+        }
+        .ask_args("Draft it.".to_owned());
+        assert_eq!(created.output.layout, AskLayout::Captured);
     }
 
     #[test]

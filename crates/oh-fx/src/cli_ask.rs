@@ -266,8 +266,23 @@ pub(crate) fn unavailable_launch(modifiers: &LaunchModifiers) -> Option<&'static
 }
 
 pub(crate) fn run_prompt(args: &AskArgs, prompt: &str, modifiers: &LaunchModifiers) -> ExitCode {
+    run_turn(args, prompt, modifiers).exit
+}
+
+pub(crate) fn capture_prompt(
+    args: &AskArgs,
+    prompt: &str,
+    modifiers: &LaunchModifiers,
+) -> Result<String, ExitCode> {
+    let answered = run_turn(args, prompt, modifiers);
+    answered.final_text.ok_or(answered.exit)
+}
+
+fn run_turn(args: &AskArgs, prompt: &str, modifiers: &LaunchModifiers) -> Answered {
     if prompt.is_empty() && !args.session.continue_recovery {
-        return Failure::code("InvalidConversationEvent").report(args.output.json);
+        return Answered::failed(
+            Failure::code("InvalidConversationEvent").report(args.output.json),
+        );
     }
     crate::auto_upgrade::announce_and_schedule();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -280,7 +295,21 @@ pub(crate) fn run_prompt(args: &AskArgs, prompt: &str, modifiers: &LaunchModifie
             modifiers,
             SubscriptionEndpoints::from_environment(),
         )),
-        Err(_) => Failure::code("RuntimeUnavailable").report(args.output.json),
+        Err(_) => Answered::failed(Failure::code("RuntimeUnavailable").report(args.output.json)),
+    }
+}
+
+struct Answered {
+    exit: ExitCode,
+    final_text: Option<String>,
+}
+
+impl Answered {
+    fn failed(exit: ExitCode) -> Self {
+        Self {
+            exit,
+            final_text: None,
+        }
     }
 }
 
@@ -347,9 +376,9 @@ async fn ask(
     prompt: &str,
     modifiers: &LaunchModifiers,
     endpoints: SubscriptionEndpoints,
-) -> ExitCode {
+) -> Answered {
     let Ok(supervisor) = SessionSupervisor::current_executable() else {
-        return Failure::code("SelfExeNotFound").report(args.output.json);
+        return Answered::failed(Failure::code("SelfExeNotFound").report(args.output.json));
     };
     let echo = (output_mode(args.output) != OutputMode::Terminal).then(Arc::default);
     let mut executions = ManagedExecutions::new(supervisor);
@@ -369,12 +398,12 @@ async fn ask(
     settle(answered, &received)
 }
 
-fn settle(answered: Result<ExitCode, Signalled>, received: &ReceivedSignals) -> ExitCode {
-    match answered.and_then(|exit| received.unless_signalled(exit)) {
-        Ok(exit) => exit,
+fn settle(answered: Result<Answered, Signalled>, received: &ReceivedSignals) -> Answered {
+    match answered.and_then(|answered| received.unless_signalled(answered)) {
+        Ok(answered) => answered,
         Err(Signalled(signal)) => {
             let _ = io::stdout().flush();
-            crate::die_by_signal(signal)
+            Answered::failed(crate::die_by_signal(signal))
         }
     }
 }
@@ -385,7 +414,7 @@ async fn answer(
     echo: Option<Arc<CommandEcho>>,
     cancel: &CancellationToken,
     received: &ReceivedSignals,
-) -> Result<ExitCode, Signalled> {
+) -> Result<Answered, Signalled> {
     let mut mcp = None;
     let answered = respond(request, endpoints, echo, cancel, received, &mut mcp).await;
     if let Some(mcp) = mcp {
@@ -401,7 +430,7 @@ async fn respond(
     cancel: &CancellationToken,
     received: &ReceivedSignals,
     mcp: &mut Option<Arc<McpRuntime>>,
-) -> Result<ExitCode, Signalled> {
+) -> Result<Answered, Signalled> {
     let args = request.args;
     let prepared =
         received.unless_signalled(prepare_agent(request, endpoints, cancel, mcp).await)?;
@@ -417,7 +446,7 @@ async fn respond(
         recovered,
     } = match prepared {
         Ok(prepared) => prepared,
-        Err(failure) => return Ok(failure.report(args.output.json)),
+        Err(failure) => return Ok(Answered::failed(failure.report(args.output.json))),
     };
     let mut presenter = Presenter::new(args.output, permission_mode, source)
         .echoing(echo)
@@ -894,7 +923,7 @@ enum OutputMode {
 }
 
 fn output_mode(output: AskOutput) -> OutputMode {
-    if output.json {
+    if output.json || output.layout == AskLayout::Captured {
         OutputMode::Json
     } else if output.quiet {
         OutputMode::Quiet
@@ -937,6 +966,7 @@ struct Presenter {
     command_calls: Vec<ToolCallId>,
     approvals: Option<Approvals>,
     started_before_approval: Vec<ToolCallId>,
+    envelope: bool,
 }
 
 #[derive(Debug, Default)]
@@ -978,6 +1008,7 @@ impl Presenter {
             command_calls: Vec::new(),
             approvals: None,
             started_before_approval: Vec::new(),
+            envelope: output.layout != AskLayout::Captured,
         }
     }
 
@@ -1528,7 +1559,7 @@ impl Presenter {
         })
     }
 
-    fn finish(mut self, report: &TurnReport, model: &str, saved: Option<SavedAsk>) -> ExitCode {
+    fn finish(mut self, report: &TurnReport, model: &str, saved: Option<SavedAsk>) -> Answered {
         self.finalize_turn(report.outcome);
         if self.mode == OutputMode::Terminal {
             let _ = self.end_line();
@@ -1536,7 +1567,7 @@ impl Presenter {
         if let (None, Some(failure @ TurnFailure::PermissionRequired(blocked))) =
             (self.write_error, &report.failure)
         {
-            return self.finish_blocked(failure.code(), blocked, report.usage);
+            return Answered::failed(self.finish_blocked(failure.code(), blocked, report.usage));
         }
         let summary = match (self.write_error, &report.failure) {
             (Some(code), _) => FailureSummary {
@@ -1557,14 +1588,18 @@ impl Presenter {
         let session_id = saved
             .map(|saved| saved.close(untouched))
             .unwrap_or_default();
-        if self.mode != OutputMode::Json {
+        let final_text = completed.then(|| report.final_text.clone());
+        if self.mode != OutputMode::Json || !self.envelope {
             if let Some(code) = self.write_error {
                 let _ = write_stderr(&format!("oh-fx: {code}\n"));
             }
-            return if completed {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
+            return Answered {
+                exit: if completed {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                },
+                final_text,
             };
         }
         let normalized = normalize_assistant_text_for_display(&report.final_text);
@@ -1573,7 +1608,7 @@ impl Presenter {
         } else {
             ""
         };
-        print_result(&RunResult {
+        let exit = print_result(&RunResult {
             output: &self.output,
             final_output,
             exit_code: u8::from(!completed),
@@ -1593,7 +1628,8 @@ impl Presenter {
                 .recovery
                 .as_ref()
                 .map(|status| RecoveryRecord::new(status, durable)),
-        })
+        });
+        Answered { exit, final_text }
     }
 
     fn finish_blocked(mut self, code: &str, blocked: &BlockedCall, usage: Usage) -> ExitCode {
@@ -1605,7 +1641,7 @@ impl Presenter {
             blocked.tool_name.clone(),
             &blocked.arguments,
         ));
-        if self.mode != OutputMode::Json {
+        if self.mode != OutputMode::Json || !self.envelope {
             return ExitCode::FAILURE;
         }
         print_result(&RunResult {
@@ -1955,7 +1991,7 @@ mod tests {
             &cancel,
             &received,
         ));
-        assert_eq!(settle(answered, &received), ExitCode::SUCCESS);
+        assert_eq!(settle(answered, &received).exit, ExitCode::SUCCESS);
     }
 
     #[test]
@@ -3418,7 +3454,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            presenter.finish(&report(None), "m", None),
+            presenter.finish(&report(None), "m", None).exit,
             ExitCode::SUCCESS
         );
         assert_eq!(
@@ -3603,7 +3639,7 @@ mod tests {
             present(&mut presenter, reply.iter().map(|text| assistant(text)));
             present(&mut presenter, [operational("Done.")]);
             assert_eq!(
-                presenter.finish(&report(None), "m", None),
+                presenter.finish(&report(None), "m", None).exit,
                 ExitCode::SUCCESS
             );
             assert_eq!(screen.text(), "Done.\n", "{reply:?}");
@@ -3621,7 +3657,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            presenter.finish(&report(None), "m", None),
+            presenter.finish(&report(None), "m", None).exit,
             ExitCode::SUCCESS
         );
         assert_eq!(screen.text(), "Looking.\n\nReading a.txt\n\nDone.\n");
@@ -3664,7 +3700,7 @@ mod tests {
             present(&mut presenter, read("call-1"));
             present(&mut presenter, after.iter().map(|text| assistant(text)));
             assert_eq!(
-                presenter.finish(&report(None), "m", None),
+                presenter.finish(&report(None), "m", None).exit,
                 ExitCode::SUCCESS
             );
             assert_eq!(screen.text(), expected, "{before:?} {after:?}");
@@ -3806,7 +3842,7 @@ mod tests {
         );
         let failure = Some(TurnFailure::StepLimitReached);
         assert_eq!(
-            presenter.finish(&report(failure), "m", None),
+            presenter.finish(&report(failure), "m", None).exit,
             ExitCode::FAILURE
         );
         assert_eq!(
@@ -3818,7 +3854,7 @@ mod tests {
         present(&mut presenter, [assistant("Partial answer")]);
         let failure = Some(TurnFailure::StepLimitReached);
         assert_eq!(
-            presenter.finish(&report(failure), "m", None),
+            presenter.finish(&report(failure), "m", None).exit,
             ExitCode::FAILURE
         );
         assert_eq!(screen.text(), "Partial answer\n");
@@ -3828,7 +3864,7 @@ mod tests {
         present(&mut presenter, [operational(&format!("{notice}\n"))]);
         let failure = Some(TurnFailure::RepeatedMalformedArguments);
         assert_eq!(
-            presenter.finish(&report(failure), "m", None),
+            presenter.finish(&report(failure), "m", None).exit,
             ExitCode::FAILURE
         );
         assert_eq!(screen.text(), format!("{notice}\n"));

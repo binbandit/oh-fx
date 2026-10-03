@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -50,12 +51,42 @@ impl Home {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_with(args, "/usr/bin:/bin", &[])
+    }
+
+    fn fake_gh(&self) -> String {
+        let bin = self.root.join("bin");
+        fs::create_dir_all(&bin).expect("create the bin directory");
+        let gh = bin.join("gh");
+        fs::write(
+            &gh,
+            "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$GH_ARGS_FILE\"\nprintf '%s' \"$GH_STDOUT\"\nprintf '%s' \"$GH_STDERR\" >&2\nexit \"${GH_EXIT:-0}\"\n",
+        )
+        .expect("write the fake gh");
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("make gh runnable");
+        format!("{}:/usr/bin:/bin", bin.display())
+    }
+
+    fn gh_args(&self) -> Option<Vec<String>> {
+        let recorded = fs::read(self.root.join("gh-args")).ok()?;
+        Some(
+            recorded
+                .split(|byte| *byte == 0)
+                .filter(|arg| !arg.is_empty())
+                .map(|arg| String::from_utf8(arg.to_vec()).expect("UTF-8 arguments"))
+                .collect(),
+        )
+    }
+
+    fn run_with(&self, args: &[&str], path: &str, environment: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_oh-fx"))
             .args(args)
             .current_dir(&self.workspace)
             .env_clear()
             .env("HOME", &self.root)
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", path)
+            .env("GH_ARGS_FILE", self.root.join("gh-args"))
+            .envs(environment.iter().copied())
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_DATA_HOME", self.root.join("data"))
@@ -187,8 +218,6 @@ fn launch_modifiers_the_drafts_cannot_honor_yet_fail_before_any_request() {
             &["--context-limit", "mcp_description_bytes=1", "issue"],
             "--context-limit",
         ),
-        (&["issue", "--create"], "issue --create"),
-        (&["pr", "--auto", "--create"], "pr --create"),
     ] {
         let output = home.run(args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -217,4 +246,167 @@ fn an_added_directory_reaches_the_draft_as_it_reaches_ask() {
         "{:?}",
         messages(&server.requests()[0])
     );
+}
+
+fn text_then_tool_call(text: &str, call_id: &str, name: &str, arguments: &str) -> Vec<String> {
+    let chunk = |delta: Value, finish_reason: Value| {
+        json!({
+            "id": "chatcmpl-draft",
+            "object": "chat.completion.chunk",
+            "model": "testkit-model",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        })
+        .to_string()
+    };
+    vec![
+        chunk(json!({"content": text}), Value::Null),
+        chunk(
+            json!({"tool_calls": [{"index": 0, "id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}]}),
+            Value::Null,
+        ),
+        chunk(json!({}), json!("tool_calls")),
+        "[DONE]".to_owned(),
+    ]
+}
+
+#[test]
+fn create_publishes_the_drafted_issue_with_gh_and_prints_its_trimmed_answer() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&[
+        "Login fails\n\n## Summary\nIt **fails** in `auth`.",
+    ]))]);
+    let home = Home::new(&server);
+    let path = home.fake_gh();
+    let output = home.run_with(
+        &["issue", "--create", "flaky"],
+        &path,
+        &[("GH_STDOUT", " \nhttps://github.com/o/r/issues/2\n ")],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "https://github.com/o/r/issues/2\n");
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        home.gh_args().expect("gh ran"),
+        [
+            "issue",
+            "create",
+            "--title",
+            "Login fails",
+            "--body",
+            "## Summary\nIt **fails** in `auth`."
+        ]
+    );
+}
+
+#[test]
+fn gh_failures_and_empty_answers_are_reported_as_upstream_reports_them() {
+    for (environment, expected_stdout, expected_stderr, code) in [
+        (
+            &[("GH_EXIT", "1"), ("GH_STDERR", " \nfailed to create\n ")][..],
+            "",
+            "oh-fx issue: failed to create\n",
+            1,
+        ),
+        (
+            &[("GH_EXIT", "1")],
+            "",
+            "oh-fx issue: gh command failed\n",
+            1,
+        ),
+        (&[("GH_STDOUT", " \n\t ")], "created successfully\n", "", 0),
+    ] {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["Title\n\nBody"]))]);
+        let home = Home::new(&server);
+        let path = home.fake_gh();
+        let output = home.run_with(&["issue", "--create"], &path, environment);
+        assert_eq!(output.status.code(), Some(code), "{environment:?}");
+        assert_eq!(stdout(&output), expected_stdout, "{environment:?}");
+        assert_eq!(stderr(&output), expected_stderr, "{environment:?}");
+    }
+}
+
+#[test]
+fn a_missing_gh_is_reported_after_the_draft() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Title\n\nBody"]))]);
+    let home = Home::new(&server);
+    let empty = home.root.join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let output = home.run_with(&["issue", "--create"], empty.to_str().unwrap(), &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "oh-fx issue: gh CLI not found in PATH\n");
+}
+
+#[test]
+fn a_reply_that_is_not_a_draft_is_never_published() {
+    for (command, reply, expected) in [
+        (
+            "issue",
+            "Title only",
+            "oh-fx issue: failed to parse drafted issue title/body\n",
+        ),
+        (
+            "issue",
+            "",
+            "Done.oh-fx issue: failed to parse drafted issue title/body\n",
+        ),
+        (
+            "pr",
+            "Title only",
+            "oh-fx pr: failed to parse drafted PR title/body\n",
+        ),
+    ] {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&[reply]))]);
+        let home = Home::new(&server);
+        git(&home.workspace, &["init", "-q", "-b", "feature"]);
+        let path = home.fake_gh();
+        let output = home.run_with(&[command, "--create"], &path, &[]);
+        assert_eq!(output.status.code(), Some(1), "{command} {reply:?}");
+        assert_eq!(stdout(&output), "", "{command} {reply:?}");
+        assert_eq!(stderr(&output), expected, "{command} {reply:?}");
+        assert_eq!(home.gh_args(), None, "{command} {reply:?}");
+    }
+}
+
+#[test]
+fn only_the_final_reply_is_published_with_its_markdown_intact() {
+    let server = FakeServer::start([
+        Reply::sse(&text_then_tool_call(
+            "Let me look at the branch first.",
+            "call_1",
+            "read_file",
+            r#"{"path":"notes.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&[
+            "## **Add notes**\n\n## Summary\nUses `code` and **bold**.",
+        ])),
+    ]);
+    let home = Home::new(&server);
+    git(&home.workspace, &["init", "-q", "-b", "feature"]);
+    fs::write(home.workspace.join("notes.txt"), "one\n").unwrap();
+    let path = home.fake_gh();
+    let output = home.run_with(&["pr", "--create"], &path, &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "created successfully\n");
+    assert_eq!(
+        home.gh_args().expect("gh ran"),
+        [
+            "pr",
+            "create",
+            "--title",
+            "Add notes",
+            "--body",
+            "## Summary\nUses `code` and **bold**."
+        ]
+    );
+}
+
+#[test]
+fn a_failed_draft_exits_without_publishing() {
+    let server = FakeServer::start([Reply::status(400, "bad request")]);
+    let home = Home::new(&server);
+    let path = home.fake_gh();
+    let output = home.run_with(&["issue", "--create"], &path, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(home.gh_args(), None);
 }
