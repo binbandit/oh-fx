@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -27,6 +28,26 @@ done
 "#;
 const FAILING_SERVER: &str = "#!/bin/sh\necho 'fatal: missing token' >&2\nexit 3\n";
 const LAUNCH_MARKER: &str = "#!/bin/sh\ntouch \"$MCP_STATE/launched\"\nexit 1\n";
+const LINGERING_SERVER: &str = r#"#!/bin/sh
+trap '' TERM HUP
+echo $$ > "$MCP_STATE/ready-pid"
+sleep 600 &
+echo $! > "$MCP_STATE/child-pid"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"ready\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      reply "$id" '{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}'
+      echo yes > "$MCP_STATE/listed" ;;
+  esac
+done
+while :; do sleep 1; done
+"#;
+const STALLED_SERVER: &str = "#!/bin/sh\ntrap '' TERM HUP\necho $$ > \"$MCP_STATE/stalled-pid\"\nwhile :; do sleep 1; done\n";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -87,7 +108,15 @@ impl Home {
     }
 
     fn ask(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        self.command(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx")
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
             .args(args)
             .current_dir(&self.workspace)
             .env_clear()
@@ -100,9 +129,8 @@ impl Home {
             .env("SHELL", "/bin/sh")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env("MCP_STATE", &self.state)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run oh-fx")
+            .stdin(Stdio::null());
+        command
     }
 }
 
@@ -127,6 +155,27 @@ fn wait_until_gone(pid: i32) -> bool {
         thread::sleep(Duration::from_millis(20));
     }
     false
+}
+
+fn running(pid: &str) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", pid])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn wait_for(path: &Path) -> String {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(10) {
+        if let Ok(text) = fs::read_to_string(path)
+            && !text.trim().is_empty()
+        {
+            return text.trim().to_owned();
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("{} never appeared", path.display());
 }
 
 fn read_pid(state: &Path) -> i32 {
@@ -338,5 +387,41 @@ fn a_required_server_that_fails_to_start_fails_ask_before_any_request() {
         "{}",
         stderr(&output)
     );
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn a_signal_during_mcp_startup_stops_ready_and_starting_servers() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["unused"]))]);
+    let home = Home::new(&server.base_url());
+    let ready = home.script("ready.sh", LINGERING_SERVER);
+    let stalled = home.script("stalled.sh", STALLED_SERVER);
+    home.profile_servers(&json!({
+        "ready": {"command": "/bin/sh", "args": [ready]},
+        "stalled": {"command": "/bin/sh", "args": [stalled]},
+    }));
+    let child = home
+        .command(&["ask", "--full-access", "hi"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run oh-fx");
+    wait_for(&home.state.join("listed"));
+    let pids =
+        ["ready-pid", "child-pid", "stalled-pid"].map(|name| wait_for(&home.state.join(name)));
+    let status = Command::new("/bin/kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    assert!(status.success());
+    let output = child.wait_with_output().expect("wait for oh-fx");
+    assert_eq!(output.status.signal(), Some(15));
+    let started = Instant::now();
+    while pids.iter().any(|pid| running(pid)) && started.elapsed() < Duration::from_secs(5) {
+        thread::sleep(Duration::from_millis(20));
+    }
+    for pid in &pids {
+        assert!(!running(pid), "process {pid} outlived oh-fx ask");
+    }
     assert!(server.requests().is_empty());
 }
