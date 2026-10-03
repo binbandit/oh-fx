@@ -2,7 +2,9 @@ mod app_input_runtime;
 mod app_permission_runtime;
 mod app_worker_runtime;
 mod approval_runtime;
+mod directory_completion_job;
 mod event_loop;
+mod input_completion_runtime;
 mod input_history_runtime;
 mod input_selection_runtime;
 mod input_submit_runtime;
@@ -20,10 +22,13 @@ use ofx_contract::{PermissionMode, TurnId, UiCommand};
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
+pub use directory_completion_job::DirectoryLister;
+pub use input_completion_runtime::FileMentionSource;
 pub use input_history_runtime::PromptHistory;
 
 use app_permission_runtime::YoloWarning;
 use approval_runtime::ApprovalPrompt;
+use input_completion_runtime::FilePicker;
 use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
 use skills_menu::SkillsMenu;
@@ -33,7 +38,7 @@ use crate::footer::input_presentation::ComposerView;
 use crate::footer::input_presentation::{
     DangerStatus, HintState, compose_hint_row, composer_view, danger_status_text, input_row_limit,
 };
-use crate::footer::skills_menu_presentation::{skills_menu_hint_row, skills_menu_rows};
+use crate::footer::skills_menu_presentation::{skills_menu_band, skills_menu_hint_row};
 use crate::host::Clipboard;
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
@@ -59,6 +64,7 @@ const FOOTER_ROWS: u16 = 4;
 const STARTUP_MIN_BODY_ROWS: u16 = 11;
 const MAX_PROMPT_HISTORY: usize = 100;
 const RESIZE_DEBOUNCE_MS: i64 = 100;
+const FILE_PICKER_POLL_MS: i64 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommandSpec {
@@ -79,6 +85,7 @@ pub struct ShellOptions {
     pub commands: Vec<SlashCommandSpec>,
     pub command_categories: Vec<String>,
     pub prompt_history: PromptHistory,
+    pub file_mentions: Option<Box<dyn FileMentionSource>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +132,7 @@ pub(crate) struct Shell<'a> {
     input: TerminalInput,
     composer: Composer,
     history: HistoryRecorder,
+    file_picker: FilePicker,
     gestures: gesture_state::State,
     transcript: Transcript,
     renderer: LiveRegionRenderer,
@@ -273,11 +281,13 @@ impl<'a> Shell<'a> {
         let yolo_warning = YoloWarning::new(options.full_access_warning);
         let mut composer = Composer::new();
         let history = HistoryRecorder::install(options.prompt_history.take(), &mut composer);
+        let file_picker = FilePicker::new(options.file_mentions.take());
         Self {
             terminal: setup.terminal,
             input: setup.input,
             composer,
             history,
+            file_picker,
             gestures: gesture_state::State::default(),
             transcript,
             renderer,
@@ -407,6 +417,9 @@ impl<'a> Shell<'a> {
     }
 
     fn commit_frame(&mut self) -> Result<(), TerminalError> {
+        if self.prepare_file_picker() {
+            self.mark_dirty();
+        }
         let now_ms = self.now_ms();
         if self.dimensions_invalid || !self.frame_due(now_ms) {
             return self.flush_output();
@@ -414,24 +427,8 @@ impl<'a> Shell<'a> {
         self.frame.stale = false;
         self.frame.drawn_activity = self.activity_phase(now_ms);
         let appended = self.transcript.take_new_rows(&self.theme);
-        let base_hint = hint_line(
-            &self.theme,
-            &self.options.model,
-            self.options.permission_mode,
-            self.cols(),
-        );
-        let hint_state = HintState {
-            ctrl_c_pending: self.gestures.ctrl_c_exit_armed(),
-            esc_clear_armed: self.gestures.escape_clear_armed(),
-            esc_interrupt_armed: self.gestures.escape_interrupt_armed(),
-            danger: if self.yolo_warning.active() && self.approval.is_none() {
-                DangerStatus::FullAccess
-            } else {
-                DangerStatus::None
-            },
-        };
-        let menu = match (&self.skills_menu, &self.approval) {
-            (Some(menu), None) => Some(skills_menu_rows(
+        let skills_menu = match (&self.skills_menu, &self.approval) {
+            (Some(menu), None) => Some(skills_menu_band(
                 menu,
                 self.skills_menu_budget(),
                 self.cols(),
@@ -439,13 +436,7 @@ impl<'a> Shell<'a> {
             )),
             _ => None,
         };
-        let warning_included =
-            menu.is_none() && !danger_status_text(hint_state, self.cols()).is_empty();
-        let hint = if menu.is_some() {
-            skills_menu_hint_row(&self.theme, self.cols(), hint_state.ctrl_c_pending)
-        } else {
-            compose_hint_row(&self.theme, &base_hint, hint_state, self.cols())
-        };
+        let (hint, warning_included) = self.hint_row(skills_menu.is_some());
         let activity = self.activity_rows(now_ms);
         let banner = self.banner_rows();
         let banner_rows = if banner.is_empty() {
@@ -457,7 +448,8 @@ impl<'a> Shell<'a> {
         let composer = self
             .frame
             .composer
-            .get_or_insert_with(|| match &self.approval {
+            .take()
+            .unwrap_or_else(|| match &self.approval {
                 Some(prompt) => prompt.view(&self.theme, self.layout, banner_rows),
                 None => composer_view(
                     &self.composer,
@@ -466,6 +458,7 @@ impl<'a> Shell<'a> {
                     &self.theme,
                 ),
             });
+        let picker = self.file_picker_band(composer.rows.len().saturating_sub(1), banner_rows);
         let review = composer.review.clone();
         let banner = if review.as_ref().is_some_and(|review| review.screen) {
             Vec::new()
@@ -477,12 +470,13 @@ impl<'a> Shell<'a> {
                 tail_gap,
                 activity,
                 banner,
-                composer,
-                menu: menu.unwrap_or_default(),
+                composer: &composer,
+                menu: skills_menu.unwrap_or(picker.rows),
                 hint,
             },
             usize::from(self.layout.rows),
         );
+        self.frame.composer = Some(composer);
         self.footer_row = live.footer_row;
         self.renderer.present(
             &Frame {
@@ -503,7 +497,36 @@ impl<'a> Shell<'a> {
             let visible = live.composer_start + review.required_rows.start >= hidden_rows;
             prompt.frame_drawn(self.layout, review, visible, drawn_ms);
         }
+        if let Some(receipt) = picker.receipt {
+            self.acknowledge_file_picker(receipt);
+        }
         Ok(())
+    }
+
+    fn hint_row(&self, skills_menu_open: bool) -> (Row, bool) {
+        let hint_state = HintState {
+            ctrl_c_pending: self.gestures.ctrl_c_exit_armed(),
+            esc_clear_armed: self.gestures.escape_clear_armed(),
+            esc_interrupt_armed: self.gestures.escape_interrupt_armed(),
+            danger: if self.yolo_warning.active() && self.approval.is_none() {
+                DangerStatus::FullAccess
+            } else {
+                DangerStatus::None
+            },
+        };
+        if skills_menu_open {
+            let hint = skills_menu_hint_row(&self.theme, self.cols(), hint_state.ctrl_c_pending);
+            return (hint, false);
+        }
+        let base_hint = hint_line(
+            &self.theme,
+            &self.options.model,
+            self.options.permission_mode,
+            self.cols(),
+        );
+        let warning_included = !danger_status_text(hint_state, self.cols()).is_empty();
+        let hint = compose_hint_row(&self.theme, &base_hint, hint_state, self.cols());
+        (hint, warning_included)
     }
 
     fn flush_output(&mut self) -> Result<(), TerminalError> {
@@ -642,9 +665,13 @@ impl<'a> Shell<'a> {
         let blink = self.activity_clock_ms().map(|started_ms| {
             started_ms + (activity_phase(started_ms, now_ms) + 1) * ACTIVITY_BLINK_HALF_PERIOD_MS
         });
+        let file_picker = self
+            .file_picker_busy()
+            .then_some(now_ms + FILE_PICKER_POLL_MS);
         [
             pending_input,
             blink,
+            file_picker,
             self.gestures.next_expiry_ms(),
             self.yolo_warning.deadline_ms(),
             self.resize_due_ms,
@@ -809,6 +836,7 @@ mod tests {
             commands: Vec::new(),
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
+            file_mentions: None,
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
     }

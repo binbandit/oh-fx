@@ -3,6 +3,7 @@ mod composer;
 mod footer;
 mod host;
 mod input;
+mod list_window;
 mod output;
 mod render;
 mod render_engine;
@@ -12,9 +13,10 @@ mod terminal;
 mod theme;
 mod transcript;
 
+pub use composer::file_completion_state::{FileMatch, IndexRevision, IndexState, MentionKind};
 pub use host::Clipboard;
 pub use shell::{
-    PromptHistory, ShellOptions, SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell,
-    ui_channel,
+    DirectoryLister, FileMentionSource, PromptHistory, ShellOptions, SlashCommandSpec,
+    UiEventReceiver, UiEventSender, run_shell, ui_channel,
 };
 pub use terminal::TerminalError;

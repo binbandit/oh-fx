@@ -22,6 +22,7 @@ use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
+use crate::file_mention_runtime::WorkspaceFileMentions;
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
 
@@ -197,6 +198,10 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         commands: slash_command_specs(),
         command_categories: slash_command_categories(),
         prompt_history,
+        file_mentions: Some(Box::new(WorkspaceFileMentions::start(
+            session.profile.workspace_root(),
+            session.profile.cache_dir(),
+        ))),
     };
     let refreshes = session.setup.refreshes();
     let agent = agent_work(session.setup, session.executions, runtime);

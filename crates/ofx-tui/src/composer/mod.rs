@@ -10,6 +10,8 @@ mod composer_undo;
 mod edit_history;
 mod editor_state;
 mod entity_spans;
+pub(crate) mod file_completion_state;
+pub(crate) mod file_picker_path;
 mod horizontal_navigation;
 mod input_limit_rejection;
 mod input_paste_runtime;
@@ -28,10 +30,12 @@ use std::borrow::Cow;
 pub(crate) use composer_deletion::DeletionKind;
 pub(crate) use composer_history::HistoryNavigation;
 pub(crate) use composer_kill_ring::KillKind;
+pub(crate) use composer_replacement::EditRange;
 pub(crate) use editor_state::{InsertResult, SelectionRange};
 pub(crate) use vertical_navigation::VerticalOutcome;
 pub(crate) use visual_layout::{
-    LayoutEvent, UnitKind, VerticalDirection, VisualLayout, terminal_column, visible_window,
+    LayoutEvent, UnitKind, VerticalDirection, VisualLayout, projected_anchor_column,
+    terminal_column, visible_window,
 };
 
 use composer_history::PromptHistory;
@@ -51,6 +55,13 @@ pub(crate) struct Composer {
     prompt_history: PromptHistory,
     vertical: VerticalNavigation,
     limit_rejection: LimitRejection,
+    auto_separator: Option<AutoSeparator>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoSeparator {
+    offset: usize,
+    revision: u64,
 }
 
 impl Composer {
@@ -66,9 +77,16 @@ impl Composer {
         self.edit.input.is_empty()
     }
 
-    #[cfg(test)]
     pub(crate) fn cursor(&self) -> usize {
         self.edit.cursor
+    }
+
+    pub(crate) fn edit_revision(&self) -> u64 {
+        self.edit.revision
+    }
+
+    pub(crate) fn reset_vertical(&mut self) {
+        self.vertical.reset();
     }
 
     pub(crate) fn selection(&self) -> Option<SelectionRange> {

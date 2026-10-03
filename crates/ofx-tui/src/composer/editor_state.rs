@@ -22,16 +22,23 @@ pub(crate) struct EditorState {
     pub(crate) input: String,
     pub(crate) cursor: usize,
     pub(crate) selection_anchor: Option<usize>,
+    pub(crate) revision: u64,
 }
 
 impl EditorState {
+    fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub(crate) fn clear(&mut self) {
+        self.changed();
         self.input.clear();
         self.cursor = 0;
         self.selection_anchor = None;
     }
 
     pub(crate) fn swap_input(&mut self, other: &mut String) {
+        self.changed();
         std::mem::swap(&mut self.input, other);
         self.cursor = self.input.len();
         self.selection_anchor = None;
@@ -108,6 +115,7 @@ impl EditorState {
         if text.is_empty() {
             return;
         }
+        self.changed();
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.selection_anchor = None;
@@ -122,6 +130,7 @@ impl EditorState {
         if let Some(anchor) = self.selection_anchor {
             self.selection_anchor = Some(offset_after_delete(anchor, start, end));
         }
+        self.changed();
         delete_range(&mut self.input, &mut self.cursor, start, end)
     }
 
@@ -134,6 +143,7 @@ impl EditorState {
         {
             return false;
         }
+        self.changed();
         self.input
             .replace_range(index..self.cursor, replacement.encode_utf8(&mut [0; 4]));
         self.selection_anchor = None;
@@ -201,6 +211,7 @@ mod tests {
             input: text.to_owned(),
             cursor: text.len(),
             selection_anchor: None,
+            revision: 0,
         }
     }
 

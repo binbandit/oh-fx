@@ -915,3 +915,40 @@ fn disabled_prompt_history_saves_nothing() {
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
     assert!(!home.root.join("data/oh-fx/history.jsonl").exists());
 }
+
+#[test]
+fn at_mentions_pick_workspace_files_and_reach_the_model_as_typed() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Read it."]))]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    fs::create_dir_all(home.workspace.join("src")).expect("create src");
+    fs::create_dir_all(home.workspace.join("docs")).expect("create docs");
+    for file in ["src/main.rs", "src/mailbox.rs", "docs/my notes.md"] {
+        fs::write(home.workspace.join(file), "").expect("write a workspace file");
+    }
+    let mut session = home.shell(24, 80);
+    session.send(b"explain @mai");
+    let screen = wait(&session, "src/mailbox.rs");
+    assert!(screen.contains("src/main.rs"), "{screen}");
+    session.send(b"\t");
+    wait(&session, "┃ explain @src/main.rs");
+    session.send(b"and @notes");
+    wait(&session, "docs/my notes.md");
+    session.send(b"\r");
+    wait(&session, "┃ explain @src/main.rs and @\"docs/my notes.md\"");
+    session.send(b"\r");
+    wait(&session, "Read it.");
+    let requests = server.requests();
+    assert!(
+        requests[0]
+            .body_text()
+            .contains("explain @src/main.rs and @\\\"docs/my notes.md\\\""),
+        "{}",
+        requests[0].body_text()
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    let cached = fs::read_dir(home.root.join("cache/oh-fx/file-index"))
+        .expect("read the file index cache")
+        .count();
+    assert_eq!(cached, 1);
+}

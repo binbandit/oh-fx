@@ -195,6 +195,10 @@ impl Profile {
         self.paths.as_ref().map(|paths| paths.data.as_path())
     }
 
+    pub(crate) fn cache_dir(&self) -> Option<&Path> {
+        self.paths.as_ref().map(|paths| paths.cache.as_path())
+    }
+
     pub fn resume_selection(
         &mut self,
         provider: &ProviderId,
