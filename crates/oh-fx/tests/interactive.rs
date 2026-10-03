@@ -486,6 +486,24 @@ fn settings_shows_the_session_and_saves_startup_scrollback() {
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
+#[test]
+fn a_terminal_theme_switch_redraws_in_the_light_palette_with_no_key_pressed() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = home.shell(24, 80);
+    let start = session.output().len();
+    session.send(b"\x1b[?997;2n");
+    output_after(&session, start, b"\x1b[c");
+    let start = session.output().len();
+    session.send(b"\x1b[?1;2c");
+    output_after(&session, start, b"\x1b]11;?\x1b\\\x1b[c");
+    let start = session.output().len();
+    session.send(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?1;2c");
+    output_after(&session, start, b"\x1b[0;1;38;5;235moh-fx");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
 fn output_after(session: &PtySession, start: usize, needle: &[u8]) -> Vec<u8> {
     let deadline = Instant::now() + WAIT;
     loop {

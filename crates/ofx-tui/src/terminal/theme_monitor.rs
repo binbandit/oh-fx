@@ -216,6 +216,30 @@ impl Monitor {
         }
     }
 
+    pub(crate) fn next_deadline_ms(&self, now_ms: i64, queries_held: bool) -> Option<i64> {
+        if !self.enabled {
+            return None;
+        }
+        let ready = self.settled_update.is_some()
+            || (!queries_held
+                && match self.query_state {
+                    QueryState::Idle => self.theme_dirty,
+                    QueryState::BackgroundReady => true,
+                    QueryState::AwaitingResponseFence { .. }
+                    | QueryState::AwaitingBackground { .. } => false,
+                });
+        let waiting = match self.query_state {
+            QueryState::AwaitingResponseFence { deadline_ms }
+            | QueryState::AwaitingBackground { deadline_ms, .. } => Some(deadline_ms),
+            QueryState::Idle | QueryState::BackgroundReady => None,
+        };
+        let candidate = (self.candidate_len > 0).then_some(self.candidate_deadline_ms);
+        [ready.then_some(now_ms), waiting, candidate]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
     pub(crate) fn fail_query(&mut self) {
         if self.query_state == QueryState::Idle {
             return;
