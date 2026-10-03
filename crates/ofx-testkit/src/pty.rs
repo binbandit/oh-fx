@@ -634,6 +634,33 @@ mod tests {
     }
 
     #[test]
+    fn stopped_children_can_have_unprocessed_terminal_cleanup() {
+        let mut session = shell(
+            "read line; printf 'ready\\n'; read line; printf '\\033[2J\\033[H'; kill -STOP $$; printf 'resumed\\n'",
+        );
+        session.stall_output_after(b"ready\r\n").unwrap();
+        session.send(b"start\n");
+        session
+            .wait_for(WAIT, |screen| screen.contains("ready"))
+            .unwrap();
+        session.send(b"stop\n");
+        assert!(session.wait_until_stopped(WAIT));
+        assert!(session.wait_for_pending_output(WAIT));
+        assert!(session.screen().contains("ready"));
+        session.stall.release();
+        session.held_slave = None;
+        session
+            .wait_for(WAIT, |screen| !screen.contains("ready"))
+            .unwrap();
+        session.resume().unwrap();
+        session
+            .wait_for(WAIT, |screen| screen.contains("resumed"))
+            .unwrap();
+        assert!(session.wait_exit(WAIT).unwrap().success());
+        assert!(session.drain_output(WAIT));
+    }
+
+    #[test]
     fn stopped_children_are_observed_and_resumed() {
         let mut session = shell("kill -STOP $$; printf 'resumed\\n'");
         assert!(session.wait_until_stopped(WAIT));

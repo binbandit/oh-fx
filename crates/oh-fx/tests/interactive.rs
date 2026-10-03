@@ -707,7 +707,9 @@ fn job_control_stops_reenter_the_terminal_once() {
     let mut session = home.shell(24, 80);
     session.send(b"\x1a");
     assert!(session.wait_until_stopped(WAIT), "ctrl+z stops the shell");
-    assert!(!session.screen().contains("auto · model-a"));
+    session
+        .wait_for(WAIT, |screen| !screen.contains("auto · model-a"))
+        .unwrap_or_else(|screen| panic!("the stopped shell retained its footer:\n{screen}"));
     session.resume().expect("continue the shell");
     wait(&session, "auto · model-a");
     session.resume().expect("send a stray continue");
