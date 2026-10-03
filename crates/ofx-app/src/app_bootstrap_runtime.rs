@@ -581,6 +581,11 @@ impl AgentSetup {
         &self.skills
     }
 
+    pub(crate) fn restore_reasoning(&mut self, reasoning_effort: Option<String>, fast_mode: bool) {
+        self.config.reasoning_effort = reasoning_effort;
+        self.config.fast_mode = fast_mode;
+    }
+
     pub(crate) fn config(&self, model: &str) -> AgentConfig {
         AgentConfig {
             model: model.to_owned(),

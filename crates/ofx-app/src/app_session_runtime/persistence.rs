@@ -1,10 +1,10 @@
 use ofx_agent::{Agent, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, TurnOutcome};
-use ofx_session::{SavedProvider, SessionError, SessionPreferences, SessionStore};
+use ofx_session::{SavedProvider, SessionCatalog, SessionError, SessionPreferences, SessionStore};
 
-use super::{LiveSession, ResumedSession};
+use super::{LaunchOverrides, LiveSession, ResumedSession};
 
-const SESSION_TOPIC: &str = "session";
+pub(super) const SESSION_TOPIC: &str = "session";
 
 pub(crate) struct Resumption {
     pub(crate) session: ResumedSession,
@@ -12,10 +12,12 @@ pub(crate) struct Resumption {
 }
 
 pub(crate) struct Persistence {
-    store: SessionStore,
-    provider: SavedProvider,
+    pub(super) store: SessionStore,
+    pub(super) provider: SavedProvider,
     preferences: SessionPreferences,
-    live: Option<LiveSession>,
+    pub(super) live: Option<LiveSession>,
+    pub(super) overrides: LaunchOverrides,
+    pub(super) catalog: Option<SessionCatalog>,
     resumption: Option<Resumption>,
     remember_fresh: bool,
     degraded: bool,
@@ -26,6 +28,7 @@ impl Persistence {
         store: SessionStore,
         provider: SavedProvider,
         preferences: SessionPreferences,
+        overrides: LaunchOverrides,
         resumption: Option<Resumption>,
     ) -> Self {
         Self {
@@ -33,6 +36,8 @@ impl Persistence {
             provider,
             preferences,
             live: None,
+            overrides,
+            catalog: None,
             resumption,
             remember_fresh: false,
             degraded: false,
@@ -66,6 +71,13 @@ impl Persistence {
             }
             Err(error) => Some(non_durable("session creation failed", error)),
         }
+    }
+
+    pub(crate) fn begin_unless_open(&mut self, agent: &mut Agent) -> Option<Notice> {
+        if self.live.is_some() {
+            return None;
+        }
+        self.begin_fresh(agent)
     }
 
     pub(crate) fn finish_turn(&mut self, report: &TurnReport) -> Option<Notice> {
@@ -109,6 +121,10 @@ impl Persistence {
         Some(non_durable("session persistence degraded", error))
     }
 
+    pub(super) fn adopt_preferences(&mut self, saved: &SessionPreferences) {
+        saved.clone_into(&mut self.preferences);
+    }
+
     pub(crate) fn close(&mut self, agent: &mut Agent) {
         agent.detach_session();
         if let Some(live) = self.live.take() {
@@ -117,7 +133,7 @@ impl Persistence {
         self.remember_fresh = false;
     }
 
-    fn remember(&self, id: &str) -> Option<Notice> {
+    pub(super) fn remember(&self, id: &str) -> Option<Notice> {
         let error = self.store.remember_session_id(id).err()?;
         Some(Notice::new(
             NoticeTone::Warning,

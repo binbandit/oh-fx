@@ -5,6 +5,7 @@ use ofx_contract::{
     SkillMenuGroup, SkillMenuItem, SkillMenuSource, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
+use super::super::Opening;
 use super::super::test_shell::TestShell;
 
 const HINT: &str = "1–4 choose now    ↑↓ options    tab questions    enter answer    esc cancel";
@@ -566,7 +567,7 @@ fn a_resumed_session_replays_answered_questions_as_their_resolution_rows() {
         ]),
         HistoryEntry::Assistant("Shipping fast.".to_owned()),
     ];
-    let mut test = TestShell::start_with(|options| options.history = Some(history));
+    let mut test = TestShell::start_with(|options| options.opening = Opening::Transcript(history));
     let screen = test.screen();
     assert!(
         screen.contains("  1) Which depth?\n     Fast\n  2) Ship it?\n     after\n     review"),
