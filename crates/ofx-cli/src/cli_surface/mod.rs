@@ -4,6 +4,7 @@ mod failure;
 mod launch_modifiers;
 mod model_overrides;
 mod resume;
+mod workflow_args;
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
@@ -26,6 +27,8 @@ pub use resume::RequestedResume;
 use resume::{
     InvalidResumeArgs, RESUME_ID_ALIAS_PREFIX, resume_alias_target, resume_subcommand_target,
 };
+pub use workflow_args::WorkflowArgs;
+use workflow_args::parse_workflow_args;
 
 #[derive(Debug)]
 pub enum Invocation {
@@ -54,8 +57,8 @@ pub struct CommandLaunch {
 pub enum Command {
     Ask(AskArgs),
     Acp,
-    Pr,
-    Issue,
+    Pr(WorkflowArgs),
+    Issue(WorkflowArgs),
     Login(Option<ProviderId>),
     Logout(Option<ProviderId>),
     Setup,
@@ -80,8 +83,8 @@ impl Command {
         match self {
             Self::Ask(_) => TopLevelKind::Ask,
             Self::Acp => TopLevelKind::Acp,
-            Self::Pr => TopLevelKind::Pr,
-            Self::Issue => TopLevelKind::Issue,
+            Self::Pr(_) => TopLevelKind::Pr,
+            Self::Issue(_) => TopLevelKind::Issue,
             Self::Login(_) => TopLevelKind::Login,
             Self::Logout(_) => TopLevelKind::Logout,
             Self::Setup => TopLevelKind::Setup,
@@ -118,8 +121,8 @@ impl Command {
             Self::Ask(args) if args.output.json => OutputFormat::Json,
             Self::Ask(_)
             | Self::Acp
-            | Self::Pr
-            | Self::Issue
+            | Self::Pr(_)
+            | Self::Issue(_)
             | Self::Login(_)
             | Self::Logout(_)
             | Self::Setup
@@ -248,8 +251,8 @@ fn parse_command(
         }
         TopLevelKind::Ask => Command::Ask(parse_ask(rest)?),
         TopLevelKind::Acp => command_args::validate_acp(rest).map(|()| Command::Acp)?,
-        TopLevelKind::Pr => Command::Pr,
-        TopLevelKind::Issue => Command::Issue,
+        TopLevelKind::Pr => Command::Pr(parse_workflow_args(rest)),
+        TopLevelKind::Issue => Command::Issue(parse_workflow_args(rest)),
         TopLevelKind::Login => Command::Login(command_args::parse_login(kind, &rest)?),
         TopLevelKind::Logout => Command::Logout(command_args::parse_login(kind, &rest)?),
         TopLevelKind::Setup => {
