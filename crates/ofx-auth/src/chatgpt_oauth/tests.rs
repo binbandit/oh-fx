@@ -471,3 +471,23 @@ fn terminal_refresh_codes_require_a_new_sign_in() {
         br#"{"error":"server_error"}"#
     ));
 }
+
+#[tokio::test]
+async fn non_json_successful_refresh_keeps_the_session() {
+    let server = FakeServer::start([Reply::status(200, "upstream unavailable")]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("oh-fx"));
+    oauth
+        .store
+        .save_new_session(&stored_session(&account_token("acct_test"), 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        oauth
+            .load_access(RefreshMode::Force, &CancellationToken::new())
+            .await
+            .unwrap_err(),
+        ChatGptError::ChatGptOAuthRequestFailed
+    );
+    assert!(saved_session(&oauth).await.is_some());
+}

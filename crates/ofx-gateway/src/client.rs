@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) enum BoundedFailure {
     Cancelled,
     Failed,
+    TooLarge,
 }
 
 pub(crate) async fn bounded_get(
@@ -20,7 +21,7 @@ pub(crate) async fn bounded_get(
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| BoundedFailure::Failed)? {
             if body.len() + chunk.len() > max_bytes {
-                return Err(BoundedFailure::Failed);
+                return Err(BoundedFailure::TooLarge);
             }
             body.extend_from_slice(&chunk);
         }
