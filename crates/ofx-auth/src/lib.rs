@@ -21,7 +21,8 @@ pub use auth_runtime::{
     stored_codex_login,
 };
 pub use chatgpt_oauth::{
-    CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth, RefreshMode,
+    CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth,
+    ChatGptSignIn, RefreshMode,
 };
 pub use credentials::{
     AUTH_MODE_VARIABLE, AuthMode, CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL,
