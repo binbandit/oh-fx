@@ -1,7 +1,8 @@
+#[cfg(test)]
 use super::KeywordCase;
 
-const CAPACITY: usize = 32;
-const LONGEST: usize = 16;
+pub(super) const CAPACITY: usize = 32;
+pub(super) const LONGEST: usize = 16;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Words<Text: ?Sized = [u8]> {
@@ -42,6 +43,15 @@ impl<const N: usize> Words<[u8; N]> {
 }
 
 impl Words {
+    pub(super) const fn text(&self) -> &[u8] {
+        &self.text
+    }
+
+    pub(super) const fn buckets(&self) -> ([u8; LONGEST + 2], [u8; CAPACITY]) {
+        (self.first_of_len, self.starts_by_len)
+    }
+
+    #[cfg(test)]
     pub(crate) fn contains(&self, word: &str, case: KeywordCase) -> bool {
         let Some(&[first, end]) = self.first_of_len.get(word.len()..word.len() + 2) else {
             return false;

@@ -1,9 +1,14 @@
 mod json_document;
+mod packed_registry;
+#[cfg(test)]
+mod registry_equivalence;
 #[cfg(test)]
 mod word_list_equivalence;
 mod words;
 
 use json_document::is_json_document;
+use packed_registry::PROFILES;
+pub use packed_registry::Profile;
 use words::Words;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,8 +47,8 @@ enum ProfileFlag {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Profile {
-    pub label: &'static str,
+struct SourceProfile {
+    label: &'static str,
     aliases: &'static Words,
     pub(crate) line_comments: &'static [&'static str],
     pub(crate) block_comment: Option<BlockComment>,
@@ -56,7 +61,7 @@ pub struct Profile {
     detection: Detection,
 }
 
-impl Profile {
+impl SourceProfile {
     const fn new(label: &'static str, aliases: &'static Words) -> Self {
         Self {
             label,
@@ -71,30 +76,6 @@ impl Profile {
             keyword_case: KeywordCase::Sensitive,
             detection: Detection::None,
         }
-    }
-
-    fn has(&self, flag: ProfileFlag) -> bool {
-        self.flags.contains(&flag)
-    }
-
-    pub(crate) fn dollar_vars(&self) -> bool {
-        self.has(ProfileFlag::DollarVars)
-    }
-
-    pub(crate) fn dash_flags(&self) -> bool {
-        self.has(ProfileFlag::DashFlags)
-    }
-
-    pub(crate) fn command_words(&self) -> bool {
-        self.has(ProfileFlag::CommandWords)
-    }
-
-    pub(crate) fn bare_numbers(&self) -> bool {
-        !self.has(ProfileFlag::PlainBareNumbers)
-    }
-
-    pub fn diff_lines(&self) -> bool {
-        self.has(ProfileFlag::DiffLines)
     }
 }
 
@@ -115,17 +96,17 @@ const NO_WORDS: &Words = &Words::new(b"");
 const TRUE_FALSE_NULL: &Words = &Words::new(b"true false null");
 const TRUE_FALSE_NIL: &Words = &Words::new(b"true false nil");
 
-static PROFILES: [Profile; 40] = [
-    Profile {
+const SOURCES: [SourceProfile; 40] = [
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         quotes: DOUBLE_QUOTE,
         keywords: &Words::new(
             b"const var fn pub return if else while for struct enum union try catch comptime defer \
               errdefer async await anytype void",
         ),
-        ..Profile::new("zig", &Words::new(b"zig"))
+        ..SourceProfile::new("zig", &Words::new(b"zig"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: SHELL_QUOTES,
@@ -135,15 +116,15 @@ static PROFILES: [Profile; 40] = [
         ),
         literals: &Words::new(b"true false null undefined"),
         detection: Detection::TypescriptAssertion,
-        ..Profile::new("ts", &Words::new(b"js jsx javascript ts tsx typescript"))
+        ..SourceProfile::new("ts", &Words::new(b"js jsx javascript ts tsx typescript"))
     },
-    Profile {
+    SourceProfile {
         quotes: DOUBLE_QUOTE,
         literals: TRUE_FALSE_NULL,
         detection: Detection::Json,
-        ..Profile::new("json", &Words::new(b"json"))
+        ..SourceProfile::new("json", &Words::new(b"json"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
         operators: b"&|;<>*",
@@ -154,9 +135,9 @@ static PROFILES: [Profile; 40] = [
             ProfileFlag::PlainBareNumbers,
         ],
         detection: Detection::ShellShebang,
-        ..Profile::new("sh", &Words::new(b"sh bash zsh shell shellscript"))
+        ..SourceProfile::new("sh", &Words::new(b"sh bash zsh shell shellscript"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
         keywords: &Words::new(
@@ -165,21 +146,21 @@ static PROFILES: [Profile; 40] = [
         ),
         literals: &Words::new(b"True False None"),
         detection: Detection::PythonHeader,
-        ..Profile::new("python", &Words::new(b"python py"))
+        ..SourceProfile::new("python", &Words::new(b"python py"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
         literals: &Words::new(b"true false null yes no on off"),
-        ..Profile::new("yaml", &Words::new(b"yaml yml"))
+        ..SourceProfile::new("yaml", &Words::new(b"yaml yml"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
         literals: &Words::new(b"true false"),
-        ..Profile::new("toml", &Words::new(b"toml"))
+        ..SourceProfile::new("toml", &Words::new(b"toml"))
     },
-    Profile {
+    SourceProfile {
         line_comments: &["--"],
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -191,9 +172,9 @@ static PROFILES: [Profile; 40] = [
         literals: TRUE_FALSE_NULL,
         keyword_case: KeywordCase::AsciiInsensitive,
         detection: Detection::SqlSelect,
-        ..Profile::new("sql", &Words::new(b"sql"))
+        ..SourceProfile::new("sql", &Words::new(b"sql"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
         keywords: &Words::new(
@@ -202,9 +183,9 @@ static PROFILES: [Profile; 40] = [
         ),
         keyword_case: KeywordCase::AsciiInsensitive,
         detection: Detection::DockerfileFrom,
-        ..Profile::new("dockerfile", &Words::new(b"dockerfile docker"))
+        ..SourceProfile::new("dockerfile", &Words::new(b"dockerfile docker"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -214,9 +195,9 @@ static PROFILES: [Profile; 40] = [
         ),
         literals: &Words::new(b"true false None Some"),
         detection: Detection::RustFunction,
-        ..Profile::new("rust", &Words::new(b"rust rs"))
+        ..SourceProfile::new("rust", &Words::new(b"rust rs"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: b"\"`",
@@ -226,9 +207,9 @@ static PROFILES: [Profile; 40] = [
         ),
         literals: TRUE_FALSE_NIL,
         detection: Detection::GoPackage,
-        ..Profile::new("go", &Words::new(b"go"))
+        ..SourceProfile::new("go", &Words::new(b"go"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -238,9 +219,9 @@ static PROFILES: [Profile; 40] = [
               unsigned void volatile while",
         ),
         literals: &Words::new(b"true false NULL"),
-        ..Profile::new("c", &Words::new(b"c h m mm"))
+        ..SourceProfile::new("c", &Words::new(b"c h m mm"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -250,9 +231,9 @@ static PROFILES: [Profile; 40] = [
               void",
         ),
         literals: &Words::new(b"true false nullptr NULL"),
-        ..Profile::new("cpp", &Words::new(b"cpp c++ cc cxx hpp"))
+        ..SourceProfile::new("cpp", &Words::new(b"cpp c++ cc cxx hpp"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -261,9 +242,9 @@ static PROFILES: [Profile; 40] = [
               new return if else for foreach while async await interface record get set",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("csharp", &Words::new(b"csharp cs"))
+        ..SourceProfile::new("csharp", &Words::new(b"csharp cs"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -272,9 +253,9 @@ static PROFILES: [Profile; 40] = [
               if else for while try catch throws extends implements record var",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("java", &Words::new(b"java"))
+        ..SourceProfile::new("java", &Words::new(b"java"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -283,9 +264,9 @@ static PROFILES: [Profile; 40] = [
               for while try catch data sealed suspend",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("kotlin", &Words::new(b"kotlin kt kts"))
+        ..SourceProfile::new("kotlin", &Words::new(b"kotlin kt kts"))
     },
-    Profile {
+    SourceProfile {
         line_comments: &["//", "#"],
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -294,9 +275,9 @@ static PROFILES: [Profile; 40] = [
               while try catch new static const echo yield",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("php", &Words::new(b"php"))
+        ..SourceProfile::new("php", &Words::new(b"php"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
         keywords: &Words::new(
@@ -304,9 +285,9 @@ static PROFILES: [Profile; 40] = [
               rescue require attr_reader",
         ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("ruby", &Words::new(b"ruby rb"))
+        ..SourceProfile::new("ruby", &Words::new(b"ruby rb"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -315,9 +296,9 @@ static PROFILES: [Profile; 40] = [
               else guard for while switch case async await throws try",
         ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("swift", &Words::new(b"swift"))
+        ..SourceProfile::new("swift", &Words::new(b"swift"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         block_comment: Some(BlockComment {
             start: "<#",
@@ -330,9 +311,9 @@ static PROFILES: [Profile; 40] = [
         ),
         literals: TRUE_FALSE_NULL,
         keyword_case: KeywordCase::AsciiInsensitive,
-        ..Profile::new("powershell", &Words::new(b"powershell ps1 pwsh ps"))
+        ..SourceProfile::new("powershell", &Words::new(b"powershell ps1 pwsh ps"))
     },
-    Profile {
+    SourceProfile {
         line_comments: &["--"],
         block_comment: Some(BlockComment {
             start: "--[[",
@@ -344,33 +325,33 @@ static PROFILES: [Profile; 40] = [
               return then true until while",
         ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("lua", &Words::new(b"lua"))
+        ..SourceProfile::new("lua", &Words::new(b"lua"))
     },
-    Profile {
+    SourceProfile {
         block_comment: MARKUP_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
         keywords: &Words::new(
             b"html head body main header footer section article div span a p script style link \
               meta title button input form img ul li",
         ),
-        ..Profile::new("html", &Words::new(b"html htm vue svelte"))
+        ..SourceProfile::new("html", &Words::new(b"html htm vue svelte"))
     },
-    Profile {
+    SourceProfile {
         block_comment: MARKUP_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
         keywords: &Words::new(b"xml version encoding DOCTYPE CDATA"),
-        ..Profile::new("xml", &Words::new(b"xml"))
+        ..SourceProfile::new("xml", &Words::new(b"xml"))
     },
-    Profile {
+    SourceProfile {
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
         keywords: &Words::new(
             b"color background display position margin padding border font width height flex grid \
               align justify transition transform animation media",
         ),
-        ..Profile::new("css", &Words::new(b"css"))
+        ..SourceProfile::new("css", &Words::new(b"css"))
     },
-    Profile {
+    SourceProfile {
         line_comments: &["#", "//"],
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -379,22 +360,22 @@ static PROFILES: [Profile; 40] = [
               count",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("hcl", &Words::new(b"hcl terraform tf"))
+        ..SourceProfile::new("hcl", &Words::new(b"hcl terraform tf"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         flags: &[ProfileFlag::DollarVars],
-        ..Profile::new("make", &Words::new(b"make makefile mk"))
+        ..SourceProfile::new("make", &Words::new(b"make makefile mk"))
     },
-    Profile {
+    SourceProfile {
         line_comments: &["#", ";"],
-        ..Profile::new("ini", &Words::new(b"ini conf cfg editorconfig"))
+        ..SourceProfile::new("ini", &Words::new(b"ini conf cfg editorconfig"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
-        ..Profile::new("dotenv", &Words::new(b"dotenv env"))
+        ..SourceProfile::new("dotenv", &Words::new(b"dotenv env"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_QUOTE,
         keywords: &Words::new(
@@ -402,9 +383,9 @@ static PROFILES: [Profile; 40] = [
               schema extend implements directive",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("graphql", &Words::new(b"graphql gql"))
+        ..SourceProfile::new("graphql", &Words::new(b"graphql gql"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -413,9 +394,9 @@ static PROFILES: [Profile; 40] = [
               async await new static import export void",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("dart", &Words::new(b"dart"))
+        ..SourceProfile::new("dart", &Words::new(b"dart"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_QUOTE,
@@ -424,9 +405,9 @@ static PROFILES: [Profile; 40] = [
               match case return new type given override",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("scala", &Words::new(b"scala sc"))
+        ..SourceProfile::new("scala", &Words::new(b"scala sc"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_QUOTE,
         keywords: &Words::new(
@@ -434,9 +415,9 @@ static PROFILES: [Profile; 40] = [
               for try rescue after alias import require use",
         ),
         literals: TRUE_FALSE_NIL,
-        ..Profile::new("elixir", &Words::new(b"elixir ex exs"))
+        ..SourceProfile::new("elixir", &Words::new(b"elixir ex exs"))
     },
-    Profile {
+    SourceProfile {
         line_comments: &["--"],
         block_comment: Some(BlockComment {
             start: "{-",
@@ -448,9 +429,9 @@ static PROFILES: [Profile; 40] = [
               do let in infix infixl infixr",
         ),
         literals: &Words::new(b"True False"),
-        ..Profile::new("haskell", &Words::new(b"haskell hs"))
+        ..SourceProfile::new("haskell", &Words::new(b"haskell hs"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: SHELL_QUOTES,
         flags: &[ProfileFlag::DollarVars],
@@ -459,18 +440,18 @@ static PROFILES: [Profile; 40] = [
               print die warn eval do require",
         ),
         literals: &Words::new(b"undef"),
-        ..Profile::new("perl", &Words::new(b"perl pl pm"))
+        ..SourceProfile::new("perl", &Words::new(b"perl pl pm"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         quotes: DOUBLE_SINGLE_QUOTES,
         keywords: &Words::new(
             b"function if else for while repeat break next return in library require",
         ),
         literals: &Words::new(b"TRUE FALSE NULL NA"),
-        ..Profile::new("r", &Words::new(b"r"))
+        ..SourceProfile::new("r", &Words::new(b"r"))
     },
-    Profile {
+    SourceProfile {
         line_comments: SLASH_COMMENTS,
         block_comment: C_BLOCK_COMMENT,
         quotes: DOUBLE_SINGLE_QUOTES,
@@ -479,37 +460,37 @@ static PROFILES: [Profile; 40] = [
               package import extends implements static final void",
         ),
         literals: TRUE_FALSE_NULL,
-        ..Profile::new("groovy", &Words::new(b"groovy gradle"))
+        ..SourceProfile::new("groovy", &Words::new(b"groovy gradle"))
     },
-    Profile {
+    SourceProfile {
         line_comments: HASH_COMMENTS,
         keywords: &Words::new(
             b"server location listen root proxy_pass set return rewrite if error_page access_log \
               include upstream worker_processes events http",
         ),
-        ..Profile::new("nginx", &Words::new(b"nginx"))
+        ..SourceProfile::new("nginx", &Words::new(b"nginx"))
     },
-    Profile {
+    SourceProfile {
         block_comment: MARKUP_BLOCK_COMMENT,
         quotes: b"`",
         flags: &[ProfileFlag::PlainBareNumbers],
-        ..Profile::new("markdown", &Words::new(b"md markdown mdx"))
+        ..SourceProfile::new("markdown", &Words::new(b"md markdown mdx"))
     },
-    Profile {
+    SourceProfile {
         flags: &[ProfileFlag::PlainBareNumbers],
-        ..Profile::new("text", &Words::new(b"text txt plain plaintext"))
+        ..SourceProfile::new("text", &Words::new(b"text txt plain plaintext"))
     },
-    Profile {
+    SourceProfile {
         flags: &[ProfileFlag::DiffLines],
         detection: Detection::DiffPatch,
-        ..Profile::new("diff", &Words::new(b"diff patch"))
+        ..SourceProfile::new("diff", &Words::new(b"diff patch"))
     },
 ];
 
 pub fn resolve(label: &str) -> Option<&'static Profile> {
     PROFILES.iter().find(|profile| {
         profile
-            .aliases
+            .aliases()
             .contains(label, KeywordCase::AsciiInsensitive)
     })
 }
@@ -517,7 +498,7 @@ pub fn resolve(label: &str) -> Option<&'static Profile> {
 pub fn infer(source: &str) -> Option<&'static Profile> {
     PROFILES
         .iter()
-        .find(|profile| matches_detection(profile.detection, source))
+        .find(|profile| matches_detection(profile.detection(), source))
 }
 
 fn matches_detection(detection: Detection, source: &str) -> bool {
@@ -633,7 +614,7 @@ mod tests {
     #[test]
     fn type_script_assertions_infer_the_canonical_type_script_label() {
         let source = "const hook = await resumeHook(token, { cleanup: true } as CleanupSignal);";
-        assert_eq!(infer(source).map(|profile| profile.label), Some("ts"));
+        assert_eq!(infer(source).map(Profile::label), Some("ts"));
         assert!(infer("const value = 1;").is_none());
         assert!(infer("const value = {} as cleanupSignal;").is_none());
     }
@@ -655,10 +636,10 @@ mod tests {
             ("Shell", "sh"),
         ];
         for (label, profile) in cases {
-            assert_eq!(resolve(label).map(|found| found.label), Some(profile));
+            assert_eq!(resolve(label).map(Profile::label), Some(profile));
         }
         assert!(resolve("").is_none());
-        assert_eq!(resolve("text").map(|found| found.label), Some("text"));
+        assert_eq!(resolve("text").map(Profile::label), Some("text"));
     }
 
     #[test]
@@ -695,7 +676,7 @@ mod tests {
             ("tf", "hcl"),
         ];
         for (label, profile) in cases {
-            assert_eq!(resolve(label).map(|found| found.label), Some(profile));
+            assert_eq!(resolve(label).map(Profile::label), Some(profile));
         }
     }
 
@@ -711,7 +692,7 @@ mod tests {
             ("fn main() { println!(\"ready\"); }", "rust"),
         ];
         for (source, profile) in cases {
-            assert_eq!(infer(source).map(|found| found.label), Some(profile));
+            assert_eq!(infer(source).map(Profile::label), Some(profile));
         }
         assert!(infer("const value = 1;").is_none());
         assert!(infer("title: ready").is_none());
@@ -727,7 +708,7 @@ mod tests {
             nested(100_000),
             " \t{\"a\": {\"a\": [true, false, null, \"\\ud83d\\ude00\\n\"]}}\r\n".to_owned(),
         ] {
-            assert_eq!(infer(&source).map(|found| found.label), Some("json"));
+            assert_eq!(infer(&source).map(Profile::label), Some("json"));
         }
         for source in [
             "{\"a\":1,\"a\":2}",
@@ -745,11 +726,11 @@ mod tests {
     #[test]
     fn aliases_do_not_collide_across_profiles() {
         for (index, profile) in PROFILES.iter().enumerate() {
-            for alias in profile.aliases.iter() {
+            for alias in profile.aliases().iter() {
                 for other in &PROFILES[index + 1..] {
                     assert!(
                         other
-                            .aliases
+                            .aliases()
                             .iter()
                             .all(|other_alias| !alias.eq_ignore_ascii_case(other_alias))
                     );
@@ -781,14 +762,14 @@ mod tests {
             ("vue", "html"),
         ];
         for (alias, label) in cases {
-            assert_eq!(resolve(alias).map(|profile| profile.label), Some(label));
+            assert_eq!(resolve(alias).map(Profile::label), Some(label));
         }
     }
 
     #[test]
     fn infer_detects_diff_patches_without_a_fence_label() {
         assert_eq!(
-            infer("--- a/main.zig\n+++ b/main.zig\n@@ -1 +1 @@\n-old\n+new").map(|p| p.label),
+            infer("--- a/main.zig\n+++ b/main.zig\n@@ -1 +1 @@\n-old\n+new").map(Profile::label),
             Some("diff")
         );
         assert!(infer("plain prose about --- things").is_none());
