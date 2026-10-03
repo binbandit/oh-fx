@@ -14,7 +14,7 @@ use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 use crate::app_agent_runtime::ControllerState;
 use crate::app_session_runtime::{Persistence, RenameError, validate_session_title};
 use crate::session_commands::{handle_allowlist, handle_settings};
-use crate::skill_commands::handle_skills;
+use crate::skill_commands::{InstallRequest, handle_skills};
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
 const CLIPBOARD_TOPIC: &str = "clipboard";
@@ -40,6 +40,7 @@ const MODEL_USAGE: &str = "usage: /model <id> <effort> [normal|fast]";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
     None,
+    Install(InstallRequest),
     SwitchModel(String),
     Clear,
     ToggleFast,
@@ -125,6 +126,8 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         SlashKind::RenameSession => CommandEffect::Rename(command.payload.to_owned()),
         SlashKind::Fast => CommandEffect::ToggleFast,
         SlashKind::Compact => compaction_effect(state, work),
+        SlashKind::Skills => handle_skills(state, command.payload)
+            .map_or(CommandEffect::None, CommandEffect::Install),
         SlashKind::Model if !command.payload.is_empty() => {
             CommandEffect::SwitchModel(command.payload.to_owned())
         }
@@ -188,8 +191,8 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         SlashKind::Model => state.notice(NoticeTone::Neutral, "model", state.model()),
         SlashKind::Permissions => state.permissions().handle_command(payload),
         SlashKind::Shell => state.permissions().reload_shell(payload),
-        SlashKind::Skills => handle_skills(state, payload),
-        SlashKind::ClearScreen
+        SlashKind::Skills
+        | SlashKind::ClearScreen
         | SlashKind::NewSession
         | SlashKind::ResetSession
         | SlashKind::ResumeSession

@@ -8,11 +8,14 @@ use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use ofx_contract::{
     NoticeTone, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiEvent,
 };
-use ofx_skills::{Skill, SkillDiscovery, SkillSource, diagnostic_summary, install_local};
+use ofx_skills::{
+    InstallResult, Skill, SkillDiscovery, SkillSource, diagnostic_summary, install_local,
+};
 use rustix::fs::{Mode, OFlags, mkdirat, openat};
 use rustix::io::Errno;
 
 use crate::app_agent_runtime::ControllerState;
+use crate::skills::SkillInstall;
 
 const TOPIC: &str = "skills";
 const TRIMMED: [char; 2] = [' ', '\t'];
@@ -92,7 +95,7 @@ pub(crate) fn is_install_command(text: &str) -> bool {
     })
 }
 
-pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
+pub(crate) fn handle_skills(state: &ControllerState, rest: &str) -> Option<InstallRequest> {
     let command = parse(rest);
     let skills = state.skills();
     if matches!(
@@ -110,7 +113,12 @@ pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
     match command {
         Command::List => open_menu(state, &found, SkillMenuFocus::Start),
         Command::Show(name) => show(state, &found, name),
-        Command::Install { source, filter } => install(state, source, filter),
+        Command::Install { source, filter } => {
+            return Some(InstallRequest {
+                source: source.to_owned(),
+                filter: filter.map(str::to_owned),
+            });
+        }
         Command::Create(name) => create(state, name),
         Command::Remove(name) => remove(state, &found, name),
         Command::Path => state.notice(
@@ -120,38 +128,92 @@ pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
         ),
         Command::Usage => state.notice(NoticeTone::Neutral, "", USAGE),
     }
+    None
 }
 
-fn install(state: &ControllerState, source: &str, filter: Option<&str>) {
-    let installation = state.skills().installations().start();
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallRequest {
+    source: String,
+    filter: Option<String>,
+}
+
+pub(crate) struct InstallTask {
+    request: InstallRequest,
+    task: tokio::task::JoinHandle<io::Result<InstallResult>>,
+    guard: SkillInstall,
+}
+
+impl InstallRequest {
+    pub(crate) fn start(
+        self,
+        state: &ControllerState,
+        accepted: Option<SkillInstall>,
+    ) -> InstallTask {
+        let guard = accepted.unwrap_or_else(|| state.skills().installations().start());
+        let root = state.skills().managed_root().to_owned();
+        let source = self.source.clone();
+        let filter = self.filter.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            install_local(
+                &root,
+                Path::new(source.trim_matches([' ', '\t', '\r', '\n'])),
+                filter.as_deref(),
+            )
+        });
+        InstallTask {
+            request: self,
+            task,
+            guard,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn panicking_install(state: &ControllerState, source: &str) -> InstallTask {
+    InstallTask {
+        request: InstallRequest {
+            source: source.to_owned(),
+            filter: None,
+        },
+        task: tokio::task::spawn_blocking(|| panic!("copy failed")),
+        guard: state.skills().installations().start(),
+    }
+}
+
+pub(crate) async fn finish_install(state: &ControllerState, task: &mut Option<InstallTask>) {
+    let Some(running) = task.as_mut() else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    let result = (&mut running.task).await;
+    let completed = task
+        .take()
+        .expect("installation completed without its task");
     state.notice(
         NoticeTone::Neutral,
         TOPIC,
-        &format!("Installing from {source}..."),
+        &format!("Installing from {}...", completed.request.source),
     );
-    let skills = state.skills();
-    let notice = match install_local(
-        skills.managed_root(),
-        Path::new(source.trim_matches([' ', '\t', '\r', '\n'])),
-        filter,
-    ) {
-        Ok(result) if result.installed.is_empty() => filter.map_or_else(
-            || "No skills found (no SKILL.md files).".to_owned(),
-            |filter| format!("Skill '{filter}' not found in the repository."),
-        ),
-        Ok(result) => {
-            skills.refresh();
-            result
-                .installed
-                .iter()
-                .map(|name| format!("Installed: {name}"))
-                .collect::<Vec<_>>()
-                .join("\n")
+    let notice = match result {
+        Ok(Ok(result)) if result.installed.is_empty() => {
+            completed.request.filter.as_deref().map_or_else(
+                || "No skills found (no SKILL.md files).".to_owned(),
+                |filter| format!("Skill '{filter}' not found in the repository."),
+            )
         }
-        Err(_) => "Failed to install. Check the source path or URL and try again.".to_owned(),
+        Ok(Ok(result)) => result
+            .installed
+            .iter()
+            .map(|name| format!("Installed: {name}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Ok(Err(_)) | Err(_) => {
+            "Failed to install. Check the source path or URL and try again.".to_owned()
+        }
     };
     state.notice(NoticeTone::Neutral, TOPIC, &notice);
-    drop(installation);
+    state.skills().refresh();
+    drop(completed.guard);
 }
 
 fn open_menu(state: &ControllerState, found: &SkillDiscovery, focus: SkillMenuFocus) {
