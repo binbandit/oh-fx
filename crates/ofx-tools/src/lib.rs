@@ -3,6 +3,7 @@ mod file_mutation_execution;
 mod filesystem;
 mod shell;
 mod skill;
+mod subagent;
 mod tool_admission;
 mod tool_args;
 mod tool_runtime;
@@ -11,17 +12,34 @@ mod web;
 pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
 pub use skill::SkillTool;
+pub use subagent::SubagentTool;
 pub use web::{WebFetch, WebFetchProgress};
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use ofx_config::ContextLimits;
-    use ofx_contract::Tool;
+    use ofx_contract::{
+        BoxFuture, SubagentProvider, SubagentRequest, Tool, ToolContext, ToolOutput,
+    };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_skills::{RootPolicy, SkillDiscoveryContext, SymlinkAuthorities};
     use serde_json::Value;
 
     use super::*;
+
+    struct NoProvider;
+
+    impl SubagentProvider for NoProvider {
+        fn execute(
+            &self,
+            _request: SubagentRequest,
+            _context: ToolContext,
+        ) -> BoxFuture<'static, ToolOutput> {
+            Box::pin(async { ToolOutput::failure("unused") })
+        }
+    }
 
     #[test]
     fn every_tool_has_a_bounded_description_and_a_schema_that_round_trips() {
@@ -44,7 +62,8 @@ mod tests {
             },
             ContextLimits::default(),
         );
-        let tools: [&dyn Tool; 7] = [
+        let subagent = SubagentTool::new(Arc::new(NoProvider));
+        let tools: [&dyn Tool; 8] = [
             &ReadFile::new("/"),
             &GlobFiles::new("/"),
             &GrepFiles::new("/"),
@@ -52,6 +71,7 @@ mod tests {
             &EditFile::new("/"),
             &shell,
             &skill,
+            &subagent,
         ];
         for tool in tools {
             let spec = tool.spec();
