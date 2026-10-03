@@ -5,7 +5,7 @@ pub(crate) static RGI_EMOJI_SEQUENCES: SortedLines<
     { first_char_count(RGI_EMOJI_SEQUENCE_LINES) },
 > = SortedLines::new(RGI_EMOJI_SEQUENCE_LINES);
 
-const RGI_EMOJI_SEQUENCE_LINES: &str = "\
+pub(crate) const RGI_EMOJI_SEQUENCE_LINES: &str = "\
 #\u{fe0f}\u{20e3}
 *\u{fe0f}\u{20e3}
 0\u{fe0f}\u{20e3}

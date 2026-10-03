@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use tokio_util::sync::CancellationToken;
 
@@ -108,6 +108,23 @@ pub struct FileChange<'a> {
     pub line_counts: Option<&'a OnceLock<FileChangeStats>>,
 }
 
+impl FileChange<'_> {
+    pub fn to_proposed(&self) -> ProposedFileChange {
+        ProposedFileChange {
+            display_path: self.display_path.clone(),
+            before: self.before.map(Arc::from),
+            after: Arc::from(self.after),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedFileChange {
+    pub display_path: String,
+    pub before: Option<Arc<[u8]>>,
+    pub after: Arc<[u8]>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RootUserRequests {
     pub current: String,
@@ -191,5 +208,36 @@ pub trait PermissionGate: Send + Sync {
         _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<Reviewed>> {
         Box::pin(async { Some(Reviewed::unavailable(ReviewFailure::ReviewerUnconfigured)) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_proposed_change_copies_the_exact_bytes_and_path_it_was_prepared_with() {
+        let slot = OnceLock::new();
+        let change = FileChange {
+            display_path: "notes\\x1b.md".to_owned(),
+            before: Some(b"old\r\n\xff"),
+            after: b"new\n",
+            parents: vec![PathBuf::from("/ws")],
+            line_counts: Some(&slot),
+        };
+        assert_eq!(
+            change.to_proposed(),
+            ProposedFileChange {
+                display_path: "notes\\x1b.md".to_owned(),
+                before: Some(Arc::from(&b"old\r\n\xff"[..])),
+                after: Arc::from(&b"new\n"[..]),
+            }
+        );
+        let created = FileChange {
+            before: None,
+            line_counts: None,
+            ..change
+        };
+        assert_eq!(created.to_proposed().before, None);
     }
 }

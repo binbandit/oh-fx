@@ -31,7 +31,32 @@ impl ReviewOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReviewLine<'a> {
     pub op: ReviewOp,
+    pub old_line: Option<u32>,
+    pub new_line: Option<u32>,
     pub text: &'a [u8],
+    pub elision_count: usize,
+}
+
+impl<'a> ReviewLine<'a> {
+    fn new(op: ReviewOp, old_line: Option<u32>, new_line: Option<u32>, text: &'a [u8]) -> Self {
+        Self {
+            op,
+            old_line,
+            new_line,
+            text,
+            elision_count: 0,
+        }
+    }
+
+    fn elision(count: usize) -> Option<Self> {
+        (count > 0).then_some(Self {
+            op: ReviewOp::Elision,
+            old_line: None,
+            new_line: None,
+            text: b"",
+            elision_count: count,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +69,8 @@ enum LineOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DiffLine<'a> {
     op: LineOp,
+    old_line: Option<u32>,
+    new_line: Option<u32>,
     text: &'a [u8],
 }
 
@@ -113,10 +140,12 @@ impl<'a> FileReview<'a> {
 
     pub fn rows(&self) -> impl Iterator<Item = ReviewLine<'a>> + '_ {
         if self.additions + self.deletions == 0 {
-            return Rows::Notice(Some(ReviewLine {
-                op: ReviewOp::Notice,
-                text: NO_CONTENT_CHANGES,
-            }));
+            return Rows::Notice(Some(ReviewLine::new(
+                ReviewOp::Notice,
+                None,
+                None,
+                NO_CONTENT_CHANGES,
+            )));
         }
         match &self.mode {
             Mode::Computed(source) => Rows::Computed(computed_rows(source).into_iter()),
@@ -183,42 +212,45 @@ impl<'a> Fallback<'a> {
         let prefix_elision = self.prefix_count - prefix_context;
         let suffix_context = self.suffix_count.min(REVIEW_CONTEXT_LINES);
         let suffix_elision = self.suffix_count - suffix_context;
-        let line = |op: ReviewOp| move |text: &'a [u8]| ReviewLine { op, text };
-        let elision = |count: usize| {
-            (count > 0).then_some(ReviewLine {
-                op: ReviewOp::Elision,
-                text: b"",
-            })
+        let old_suffix = self.prefix_count + self.old_middle_count;
+        let new_suffix = self.prefix_count + self.new_middle_count;
+        let lines = |text: &'a [u8], start: usize, count: usize| {
+            text_lines(text)
+                .skip(start)
+                .take(count)
+                .zip(start..)
+                .map(|(line, index)| (line, line_number(index)))
         };
-        elision(prefix_elision)
+        ReviewLine::elision(prefix_elision)
             .into_iter()
             .chain(
-                text_lines(self.old_text)
-                    .skip(prefix_elision)
-                    .take(prefix_context)
-                    .map(line(ReviewOp::Context)),
+                lines(self.old_text, prefix_elision, prefix_context)
+                    .map(|(text, number)| ReviewLine::new(ReviewOp::Context, number, number, text)),
             )
             .chain(
-                text_lines(self.old_text)
-                    .skip(self.prefix_count)
-                    .take(self.old_middle_count)
-                    .map(line(ReviewOp::Deletion)),
+                lines(self.old_text, self.prefix_count, self.old_middle_count)
+                    .map(|(text, number)| ReviewLine::new(ReviewOp::Deletion, number, None, text)),
             )
             .chain(
-                text_lines(self.new_text)
-                    .skip(self.prefix_count)
-                    .take(self.new_middle_count)
-                    .map(line(ReviewOp::Addition)),
+                lines(self.new_text, self.prefix_count, self.new_middle_count)
+                    .map(|(text, number)| ReviewLine::new(ReviewOp::Addition, None, number, text)),
             )
-            .chain(self.old_marker.map(line(ReviewOp::Deletion)))
-            .chain(self.new_marker.map(line(ReviewOp::Addition)))
+            .chain(self.old_marker.map(|marker| {
+                let number = line_number(count_text_lines(self.old_text));
+                ReviewLine::new(ReviewOp::Deletion, number, None, marker)
+            }))
+            .chain(self.new_marker.map(|marker| {
+                let number = line_number(count_text_lines(self.new_text));
+                ReviewLine::new(ReviewOp::Addition, None, number, marker)
+            }))
             .chain(
-                text_lines(self.old_text)
-                    .skip(self.prefix_count + self.old_middle_count)
-                    .take(suffix_context)
-                    .map(line(ReviewOp::Context)),
+                lines(self.old_text, old_suffix, suffix_context)
+                    .zip(new_suffix..)
+                    .map(|((text, old_number), new_index)| {
+                        ReviewLine::new(ReviewOp::Context, old_number, line_number(new_index), text)
+                    }),
             )
-            .chain(elision(suffix_elision))
+            .chain(ReviewLine::elision(suffix_elision))
     }
 }
 
@@ -236,17 +268,21 @@ fn computed_rows<'a>(source: &[DiffLine<'a>]) -> Vec<ReviewLine<'a>> {
                 append_equal_run(source, run_start, index, &mut rows);
             }
             LineOp::Add => {
-                rows.push(ReviewLine {
-                    op: ReviewOp::Addition,
-                    text: line.text,
-                });
+                rows.push(ReviewLine::new(
+                    ReviewOp::Addition,
+                    None,
+                    line.new_line,
+                    line.text,
+                ));
                 index += 1;
             }
             LineOp::Remove => {
-                rows.push(ReviewLine {
-                    op: ReviewOp::Deletion,
-                    text: line.text,
-                });
+                rows.push(ReviewLine::new(
+                    ReviewOp::Deletion,
+                    line.old_line,
+                    None,
+                    line.text,
+                ));
                 index += 1;
             }
         }
@@ -261,18 +297,12 @@ fn append_equal_run<'a>(
     rows: &mut Vec<ReviewLine<'a>>,
 ) {
     let context = |range: &[DiffLine<'a>], rows: &mut Vec<ReviewLine<'a>>| {
-        rows.extend(range.iter().map(|line| ReviewLine {
-            op: ReviewOp::Context,
-            text: line.text,
+        rows.extend(range.iter().map(|line| {
+            ReviewLine::new(ReviewOp::Context, line.old_line, line.new_line, line.text)
         }));
     };
     let elision = |count: usize, rows: &mut Vec<ReviewLine<'a>>| {
-        if count > 0 {
-            rows.push(ReviewLine {
-                op: ReviewOp::Elision,
-                text: b"",
-            });
-        }
+        rows.extend(ReviewLine::elision(count));
     };
     if run_start == 0 {
         let context_start = run_start.max(run_end.saturating_sub(REVIEW_CONTEXT_LINES));
@@ -312,6 +342,8 @@ fn compute<'a>(
         {
             result.push(DiffLine {
                 op: LineOp::Equal,
+                old_line: line_number(old_cursor - 1),
+                new_line: line_number(new_cursor - 1),
                 text: old_lines[old_cursor - 1],
             });
             old_cursor -= 1;
@@ -323,12 +355,16 @@ fn compute<'a>(
         {
             result.push(DiffLine {
                 op: LineOp::Add,
+                old_line: None,
+                new_line: line_number(new_cursor - 1),
                 text: new_lines[new_cursor - 1],
             });
             new_cursor -= 1;
         } else {
             result.push(DiffLine {
                 op: LineOp::Remove,
+                old_line: line_number(old_cursor - 1),
+                new_line: None,
                 text: old_lines[old_cursor - 1],
             });
             old_cursor -= 1;
@@ -402,6 +438,10 @@ fn line_ids<'a>(old_lines: &[&'a [u8]], new_lines: &[&'a [u8]]) -> (Vec<u32>, Ve
     let old_ids = old_lines.iter().map(&mut id).collect();
     let new_ids = new_lines.iter().map(&mut id).collect();
     (old_ids, new_ids)
+}
+
+fn line_number(index: usize) -> Option<u32> {
+    u32::try_from(index + 1).ok()
 }
 
 fn text_lines(text: &[u8]) -> impl Iterator<Item = &[u8]> {
