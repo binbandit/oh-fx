@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ofx_config::ProfilePaths;
-use ofx_upgrade::{UpgradeError, UpgradeLock, UpgradeOutcome, UpgradeProgress};
+use ofx_upgrade::{UpgradeControl, UpgradeError, UpgradeLock, UpgradeOutcome, UpgradeProgress};
 use serde_json::json;
 
 const CLEAR_LINE: &str = "\r\x1b[K";
@@ -58,7 +58,9 @@ async fn upgrade(show_progress: bool, lock: &UpgradeLock) -> Result<UpgradeOutco
     })
     .map_err(|_| UpgradeError::FetchFailed)?;
     let mut progress = ProgressLine::new(show_progress);
-    let outcome = ofx_upgrade::upgrade(&client, lock, |update| progress.show(update)).await;
+    let control = UpgradeControl::new();
+    let outcome =
+        ofx_upgrade::upgrade(&client, lock, &control, |update| progress.show(update)).await;
     progress.clear();
     outcome
 }

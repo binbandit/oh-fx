@@ -1,6 +1,7 @@
 mod archive;
 mod auto;
 mod build_identity;
+mod control;
 mod error;
 mod lock;
 mod release_source;
@@ -11,6 +12,7 @@ pub use auto::{
     BACKGROUND_UPGRADE_ARGS, schedule_background_upgrade, version_change_since_last_run,
 };
 pub use build_identity::VERSION;
+pub use control::UpgradeControl;
 pub use error::UpgradeError;
 pub use lock::UpgradeLock;
 pub use release_source::release_notes_url;

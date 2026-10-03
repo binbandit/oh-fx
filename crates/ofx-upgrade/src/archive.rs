@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
 use std::process::{Command, Output};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use flate2::read::GzDecoder;
 use ofx_text::lowercase_hex;
@@ -16,6 +16,8 @@ const BINARY_NAME: &str = "oh-fx";
 const EXECUTABLE_MODE: u32 = 0o755;
 const BUSY_RETRY_LIMIT: u32 = 50;
 const BUSY_RETRY_DELAY: Duration = Duration::from_millis(20);
+const STAGING_PREFIX: &str = ".oh-fx-upgrade-";
+const STALE_STAGING_AGE: Duration = Duration::from_hours(1);
 
 pub(crate) fn verify_checksum(archive: &[u8], checksum_file: &str) -> Result<(), UpgradeError> {
     let actual = lowercase_hex(&Sha256::digest(archive));
@@ -67,6 +69,7 @@ pub(crate) fn install_executable(
 ) -> Result<(), UpgradeError> {
     ensure_replaceable(target)?;
     let directory = target.parent().ok_or(UpgradeError::SelfExeNotFound)?;
+    sweep_stale_staging(directory, SystemTime::now());
     let staged = stage(directory, binary).map_err(|_| UpgradeError::ReplaceFailed)?;
     if reported_version(&staged).as_deref() != Some(expected_version) {
         return Err(UpgradeError::BinaryVerificationFailed);
@@ -76,9 +79,32 @@ pub(crate) fn install_executable(
         .map_err(|_| UpgradeError::ReplaceFailed)
 }
 
+fn sweep_stale_staging(directory: &Path, now: SystemTime) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry
+            .file_name()
+            .as_encoded_bytes()
+            .starts_with(STAGING_PREFIX.as_bytes())
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+            && entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| {
+                    now.duration_since(modified)
+                        .is_ok_and(|age| age >= STALE_STAGING_AGE)
+                });
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn stage(directory: &Path, binary: &[u8]) -> io::Result<tempfile::TempPath> {
     let mut staged = tempfile::Builder::new()
-        .prefix(".oh-fx-upgrade-")
+        .prefix(STAGING_PREFIX)
         .tempfile_in(directory)?;
     staged.write_all(binary)?;
     staged
@@ -149,6 +175,34 @@ pub(crate) fn archive_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installing_sweeps_only_stale_staged_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let aged = |path: &Path| {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_hours(2))
+                .unwrap();
+        };
+        for name in [".oh-fx-upgrade-stale", ".oh-fx-upgrade-fresh", "notes.txt"] {
+            fs::write(root.join(name), b"x").unwrap();
+        }
+        aged(&root.join(".oh-fx-upgrade-stale"));
+        aged(&root.join("notes.txt"));
+        fs::create_dir(root.join(".oh-fx-upgrade-folder")).unwrap();
+        let target = root.join("oh-fx");
+        fs::write(&target, version_script("0.1.0")).unwrap();
+        fs::set_permissions(&target, Permissions::from_mode(0o755)).unwrap();
+        install_executable(&target, &version_script("0.2.0"), "0.2.0").unwrap();
+        assert!(!root.join(".oh-fx-upgrade-stale").exists());
+        assert!(root.join(".oh-fx-upgrade-fresh").exists());
+        assert!(root.join("notes.txt").exists());
+        assert!(root.join(".oh-fx-upgrade-folder").is_dir());
+    }
 
     #[test]
     fn extracts_only_the_root_binary() {

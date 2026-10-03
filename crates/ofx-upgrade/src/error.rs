@@ -18,4 +18,6 @@ pub enum UpgradeError {
     ReplaceFailed,
     #[error("downloaded binary failed to run")]
     BinaryVerificationFailed,
+    #[error("upgrade cancelled")]
+    Cancelled,
 }
