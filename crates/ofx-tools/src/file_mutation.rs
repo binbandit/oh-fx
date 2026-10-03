@@ -284,9 +284,11 @@ impl PreparedMutation {
         format!("{verb} {} ({} bytes)", encoded.text, self.after.len())
     }
 
-    pub(crate) fn into_tracked_operation(self) -> FileOperation {
+    pub(crate) fn into_tracked_operation(self, committed: Committed) -> FileOperation {
         FileOperation {
-            path: self.targets.target.path(),
+            target: self.targets.target,
+            anchor_identity: self.targets.anchor_identity,
+            parent_identities: committed.traversal,
             previous_content: match self.preimage {
                 Preimage::Absent => None,
                 Preimage::Present { content, .. } => Some(content),
@@ -313,6 +315,7 @@ impl PreparedMutation {
             .map_err(|reason| transaction.reject(reason))?;
         Ok(Committed {
             stage_residue: transaction.stage_residue,
+            traversal: transaction.realized,
         })
     }
 
@@ -449,6 +452,7 @@ struct Residue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Committed {
     stage_residue: Option<Residue>,
+    traversal: Vec<FileIdentity>,
 }
 
 impl Committed {

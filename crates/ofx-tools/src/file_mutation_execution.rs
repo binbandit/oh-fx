@@ -307,7 +307,7 @@ impl Plan {
                 let output = ToolOutput::success(committed.annotate(prepared.success_message()))
                     .with_file_change(prepared.change_stats());
                 if let Some(tracker) = &self.change_tracker {
-                    tracker.push_operation(prepared.into_tracked_operation());
+                    tracker.push_operation(prepared.into_tracked_operation(committed));
                 }
                 output
             }

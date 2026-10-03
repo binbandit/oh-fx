@@ -876,3 +876,37 @@ fn writes_that_never_commit_are_not_tracked() {
     )));
     assert_eq!(tracker.undo_last(), UndoResult::Empty);
 }
+
+#[test]
+fn undo_refuses_a_created_file_whose_created_parent_was_swapped_for_a_symlink() {
+    let workspace = Fixture::new();
+    let tracker = ChangeTracker::default();
+    let tool = workspace.tool().with_change_tracker(tracker.clone());
+    let outside = workspace.root.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("new.txt"), "outside bytes\n").unwrap();
+
+    run(
+        &tool,
+        &arguments("a/b/new.txt", "new\n"),
+        PathAccess::WorkspaceOnly,
+    );
+    let created = workspace.workspace.join("a/b/new.txt");
+    assert_eq!(fs::read_to_string(&created).unwrap(), "new\n");
+    fs::rename(
+        workspace.workspace.join("a/b"),
+        workspace.workspace.join("a/kept"),
+    )
+    .unwrap();
+    symlink(&outside, workspace.workspace.join("a/b")).unwrap();
+
+    assert_eq!(tracker.undo_last(), UndoResult::Unavailable(created));
+    assert_eq!(
+        fs::read_to_string(outside.join("new.txt")).unwrap(),
+        "outside bytes\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.workspace.join("a/kept/new.txt")).unwrap(),
+        "new\n"
+    );
+}
