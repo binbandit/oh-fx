@@ -21,6 +21,7 @@ use crate::transcript::tool_presentation::{Finished, Rejected, ToolActivityRow};
 
 const PARAGRAPH_BREAK: &str = "\n\n";
 const ASK_USER_QUESTION: &str = "ask_user_question";
+const SYSTEM_NOTICE_TOPIC: &str = "system";
 
 #[derive(Clone)]
 pub struct UiEventSender {
@@ -162,6 +163,11 @@ impl Shell<'_> {
                 }
             }
             UiEvent::Notice { notice } => self.push_entry(Entry::Notice(notice)),
+            UiEvent::SystemNotice { text } => self.push_entry(Entry::Notice(Notice::new(
+                NoticeTone::Neutral,
+                SYSTEM_NOTICE_TOPIC,
+                text,
+            ))),
             UiEvent::ModelSelected { model } => self.options.model = model,
             UiEvent::SessionTitleChanged { title } => self.session_title_changed(title),
             UiEvent::PermissionModeChanged {
@@ -964,6 +970,24 @@ mod tests {
         let notice = screen.find("! Requested skills").unwrap();
         let reply = screen.find("Reviewed.").unwrap();
         assert!(prompt < notice && notice < reply, "{screen}");
+    }
+
+    #[test]
+    fn system_notices_show_as_neutral_notice_rows_in_the_turn() {
+        let mut test = TestShell::start();
+        test.submit("fix it");
+        test.deliver(started(1));
+        test.deliver(UiEvent::SystemNotice {
+            text: "Repeated shell validation failures stopped the tool loop.".to_owned(),
+        });
+        test.deliver(finished(1, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(
+            screen.contains(
+                "┃ fix it\n\n* system: Repeated shell validation failures stopped the tool loop.\n"
+            ),
+            "{screen}"
+        );
     }
 
     fn tool_started(turn: u64, call: &str) -> UiEvent {

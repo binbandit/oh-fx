@@ -2596,6 +2596,7 @@ mod compaction;
 mod malformed_arguments;
 mod project_context;
 mod recovery_pause;
+mod response_language;
 mod reviews;
 mod skills;
 mod steering;

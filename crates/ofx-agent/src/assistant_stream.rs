@@ -1,6 +1,86 @@
-use ofx_text::sanitize_assistant_text;
+use std::mem;
+
+use ofx_text::{Script, sanitize_assistant_text};
+
+use crate::response_language::evidence;
 
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
+const LANGUAGE_PROBE_LIMIT_BYTES: usize = 4096;
+const FIRST_LANGUAGE_PROBE_BYTES: usize = 5;
+
+#[derive(Debug, Default)]
+pub(crate) struct LanguageStage {
+    expected: Option<Script>,
+    accepted: bool,
+    hold_until_completion: bool,
+    next_probe_bytes: usize,
+    staged: String,
+}
+
+impl LanguageStage {
+    pub(crate) fn begin_request(&mut self, expected: Option<Script>, hold_until_completion: bool) {
+        self.expected = expected;
+        self.accepted = false;
+        self.hold_until_completion = hold_until_completion;
+        self.next_probe_bytes = FIRST_LANGUAGE_PROBE_BYTES;
+        self.staged.clear();
+    }
+
+    pub(crate) fn admit(&mut self, text: String) -> Option<String> {
+        if !self.staging() {
+            return Some(text);
+        }
+        self.staged.push_str(&text);
+        if self.hold_until_completion || self.staged.len() < self.next_probe_bytes {
+            return None;
+        }
+        let prefix = &self.staged[..self.staged.floor_char_boundary(LANGUAGE_PROBE_LIMIT_BYTES)];
+        if evidence(prefix).script == self.expected {
+            return self.accept();
+        }
+        self.next_probe_bytes = if self.staged.len() >= LANGUAGE_PROBE_LIMIT_BYTES {
+            usize::MAX
+        } else {
+            LANGUAGE_PROBE_LIMIT_BYTES
+                .min((self.staged.len() + 1).max(self.staged.len().saturating_mul(2)))
+        };
+        None
+    }
+
+    pub(crate) fn accept(&mut self) -> Option<String> {
+        if !self.staging() {
+            return None;
+        }
+        self.accepted = true;
+        Some(mem::take(&mut self.staged)).filter(|text| !text.is_empty())
+    }
+
+    pub(crate) fn drop_candidate(&mut self) {
+        if !self.staging() {
+            return;
+        }
+        self.staged.clear();
+        self.next_probe_bytes = FIRST_LANGUAGE_PROBE_BYTES;
+    }
+
+    pub(crate) fn interruption_source<'a>(&self, candidate: &'a str) -> &'a str {
+        if !self.staging() {
+            return candidate;
+        }
+        match evidence(candidate).script {
+            Some(actual) if Some(actual) != self.expected => "",
+            _ => candidate,
+        }
+    }
+
+    pub(crate) fn expected(&self) -> Option<Script> {
+        self.expected
+    }
+
+    fn staging(&self) -> bool {
+        self.expected.is_some() && !self.accepted
+    }
+}
 
 pub fn normalize_assistant_text_for_display(raw_text: &str) -> String {
     let base = sanitize_assistant_text(raw_text);

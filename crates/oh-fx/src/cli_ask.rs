@@ -948,6 +948,9 @@ impl Presenter {
             UiEvent::ContextNotice { text, .. } => {
                 return self.context_notice(&text);
             }
+            UiEvent::SystemNotice { text } => {
+                self.write_status(StatusBlock::Notice, &format!("[notice] {text}\n"))
+            }
             UiEvent::TurnStarted { .. }
             | UiEvent::ToolDeferred { .. }
             | UiEvent::SteeringApplied { .. }
@@ -1197,6 +1200,7 @@ impl Presenter {
                 }
             }
             TurnFailure::InvalidCompletion
+            | TurnFailure::ResponseLanguageMismatch
             | TurnFailure::PermissionRequired(_)
             | TurnFailure::ProjectContext
             | TurnFailure::SkillContext(_)
@@ -2401,6 +2405,25 @@ mod tests {
                 retrying.label(),
                 recovered.label()
             )
+        );
+    }
+
+    #[test]
+    fn terminal_output_shows_system_notices_as_notice_lines_after_tool_progress() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                started("call-1", "Running command", ToolEffect::ReadOnly),
+                finished("call-1"),
+                UiEvent::SystemNotice {
+                    text: "Repeated shell validation failures stopped the tool loop.".to_owned(),
+                },
+            ],
+        );
+        assert_eq!(
+            screen.text(),
+            "Running command\n\n[notice] Repeated shell validation failures stopped the tool loop.\n"
         );
     }
 
