@@ -482,7 +482,8 @@ impl HttpShared {
                     retry_ms = value;
                 }
                 match classify_event(&event.data, request_id, options.progress)? {
-                    EventOutcome::Empty | EventOutcome::Notification | EventOutcome::Progress => {}
+                    EventOutcome::Empty | EventOutcome::Progress => {}
+                    EventOutcome::Notification => self.route_notification(&event.data)?,
                     EventOutcome::ServerRequest => {
                         self.answer_server_request(&event, options.elicitation)
                             .await?;
@@ -771,7 +772,7 @@ mod tests {
     use super::*;
     use crate::features::tools::{ToolCallOutcome, ToolContent};
     use crate::mcp_contract::{McpServerConfig, TransportType};
-    use crate::server_connection::McpClient;
+    use crate::server_connection::{McpClient, ServerNotification};
     use crate::server_transport::ConnectOptions;
     use crate::test_support::{FakeServer, RecordedRequest, Reply};
     use crate::tool_operations::CallOptions;
@@ -1103,6 +1104,45 @@ mod tests {
             refreshed = client.current_tools().await.unwrap();
         }
         assert_eq!(refreshed.tools[0].name, "after");
+        client.shutdown(ShutdownMode::ProcessExit).await;
+    }
+
+    #[tokio::test]
+    async fn notifications_on_a_tool_call_stream_reach_the_client() {
+        let listed = Arc::new(AtomicUsize::new(0));
+        let lists = Arc::clone(&listed);
+        let server = FakeServer::start(move |request| match (request.method.as_str(), request.method_name().as_deref()) {
+            ("POST", Some("initialize")) => {
+                initialize_reply(request, "2025-11-25", r#"{"tools":{"listChanged":true}}"#)
+            }
+            ("POST", Some("tools/list")) => {
+                let tool = if lists.fetch_add(1, Ordering::Relaxed) == 0 { "before" } else { "after" };
+                tools_reply(request, tool)
+            }
+            ("POST", Some("tools/call")) => {
+                let done = final_event(request, "done");
+                Reply::sse(&[
+                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n",
+                    &done,
+                ])
+            }
+            ("GET", _) => Reply::status(405),
+            _ => session_handler("2025-11-25")(request),
+        })
+        .await;
+        let client = McpClient::connect(&remote(&server.url), &ConnectOptions::default())
+            .await
+            .unwrap();
+        let outcome = client
+            .call_tool("before", &json!({}), CallOptions::default())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
+        assert_eq!(
+            client.poll_notifications(),
+            [ServerNotification::ToolsListChanged]
+        );
+        assert_eq!(client.current_tools().await.unwrap().tools[0].name, "after");
         client.shutdown(ShutdownMode::ProcessExit).await;
     }
 
