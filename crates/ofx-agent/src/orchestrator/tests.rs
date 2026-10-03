@@ -2480,6 +2480,7 @@ mod approvals;
 mod capabilities;
 mod compaction;
 mod malformed_arguments;
+mod modes;
 mod project_context;
 mod reviews;
 mod skills;

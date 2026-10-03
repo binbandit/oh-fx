@@ -10,6 +10,8 @@ use ofx_tools::{
 };
 use ofx_workspace::ChangeTracker;
 
+pub(crate) const READ_ONLY_TOOL_NAMES: [&str; 3] = ["read_file", "glob_files", "grep_files"];
+
 #[derive(Default)]
 pub(crate) struct ToolHooks<'a> {
     pub(crate) questions: Option<Arc<dyn QuestionAsker>>,
