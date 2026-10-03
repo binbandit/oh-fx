@@ -333,6 +333,47 @@ fn compute_keeps_upstream_operations_for_any_line_sequences() {
     }
 }
 
+fn upstream_line_numbers(operations: &[(LineOp, Vec<u8>)]) -> Vec<(Option<u32>, Option<u32>)> {
+    let (mut old, mut new) = (0, 0);
+    operations
+        .iter()
+        .map(|(op, _)| {
+            let old_line = (*op != LineOp::Add).then(|| {
+                old += 1;
+                old
+            });
+            let new_line = (*op != LineOp::Remove).then(|| {
+                new += 1;
+                new
+            });
+            (old_line, new_line)
+        })
+        .collect()
+}
+
+#[test]
+fn compute_numbers_lines_as_they_fall_in_upstreams_operations() {
+    let mut lines = Lines(0xd1ff);
+    for round in 0..2_000 {
+        let alphabet = [1, 2, 3, 5, 9][round % 5];
+        let old = lines.text(alphabet);
+        let new = lines.text(alphabet);
+        let numbers: Vec<(Option<u32>, Option<u32>)> = compute(
+            &old,
+            &new,
+            trailing_newline_marker(&old, &new, true),
+            trailing_newline_marker(&old, &new, false),
+        )
+        .iter()
+        .map(|line| (line.old_line, line.new_line))
+        .collect();
+        assert_eq!(
+            numbers,
+            upstream_line_numbers(&upstream_compute(&old, &new))
+        );
+    }
+}
+
 #[test]
 fn compute_keeps_upstream_operations_around_shared_prefixes_and_suffixes() {
     for (old, new) in [
