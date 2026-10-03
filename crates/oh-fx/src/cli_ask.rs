@@ -1184,10 +1184,11 @@ impl Presenter {
         if status.kind == ofx_contract::RouteRecoveryKind::AutoRetry {
             self.provisional_calls.clear();
         }
-        let notice =
-            (self.mode != OutputMode::Quiet).then(|| format!("[notice] {}\n", status.label()));
+        let notices = self.recovery_notices(&status);
         self.recovery = Some(status);
-        notice.map_or(Ok(()), |line| self.write_status(StatusBlock::Notice, &line))
+        notices
+            .iter()
+            .try_for_each(|line| self.write_status(StatusBlock::Notice, line))
     }
 
     fn context_notice(&mut self, notice: &str) -> bool {
@@ -2113,6 +2114,76 @@ mod tests {
             serde_json::to_string(&RecoveryRecord::new(&stopped, false)).unwrap(),
             r#"{"state":"failed","kind":"terminal_provider_error","cause":"provider_unavailable","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"⚠ Provider unavailable · ConnectionFailed · stopped after 2 attempts"}"#
         );
+    }
+
+    #[test]
+    fn provisional_retry_clear_preserves_terminal_recovery_notices_and_save_state() {
+        let stopped = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::TerminalProviderError,
+            failed_attempt: 2,
+            succeeded_attempt: 0,
+            attempt_limit: 10,
+            cause: Some(ModelRecoveryCause::ProviderUnavailable),
+            action: None,
+            delay_seconds: 0,
+            diagnostic: Some(ModelFailureDiagnostic::new("ConnectionFailed")),
+            retry_wait: None,
+        };
+        let retry = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::AutoRetry,
+            action: Some(ModelRecoveryAction::RetryingRequest),
+            ..stopped.clone()
+        };
+        for mode in [OutputMode::Quiet, OutputMode::Json, OutputMode::Terminal] {
+            for saving in [false, true] {
+                let screen = Screen::default();
+                let mut presenter = json_presenter().saving(saving);
+                presenter.mode = mode;
+                if mode == OutputMode::Terminal {
+                    presenter.stdout = Box::new(screen.clone());
+                } else {
+                    presenter.stderr = Box::new(screen.clone());
+                }
+                present(&mut presenter, [provisional("abandoned")]);
+                assert!(presenter.handle(UiEvent::Recovery {
+                    turn_id: TurnId::new(1),
+                    status: retry.clone(),
+                }));
+                assert!(presenter.provisional_calls.is_empty());
+                if mode == OutputMode::Quiet {
+                    assert!(!screen.text().contains("retrying request"));
+                }
+                present(
+                    &mut presenter,
+                    [rejected(
+                        "abandoned",
+                        "read_file",
+                        "{",
+                        ToolRejection::MalformedArguments,
+                        None,
+                    )],
+                );
+                assert_eq!(presenter.steps, 1);
+                assert!(presenter.handle(UiEvent::Recovery {
+                    turn_id: TurnId::new(1),
+                    status: stopped.clone(),
+                }));
+                let notice = "[notice] ⚠ Provider unavailable · ConnectionFailed · stopped after 2 attempts\n";
+                let expected = if saving {
+                    notice.to_owned()
+                } else {
+                    format!(
+                        "{notice}[notice] This run was started with --no-save, so its recovery context cannot be resumed after exit.\n"
+                    )
+                };
+                assert!(
+                    screen.text().ends_with(&expected),
+                    "mode={mode:?}, saving={saving}: {:?}",
+                    screen.text()
+                );
+                assert_eq!(presenter.recovery, Some(stopped.clone()));
+            }
+        }
     }
 
     fn json_presenter() -> Presenter {

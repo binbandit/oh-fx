@@ -211,6 +211,23 @@ struct KnownCapabilities {
     catalog_unavailable: bool,
 }
 
+#[derive(Default)]
+struct StreamText {
+    partial: String,
+    visible: bool,
+    ends_in_newline: bool,
+}
+
+impl StreamText {
+    fn push(&mut self, text: &str) {
+        self.partial.push_str(text);
+        if !text.is_empty() {
+            self.visible |= !text.trim_matches([' ', '\t', '\r', '\n']).is_empty();
+            self.ends_in_newline = text.ends_with('\n');
+        }
+    }
+}
+
 struct LastReply {
     turn: usize,
     text: Arc<str>,
@@ -962,11 +979,9 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Attempt {
         let turn_id = turn.id;
-        let mut partial = String::new();
+        let mut streamed_text = StreamText::default();
         let mut streamed_bytes = 0;
         let mut admitted = false;
-        let mut visible_text = false;
-        let mut ends_in_newline = false;
         let mut sink = |event: StreamEvent| match event {
             StreamEvent::Admitted => {
                 admitted = true;
@@ -975,19 +990,17 @@ impl Agent {
                 }
             }
             StreamEvent::ToolCallStarted { call_id, tool_name } => {
-                if self.streamed_tool_start(
-                    turn_id, call_id, tool_name, visible_text && !ends_in_newline, events,
-                ) {
-                    ends_in_newline = true;
-                }
+                streamed_text.ends_in_newline |= self.streamed_tool_start(
+                    turn_id,
+                    call_id,
+                    tool_name,
+                    streamed_text.visible && !streamed_text.ends_in_newline,
+                    events,
+                );
             }
             StreamEvent::TextDelta { text } => {
                 streamed_bytes += text.len();
-                partial.push_str(&text);
-                if !text.is_empty() {
-                    visible_text |= !text.trim_matches([' ', '\t', '\r', '\n']).is_empty();
-                    ends_in_newline = text.ends_with('\n');
-                }
+                streamed_text.push(&text);
                 if let Some(text) = turn.language.stage.admit(text) {
                     events(UiEvent::AssistantText { turn_id, text });
                 }
@@ -1007,7 +1020,7 @@ impl Agent {
         };
         Attempt {
             streamed,
-            partial,
+            partial: streamed_text.partial,
             streamed_bytes,
             admitted,
         }
