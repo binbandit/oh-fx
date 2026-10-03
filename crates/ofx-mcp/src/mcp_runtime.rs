@@ -138,10 +138,6 @@ impl McpRuntime {
         self.profile_warning.as_ref()
     }
 
-    pub fn take_notices(&self) -> Vec<String> {
-        std::mem::take(&mut lock(&self.published).notices)
-    }
-
     pub fn shutdown(&self, mode: ShutdownMode) -> Settling {
         Settling::all(
             self.servers
@@ -225,6 +221,10 @@ impl DynamicTools for McpRuntime {
             published.notices.extend(notices);
         }
         published.tools.clone()
+    }
+
+    fn take_notices(&self) -> Vec<String> {
+        std::mem::take(&mut lock(&self.published).notices)
     }
 }
 

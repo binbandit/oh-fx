@@ -425,3 +425,32 @@ fn a_signal_during_mcp_startup_stops_ready_and_starting_servers() {
     }
     assert!(server.requests().is_empty());
 }
+
+#[test]
+fn a_schema_over_its_context_limit_is_reported_with_its_override() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+    let home = Home::new(&server.base_url());
+    let path = home.root.join("config/oh-fx/settings.json");
+    let mut settings: Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("read settings")).expect("json");
+    settings["context_limits"] = json!({"mcp_selected_schema_bytes": 16});
+    fs::write(&path, settings.to_string()).expect("write settings");
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&["ask", "--full-access", "--json", "hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stderr(&output);
+    let notice = text
+        .lines()
+        .find(|line| {
+            line.starts_with(
+                "[notice] [context] MCP schema \"mcp_fixture_echo\" rejected: observed=",
+            )
+        })
+        .unwrap_or_else(|| panic!("no schema notice in {text}"));
+    assert!(
+        notice.ends_with(" bytes effective=16 bytes source=global settings; override with --context-limit mcp_selected_schema_bytes=BYTES|off"),
+        "{notice}"
+    );
+    let tools = server.requests()[0].json()["tools"].clone();
+    assert!(!tools.to_string().contains("mcp_fixture_echo"), "{tools}");
+}
