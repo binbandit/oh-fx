@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+use serde_json::Value;
+
+use crate::error::McpError;
+
 pub const DEFAULT_STARTUP_TIMEOUT_MS: u32 = 30_000;
 pub const DEFAULT_OPERATION_TIMEOUT_MS: u32 = 60_000;
 pub const DEFAULT_RESTART_LIMIT: u8 = 1;
@@ -234,9 +238,48 @@ impl McpServerConfig {
     }
 }
 
+pub(crate) fn validate_json_rpc_response_envelope(value: &Value) -> Result<(), McpError> {
+    let object = value.as_object().ok_or(McpError::McpInvalidJson)?;
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(McpError::McpInvalidJson);
+    }
+    if object.contains_key("result") == object.contains_key("error") {
+        return Err(McpError::McpInvalidJson);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_rpc_response_envelopes_require_version_2_0_and_one_payload_member() {
+        let cases = [
+            (r#"{"jsonrpc":"2.0","id":1,"result":null}"#, true),
+            (r#"{"jsonrpc":"2.0","id":1,"error":null}"#, true),
+            (r#"{"id":1,"result":null}"#, false),
+            (r#"{"jsonrpc":"1.0","id":1,"result":null}"#, false),
+            (r#"{"jsonrpc":"2.0","id":1}"#, false),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"result":null,"error":null}"#,
+                false,
+            ),
+        ];
+        for (json, valid) in cases {
+            let value: Value = serde_json::from_str(json).unwrap();
+            let expected = if valid {
+                Ok(())
+            } else {
+                Err(McpError::McpInvalidJson)
+            };
+            assert_eq!(
+                validate_json_rpc_response_envelope(&value),
+                expected,
+                "{json}"
+            );
+        }
+    }
 
     #[test]
     fn mcp_default_startup_timeout_allows_thirty_second_cold_starts() {
