@@ -433,3 +433,62 @@ fn an_armed_clear_survives_cursor_keys_until_the_second_escape() {
     assert!(!screen.contains("typed"), "{screen}");
     assert!(!screen.contains("esc again to clear"), "{screen}");
 }
+
+#[test]
+fn focused_editor_keys_edit_only_the_typed_answer() {
+    let mut test = asking(vec![entry("Continue?", &["Alpha"])]);
+    test.shell
+        .composer
+        .insert_text("hidden composer", usize::MAX);
+    press(&mut test, b"2");
+    press(&mut test, b"alpha beta gamma");
+    press(&mut test, b"\x01\x05\x02\x06\x17");
+    press(&mut test, b"!");
+    press(&mut test, b"\x15");
+    press(&mut test, b"alpha beta");
+    press(&mut test, b"\x01");
+    press(&mut test, b"\x1bd");
+    press(&mut test, b"\x05");
+    press(&mut test, b"\x1b\x7f");
+    press(&mut test, b"left right");
+    press(&mut test, b"\x01\x06\x0b");
+    press(&mut test, b"\r");
+    assert_eq!(answers(&test), [answered(4, Some(&["l"]))]);
+    assert_eq!(test.shell.composer.text(), "hidden composer");
+}
+
+#[test]
+fn csi_u_digits_neither_choose_nor_type() {
+    for sequence in [&b"\x1b[49;5u"[..], b"\x1b[\x1b[49;5u"] {
+        let mut test = asking(vec![entry("Continue?", &["Alpha", "Beta", "Gamma"])]);
+        press(&mut test, b"\x1b[B");
+        press(&mut test, sequence);
+        test.advance(100);
+        test.step();
+        press(&mut test, b"\t");
+        assert!(answers(&test).is_empty(), "{sequence:?}");
+        press(&mut test, b"\r");
+        assert_eq!(
+            answers(&test),
+            [answered(4, Some(&["Beta"]))],
+            "{sequence:?}"
+        );
+    }
+    let mut test = asking(vec![entry("Continue?", &["Alpha", "Beta"])]);
+    press(&mut test, b"3");
+    press(&mut test, b"\x1b[49;5u");
+    press(&mut test, b"x\r");
+    assert_eq!(answers(&test), [answered(4, Some(&["x"]))]);
+}
+
+#[test]
+fn kitty_escapes_and_a_remapped_ctrl_c_cancel_the_question() {
+    for sequence in [&b"\x1b[27u"[..], b"\x1b[27;1u", b"\x1b[99;5u"] {
+        let mut test = asking(proceed());
+        press(&mut test, sequence);
+        assert_eq!(answers(&test), [answered(4, None)], "{sequence:?}");
+        assert!(test.sent().contains(&UiCommand::Cancel {
+            turn_id: TurnId::new(1)
+        }));
+    }
+}
