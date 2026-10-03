@@ -260,6 +260,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.workspace_root(),
             session.profile.cache_dir(),
         ))),
+        steering: None,
         opening: session.opening,
     };
     let picking = matches!(options.opening, Opening::SessionPicker);
