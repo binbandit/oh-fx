@@ -316,6 +316,38 @@ async fn reviews_that_reach_no_decision_hold_the_call_without_a_prompt_and_ask_w
 }
 
 #[tokio::test]
+async fn permission_prompts_hold_reviews_that_reach_no_decision_as_upstream_does() {
+    for verdict in [
+        ReviewVerdict::EvidenceIncomplete,
+        ReviewVerdict::Unavailable(ReviewFailure::ReviewerUnconfigured),
+    ] {
+        let provider = FakeProvider::new(vec![
+            tool_reply(&[("call-1", REVIEWED)]),
+            text_reply("done"),
+        ]);
+        let mut agent = Agent::new(
+            Arc::clone(&provider) as Arc<dyn ModelProvider>,
+            vec![echo_tool()],
+            Arc::new(FixedContext),
+            ReviewingGate::answering([verdict.clone()]),
+            config(),
+        )
+        .with_permission_prompts(Approvals::default());
+        let (report, events) = run(&mut agent, "go").await;
+        assert_eq!(report.outcome, TurnOutcome::Completed, "{verdict:?}");
+        assert_eq!(approvals_requested(&events), 0, "{verdict:?}");
+        assert_eq!(
+            tool_results(&provider, 1),
+            [tool_message(
+                "call-1",
+                &hold(&verdict),
+                ToolResultStatus::Failure
+            )]
+        );
+    }
+}
+
+#[tokio::test]
 async fn gates_without_a_reviewer_hold_review_required_calls_as_unconfigured() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[("call-1", REVIEWED)]),

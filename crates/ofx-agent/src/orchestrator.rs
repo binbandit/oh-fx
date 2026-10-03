@@ -193,6 +193,7 @@ pub struct Agent {
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
+    reviews_fall_back_to_approval: bool,
     config: AgentConfig,
     capability_resolver: Option<Arc<dyn CapabilityResolver>>,
     capabilities: Option<KnownCapabilities>,
@@ -240,6 +241,7 @@ impl Agent {
             context,
             permissions,
             approvals: None,
+            reviews_fall_back_to_approval: false,
             config,
             capability_resolver: None,
             capabilities: None,
@@ -263,6 +265,14 @@ impl Agent {
     #[must_use]
     pub fn with_approvals(mut self, approvals: Approvals) -> Self {
         self.approvals = Some(approvals);
+        self.reviews_fall_back_to_approval = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_prompts(mut self, approvals: Approvals) -> Self {
+        self.approvals = Some(approvals);
+        self.reviews_fall_back_to_approval = false;
         self
     }
 
@@ -793,6 +803,7 @@ impl Agent {
             let gate = Gate {
                 permissions: &*self.permissions,
                 approvals: self.approvals.as_ref(),
+                reviews_fall_back_to_approval: self.reviews_fall_back_to_approval,
             };
             let mut reviewing = Reviewing {
                 model: &self.config.model,
@@ -1265,6 +1276,7 @@ struct SettledGroup<'c> {
 struct Gate<'a> {
     permissions: &'a dyn PermissionGate,
     approvals: Option<&'a Approvals>,
+    reviews_fall_back_to_approval: bool,
 }
 
 struct Reviewing<'a> {
@@ -1363,7 +1375,7 @@ async fn judge(
                     &call.name,
                     ReviewHold::Caution(&advice),
                 )),
-                _ if gate.approvals.is_some() => {
+                _ if gate.approvals.is_some() && gate.reviews_fall_back_to_approval => {
                     ask_approval(gate, turn_id, &judged, events, cancel).await
                 }
                 ReviewVerdict::EvidenceIncomplete => Verdict::Held(tool_review_held_json(
