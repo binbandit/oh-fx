@@ -10,6 +10,7 @@ use crate::input::{
     PasteOutcome, PasteOwner, RawTerminalInput, ShortcutAction, TextOwner,
 };
 use crate::render_engine::transcript_blocks::Entry;
+use crate::terminal::TAGGED_CURSOR_QUERY;
 
 const LIMIT_REJECTED: &str = "That edit exceeds the local prompt safety limit and was not applied.";
 const PASTE_TRAILING_INPUT: &str =
@@ -27,6 +28,7 @@ impl Shell<'_> {
                 now_ms: self.now_ms(),
                 cancel_pending: self.working(),
                 text_owner: TextOwner::Composer,
+                native_clear_row: self.native_clear_row(),
             };
             let Some(event) = self.input.next_event(context) else {
                 return Ok(());
@@ -38,12 +40,13 @@ impl Shell<'_> {
     pub(super) fn flush_pending_input(&mut self) -> Result<(), crate::terminal::TerminalError> {
         let now_ms = self.now_ms();
         self.input.poll_theme_monitor(now_ms);
+        self.input.poll_native_clear_probe(now_ms);
         self.process_input()?;
         if let Some(event) = self.input.flush_escape(now_ms) {
             self.handle_input_event(event)?;
             self.process_input()?;
         }
-        if let Some(event) = self.input.settle_delivery_epoch() {
+        if let Some(event) = self.input.settle_delivery_epoch(now_ms) {
             self.handle_input_event(event)?;
         }
         self.process_input()
@@ -53,6 +56,24 @@ impl Shell<'_> {
         &mut self,
         event: InputEvent,
     ) -> Result<(), crate::terminal::TerminalError> {
+        match event {
+            InputEvent::NativeClearProbe => {
+                match self
+                    .terminal
+                    .write_all_unless_full(TAGGED_CURSOR_QUERY.as_bytes())
+                {
+                    Ok(true) => {}
+                    Ok(false) => self.input.cancel_native_clear_probe(false),
+                    Err(_) => self.input.cancel_native_clear_probe(true),
+                }
+                return Ok(());
+            }
+            InputEvent::NativeClearDetected => {
+                self.start_fresh_transcript(FreshScreen::Erase);
+                return Ok(());
+            }
+            _ => {}
+        }
         self.invalidate();
         if self.approval.is_some() {
             return self.handle_approval_input(&event);
@@ -75,7 +96,9 @@ impl Shell<'_> {
             }
             InputEvent::Action(decoded) => self.handle_action(decoded),
             InputEvent::Paste(outcome) => self.handle_paste(outcome),
-            InputEvent::TextDropped(_) => {}
+            InputEvent::TextDropped(_)
+            | InputEvent::NativeClearProbe
+            | InputEvent::NativeClearDetected => {}
         }
         if self.composer.edit_revision() != revision {
             self.file_picker_after_edit();

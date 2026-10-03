@@ -2,6 +2,7 @@ mod escape_parser;
 pub(crate) mod gesture_state;
 mod ingress_queue;
 mod input_action;
+mod native_clear_probe;
 mod paste_framing;
 mod shortcuts;
 mod terminal_action_decoder;
@@ -9,7 +10,10 @@ mod text_scalar;
 
 use std::collections::VecDeque;
 
-use crate::terminal::{ThemeMonitor, ThemeMonitorFeed, ThemeQuery, ThemeUpdate};
+use crate::terminal::{
+    ProbeFeed, ProbePoll, TaggedCursorProbe, ThemeMonitor, ThemeMonitorFeed, ThemeQuery,
+    ThemeUpdate,
+};
 
 pub(crate) use input_action::{
     Action, DecodedTerminalAction, MoveIntent, MoveKind, RawTerminalInput, ShortcutAction,
@@ -21,6 +25,7 @@ pub(crate) use text_scalar::{DroppedText, TextDropReason, TextOwner};
 
 use ingress_queue::IngressQueue;
 use input_action::{TerminalDecodeContext, TerminalInputEvent};
+use native_clear_probe::NativeClearProbe;
 use paste_framing::PasteFraming;
 use terminal_action_decoder::Decoder;
 
@@ -31,6 +36,7 @@ pub(crate) struct InputContext {
     pub(crate) now_ms: i64,
     pub(crate) cancel_pending: bool,
     pub(crate) text_owner: TextOwner,
+    pub(crate) native_clear_row: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +46,8 @@ pub(crate) enum InputEvent {
     Text(char),
     TextDropped(DroppedText),
     Paste(PasteOutcome),
+    NativeClearProbe,
+    NativeClearDetected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,11 +67,14 @@ enum Owner {
 #[derive(Debug, Default)]
 pub(crate) struct TerminalInput {
     theme_monitor: ThemeMonitor,
+    cursor_probe: TaggedCursorProbe,
+    native_clear: NativeClearProbe,
     decoder: Decoder,
     paste: PasteFraming,
     text: text_scalar::State,
     fresh: IngressQueue,
     staged: IngressQueue,
+    released: IngressQueue,
     replay: Option<u8>,
     events: VecDeque<InputEvent>,
 }
@@ -91,11 +102,15 @@ impl TerminalInput {
         self.replay = Some(byte);
     }
 
-    pub(crate) fn settle_delivery_epoch(&mut self) -> Option<InputEvent> {
+    pub(crate) fn settle_delivery_epoch(&mut self, now_ms: i64) -> Option<InputEvent> {
         if !self.paste.active() || self.has_unclassified_input() {
             return None;
         }
-        self.paste.settle_delivery_epoch().map(InputEvent::Paste)
+        let outcome = self.paste.settle_delivery_epoch()?;
+        if !self.paste.active() {
+            self.cursor_probe.resume_after_paste(now_ms);
+        }
+        Some(InputEvent::Paste(outcome))
     }
 
     pub(crate) fn flush_escape(&mut self, now_ms: i64) -> Option<InputEvent> {
@@ -116,6 +131,7 @@ impl TerminalInput {
         self.drop_pending_text(TextDropReason::PasteStarted);
         self.paste.begin(owner, max_buffer_len);
         self.decoder.reset();
+        self.cursor_probe.suspend_for_paste();
     }
 
     pub(crate) fn has_pending_input(&self) -> bool {
@@ -123,12 +139,55 @@ impl TerminalInput {
             || self.theme_monitor.has_pending_input()
             || !self.fresh.is_empty()
             || !self.staged.is_empty()
+            || self.released_ready()
             || self.replay.is_some()
             || !self.events.is_empty()
     }
 
     pub(crate) fn awaiting_terminal_reply(&self) -> bool {
-        self.theme_monitor.owns_input() || self.decoder.holds_sequence()
+        self.theme_monitor.owns_input()
+            || self.cursor_probe.intercepts_input()
+            || self.decoder.holds_sequence()
+    }
+
+    pub(crate) fn start_native_clear_probe(&mut self) {
+        self.native_clear.start();
+    }
+
+    pub(crate) fn native_clear_active(&self) -> bool {
+        self.native_clear.active()
+    }
+
+    pub(crate) fn native_clear_busy(&self) -> bool {
+        self.native_clear.busy()
+    }
+
+    pub(crate) fn native_clear_deadline_ms(&self) -> Option<i64> {
+        self.cursor_probe.deadline_ms()
+    }
+
+    pub(crate) fn poll_native_clear_probe(&mut self, now_ms: i64) {
+        match self.cursor_probe.poll(now_ms) {
+            ProbePoll::Quiet => {}
+            ProbePoll::TimedOut(unmatched) => {
+                self.native_clear.disable(true);
+                self.native_clear.settle();
+                self.released.push(unmatched.as_slice());
+            }
+            ProbePoll::LateWindowExpired(unmatched) => {
+                self.native_clear.finish_late_response();
+                self.released.push(unmatched.as_slice());
+            }
+        }
+    }
+
+    pub(crate) fn cancel_native_clear_probe(&mut self, turn_off: bool) {
+        let unmatched = self.cursor_probe.cancel();
+        if turn_off {
+            self.native_clear.disable(false);
+        }
+        self.native_clear.settle();
+        self.released.push(unmatched.as_slice());
     }
 
     pub(crate) fn start_theme_monitor(&mut self) {
@@ -140,7 +199,7 @@ impl TerminalInput {
     }
 
     pub(crate) fn take_theme_query(&mut self, now_ms: i64) -> Option<ThemeQuery> {
-        if self.paste.active() {
+        if self.theme_queries_held() {
             return None;
         }
         self.theme_monitor.take_query_request(now_ms)
@@ -148,7 +207,11 @@ impl TerminalInput {
 
     pub(crate) fn theme_deadline_ms(&self, now_ms: i64) -> Option<i64> {
         self.theme_monitor
-            .next_deadline_ms(now_ms, self.paste.active())
+            .next_deadline_ms(now_ms, self.theme_queries_held())
+    }
+
+    fn theme_queries_held(&self) -> bool {
+        self.paste.active() || self.native_clear.busy()
     }
 
     pub(crate) fn fail_theme_query(&mut self) {
@@ -166,13 +229,23 @@ impl TerminalInput {
     fn has_queued_input(&self) -> bool {
         !self.fresh.is_empty()
             || !self.staged.is_empty()
+            || self.released_ready()
             || self.replay.is_some()
             || !self.events.is_empty()
             || self.theme_monitor.has_deferred_bytes()
     }
 
+    fn released_ready(&self) -> bool {
+        !self.native_clear.active() && !self.released.is_empty()
+    }
+
     fn next_byte(&mut self) -> Option<(Entry, u8)> {
         if let Some(byte) = self.replay.take() {
+            return Some((Entry::Decoder, byte));
+        }
+        if self.released_ready()
+            && let Some(byte) = self.released.pop()
+        {
             return Some((Entry::Decoder, byte));
         }
         if let Some(byte) = self.staged.pop() {
@@ -219,9 +292,60 @@ impl TerminalInput {
     fn after_theme_monitor(&mut self, byte: u8, context: InputContext) {
         if self.paste.active() {
             self.paste.consume_byte(byte);
+        } else if self.cursor_probe.intercepts_input() {
+            self.feed_cursor_probe(byte, context.now_ms);
+        } else if let Some(row) = self.native_clear_row(byte, context) {
+            self.begin_native_clear_probe(row, byte, context.now_ms);
+        } else {
+            self.decode(byte, context);
+        }
+    }
+
+    fn native_clear_row(&self, byte: u8, context: InputContext) -> Option<u16> {
+        let printable = byte >= 0x20 && byte != 0x7f;
+        let ready = printable
+            && self.native_clear.can_begin()
+            && self.cursor_probe.can_begin()
+            && !self.decoder.has_pending();
+        context.native_clear_row.filter(|row| ready && *row > 0)
+    }
+
+    fn begin_native_clear_probe(&mut self, row: u16, byte: u8, now_ms: i64) {
+        self.native_clear.begin(row);
+        self.released.push(&[byte]);
+        self.cursor_probe.begin(now_ms);
+        self.events.push_back(InputEvent::NativeClearProbe);
+    }
+
+    fn feed_cursor_probe(&mut self, byte: u8, now_ms: i64) {
+        self.cursor_probe.note_input_activity(now_ms);
+        match self.cursor_probe.feed(byte) {
+            ProbeFeed::Pending => {}
+            ProbeFeed::Position(position) => {
+                if self.native_clear.settle() != Some(position.row) {
+                    self.events.push_back(InputEvent::NativeClearDetected);
+                }
+            }
+            ProbeFeed::LateResponse => self.native_clear.finish_late_response(),
+            ProbeFeed::Forward(forwarded) => self.release_forwarded(forwarded.as_slice(), now_ms),
+        }
+    }
+
+    fn release_forwarded(&mut self, forwarded: &[u8], now_ms: i64) {
+        if self.native_clear.active() && self.native_clear.can_hold(forwarded.len()) {
+            self.native_clear.hold(forwarded.len());
+            self.released.push(forwarded);
             return;
         }
-        self.decode(byte, context);
+        if self.native_clear.active() {
+            let unmatched = self.cursor_probe.expire(now_ms);
+            self.native_clear.disable(true);
+            self.native_clear.settle();
+            self.released.push(forwarded);
+            self.released.push(unmatched.as_slice());
+            return;
+        }
+        self.released.push(forwarded);
     }
 
     fn decode(&mut self, byte: u8, context: InputContext) {
@@ -282,6 +406,7 @@ mod tests {
             now_ms,
             cancel_pending: false,
             text_owner: TextOwner::Composer,
+            native_clear_row: None,
         }
     }
 
@@ -321,6 +446,193 @@ mod tests {
         input.push_bytes(b"\x1b[?1;2;4c");
         assert!(drain(&mut input, 1001).is_empty());
         assert_eq!(input.owner(), Owner::Paste);
+    }
+
+    fn probing(now_ms: i64) -> InputContext {
+        InputContext {
+            native_clear_row: Some(5),
+            ..context(now_ms)
+        }
+    }
+
+    fn drain_probing(input: &mut TerminalInput, now_ms: i64) -> Vec<InputEvent> {
+        std::iter::from_fn(|| input.next_event(probing(now_ms))).collect()
+    }
+
+    fn probing_input() -> TerminalInput {
+        let mut input = TerminalInput::new();
+        input.start_native_clear_probe();
+        input
+    }
+
+    #[test]
+    fn a_printable_key_holds_input_until_the_cursor_reply_pair_arrives() {
+        let mut input = probing_input();
+        input.start_theme_monitor();
+        input.push_bytes(b"ab\x1b[A");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+        assert!(input.native_clear_active() && input.awaiting_terminal_reply());
+        assert!(!input.has_pending_input());
+        assert_eq!(input.native_clear_deadline_ms(), Some(100));
+        input.push_bytes(b"\x1b[5;1R\x1b[5;2Rc");
+        assert_eq!(
+            drain_probing(&mut input, 10),
+            [
+                raw(b'a'),
+                raw(b'b'),
+                action(Action::CursorUp),
+                InputEvent::NativeClearProbe
+            ]
+        );
+        input.push_bytes(b"\x1b[5;1R\x1b[5;2R");
+        assert_eq!(drain_probing(&mut input, 20), [raw(b'c')]);
+        assert!(!input.native_clear_busy());
+    }
+
+    #[test]
+    fn a_reply_on_another_row_reports_the_clear_before_the_held_keys() {
+        let mut input = probing_input();
+        input.push_bytes(b"x");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+        input.push_bytes(b"\x1b[1;1R\x1b[1;2R");
+        assert_eq!(
+            drain_probing(&mut input, 5),
+            [InputEvent::NativeClearDetected, raw(b'x')]
+        );
+    }
+
+    #[test]
+    fn only_a_printable_key_with_a_known_cursor_row_starts_a_probe() {
+        let mut input = probing_input();
+        input.push_bytes(b"\x01\x7f\x1b[Az");
+        assert_eq!(
+            drain(&mut input, 0),
+            [raw(1), raw(0x7f), action(Action::CursorUp), raw(b'z')]
+        );
+        input.push_bytes(b"\x1b[");
+        assert!(drain_probing(&mut input, 0).is_empty());
+        input.push_bytes(b"A");
+        assert_eq!(drain_probing(&mut input, 0), [action(Action::CursorUp)]);
+        let mut unstarted = TerminalInput::new();
+        unstarted.push_bytes(b"q");
+        assert_eq!(drain_probing(&mut unstarted, 0), [raw(b'q')]);
+    }
+
+    #[test]
+    fn a_timeout_releases_the_keys_turns_the_probe_off_and_discards_a_late_pair() {
+        let mut input = probing_input();
+        input.start_theme_monitor();
+        input.push_bytes(b"\x1b[?997;1n");
+        assert!(drain(&mut input, 0).is_empty());
+        input.push_bytes(b"a\x1b[5");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+        assert_eq!(input.take_theme_query(0), None);
+        input.poll_native_clear_probe(99);
+        assert!(drain_probing(&mut input, 99).is_empty());
+        input.poll_native_clear_probe(100);
+        assert!(!input.native_clear_active() && input.native_clear_busy());
+        assert_eq!(drain_probing(&mut input, 100), [raw(b'a')]);
+        assert_eq!(input.take_theme_query(100), None);
+        input.push_bytes(b";1R\x1b[5;1R\x1b[5;2Rb");
+        assert_eq!(
+            drain_probing(&mut input, 150),
+            [action(Action::Ignore), raw(b'b')]
+        );
+        assert!(!input.native_clear_busy());
+        assert_eq!(input.take_theme_query(150), Some(ThemeQuery::ResponseFence));
+        input.push_bytes(b"c");
+        assert_eq!(drain_probing(&mut input, 160), [raw(b'c')]);
+    }
+
+    #[test]
+    fn the_late_window_hands_on_a_partial_reply_when_it_closes() {
+        let mut input = probing_input();
+        input.push_bytes(b"a");
+        drain_probing(&mut input, 0);
+        input.poll_native_clear_probe(100);
+        assert_eq!(drain_probing(&mut input, 100), [raw(b'a')]);
+        input.push_bytes(b"\x1b[");
+        assert!(drain_probing(&mut input, 110).is_empty());
+        assert_eq!(input.native_clear_deadline_ms(), Some(210));
+        input.poll_native_clear_probe(210);
+        assert!(!input.native_clear_busy());
+        input.push_bytes(b"A");
+        assert_eq!(drain_probing(&mut input, 210), [action(Action::CursorUp)]);
+    }
+
+    #[test]
+    fn held_input_past_its_bound_is_released_in_arrival_order_and_ends_the_probe() {
+        let mut input = probing_input();
+        input.push_bytes(b"a");
+        drain_probing(&mut input, 0);
+        let mut burst = vec![b'b'; 4094];
+        burst.extend_from_slice(b"cd\x1b[");
+        input.push_bytes(&burst);
+        let events = drain_probing(&mut input, 1);
+        let keys: Vec<u8> = events
+            .iter()
+            .map(|event| match event {
+                InputEvent::Raw(raw) => raw.byte,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        let mut expected = vec![b'a'];
+        expected.extend_from_slice(&[b'b'; 4094]);
+        expected.extend_from_slice(b"cd");
+        assert_eq!(keys, expected);
+        assert!(!input.native_clear_active() && input.native_clear_busy());
+        input.push_bytes(b"A");
+        assert_eq!(drain_probing(&mut input, 2), [action(Action::CursorUp)]);
+    }
+
+    #[test]
+    fn a_failed_query_write_releases_the_key_without_a_late_window() {
+        let mut input = probing_input();
+        input.push_bytes(b"a");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+        input.cancel_native_clear_probe(true);
+        assert!(!input.native_clear_busy());
+        assert_eq!(drain_probing(&mut input, 0), [raw(b'a')]);
+        input.push_bytes(b"b");
+        assert_eq!(drain_probing(&mut input, 0), [raw(b'b')]);
+    }
+
+    #[test]
+    fn a_query_the_terminal_had_no_room_for_releases_the_key_and_keeps_probing() {
+        let mut input = probing_input();
+        input.push_bytes(b"ab");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+        input.cancel_native_clear_probe(false);
+        assert!(!input.native_clear_busy());
+        assert_eq!(drain_probing(&mut input, 0), [raw(b'a'), raw(b'b')]);
+        input.push_bytes(b"c");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+    }
+
+    #[test]
+    fn a_paste_keeps_the_late_window_open_until_it_settles() {
+        let mut input = probing_input();
+        input.push_bytes(b"a\x1b[200~");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+        input.poll_native_clear_probe(100);
+        assert_eq!(
+            drain_probing(&mut input, 100),
+            [raw(b'a'), action(Action::PasteStart)]
+        );
+        input.begin_paste(PasteOwner::Composer, usize::MAX);
+        assert_eq!(input.native_clear_deadline_ms(), None);
+        input.poll_native_clear_probe(1_000);
+        assert!(input.native_clear_busy());
+        input.push_bytes(b"text\x1b[201~");
+        assert!(drain_probing(&mut input, 1_000).is_empty());
+        assert!(matches!(
+            input.settle_delivery_epoch(1_000),
+            Some(InputEvent::Paste(PasteOutcome::Text { .. }))
+        ));
+        assert_eq!(input.native_clear_deadline_ms(), Some(1_100));
+        input.push_bytes(b"\x1b[9;1R\x1b[9;2R");
+        assert!(drain_probing(&mut input, 1_050).is_empty());
+        assert!(!input.native_clear_busy());
     }
 
     #[test]
@@ -398,10 +710,10 @@ mod tests {
         input.push_bytes(b"safe\x1b[201~");
         assert!(drain(&mut input, 0).is_empty());
         input.push_bytes(b"\r");
-        assert_eq!(input.settle_delivery_epoch(), None);
+        assert_eq!(input.settle_delivery_epoch(0), None);
         assert!(drain(&mut input, 0).is_empty());
         assert_eq!(
-            input.settle_delivery_epoch(),
+            input.settle_delivery_epoch(0),
             Some(InputEvent::Paste(PasteOutcome::TrailingInput {
                 owner: PasteOwner::Composer
             }))
@@ -434,7 +746,7 @@ mod tests {
         input.push_bytes(b"one\r\n\x1b[Atwo\x1b[201~");
         assert!(drain(&mut input, 0).is_empty());
         assert_eq!(
-            input.settle_delivery_epoch(),
+            input.settle_delivery_epoch(0),
             Some(InputEvent::Paste(PasteOutcome::Text {
                 owner: PasteOwner::Composer,
                 text: "one\n[Atwo".to_owned(),
@@ -449,12 +761,12 @@ mod tests {
         input.begin_paste(PasteOwner::Composer, usize::MAX);
         input.push_bytes(b"abc");
         assert!(drain(&mut input, 0).is_empty());
-        assert_eq!(input.settle_delivery_epoch(), None);
+        assert_eq!(input.settle_delivery_epoch(0), None);
         assert!(input.paste.active());
         input.push_bytes(b"def\x1b[201~");
         drain(&mut input, 1);
         assert_eq!(
-            input.settle_delivery_epoch(),
+            input.settle_delivery_epoch(0),
             Some(InputEvent::Paste(PasteOutcome::Text {
                 owner: PasteOwner::Composer,
                 text: "abcdef".to_owned(),
@@ -469,7 +781,7 @@ mod tests {
         input.push_bytes(b"safe\x1b[201~\r");
         drain(&mut input, 0);
         assert_eq!(
-            input.settle_delivery_epoch(),
+            input.settle_delivery_epoch(0),
             Some(InputEvent::Paste(PasteOutcome::TrailingInput {
                 owner: PasteOwner::Composer
             }))
@@ -500,11 +812,11 @@ mod tests {
     fn a_partial_theme_candidate_after_the_end_marker_holds_the_paste_until_it_resolves() {
         for (rest, decoded) in [(&b"13u"[..], "kitty enter"), (&b"A"[..], "cursor up")] {
             let mut input = paste_after_an_in_flight_theme_query(b"\x1b[");
-            assert_eq!(input.settle_delivery_epoch(), None, "{decoded}");
+            assert_eq!(input.settle_delivery_epoch(0), None, "{decoded}");
             input.push_bytes(rest);
             assert!(drain(&mut input, 2).is_empty(), "{decoded}");
             assert_eq!(
-                input.settle_delivery_epoch(),
+                input.settle_delivery_epoch(0),
                 Some(trailing_input()),
                 "{decoded}"
             );
@@ -515,11 +827,11 @@ mod tests {
     #[test]
     fn a_theme_reply_completing_after_the_end_marker_is_not_a_paste_suffix() {
         let mut input = paste_after_an_in_flight_theme_query(b"\x1b[?1;");
-        assert_eq!(input.settle_delivery_epoch(), None);
+        assert_eq!(input.settle_delivery_epoch(0), None);
         input.push_bytes(b"2c");
         assert!(drain(&mut input, 2).is_empty());
         assert_eq!(
-            input.settle_delivery_epoch(),
+            input.settle_delivery_epoch(0),
             Some(InputEvent::Paste(PasteOutcome::Text {
                 owner: PasteOwner::Composer,
                 text: "safe".to_owned(),
@@ -531,11 +843,11 @@ mod tests {
     #[test]
     fn a_theme_candidate_that_never_completes_rejects_the_paste_after_the_idle_timeout() {
         let mut input = paste_after_an_in_flight_theme_query(b"\x1b[");
-        assert_eq!(input.settle_delivery_epoch(), None);
+        assert_eq!(input.settle_delivery_epoch(0), None);
         input.poll_theme_monitor(76);
-        assert_eq!(input.settle_delivery_epoch(), None);
+        assert_eq!(input.settle_delivery_epoch(0), None);
         assert!(drain(&mut input, 76).is_empty());
-        assert_eq!(input.settle_delivery_epoch(), Some(trailing_input()));
+        assert_eq!(input.settle_delivery_epoch(0), Some(trailing_input()));
         assert!(!input.has_pending_input());
     }
 
@@ -561,7 +873,7 @@ mod tests {
         assert!(drain(&mut input, 0).is_empty());
         assert_eq!(input.fresh.storage().len(), 20);
         assert!(input.fresh.storage().iter().all(|byte| *byte == 0));
-        assert_eq!(secret(input.settle_delivery_epoch()), "code-123");
+        assert_eq!(secret(input.settle_delivery_epoch(0)), "code-123");
     }
 
     #[test]
@@ -583,7 +895,7 @@ mod tests {
         input.push_bytes(b"\x1b[201~");
         assert!(drain(&mut input, 1).is_empty());
         assert!(input.staged.storage().iter().all(|byte| *byte == 0));
-        assert_eq!(secret(input.settle_delivery_epoch()), "code-123");
+        assert_eq!(secret(input.settle_delivery_epoch(0)), "code-123");
     }
 
     #[test]
@@ -594,7 +906,7 @@ mod tests {
         input.begin_paste(PasteOwner::AuthCode, 64);
         input.push_bytes(b"half-entered-code");
         assert!(drain(&mut input, 0).is_empty());
-        assert_eq!(input.settle_delivery_epoch(), None);
+        assert_eq!(input.settle_delivery_epoch(0), None);
         assert!(input.paste.active());
         drop(input);
     }

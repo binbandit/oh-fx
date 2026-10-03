@@ -612,6 +612,61 @@ fn a_theme_pinned_in_settings_skips_the_probe_unless_the_environment_names_anoth
     assert!(count(&session.output(), b"\x1b[0;1;38;5;255moh-fx") > 0);
 }
 
+const CURSOR_PROBE: &[u8] = b"\x1b[?2026h\x1b7\x1b[1G\x1b[6n\x1b[2G\x1b[6n\x1b8\x1b[?2026l";
+
+#[test]
+fn a_screen_cleared_behind_the_shell_is_redrawn_on_the_next_key() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let trigger = home.root.join("clear-now");
+    let command = home.command();
+    let mut wrapper = Command::new("/bin/sh");
+    wrapper
+        .arg("-c")
+        .arg(r#"(while [ ! -f "$1" ]; do sleep 0.02; done; printf '\033[2J\033[H') & exec "$0""#)
+        .arg(command.get_program())
+        .arg(&trigger)
+        .current_dir(&home.workspace)
+        .env_clear()
+        .envs(
+            command
+                .get_envs()
+                .filter_map(|(key, value)| Some((key.to_owned(), value?.to_owned()))),
+        )
+        .process_group(0);
+    let mut session = PtySession::spawn(wrapper, 24, 80).expect("spawn oh-fx in a pty");
+    wait(&session, "auto · model-a");
+    session.send(b"one");
+    wait(&session, "┃ one");
+    assert!(count(&session.output(), CURSOR_PROBE) > 0);
+    fs::write(&trigger, b"").expect("write the trigger");
+    session
+        .wait_for(WAIT, |screen| screen.trim().is_empty())
+        .unwrap_or_else(|screen| panic!("the screen was not cleared:\n{screen}"));
+    let start = session.output().len();
+    session.send(b"x");
+    let screen = wait(&session, "┃ onex");
+    assert!(screen.contains("Run /help for commands"), "{screen}");
+    assert!(count(&session.output()[start..], b"\x1b[3J") > 0);
+    session.send(b"\x15\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn tmux_sessions_never_probe_for_a_native_clear() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut command = home.command();
+    command.env("TMUX", "/tmp/tmux-1/default,1,0");
+    let mut session = PtySession::spawn(command, 24, 80).expect("spawn oh-fx in a pty");
+    wait(&session, "auto · model-a");
+    session.send(b"typed");
+    wait(&session, "┃ typed");
+    assert_eq!(count(&session.output(), CURSOR_PROBE), 0);
+    session.send(b"\x15\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
 fn output_after(session: &PtySession, start: usize, needle: &[u8]) -> Vec<u8> {
     let deadline = Instant::now() + WAIT;
     loop {

@@ -82,8 +82,8 @@ use crate::render_engine::transcript_blocks::Entry;
 use crate::row_text::Row;
 use crate::terminal::signal_pipe::SignalPipe;
 use crate::terminal::{
-    ColorSupport, ExitCleanup, HistoryReset, Layout, StartupViewport, Terminal, TerminalError,
-    interactive_mode_enable_sequence,
+    CONFIRMATION_TAG_COLUMN, ColorSupport, ExitCleanup, HistoryReset, Layout, StartupViewport,
+    Terminal, TerminalError, interactive_mode_enable_sequence,
 };
 use crate::theme::Theme;
 use crate::transcript::history_replay::replayed_entries;
@@ -348,6 +348,9 @@ impl<'a> Shell<'a> {
         terminal.enter_interactive_mode()?;
         let mut input = TerminalInput::new();
         input.push_bytes(&typeahead);
+        if !capabilities.tmux {
+            input.start_native_clear_probe();
+        }
         if !theme_pinned {
             terminal.enable_theme_notifications()?;
             terminal.request_theme_color_scheme()?;
@@ -591,13 +594,20 @@ impl<'a> Shell<'a> {
             .collect()
     }
 
+    fn frame_held(&self, now_ms: i64) -> bool {
+        self.dimensions_invalid
+            || self.pending_resize.is_some()
+            || self.input.native_clear_active()
+            || !self.frame_due(now_ms)
+    }
+
     fn commit_frame(&mut self) -> Result<(), TerminalError> {
         self.sync_waiting_clock();
         if self.prepare_file_picker() {
             self.mark_dirty();
         }
         let now_ms = self.now_ms();
-        if self.dimensions_invalid || self.pending_resize.is_some() || !self.frame_due(now_ms) {
+        if self.frame_held(now_ms) {
             return self.flush_output();
         }
         self.frame.stale = false;
@@ -925,6 +935,18 @@ impl<'a> Shell<'a> {
         self.transcript.push(entry);
     }
 
+    fn native_clear_row(&self) -> Option<u16> {
+        let blocked = self.approval.is_some()
+            || self.question.is_some()
+            || self.pending_resize.is_some()
+            || self.dimensions_invalid
+            || self.layout.cols < CONFIRMATION_TAG_COLUMN;
+        if blocked {
+            return None;
+        }
+        self.renderer.cursor_row()
+    }
+
     fn start_fresh_transcript(&mut self, screen: FreshScreen) {
         let welcome = Entry::Welcome {
             version: self.options.version.clone(),
@@ -961,11 +983,14 @@ impl<'a> Shell<'a> {
             file_picker,
             self.gestures.next_expiry_ms(),
             self.yolo_warning.deadline_ms(),
-            self.pending_resize.map(|pending| pending.due_ms),
+            self.pending_resize
+                .filter(|_| !self.input.native_clear_busy())
+                .map(|pending| pending.due_ms),
             self.compaction.and_then(|status| status.expires_ms()),
             self.recovery()
                 .and_then(|recovery| recovery.next_change_ms(now_ms)),
             self.input.theme_deadline_ms(now_ms),
+            self.input.native_clear_deadline_ms(),
         ]
         .into_iter()
         .flatten()
