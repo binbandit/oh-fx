@@ -540,6 +540,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
     )
     .with_payload(),
     SlashSpec::new(
+        SlashKind::Allowlist,
+        "/allowlist",
+        "manage trusted commands, tools, and URLs",
+        SlashPresentationCategory::Security,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Undo,
         "/undo",
         "undo the latest tracked file operation",

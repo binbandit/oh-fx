@@ -64,10 +64,11 @@ pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,
     FileChangeStats, FinishReason, LivePermissionMode, ModelFailureDiagnostic, ModelRecoveryAction,
-    ModelRecoveryCause, PermissionMode, ProviderReplay, QuestionBatchEntry, QuestionOption,
-    ReasoningEffort, ReplaySource, RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolResultStatus, ToolStatusDetail, Usage,
-    is_valid_reasoning_effort, valid_credential_account_id,
+    ModelRecoveryCause, PermissionAction, PermissionMode, PermissionRule, ProviderReplay,
+    QuestionBatchEntry, QuestionOption, ReasoningEffort, ReplaySource, RouteRecoveryKind,
+    RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice,
+    ToolResultStatus, ToolStatusDetail, Usage, is_valid_reasoning_effort,
+    valid_credential_account_id,
 };
 pub use ui::{
     ApprovalRequest, CompactionActivity, CompactionEnd, HistoryEntry, Notice, NoticeLink,
