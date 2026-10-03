@@ -79,4 +79,87 @@ mod tests {
             ToolOutput::failure(UNAVAILABLE)
         );
     }
+
+    #[test]
+    fn answers_each_argument_shape_with_the_result_upstream_gives_it() {
+        let only_one = "web_search accepts only one non-empty domain filter";
+        let allowed_not_array = "web_search field \"allowed_domains\" must be an array of strings";
+        let allowed_item = "web_search field \"allowed_domains\" item 0 must be a string";
+        let short = "web_search field \"query\" must contain at least two characters";
+        let not_string = "web_search field \"query\" must be a string";
+        for (arguments, expected) in [
+            (
+                r#"{"query":"news","extra":1}"#,
+                "web_search field \"extra\" is not supported",
+            ),
+            (
+                r#"{"extra":1,"query":1}"#,
+                "web_search field \"extra\" is not supported",
+            ),
+            (r#"{"query":"  "}"#, UNAVAILABLE),
+            (r#"{"query":"😀😀"}"#, UNAVAILABLE),
+            (r#"{"query":"zig"}"#, UNAVAILABLE),
+            ("{\"query\":\"zig\"} ", UNAVAILABLE),
+            (r#"{"allowed_domains":[],"query":"zig"}"#, UNAVAILABLE),
+            (
+                r#"{"query":"zig","allowed_domains":[],"blocked_domains":[]}"#,
+                UNAVAILABLE,
+            ),
+            (
+                r#"{"query":"zig","allowed_domains":["a"],"blocked_domains":[]}"#,
+                UNAVAILABLE,
+            ),
+            (
+                r#"{"query":"zig","allowed_domains":["a"],"blocked_domains":["b"]}"#,
+                only_one,
+            ),
+            (r#"{"query":null}"#, not_string),
+            (r#"{"query":1,"allowed_domains":5}"#, not_string),
+            (r#"{"query":"x","allowed_domains":5}"#, short),
+            (
+                r#"{"query":"zig","allowed_domains":"a"}"#,
+                allowed_not_array,
+            ),
+            (
+                r#"{"query":"zig","allowed_domains":5,"blocked_domains":[1]}"#,
+                allowed_not_array,
+            ),
+            (
+                r#"{"query":"zig","blocked_domains":[1],"allowed_domains":5}"#,
+                allowed_not_array,
+            ),
+            (
+                r#"{"query":"zig","allowed_domains":null,"blocked_domains":["a"]}"#,
+                allowed_not_array,
+            ),
+            (r#"{"query":"zig","allowed_domains":[["a"]]}"#, allowed_item),
+            (r#"{"query":"zig","allowed_domains":[-0]}"#, allowed_item),
+            (
+                r#"{"query":"zig","allowed_domains":[1,2,3],"blocked_domains":["a"]}"#,
+                allowed_item,
+            ),
+            (
+                r#"{"query":"zig","allowed_domains":[123456789012345678901234567890]}"#,
+                allowed_item,
+            ),
+            (
+                r#"{"query":"zig","allowed_domains":[1e400],"blocked_domains":["a"]}"#,
+                allowed_item,
+            ),
+            (
+                r#"{"query":"zig","blocked_domains":[null]}"#,
+                "web_search field \"blocked_domains\" item 0 must be a string",
+            ),
+            (
+                r#"{"query":"zig","blocked_domains":-1e400}"#,
+                "web_search field \"blocked_domains\" must be an array of strings",
+            ),
+        ] {
+            assert_eq!(
+                rejection(arguments),
+                ToolOutput::failure(expected),
+                "{arguments}"
+            );
+        }
+    }
 }
