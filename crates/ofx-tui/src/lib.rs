@@ -19,4 +19,4 @@ pub use shell::{
     DirectoryLister, FileMentionSource, Opening, PromptHistory, ShellOptions, SkillCatalogSource,
     SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell, ui_channel,
 };
-pub use terminal::TerminalError;
+pub use terminal::{StartRecording, TerminalError, TerminalRecorder};
