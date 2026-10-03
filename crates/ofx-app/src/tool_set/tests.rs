@@ -21,7 +21,7 @@ use ofx_permissions::PermissionPolicy;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-use super::ask_tools;
+use super::{ToolHooks, ask_tools};
 
 const OUTSIDE_THE_APPROVED_TREE: &str = r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"read_file failed","details":{"field":"path","path":"../link/data.txt","error":"PathOutsideWorkspace"},"suggestion":"Run glob_files to discover matching paths, or check the path relative to the workspace."}}"#;
 
@@ -157,8 +157,7 @@ impl Session {
                 None,
                 mode,
                 crate::skills::rootless_skill_tool(),
-                None,
-                None,
+                ToolHooks::default(),
             ),
             Arc::new(NoContext),
             gate,

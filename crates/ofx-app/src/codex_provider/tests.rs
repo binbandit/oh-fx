@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
-use crate::tool_set;
+use crate::tool_set::{self, ToolHooks};
 
 const SAVED_TOKEN: &str = "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl";
 const FRESH_TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF90ZXN0In0sImV4cCI6NDEwMjQ0NDgwMCwibWFya2VyIjoiZnJlc2gifQ.c2lnbmF0dXJl";
@@ -160,8 +160,7 @@ fn ask_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
         None,
         &PermissionMode::Auto.into(),
         crate::skills::rootless_skill_tool(),
-        None,
-        None,
+        ToolHooks::default(),
     )
 }
 

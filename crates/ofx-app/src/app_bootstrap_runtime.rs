@@ -39,7 +39,7 @@ use crate::context::{
 };
 use crate::output_contracts::StatusSnapshot;
 use crate::skills::HostSkills;
-use crate::tool_set;
+use crate::tool_set::{self, ToolHooks};
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
@@ -293,11 +293,13 @@ impl Profile {
                 launch.command_timeout,
                 &permission_mode,
                 skills.tool(),
-                questions
-                    .clone()
-                    .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
-                launch.web_fetch_progress,
-                change_tracker.as_ref(),
+                ToolHooks {
+                    questions: questions
+                        .clone()
+                        .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
+                    web_fetch_progress: launch.web_fetch_progress,
+                    change_tracker: change_tracker.as_ref(),
+                },
             ),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
