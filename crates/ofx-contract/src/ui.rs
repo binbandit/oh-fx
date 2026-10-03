@@ -237,7 +237,15 @@ pub enum UiEvent {
         model: String,
     },
     ModelCatalog {
+        provider: String,
         catalog: ModelCatalog,
+    },
+    ProviderPicker {
+        prefix: String,
+        providers: Vec<String>,
+    },
+    ProviderSelected {
+        provider: String,
     },
     PermissionModeChanged {
         mode: PermissionMode,
@@ -268,6 +276,9 @@ pub enum UiCommand {
         text: String,
     },
     ListModels,
+    SelectProvider {
+        provider: String,
+    },
     SelectModel {
         model: String,
         effort: ReasoningEffort,

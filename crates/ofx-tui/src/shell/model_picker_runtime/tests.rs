@@ -46,7 +46,10 @@ fn catalog() -> ModelCatalog {
 }
 
 fn listed(test: &mut TestShell, catalog: ModelCatalog) {
-    test.deliver(UiEvent::ModelCatalog { catalog });
+    test.deliver(UiEvent::ModelCatalog {
+        provider: "local".to_owned(),
+        catalog,
+    });
 }
 
 fn open_menu(test: &mut TestShell) {

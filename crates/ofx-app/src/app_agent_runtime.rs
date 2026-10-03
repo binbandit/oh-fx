@@ -25,6 +25,8 @@ use crate::session_commands::SettingsAccess;
 use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
 
+mod provider_switch;
+
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 const CONTEXT_TOPIC: &str = "context";
@@ -244,11 +246,18 @@ pub(crate) struct Controller {
 
 struct CatalogFetch {
     source: ModelSource,
+    provider: String,
     emit: Emit,
     pending: Option<BoxFuture<'static, ModelCatalog>>,
 }
 
 impl CatalogFetch {
+    fn retarget(&mut self, source: ModelSource, provider: &str) {
+        self.source = source;
+        provider.clone_into(&mut self.provider);
+        self.pending = None;
+    }
+
     fn request(&mut self) {
         if self.pending.is_none() {
             let source = self.source.clone();
@@ -268,7 +277,8 @@ impl CatalogFetch {
                 command = commands.recv() => return command,
                 catalog = fetch => {
                     self.pending = None;
-                    (self.emit)(UiEvent::ModelCatalog { catalog });
+                    let provider = self.provider.clone();
+                    (self.emit)(UiEvent::ModelCatalog { provider, catalog });
                 }
             }
         }
@@ -303,6 +313,7 @@ impl Controller {
             agent: state.setup.agent(),
             catalog: CatalogFetch {
                 source: state.setup.models_source(),
+                provider: state.setup.provider().label().to_owned(),
                 emit: Arc::clone(&state.emit),
                 pending: None,
             },
@@ -351,6 +362,7 @@ impl Controller {
                     }
                 }
                 UiCommand::ListModels => self.catalog.request(),
+                UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
                 UiCommand::SelectModel {
                     model,
                     effort,
@@ -676,6 +688,7 @@ async fn run_deferred(
             fast_mode,
         },
         UiCommand::ListModels => return catalog.request(),
+        UiCommand::SelectProvider { .. } => return state.provider_busy(),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::FullAccessWarningShown => {
             return state.permissions.full_access_warning_shown();
@@ -1766,7 +1779,7 @@ mod tests {
     async fn listed_catalog(harness: &mut Harness) -> ModelCatalog {
         harness.send(UiCommand::ListModels);
         match harness.until(catalog_event).await.last() {
-            Some(UiEvent::ModelCatalog { catalog }) => catalog.clone(),
+            Some(UiEvent::ModelCatalog { catalog, .. }) => catalog.clone(),
             other => panic!("{other:?}"),
         }
     }

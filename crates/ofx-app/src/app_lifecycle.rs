@@ -17,7 +17,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Controller;
-use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
+use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError, provider_names};
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_session_runtime::{
@@ -225,6 +225,8 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
+        provider: session.setup.provider().label().to_owned(),
+        providers: provider_names(session.profile.settings()),
         permission_mode: session.permission_mode,
         full_access_warning: session.permission_mode == PermissionMode::Yolo
             && !session.profile.settings().yolo_acknowledged(),

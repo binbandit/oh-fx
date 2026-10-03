@@ -13,6 +13,7 @@ mod leading_whitespace;
 pub(crate) mod model_menu;
 mod model_picker_runtime;
 mod picker_state;
+mod provider_picker_runtime;
 pub(crate) mod question_prompt;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
@@ -40,6 +41,7 @@ use input_selection_runtime::ClipboardRuntime;
 use leading_whitespace::LeadingWhitespace;
 use model_menu::{CatalogLoad, ModelMenu};
 use picker_state::ModelFlow;
+use provider_picker_runtime::ProviderColumn;
 use question_prompt::QuestionPrompt;
 use skills_menu::SkillsMenu;
 
@@ -92,6 +94,8 @@ pub struct SlashCommandSpec {
 pub struct ShellOptions {
     pub version: String,
     pub model: String,
+    pub provider: String,
+    pub providers: Vec<String>,
     pub permission_mode: PermissionMode,
     pub full_access_warning: bool,
     pub workspace_label: String,
@@ -169,6 +173,7 @@ pub(crate) struct Shell<'a> {
     model_flow: ModelFlow,
     model_draft: Option<ComposerStash>,
     catalog: CatalogLoad,
+    provider_column: ProviderColumn,
     yolo_warning: YoloWarning,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
@@ -332,6 +337,7 @@ impl<'a> Shell<'a> {
             model_flow: ModelFlow::default(),
             model_draft: None,
             catalog: CatalogLoad::default(),
+            provider_column: ProviderColumn::default(),
             yolo_warning,
             events,
             send,
@@ -488,7 +494,12 @@ impl<'a> Shell<'a> {
         let input_extra = composer.rows.len().saturating_sub(1);
         let column = if catalog_menu.is_none() && self.approval.is_none() && self.question.is_none()
         {
-            self.model_column_band(input_extra, banner_rows)
+            let model = self.model_column_band(input_extra, banner_rows);
+            if model.is_empty() {
+                self.provider_column_band(input_extra, banner_rows)
+            } else {
+                model
+            }
         } else {
             Vec::new()
         };
@@ -912,6 +923,8 @@ mod tests {
         let options = ShellOptions {
             version: "0.1.0".to_owned(),
             model: "m".to_owned(),
+            provider: "local".to_owned(),
+            providers: Vec::new(),
             permission_mode: PermissionMode::Auto,
             full_access_warning: false,
             workspace_label: "proj\x07".to_owned(),

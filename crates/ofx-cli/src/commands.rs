@@ -516,6 +516,19 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Login,
+        "/login",
+        "choose the model provider and how it signs in",
+        SlashPresentationCategory::Account,
+    ),
+    SlashSpec::new(
+        SlashKind::Provider,
+        "/provider",
+        "choose the model provider and how it signs in",
+        SlashPresentationCategory::Account,
+    )
+    .with_aliases(&["/setup"]),
+    SlashSpec::new(
         SlashKind::Stats,
         "/stats",
         "show token and turn statistics",

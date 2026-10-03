@@ -96,6 +96,18 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             state.emit(UiEvent::StatsRequested);
             CommandEffect::None
         }
+        SlashKind::Login | SlashKind::Provider if work != Work::Idle => {
+            state.provider_busy();
+            CommandEffect::None
+        }
+        SlashKind::Login => {
+            state.open_provider_picker("/login ");
+            CommandEffect::None
+        }
+        SlashKind::Provider => {
+            state.open_provider_picker("/provider ");
+            CommandEffect::None
+        }
         SlashKind::Fast => CommandEffect::ToggleFast,
         SlashKind::Compact => match work {
             Work::Compaction => CommandEffect::None,
@@ -255,6 +267,8 @@ mod tests {
                 "/clear",
                 "/new",
                 "/reset",
+                "/login",
+                "/provider",
                 "/stats",
                 "/status",
                 "/model",
@@ -276,9 +290,10 @@ mod tests {
             .collect();
         assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[2].description, "start a fresh session");
-        assert_eq!(specs[10].description, "browse and manage skills");
-        assert_eq!(specs[15].aliases, ["/exit"]);
-        assert_eq!(specs[15].description, "exit the interactive shell");
+        assert_eq!(specs[12].description, "browse and manage skills");
+        assert_eq!(specs[5].aliases, ["/setup"]);
+        assert_eq!(specs[17].aliases, ["/exit"]);
+        assert_eq!(specs[17].description, "exit the interactive shell");
     }
 
     #[test]
@@ -296,6 +311,8 @@ mod tests {
                 ("/clear", "General"),
                 ("/new", "Session"),
                 ("/reset", "Session"),
+                ("/login", "Account"),
+                ("/provider", "Account"),
                 ("/stats", "Account"),
                 ("/status", "General"),
                 ("/model", "Model"),

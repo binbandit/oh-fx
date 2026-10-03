@@ -117,6 +117,23 @@ impl Persistence {
         Some(non_durable("session persistence degraded", error))
     }
 
+    pub(crate) fn select_provider(
+        &mut self,
+        agent: &mut Agent,
+        provider: SavedProvider,
+        model: &str,
+    ) -> Result<(), SessionError> {
+        self.provider = provider.clone();
+        self.preferences.provider = provider.clone();
+        model.clone_into(&mut self.preferences.model);
+        let Some(live) = &mut self.live else {
+            return Ok(());
+        };
+        live.provider = provider.clone();
+        live.attach(agent);
+        live.session().select_provider(provider, model)
+    }
+
     pub(crate) fn close(&mut self, agent: &mut Agent) {
         agent.detach_session();
         if let Some(live) = self.live.take() {

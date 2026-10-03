@@ -11,7 +11,7 @@ impl Shell<'_> {
         let Some(menu) = SkillsMenu::open(items, focus) else {
             return;
         };
-        self.close_model_menu_for_skills();
+        self.close_model_menu_quietly();
         if let SkillMenuFocus::Query(query) = focus {
             self.composer.clear();
             if self.composer.insert_text(query, COMPOSER_INPUT_LIMIT_BYTES)

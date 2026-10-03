@@ -286,6 +286,17 @@ impl WritableSession {
         self.set_preferences(preferences, now_ms())
     }
 
+    pub fn select_provider(
+        &mut self,
+        provider: SavedProvider,
+        model: &str,
+    ) -> Result<(), SessionError> {
+        let mut preferences = self.metadata.preferences.clone();
+        preferences.provider = provider;
+        model.clone_into(&mut preferences.model);
+        self.set_preferences(preferences, now_ms())
+    }
+
     pub(crate) fn rebind_workspace(&mut self, workspace_root: &str) -> Result<(), SessionError> {
         let mut proposed = self.metadata.clone();
         workspace_root.clone_into(&mut proposed.workspace_root);

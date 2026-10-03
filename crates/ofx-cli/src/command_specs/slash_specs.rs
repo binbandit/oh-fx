@@ -6,6 +6,8 @@ pub enum SlashKind {
     ClearScreen,
     NewSession,
     ResetSession,
+    Login,
+    Provider,
     Stats,
     Status,
     Model,
@@ -204,6 +206,8 @@ mod tests {
                 "/clear",
                 "/new",
                 "/reset",
+                "/login",
+                "/provider",
                 "/stats",
                 "/status",
                 "/model",
@@ -219,6 +223,18 @@ mod tests {
             ]
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
+        assert_eq!(spec(SlashKind::Provider).aliases, ["/setup"]);
+        for kind in [SlashKind::Login, SlashKind::Provider] {
+            assert_eq!(
+                spec(kind).completion_description,
+                "choose the model provider and how it signs in"
+            );
+            assert_eq!(
+                spec(kind).presentation_category,
+                SlashPresentationCategory::Account
+            );
+            assert!(!spec(kind).accepts_payload());
+        }
         assert_eq!(
             spec(SlashKind::Permissions).completion_description,
             "choose what oh-fx is allowed to do"
@@ -279,6 +295,8 @@ mod tests {
                 ("/clear", "General"),
                 ("/new", "Session"),
                 ("/reset", "Session"),
+                ("/login", "Account"),
+                ("/provider", "Account"),
                 ("/stats", "Account"),
                 ("/status", "General"),
                 ("/model", "Model"),

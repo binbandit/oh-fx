@@ -135,7 +135,13 @@ impl Shell<'_> {
             }
             UiEvent::Notice { notice } => self.push_entry(Entry::Notice(notice)),
             UiEvent::ModelSelected { model } => self.options.model = model,
-            UiEvent::ModelCatalog { catalog } => self.catalog_received(catalog),
+            UiEvent::ModelCatalog { provider, catalog } => {
+                self.catalog_received(&provider, catalog);
+            }
+            UiEvent::ProviderPicker { prefix, providers } => {
+                self.open_provider_column(&prefix, providers);
+            }
+            UiEvent::ProviderSelected { provider } => self.provider_selected(provider),
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,

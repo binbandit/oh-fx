@@ -913,6 +913,8 @@ impl Presenter {
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }
             | UiEvent::ModelCatalog { .. }
+            | UiEvent::ProviderPicker { .. }
+            | UiEvent::ProviderSelected { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested
