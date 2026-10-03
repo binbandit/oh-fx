@@ -131,6 +131,15 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_g_right_after_a_bare_escape_still_applies() {
+        let mut test = TestShell::start();
+        test.screen();
+        test.type_bytes(b"\x1b\x07");
+        test.step();
+        assert_eq!(test.sent(), [UiCommand::ApplyReadyUpgrade]);
+    }
+
+    #[test]
     fn ctrl_g_waits_for_the_response_to_finish() {
         let mut test = working();
         let screen = press_ctrl_g(&mut test);
