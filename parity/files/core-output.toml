@@ -50,5 +50,5 @@ modules = []
 [[file]]
 upstream = "src/core/output/worker_status.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/types.rs", "crates/oh-fx/src/cli_ask.rs"]
-note = "Route-recovery labels exist for ask; interactive recovery/API projections, recovered-state expiry and awake-deadline countdown refresh are absent."
+modules = ["crates/ofx-contract/src/types.rs", "crates/oh-fx/src/cli_ask.rs", "crates/ofx-tui/src/output/recovery_status.rs"]
+note = "Route-recovery labels, the interactive retry countdown, recovered-state expiry and the activity-row projection exist; the connectivity pause suffix, paused and terminal footer labels and the API status projection are absent."

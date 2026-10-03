@@ -1799,6 +1799,7 @@ mod tests {
             action: None,
             delay_seconds: 0,
             diagnostic: None,
+            retry_wait: None,
         };
         let result = RunResult {
             tool_calls: &records,
@@ -1819,6 +1820,7 @@ mod tests {
             action: Some(ModelRecoveryAction::RetryingRequest),
             delay_seconds: 2,
             diagnostic: Some(ModelFailureDiagnostic::new("HTTP 429 · slow")),
+            retry_wait: None,
         };
         assert_eq!(
             serde_json::to_string(&RecoveryRecord::new(&retrying)).unwrap(),
@@ -2298,6 +2300,7 @@ mod tests {
             action: Some(ModelRecoveryAction::RetryingRequest),
             delay_seconds: 2,
             diagnostic: None,
+            retry_wait: None,
         };
         let recovered = RouteRecoveryStatus {
             kind: RouteRecoveryKind::AutoRecovered,
@@ -2466,6 +2469,7 @@ mod tests {
                     action: None,
                     delay_seconds: 0,
                     diagnostic: None,
+                    retry_wait: None,
                 },
             }],
             4 => vec![operational("Done.")],

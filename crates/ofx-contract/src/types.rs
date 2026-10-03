@@ -3,6 +3,7 @@ mod tool_argument_integrity;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
 use ofx_text::mask_secrets;
 
@@ -442,6 +443,7 @@ pub struct RouteRecoveryStatus {
     pub action: Option<ModelRecoveryAction>,
     pub delay_seconds: u64,
     pub diagnostic: Option<ModelFailureDiagnostic>,
+    pub retry_wait: Option<Duration>,
 }
 
 impl RouteRecoveryStatus {
@@ -551,6 +553,7 @@ mod tests {
             }),
             delay_seconds,
             diagnostic: diagnostic.map(ModelFailureDiagnostic::new),
+            retry_wait: None,
         }
         .label()
     }
@@ -718,6 +721,7 @@ mod tests {
             action: None,
             delay_seconds: 0,
             diagnostic: None,
+            retry_wait: None,
         };
         assert_eq!(recovered.label(), "✓ recovered · succeeded on attempt 2");
         assert_eq!(recovered.reported_attempt(), 2);
