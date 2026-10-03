@@ -5,7 +5,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::features::tools::{ToolCallOutcome, ToolCatalog};
+use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
 use crate::server_transport::{ConnectOptions, startup_failure_message};
@@ -39,6 +39,13 @@ struct Connection {
 pub(crate) enum CallFailure {
     Mcp(McpError),
     RestartFailed(String),
+    DefinitionChanged { still_advertised: bool },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Advertised {
+    pub(crate) tool: Tool,
+    pub(crate) instructions: Option<String>,
 }
 
 impl From<McpError> for CallFailure {
@@ -148,7 +155,7 @@ impl Server {
 
     pub(crate) async fn call(
         self: &Arc<Self>,
-        tool: &str,
+        advertised: &Advertised,
         arguments: &Value,
         options: CallOptions,
     ) -> Result<ToolCallOutcome, CallFailure> {
@@ -158,11 +165,16 @@ impl Server {
         if !Arc::ptr_eq(&published, &catalog) {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
-        if catalog.get(tool).is_none() {
+        let name = &advertised.tool.name;
+        let current = catalog.get(name);
+        let instructions = &client.server_info().instructions;
+        if current != Some(&advertised.tool) || *instructions != advertised.instructions {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-            return Err(CallFailure::Mcp(McpError::McpToolCatalogChanged));
+            return Err(CallFailure::DefinitionChanged {
+                still_advertised: current.is_some(),
+            });
         }
-        Ok(client.call_tool(tool, arguments, options).await?)
+        Ok(client.call_tool(name, arguments, options).await?)
     }
 
     async fn running_client(self: &Arc<Self>) -> Result<Arc<McpClient>, CallFailure> {

@@ -11,13 +11,15 @@ use ofx_text::write_scalar;
 use serde_json::{Map, Value};
 
 use crate::features::tools::Tool as CatalogTool;
-use crate::server_lifecycle::{CallFailure, Server};
+use crate::server_lifecycle::{Advertised, CallFailure, Server};
 use crate::tool_names::ToolNames;
 use crate::tool_operations::CallOptions;
 use crate::tool_result::{model_output, restart_failed_output};
 
 const SELECTED_SCHEMA_LIMIT: &str = "mcp_selected_schema_bytes";
 const SERVER_INSTRUCTIONS_LIMIT: &str = "mcp_server_instructions_bytes";
+const DEFINITION_CHANGED: &str = "MCP tool definition changed before execution. Its current schema is loaded; review it before issuing a new call.";
+const DEFINITION_WITHDRAWN: &str = "MCP tool definition changed before execution and is no longer available. Search for current tools.";
 
 #[derive(Debug, Clone, Copy)]
 pub struct SchemaLimits {
@@ -47,7 +49,10 @@ pub(crate) fn publish_tools(
                     tools.push(Arc::new(McpTool {
                         spec: Arc::new(spec),
                         server: Arc::clone(server),
-                        tool: tool.name.clone(),
+                        advertised: Arc::new(Advertised {
+                            tool: tool.clone(),
+                            instructions: instructions.clone(),
+                        }),
                     }));
                 }
                 Projection::Rejected(notice) => notices.push(notice),
@@ -149,7 +154,7 @@ fn schema_notice(
 struct McpTool {
     spec: Arc<ToolSpec>,
     server: Arc<Server>,
-    tool: String,
+    advertised: Arc<Advertised>,
 }
 
 impl Tool for McpTool {
@@ -166,7 +171,7 @@ impl Tool for McpTool {
         Ok(Box::new(McpCall {
             spec: Arc::clone(&self.spec),
             server: Arc::clone(&self.server),
-            tool: self.tool.clone(),
+            advertised: Arc::clone(&self.advertised),
             arguments,
         }))
     }
@@ -175,7 +180,7 @@ impl Tool for McpTool {
 struct McpCall {
     spec: Arc<ToolSpec>,
     server: Arc<Server>,
-    tool: String,
+    advertised: Arc<Advertised>,
     arguments: Map<String, Value>,
 }
 
@@ -206,7 +211,7 @@ impl PreparedCall for McpCall {
         Box::pin(async move {
             let arguments = Value::Object(self.arguments);
             let call = self.server.call(
-                &self.tool,
+                &self.advertised,
                 &arguments,
                 CallOptions {
                     max_tool_result_bytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
@@ -223,7 +228,7 @@ impl PreparedCall for McpCall {
             match outcome {
                 Ok(outcome) => model_output(
                     server_name,
-                    &self.tool,
+                    &self.advertised.tool.name,
                     &self.spec.name,
                     outcome,
                     DEFAULT_MAX_TOOL_RESULT_BYTES,
@@ -231,6 +236,13 @@ impl PreparedCall for McpCall {
                 Err(CallFailure::RestartFailed(failure)) => ToolOutput::failure(
                     restart_failed_output(server_name, &self.spec.name, &failure),
                 ),
+                Err(CallFailure::DefinitionChanged { still_advertised }) => {
+                    ToolOutput::failure(if still_advertised {
+                        DEFINITION_CHANGED
+                    } else {
+                        DEFINITION_WITHDRAWN
+                    })
+                }
                 Err(CallFailure::Mcp(error)) => ToolOutput::failure(
                     format_tool_execution_error_json(&self.spec.name, &error.to_string()),
                 ),

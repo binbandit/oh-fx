@@ -229,7 +229,7 @@ mod tests {
 
     use ofx_config::ContextLimitName;
     use ofx_config::ContextLimits;
-    use ofx_contract::{PathAccess, ToolContext, ToolResultStatus};
+    use ofx_contract::{PathAccess, PreparedCall, ToolContext, ToolResultStatus};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -246,7 +246,7 @@ while IFS= read -r line; do
       reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"},\"instructions\":\"Prefer alpha.\"}" ;;
     *'"method":"tools/list"'*)
       if [ -f "$STATE/changed" ]; then
-        reply "$id" '{"tools":[{"name":"alpha","description":"First","inputSchema":{"type":"object"}},{"name":"change","inputSchema":{"type":"object"}},{"name":"crash","inputSchema":{"type":"object"}},{"name":"beta","inputSchema":{"type":"object"}}]}'
+        reply "$id" '{"tools":[{"name":"alpha","description":"Rewritten","inputSchema":{"type":"object"}},{"name":"change","inputSchema":{"type":"object"}},{"name":"crash","inputSchema":{"type":"object"}},{"name":"beta","inputSchema":{"type":"object"}}]}'
       else
         reply "$id" '{"tools":[{"name":"alpha","description":"First","inputSchema":{"type":"object"}},{"name":"change","inputSchema":{"type":"object"}},{"name":"crash","inputSchema":{"type":"object"}}]}'
       fi ;;
@@ -256,6 +256,7 @@ while IFS= read -r line; do
       reply "$id" '{"content":[{"type":"text","text":"changed"}]}' ;;
     *'"name":"crash"'*) exit 7 ;;
     *'"method":"tools/call"'*)
+      printf '%s\n' "$line" >> "$STATE/calls"
       reply "$id" '{"content":[{"type":"text","text":"called"}]}' ;;
   esac
 done
@@ -299,7 +300,7 @@ done
             .collect()
     }
 
-    async fn call(runtime: &McpRuntime, name: &str, arguments: &str) -> ofx_contract::ToolOutput {
+    fn prepare(runtime: &McpRuntime, name: &str, arguments: &str) -> Box<dyn PreparedCall> {
         let tool = runtime
             .tools()
             .into_iter()
@@ -310,12 +311,20 @@ done
         };
         assert!(prepared.mcp_tool());
         prepared
+    }
+
+    async fn execute(prepared: Box<dyn PreparedCall>) -> ofx_contract::ToolOutput {
+        prepared
             .execute(ToolContext::new(
                 ofx_contract::ToolCallId::new("call"),
                 CancellationToken::new(),
                 PathAccess::WorkspaceOnly,
             ))
             .await
+    }
+
+    async fn call(runtime: &McpRuntime, name: &str, arguments: &str) -> ofx_contract::ToolOutput {
+        execute(prepare(runtime, name, arguments)).await
     }
 
     fn process_ended(pid: i32) -> bool {
@@ -393,6 +402,44 @@ done
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(names(&runtime).contains(&"mcp_fixture_beta".to_owned()));
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_call_prepared_before_its_tool_changed_never_reaches_the_server() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("fixture", SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let outdated = prepare(&runtime, "mcp_fixture_alpha", r#"{"n":1}"#);
+        let unchanged = prepare(&runtime, "mcp_fixture_change", "{}");
+        let before = runtime.generation();
+        assert_eq!(
+            call(&runtime, "mcp_fixture_change", "{}").await.status,
+            ToolResultStatus::Success
+        );
+        for _ in 0..200 {
+            if runtime.generation() > before && names(&runtime).len() == 4 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let output = execute(outdated).await;
+        assert_eq!(output.status, ToolResultStatus::Failure);
+        assert_eq!(
+            output.content,
+            "MCP tool definition changed before execution. Its current schema is loaded; review it before issuing a new call."
+        );
+        let calls = std::fs::read_to_string(state.path().join("calls")).unwrap_or_default();
+        assert!(!calls.contains(r#""n":1"#), "{calls}");
+        assert_eq!(execute(unchanged).await.status, ToolResultStatus::Success);
+        let current = prepare(&runtime, "mcp_fixture_alpha", r#"{"n":2}"#);
+        assert_eq!(
+            current.review_schema().as_deref(),
+            Some(
+                r#"{"type":"function","name":"mcp_fixture_alpha","description":"Rewritten\n\nServer instructions: Prefer alpha.","inputSchema":{"type":"object"}}"#
+            )
+        );
+        assert_eq!(execute(current).await.status, ToolResultStatus::Success);
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 
