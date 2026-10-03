@@ -502,21 +502,12 @@ impl<'a> Shell<'a> {
                     ),
                 });
         let picker = self.file_picker_band(composer.rows.len().saturating_sub(1), banner_rows);
-        let sessions = match (&mut self.picker, &self.approval) {
-            (Some(sessions), None) => {
-                sessions.menu_rows(&self.theme, self.layout, composer.rows.len())
-            }
-            _ => Vec::new(),
-        };
-        let sessions_open = !sessions.is_empty();
-        let (menu, hint) = if sessions_open {
-            let mut band = vec![Row::new()];
-            band.extend(sessions);
-            (band, None)
-        } else {
-            (skills_menu.unwrap_or(picker.rows), Some(hint))
-        };
-        let warning_included = warning_included && !sessions_open;
+        let (menu, hint) = self.footer_menu(
+            composer.rows.len(),
+            skills_menu.unwrap_or(picker.rows),
+            hint,
+        );
+        let warning_included = warning_included && hint.is_some();
         let review = composer.review.clone();
         let banner = if review.as_ref().is_some_and(|review| review.screen) {
             Vec::new()

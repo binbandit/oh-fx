@@ -103,12 +103,7 @@ impl SessionPicker {
         self.refusal = None;
     }
 
-    pub(super) fn menu_rows(
-        &mut self,
-        theme: &Theme,
-        layout: Layout,
-        composer_rows: usize,
-    ) -> Vec<Row> {
+    fn menu_rows(&mut self, theme: &Theme, layout: Layout, composer_rows: usize) -> Vec<Row> {
         let budget = MAX_INLINE_ROWS
             .min(usize::from(layout.rows).saturating_sub(composer_rows + 1))
             .max(1);
@@ -221,6 +216,24 @@ impl Shell<'_> {
 
     pub(super) fn picker_active(&self) -> bool {
         self.picker.is_some()
+    }
+
+    pub(super) fn footer_menu(
+        &mut self,
+        composer_rows: usize,
+        menu: Vec<Row>,
+        hint: Row,
+    ) -> (Vec<Row>, Option<Row>) {
+        let sessions = match (&mut self.picker, &self.approval) {
+            (Some(sessions), None) => sessions.menu_rows(&self.theme, self.layout, composer_rows),
+            _ => Vec::new(),
+        };
+        if sessions.is_empty() {
+            return (menu, Some(hint));
+        }
+        let mut band = vec![Row::new()];
+        band.extend(sessions);
+        (band, None)
     }
 
     pub(super) fn submit_picker_selection(&mut self) {
