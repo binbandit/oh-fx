@@ -52,6 +52,7 @@ const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
 pub struct PermissionPolicy {
     mode: LivePermissionMode,
     workspace_root: PathBuf,
+    additional_roots: Vec<PathBuf>,
     session_grants: Arc<SessionGrants>,
     inherited_grants: Option<Arc<SessionGrants>>,
     reviewer: Option<Reviewer>,
@@ -63,6 +64,7 @@ impl fmt::Debug for PermissionPolicy {
             .debug_struct("PermissionPolicy")
             .field("mode", &self.mode)
             .field("workspace_root", &self.workspace_root)
+            .field("additional_roots", &self.additional_roots)
             .field("session_grants", &self.session_grants)
             .field("inherited_grants", &self.inherited_grants)
             .field("reviewer", &self.reviewer.is_some())
@@ -75,6 +77,7 @@ impl PermissionPolicy {
         Self {
             mode: mode.into(),
             workspace_root: workspace_root.into(),
+            additional_roots: Vec::new(),
             session_grants: Arc::default(),
             inherited_grants: None,
             reviewer: None,
@@ -95,6 +98,12 @@ impl PermissionPolicy {
 
     pub fn forget_command_approvals(&self) {
         self.session_grants.forget_commands();
+    }
+
+    #[must_use]
+    pub fn with_additional_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.additional_roots = roots;
+        self
     }
 
     #[must_use]
@@ -123,6 +132,9 @@ impl PermissionGate for PermissionPolicy {
             Some(target) if path_inside(&self.workspace_root, &target) => {
                 Admission::Allowed(PathAccess::WorkspaceOnly)
             }
+            Some(target) if let Some(root) = self.additional_root(&target) => {
+                Admission::Allowed(PathAccess::Within(root.to_path_buf()))
+            }
             Some(target) => TreePermission::of_tool(&call.name)
                 .and_then(|permission| self.granted_root(permission, &target))
                 .map_or(Admission::ApprovalRequired, |root| {
@@ -139,7 +151,12 @@ impl PermissionGate for PermissionPolicy {
         {
             return Admission::Allowed(PathAccess::WorkspaceOrExternal);
         }
-        command_admission(self.mode.get(), &self.workspace_root, request)
+        command_admission(
+            self.mode.get(),
+            &self.workspace_root,
+            &self.additional_roots,
+            request,
+        )
     }
 
     fn admit_mcp_tool(&self, call: &ToolCall) -> Admission {
@@ -256,6 +273,13 @@ impl PermissionPolicy {
         self.grant_sets()
             .filter_map(|grants| grants.granted_root(&self.workspace_root, permission, target))
             .min_by_key(|root| root.as_os_str().len())
+    }
+
+    fn additional_root(&self, target: &Path) -> Option<&Path> {
+        self.additional_roots
+            .iter()
+            .map(PathBuf::as_path)
+            .find(|root| path_inside(root, target))
     }
 
     fn call_approval_scope(&self, call: &ToolCall) -> ApprovalScope {
@@ -487,6 +511,78 @@ mod tests {
                 Admission::Allowed(PathAccess::WorkspaceOrExternal)
             );
         }
+    }
+
+    #[test]
+    fn reads_and_searches_in_an_additional_directory_run_confined_to_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        let shared = root.join("shared");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(shared.join("docs")).unwrap();
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::write(shared.join("docs/guide.md"), "guide\n").unwrap();
+        fs::write(root.join("other/notes.md"), "notes\n").unwrap();
+        let inside = shared.join("docs/guide.md");
+        let inside = inside.to_str().unwrap();
+        let other = root.join("other/notes.md");
+        let other = other.to_str().unwrap();
+        let glob = ToolCall::new(
+            "call-2",
+            "glob_files",
+            format!(r#"{{"pattern":"*.md","path":"{}"}}"#, shared.display()),
+        );
+        for mode in [PermissionMode::Ask, PermissionMode::Auto] {
+            let policy =
+                PermissionPolicy::new(mode, &workspace).with_additional_roots(vec![shared.clone()]);
+            let confined = Admission::Allowed(PathAccess::Within(shared.clone()));
+            assert_eq!(policy.admit(&read(inside)), confined, "{mode:?}");
+            assert_eq!(policy.admit(&read("../shared/docs/guide.md")), confined);
+            assert_eq!(policy.admit(&glob), confined, "{mode:?}");
+            assert_eq!(policy.admit(&read(other)), Admission::ApprovalRequired);
+            assert_eq!(
+                policy.admit(&read("src/main.rs")),
+                Admission::Allowed(PathAccess::WorkspaceOnly)
+            );
+        }
+    }
+
+    #[test]
+    fn auto_mode_runs_reversible_commands_in_an_additional_directory_confined_to_it() {
+        let shared = PathBuf::from("/srv/shared");
+        let run = |cwd: &str, command: &str| CommandRequest::Run {
+            command: command.to_owned(),
+            cwd: PathBuf::from(cwd),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+            reload: false,
+        };
+        let policy = |mode| {
+            PermissionPolicy::new(mode, "/workspace").with_additional_roots(vec![shared.clone()])
+        };
+        let auto = policy(PermissionMode::Auto);
+        assert_eq!(
+            auto.admit_command(&run("/srv/shared/lib", "git status")),
+            Admission::Allowed(PathAccess::Within(shared.clone()))
+        );
+        assert_eq!(
+            auto.admit_command(&run("/workspace", "git status")),
+            Admission::Allowed(PathAccess::WorkspaceOnly)
+        );
+        assert_eq!(
+            auto.admit_command(&run("/srv/other", "git status")),
+            Admission::ReviewRequired
+        );
+        assert_eq!(
+            auto.admit_command(&run("/srv/shared", "rm -rf build")),
+            Admission::ReviewRequired
+        );
+        assert_eq!(
+            policy(PermissionMode::Ask).admit_command(&run("/srv/shared", "git status")),
+            Admission::ApprovalRequired
+        );
     }
 
     #[test]
