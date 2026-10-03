@@ -594,6 +594,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Settings,
+        "/settings",
+        "browse and update settings",
+        SlashPresentationCategory::Appearance,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Alias,
         "/alias",
         "show alias availability",

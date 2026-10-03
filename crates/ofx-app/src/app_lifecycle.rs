@@ -253,6 +253,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default(),
         workspace_root: session.profile.workspace_root().to_owned(),
+        startup_scrollback: session.profile.settings().startup_scrollback(),
         commands: slash_command_specs(),
         command_categories: slash_command_categories(),
         prompt_history,

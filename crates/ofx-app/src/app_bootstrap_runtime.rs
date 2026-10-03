@@ -589,6 +589,14 @@ impl AgentSetup {
         self.approvals.as_ref()
     }
 
+    pub(crate) fn permission_mode(&self) -> PermissionMode {
+        self.permission_mode.get()
+    }
+
+    pub(crate) fn step_limit(&self) -> u64 {
+        self.config.step_limit
+    }
+
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }

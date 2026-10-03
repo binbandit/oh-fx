@@ -20,10 +20,22 @@ pub(crate) fn save(
 }
 
 pub(crate) fn unsaved_notice(topic: &str, unsaved: &Unsaved) -> Notice {
-    Notice::new(NoticeTone::Error, topic, unsaved_settings_body(unsaved))
+    Notice::new(
+        NoticeTone::Error,
+        topic,
+        unsaved_settings_body(unsaved, true),
+    )
 }
 
-fn unsaved_settings_body(unsaved: &Unsaved) -> String {
+pub(crate) fn not_saved_notice(topic: &str, unsaved: &Unsaved) -> Notice {
+    Notice::new(
+        NoticeTone::Error,
+        topic,
+        unsaved_settings_body(unsaved, false),
+    )
+}
+
+fn unsaved_settings_body(unsaved: &Unsaved, runtime_changed: bool) -> String {
     let (error, cleanup) = match unsaved {
         Unsaved::HomeNotSet => (HOME_NOT_SET.to_owned(), None),
         Unsaved::Failed(failure) => (failure.error.to_string(), Some(&failure.cleanup)),
@@ -37,7 +49,12 @@ fn unsaved_settings_body(unsaved: &Unsaved) -> String {
     ) {
         format!("user settings persistence uncertain (scope=user, error={error})")
     } else {
-        format!("active for this process but not saved to user settings ({error})")
+        let applied = if runtime_changed {
+            "active for this process but "
+        } else {
+            ""
+        };
+        format!("{applied}not saved to user settings ({error})")
     };
     if let Some(cleanup) = cleanup {
         append_legacy_cleanup(&mut body, cleanup);
@@ -45,7 +62,7 @@ fn unsaved_settings_body(unsaved: &Unsaved) -> String {
     body
 }
 
-fn append_legacy_cleanup(body: &mut String, cleanup: &LegacyCleanup) {
+pub(crate) fn append_legacy_cleanup(body: &mut String, cleanup: &LegacyCleanup) {
     if cleanup.fields_removed > 0 {
         let plural = |count: usize| if count == 1 { "" } else { "s" };
         let _ = write!(
@@ -78,22 +95,32 @@ mod tests {
             )],
         };
         assert_eq!(
-            unsaved_settings_body(&Unsaved::Failed(SettingsWriteFailure {
-                error: SettingsWriteError::CommitIndeterminate,
-                cleanup: cleanup.clone(),
-            })),
+            unsaved_settings_body(
+                &Unsaved::Failed(SettingsWriteFailure {
+                    error: SettingsWriteError::CommitIndeterminate,
+                    cleanup: cleanup.clone(),
+                }),
+                true
+            ),
             "user settings persistence uncertain (scope=user, error=SettingsCommitIndeterminate); normalized 2 legacy values across 1 workspace; recovery=/config/backups/settings.json.preference-migration.permission_mode.json"
         );
         assert_eq!(
-            unsaved_settings_body(&Unsaved::Failed(SettingsWriteFailure {
-                error: SettingsWriteError::LockBusy,
-                cleanup: LegacyCleanup {
-                    fields_removed: 1,
-                    workspaces_changed: 2,
-                    recovery_paths: Vec::new(),
-                },
-            })),
+            unsaved_settings_body(
+                &Unsaved::Failed(SettingsWriteFailure {
+                    error: SettingsWriteError::LockBusy,
+                    cleanup: LegacyCleanup {
+                        fields_removed: 1,
+                        workspaces_changed: 2,
+                        recovery_paths: Vec::new(),
+                    },
+                }),
+                true
+            ),
             "active for this process but not saved to user settings (SettingsLockBusy); normalized 1 legacy value across 2 workspaces"
+        );
+        assert_eq!(
+            not_saved_notice("startup-scrollback", &Unsaved::HomeNotSet).body,
+            "not saved to user settings (HomeNotSet)"
         );
         let homeless = unsaved_notice("fast", &Unsaved::HomeNotSet);
         assert_eq!(

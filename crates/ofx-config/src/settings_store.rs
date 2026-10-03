@@ -30,10 +30,16 @@ const FAST_MODE_MODEL_BOUND: &str = "fast_mode_model_bound";
 const LEGACY_CODEX_MODEL: &str = "codex_model";
 const PERMISSION_MODE: &str = "permission_mode";
 const YOLO_ACKNOWLEDGED: &str = "yolo_acknowledged";
+const STARTUP_SCROLLBACK: &str = "startup_scrollback";
 const PERMISSION_MODE_MIGRATION: Migration = Migration {
     field: PERMISSION_MODE,
     binding: None,
     snapshot: "settings.json.preference-migration.permission_mode.json",
+};
+const STARTUP_SCROLLBACK_MIGRATION: Migration = Migration {
+    field: STARTUP_SCROLLBACK,
+    binding: None,
+    snapshot: "settings.json.preference-migration.startup_scrollback.json",
 };
 const FAST_MODE_MIGRATION: Migration = Migration {
     field: FAST_MODE,
@@ -159,10 +165,13 @@ pub enum PermissionPatch<'a> {
     Reset(AllowlistResetScope),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitOutcome {
     Unchanged,
-    Committed { permission_rules_removed: usize },
+    Committed {
+        permission_rules_removed: usize,
+        cleanup: LegacyCleanup,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +184,7 @@ enum Patch<'a> {
     },
     PermissionMode(PermissionMode),
     YoloAcknowledged,
+    StartupScrollback(bool),
     Permission {
         workspace: Option<&'a str>,
         patch: PermissionPatch<'a>,
@@ -229,6 +239,13 @@ pub fn save_permission_mode(
 
 pub fn save_yolo_acknowledged(paths: &ProfilePaths) -> Result<(), SettingsWriteFailure> {
     commit(paths, Patch::YoloAcknowledged, &mut || {}).map(drop)
+}
+
+pub fn save_startup_scrollback(
+    paths: &ProfilePaths,
+    enabled: bool,
+) -> Result<CommitOutcome, SettingsWriteFailure> {
+    commit(paths, Patch::StartupScrollback(enabled), &mut || {})
 }
 
 pub fn save_permission_patch(
@@ -298,6 +315,11 @@ fn commit(
         return match directory.replace(SETTINGS_FILE, candidate.as_bytes()) {
             Ok(()) => Ok(CommitOutcome::Committed {
                 permission_rules_removed: application.permission_rules_removed,
+                cleanup: LegacyCleanup {
+                    fields_removed: application.fields_removed,
+                    workspaces_changed: application.workspaces_changed,
+                    recovery_paths,
+                },
             }),
             Err(DurableError::PostRenameFailed) => Err(SettingsWriteFailure {
                 error: SettingsWriteError::CommitIndeterminate,
@@ -454,6 +476,10 @@ fn apply(
             migrate_workspace_preference(root, &PERMISSION_MODE_MIGRATION, &mut application);
         }
         Patch::YoloAcknowledged => application.changed |= put_bool(root, YOLO_ACKNOWLEDGED, true),
+        Patch::StartupScrollback(enabled) => {
+            application.changed |= put_bool(root, STARTUP_SCROLLBACK, enabled);
+            migrate_workspace_preference(root, &STARTUP_SCROLLBACK_MIGRATION, &mut application);
+        }
         Patch::Permission { workspace, patch } => {
             let target = match workspace {
                 Some(workspace_root) => workspace_object(root, workspace_root)?,
