@@ -6,6 +6,7 @@ mod app_mcp_runtime;
 mod app_panic_runtime;
 mod app_permission_runtime;
 mod app_session_runtime;
+mod app_steering_runtime;
 mod app_subagent_runtime;
 mod app_upgrade_runtime;
 mod approval_queue;

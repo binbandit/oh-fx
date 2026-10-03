@@ -1404,7 +1404,7 @@ fn a_prompt_sent_right_after_a_mid_turn_clear_is_not_dropped() {
 }
 
 #[test]
-fn a_failed_turn_keeps_its_error_under_its_prompt_while_prompts_queue() {
+fn a_failed_turn_keeps_its_error_under_its_prompt_after_the_next_turn() {
     let server = FakeServer::start([
         Reply::status(
             400,
@@ -1414,9 +1414,11 @@ fn a_failed_turn_keeps_its_error_under_its_prompt_while_prompts_queue() {
     ]);
     let home = Home::with_settings(&settings(&server.base_url()));
     let mut session = home.shell(24, 80);
-    session.send(b"one\rtwo\r");
-    let screen = wait(&session, "Second answer.");
     let error = "⚠ API request failed · HTTP 400 · invalid_request_error: first prompt rejected";
+    session.send(b"one\r");
+    wait(&session, error);
+    session.send(b"two\r");
+    let screen = wait(&session, "Second answer.");
     let order: Vec<usize> = ["┃ one", error, "┃ two", "Second answer."]
         .iter()
         .map(|needle| {
