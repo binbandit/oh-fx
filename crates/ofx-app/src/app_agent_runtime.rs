@@ -4079,7 +4079,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_install_keeps_active_turn_progress_and_cancellation_live() {
-        let gate = ofx_testkit::Gate::default();
+        let gate = Gate::default();
         let held = Reply::held_sse(&chat_text_events(&["during installation\n"])[..2]).after(&gate);
         let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["next"]))]);
         let home = tempfile::tempdir().unwrap();
