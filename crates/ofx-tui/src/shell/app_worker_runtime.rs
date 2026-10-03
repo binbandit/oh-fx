@@ -188,7 +188,8 @@ impl Shell<'_> {
                 prompt,
                 text,
             } => self.steering_applied(turn_id, prompt, text),
-            UiEvent::ToolProvisional { .. }
+            UiEvent::AssistantBoundary { .. }
+            | UiEvent::ToolProvisional { .. }
             | UiEvent::ContextNotice { .. }
             | UiEvent::AssistantText { .. }
             | UiEvent::ReasoningText { .. } => {}
