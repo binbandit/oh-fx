@@ -14,6 +14,7 @@ use ofx_agent::{
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
     ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, open_store,
+    recovered_turn,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -23,8 +24,8 @@ use ofx_config::{
 };
 use ofx_contract::{
     CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
-    TurnOutcome, UiEvent, Usage, format_unknown_action,
+    RecoveredTurn, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection,
+    ToolResultStatus, TurnOutcome, UiEvent, Usage, format_unknown_action,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
@@ -237,6 +238,7 @@ struct PreparedAsk {
     context_notices: Vec<String>,
     saved: Option<SavedAsk>,
     title: Option<TitleGeneration>,
+    recovered: Option<RecoveredTurn>,
 }
 
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -247,7 +249,7 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
     if let Some(feature) = unavailable_feature(args, modifiers) {
         return unavailable(&feature, args.output.json);
     }
-    if prompt.is_empty() {
+    if prompt.is_empty() && !args.session.continue_recovery {
         return Failure::code("InvalidConversationEvent").report(args.output.json);
     }
     crate::auto_upgrade::announce_and_schedule();
@@ -288,7 +290,6 @@ fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<St
     let ask = [
         (args.images, "--image"),
         (args.permissions.prompt, "--prompt-permissions"),
-        (args.session.continue_recovery, "--continue-recovery"),
     ];
     if let Some(flag) = unsupported_launch_modifier(modifiers) {
         return Some(flag.to_owned());
@@ -401,6 +402,7 @@ async fn respond(
         context_notices,
         saved,
         title,
+        recovered,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
@@ -417,17 +419,15 @@ async fn respond(
         let cancel = cancel.clone();
         tokio::spawn(async move { title.run(&cancel).await })
     });
-    let report = agent
-        .run_turn(
-            request.prompt,
-            &mut |event| {
-                if !presenter.handle(event) {
-                    cancel.cancel();
-                }
-            },
-            cancel,
-        )
-        .await;
+    let mut present = |event| {
+        if !presenter.handle(event) {
+            cancel.cancel();
+        }
+    };
+    let report = match recovered {
+        Some(recovered) => agent.continue_turn(recovered, &mut present, cancel).await,
+        None => agent.run_turn(request.prompt, &mut present, cancel).await,
+    };
     if let Some(titling) = titling {
         let _ = titling.await;
     }
@@ -450,10 +450,17 @@ async fn prepare_agent(
             .permission_mode(&|name| env::var(name).ok())
     });
     announce_settings(args, &profile, permission_mode)?;
+    let mut pending = None;
     let resumed = match &args.session.resume {
         Some(target) => {
             let store = open_store(&profile)?;
-            let resumed = ResumedSession::open(&store, &mut profile, target)?;
+            let (resumed, recovery) = ResumedSession::open_for_ask(
+                &store,
+                &mut profile,
+                target,
+                args.session.continue_recovery,
+            )?;
+            pending = recovery;
             Some((store, resumed))
         }
         None => None,
@@ -476,6 +483,9 @@ async fn prepare_agent(
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
     };
     let setup = profile.connect(launch, cancel).await?;
+    let recovered = pending
+        .map(|pending| recovered_turn(pending, &setup))
+        .transpose()?;
     *mcp = setup.mcp().cloned();
     if let Some(mcp) = setup.mcp() {
         start_mcp(mcp, cancel).await?;
@@ -500,12 +510,15 @@ async fn prepare_agent(
         (None, Some(store)) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
         (None, None) => None,
     };
+    let prompt = recovered
+        .as_ref()
+        .map_or(request.prompt, |recovered| recovered.prompt.as_str());
     if let Some(saved) = &saved {
-        saved.observe_prompt(request.prompt);
+        saved.observe_prompt(prompt);
     }
     let title = saved
         .as_ref()
-        .and_then(|saved| saved.title_generation(&setup, request.prompt, &agent));
+        .and_then(|saved| saved.title_generation(&setup, prompt, &agent));
     Ok(PreparedAsk {
         agent,
         model: setup.model().to_owned(),
@@ -514,6 +527,7 @@ async fn prepare_agent(
         context_notices: setup.context_notices().to_vec(),
         saved,
         title,
+        recovered,
     })
 }
 

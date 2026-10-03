@@ -6,6 +6,7 @@ mod turn_events;
 mod turn_recovery;
 mod turn_restore;
 
+use std::fs::File;
 use std::mem;
 use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,7 +35,8 @@ use managed_file::{
     same_directory, sync_dir,
 };
 use turn_events::{TurnArtifacts, turn_events};
-use turn_recovery::close_unfinished_turn;
+pub use turn_recovery::PendingRecovery;
+use turn_recovery::{Recovery, clear_recovery, commit_checkpoint, open_unfinished_turn};
 use turn_restore::{complete_result_output, restored_history};
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
@@ -96,6 +98,7 @@ pub struct WritableSession {
     history: SavedHistory,
     started: bool,
     language: String,
+    recovery: Recovery,
 }
 
 impl WritableSession {
@@ -205,6 +208,10 @@ impl WritableSession {
             self.writer.block_open_turn();
         }
         saved?;
+        if !matches!(self.recovery, Recovery::Absent) {
+            clear_recovery(&self.owned.dir);
+            self.recovery = Recovery::Absent;
+        }
         self.write_first_title(fresh, turn.user)?;
         self.save_language()
     }
@@ -222,6 +229,45 @@ impl WritableSession {
                 _ => SessionError::SessionPersistenceUncertain,
             }
         })
+    }
+
+    pub fn settle_recovery(&mut self) -> Result<(), SessionError> {
+        let checkpoint = match mem::take(&mut self.recovery) {
+            Recovery::Pending(checkpoint) => checkpoint,
+            other => {
+                self.recovery = other;
+                return Ok(());
+            }
+        };
+        commit_checkpoint(
+            &self.owned.dir,
+            &mut self.writer,
+            &self.metadata.preferences.provider,
+            checkpoint,
+        )?;
+        self.history = replayed_history(self.writer.file(), self.writer.committed_bytes())?;
+        Ok(())
+    }
+
+    pub fn settle_open_recovery(&mut self) -> Result<(), SessionError> {
+        if self.writer.turn_open() {
+            self.settle_recovery()
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn take_recovery(&mut self) -> Option<PendingRecovery> {
+        match mem::take(&mut self.recovery) {
+            Recovery::Pending(checkpoint) => {
+                self.recovery = Recovery::Continuing;
+                Some(PendingRecovery::new(checkpoint, &self.owned.dir))
+            }
+            other => {
+                self.recovery = other;
+                None
+            }
+        }
     }
 
     fn append_turn(
@@ -399,6 +445,7 @@ pub(crate) fn start_session(
             history: SavedHistory::default(),
             started: true,
             language,
+            recovery: Recovery::Absent,
         });
     let session = match prepared {
         Ok(session) => session,
@@ -451,7 +498,7 @@ pub(crate) fn resume_session(
     let mut replay = ReplayScan::default();
     let mut writer = ConversationWriter::open(file, &mut replay)?;
     let closed_from = writer.committed_bytes();
-    close_unfinished_turn(&owned.dir, &mut writer, &metadata.preferences.provider)?;
+    let recovery = open_unfinished_turn(&owned.dir, &mut writer)?;
     let end = writer.committed_bytes();
     replay.observe_range(writer.file(), closed_from, end)?;
     let window = replay.finish(writer.file(), end)?;
@@ -463,6 +510,7 @@ pub(crate) fn resume_session(
         metadata,
         history,
         started: false,
+        recovery,
     })
 }
 
@@ -516,6 +564,13 @@ pub(crate) fn read_metadata(dir: &PrivateDir, id: &str) -> Result<SessionMetadat
         return Err(SessionError::InvalidSessionMetadata);
     }
     Ok(metadata)
+}
+
+fn replayed_history(file: &File, end: u64) -> Result<SavedHistory, SessionError> {
+    let mut replay = ReplayScan::default();
+    scan_log(file, end, &mut replay)?;
+    let window = replay.finish(file, end)?;
+    replay_history(file, end, &window)
 }
 
 pub(crate) fn now_ms() -> i64 {

@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::Agent;
 use ofx_config::SelectionError;
-use ofx_contract::{HistoryEntry, RestoredHistory};
+use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
 use ofx_session::{
-    ResumeTarget, SavedProvider, SessionDisposal, SessionError, SessionLog, SessionPreferences,
-    SessionStore, TitleGate, WritableSession, prompt_excerpt,
+    PendingRecovery, ResumeTarget, SavedProvider, SessionDisposal, SessionError, SessionLog,
+    SessionPreferences, SessionStore, TitleGate, WritableSession, prompt_excerpt,
 };
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
@@ -46,16 +46,31 @@ impl ResumedSession {
         profile: &mut Profile,
         target: &ResumeTarget,
     ) -> Result<Self, ResumeFailure> {
-        let session = store.resume_target(target)?;
-        let preferences = &session.metadata().preferences;
-        profile
-            .resume_selection(
-                preferences.provider.id(),
-                preferences.provider.binding(),
-                &preferences.model,
-            )
-            .map_err(ResumeFailure::Selection)?;
+        let mut session = store.resume_target(target)?;
+        select(profile, &session)?;
+        session.settle_recovery()?;
         Ok(Self::load(session)?)
+    }
+
+    pub fn open_for_ask(
+        store: &SessionStore,
+        profile: &mut Profile,
+        target: &ResumeTarget,
+        continue_recovery: bool,
+    ) -> Result<(Self, Option<PendingRecovery>), ResumeFailure> {
+        let mut session = store.resume_target(target)?;
+        let pending = if continue_recovery {
+            Some(
+                session
+                    .take_recovery()
+                    .ok_or(SessionError::NoPendingRecovery)?,
+            )
+        } else {
+            session.settle_open_recovery()?;
+            None
+        };
+        select(profile, &session)?;
+        Ok((Self::load(session)?, pending))
     }
 
     fn load(mut session: WritableSession) -> Result<Self, SessionError> {
@@ -85,6 +100,27 @@ impl ResumedSession {
     pub(crate) fn display_title(&self) -> Option<&str> {
         self.title_present.then_some(self.title.as_str())
     }
+}
+
+fn select(profile: &mut Profile, session: &WritableSession) -> Result<(), ResumeFailure> {
+    let preferences = &session.metadata().preferences;
+    profile
+        .resume_selection(
+            preferences.provider.id(),
+            preferences.provider.binding(),
+            &preferences.model,
+        )
+        .map_err(ResumeFailure::Selection)
+}
+
+pub fn recovered_turn(
+    pending: PendingRecovery,
+    setup: &AgentSetup,
+) -> Result<RecoveredTurn, SessionError> {
+    if !pending.authorizes(setup.credential_authority()) {
+        return Err(SessionError::RecoveryCredentialAuthorityChanged);
+    }
+    Ok(pending.into_turn(&running_provider(setup)?, setup.model(), setup.fast_mode()))
 }
 
 pub struct LiveSession {

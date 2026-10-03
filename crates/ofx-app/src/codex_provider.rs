@@ -37,6 +37,7 @@ pub enum CodexUnavailable {
 pub(crate) struct CodexSubscription {
     pub(crate) provider: CodexProvider,
     pub(crate) capabilities: CatalogCapabilities,
+    pub(crate) account_id: String,
 }
 
 pub(crate) struct CatalogCapabilities {
@@ -240,7 +241,7 @@ pub(crate) async fn codex_subscription(
         credential: CatalogCredential::new(token.clone(), account_id.clone()),
         listed: OnceLock::new(),
     };
-    let access = CodexAccess::new(token, account_id, refresh_after_ms);
+    let access = CodexAccess::new(token, account_id.clone(), refresh_after_ms);
     let credentials = Arc::new(SubscriptionCredentials {
         oauth: Arc::new(oauth),
         detached,
@@ -250,6 +251,7 @@ pub(crate) async fn codex_subscription(
     Ok(CodexSubscription {
         provider,
         capabilities,
+        account_id,
     })
 }
 

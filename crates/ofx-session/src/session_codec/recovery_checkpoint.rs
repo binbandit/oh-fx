@@ -1,19 +1,23 @@
+mod continuation;
+
 use std::cmp::Ordering;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
-    HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, StepResult, ToolArgumentIntegrity,
-    ToolCall, ToolResultStatus, TurnEnd, TurnStop,
+    HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, RecoveryStrategy, StepResult,
+    ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd, TurnStop,
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
 use crate::json_fields::{Fields, Json, parse_json};
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
-use crate::session_codec::parse_saved_provider;
+use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
 use crate::session_event::{FileEvidence, SavedReplay, WireTag, are_valid_files, saved_replay};
+
+pub use continuation::CredentialAuthority;
 
 pub(crate) const MAX_RECOVERY_FILE_BYTES: usize = EMERGENCY_CEILING_BYTES + 128;
 const CHECKPOINT_VERSION: u64 = 2;
@@ -51,13 +55,31 @@ const CREDENTIAL_SOURCES: [&str; 8] = [
     "host_managed",
     "configured",
 ];
-const CREDENTIAL_IDENTITY_HEX_BYTES: usize = 64;
+const CREDENTIAL_IDENTITY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryCheckpoint {
     user: String,
     assistant_source: String,
     execution: SavedExecution,
+    strategy: RecoveryStrategy,
+    route: RecoveryRoute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveryRoute {
+    provider: SavedProvider,
+    model: String,
+    credential: Option<SavedCredential>,
+    requested_fast_mode: bool,
+    fast_mode: bool,
+    may_have_sent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SavedCredential {
+    source: &'static str,
+    identity: Option<[u8; CREDENTIAL_IDENTITY_BYTES]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,21 +234,44 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
         .unsigned("version")
         .filter(|version| *version == CHECKPOINT_VERSION)?;
     fields.unsigned("turn_id")?;
-    let checkpoint = RecoveryCheckpoint {
-        user: user_text(fields.required("user")?)?,
-        assistant_source: durable_text(fields.required("assistant_source")?)?,
-        execution: execution(fields.required("execution")?)?,
-    };
-    one_of(&fields.required("cause")?, &CAUSES)?;
+    let user = user_text(fields.required("user")?)?;
+    let assistant_source = durable_text(fields.required("assistant_source")?)?;
+    let execution = execution(fields.required("execution")?)?;
+    let cause = one_of(&fields.required("cause")?, &CAUSES)?;
     one_of(&fields.required("action")?, &ACTIONS)?;
-    one_of(&fields.required("tool_state")?, &TOOL_STATES)?;
-    authority(fields.required("authority")?)?;
-    fields.flag("requested_fast_mode")?;
-    fields.flag("fast_mode")?;
+    let tool_state = one_of(&fields.required("tool_state")?, &TOOL_STATES)?;
+    let (provider, model, credential) = authority(fields.required("authority")?)?;
+    let requested_fast_mode = fields.flag("requested_fast_mode")?;
+    let fast_mode = fields.flag("fast_mode")?;
     fields.unsigned("max_provider_attempts")?;
-    fields.unsigned("consumed_provider_attempts")?;
-    fields.flag("outstanding_reservation")?;
+    let consumed_attempts = fields.unsigned("consumed_provider_attempts")?;
+    let outstanding_reservation = fields.flag("outstanding_reservation")?;
+    let checkpoint = RecoveryCheckpoint {
+        strategy: strategy(cause, tool_state, &assistant_source),
+        user,
+        assistant_source,
+        execution,
+        route: RecoveryRoute {
+            provider,
+            model,
+            credential,
+            requested_fast_mode,
+            fast_mode,
+            may_have_sent: consumed_attempts > 0 || outstanding_reservation,
+        },
+    };
     fields.finish(checkpoint)
+}
+
+fn strategy(cause: &str, tool_state: &str, assistant_source: &str) -> RecoveryStrategy {
+    match tool_state {
+        _ if cause == "request_limit_reached" => RecoveryStrategy::RetryRequest,
+        "proven_unexecuted" => RecoveryStrategy::RegenerateTool,
+        "confirmed" => RecoveryStrategy::ContinueAfterTool,
+        "uncertain" => RecoveryStrategy::ReconcileTool,
+        _ if assistant_source.is_empty() => RecoveryStrategy::RetryRequest,
+        _ => RecoveryStrategy::ContinueResponse,
+    }
 }
 
 fn user_text(value: Json<'_>) -> Option<String> {
@@ -276,6 +321,17 @@ fn tool_step(value: Json<'_>) -> Option<SavedToolStep> {
         tool_calls: list(fields.required("tool_calls")?, tool_call)?,
         tool_results: list(fields.required("tool_results")?, tool_result)?,
     };
+    let answers_its_calls = step.tool_results.iter().enumerate().all(|(index, result)| {
+        let called = step
+            .tool_calls
+            .iter()
+            .any(|call| call.id.as_str() == result.tool_call_id && call.name == result.tool_name);
+        let repeated = step.tool_results[..index]
+            .iter()
+            .any(|seen| seen.tool_call_id == result.tool_call_id);
+        called && !repeated
+    });
+    answers_its_calls.then_some(())?;
     fields.finish(step)
 }
 
@@ -348,33 +404,39 @@ fn steering_entry(value: Json<'_>) -> Option<SavedSteering> {
     fields.finish(entry)
 }
 
-fn authority(value: Json<'_>) -> Option<()> {
+fn authority(value: Json<'_>) -> Option<(SavedProvider, String, Option<SavedCredential>)> {
     let mut fields = Fields::new(value)?;
-    parse_saved_provider(&fields.required("provider")?)?;
-    durable_text(fields.required("model")?)?;
-    let sourced = match fields.required("credential_source")? {
-        Json::Null => false,
-        source => {
-            one_of(&source, &CREDENTIAL_SOURCES)?;
-            true
-        }
+    let provider = parse_saved_provider(&fields.required("provider")?)?;
+    let model = durable_text(fields.required("model")?)?;
+    let source = match fields.required("credential_source")? {
+        Json::Null => None,
+        source => Some(one_of(&source, &CREDENTIAL_SOURCES)?),
     };
-    let identified = match fields.required("credential_identity")? {
-        Json::Null => false,
-        Json::String(hex) if is_lowercase_digest(&hex) => true,
+    let identity = match fields.required("credential_identity")? {
+        Json::Null => None,
+        Json::String(hex) => Some(lowercase_digest(&hex)?),
         _ => return None,
     };
-    if identified && !sourced {
-        return None;
-    }
-    fields.finish(())
+    let credential = match (source, identity) {
+        (None, Some(_)) => return None,
+        (None, None) => None,
+        (Some(source), identity) => Some(SavedCredential { source, identity }),
+    };
+    fields.finish((provider, model, credential))
 }
 
-fn is_lowercase_digest(hex: &str) -> bool {
-    hex.len() == CREDENTIAL_IDENTITY_HEX_BYTES
-        && hex
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+fn lowercase_digest(hex: &str) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
+    let lowercase = hex
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !lowercase || hex.len() != CREDENTIAL_IDENTITY_BYTES * 2 {
+        return None;
+    }
+    let mut digest = [0_u8; CREDENTIAL_IDENTITY_BYTES];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(digest)
 }
 
 fn durable_text(value: Json<'_>) -> Option<String> {
@@ -404,8 +466,9 @@ fn fixed<T: FixedField>(fields: &mut Fields<'_>, key: &str) -> Option<()> {
     T::accepts(&fields.required(key)?).then_some(())
 }
 
-fn one_of(value: &Json<'_>, tags: &[&str]) -> Option<()> {
-    tags.contains(&value.as_str()?).then_some(())
+fn one_of(value: &Json<'_>, tags: &[&'static str]) -> Option<&'static str> {
+    let text = value.as_str()?;
+    tags.iter().copied().find(|tag| *tag == text)
 }
 
 fn tag<T: WireTag>(value: &Json<'_>) -> Option<T> {

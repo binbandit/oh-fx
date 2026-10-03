@@ -343,8 +343,16 @@ fn a_saved_run_that_retries_and_then_fails_before_any_work_reports_recovery_as_n
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "oh-fx: ask --continue-recovery is not available yet\n"
+        "oh-fx: NoPendingRecovery\n"
     );
+    let output = home.ask(
+        &["ask", "--json", "--resume-id", &id, "--continue-recovery"],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["error"], "NoPendingRecovery");
     let resumed = home.ask_json(&["--resume-id", &id, "next"], &[]);
     assert_eq!(session_id(&resumed), id);
     assert_eq!(resumed["final_output"], "fresh");
@@ -799,6 +807,151 @@ fn an_interrupted_turn_is_saved_and_resumes_with_its_partial_reply_closed() {
             "assistant: half\n\nThe previous response ended before completion.",
             "user: <turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>",
             "user: next",
+        ]
+    );
+}
+
+const CONFIGURED_IDENTITY: &str =
+    "40122b758656199048961e6e8369383c25ebcdeddced75b64ad736e527014da8";
+const CONTINUE_AFTER_TOOL: &str =
+    "Continue from the confirmed tool result above without repeating the tool.";
+
+fn save_checkpoint(home: &Home, id: &str, credential: &str) {
+    let provider = home.metadata(id)["provider"].clone();
+    let checkpoint = json!({
+        "version": 2,
+        "turn_id": 7,
+        "user": {"text": "fix the build", "images": []},
+        "assistant_source": "",
+        "execution": {
+            "schema_version": 10,
+            "tool_steps": [{
+                "assistant": null,
+                "provider_replay": null,
+                "tool_calls": [{"id": "call_1", "name": "read", "arguments_json": "{\"path\":\"a.rs\"}", "provider_result": null}],
+                "tool_results": [{
+                    "tool_call_id": "call_1", "tool_name": "read", "status": "success",
+                    "output": "fn main() {}", "output_handle": null, "preview": null,
+                    "output_bytes": 12, "stored_output_bytes": 12, "truncated": false,
+                    "provider_native": false, "review_feedback": false, "created_at_ms": 5,
+                    "permission_feedback": [], "committed_file_presentation": null,
+                    "command_output_replay": null, "command_process_presentation": null,
+                    "terminal_action_presentation": null
+                }]
+            }],
+            "files": [],
+            "steering": [],
+            "turn_summary": null
+        },
+        "cause": "response_interrupted",
+        "action": "continuing_after_tool",
+        "tool_state": "confirmed",
+        "authority": {
+            "provider": provider,
+            "model": "@openai/gpt-4o",
+            "credential_source": "configured",
+            "credential_identity": credential
+        },
+        "requested_fast_mode": false,
+        "fast_mode": false,
+        "max_provider_attempts": 10,
+        "consumed_provider_attempts": 1,
+        "outstanding_reservation": false
+    });
+    let seq = home.frames(id).len();
+    fs::write(
+        home.sessions().join(id).join("recovery.json"),
+        format!("{{\"conversation_seq\":{seq},\"checkpoint\":{checkpoint}}}\n"),
+    )
+    .expect("write recovery.json");
+}
+
+#[test]
+fn continue_recovery_resumes_a_paused_turn_from_its_saved_tool_steps() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["continued"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    save_checkpoint(&home, &id, CONFIGURED_IDENTITY);
+    let result = home.ask_json(&["--resume-id", &id, "--continue-recovery"], &[]);
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["final_output"], "continued");
+    assert_eq!(session_id(&result), id);
+    let requests = server.requests();
+    let sent = conversation(&requests[1]);
+    assert_eq!(
+        texts(&sent),
+        [
+            "user: first",
+            "assistant: one",
+            "user: fix the build",
+            "assistant: ",
+            "tool: fn main() {}",
+            &format!("user: {CONTINUE_AFTER_TOOL}"),
+        ]
+    );
+    assert_eq!(sent[3]["tool_calls"][0]["id"], "call_1");
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+    assert_eq!(
+        kinds(&home.frames(&id)),
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "tool_call",
+            "tool_result",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+    let again = home.ask_json(&["--resume-id", &id, "--continue-recovery"], &[]);
+    assert_eq!(again["error"], "NoPendingRecovery");
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[test]
+fn continue_recovery_refuses_a_possibly_sent_request_under_another_credential() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+    let home = Home::new(&server.base_url());
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    save_checkpoint(&home, &id, &"ab".repeat(32));
+    let result = home.ask_json(&["--resume-id", &id, "--continue-recovery"], &[]);
+    assert_eq!(
+        result["error"], "RecoveryCredentialAuthorityChanged",
+        "{result}"
+    );
+    assert_eq!(server.requests().len(), 1);
+    assert!(home.sessions().join(&id).join("recovery.json").exists());
+}
+
+#[test]
+fn a_new_prompt_leaves_a_paused_turn_out_and_clears_it_once_saved() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["fresh"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    save_checkpoint(&home, &id, CONFIGURED_IDENTITY);
+    let result = home.ask_json(&["--resume-id", &id, "next"], &[]);
+    assert_eq!(result["final_output"], "fresh");
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+    assert_eq!(
+        texts(&conversation(&server.requests()[1])),
+        ["user: first", "assistant: one", "user: next"]
+    );
+    assert_eq!(
+        kinds(&home.frames(&id)),
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "assistant",
+            "turn_completed"
         ]
     );
 }

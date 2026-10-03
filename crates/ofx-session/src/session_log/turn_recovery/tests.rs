@@ -2,7 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use ofx_config::ProviderId;
-use ofx_contract::{ReasoningEffort, ToolArgumentIntegrity, ToolResultStatus};
+use ofx_contract::{
+    ChatMessage, HistoryStep, HistoryTurn, ReasoningEffort, RecoveryStrategy, StepResult,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolResultStatus, TurnEnd,
+};
 
 use super::*;
 use crate::session_codec::{SessionMetadata, SessionPreferences};
@@ -151,20 +154,24 @@ fn evidence() -> FileEvidence {
     }
 }
 
+fn interrupted_checkpoint() -> String {
+    checkpoint(
+        "fix the build",
+        &[step("c2", "out")],
+        "{\"text\":\"also tests\",\"assistant_prefix\":null,\"after_tool_step_count\":1}",
+        "Looking at",
+    )
+}
+
 #[test]
-fn a_matching_checkpoint_resumes_as_its_interrupted_turn() {
+fn a_matching_checkpoint_waits_until_it_is_settled_as_its_interrupted_turn() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());
-    fixture.save_checkpoint(
-        3,
-        &checkpoint(
-            "fix the build",
-            &[step("c2", "out")],
-            "{\"text\":\"also tests\",\"assistant_prefix\":null,\"after_tool_step_count\":1}",
-            "Looking at",
-        ),
-    );
+    fixture.save_checkpoint(3, &interrupted_checkpoint());
     let mut resumed = fixture.resume().unwrap();
+    assert_eq!(fixture.log().len(), 3);
+    assert!(fixture.path(RECOVERY_FILE).exists());
+    resumed.settle_recovery().unwrap();
     assert!(!resumed.turn_open());
     assert!(!fixture.path(RECOVERY_FILE).exists());
     assert!(!fixture.path(RECOVERY_ASKED_FILE).exists());
@@ -220,7 +227,11 @@ fn a_turn_left_open_by_compaction_keeps_its_saved_prefix() {
             "half way",
         ),
     );
-    drop(fixture.resume().unwrap());
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.turn_open());
+    assert_eq!(fixture.log().len(), 4);
+    resumed.settle_recovery().unwrap();
+    drop(resumed);
     let log = fixture.log();
     assert_eq!(log.len(), 7, "{log:#?}");
     assert!(
@@ -314,7 +325,7 @@ fn a_saved_replay_keeps_its_own_provider_binding_under_any_preferences() {
                 "Looking at",
             ),
         );
-        drop(fixture.resume().unwrap());
+        fixture.resume().unwrap().settle_recovery().unwrap();
         let log = fixture.log();
         assert!(
             log[4].contains(&format!("\"provider_replay\":{saved}")),
@@ -362,7 +373,7 @@ fn each_recovered_step_keeps_the_replay_binding_it_was_saved_with() {
             "Looking at",
         ),
     );
-    drop(fixture.resume().unwrap());
+    fixture.resume().unwrap().settle_recovery().unwrap();
     assert_eq!(
         replays_in(&fixture.log()),
         [bound_replay("11"), bound_replay("22")]
@@ -390,7 +401,75 @@ fn a_step_after_a_compacted_prefix_keeps_its_own_replay_binding() {
             "half way",
         ),
     );
-    drop(fixture.resume().unwrap());
+    fixture.resume().unwrap().settle_recovery().unwrap();
     let log = fixture.log();
     assert_eq!(replays_in(&log[4..]), [bound_replay("22")], "{log:#?}");
+}
+
+#[test]
+fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(3, &interrupted_checkpoint());
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.take_recovery().is_some());
+    drop(resumed);
+    assert!(fixture.path(RECOVERY_FILE).exists());
+    let mut resumed = fixture.resume().unwrap();
+    let pending = resumed.take_recovery().unwrap();
+    assert!(resumed.take_recovery().is_none());
+    assert_eq!(pending.prompt(), "fix the build");
+    let provider = metadata().preferences.provider;
+    let recovered = pending.into_turn(&provider, "openai/gpt-5", false);
+    assert_eq!(recovered.prompt, "fix the build");
+    assert_eq!(recovered.strategy, RecoveryStrategy::ContinueResponse);
+    let calls = vec![ToolCall {
+        id: ToolCallId::new("c2"),
+        name: "shell".to_owned(),
+        arguments: "{\"command\":\"ls\"}".to_owned(),
+    }];
+    assert_eq!(
+        recovered.messages,
+        [
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: calls.clone(),
+                provider_replay: None,
+            },
+            ChatMessage::Tool {
+                call_id: ToolCallId::new("c2"),
+                tool_name: "shell".to_owned(),
+                content: "out".to_owned(),
+                status: ToolResultStatus::Success,
+            },
+            ChatMessage::restored_steering("also tests"),
+        ]
+    );
+    let finished = HistoryTurn {
+        user: "fix the build",
+        steps: vec![HistoryStep {
+            assistant: "",
+            provider_replay: None,
+            tool_calls: &calls,
+            tool_results: vec![StepResult {
+                call_id: "c2",
+                tool_name: "shell",
+                output: "out",
+                output_bytes: 3,
+                status: ToolResultStatus::Success,
+            }],
+        }],
+        steering: Vec::new(),
+        end: TurnEnd::Replied {
+            text: "fixed",
+            provider_replay: None,
+        },
+    };
+    resumed.record_turn(&finished, &provider).unwrap();
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+    assert!(!fixture.path(RECOVERY_ASKED_FILE).exists());
+    drop(resumed);
+    let log = fixture.log();
+    assert_eq!(log.len(), 8, "{log:#?}");
+    assert!(log[6].contains("\"text\":\"fixed\""), "{}", log[6]);
 }
