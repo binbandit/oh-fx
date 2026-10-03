@@ -125,7 +125,14 @@ async fn http_failures_keep_their_catalog_category() {
         (Reply::status(401, "{}"), CatalogFailure::Authentication),
         (Reply::status(403, "{}"), CatalogFailure::Authentication),
         (Reply::status(429, "{}"), CatalogFailure::RateLimited),
-        (Reply::status(503, "{}"), CatalogFailure::GatewayUnavailable),
+        (
+            Reply::status(503, "{}"),
+            CatalogFailure::GatewayUnavailable { retryable: true },
+        ),
+        (
+            Reply::status(501, "{}"),
+            CatalogFailure::GatewayUnavailable { retryable: false },
+        ),
         (Reply::status(404, "{}"), CatalogFailure::HttpStatus),
         (
             Reply::status_with_headers(302, &[("location", "https://example.com/login")], ""),

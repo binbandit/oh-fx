@@ -10,6 +10,9 @@ mod input_question_runtime;
 mod input_selection_runtime;
 mod input_submit_runtime;
 mod leading_whitespace;
+pub(crate) mod model_menu;
+mod model_picker_runtime;
+mod picker_state;
 pub(crate) mod question_prompt;
 mod session_picker_runtime;
 pub(crate) mod skills_menu;
@@ -33,21 +36,25 @@ pub use input_history_runtime::PromptHistory;
 
 use app_permission_runtime::YoloWarning;
 use approval_runtime::ApprovalPrompt;
-use input_completion_runtime::FilePicker;
+use input_completion_runtime::{FilePicker, PickerBand};
 use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
 use leading_whitespace::LeadingWhitespace;
+use model_menu::{CatalogLoad, ModelMenu};
+use picker_state::ModelFlow;
 use question_prompt::QuestionPrompt;
 use session_picker_runtime::SessionPicker;
 use skills_menu::SkillsMenu;
 
-use crate::composer::Composer;
+use crate::composer::{Composer, ComposerStash};
 use crate::footer::input_presentation::ComposerView;
 use crate::footer::input_presentation::{
     DangerStatus, HintState, compose_hint_row, composer_view, danger_status_text, input_row_limit,
 };
+use crate::footer::model_menu_presentation::{MAX_INLINE_ROWS, model_menu_band};
+use crate::footer::picker_presentation::{catalog_menu_hint_row, menu_row_budget};
 use crate::footer::question_ui::question_hint_row;
-use crate::footer::skills_menu_presentation::{skills_menu_band, skills_menu_hint_row};
+use crate::footer::skills_menu_presentation::{MAX_MENU_ROWS, skills_menu_band};
 use crate::host::Clipboard;
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
@@ -171,6 +178,10 @@ pub(crate) struct Shell<'a> {
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
     session_title: Option<String>,
+    model_menu: Option<ModelMenu>,
+    model_flow: ModelFlow,
+    model_draft: Option<ComposerStash>,
+    catalog: CatalogLoad,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
     events: UiEventReceiver,
@@ -339,6 +350,10 @@ impl<'a> Shell<'a> {
             question: None,
             skills_menu: None,
             session_title: None,
+            model_menu: None,
+            model_flow: ModelFlow::default(),
+            model_draft: None,
+            catalog: CatalogLoad::default(),
             yolo_warning,
             picker: None,
             events,
@@ -469,16 +484,8 @@ impl<'a> Shell<'a> {
         self.frame.stale = false;
         self.frame.drawn_activity = self.activity_phase(now_ms);
         let appended = self.transcript.take_new_rows(&self.theme);
-        let skills_menu = match (&self.skills_menu, &self.approval, &self.question) {
-            (Some(menu), None, None) => Some(skills_menu_band(
-                menu,
-                self.skills_menu_budget(),
-                self.cols(),
-                &self.theme,
-            )),
-            _ => None,
-        };
-        let (hint, warning_included) = self.hint_row(skills_menu.is_some());
+        let catalog_menu = self.catalog_menu_band();
+        let (hint, warning_included) = self.hint_row(catalog_menu.as_ref().map(|(_, tab)| *tab));
         let activity = if self.question.is_some() {
             Vec::new()
         } else {
@@ -505,12 +512,23 @@ impl<'a> Shell<'a> {
                         &self.theme,
                     ),
                 });
-        let picker = self.file_picker_band(composer.rows.len().saturating_sub(1), banner_rows);
-        let (menu, hint) = self.footer_menu(
-            composer.rows.len(),
-            skills_menu.unwrap_or(picker.rows),
-            hint,
-        );
+        let input_extra = composer.rows.len().saturating_sub(1);
+        let column = if catalog_menu.is_none() {
+            self.inline_column_band(input_extra, banner_rows)
+        } else {
+            Vec::new()
+        };
+        let picker = if column.is_empty() {
+            self.file_picker_band(input_extra, banner_rows)
+        } else {
+            PickerBand::default()
+        };
+        let menu = match catalog_menu {
+            Some((rows, _)) => rows,
+            None if column.is_empty() => picker.rows,
+            None => column,
+        };
+        let (menu, hint) = self.footer_menu(composer.rows.len(), menu, hint);
         let warning_included = warning_included && hint.is_some();
         let review = composer.review.clone();
         let banner = if review.as_ref().is_some_and(|review| review.screen) {
@@ -558,7 +576,46 @@ impl<'a> Shell<'a> {
         Ok(())
     }
 
-    fn hint_row(&self, skills_menu_open: bool) -> (Row, bool) {
+    fn catalog_menu_band(&self) -> Option<(Vec<Row>, &'static str)> {
+        if self.approval.is_some() || self.question.is_some() {
+            return None;
+        }
+        if let Some(menu) = &self.model_menu {
+            let budget = self.menu_budget(MAX_INLINE_ROWS);
+            let rows = model_menu_band(menu, &self.catalog, budget, self.cols(), &self.theme);
+            return Some((rows, "provider"));
+        }
+        let menu = self.skills_menu.as_ref()?;
+        let budget = self.menu_budget(MAX_MENU_ROWS);
+        Some((
+            skills_menu_band(menu, budget, self.cols(), &self.theme),
+            "source",
+        ))
+    }
+
+    fn inline_column_band(&self, input_extra: usize, banner_rows: usize) -> Vec<Row> {
+        if self.approval.is_some() || self.question.is_some() {
+            return Vec::new();
+        }
+        self.model_column_band(input_extra, banner_rows)
+    }
+
+    fn menu_budget(&self, max_rows: usize) -> usize {
+        let composer_rows = self
+            .composer
+            .visual_layout(self.layout.cols)
+            .summary(None)
+            .total_rows
+            .min(input_row_limit(usize::from(self.layout.content_bottom)));
+        menu_row_budget(
+            usize::from(self.layout.rows),
+            composer_rows.saturating_sub(1),
+            self.banner_rows().len(),
+            max_rows,
+        )
+    }
+
+    fn hint_row(&self, catalog_tab: Option<&str>) -> (Row, bool) {
         let hint_state = HintState {
             ctrl_c_pending: self.gestures.ctrl_c_exit_armed() && self.question.is_none(),
             esc_clear_armed: self.gestures.escape_clear_armed(),
@@ -572,8 +629,9 @@ impl<'a> Shell<'a> {
                 DangerStatus::None
             },
         };
-        if skills_menu_open {
-            let hint = skills_menu_hint_row(&self.theme, self.cols(), hint_state.ctrl_c_pending);
+        if let Some(tab) = catalog_tab {
+            let hint =
+                catalog_menu_hint_row(&self.theme, self.cols(), hint_state.ctrl_c_pending, tab);
             return (hint, false);
         }
         let base_hint = match &self.question {

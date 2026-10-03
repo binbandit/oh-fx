@@ -26,6 +26,7 @@ const BACKUP_KEEP_COUNT: usize = 5;
 const CORRUPT_KEEP_COUNT: usize = 3;
 const RETIRED_SETTINGS: [&str; 2] = ["input_appearance", "maxxing_mode"];
 const FAST_MODE: &str = "fast_mode";
+const EFFORT: &str = "effort";
 const FAST_MODE_MODEL_BOUND: &str = "fast_mode_model_bound";
 const LEGACY_CODEX_MODEL: &str = "codex_model";
 const PERMISSION_MODE: &str = "permission_mode";
@@ -39,6 +40,11 @@ const FAST_MODE_MIGRATION: Migration = Migration {
     field: FAST_MODE,
     binding: Some(FAST_MODE_MODEL_BOUND),
     snapshot: "settings.json.preference-migration.fast_mode.json",
+};
+const EFFORT_MIGRATION: Migration = Migration {
+    field: EFFORT,
+    binding: None,
+    snapshot: "settings.json.preference-migration.effort.json",
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -171,6 +177,7 @@ enum Patch<'a> {
     ModelPreference {
         provider: &'a ProviderId,
         model: &'a str,
+        effort: Option<&'a str>,
         fast_mode: bool,
     },
     PermissionMode(PermissionMode),
@@ -187,7 +194,7 @@ struct Application {
     fields_removed: usize,
     workspaces_changed: usize,
     permission_rules_removed: usize,
-    migration_snapshot: Option<&'static str>,
+    migration_snapshots: Vec<&'static str>,
 }
 
 struct Migration {
@@ -206,6 +213,7 @@ pub fn save_model_preference(
     paths: &ProfilePaths,
     provider: &ProviderId,
     model: &str,
+    effort: Option<&str>,
     fast_mode: bool,
 ) -> Result<(), SettingsWriteFailure> {
     commit(
@@ -213,6 +221,7 @@ pub fn save_model_preference(
         Patch::ModelPreference {
             provider,
             model,
+            effort,
             fast_mode,
         },
         &mut || {},
@@ -278,12 +287,13 @@ fn commit(
             return Err(SettingsWriteError::TooLarge.into());
         }
         validate_candidate(&candidate, patch)?;
-        let recovery_paths = match application.migration_snapshot {
-            Some(snapshot) => {
-                write_migration_snapshot(&directory, paths, existing.as_deref(), snapshot)?
-            }
-            None => Vec::new(),
-        };
+        let recovery_paths = application
+            .migration_snapshots
+            .iter()
+            .map(|snapshot| {
+                write_migration_snapshot(&directory, paths, existing.as_deref(), snapshot)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         before_commit();
         if directory.read_owned(SETTINGS_FILE, MAX_SETTINGS_BYTES)? != existing {
             continue;
@@ -318,13 +328,13 @@ fn write_migration_snapshot(
     paths: &ProfilePaths,
     existing: Option<&[u8]>,
     snapshot: &str,
-) -> Result<Vec<PathBuf>, SettingsWriteError> {
+) -> Result<PathBuf, SettingsWriteError> {
     let bytes = existing.ok_or(SettingsWriteError::InvalidFormat)?;
     directory
         .open_or_create_child(BACKUPS_DIRECTORY)
         .and_then(|backups| backups.replace(snapshot, bytes))
         .map_err(|_| SettingsWriteError::MigrationSnapshotFailed)?;
-    Ok(vec![paths.config.join(BACKUPS_DIRECTORY).join(snapshot)])
+    Ok(paths.config.join(BACKUPS_DIRECTORY).join(snapshot))
 }
 
 fn lock(directory: &PrivateDir) -> Result<AdvisoryLock, SettingsWriteError> {
@@ -441,10 +451,15 @@ fn apply(
         Patch::ModelPreference {
             provider,
             model,
+            effort,
             fast_mode,
         } => {
             application.changed |= put_model(root, provider, model)?;
             application.changed |= put_string(root, "provider", provider.label());
+            if let Some(effort) = effort {
+                application.changed |= put_string(root, EFFORT, effort);
+                migrate_workspace_preference(root, &EFFORT_MIGRATION, &mut application);
+            }
             application.changed |= put_bool(root, FAST_MODE, fast_mode);
             application.changed |= put_bool(root, FAST_MODE_MODEL_BOUND, true);
             migrate_workspace_preference(root, &FAST_MODE_MIGRATION, &mut application);
@@ -622,8 +637,12 @@ fn migrate_workspace_preference(
         application.changed = true;
         application.fields_removed += usize::from(field) + usize::from(binding);
         application.workspaces_changed += 1;
-        if field {
-            application.migration_snapshot = Some(migration.snapshot);
+        if field
+            && !application
+                .migration_snapshots
+                .contains(&migration.snapshot)
+        {
+            application.migration_snapshots.push(migration.snapshot);
         }
         !workspace.is_empty()
     });

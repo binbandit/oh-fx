@@ -6,6 +6,7 @@ mod composer_line_continuation;
 mod composer_replacement;
 mod composer_selection;
 mod composer_skill_binding;
+mod composer_stash;
 mod composer_undo;
 mod edit_history;
 mod editor_state;
@@ -31,6 +32,7 @@ pub(crate) use composer_deletion::DeletionKind;
 pub(crate) use composer_history::HistoryNavigation;
 pub(crate) use composer_kill_ring::KillKind;
 pub(crate) use composer_replacement::EditRange;
+pub(crate) use composer_stash::ComposerStash;
 pub(crate) use editor_state::{InsertResult, SelectionRange};
 pub(crate) use vertical_navigation::VerticalOutcome;
 pub(crate) use visual_layout::{

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ofx_text::{display_unit_at, prefix_by_width, suffix_by_width, visible_width};
 
 use crate::composer::file_completion_state::{FileMatch, MentionKind};
@@ -6,8 +8,11 @@ use crate::row_text::{Paint, Row};
 use crate::theme::Theme;
 
 const FIXED_FOOTER_ROWS: usize = 5;
+const MINIMUM_TRANSCRIPT_ROWS: usize = 5;
 const MINIMUM_SEGMENTED_WIDTH: usize = 8;
 const ELLIPSIS: &str = "\u{2026}";
+const CTRL_C_EXIT_HINT: &str = "press ctrl+c again to exit";
+const ANNOTATION_SEPARATOR: &str = " · ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FilePickerStatus<'a> {
@@ -45,6 +50,142 @@ pub(crate) fn list_picker_rows(
     } else {
         available.min(DEFAULT_MAX_PICKER_ROWS)
     }
+}
+
+pub(crate) fn menu_row_budget(
+    terminal_rows: usize,
+    input_extra: usize,
+    banner_rows: usize,
+    max_rows: usize,
+) -> usize {
+    let available = terminal_rows
+        .saturating_sub(FIXED_FOOTER_ROWS + input_extra + banner_rows)
+        .saturating_sub(MINIMUM_TRANSCRIPT_ROWS);
+    max_rows.min(available.max(1))
+}
+
+pub(crate) fn catalog_menu_hint_row(
+    theme: &Theme,
+    width: usize,
+    ctrl_c_pending: bool,
+    tab: &str,
+) -> Row {
+    if ctrl_c_pending {
+        return Row::styled(CTRL_C_EXIT_HINT, theme.statusline).clipped(width);
+    }
+    let hints = [
+        format!("↑↓ navigate     tab {tab}     enter use     esc close"),
+        format!("↑↓ navigate  tab {tab}  enter use  esc close"),
+        format!("↑↓ move  tab {tab}  enter  esc"),
+        "enter use  esc close".to_owned(),
+        "enter esc".to_owned(),
+    ];
+    let hint = hints
+        .iter()
+        .find(|hint| visible_width(hint) <= width)
+        .unwrap_or(&hints[hints.len() - 1]);
+    Row::styled(hint, theme.dim).clipped(width)
+}
+
+pub(crate) fn single_line_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
+    ellipsized(text, width, false)
+}
+
+pub(crate) fn middle_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
+    ellipsized(text, width, true)
+}
+
+fn ellipsized(text: &str, width: usize, middle: bool) -> Cow<'_, str> {
+    let text = if text.contains(['\n', '\r']) {
+        Cow::Owned(text.replace(['\n', '\r'], " "))
+    } else {
+        Cow::Borrowed(text)
+    };
+    if visible_width(&text) <= width {
+        return text;
+    }
+    match width {
+        0 => Cow::Borrowed(""),
+        1 => Cow::Borrowed(ELLIPSIS),
+        _ if middle => {
+            let content = width - 1;
+            let prefix = prefix_by_width(&text, content.div_ceil(2));
+            let suffix = display_safe_suffix(&text, content / 2);
+            Cow::Owned(format!("{prefix}{ELLIPSIS}{suffix}"))
+        }
+        _ => Cow::Owned(format!("{}{ELLIPSIS}", prefix_by_width(&text, width - 1))),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OptionList<'a> {
+    pub(crate) labels: &'a [String],
+    pub(crate) annotations: &'a [&'a str],
+    pub(crate) cursor: (usize, usize),
+    pub(crate) empty: &'a str,
+    pub(crate) start_col: usize,
+    pub(crate) cols: usize,
+    pub(crate) rows: usize,
+}
+
+pub(crate) fn option_picker_band(theme: &Theme, list: &OptionList<'_>) -> Vec<Row> {
+    let mut band = vec![picker_divider(theme, list.cols)];
+    if list.labels.is_empty() {
+        band.push(picker_status_row(
+            theme,
+            list.start_col,
+            list.empty,
+            list.cols,
+        ));
+    } else {
+        let count = list.labels.len();
+        let selected = list.cursor.0 % count;
+        let start = update_edge_start(list.cursor.1, count, selected, list.rows);
+        for index in edge_from_start(count, start, list.rows) {
+            let annotation = list.annotations.get(index).copied().unwrap_or_default();
+            band.push(option_row(
+                theme,
+                list,
+                index,
+                annotation,
+                index == selected,
+            ));
+        }
+    }
+    band.resize_with(list.rows.max(1) + 1, Row::new);
+    band.push(picker_divider(theme, list.cols));
+    band
+}
+
+fn option_row(
+    theme: &Theme,
+    list: &OptionList<'_>,
+    index: usize,
+    annotation: &str,
+    selected: bool,
+) -> Row {
+    let Some((mut row, width)) = picker_row_at(list.start_col, list.cols) else {
+        return Row::new();
+    };
+    let label = &list.labels[index];
+    let annotation_width = if annotation.is_empty() {
+        0
+    } else {
+        visible_width(ANNOTATION_SEPARATOR) + visible_width(annotation)
+    };
+    let show_annotation = annotation_width > 0 && width >= visible_width(label) + annotation_width;
+    let label_width = width - if show_annotation { annotation_width } else { 0 };
+    let paint = if selected {
+        theme.selected_completion
+    } else {
+        theme.dim
+    };
+    row.push(prefix_by_width(label, label_width), paint);
+    if show_annotation {
+        row.push(ANNOTATION_SEPARATOR, theme.dim);
+        row.push(annotation, theme.dim);
+    }
+    row
 }
 
 pub(crate) fn file_picker_band(theme: &Theme, frame: &FilePickerFrame<'_>) -> Vec<Row> {
@@ -252,7 +393,7 @@ impl FileLabel<'_> {
     }
 }
 
-fn display_safe_suffix(source: &str, width: usize) -> &str {
+pub(crate) fn display_safe_suffix(source: &str, width: usize) -> &str {
     let suffix = suffix_by_width(source, width);
     if suffix.is_empty() || suffix.len() == source.len() {
         return suffix;

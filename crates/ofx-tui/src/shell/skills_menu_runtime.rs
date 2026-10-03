@@ -3,12 +3,14 @@ use ofx_contract::{SkillMenuFocus, SkillMenuItem};
 use super::Shell;
 use super::skills_menu::SkillsMenu;
 use crate::composer::InsertResult;
-use crate::footer::input_presentation::input_row_limit;
-use crate::footer::skills_menu_presentation::{menu_row_budget, visible_item_rows};
+use crate::footer::skills_menu_presentation::{MAX_MENU_ROWS, visible_item_rows};
 use crate::input::COMPOSER_INPUT_LIMIT_BYTES;
 
 impl Shell<'_> {
     pub(super) fn open_skills_menu(&mut self, items: Vec<SkillMenuItem>, focus: &SkillMenuFocus) {
+        if self.model_menu.is_some() || self.model_draft.is_some() || self.picker.is_some() {
+            return;
+        }
         let Some(menu) = SkillsMenu::open(items, focus) else {
             return;
         };
@@ -24,22 +26,8 @@ impl Shell<'_> {
         self.invalidate();
     }
 
-    pub(super) fn skills_menu_budget(&self) -> usize {
-        let composer_rows = self
-            .composer
-            .visual_layout(self.layout.cols)
-            .summary(None)
-            .total_rows
-            .min(input_row_limit(usize::from(self.layout.content_bottom)));
-        menu_row_budget(
-            usize::from(self.layout.rows),
-            composer_rows.saturating_sub(1),
-            self.banner_rows().len(),
-        )
-    }
-
     pub(super) fn move_skills_menu(&mut self, delta: isize) -> bool {
-        let budget = self.skills_menu_budget();
+        let budget = self.menu_budget(MAX_MENU_ROWS);
         let Some(menu) = &mut self.skills_menu else {
             return false;
         };
@@ -49,7 +37,7 @@ impl Shell<'_> {
     }
 
     pub(super) fn cycle_skills_menu_source(&mut self, delta: isize) -> bool {
-        let budget = self.skills_menu_budget();
+        let budget = self.menu_budget(MAX_MENU_ROWS);
         let Some(menu) = &mut self.skills_menu else {
             return false;
         };
@@ -92,7 +80,7 @@ impl Shell<'_> {
         if self.skills_menu.is_none() {
             return;
         }
-        let budget = self.skills_menu_budget();
+        let budget = self.menu_budget(MAX_MENU_ROWS);
         let query = self.composer.text().to_owned();
         if let Some(menu) = &mut self.skills_menu {
             let rows = visible_item_rows(menu, budget);

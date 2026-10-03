@@ -153,7 +153,7 @@ fn failure_message(failure: CatalogFailure) -> String {
         CatalogFailure::Cancellation => "the request was cancelled",
         CatalogFailure::MalformedResponse => "MalformedResponse",
         CatalogFailure::RateLimited
-        | CatalogFailure::GatewayUnavailable
+        | CatalogFailure::GatewayUnavailable { .. }
         | CatalogFailure::Transport
         | CatalogFailure::HttpStatus => "Unavailable",
     };

@@ -1045,7 +1045,9 @@ fn only_the_first_save_of_a_fresh_session_names_it() {
 
     let fixture = Fixture::new();
     let mut session = fixture.start();
-    session.select_model("openai/gpt-5-mini", false).unwrap();
+    session
+        .select_model("openai/gpt-5-mini", None, false)
+        .unwrap();
     session
         .record_turn(&simple_turn("after a model choice", "ok"), &gateway())
         .unwrap();

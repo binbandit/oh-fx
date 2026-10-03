@@ -620,8 +620,9 @@ fn slash_commands_switch_models_show_help_and_exit() {
     let home = Home::with_settings(&settings(&server.base_url()));
     let mut session = home.shell(30, 100);
     session.send(b"/model\r");
-    wait(&session, "* model: model-a");
-    wait(&session, "available: model-a, vendor/model-b");
+    wait(&session, "Models 2  [All]");
+    session.send(b"\x1b[27u");
+    wait(&session, "auto · model-a");
     session.send(b"/model model-b\r");
     wait(&session, "* Switched to vendor/model-b");
     wait(&session, "auto · model-b");
@@ -680,6 +681,39 @@ fn slash_commands_switch_models_show_help_and_exit() {
     assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
     session.send(b"/exit\r");
     assert!(session.wait_exit(WAIT).expect("oh-fx exits").success());
+}
+
+#[test]
+fn the_model_picker_chooses_the_model_for_the_next_turn_and_saves_it() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Picked reply."]))]);
+    let mut settings = settings(&server.base_url());
+    settings["providers"]["local"]["model_metadata"] =
+        json!({"vendor/model-b": {"context_window": 128_000, "max_output_tokens": 16_000}});
+    let home = Home::with_settings(&settings);
+    let session = home.shell(30, 100);
+    session.send(b"keep this");
+    wait(&session, "keep this");
+    session.send(b"\x10");
+    let screen = wait(&session, "Models 2  [All]");
+    assert!(
+        screen.contains("↑↓ navigate     tab provider     enter use     esc close"),
+        "{screen}"
+    );
+    assert!(!screen.contains("keep this"), "{screen}");
+    wait(&session, "vendor/model-b  128K context · 16K output");
+    wait(&session, "Models from profile settings");
+    session.send(b"b");
+    wait(&session, "Models 1  [All]");
+    session.send(b"\r");
+    wait(&session, "* Switched to vendor/model-b");
+    let screen = wait(&session, "auto · model-b");
+    assert!(!screen.contains("Models 1"), "{screen}");
+    assert!(screen.contains("┃ keep this"), "{screen}");
+    wait_saved(&home, "models", &json!({"local": "vendor/model-b"}));
+    assert_eq!(saved_settings(&home)["fast_mode"], false);
+    session.send(b"\x15go\r");
+    wait(&session, "Picked reply.");
+    assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
 }
 
 #[test]
