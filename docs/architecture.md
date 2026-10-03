@@ -257,6 +257,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - A summary request is retried as the turn loop retries a model request that has streamed nothing, at most 10 attempts on the same backoff, and shows no retry notice. Upstream leaves those retries to its provider transport; oh-fx's transports do not retry, so the agent does.
 - Compaction writes no trace lines and keeps no trace ring for `/trace`, since oh-fx has no trace log yet.
 - Compaction reads tool call arguments with serde_json, where upstream uses `std.json`. Arguments that repeat a key are read with the key's last value, where upstream treats them as plain text, and arguments with a number beyond a 64-bit float's range are treated as plain text, where upstream reads them. This changes only the one-line index of a call's argument values in the notes request and the skills and MCP features the checkpoint lists as used.
+- Adding or removing a profile MCP server fails with `StreamTooLong` and leaves `mcp.json` untouched when the canonical file it would write exceeds 1 MiB, the limit a profile is read with. Upstream writes the larger file, which its next read then refuses with the same error.
 
 ## Parity tracking
 

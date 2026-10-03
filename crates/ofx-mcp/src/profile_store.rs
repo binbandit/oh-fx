@@ -296,6 +296,9 @@ impl<'a> ProfileFile<'a> {
 
     fn save(&self, configs: &[McpServerConfig]) -> Result<(), ProfileStoreError> {
         let json = render_profile_config(configs)?;
+        if json.len() as u64 > MAX_PROFILE_CONFIG_BYTES {
+            return Err(ProfileStoreError::StreamTooLong);
+        }
         Ok(self.directory.replace(self.name, json.as_bytes())?)
     }
 }
@@ -513,6 +516,27 @@ mod tests {
             load_profile_document(&path),
             Err(ProfileStoreError::StreamTooLong)
         ));
+    }
+
+    #[test]
+    fn a_save_whose_canonical_form_exceeds_the_cap_leaves_the_profile_intact() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = profile_path(temp.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let shell = r#"{"mcp":{"big":{"type":"local","command":["node",""]}}}"#;
+        let filler = "a".repeat(1024 * 1024 - 64 - shell.len());
+        let original =
+            format!(r#"{{"mcp":{{"big":{{"type":"local","command":["node","{filler}"]}}}}}}"#);
+        assert!(original.len() as u64 <= MAX_PROFILE_CONFIG_BYTES);
+        fs::write(&path, &original).unwrap();
+        assert_eq!(load_profile_document(&path).unwrap().configs.len(), 1);
+        assert!(matches!(
+            add_profile_server(&path, local("tiny", "x", &[])),
+            Err(ProfileStoreError::StreamTooLong)
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(load_profile_document(&path).unwrap().configs.len(), 1);
+        assert!(remove_profile_server(&path, "big").unwrap().removed);
     }
 
     #[test]
