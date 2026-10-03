@@ -15,12 +15,14 @@ pub(crate) struct Statusline {
     context_total: Option<u32>,
     identity_source: Option<Box<dyn WorkspaceIdentitySource>>,
     identity: WorkspaceIdentity,
+    session_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StatuslineView<'a> {
     pub(crate) context_used: u64,
     pub(crate) context_total: Option<u32>,
+    pub(crate) session_title: Option<&'a str>,
     pub(crate) identity: Option<&'a WorkspaceIdentity>,
 }
 
@@ -35,7 +37,12 @@ impl Statusline {
             context_total: None,
             identity_source,
             identity: WorkspaceIdentity::default(),
+            session_title: None,
         }
+    }
+
+    pub(crate) fn session_title_changed(&mut self, title: Option<&str>) {
+        self.session_title = title.map(str::to_owned);
     }
 
     pub(crate) fn set(&mut self, item: StatuslineItem, enabled: bool) {
@@ -75,6 +82,10 @@ impl Statusline {
         StatuslineView {
             context_used: if context { self.context_used } else { 0 },
             context_total: self.context_total.filter(|_| context),
+            session_title: self
+                .session_title
+                .as_deref()
+                .filter(|_| self.toggles.enabled(StatuslineItem::Session)),
             identity: (self.toggles.enabled(StatuslineItem::Workspace)
                 && self.identity_source.is_some())
             .then_some(&self.identity),

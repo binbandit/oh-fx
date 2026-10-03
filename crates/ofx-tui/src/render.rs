@@ -1,5 +1,5 @@
 use ofx_contract::{PermissionMode, WorkspaceIdentity};
-use ofx_text::visible_width;
+use ofx_text::{prefix_by_width, visible_width};
 
 use crate::footer::statusline::{
     MAX_STATUS_LINE_BYTES, StatuslineView, context_segment, workspace_identity_segment,
@@ -8,6 +8,7 @@ use crate::row_text::{Row, terminal_safe};
 use crate::theme::Theme;
 
 const STATUSLINE_SEPARATOR: &str = " · ";
+const MAX_SESSION_TITLE_CELLS: usize = 32;
 
 pub(crate) fn welcome_rows(theme: &Theme, version: &str, cols: usize) -> Vec<Row> {
     let mut row = Row::styled("oh-fx", theme.subtitle);
@@ -60,6 +61,9 @@ pub(crate) fn hint_line(
         row.push(STATUSLINE_SEPARATOR, theme.statusline);
     }
     row.push(&model_label, theme.statusline);
+    if let Some(title) = statusline.session_title {
+        push_segment(&mut row, theme, &session_title_segment(title));
+    }
     if let Some(context) = context_segment(statusline.context_used, statusline.context_total) {
         push_segment(&mut row, theme, &context);
     }
@@ -67,6 +71,14 @@ pub(crate) fn hint_line(
         push_workspace_identity(&mut row, theme, identity, status_limit);
     }
     row.clipped(width)
+}
+
+fn session_title_segment(title: &str) -> String {
+    let visible: String = title
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    prefix_by_width(&visible, MAX_SESSION_TITLE_CELLS).to_owned()
 }
 
 fn push_segment(row: &mut Row, theme: &Theme, segment: &str) {
@@ -152,6 +164,7 @@ mod tests {
         let full = StatuslineView {
             context_used: 43_000,
             context_total: Some(1_000_000),
+            session_title: None,
             identity: None,
         };
         assert_eq!(
@@ -177,11 +190,58 @@ mod tests {
         let empty_window = StatuslineView {
             context_used: 1_500,
             context_total: Some(0),
+            session_title: None,
             identity: None,
         };
         assert_eq!(
             line("openai/gpt-5", PermissionMode::Ask, empty_window, 80),
             "ask · gpt-5 · 1k/0k 0%"
+        );
+    }
+
+    #[test]
+    fn the_hint_line_shows_the_session_title_after_the_model() {
+        let branch = identity("/tmp/fx", Some("main"));
+        let titled = StatuslineView {
+            context_used: 12_000,
+            session_title: Some("Fix the renderer"),
+            ..workspace(&branch)
+        };
+        assert_eq!(
+            line("openai/gpt-5", PermissionMode::Ask, titled, 100),
+            "ask · gpt-5 · Fix the renderer · 12k · /tmp/fx (main)"
+        );
+        let long = StatuslineView {
+            session_title: Some("Investigate the flaky renderer resize test on macOS"),
+            ..StatuslineView::default()
+        };
+        assert_eq!(
+            line("openai/gpt-5", PermissionMode::Ask, long, 100),
+            "ask · gpt-5 · Investigate the flaky renderer r"
+        );
+        let wide = StatuslineView {
+            session_title: Some("界面渲染错误修复与终端尺寸变化测试稳定"),
+            ..StatuslineView::default()
+        };
+        assert_eq!(
+            line("openai/gpt-5", PermissionMode::Ask, wide, 100),
+            "ask · gpt-5 · 界面渲染错误修复与终端尺寸变化测"
+        );
+        let controls = StatuslineView {
+            session_title: Some("Fix\u{9b}31m it"),
+            ..StatuslineView::default()
+        };
+        assert_eq!(
+            line("openai/gpt-5", PermissionMode::Ask, controls, 100),
+            "ask · gpt-5 · Fix31m it"
+        );
+        let empty = StatuslineView {
+            session_title: Some(""),
+            ..StatuslineView::default()
+        };
+        assert_eq!(
+            line("openai/gpt-5", PermissionMode::Ask, empty, 100),
+            "ask · gpt-5"
         );
     }
 
@@ -245,6 +305,7 @@ mod tests {
         let statusline = StatuslineView {
             context_used: 1_000,
             context_total: Some(100_000),
+            session_title: None,
             identity: Some(&long),
         };
         let text = line(
