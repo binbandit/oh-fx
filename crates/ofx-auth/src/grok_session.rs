@@ -36,7 +36,6 @@ impl SessionPolicy for GrokPolicy {
     }
 }
 pub(crate) type SessionStore = subscription_session::SessionStore<GrokPolicy>;
-pub(crate) type Mutation = subscription_session::Mutation<GrokPolicy>;
 #[cfg(test)]
 fn parse(bytes: &[u8]) -> Result<Session, GrokError> {
     subscription_session::parse(bytes).map_err(GrokPolicy::error)

@@ -125,15 +125,6 @@ impl<P: SessionPolicy> SessionStore<P> {
         }
     }
 
-    pub(crate) fn load(&self) -> Result<Option<Session>, P::Error> {
-        let Some(directory) =
-            PrivateDir::open_existing(&self.directory).map_err(storage_error::<P>)?
-        else {
-            return Ok(None);
-        };
-        load_from_dir::<P>(&directory)
-    }
-
     pub(crate) fn presence(&self) -> Presence {
         session_presence::profile_file(&self.directory, P::AUTH_FILE_NAME, MAX_AUTH_FILE_BYTES)
     }
@@ -309,12 +300,15 @@ mod tests {
             .save_new_session(&session)
             .await
             .expect("existing ChatGPT writer permits account until load");
-        assert_eq!(chatgpt.load(), Err(ChatGptError::InvalidChatGptAuthSession));
+        assert_eq!(
+            chatgpt.begin_mutation().await.unwrap().load(),
+            Err(ChatGptError::InvalidChatGptAuthSession)
+        );
         let grok = SessionStore::<GrokPolicy>::new(root.path().join("grok"));
         assert_eq!(
             grok.save_new_session(&session).await,
             Err(GrokError::InvalidGrokAuthSession)
         );
-        assert_eq!(grok.load(), Ok(None));
+        assert_eq!(grok.begin_mutation().await.unwrap().load(), Ok(None));
     }
 }

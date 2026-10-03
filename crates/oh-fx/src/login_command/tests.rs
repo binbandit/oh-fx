@@ -139,13 +139,143 @@ async fn a_failed_sign_in_reports_the_login_failure_before_activation() {
 }
 
 #[tokio::test]
-async fn grok_sign_in_reaches_authenticated_userinfo_and_catalog_before_selection() {
-    use crate::provider_activation::tests::grok_catalog;
+async fn grok_sign_in_stores_authenticated_session_without_activation() {
+    grok_signed_in_fixture(Fixture::new()).await;
+}
+
+#[tokio::test]
+async fn grok_sign_in_keeps_the_next_request_provider_usable() {
     let fixture = Fixture::new();
+    fixture.write_settings(
+        r#"{"provider":"local","models":{"local":"existing-model"},"providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:9/v1","auth":{"type":"none"},"models":["existing-model"]}}}"#,
+    );
+    let before = ofx_config::Settings::load(&fixture.paths, &fixture.workspace).unwrap();
+    let previous = before.selected_connection(&|_| None).unwrap();
+    assert_eq!(previous.id(), "local");
+    assert_eq!(
+        before.selected_model(previous, None, &|_| None),
+        Ok("existing-model".to_owned())
+    );
+    let fixture = grok_signed_in_fixture(fixture).await;
+    let after = ofx_config::Settings::load(&fixture.paths, &fixture.workspace).unwrap();
+    assert!(
+        after.selected_connection(&|_| None).is_ok(),
+        "successful login left the next request without a usable provider: {:?}",
+        after.selected_connection(&|_| None)
+    );
+}
+
+#[tokio::test]
+async fn grok_sign_in_preserves_codex_settings_bytes_and_next_request_resolution() {
+    if env::var_os("OH_FX_STAGED_LOGIN_REQUEST").is_some() {
+        saved_codex_request().await;
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture.signed_in();
+    let saved = b"{\n  \"theme\": \"dark\",\n  \"provider\": \"codex\",\n  \"models\": {\"codex\": \"gpt-6.1-sol\", \"grok\": \"saved-grok\"},\n  \"fast_mode\": true\n}\n";
+    fixture.write_settings(std::str::from_utf8(saved).unwrap());
+    let previous_session = fs::read(fixture.credential_file()).unwrap();
+    let fixture = grok_signed_in_fixture(fixture).await;
+    assert_eq!(fs::read(fixture.settings_file()).unwrap(), saved);
+    assert_eq!(
+        fs::read(fixture.credential_file()).unwrap(),
+        previous_session
+    );
+    let after = ofx_config::Settings::load(&fixture.paths, &fixture.workspace).unwrap();
+    assert_eq!(after.codex_selected(&|_| None), Ok(true));
+    assert_eq!(
+        after.selected_codex_model(None, &|_| None),
+        Ok("gpt-6.1-sol".to_owned())
+    );
+    let output = std::process::Command::new(env::current_exe().unwrap())
+        .args(["--exact", "login_command::tests::grok_sign_in_preserves_codex_settings_bytes_and_next_request_resolution", "--nocapture"])
+        .env_clear()
+        .env("OH_FX_STAGED_LOGIN_REQUEST", "1")
+        .env("HOME", fixture.paths.config.parent().unwrap())
+        .env("XDG_CONFIG_HOME", fixture.paths.config.parent().unwrap())
+        .env("XDG_DATA_HOME", fixture.paths.data.parent().unwrap())
+        .env("XDG_STATE_HOME", fixture.paths.state.parent().unwrap())
+        .env("XDG_CACHE_HOME", fixture.paths.cache.parent().unwrap())
+        .current_dir(&fixture.workspace)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn saved_codex_request() {
+    use ofx_contract::{PermissionMode, TurnOutcome};
+    use ofx_exec::{ManagedExecutions, SessionSupervisor};
+    use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
+    use tokio_util::sync::CancellationToken;
+    let auth = FakeServer::start([]);
+    let models = FakeServer::start([release(), catalog(&["gpt-6.1-sol"])]);
+    let events = [
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg","phase":"final_answer"}}).to_string(),
+        json!({"type":"response.output_text.delta","output_index":0,"delta":"Codex still works."}).to_string(),
+        json!({"type":"response.completed","response":{"id":"resp","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}).to_string(),
+    ];
+    let responses = FakeServer::start([Reply::sse(&events)]);
+    let profile = ofx_app::Profile::load().unwrap();
+    let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+    let cancel = CancellationToken::new();
+    let setup = profile
+        .connect(
+            ofx_app::Launch {
+                model: None,
+                permission_mode: PermissionMode::Auto,
+                system_prompt: None,
+                reasoning_effort: None,
+                fast_mode: None,
+                context_limits: &[],
+                command_timeout: None,
+                executions: &executions,
+                web_fetch_progress: None,
+                endpoints: ofx_app::SubscriptionEndpoints {
+                    chatgpt: ofx_auth::ChatGptEndpoints {
+                        issuer: auth.base_url(),
+                        token_url: format!("{}/oauth/token", auth.base_url()),
+                        callback_ports: vec![0],
+                    },
+                    codex: CodexEndpoints {
+                        responses: format!("{}/backend-api/codex/responses", responses.base_url()),
+                    },
+                    models: CodexModelsEndpoints {
+                        models: format!("{}/backend-api/codex/models", models.base_url()),
+                        client_version: format!("{}/@openai/codex/latest", models.base_url()),
+                    },
+                },
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(setup.provider(), ProviderId::Codex);
+    assert_eq!(setup.model(), "gpt-6.1-sol");
+    let result = setup.agent().run_turn("Hello", &mut |_| {}, &cancel).await;
+    assert_eq!(result.outcome, TurnOutcome::Completed);
+    assert_eq!(result.final_text, "Codex still works.");
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/v1/backend-api/codex/responses");
+    assert_eq!(requests[0].header("chatgpt-account-id"), Some("acct_test"));
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {ACCESS_TOKEN}").as_str())
+    );
+    assert!(auth.requests().is_empty());
+}
+
+async fn grok_signed_in_fixture(fixture: Fixture) -> Fixture {
     let auth=FakeServer::start([Reply::status(200,json!({"access_token":"grok-login-secret","refresh_token":"grok-refresh-secret","expires_in":3600}).to_string()),Reply::status(200,r#"{"sub":"grok-account"}"#)]);
     let catalog_server = FakeServer::start([
         Reply::status(200, "1.0.13\n"),
-        grok_catalog(&["grok-current"]),
+        Reply::status(503, "unavailable"),
         Reply::status(503, ""),
     ]);
     let profile = fixture.grok_profile(&auth, &catalog_server);
@@ -190,9 +320,12 @@ async fn grok_sign_in_reaches_authenticated_userinfo_and_catalog_before_selectio
     browser.await.unwrap();
     assert_eq!(result, Ok(()));
     assert!(fixture.grok_credential_file().is_file());
-    let settings: serde_json::Value = serde_json::from_str(&fixture.settings().unwrap()).unwrap();
-    assert_eq!(settings["provider"], "grok");
-    assert_eq!(settings["models"]["grok"], "grok-current");
+    let session: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.grok_credential_file()).unwrap()).unwrap();
+    assert_eq!(session["account_id"], "grok-account");
+    assert_eq!(session["access_token"], "grok-login-secret");
+    assert_eq!(session["refresh_token"], "grok-refresh-secret");
+    assert!(catalog_server.requests().is_empty());
     let requests = auth.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].path, "/v1/oauth/token");
@@ -209,6 +342,7 @@ async fn grok_sign_in_reaches_authenticated_userinfo_and_catalog_before_selectio
         requests[1].header("authorization"),
         Some("Bearer grok-login-secret")
     );
+    fixture
 }
 
 #[tokio::test]
@@ -303,7 +437,11 @@ async fn grok_logout_reports_durable_storage_and_output_failures() {
 fn browser_sign_in_owns_input_when_invoked_from_a_push_hook() {
     use std::process::{Command, Stdio};
     let mut child = Command::new(env::current_exe().unwrap())
-        .args(["--exact", "login_command::tests::grok_sign_in_reaches_authenticated_userinfo_and_catalog_before_selection", "--nocapture"])
+        .args([
+            "--exact",
+            "login_command::tests::grok_sign_in_stores_authenticated_session_without_activation",
+            "--nocapture",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -3,7 +3,6 @@ mod chat_completions;
 mod chat_completions_protocol;
 mod client;
 mod gateway_error_format;
-mod grok_models;
 mod model_catalog;
 mod openai_codex;
 mod openai_codex_models;
@@ -15,7 +14,6 @@ mod secret_mask;
 mod tool_call_ids;
 
 pub use chat_completions::ChatCompletionsProvider;
-pub use grok_models::{GrokModel, GrokModelCatalog, GrokModelsEndpoints};
 pub use model_catalog::CatalogFailure;
 pub use openai_codex::{
     CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh,

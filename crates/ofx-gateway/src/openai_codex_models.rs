@@ -59,12 +59,6 @@ impl CatalogCredential {
             account_id,
         }
     }
-    pub(crate) fn token(&self) -> &str {
-        &self.token
-    }
-    pub(crate) fn account_id(&self) -> &str {
-        &self.account_id
-    }
 }
 
 impl fmt::Debug for CatalogCredential {

@@ -320,21 +320,3 @@ async fn sign_in_admission_checks_the_lock_file_and_profile_write_permissions() 
         GrokError::CredentialStorageUnavailable
     );
 }
-
-#[tokio::test]
-async fn stored_load_never_takes_the_mutation_lock_or_changes_permissions() {
-    let root = tempfile::tempdir().unwrap();
-    let store = store(&root);
-    assert_eq!(store.load(), Ok(None));
-    store.save_new_session(&session()).await.unwrap();
-    let path = root.path().join("oh-fx");
-    let holder = PrivateDir::open_or_create(&path).unwrap();
-    let held = holder.try_lock(MUTATION_LOCK_FILE_NAME).unwrap().unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o500)).unwrap();
-    let loaded = store.load();
-    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-    assert_eq!(loaded, Ok(Some(session())));
-    assert_eq!(mode, 0o500);
-    drop(held);
-}

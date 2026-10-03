@@ -17,7 +17,7 @@ mod url_opener;
 
 pub use auth_runtime::{
     PreparationError, grok_login_failure_detail, login_failure_detail, prepare_chatgpt_credential,
-    prepare_grok_credential, refresh_chatgpt_credential,
+    refresh_chatgpt_credential,
 };
 pub use chatgpt_oauth::{
     CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth, RefreshMode,
