@@ -14,6 +14,7 @@ use rustix::termios::{
 
 use super::app_lifecycle;
 use super::cursor_probe::{CursorPosition, find_position_response, find_position_span};
+use super::recording::TerminalRecorder;
 use super::theme_detection::{THEME_ENV, ThemeDetection, detect_theme_with};
 use super::theme_protocol::{
     TerminalBackground, find_osc11_reply, parse_osc11_response, truecolor_supported_for_values,
@@ -104,6 +105,7 @@ pub(crate) struct Terminal {
     write_abort: Option<OwnedFd>,
     restore_wait: Duration,
     typeahead: Vec<u8>,
+    recorder: Option<Box<dyn TerminalRecorder>>,
 }
 
 impl Terminal {
@@ -140,7 +142,30 @@ impl Terminal {
             write_abort: None,
             restore_wait: ABNORMAL_RESTORE_WAIT,
             typeahead: Vec::new(),
+            recorder: None,
         })
+    }
+
+    pub(crate) fn record_with(&mut self, recorder: Box<dyn TerminalRecorder>) {
+        self.recorder = Some(recorder);
+    }
+
+    pub(crate) fn stop_recording(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            recorder.stop();
+        }
+    }
+
+    pub(crate) fn record_input(&self, bytes: &[u8]) {
+        if let Some(recorder) = &self.recorder {
+            recorder.stdin(bytes);
+        }
+    }
+
+    pub(crate) fn record_resize(&self, layout: Layout) {
+        if let Some(recorder) = &self.recorder {
+            recorder.resize(layout.cols, layout.rows);
+        }
     }
 
     pub(crate) fn input_fd(&self) -> BorrowedFd<'_> {
@@ -283,7 +308,13 @@ impl Terminal {
 
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
         let abort = self.write_abort.as_ref().map(AsFd::as_fd);
-        write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
+        let (accepted, written) = write_fully(self.output.as_fd(), bytes, abort, None);
+        if let Some(recorder) = &self.recorder
+            && accepted > 0
+        {
+            recorder.stdout(&bytes[..accepted]);
+        }
+        written.map_err(TerminalError::from)
     }
 
     fn write_abnormal_restore(&self) {
@@ -292,7 +323,7 @@ impl Terminal {
         let _ = app_lifecycle::abnormal_exit_restore_sequences(self.capabilities.tmux)
             .try_for_each(|sequence| {
                 wait_until_writable(output, None, deadline)?;
-                write_fully(output, sequence.as_bytes(), None, deadline)
+                write_fully(output, sequence.as_bytes(), None, deadline).1
             });
     }
 
@@ -388,20 +419,25 @@ fn controls_this_session(terminal: BorrowedFd<'_>) -> bool {
 
 fn write_fully(
     fd: BorrowedFd<'_>,
-    mut bytes: &[u8],
+    bytes: &[u8],
     abort: Option<BorrowedFd<'_>>,
     deadline: Option<Instant>,
-) -> std::io::Result<()> {
-    while !bytes.is_empty() {
-        match rustix::io::write(fd, bytes) {
-            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-            Ok(written) => bytes = &bytes[written..],
+) -> (usize, std::io::Result<()>) {
+    let mut accepted = 0;
+    while accepted < bytes.len() {
+        match rustix::io::write(fd, &bytes[accepted..]) {
+            Ok(0) => return (accepted, Err(std::io::ErrorKind::WriteZero.into())),
+            Ok(written) => accepted += written,
             Err(Errno::INTR) => {}
-            Err(Errno::AGAIN) => wait_until_writable(fd, abort, deadline)?,
-            Err(errno) => return Err(errno.into()),
+            Err(Errno::AGAIN) => {
+                if let Err(error) = wait_until_writable(fd, abort, deadline) {
+                    return (accepted, Err(error));
+                }
+            }
+            Err(errno) => return (accepted, Err(errno.into())),
         }
     }
-    Ok(())
+    (accepted, Ok(()))
 }
 
 fn wait_until_writable(

@@ -309,6 +309,7 @@ fn run_a_worker_that_panics() -> ! {
         prompt_history: PromptHistory::disabled(),
         file_mentions: None,
         opening: Opening::Welcome,
+        recording: None,
     };
     let outcome = host(options, events, receiver, None, |events, mut commands| {
         let _ = commands.blocking_recv();
@@ -384,6 +385,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         prompt_history: PromptHistory::disabled(),
         file_mentions: None,
         opening: Opening::Welcome,
+        recording: None,
     };
     let stopped = directory.join("stopped");
     let outcome = host(options, events, receiver, None, move |_, mut commands| {

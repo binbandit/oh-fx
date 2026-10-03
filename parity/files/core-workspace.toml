@@ -90,9 +90,9 @@ note = "Session read snapshots with content hash and separate model/snapshot ful
 
 [[file]]
 upstream = "src/core/workspace/record_tape.zig"
-status = "partial"
-modules = ["crates/ofx-workspace/src/record_tape.rs"]
-note = "The tape format, parser, recorder, startup policy, and automatic tape path are ported; the interactive shell does not record tapes yet, and sigint and marker frames have no writer because nothing records them."
+status = "ported"
+modules = ["crates/ofx-workspace/src/record_tape.rs", "crates/ofx-app/src/app_recording.rs", "crates/ofx-tui/src/terminal/recording.rs"]
+note = "Marker frames have no writer, because oh-fx has no UI observer to place them, and sigint frames have none, as upstream never records one."
 
 [[file]]
 upstream = "src/core/workspace/render_metrics.zig"

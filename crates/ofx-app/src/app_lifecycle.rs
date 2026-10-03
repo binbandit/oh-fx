@@ -22,6 +22,7 @@ use crate::app_agent_runtime::Controller;
 use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_panic_runtime::PanicCapture;
+use crate::app_recording;
 use crate::app_session_runtime::{
     LaunchOverrides, Persistence, configured_preferences, open_store, running_provider,
 };
@@ -261,6 +262,10 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.cache_dir(),
         ))),
         opening: session.opening,
+        recording: Some(app_recording::start_recording(
+            session.profile.paths().map(|paths| paths.state.clone()),
+            sender.clone(),
+        )),
     };
     let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();

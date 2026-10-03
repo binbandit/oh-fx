@@ -258,6 +258,7 @@ fn options() -> ShellOptions {
         prompt_history: PromptHistory::enabled(Vec::new(), |_| Ok(())),
         file_mentions: None,
         opening: Opening::Welcome,
+        recording: None,
     }
 }
 

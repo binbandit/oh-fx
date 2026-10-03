@@ -4,6 +4,7 @@ mod app_commands;
 mod app_lifecycle;
 mod app_panic_runtime;
 mod app_permission_runtime;
+mod app_recording;
 mod app_session_runtime;
 mod app_upgrade_runtime;
 mod codex_provider;

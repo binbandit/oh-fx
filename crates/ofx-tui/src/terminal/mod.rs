@@ -1,6 +1,7 @@
 mod app_lifecycle;
 mod cursor_probe;
 mod forwarded_bytes;
+mod recording;
 mod shell_runtime;
 pub(crate) mod signal_pipe;
 mod theme_detection;
@@ -10,6 +11,7 @@ mod theme_protocol;
 use thiserror::Error;
 
 pub(crate) use app_lifecycle::{ExitCleanup, StartupViewport};
+pub use recording::{StartRecording, TerminalRecorder};
 #[cfg(test)]
 pub(crate) use shell_runtime::test_pty;
 pub(crate) use shell_runtime::{ColorSupport, HistoryReset, Terminal};
@@ -35,6 +37,8 @@ pub enum TerminalError {
     TerminalTooSmall,
     #[error("cursor position unavailable")]
     CursorPositionUnavailable,
+    #[error("unable to start terminal recording.")]
+    RecordingStartFailed,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

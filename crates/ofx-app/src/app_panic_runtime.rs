@@ -322,6 +322,7 @@ mod tests {
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
             opening: Opening::Welcome,
+            recording: None,
         };
         let outcome = panics.contain_shell(|| {
             run_shell(options, events, NativeClipboard, |command| {
