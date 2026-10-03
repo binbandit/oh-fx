@@ -111,8 +111,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/health.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/local_inspection.rs"]
+note = "The local configuration inspection used by status exists; live health snapshots, their rendering and summaries are missing."
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"

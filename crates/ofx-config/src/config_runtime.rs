@@ -299,6 +299,7 @@ pub struct Settings {
     providers: ProviderRegistry,
     global: Layer,
     workspace: Layer,
+    workspace_entry: Option<Map<String, Value>>,
     resumed: Layer,
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
@@ -338,6 +339,10 @@ impl Settings {
 
     pub fn diagnostics(&self) -> &[ConfigDiagnostic] {
         &self.diagnostics
+    }
+
+    pub fn workspace_entry(&self) -> Option<&Map<String, Value>> {
+        self.workspace_entry.as_ref()
     }
 
     pub fn profile_is_unusable(&self) -> bool {
@@ -488,7 +493,7 @@ impl Settings {
         Ok(())
     }
 
-    pub(crate) fn selected_provider(
+    pub fn selected_provider(
         &self,
         lookup: EnvironmentLookup<'_>,
     ) -> Result<ProviderId, SelectionError> {
@@ -526,9 +531,13 @@ impl Settings {
     }
 
     pub fn saved_codex_model(&self) -> Option<&str> {
+        self.saved_model(&ProviderId::Codex)
+    }
+
+    pub fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
         self.workspace
-            .codex_model()
-            .or_else(|| self.global.codex_model())
+            .saved_model(provider)
+            .or_else(|| self.global.saved_model(provider))
     }
 
     pub fn selected_connection(
@@ -562,6 +571,20 @@ impl Settings {
             .or_else(|| saved(&self.global))
             .or_else(|| connection.models.first().cloned())
             .ok_or(SelectionError::ModelNotSelected)
+    }
+
+    pub fn model_origin(
+        &self,
+        provider: &ProviderId,
+        lookup: EnvironmentLookup<'_>,
+    ) -> &'static str {
+        if environment_model(lookup).is_some() {
+            MODEL_VARIABLE
+        } else if self.saved_model(provider).is_some() {
+            "settings"
+        } else {
+            "default"
+        }
     }
 
     pub fn max_agent_steps(&self, lookup: EnvironmentLookup<'_>) -> u64 {
@@ -636,6 +659,7 @@ impl Settings {
         };
         if let Some(entry) = workspace {
             self.workspace = self.parse_profile_layer(entry)?;
+            self.workspace_entry = Some(entry.clone());
         }
         Ok(())
     }
@@ -1057,6 +1081,29 @@ mod tests {
 
     fn fixture_settings(json: &str) -> Settings {
         load(&fixture(Some(json), None)).unwrap()
+    }
+
+    #[test]
+    fn model_origin_names_the_environment_variable_then_saved_settings_then_the_default() {
+        let settings = fixture_settings(r#"{"models":{"codex":"saved"}}"#);
+        assert_eq!(
+            settings.model_origin(&ProviderId::Codex, &|_| None),
+            "settings"
+        );
+        assert_eq!(
+            settings.model_origin(&ProviderId::Gateway, &|_| None),
+            "default"
+        );
+        let run = |name: &str| (name == "OH_FX_MODEL").then(|| " run ".to_owned());
+        assert_eq!(
+            settings.model_origin(&ProviderId::Gateway, &run),
+            "OH_FX_MODEL"
+        );
+        let blank = |name: &str| (name == "OH_FX_MODEL").then(|| " ".to_owned());
+        assert_eq!(
+            settings.model_origin(&ProviderId::Codex, &blank),
+            "settings"
+        );
     }
 
     #[test]

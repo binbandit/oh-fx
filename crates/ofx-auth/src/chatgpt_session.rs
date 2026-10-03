@@ -113,6 +113,14 @@ impl SessionStore {
         }
     }
 
+    pub(crate) fn load_unlocked(&self) -> Result<Option<Session>, ChatGptError> {
+        match PrivateDir::open_existing_private(&self.directory) {
+            Ok(Some(directory)) => load_from_dir(&directory),
+            Ok(None) => Ok(None),
+            Err(error) => Err(storage_error(error)),
+        }
+    }
+
     async fn begin_mutation(&self) -> Result<Mutation, ChatGptError> {
         let directory = PrivateDir::open_or_create(&self.directory).map_err(durable_error)?;
         lock_mutation(directory).await
