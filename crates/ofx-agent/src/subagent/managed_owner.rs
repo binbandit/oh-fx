@@ -1,17 +1,18 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
     ApprovalOrigin, ApprovalRequest, ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode,
-    ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest, SubagentStatus,
-    TurnId,
+    LogFailure, ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest,
+    SubagentStatus, TurnId,
 };
 use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
 use super::child_state::{ActiveWork, Child, Outcome, Registry};
 use super::execution::{ChildRuntime, WorkOutcome};
-use super::tool_host::{ChildAgents, ChildDefaults, effective_settings};
+use super::tool_host::{ChildAgents, ChildDefaults, ChildStore, effective_settings};
 
 type SharedRuntime = Arc<tokio::sync::Mutex<ChildRuntime>>;
 
@@ -31,6 +32,18 @@ pub(crate) enum Admitted {
     Ready(Waiter),
     Completed(Finished),
     Rejected(&'static str),
+    Failed(String),
+}
+
+enum Refusal {
+    Code(&'static str),
+    Store(String),
+}
+
+impl From<&'static str> for Refusal {
+    fn from(code: &'static str) -> Self {
+        Self::Code(code)
+    }
 }
 
 pub(crate) struct Waiter {
@@ -79,6 +92,16 @@ struct State {
     slots: HashMap<String, Slot>,
     texts: HashMap<String, Option<String>>,
     issued: u64,
+    store: Option<Arc<dyn ChildStore>>,
+}
+
+impl State {
+    fn save(&self) -> Result<(), LogFailure> {
+        match &self.store {
+            Some(store) => store.save_registry(&self.registry.render(store.parent_id())),
+            None => Ok(()),
+        }
+    }
 }
 
 struct Start {
@@ -134,9 +157,12 @@ impl Owner {
             id: operation_id.to_owned(),
             request_fingerprint: fingerprint,
             message: request.content().to_owned(),
+            root_user_context: self.agents.root_user_context(&root_user_requests),
             root_user_requests,
             permission_mode: defaults.permission_mode,
+            created_at_ms: now_ms(),
         };
+        let before = state.registry.clone();
         let start = match request.agent_name() {
             None => self.create(state, request, &defaults, work),
             Some(agent) => match state
@@ -150,10 +176,36 @@ impl Owner {
                 None => self.create(state, request, &defaults, work),
             },
         };
+        let start = start.and_then(|start| match state.save() {
+            Ok(()) => Ok(start),
+            Err(failure) => {
+                state.named.remove(&start.child_id);
+                Err(Refusal::Store(failure.code))
+            }
+        });
         match start {
             Ok(start) => Admitted::Ready(self.start(state, start, turn_id)),
-            Err(code) => Admitted::Rejected(code),
+            Err(refusal) => {
+                state.registry = before;
+                match refusal {
+                    Refusal::Code(code) => Admitted::Rejected(code),
+                    Refusal::Store(code) => Admitted::Failed(code),
+                }
+            }
         }
+    }
+
+    pub(crate) fn bind(&self, store: Option<Arc<dyn ChildStore>>) {
+        let bound = self
+            .lock()
+            .store
+            .as_ref()
+            .map(|bound| bound.parent_id().to_owned());
+        if bound.as_deref() == store.as_ref().map(|store| store.parent_id()) {
+            return;
+        }
+        self.clear();
+        self.lock().store = store;
     }
 
     pub(crate) fn clear(&self) {
@@ -163,6 +215,7 @@ impl Owner {
         }
         *state = State {
             issued: state.issued,
+            store: state.store.take(),
             ..State::default()
         };
     }
@@ -191,9 +244,15 @@ impl Owner {
         request: &SubagentRequest,
         defaults: &ChildDefaults,
         work: ActiveWork,
-    ) -> Result<Start, &'static str> {
-        state.issued += 1;
-        let child_id = state.issued.to_string();
+    ) -> Result<Start, Refusal> {
+        let child_id = if let Some(store) = &state.store {
+            store
+                .new_child_id()
+                .map_err(|failure| Refusal::Store(failure.code))?
+        } else {
+            state.issued += 1;
+            state.issued.to_string()
+        };
         let instructions = request.instructions().unwrap_or_default();
         match request.agent_name() {
             None => state.registry.append_one_off(&child_id, work.clone()),
@@ -207,10 +266,14 @@ impl Owner {
         let settings = effective_settings(&defaults.settings, request.overrides());
         let permission_mode = LivePermissionMode::from(defaults.permission_mode);
         let agent = self.agents.agent(&settings, permission_mode.clone());
-        let runtime = Arc::new(tokio::sync::Mutex::new(ChildRuntime::new(
-            agent,
-            permission_mode,
-        )));
+        let mut runtime = ChildRuntime::new(agent, permission_mode);
+        if let Some(store) = &state.store {
+            let record = store
+                .start_child(&child_id, &settings)
+                .map_err(|failure| Refusal::Store(failure.code))?;
+            runtime = runtime.saved(&child_id, record);
+        }
+        let runtime = Arc::new(tokio::sync::Mutex::new(runtime));
         let status = SubagentStatus {
             model: settings.model,
             effort: settings.effort,
@@ -293,6 +356,7 @@ impl Owner {
             return;
         };
         let observation = observation(child);
+        let _ = state.save();
         state
             .texts
             .insert(child_id.to_owned(), outcome.text.clone());
@@ -314,18 +378,20 @@ fn continue_persistent(
     agent: &str,
     (child_id, phase): (&str, ChildPhase),
     work: ActiveWork,
-) -> Result<Start, &'static str> {
+) -> Result<Start, Refusal> {
     if request.overrides().is_present() {
-        return Err("override_after_create");
+        return Err("override_after_create".into());
     }
     match request.plan(Some(ChildSnapshot {
         kind: ChildKind::Persistent,
         phase,
     })) {
         SubagentPlan::ContinuePersistent => {}
-        SubagentPlan::SteerPersistent => return Err("child_busy"),
-        SubagentPlan::Reject(code) => return Err(code.code()),
-        SubagentPlan::CreateOneOff | SubagentPlan::CreatePersistent => return Err("host_failure"),
+        SubagentPlan::SteerPersistent => return Err("child_busy".into()),
+        SubagentPlan::Reject(code) => return Err(code.code().into()),
+        SubagentPlan::CreateOneOff | SubagentPlan::CreatePersistent => {
+            return Err("host_failure".into());
+        }
     }
     let (runtime, status) = state
         .named
@@ -352,4 +418,12 @@ fn observation(child: &Child) -> Observation {
         outcome: child.last_outcome,
         failure: child.last_failure.clone(),
     }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
 }

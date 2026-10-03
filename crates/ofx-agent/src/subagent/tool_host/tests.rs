@@ -9,9 +9,9 @@ use ofx_contract::{
     CallDescription, ChatMessage, Completion, Concurrency, FileChange, FileMutation,
     FileMutationState, FinishReason, ModelProvider, ModelRequest, PathAccess, PermissionGate,
     PreparedCall, ProposedFileChange, ProviderError, ProviderErrorKind, ReviewRequest,
-    ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput, SubagentStatus,
-    SubagentStatusSink, Tool, ToolActivity, ToolCall, ToolCallId, ToolEffect, ToolResultStatus,
-    ToolSpec, TurnId, UiEvent, Usage,
+    ReviewVerdict, Reviewed, RootUserRequests, StreamEvent, StreamSink, SubagentRequestInput,
+    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolCall, ToolCallId, ToolEffect,
+    ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -28,7 +28,7 @@ const BASE_PROMPT: &str = "base prompt";
 const PARENT_TURN: TurnId = TurnId::new(7);
 const EDIT_ARGUMENTS: &str = r#"{"path":"notes.md"}"#;
 
-enum Script {
+pub(super) enum Script {
     Reply(&'static str),
     Probe,
     Edit,
@@ -37,16 +37,16 @@ enum Script {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Seen {
+pub(super) struct Seen {
     model: String,
     effort: Option<String>,
     system_prompt: String,
     tools: Vec<String>,
-    messages: Vec<ChatMessage>,
+    pub(super) messages: Vec<ChatMessage>,
 }
 
 #[derive(Default)]
-struct Provider {
+pub(super) struct Provider {
     scripts: Mutex<VecDeque<Script>>,
     seen: Mutex<Vec<Seen>>,
     holding: Notify,
@@ -61,7 +61,7 @@ impl Provider {
         })
     }
 
-    fn seen(&self) -> Vec<Seen> {
+    pub(super) fn seen(&self) -> Vec<Seen> {
         self.seen.lock().unwrap().clone()
     }
 }
@@ -287,16 +287,20 @@ impl ChildAgents for Agents {
         self.requested.lock().unwrap().push(request);
         self.asked.notify_one();
     }
+
+    fn root_user_context(&self, requests: &RootUserRequests) -> String {
+        format!("current_request: {}\n", requests.current)
+    }
 }
 
-struct Harness {
-    provider: Arc<Provider>,
+pub(super) struct Harness {
+    pub(super) provider: Arc<Provider>,
     agents: Arc<Agents>,
-    host: SubagentHost,
+    pub(super) host: SubagentHost,
 }
 
 impl Harness {
-    fn new(scripts: Vec<Script>) -> Self {
+    pub(super) fn new(scripts: Vec<Script>) -> Self {
         Self::asking(scripts, true)
     }
 
@@ -342,12 +346,12 @@ impl Harness {
         )
     }
 
-    async fn run(&self, call_id: &str, input: SubagentRequestInput<'_>) -> ToolOutput {
+    pub(super) async fn run(&self, call_id: &str, input: SubagentRequestInput<'_>) -> ToolOutput {
         self.call(call_id, input, &CancellationToken::new()).await
     }
 }
 
-fn run(task: &str) -> SubagentRequestInput<'_> {
+pub(super) fn run(task: &str) -> SubagentRequestInput<'_> {
     SubagentRequestInput::Run {
         task,
         model: None,
@@ -355,7 +359,7 @@ fn run(task: &str) -> SubagentRequestInput<'_> {
     }
 }
 
-fn message<'a>(
+pub(super) fn message<'a>(
     agent: &'a str,
     instructions: Option<&'a str>,
     text: &'a str,
@@ -369,7 +373,7 @@ fn message<'a>(
     }
 }
 
-fn succeeded(result: &str) -> ToolOutput {
+pub(super) fn succeeded(result: &str) -> ToolOutput {
     ToolOutput::success(format!(
         r#"{{"ok":true,"result":"{result}","error_code":null}}"#
     ))
@@ -1157,6 +1161,10 @@ impl ChildAgents for IntentChildren {
     }
 
     fn approval_requested(&self, _turn_id: Option<TurnId>, _request: ApprovalRequest) {}
+
+    fn root_user_context(&self, _requests: &RootUserRequests) -> String {
+        String::new()
+    }
 }
 
 fn intent_host(provider: &Arc<ScriptedProvider>, gate: &Arc<IntentGate>) -> Arc<SubagentHost> {

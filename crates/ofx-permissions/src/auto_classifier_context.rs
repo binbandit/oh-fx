@@ -1,3 +1,4 @@
+use ofx_contract::RootUserRequests;
 use ofx_text::{HeadRounding, encode_terminal_safe, is_terminal_safe, write_head_tail_bounded};
 
 const MAX_ROOT_USER_BYTES: usize = 1024;
@@ -12,6 +13,11 @@ const COUNT_MARKER_RESERVE: usize = 64;
 
 pub(crate) fn root_user_request_context(context: &str) -> Option<&str> {
     is_canonical_root_user_context(context).then(|| &context[..canonical_feedback_start(context)])
+}
+
+pub fn canonical_root_user_context(requests: &RootUserRequests) -> String {
+    let earlier: Vec<&str> = requests.earlier.iter().map(String::as_str).collect();
+    build_canonical_root_user_context(&requests.current, &earlier, requests.compacted_turns)
 }
 
 pub(crate) fn build_canonical_root_user_context(
