@@ -757,6 +757,155 @@ fn a_skill_chosen_in_the_skills_menu_is_loaded_for_the_prompt() {
     assert!(session.wait_exit(WAIT).expect("oh-fx exits").success());
 }
 
+fn install_pack(home: &Home) -> PathBuf {
+    let pack = home.workspace.join("install-pack");
+    fs::create_dir(&pack).expect("create the install source");
+    fs::write(
+        pack.join("SKILL.md"),
+        "---\nname: new-skill\ndescription: installed workflow\n---\nNEW SKILL BODY\n",
+    )
+    .expect("write skill metadata");
+    fs::canonicalize(pack).expect("canonicalize install source")
+}
+
+fn lock_install_pack(home: &Home) -> fs::File {
+    let locks = home.root.join("config/oh-fx/.skill-install-locks");
+    fs::create_dir(&locks).expect("create private install lock directory");
+    fs::set_permissions(&locks, fs::Permissions::from_mode(0o700))
+        .expect("make lock directory private");
+    let file = fs::File::create(locks.join("install-pack")).expect("create owned install lock");
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .expect("make lock file private");
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+        .expect("hold the install lock");
+    file
+}
+
+#[test]
+fn installing_then_showing_a_skill_completes_while_native_stream_is_held() {
+    let server = FakeServer::start([Reply::held_sse(
+        &chat_text_events(&["Held stream.\n\n"])[..2],
+    )]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let source = install_pack(&home);
+    let mut session = home.shell(36, 120);
+    session.send(b"keep streaming\r");
+    wait(&session, "Held stream.");
+    session.send(
+        format!(
+            "/skills install {}\r/skills show new-skill\r",
+            source.display()
+        )
+        .as_bytes(),
+    );
+    let shown = session
+        .wait_for(WAIT, |screen| {
+            (screen.contains("Installed: new-skill")
+                && screen.contains("Skills 1")
+                && screen.contains("new-skill"))
+                || screen.contains("Skill 'new-skill' not found.")
+        })
+        .unwrap_or_else(|screen| {
+            panic!("installation/show did not finish while stream held:\n{screen}")
+        });
+    assert!(shown.contains("Installed: new-skill"), "{shown}");
+    assert!(shown.contains("Skills 1"), "{shown}");
+    assert!(shown.contains("Installing from"), "{shown}");
+    assert!(shown.contains("Generating"), "{shown}");
+    assert!(!shown.contains("Skill 'new-skill' not found."), "{shown}");
+    let transcript = String::from_utf8_lossy(&session.output()).into_owned();
+    assert!(
+        transcript.find("Installing from").unwrap()
+            < transcript.find("Installed: new-skill").unwrap()
+    );
+    assert_eq!(server.requests().len(), 1);
+    session.send(b"\x1b");
+    wait(&session, "Generating");
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("press ctrl+c again to exit")
+        })
+        .unwrap();
+    session.send(b"/exit\r");
+    assert!(session.wait_exit(WAIT).unwrap().success());
+}
+
+#[test]
+fn native_cancel_stays_live_while_an_install_waits_for_its_lock() {
+    let server = FakeServer::start([Reply::held_sse(
+        &chat_text_events(&["Held stream.\n\n"])[..2],
+    )]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let source = install_pack(&home);
+    let lock = lock_install_pack(&home);
+    let mut session = home.shell(36, 120);
+    session.send(b"keep streaming\r");
+    wait(&session, "Held stream.");
+    session.send(format!("/skills install {}\r/stats\r", source.display()).as_bytes());
+    wait(&session, "* stats: ansi_bytes=");
+    session.send(b"\x03");
+    let cancelled = wait(&session, CANCELLATION);
+    assert!(!cancelled.contains("Installed: new-skill"), "{cancelled}");
+    assert!(!cancelled.contains("Failed to install."), "{cancelled}");
+    drop(lock);
+    wait(&session, "Installed: new-skill");
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("press ctrl+c again to exit")
+        })
+        .unwrap();
+    session.send(b"/exit\r");
+    assert!(session.wait_exit(WAIT).unwrap().success());
+}
+
+#[test]
+fn native_approval_stays_live_while_an_install_waits_for_its_lock() {
+    let gate = ofx_testkit::Gate::default();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "read-1",
+            "read_file",
+            r#"{"path":"../notes.txt"}"#,
+        ))
+        .after(&gate),
+        Reply::held_sse(&chat_text_events(&["Approved stream.\n\n"])[..2]),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    fs::write(home.root.join("notes.txt"), "APPROVED OUTSIDE CONTENT").unwrap();
+    let source = install_pack(&home);
+    let lock = lock_install_pack(&home);
+    let mut session = home.shell(40, 120);
+    session.send(b"read outside notes\r");
+    wait(&session, "Thinking");
+    session.send(format!("/skills install {}\r/stats\r", source.display()).as_bytes());
+    wait(&session, "* stats: ansi_bytes=");
+    gate.open();
+    wait(&session, "Permission needed · Choose one");
+    thread::sleep(APPROVAL_ARMING);
+    session.send(b"1\r");
+    let approved = wait(&session, "Approved stream.");
+    assert!(!approved.contains("Installed: new-skill"), "{approved}");
+    assert!(!approved.contains("Failed to install."), "{approved}");
+    assert_eq!(server.requests().len(), 2);
+    assert!(last_tool_result(&server.requests()[1]).contains("APPROVED OUTSIDE CONTENT"));
+    drop(lock);
+    wait(&session, "Installed: new-skill");
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("press ctrl+c again to exit")
+        })
+        .unwrap();
+    session.send(b"/exit\r");
+    assert!(session.wait_exit(WAIT).unwrap().success());
+}
+
 #[test]
 fn ctrl_c_cancels_a_streaming_turn_and_clear_starts_over() {
     let held =

@@ -22,9 +22,10 @@ use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
 use crate::native::NativeClipboard;
 use crate::session_commands::SettingsAccess;
-use crate::skill_commands::is_install_command;
+use crate::skill_commands::{InstallTask, finish_install, handle_skills, is_install_command};
 use crate::skills::{HostSkills, SkillInstall};
 use crate::user_settings::{self, unsaved_notice};
+use ofx_cli::{SLASH_REGISTRY, SlashKind};
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
@@ -39,7 +40,7 @@ pub(crate) struct ControllerState {
     fast_mode: bool,
     config_pending: bool,
     pending_clear: Option<u64>,
-    pending_skill_installs: VecDeque<(String, SkillInstall)>,
+    install_queue: InstallQueue,
     received_prompts: u64,
     queue: VecDeque<Prompt>,
     permissions: PermissionRuntime,
@@ -50,6 +51,21 @@ pub(crate) struct ControllerState {
     history_turns: usize,
     context_to_compact: bool,
     session_title: SessionTitle,
+}
+
+#[derive(Default)]
+struct InstallQueue {
+    inputs: VecDeque<InstallInput>,
+    blocked: bool,
+}
+
+enum InstallInput {
+    Skills {
+        rest: String,
+        accepted: Option<SkillInstall>,
+    },
+    Clear(u64),
+    Prompt(Prompt),
 }
 
 struct Prompt {
@@ -171,9 +187,16 @@ impl ControllerState {
         });
     }
 
-    fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>) {
+    fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
         self.received_prompts += 1;
-        self.queue.push_back(Prompt { text, skills });
+        let prompt = Prompt { text, skills };
+        if installing || self.install_queue.blocked || !self.install_queue.inputs.is_empty() {
+            self.install_queue
+                .inputs
+                .push_back(InstallInput::Prompt(prompt));
+        } else {
+            self.queue.push_back(prompt);
+        }
     }
 }
 
@@ -220,6 +243,7 @@ pub(crate) struct Controller {
     persistence: Option<Persistence>,
     questions: Option<QuestionRequests>,
     pick_at_start: bool,
+    installation: Option<InstallTask>,
 }
 
 impl Controller {
@@ -242,7 +266,7 @@ impl Controller {
             setup,
             config_pending: false,
             pending_clear: None,
-            pending_skill_installs: VecDeque::new(),
+            install_queue: InstallQueue::default(),
             received_prompts: 0,
             queue: VecDeque::new(),
             context_notices: Arc::new(Mutex::new(notices)),
@@ -258,6 +282,7 @@ impl Controller {
             persistence,
             questions,
             pick_at_start,
+            installation: None,
         }
     }
 
@@ -285,6 +310,7 @@ impl Controller {
         }
         self.remember_agent_facts();
         self.serve(&mut commands).await;
+        self.drain_installations().await;
         if let Some(persistence) = &mut self.persistence {
             persistence.close(&mut self.agent);
         }
@@ -292,19 +318,29 @@ impl Controller {
 
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
-            if let Some(prompt) = self.state.queue.pop_front() {
+            if self.installation.is_none()
+                && let Some(prompt) = self.state.queue.pop_front()
+            {
                 if !self.run_turn(&prompt, commands).await {
                     return;
                 }
                 continue;
             }
-            let Some(command) = commands.recv().await else {
+            let command = tokio::select! {
+                () = finish_install(&self.state, &mut self.installation) => {
+                    self.settle_deferred_commands();
+                    continue;
+                }
+                command = commands.recv() => command,
+            };
+            let Some(command) = command else {
                 return;
             };
             match command {
                 UiCommand::Submit { prompt, skills } => {
                     observe_prompt(self.persistence.as_ref(), &prompt);
-                    self.state.receive_prompt(prompt, skills);
+                    self.state
+                        .receive_prompt(prompt, skills, self.installation.is_some());
                 }
                 UiCommand::RunCommand { text } => {
                     if !self.run_idle_command(&text, commands).await {
@@ -336,8 +372,15 @@ impl Controller {
         text: &str,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
+        if defer_install_input(&mut self.state, text, self.installation.is_some()) {
+            return true;
+        }
         match handle_command(&self.state, text, Work::Idle) {
             CommandEffect::None => {}
+            CommandEffect::Install(request) => {
+                self.state.install_queue.blocked = true;
+                self.installation = Some(request.start(&self.state, None));
+            }
             CommandEffect::SwitchModel(model) => {
                 self.state.select_model(model);
                 self.save_preferences();
@@ -366,6 +409,7 @@ impl Controller {
         let state = &mut self.state;
         let persistence = &mut self.persistence;
         let mut open = true;
+        let installation = &mut self.installation;
         let result = {
             let mut summarizing = move || {
                 emit(UiEvent::CompactionActivity {
@@ -377,6 +421,7 @@ impl Controller {
             loop {
                 tokio::select! {
                     result = &mut compaction => break result,
+                    () = finish_install(state, installation) => drain_install_inputs(state, installation, &cancel),
                     command = commands.recv(), if open => match command {
                         None => {
                             open = false;
@@ -384,7 +429,7 @@ impl Controller {
                         }
                         Some(UiCommand::Submit { prompt, skills }) => {
                             observe_prompt(persistence.as_ref(), &prompt);
-                            state.receive_prompt(prompt, skills);
+                            state.receive_prompt(prompt, skills, installation.is_some());
                         }
                         Some(UiCommand::CancelCompaction) => cancel.cancel(),
                         Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
@@ -407,6 +452,7 @@ impl Controller {
                                 state,
                                 persistence,
                                 &text,
+                                installation,
                                 Work::Compaction,
                                 &cancel,
                             )
@@ -577,6 +623,7 @@ impl Controller {
         let persistence = &mut self.persistence;
         let questions = &mut self.questions;
         let mut open = true;
+        let installation = &mut self.installation;
         let report = {
             let mut sink = move |event: UiEvent| match event {
                 UiEvent::TurnFinished { .. } => {}
@@ -603,6 +650,7 @@ impl Controller {
                 tokio::select! {
                     biased;
                     report = &mut turn => break report,
+                    () = finish_install(state, installation) => drain_install_inputs(state, installation, &cancel),
                     command = commands.recv(), if open => match command {
                         None => {
                             open = false;
@@ -610,7 +658,7 @@ impl Controller {
                         }
                         Some(UiCommand::Submit { prompt, skills }) => {
                             observe_prompt(persistence.as_ref(), &prompt);
-                            state.receive_prompt(prompt, skills);
+                            state.receive_prompt(prompt, skills, installation.is_some());
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {
@@ -632,7 +680,7 @@ impl Controller {
                             state.permissions.full_access_warning_shown();
                         }
                         Some(UiCommand::RunCommand { text }) => {
-                            run_deferred_command(state, persistence, &text, Work::Turn, &cancel)
+                            run_deferred_command(state, persistence, &text, installation, Work::Turn, &cancel)
                                 .await;
                         }
                         Some(
@@ -654,6 +702,21 @@ impl Controller {
         self.remember_session_title(&prompt.text);
         self.settle_deferred_commands();
         open
+    }
+
+    async fn drain_installations(&mut self) {
+        loop {
+            self.state.queue.clear();
+            self.state
+                .install_queue
+                .inputs
+                .retain(|input| !matches!(input, InstallInput::Prompt(_)));
+            self.settle_deferred_commands();
+            if self.installation.is_none() {
+                break;
+            }
+            finish_install(&self.state, &mut self.installation).await;
+        }
     }
 
     fn announce_turn_end(&self, turn_id: TurnId, report: &TurnReport) {
@@ -701,10 +764,69 @@ impl Controller {
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
             self.clear(first_kept_prompt);
         }
-        while let Some((text, accepted)) = self.state.pending_skill_installs.pop_front() {
-            handle_command(&self.state, &text, Work::Idle);
-            drop(accepted);
+        loop {
+            drain_install_inputs(
+                &mut self.state,
+                &mut self.installation,
+                &CancellationToken::new(),
+            );
+            let Some(first_kept_prompt) = self.state.pending_clear.take() else {
+                break;
+            };
+            self.clear(first_kept_prompt);
         }
+    }
+}
+
+fn defer_install_input(state: &mut ControllerState, text: &str, installing: bool) -> bool {
+    if !installing && !state.install_queue.blocked && state.install_queue.inputs.is_empty() {
+        return false;
+    }
+    let Some(command) = SLASH_REGISTRY.parse_command(text) else {
+        return false;
+    };
+    let input = match command.kind {
+        SlashKind::Skills => InstallInput::Skills {
+            rest: command.payload.to_owned(),
+            accepted: is_install_command(text).then(|| state.skills().installations().start()),
+        },
+        SlashKind::ClearScreen | SlashKind::NewSession | SlashKind::ResetSession => {
+            InstallInput::Clear(state.received_prompts)
+        }
+        _ => return false,
+    };
+    state.install_queue.inputs.push_back(input);
+    true
+}
+
+fn drain_install_inputs(
+    state: &mut ControllerState,
+    installation: &mut Option<InstallTask>,
+    cancel: &CancellationToken,
+) {
+    while installation.is_none() && state.pending_clear.is_none() && state.queue.is_empty() {
+        let Some(input) = state.install_queue.inputs.pop_front() else {
+            break;
+        };
+        match input {
+            InstallInput::Skills { rest, accepted } => {
+                if let Some(request) = handle_skills(state, &rest) {
+                    *installation = Some(request.start(state, accepted));
+                }
+            }
+            InstallInput::Clear(first_kept) => {
+                state.pending_clear = Some(first_kept);
+                cancel.cancel();
+            }
+            InstallInput::Prompt(prompt) => state.queue.push_back(prompt),
+        }
+    }
+    if installation.is_none()
+        && state.install_queue.inputs.is_empty()
+        && state.queue.is_empty()
+        && state.pending_clear.is_none()
+    {
+        state.install_queue.blocked = false;
     }
 }
 
@@ -730,17 +852,20 @@ async fn run_deferred_command(
     state: &mut ControllerState,
     persistence: &mut Option<Persistence>,
     text: &str,
+    installation: &mut Option<InstallTask>,
     work: Work,
     cancel: &CancellationToken,
 ) {
-    if is_install_command(text) {
-        state
-            .pending_skill_installs
-            .push_back((text.to_owned(), state.skills().installations().start()));
+    if defer_install_input(state, text, installation.is_some()) {
         return;
     }
     match handle_command(state, text, work) {
         CommandEffect::None | CommandEffect::Compact | CommandEffect::OpenSessions => return,
+        CommandEffect::Install(request) => {
+            state.install_queue.blocked = true;
+            *installation = Some(request.start(state, None));
+            return;
+        }
         CommandEffect::SwitchModel(model) => {
             state.config_pending = true;
             state.select_model(model);
@@ -2960,6 +3085,14 @@ mod tests {
         (home, Controller::new(setup, emit, None, false), events)
     }
 
+    async fn direct_skill_install(controller: &mut Controller, text: &str) {
+        let (_sender, mut commands) = unbounded_channel();
+        assert!(controller.run_idle_command(text, &mut commands).await);
+        assert!(controller.installation.is_some());
+        finish_install(&controller.state, &mut controller.installation).await;
+        controller.settle_deferred_commands();
+    }
+
     fn held_install_lock(
         home: &tempfile::TempDir,
     ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
@@ -3101,18 +3234,223 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skill_install_and_show_complete_before_a_held_turn_is_released() {
+        let server = FakeServer::start([Reply::held_sse(&chat_text_events(&["partial"])[..2])]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, "install-pack", "new-skill");
+        let source = fs::canonicalize(harness.home.path().join("workspace/install-pack")).unwrap();
+        harness.submit("keep streaming");
+        timeout(
+            Duration::from_secs(10),
+            harness.until(|event| matches!(event, UiEvent::AssistantText { .. })),
+        )
+        .await
+        .unwrap();
+        harness.command(&format!("/skills install {}", source.display()));
+        harness.command("/skills show new-skill");
+        let shown = timeout(
+            Duration::from_secs(10),
+            harness.until(|event| {
+                is_skills_menu(event)
+                    || matches!(event, UiEvent::Notice { notice }
+                if notice.body == "Skill 'new-skill' not found.")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            notice_body(shown),
+            [
+                format!("skills|Installing from {}...", source.display()),
+                "skills|Installed: new-skill".to_owned(),
+            ]
+        );
+        let Some(UiEvent::SkillsMenu { items, focus }) = shown.last() else {
+            panic!("show did not open the installed skill menu: {shown:?}");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "new-skill");
+        assert_eq!(*focus, SkillMenuFocus::Item(0));
+        assert!(
+            !shown
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnFinished { .. }))
+        );
+        let notices: Vec<_> = shown
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| matches!(event, UiEvent::Notice { .. }).then_some(index))
+            .collect();
+        assert_eq!(notices[1], notices[0] + 1);
+        assert_eq!(server.requests().len(), 1);
+        harness.send(UiCommand::Cancel {
+            turn_id: harness.running_turn(),
+        });
+        timeout(
+            Duration::from_secs(10),
+            harness.until(finished(TurnOutcome::Interrupted)),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn assert_install_completion_order(starts_idle: bool) {
+        let mut replies = Vec::new();
+        if !starts_idle {
+            replies.push(Reply::held_sse(&chat_text_events(&["active"])[..2]));
+        }
+        replies.push(Reply::held_sse(&chat_text_events(&["queued"])[..2]));
+        replies.push(Reply::sse(&chat_text_events(&["after clear"])));
+        let server = FakeServer::start(replies);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, "first-pack", "first-skill");
+        write_skill(&harness.home, "second-pack", "second-skill");
+        let first = fs::canonicalize(harness.home.path().join("workspace/first-pack")).unwrap();
+        let second = fs::canonicalize(harness.home.path().join("workspace/second-pack")).unwrap();
+        let (release, worker) = held_install_lock(&harness.home);
+        let first_locked = harness.home.path().join("workspace/install-pack");
+        fs::rename(&first, &first_locked).unwrap();
+        let first_locked = fs::canonicalize(first_locked).unwrap();
+        if !starts_idle {
+            harness.submit("active");
+            harness
+                .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+                .await;
+        }
+        harness.command(&format!("/skills install {}", first_locked.display()));
+        harness.submit("queued prompt");
+        harness.command(&format!("/skills install {}", second.display()));
+        harness.command("/clear");
+        harness.submit("$second-skill after clear");
+        harness.command("/stats");
+        harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        release.send(()).unwrap();
+        let first_done = harness.until(|event| matches!(event, UiEvent::Notice { notice } if notice.body == "Installed: first-skill")).await;
+        assert_eq!(notice_body(first_done).len(), 2);
+        assert!(
+            !harness
+                .home
+                .path()
+                .join("config/skills/second-pack")
+                .exists()
+        );
+        if !starts_idle {
+            harness.send(UiCommand::Cancel {
+                turn_id: harness.running_turn(),
+            });
+            harness.until(finished(TurnOutcome::Interrupted)).await;
+        }
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.command("/stats");
+        let queued = harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        assert!(notices(queued).is_empty());
+        assert!(
+            !harness
+                .home
+                .path()
+                .join("config/skills/second-pack")
+                .exists()
+        );
+        assert_eq!(server.requests().len(), if starts_idle { 1 } else { 2 });
+        harness.send(UiCommand::Cancel {
+            turn_id: harness.running_turn(),
+        });
+        let final_events = harness.until(finished(TurnOutcome::Completed)).await;
+        let installed = final_events.iter().position(|event| matches!(event, UiEvent::Notice { notice } if notice.body == "Installed: second-skill")).unwrap();
+        let cleared = final_events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    UiEvent::ConversationCleared { first_kept_prompt } if *first_kept_prompt == if starts_idle { 1 } else { 2 }
+                )
+            })
+            .unwrap();
+        assert!(installed < cleared);
+        let body = server.requests()[if starts_idle { 1 } else { 2 }].json();
+        assert!(system_text(&body).contains("<skill_content name=\"second-skill\""));
+        assert!(
+            !body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["content"] == "queued prompt")
+        );
+        worker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn busy_install_completion_preserves_prompt_install_and_clear_arrival_order() {
+        timeout(
+            Duration::from_secs(10),
+            assert_install_completion_order(false),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_install_completion_preserves_prompt_install_and_clear_arrival_order() {
+        timeout(
+            Duration::from_secs(10),
+            assert_install_completion_order(true),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_install_join_emits_adjacent_notices_and_releases_shutdown_guard() {
+        let server = FakeServer::start([]);
+        let (_home, mut controller, events) = skill_install_controller(&server).await;
+        controller.installation = Some(crate::skill_commands::panicking_install(
+            &controller.state,
+            "panicking-pack",
+        ));
+        assert!(
+            controller
+                .state
+                .skills()
+                .installations()
+                .wait_for_running(Duration::ZERO)
+        );
+        finish_install(&controller.state, &mut controller.installation).await;
+        assert_eq!(
+            notice_body(&events.lock().unwrap()),
+            [
+                "skills|Installing from panicking-pack...",
+                "skills|Failed to install. Check the source path or URL and try again."
+            ]
+        );
+        assert!(controller.installation.is_none());
+        assert!(
+            !controller
+                .state
+                .skills()
+                .installations()
+                .wait_for_running(Duration::ZERO)
+        );
+    }
+
+    #[tokio::test]
     async fn local_skill_install_reports_metadata_names_and_refreshes_before_returning() {
         let server = FakeServer::start([]);
-        let (home, controller, events) = skill_install_controller(&server).await;
+        let (home, mut controller, events) = skill_install_controller(&server).await;
         write_skill(&home, "install-pack", "root-skill");
         write_skill(&home, "install-pack/review", "parsed-review");
         let source = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
         assert!(controller.state.skills().current().skills.is_empty());
-        handle_command(
-            &controller.state,
+        direct_skill_install(
+            &mut controller,
             &format!("/skills install {}", source.display()),
-            Work::Idle,
-        );
+        )
+        .await;
         assert_eq!(
             notices(&events.lock().unwrap()),
             [
@@ -3204,7 +3542,7 @@ mod tests {
     #[tokio::test]
     async fn local_skill_install_preserves_empty_filtered_and_failure_notices() {
         let server = FakeServer::start([]);
-        let (home, controller, events) = skill_install_controller(&server).await;
+        let (home, mut controller, events) = skill_install_controller(&server).await;
         let empty = home.path().join("workspace/empty-pack");
         fs::create_dir_all(&empty).unwrap();
         let empty = fs::canonicalize(empty).unwrap();
@@ -3223,11 +3561,7 @@ mod tests {
             ),
         ] {
             events.lock().unwrap().clear();
-            handle_command(
-                &controller.state,
-                &format!("/skills {arguments}"),
-                Work::Idle,
-            );
+            direct_skill_install(&mut controller, &format!("/skills {arguments}")).await;
             let source = arguments
                 .strip_prefix("install ")
                 .or_else(|| arguments.strip_prefix("add "))
@@ -3264,18 +3598,18 @@ mod tests {
     #[tokio::test]
     async fn local_skill_install_rejects_a_linked_managed_root_without_outside_writes() {
         let server = FakeServer::start([]);
-        let (home, controller, events) = skill_install_controller(&server).await;
+        let (home, mut controller, events) = skill_install_controller(&server).await;
         write_skill(&home, "install-pack", "root-skill");
         let source = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
         let outside = home.path().join("outside");
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("sentinel"), "unchanged").unwrap();
         std::os::unix::fs::symlink(&outside, controller.state.skills().managed_root()).unwrap();
-        handle_command(
-            &controller.state,
+        direct_skill_install(
+            &mut controller,
             &format!("/skills install {}", source.display()),
-            Work::Idle,
-        );
+        )
+        .await;
         assert_eq!(
             notices(&events.lock().unwrap()),
             [
