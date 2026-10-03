@@ -101,7 +101,7 @@ impl Persistence {
             .live
             .as_ref()?
             .session()
-            .select_model(model, fast_mode)
+            .select_model(model, None, fast_mode)
             .err()?;
         if std::mem::replace(&mut self.degraded, true) {
             return None;

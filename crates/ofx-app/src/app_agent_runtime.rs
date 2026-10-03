@@ -74,7 +74,7 @@ impl ControllerState {
     pub(crate) fn save_model_preference(&self, topic: &str) {
         let provider = self.setup.provider();
         let saved = user_settings::save(self.setup.preferences(), |paths| {
-            save_model_preference(paths, &provider, &self.model, self.fast_mode)
+            save_model_preference(paths, &provider, &self.model, None, self.fast_mode)
         });
         if let Err(unsaved) = saved {
             self.emit(UiEvent::Notice {

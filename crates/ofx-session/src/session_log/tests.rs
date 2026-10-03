@@ -850,12 +850,23 @@ fn preference_changes_rewrite_metadata_durably() {
 fn a_model_choice_saves_its_fast_mode_and_keeps_the_other_preferences() {
     let fixture = Fixture::new();
     let mut session = fixture.start("chosen");
-    session.select_model("openai/gpt-5-mini", true).unwrap();
-    drop(session);
+    session
+        .select_model("openai/gpt-5-mini", None, true)
+        .unwrap();
     let loaded = load_session(&fixture.sessions, "chosen").unwrap();
     let mut expected = metadata("chosen").preferences;
     expected.model = "openai/gpt-5-mini".to_owned();
     expected.fast_mode = true;
+    assert_eq!(loaded.metadata.preferences, expected);
+    let picked = ReasoningEffort::Named("xhigh".to_owned());
+    session
+        .select_model("openai/gpt-5", Some(&picked), false)
+        .unwrap();
+    drop(session);
+    let loaded = load_session(&fixture.sessions, "chosen").unwrap();
+    expected.model = "openai/gpt-5".to_owned();
+    expected.effort = picked;
+    expected.fast_mode = false;
     assert_eq!(loaded.metadata.preferences, expected);
 }
 
