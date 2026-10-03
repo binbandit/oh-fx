@@ -34,7 +34,6 @@ use ofx_session::{
     SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, sessions_v2_variable_is_on,
 };
 use ofx_text::encode_terminal_safe;
-use rustix::io::Errno;
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -102,7 +101,7 @@ impl Failure {
     }
 
     fn written(error: &io::Error) -> Self {
-        Self::code(write_error_name(error))
+        Self::code(crate::write_error_name(error))
     }
 
     fn report(&self, json: bool) -> ExitCode {
@@ -650,21 +649,6 @@ fn keep_first(first: &AtomicI32, signal: i32) {
     let _ = first.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-fn write_error_name(error: &io::Error) -> &'static str {
-    match Errno::from_io_error(error) {
-        Some(Errno::PIPE) => "BrokenPipe",
-        Some(Errno::NOSPC) => "NoSpaceLeft",
-        Some(Errno::BADF) => "NotOpenForWriting",
-        Some(Errno::DQUOT) => "DiskQuota",
-        Some(Errno::FBIG) => "FileTooBig",
-        Some(Errno::IO) => "InputOutput",
-        Some(Errno::PERM) => "PermissionDenied",
-        Some(Errno::AGAIN) => "WouldBlock",
-        Some(Errno::BUSY) => "DeviceBusy",
-        _ => "Unexpected",
-    }
-}
-
 fn without_leading_blank_lines(text: &str) -> &str {
     let blank = text.len() - text.trim_start_matches(BLANK_TEXT).len();
     text[..blank]
@@ -702,7 +686,7 @@ fn print_result(result: &RunResult<'_>) -> ExitCode {
     match written {
         Ok(()) => exit,
         Err(error) => {
-            let _ = write_stderr(&format!("oh-fx: {}\n", write_error_name(&error)));
+            let _ = write_stderr(&format!("oh-fx: {}\n", crate::write_error_name(&error)));
             ExitCode::FAILURE
         }
     }
@@ -1090,7 +1074,8 @@ impl Presenter {
         match written {
             Ok(()) => true,
             Err(error) => {
-                self.write_error.get_or_insert(write_error_name(&error));
+                self.write_error
+                    .get_or_insert(crate::write_error_name(&error));
                 false
             }
         }
@@ -1218,7 +1203,8 @@ impl Presenter {
         match write_stderr_to(&mut *self.stderr, &format!("[notice] {notice}\n")) {
             Ok(()) => true,
             Err(error) => {
-                self.write_error.get_or_insert(write_error_name(&error));
+                self.write_error
+                    .get_or_insert(crate::write_error_name(&error));
                 false
             }
         }
@@ -1443,7 +1429,7 @@ impl Presenter {
             }),
         };
         summary.unwrap_or_else(|error| FailureSummary {
-            error: Some(write_error_name(&error).to_owned()),
+            error: Some(crate::write_error_name(&error).to_owned()),
             auth_failure: false,
         })
     }
@@ -1550,7 +1536,7 @@ impl Presenter {
     fn finish_blocked(mut self, code: &str, blocked: &BlockedCall, usage: Usage) -> ExitCode {
         let error = match write_stderr(&self.blocked_action_guidance(&blocked.title)) {
             Ok(()) => code,
-            Err(error) => write_error_name(&error),
+            Err(error) => crate::write_error_name(&error),
         };
         self.tool_calls.push(ToolRecord::rejected(
             blocked.tool_name.clone(),
