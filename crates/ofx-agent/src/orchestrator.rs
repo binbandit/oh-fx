@@ -338,7 +338,17 @@ impl Agent {
         self.run_turn_with_skills(prompt, &[], events, cancel).await
     }
 
-    pub async fn run_turn_with_skills(
+    pub fn run_turn_with_skills<'a>(
+        &'a mut self,
+        prompt: &'a str,
+        skills: &'a [SkillBinding],
+        events: EventSink<'a>,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, TurnReport> {
+        Box::pin(self.turn(prompt, skills, events, cancel))
+    }
+
+    async fn turn(
         &mut self,
         prompt: &str,
         skills: &[SkillBinding],

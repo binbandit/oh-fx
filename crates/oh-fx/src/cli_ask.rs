@@ -466,11 +466,7 @@ async fn prepare_agent(
             }
         },
     };
-    let mut agent = if resumed.is_some() || store.is_some() {
-        setup.delegating_agent()
-    } else {
-        setup.agent()
-    };
+    let mut agent = setup.agent(resumed.is_some() || store.is_some());
     let saved = match (resumed, store) {
         (Some((store, resumed)), _) => Some(SavedAsk::resume(store, resumed, &setup, &mut agent)?),
         (None, Some(store)) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),

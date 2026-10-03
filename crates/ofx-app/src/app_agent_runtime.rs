@@ -250,7 +250,7 @@ impl Controller {
             context_to_compact: false,
         };
         Self {
-            agent: state.setup.agent(),
+            agent: state.setup.agent(false),
             state,
             persistence,
             questions,

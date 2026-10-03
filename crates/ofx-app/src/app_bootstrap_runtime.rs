@@ -649,15 +649,12 @@ impl AgentSetup {
         }
     }
 
-    pub fn agent(&self) -> Agent {
-        self.agent_with(self.tools.clone())
-    }
-
-    pub fn delegating_agent(&self) -> Agent {
-        self.agent_with(tool_set::with_subagent(&self.tools, &self.subagent))
-    }
-
-    fn agent_with(&self, tools: Vec<Arc<dyn Tool>>) -> Agent {
+    pub fn agent(&self, delegation: bool) -> Agent {
+        let tools = if delegation {
+            tool_set::with_subagent(&self.tools, &self.subagent)
+        } else {
+            self.tools.clone()
+        };
         let mut agent = Agent::new(
             Arc::clone(&self.provider),
             tools,
