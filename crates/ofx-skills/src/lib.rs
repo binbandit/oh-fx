@@ -5,6 +5,7 @@ mod io;
 mod skill_contract;
 mod skill_invocation;
 mod skill_runtime;
+mod skill_search;
 #[cfg(test)]
 mod test_fixture;
 
@@ -21,3 +22,5 @@ pub use skill_runtime::{
     SkillCatalog, SkillDiscovery, SkillDiscoveryContext, SymlinkAuthorities, build_skill_prompt,
     diagnostic_summary,
 };
+
+pub use skill_search::{SkillSearchError, SkillSearchResult, search_skills};

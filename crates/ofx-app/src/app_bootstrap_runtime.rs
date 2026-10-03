@@ -264,6 +264,7 @@ impl Profile {
             self.paths.as_ref(),
             &self.settings,
             &limits,
+            interactive,
         ));
         let mut project = self.project_context(&limits);
         let context_notices = project
@@ -285,6 +286,7 @@ impl Profile {
             launch.command_timeout,
             &permission_mode,
             skills.tool(),
+            skills.search(),
             ToolHooks {
                 questions: questions
                     .clone()
