@@ -1,11 +1,9 @@
 use ofx_contract::{ToolArgValue, ToolArgs, ToolOutput};
-use serde_json::{Map, Value};
 
 use crate::tool_args::parse_arguments;
 
 const TOOL_NAME: &str = "web_search";
 const FIELDS: [&str; 3] = ["query", "allowed_domains", "blocked_domains"];
-const DOMAIN_FIELDS: [&str; 2] = ["allowed_domains", "blocked_domains"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DomainFilters {
@@ -38,10 +36,9 @@ pub(crate) fn decode(arguments: &str) -> Result<DomainFilters, ToolOutput> {
             "web_search field \"query\" must contain at least two characters",
         ));
     }
-    let document = domain_document(arguments, &fields)?;
     Ok(DomainFilters {
-        allowed: has_domains(&fields, document.as_ref(), "allowed_domains")?,
-        blocked: has_domains(&fields, document.as_ref(), "blocked_domains")?,
+        allowed: has_domains(&fields, "allowed_domains")?,
+        blocked: has_domains(&fields, "blocked_domains")?,
     })
 }
 
@@ -54,37 +51,20 @@ pub(crate) fn validate(filters: DomainFilters) -> Result<(), ToolOutput> {
     Ok(())
 }
 
-fn domain_document(
-    arguments: &str,
-    fields: &ToolArgs,
-) -> Result<Option<Map<String, Value>>, ToolOutput> {
-    if !DOMAIN_FIELDS
-        .iter()
-        .any(|field| fields.get(field) == Some(&ToolArgValue::Other))
-    {
-        return Ok(None);
-    }
-    serde_json::from_str(arguments)
-        .map(Some)
-        .map_err(|_| ToolOutput::failure("web_search arguments must be valid JSON"))
-}
-
-fn has_domains(
-    fields: &ToolArgs,
-    document: Option<&Map<String, Value>>,
-    field: &str,
-) -> Result<bool, ToolOutput> {
+fn has_domains(fields: &ToolArgs, field: &str) -> Result<bool, ToolOutput> {
     let items = match fields.get(field) {
         None => return Ok(false),
-        Some(ToolArgValue::Other) => document.and_then(|document| document.get(field)),
-        Some(_) => None,
+        Some(ToolArgValue::Array(items)) => items,
+        Some(_) => {
+            return Err(ToolOutput::failure(format!(
+                "web_search field \"{field}\" must be an array of strings"
+            )));
+        }
     };
-    let Some(Value::Array(items)) = items else {
-        return Err(ToolOutput::failure(format!(
-            "web_search field \"{field}\" must be an array of strings"
-        )));
-    };
-    if let Some(index) = items.iter().position(|item| !item.is_string()) {
+    if let Some(index) = items
+        .iter()
+        .position(|item| !matches!(item, ToolArgValue::String(_)))
+    {
         return Err(ToolOutput::failure(format!(
             "web_search field \"{field}\" item {index} must be a string"
         )));
@@ -168,6 +148,35 @@ mod tests {
             ),
         ] {
             assert_eq!(decode_failure(arguments), expected, "{arguments}");
+        }
+    }
+
+    #[test]
+    fn reports_domain_filter_shapes_for_numbers_and_nesting_any_json_parser_accepts() {
+        let deep = format!(
+            r#"{{"query":"news","allowed_domains":["a.com",{}{}]}}"#,
+            "[".repeat(1_000),
+            "]".repeat(1_000)
+        );
+        for (arguments, expected) in [
+            (
+                r#"{"query":"news","allowed_domains":[1e400]}"#,
+                "web_search field \"allowed_domains\" item 0 must be a string",
+            ),
+            (
+                r#"{"query":"news","blocked_domains":-1e400}"#,
+                "web_search field \"blocked_domains\" must be an array of strings",
+            ),
+            (
+                r#"{"query":"news","allowed_domains":["a.com"],"blocked_domains":[1e400]}"#,
+                "web_search field \"blocked_domains\" item 0 must be a string",
+            ),
+            (
+                deep.as_str(),
+                "web_search field \"allowed_domains\" item 1 must be a string",
+            ),
+        ] {
+            assert_eq!(decode_failure(arguments), expected, "{arguments:.80}");
         }
     }
 

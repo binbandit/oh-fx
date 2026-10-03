@@ -7,6 +7,7 @@ pub enum ToolArgValue {
     String(String),
     Integer(i64),
     Bool(bool),
+    Array(Vec<ToolArgValue>),
     Other,
 }
 
@@ -81,8 +82,17 @@ enum Token {
 }
 
 enum Frame {
-    Array,
+    Array(Option<Vec<ToolArgValue>>),
     Object(HashSet<String>),
+}
+
+impl Frame {
+    fn closed(self) -> ToolArgValue {
+        match self {
+            Frame::Array(Some(items)) => ToolArgValue::Array(items),
+            Frame::Array(None) | Frame::Object(_) => ToolArgValue::Other,
+        }
+    }
 }
 
 struct Scanner<'a> {
@@ -98,17 +108,21 @@ impl Scanner<'_> {
         'values: loop {
             let mut value = match self.token()? {
                 Token::Value(value) => value,
-                Token::Open(frame) => {
-                    if frames.is_empty() && matches!(frame, Frame::Object(_)) {
-                        root = Some(ToolArgs::default());
+                Token::Open(mut frame) => {
+                    match &mut frame {
+                        Frame::Object(_) if frames.is_empty() => root = Some(ToolArgs::default()),
+                        Frame::Array(items) if root.is_some() && frames.len() == 1 => {
+                            *items = Some(Vec::new());
+                        }
+                        _ => {}
                     }
                     self.skip_whitespace();
                     let close = match frame {
-                        Frame::Array => b']',
+                        Frame::Array(_) => b']',
                         Frame::Object(_) => b'}',
                     };
                     if self.eat(close) {
-                        ToolArgValue::Other
+                        frame.closed()
                     } else {
                         frames.push(frame);
                         let depth = frames.len();
@@ -124,19 +138,23 @@ impl Scanner<'_> {
             };
             loop {
                 let depth = frames.len();
-                if depth == 1
-                    && let (Some(root), Some(key)) = (root.as_mut(), root_key.take())
-                {
-                    root.fields.push((key, value));
-                }
                 let Some(frame) = frames.last_mut() else {
                     self.skip_whitespace();
                     return (self.at == self.bytes.len())
                         .then(|| root.map_or(Document::Other, Document::Object));
                 };
+                match frame {
+                    Frame::Array(Some(items)) => items.push(value),
+                    Frame::Object(_) if depth == 1 => {
+                        if let (Some(root), Some(key)) = (root.as_mut(), root_key.take()) {
+                            root.fields.push((key, value));
+                        }
+                    }
+                    Frame::Array(None) | Frame::Object(_) => {}
+                }
                 self.skip_whitespace();
                 match (frame, self.next()?) {
-                    (Frame::Array, b',') => continue 'values,
+                    (Frame::Array(_), b',') => continue 'values,
                     (Frame::Object(keys), b',') => {
                         let key = self.member_key(keys)?;
                         if depth == 1 {
@@ -144,9 +162,8 @@ impl Scanner<'_> {
                         }
                         continue 'values;
                     }
-                    (Frame::Array, b']') | (Frame::Object(_), b'}') => {
-                        frames.pop();
-                        value = ToolArgValue::Other;
+                    (Frame::Array(_), b']') | (Frame::Object(_), b'}') => {
+                        value = frames.pop().map_or(ToolArgValue::Other, Frame::closed);
                     }
                     _ => return None,
                 }
@@ -158,7 +175,7 @@ impl Scanner<'_> {
         self.skip_whitespace();
         let value = match self.next()? {
             b'{' => return Some(Token::Open(Frame::Object(HashSet::new()))),
-            b'[' => return Some(Token::Open(Frame::Array)),
+            b'[' => return Some(Token::Open(Frame::Array(None))),
             b'"' => ToolArgValue::String(self.string()?),
             b't' => self.literal(b"rue", ToolArgValue::Bool(true))?,
             b'f' => self.literal(b"alse", ToolArgValue::Bool(false))?,
@@ -456,7 +473,13 @@ mod tests {
             Some("a\"b\\c/d\u{8}\u{c}\n\r\t\u{e9}\u{1f600}\0")
         );
         assert_eq!(args.get("nested"), Some(&ToolArgValue::Other));
-        assert_eq!(args.get("list"), Some(&ToolArgValue::Other));
+        assert_eq!(
+            args.get("list"),
+            Some(&ToolArgValue::Array(vec![
+                ToolArgValue::Integer(1),
+                ToolArgValue::Other
+            ]))
+        );
         assert_eq!(args.optional_bool("flag"), Some(false));
         assert_eq!(args.get("none"), Some(&ToolArgValue::Other));
         assert_eq!(args.get("x"), None);
@@ -474,6 +497,36 @@ mod tests {
         let args = parse_tool_args_object(&args_json).unwrap();
 
         assert_eq!(args.optional_string("path"), Some("a"));
-        assert_eq!(args.get("deep"), Some(&ToolArgValue::Other));
+        assert_eq!(
+            args.get("deep"),
+            Some(&ToolArgValue::Array(vec![ToolArgValue::Other]))
+        );
+    }
+
+    #[test]
+    fn top_level_arrays_keep_their_items_and_nested_containers_stay_opaque() {
+        let args = parse_tool_args_object(
+            r#"{"empty":[],"items":["a",7,true,null,1e400,[["b"]],{"c":["d"]}],"object":{"list":["e"]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(args.get("empty"), Some(&ToolArgValue::Array(Vec::new())));
+        assert_eq!(
+            args.get("items"),
+            Some(&ToolArgValue::Array(vec![
+                ToolArgValue::String("a".to_owned()),
+                ToolArgValue::Integer(7),
+                ToolArgValue::Bool(true),
+                ToolArgValue::Other,
+                ToolArgValue::Other,
+                ToolArgValue::Other,
+                ToolArgValue::Other,
+            ]))
+        );
+        assert_eq!(args.get("object"), Some(&ToolArgValue::Other));
+        assert_eq!(
+            parse_tool_args_object(r#"[["a"]]"#),
+            Err(ToolArgsError::NotObject)
+        );
     }
 }
