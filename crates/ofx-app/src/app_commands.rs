@@ -3,7 +3,8 @@ use std::path::Path;
 
 use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, Notice, NoticeTone, ReasoningEffort, UiEvent,
+    CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, ModelOption, Notice,
+    NoticeTone, ReasoningEffort, UiEvent,
 };
 use ofx_session::resolve_model_query_from_ids;
 use ofx_text::encode_terminal_safe;
@@ -52,6 +53,23 @@ pub(crate) struct ModelPick {
     pub(crate) model: String,
     pub(crate) effort: ReasoningEffort,
     pub(crate) fast_mode: Option<bool>,
+}
+
+pub(crate) enum ModelChange {
+    Query(String),
+    Pick(ModelPick),
+    ToggleFast,
+}
+
+pub(crate) enum Outcome {
+    Unchanged,
+    Changed { effort: Option<ReasoningEffort> },
+}
+
+impl ModelChange {
+    pub(crate) fn needs_catalog(&self, state: &ControllerState) -> bool {
+        !matches!(self, Self::ToggleFast) || !state.fast_mode()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,8 +209,33 @@ fn compaction_effect(state: &ControllerState, work: Work) -> CommandEffect {
     }
 }
 
-pub(crate) async fn switch_model(state: &mut ControllerState, query: &str, work: Work) {
-    let resolved = resolve_model_query(&state.catalog_ids().await, query);
+pub(crate) fn listed(catalog: &ModelCatalog) -> &[ModelOption] {
+    match catalog {
+        ModelCatalog::Listed { models, .. } => models,
+        ModelCatalog::Failed { .. } => &[],
+    }
+}
+
+pub(crate) fn change_model(
+    state: &mut ControllerState,
+    change: ModelChange,
+    models: &[ModelOption],
+    work: Work,
+) -> Outcome {
+    match change {
+        ModelChange::Query(query) => {
+            switch_model(state, &query, models, work);
+            Outcome::Changed { effort: None }
+        }
+        ModelChange::Pick(pick) => pick_model(state, pick, models, work),
+        ModelChange::ToggleFast if toggle_fast(state, models) => Outcome::Changed { effort: None },
+        ModelChange::ToggleFast => Outcome::Unchanged,
+    }
+}
+
+fn switch_model(state: &mut ControllerState, query: &str, models: &[ModelOption], work: Work) {
+    let ids: Vec<String> = models.iter().map(|option| option.id.clone()).collect();
+    let resolved = resolve_model_query(&ids, query);
     state.notice(
         NoticeTone::Neutral,
         "",
@@ -201,19 +244,20 @@ pub(crate) async fn switch_model(state: &mut ControllerState, query: &str, work:
     state.select_model(resolved);
 }
 
-pub(crate) async fn pick_model(
+fn pick_model(
     state: &mut ControllerState,
     pick: ModelPick,
+    models: &[ModelOption],
     work: Work,
-) -> Option<Option<ReasoningEffort>> {
-    let capabilities = state.capabilities(&pick.model).await;
+) -> Outcome {
+    let capabilities = capabilities_of(models, &pick.model);
     let effort_offered = match &pick.effort {
         ReasoningEffort::Auto => true,
         ReasoningEffort::Named(name) => capabilities.reasoning_efforts.contains(name),
     };
     if !effort_offered || capabilities.supports_fast_mode != pick.fast_mode.is_some() {
         state.notice(NoticeTone::Error, "", MODEL_USAGE);
-        return None;
+        return Outcome::Unchanged;
     }
     state.notice(
         NoticeTone::Neutral,
@@ -222,7 +266,15 @@ pub(crate) async fn pick_model(
     );
     let effort = (!capabilities.reasoning_efforts.is_empty()).then_some(pick.effort);
     state.apply_pick(pick.model, effort.as_ref(), pick.fast_mode.unwrap_or(false));
-    Some(effort)
+    Outcome::Changed { effort }
+}
+
+fn capabilities_of(models: &[ModelOption], model: &str) -> ModelCapabilities {
+    models
+        .iter()
+        .find(|option| option.id == model)
+        .map(|option| option.capabilities.clone())
+        .unwrap_or_default()
 }
 
 fn model_switch_notice(model: &str, work: Work) -> String {
@@ -234,14 +286,14 @@ fn model_switch_notice(model: &str, work: Work) -> String {
     format!("{prefix}{model}")
 }
 
-pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
+fn toggle_fast(state: &mut ControllerState, models: &[ModelOption]) -> bool {
     if state.fast_mode() {
         state.set_fast_mode(false);
         state.save_model_preference(FAST_TOPIC, None);
         state.notice(NoticeTone::Neutral, FAST_TOPIC, "off");
         return true;
     }
-    if !state.capabilities(state.model()).await.supports_fast_mode {
+    if !capabilities_of(models, state.model()).supports_fast_mode {
         state.notice(NoticeTone::Neutral, FAST_TOPIC, NO_FAST_MODE);
         return false;
     }
