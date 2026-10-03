@@ -174,15 +174,16 @@ async fn grok_sign_in_reaches_authenticated_userinfo_and_catalog_before_selectio
             .unwrap();
         assert!(![8976, 8977].contains(&port));
         let mut socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        socket.write_all(format!("GET /callback?code=manual-code&state={state} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes()).unwrap();
+        socket.write_all(format!("GET /callback?code=browser-code&state={state} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes()).unwrap();
         let mut response = String::new();
         socket.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
     });
     let mut output = Forward(sender);
+    let input = fs::File::open("/dev/null").unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        login_grok(&profile, &mut output, false),
+        login_grok(&profile, &mut output, false, &input),
     )
     .await
     .unwrap();
@@ -195,6 +196,14 @@ async fn grok_sign_in_reaches_authenticated_userinfo_and_catalog_before_selectio
     let requests = auth.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].path, "/v1/oauth/token");
+    let token_request = std::str::from_utf8(&requests[0].body).unwrap();
+    assert_eq!(
+        token_request
+            .split('&')
+            .filter(|field| field.starts_with("code="))
+            .collect::<Vec<_>>(),
+        ["code=browser-code"]
+    );
     assert_eq!(requests[1].path, "/v1/userinfo");
     assert_eq!(
         requests[1].header("authorization"),
@@ -288,4 +297,24 @@ async fn grok_logout_reports_durable_storage_and_output_failures() {
     );
     assert_eq!(fs::read_to_string(outside_session).unwrap(), "{}");
     assert!(auth.requests().is_empty());
+}
+
+#[test]
+fn browser_sign_in_owns_input_when_invoked_from_a_push_hook() {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(env::current_exe().unwrap())
+        .args(["--exact", "login_command::tests::grok_sign_in_reaches_authenticated_userinfo_and_catalog_before_selection", "--nocapture"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"refs/heads/topic 1111111111111111111111111111111111111111 refs/heads/topic 0000000000000000000000000000000000000000\n").unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

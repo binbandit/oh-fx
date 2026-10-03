@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
 
@@ -29,7 +30,7 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
             runtime.block_on(async {
                 match provider {
                     Some(ProviderId::Grok) => {
-                        login_grok(&profile, &mut io::stdout(), open_browser()).await
+                        login_grok(&profile, &mut io::stdout(), open_browser(), &io::stdin()).await
                     }
                     _ => login_codex(&profile, &mut io::stdout(), open_browser()).await,
                 }
@@ -59,10 +60,11 @@ pub(crate) async fn login_codex(
         .map(drop)
 }
 
-pub(crate) async fn login_grok(
+pub(crate) async fn login_grok<F: AsFd>(
     profile: &Profile,
     output: &mut (dyn Write + Send),
     open_browser: bool,
+    input: &F,
 ) -> Result<(), ActivationFailure> {
     let oauth = profile
         .grok_oauth()
@@ -72,6 +74,7 @@ pub(crate) async fn login_grok(
             output,
             open_browser,
             &tokio_util::sync::CancellationToken::new(),
+            input,
         )
         .await
         .map_err(|error| ActivationFailure::Detail(ofx_auth::grok_login_failure_detail(error)))?;
