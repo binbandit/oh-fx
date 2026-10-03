@@ -257,7 +257,10 @@ async fn saved_codex_request() {
         .unwrap();
     assert_eq!(setup.provider(), ProviderId::Codex);
     assert_eq!(setup.model(), "gpt-6.1-sol");
-    let result = setup.agent().run_turn("Hello", &mut |_| {}, &cancel).await;
+    let result = setup
+        .agent(false)
+        .run_turn("Hello", &mut |_| {}, &cancel)
+        .await;
     assert_eq!(result.outcome, TurnOutcome::Completed);
     assert_eq!(result.final_text, "Codex still works.");
     let requests = responses.requests();
