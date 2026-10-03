@@ -270,6 +270,17 @@ fn trimmed_questions_reach_the_user_and_answers_return_in_order() {
         output.content,
         r#"[{"question":"Which depth?","answer":"Thorough"},{"question":"Ship it?","answer":"Yes\nnow"}]"#
     );
+    let asker = FakeAsker::replying(Reply::Answers(vec![
+        "\"\\\u{1}\u{8}\u{c}\t\r\u{7f}/é".to_owned(),
+    ]));
+    let output = run(
+        &tool(&asker),
+        r#"{"questions":[{"question":"Say \"why\"?","options":[{"label":"A"},{"label":"B"}]}]}"#,
+    );
+    assert_eq!(
+        output.content,
+        "[{\"question\":\"Say \\\"why\\\"?\",\"answer\":\"\\\"\\\\\\u0001\\b\\f\\t\\r\u{7f}/é\"}]"
+    );
 }
 
 #[test]

@@ -47,10 +47,16 @@ impl Tool for AskUserQuestion {
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
-        let refusal = has_legacy_permission_request_id(arguments)
+        let parsed = parse_tool_args_object(arguments);
+        let refusal = parsed
+            .as_ref()
+            .is_ok_and(|arguments| arguments.get("permission_request_id").is_some())
             .then(|| ToolOutput::failure(LEGACY_PERMISSION_REQUEST_SENTINEL));
         let description = CallDescription {
-            title: title(arguments),
+            title: match parsed {
+                Ok(_) => ACTION_TITLE.to_owned(),
+                Err(_) => format_unknown_action(TOOL_NAME),
+            },
             activity: ToolActivity::Ask,
             effect: if refusal.is_some() {
                 ToolEffect::None
@@ -281,29 +287,19 @@ fn encode_answers(entries: &[QuestionBatchEntry], answers: &[String]) -> Option<
     if entries.len() != answers.len() {
         return None;
     }
-    let pairs: Vec<Value> = entries
-        .iter()
-        .zip(answers)
-        .map(|(entry, answer)| {
-            serde_json::json!({
-                "question": entry.question,
-                "answer": answer,
-            })
-        })
-        .collect();
-    Some(Value::Array(pairs).to_string())
-}
-
-fn has_legacy_permission_request_id(arguments: &str) -> bool {
-    parse_tool_args_object(arguments)
-        .is_ok_and(|arguments| arguments.get("permission_request_id").is_some())
-}
-
-fn title(arguments: &str) -> String {
-    match parse_tool_args_object(arguments) {
-        Ok(_) => ACTION_TITLE.to_owned(),
-        Err(_) => format_unknown_action(TOOL_NAME),
+    let mut encoded = String::from("[");
+    for (index, (entry, answer)) in entries.iter().zip(answers).enumerate() {
+        if index > 0 {
+            encoded.push(',');
+        }
+        encoded.push_str("{\"question\":");
+        encoded.push_str(&Value::String(entry.question.clone()).to_string());
+        encoded.push_str(",\"answer\":");
+        encoded.push_str(&Value::String(answer.clone()).to_string());
+        encoded.push('}');
     }
+    encoded.push(']');
+    Some(encoded)
 }
 
 #[cfg(test)]
