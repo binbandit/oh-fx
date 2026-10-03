@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ofx_contract::{
     NoticeTone, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiEvent,
 };
-use ofx_skills::{Skill, SkillDiscovery, SkillSource, diagnostic_summary};
+use ofx_skills::{Skill, SkillDiscovery, SkillSource, diagnostic_summary, install_local};
 use rustix::fs::{Mode, OFlags, mkdirat, openat};
 use rustix::io::Errno;
 
@@ -32,7 +32,10 @@ const NEW_FILE_FLAGS: OFlags = OFlags::WRONLY
 enum Command<'a> {
     List,
     Show(&'a str),
-    Install(&'a str),
+    Install {
+        source: &'a str,
+        filter: Option<&'a str>,
+    },
     Create(&'a str),
     Remove(&'a str),
     Path,
@@ -51,7 +54,7 @@ fn parse(rest: &str) -> Command<'_> {
         .strip_prefix("add ")
         .or_else(|| trimmed.strip_prefix("install "))
     {
-        return Command::Install(install_source(source.trim_matches(TRIMMED)));
+        return parse_install(source.trim_matches(TRIMMED));
     }
     if let Some(name) = trimmed.strip_prefix("create ") {
         return Command::Create(name.trim_matches(TRIMMED));
@@ -65,11 +68,20 @@ fn parse(rest: &str) -> Command<'_> {
     Command::Usage
 }
 
-fn install_source(arguments: &str) -> &str {
+fn parse_install(arguments: &str) -> Command<'_> {
     ["--skill ", "--skill="]
         .iter()
         .find_map(|flag| arguments.find(flag))
-        .map_or(arguments, |index| arguments[..index].trim_matches(TRIMMED))
+        .map_or(
+            Command::Install {
+                source: arguments,
+                filter: None,
+            },
+            |index| Command::Install {
+                source: arguments[..index].trim_matches(TRIMMED),
+                filter: Some(arguments[index + 8..].trim_matches(TRIMMED)),
+            },
+        )
 }
 
 pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
@@ -90,18 +102,7 @@ pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
     match command {
         Command::List => open_menu(state, &found, SkillMenuFocus::Start),
         Command::Show(name) => show(state, &found, name),
-        Command::Install(source) => {
-            state.notice(
-                NoticeTone::Neutral,
-                TOPIC,
-                &format!("Installing from {source}..."),
-            );
-            state.notice(
-                NoticeTone::Neutral,
-                TOPIC,
-                "Skill installation is not available yet.",
-            );
-        }
+        Command::Install { source, filter } => install(state, source, filter),
         Command::Create(name) => create(state, name),
         Command::Remove(name) => remove(state, &found, name),
         Command::Path => state.notice(
@@ -111,6 +112,36 @@ pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
         ),
         Command::Usage => state.notice(NoticeTone::Neutral, "", USAGE),
     }
+}
+
+fn install(state: &ControllerState, source: &str, filter: Option<&str>) {
+    state.notice(
+        NoticeTone::Neutral,
+        TOPIC,
+        &format!("Installing from {source}..."),
+    );
+    let skills = state.skills();
+    let notice = match install_local(
+        skills.managed_root(),
+        Path::new(source.trim_matches([' ', '\t', '\r', '\n'])),
+        filter,
+    ) {
+        Ok(result) if result.installed.is_empty() => filter.map_or_else(
+            || "No skills found (no SKILL.md files).".to_owned(),
+            |filter| format!("Skill '{filter}' not found in the repository."),
+        ),
+        Ok(result) => {
+            skills.refresh();
+            result
+                .installed
+                .iter()
+                .map(|name| format!("Installed: {name}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Err(_) => "Failed to install. Check the source path or URL and try again.".to_owned(),
+    };
+    state.notice(NoticeTone::Neutral, TOPIC, &notice);
 }
 
 fn open_menu(state: &ControllerState, found: &SkillDiscovery, focus: SkillMenuFocus) {

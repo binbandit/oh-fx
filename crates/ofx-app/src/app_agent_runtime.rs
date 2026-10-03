@@ -3830,6 +3830,209 @@ mod tests {
         assert_eq!(skill_warnings(harness.until(is_skills_menu).await), 1);
     }
 
+    async fn skill_install_controller(
+        server: &FakeServer,
+    ) -> (tempfile::TempDir, Controller, Arc<Mutex<Vec<UiEvent>>>) {
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, server).await;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let emit: Emit = Arc::new(move |event| captured.lock().unwrap().push(event));
+        (home, Controller::new(setup, emit, None), events)
+    }
+
+    #[tokio::test]
+    async fn local_skill_install_reports_metadata_names_and_refreshes_before_returning() {
+        let server = FakeServer::start([]);
+        let (home, controller, events) = skill_install_controller(&server).await;
+        write_skill(&home, "install-pack", "root-skill");
+        write_skill(&home, "install-pack/review", "parsed-review");
+        let source = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
+        assert!(controller.state.skills().current().skills.is_empty());
+        handle_command(
+            &controller.state,
+            &format!("/skills install {}", source.display()),
+            Work::Idle,
+        );
+        assert_eq!(
+            notices(&events.lock().unwrap()),
+            [
+                (
+                    NoticeTone::Neutral,
+                    "skills".to_owned(),
+                    format!("Installing from {}...", source.display())
+                ),
+                (
+                    NoticeTone::Neutral,
+                    "skills".to_owned(),
+                    "Installed: root-skill\nInstalled: parsed-review".to_owned()
+                ),
+            ]
+        );
+        let mut names: Vec<_> = controller
+            .state
+            .skills()
+            .current()
+            .skills
+            .iter()
+            .map(|skill| skill.name.clone())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["parsed-review", "root-skill"]);
+        assert!(
+            controller
+                .state
+                .skills()
+                .managed_root()
+                .join("install-pack/SKILL.md")
+                .is_file()
+        );
+        assert!(
+            controller
+                .state
+                .skills()
+                .managed_root()
+                .join("review/SKILL.md")
+                .is_file()
+        );
+    }
+
+    #[tokio::test]
+    async fn local_skill_install_filters_aliases_and_supplies_the_next_prompt() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, "install-pack", "root-skill");
+        write_skill(&harness.home, "install-pack/review", "parsed-review");
+        let source = fs::canonicalize(harness.home.path().join("workspace/install-pack")).unwrap();
+        harness.command(&format!("/skills add {} --skill=review", source.display()));
+        assert_eq!(
+            notice_body(harness.until(is_notice).await),
+            [format!("skills|Installing from {}...", source.display())]
+        );
+        assert_eq!(
+            notice_body(harness.until(is_notice).await),
+            ["skills|Installed: parsed-review"]
+        );
+        let managed = fs::canonicalize(harness.home.path().join("config"))
+            .unwrap()
+            .join("skills");
+        assert!(!managed.join("install-pack").exists());
+        assert!(managed.join("review/SKILL.md").is_file());
+        for filter in ["--skill parsed-review", "--skill=", "--skill=\t "] {
+            harness.command(&format!("/skills install {} {filter}", source.display()));
+            assert_eq!(
+                notice_body(harness.until(is_notice).await),
+                [format!("skills|Installing from {}...", source.display())]
+            );
+            let expected = if filter == "--skill parsed-review" {
+                "skills|Installed: parsed-review"
+            } else {
+                "skills|Installed: root-skill\nInstalled: parsed-review"
+            };
+            assert_eq!(notice_body(harness.until(is_notice).await), [expected]);
+        }
+        harness.submit("$parsed-review use this workflow");
+        let shown = harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(
+            notices(shown)
+                .iter()
+                .any(|(_, _, body)| body.contains("Loaded skill parsed-review"))
+        );
+        let request = server.requests().remove(0).json();
+        assert!(system_text(&request).contains("<skill_content name=\"parsed-review\""));
+    }
+
+    #[tokio::test]
+    async fn local_skill_install_preserves_empty_filtered_and_failure_notices() {
+        let server = FakeServer::start([]);
+        let (home, controller, events) = skill_install_controller(&server).await;
+        let empty = home.path().join("workspace/empty-pack");
+        fs::create_dir_all(&empty).unwrap();
+        let empty = fs::canonicalize(empty).unwrap();
+        for (arguments, expected) in [
+            (
+                format!("install {}", empty.display()),
+                "No skills found (no SKILL.md files).",
+            ),
+            (
+                format!("add {} --skill missing", empty.display()),
+                "Skill 'missing' not found in the repository.",
+            ),
+            (
+                format!("install {}/missing", empty.display()),
+                "Failed to install. Check the source path or URL and try again.",
+            ),
+        ] {
+            events.lock().unwrap().clear();
+            handle_command(
+                &controller.state,
+                &format!("/skills {arguments}"),
+                Work::Idle,
+            );
+            let source = arguments
+                .strip_prefix("install ")
+                .or_else(|| arguments.strip_prefix("add "))
+                .unwrap()
+                .split(" --skill")
+                .next()
+                .unwrap();
+            assert_eq!(
+                notices(&events.lock().unwrap()),
+                [
+                    (
+                        NoticeTone::Neutral,
+                        "skills".to_owned(),
+                        format!("Installing from {source}...")
+                    ),
+                    (
+                        NoticeTone::Neutral,
+                        "skills".to_owned(),
+                        expected.to_owned()
+                    ),
+                ]
+            );
+            assert!(controller.state.skills().current().skills.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn local_skill_install_rejects_a_linked_managed_root_without_outside_writes() {
+        let server = FakeServer::start([]);
+        let (home, controller, events) = skill_install_controller(&server).await;
+        write_skill(&home, "install-pack", "root-skill");
+        let source = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
+        let outside = home.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel"), "unchanged").unwrap();
+        std::os::unix::fs::symlink(&outside, controller.state.skills().managed_root()).unwrap();
+        handle_command(
+            &controller.state,
+            &format!("/skills install {}", source.display()),
+            Work::Idle,
+        );
+        assert_eq!(
+            notices(&events.lock().unwrap()),
+            [
+                (
+                    NoticeTone::Neutral,
+                    "skills".to_owned(),
+                    format!("Installing from {}...", source.display())
+                ),
+                (
+                    NoticeTone::Neutral,
+                    "skills".to_owned(),
+                    "Failed to install. Check the source path or URL and try again.".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("sentinel")).unwrap(),
+            "unchanged"
+        );
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+        assert!(controller.state.skills().current().skills.is_empty());
+    }
+
     #[tokio::test]
     async fn skills_commands_create_and_remove_only_inside_the_managed_root() {
         let server = FakeServer::start([]);
@@ -3883,7 +4086,7 @@ mod tests {
         harness.until(is_notice).await;
         assert_eq!(
             notice_body(harness.until(is_notice).await),
-            ["skills|Skill installation is not available yet."]
+            ["skills|Failed to install. Check the source path or URL and try again."]
         );
     }
 
