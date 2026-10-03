@@ -9,9 +9,11 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_cli::{LaunchModifiers, RequestedResume};
-use ofx_contract::{HistoryEntry, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
+use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
-use ofx_tui::{ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel};
+use ofx_tui::{
+    Opening, ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel,
+};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +23,7 @@ use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_session_runtime::{
-    Persistence, configured_preferences, open_store, running_provider,
+    LaunchOverrides, Persistence, configured_preferences, open_store, running_provider,
 };
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
@@ -43,7 +45,7 @@ struct Session {
     executions: ManagedExecutions,
     permission_mode: PermissionMode,
     persistence: Option<Persistence>,
-    history: Option<Vec<HistoryEntry>>,
+    opening: Opening,
 }
 
 pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedResume>) -> ExitCode {
@@ -132,15 +134,31 @@ async fn bootstrap(
         )
         .await
         .map_err(|error| vec![failure_line(&error)])?;
-    let history = resumed
-        .as_ref()
-        .map(|resumed| resumed.session.transcript())
-        .transpose()
-        .map_err(|error| vec![failure_line(&error)])?;
+    let opening = match &resumed {
+        Some(resumed) => Opening::Transcript(
+            resumed
+                .session
+                .transcript()
+                .map_err(|error| vec![failure_line(&error)])?,
+        ),
+        None if resume == Some(&RequestedResume::Pick) => Opening::SessionPicker,
+        None => Opening::Welcome,
+    };
     let persistence = match (store, running_provider(&setup)) {
         (Ok(store), Ok(provider)) => {
             let preferences = configured_preferences(&profile, &setup, provider.clone());
-            Some(Persistence::new(store, provider, preferences, resumed))
+            let overrides = LaunchOverrides {
+                model: modifiers.model().map(|_| setup.model().to_owned()),
+                effort: modifiers.reasoning_effort().cloned(),
+                fast_mode: modifiers.fast_mode(),
+            };
+            Some(Persistence::new(
+                store,
+                provider,
+                preferences,
+                overrides,
+                resumed,
+            ))
         }
         (_, Err(error)) if resumed.is_some() => return Err(vec![failure_line(&error)]),
         _ => None,
@@ -151,7 +169,7 @@ async fn bootstrap(
         executions,
         permission_mode,
         persistence,
-        history,
+        opening,
     })
 }
 
@@ -242,12 +260,13 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.workspace_root(),
             session.profile.cache_dir(),
         ))),
-        history: session.history,
+        opening: session.opening,
     };
+    let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();
     let agent = agent_work(
         session.setup,
-        session.persistence,
+        (session.persistence, picking),
         session.executions,
         runtime,
     );
@@ -256,7 +275,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
 
 fn agent_work(
     setup: AgentSetup,
-    persistence: Option<Persistence>,
+    (persistence, pick_at_start): (Option<Persistence>, bool),
     executions: ManagedExecutions,
     runtime: Runtime,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
@@ -266,6 +285,7 @@ fn agent_work(
             setup,
             Arc::new(move |event| events.send(event)),
             persistence,
+            pick_at_start,
         );
         runtime.block_on(async {
             controller.run(commands).await;

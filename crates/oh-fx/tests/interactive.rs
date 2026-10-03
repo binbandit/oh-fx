@@ -106,7 +106,14 @@ fn wait(session: &PtySession, needle: &str) -> String {
 fn the_picker_alias_and_launch_models_open_the_shell() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Chosen."]))]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    let mut session = home.shell_with(&["-r"], 24, 80, "auto · model-a");
+    let mut command = home.command();
+    command.arg("-r");
+    let mut session = PtySession::spawn(command, 24, 80).expect("spawn oh-fx in a pty");
+    let screen = wait(&session, "No sessions found.");
+    assert!(
+        screen.contains("Sessions 0  [Current workspace]  All workspaces"),
+        "{screen}"
+    );
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
     let mut session = home.shell_with(
@@ -621,15 +628,20 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 16");
-    assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
-    assert!(screen.contains("  /skills         browse and manage skills"));
-    assert!(screen.contains("  /quit           exit the interactive shell"));
-    assert!(screen.contains("  /reset          reset the current session context"));
-    assert!(screen.contains("  /new            start a fresh session"));
-    assert!(screen.contains("Commands 16  [All]  General  Session  Account  Model"));
-    assert!(screen.contains("  /undo           undo the latest tracked file operation"));
-    assert!(screen.contains("  /allowlist      manage trusted commands, tools, and URLs"));
+    let menu = [
+        "Commands 17  [All]  General  Session  Account  Model",
+        "  /permissions    choose what oh-fx is allowed to do",
+        "  /skills         browse and manage skills",
+        "  /quit           exit the interactive shell",
+        "  /reset          reset the current session context",
+        "  /new            start a fresh session",
+        "  /resume         resume a saved session",
+        "  /undo           undo the latest tracked file operation",
+        "  /allowlist      manage trusted commands, tools, and URLs",
+    ];
+    session
+        .wait_for(WAIT, |screen| menu.iter().all(|line| screen.contains(line)))
+        .unwrap_or_else(|screen| panic!("the help menu is incomplete:\n{screen}"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session.send(b"/stats\r");
@@ -966,7 +978,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 16");
+    wait(&session, "Commands 17");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 

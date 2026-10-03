@@ -1,5 +1,6 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
 use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
+use crate::session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionScope};
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::tool_dispatch::CallDescription;
 use crate::types::{
@@ -221,6 +222,22 @@ pub enum UiEvent {
     ConversationCleared {
         first_kept_prompt: u64,
     },
+    SessionPickerOpened {
+        scope: SessionScope,
+    },
+    SessionsListed {
+        page: SessionPage,
+    },
+    SessionsUnavailable {
+        scope: SessionScope,
+    },
+    SessionResumeFailed {
+        id: String,
+        refusal: ResumeRefusal,
+    },
+    SessionResumed {
+        history: Vec<HistoryEntry>,
+    },
     ExitRequested,
 }
 
@@ -247,6 +264,18 @@ pub enum UiCommand {
     TogglePermissionMode,
     FullAccessWarningShown,
     CancelCompaction,
+    OpenSessions {
+        scope: SessionScope,
+    },
+    ListSessions {
+        scope: SessionScope,
+        after: Option<SessionCursor>,
+        limit: usize,
+    },
+    ResumeSession {
+        id: String,
+    },
+    CloseSessionPicker,
 }
 
 #[cfg(test)]

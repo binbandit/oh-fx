@@ -245,7 +245,10 @@ impl FilePicker {
 
 impl Shell<'_> {
     fn file_picker_eligible(&self) -> bool {
-        self.approval.is_none() && self.question.is_none() && self.skills_menu.is_none()
+        self.approval.is_none()
+            && self.question.is_none()
+            && self.skills_menu.is_none()
+            && self.picker.is_none()
     }
 
     fn file_picker_distrusted(&self) -> bool {

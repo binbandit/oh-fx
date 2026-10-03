@@ -516,6 +516,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::ResumeSession,
+        "/resume",
+        "resume a saved session",
+        SlashPresentationCategory::Session,
+    ),
+    SlashSpec::new(
         SlashKind::Stats,
         "/stats",
         "show token and turn statistics",

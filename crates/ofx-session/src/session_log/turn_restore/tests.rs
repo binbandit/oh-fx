@@ -987,3 +987,127 @@ fn saved_results_larger_than_replay_limit_keep_the_complete_sidecar() {
         .unwrap();
     assert!(found);
 }
+
+fn saved_title(fixture: &Fixture) -> Value {
+    let manifest = fs::read_to_string(fixture.dir().join("session.json")).unwrap();
+    serde_json::from_str::<Value>(&manifest).unwrap()["title"].clone()
+}
+
+#[test]
+fn only_the_first_save_of_a_fresh_session_names_it() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("  fix the\tbuild\nplease", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "fix the build");
+    session
+        .record_turn(&simple_turn("rename me", "no"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "fix the build");
+    assert_eq!(session.display_title(), "fix the build");
+
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("/help", "commands"), &gateway())
+        .unwrap();
+    session
+        .record_turn(&simple_turn("named too late", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+    drop(session);
+    let resumed = resume_session(&fixture.sessions, "restored", LOCK_DEADLINE).unwrap();
+    assert_eq!(resumed.display_title(), "named too late");
+
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session.select_model("openai/gpt-5-mini", false).unwrap();
+    session
+        .record_turn(&simple_turn("after a model choice", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+}
+
+#[test]
+fn a_title_that_cannot_be_written_leaves_the_turn_saved() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let manifest = fixture.dir().join("session.json");
+    fs::remove_file(&manifest).unwrap();
+    fs::create_dir(&manifest).unwrap();
+    session
+        .record_turn(&simple_turn("named", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(session.require_writable(), Ok(()));
+    assert_eq!(session.last_seq(), 3);
+}
+
+#[test]
+fn a_title_saved_before_the_first_turn_is_kept() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let mut renamed = session.metadata.clone();
+    renamed.title = Some("Renamed by hand".to_owned());
+    session.write_metadata(renamed).unwrap();
+    session
+        .record_turn(&simple_turn("fix the build", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "Renamed by hand");
+    assert_eq!(session.display_title(), "Renamed by hand");
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let mut renamed = session.metadata.clone();
+    renamed.title = Some("Generated title".to_owned());
+    session.write_metadata(renamed).unwrap();
+    session
+        .record_compaction(
+            "S",
+            HistoryCut {
+                turns: 0,
+                tool_steps: 0,
+            },
+            Some(&simple_turn("compacted first", "")),
+            &gateway(),
+        )
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "Generated title");
+}
+
+#[test]
+fn a_resumed_session_or_a_checkpointed_first_turn_keeps_titles_as_upstream() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let cut = HistoryCut {
+        turns: 0,
+        tool_steps: 0,
+    };
+    session
+        .record_compaction(
+            "S",
+            cut,
+            Some(&simple_turn("compacted first", "")),
+            &gateway(),
+        )
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "compacted first");
+    drop(session);
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_compaction("S", cut, None, &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+    drop(session);
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("/model", "listed"), &gateway())
+        .unwrap();
+    drop(session);
+    let mut resumed = resume_session(&fixture.sessions, "restored", LOCK_DEADLINE).unwrap();
+    resumed
+        .record_turn(&simple_turn("named later", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), Value::Null);
+}

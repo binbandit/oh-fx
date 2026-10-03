@@ -241,7 +241,7 @@ fn run_a_codex_session(home: &Path) -> ! {
         executions,
         permission_mode: PermissionMode::Auto,
         persistence: None,
-        history: None,
+        opening: Opening::Welcome,
     };
     process::exit(i32::from(run(session, None, runtime).is_err()));
 }
@@ -308,7 +308,7 @@ fn run_a_worker_that_panics() -> ! {
         command_categories: Vec::new(),
         prompt_history: PromptHistory::disabled(),
         file_mentions: None,
-        history: None,
+        opening: Opening::Welcome,
     };
     let outcome = host(options, events, receiver, None, |events, mut commands| {
         let _ = commands.blocking_recv();
@@ -383,7 +383,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         command_categories: Vec::new(),
         prompt_history: PromptHistory::disabled(),
         file_mentions: None,
-        history: None,
+        opening: Opening::Welcome,
     };
     let stopped = directory.join("stopped");
     let outcome = host(options, events, receiver, None, move |_, mut commands| {

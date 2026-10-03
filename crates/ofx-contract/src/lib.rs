@@ -5,6 +5,7 @@ mod history_turn;
 mod ids;
 mod model_capabilities;
 mod permission_gate;
+mod session_picker;
 mod skill_menu;
 mod stream_provider;
 mod subagent;
@@ -30,6 +31,7 @@ pub use permission_gate::{
     FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ReviewRequest,
     ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
 };
+pub use session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope};
 pub use skill_menu::{
     SkillBinding, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
 };

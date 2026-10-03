@@ -9,7 +9,7 @@ pub(crate) struct LiveParts<'a> {
     pub(crate) banner: Vec<Row>,
     pub(crate) composer: &'a ComposerView,
     pub(crate) menu: Vec<Row>,
-    pub(crate) hint: Row,
+    pub(crate) hint: Option<Row>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
     } else {
         footer.extend(parts.menu);
     }
-    footer.push(parts.hint);
+    footer.extend(parts.hint);
     let visible = &parts.provisional[parts.provisional.len().saturating_sub(max_rows)..];
     let mut body = visible.to_vec();
     let mut leading_gaps = visible.len();
@@ -100,7 +100,7 @@ mod tests {
             banner: banner.iter().map(|text| Row::plain(text)).collect(),
             composer,
             menu: Vec::new(),
-            hint: Row::plain("auto · m"),
+            hint: Some(Row::plain("auto · m")),
         }
     }
 
@@ -188,6 +188,22 @@ mod tests {
             assert_eq!(layout.footer_row, footer_row);
             assert_eq!(layout.composer_start, expected.len() - 3);
         }
+    }
+
+    #[test]
+    fn a_menu_without_a_hint_takes_the_place_of_the_status_line() {
+        let composer = prompt();
+        let mut parts = parts(&composer, false, &[], &[]);
+        parts.menu = vec![
+            Row::new(),
+            Row::plain("Sessions 1"),
+            Row::new(),
+            Row::plain("  one"),
+        ];
+        parts.hint = None;
+        let layout = solve(parts, 30);
+        assert_eq!(texts(&layout), ["┃ ", "", "Sessions 1", "", "  one"]);
+        assert_eq!(layout.cursor, Some((0, 2)));
     }
 
     #[test]
