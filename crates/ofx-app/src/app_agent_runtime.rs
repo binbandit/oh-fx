@@ -3869,7 +3869,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&events);
         let emit: Emit = Arc::new(move |event| captured.lock().unwrap().push(event));
-        (home, Controller::new(setup, emit, None), events)
+        (home, Controller::new(setup, emit, None, false), events)
     }
 
     fn held_install_lock(

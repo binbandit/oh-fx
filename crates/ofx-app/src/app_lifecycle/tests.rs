@@ -532,7 +532,7 @@ fn run_a_local_install_session(home: &Path) -> ! {
         executions,
         permission_mode: PermissionMode::Auto,
         persistence: None,
-        history: None,
+        opening: Opening::Welcome,
     };
     process::exit(i32::from(run(session, None, runtime).is_err()));
 }
