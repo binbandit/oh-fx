@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApplicableTarget, ApprovalDecision, AutoCompactPercent, CallDescription,
-    ChatMessage, Completion, Concurrency, FinishReason, ModelProvider, ModelRequest, PathAccess,
-    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ReviewRequest, ReviewVerdict,
-    Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool, ToolActivity, ToolCall,
-    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, UiEvent, Usage,
+    Admission, ApplicableTarget, ApprovalDecision, ApprovalOrigin, AutoCompactPercent,
+    CallDescription, ChatMessage, Completion, Concurrency, FinishReason, ModelProvider,
+    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
+    ReviewRequest, ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool,
+    ToolActivity, ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -616,6 +616,28 @@ async fn abandoning_the_wait_cancels_the_child() {
     assert_eq!(harness.provider.seen().len(), 2);
 }
 
+#[tokio::test]
+async fn clearing_the_host_forgets_every_child_and_its_conversation() {
+    let harness = Harness::new(vec![Script::Reply("first"), Script::Reply("fresh")]);
+    assert_eq!(
+        harness
+            .run("call-1", message("reviewer", Some("Be terse."), "review a"))
+            .await,
+        succeeded("first")
+    );
+    harness.host.clear();
+    assert_eq!(
+        harness
+            .run("call-2", message("reviewer", None, "review b"))
+            .await,
+        succeeded("fresh")
+    );
+    let seen = harness.provider.seen();
+    assert_eq!(seen[1].system_prompt, BASE_PROMPT);
+    assert_eq!(seen[1].messages, vec![ChatMessage::user("review b")]);
+    assert_eq!(harness.agents.created.lock().unwrap().len(), 2);
+}
+
 fn tool_results(seen: &Seen) -> Vec<String> {
     seen.messages
         .iter()
@@ -627,7 +649,7 @@ fn tool_results(seen: &Seen) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_childs_approval_request_reaches_the_owner_and_its_answer_applies() {
+async fn a_childs_approval_is_raised_as_the_subagents_request_and_its_answer_applies() {
     let harness = Harness::new(vec![
         Script::Probe,
         Script::Reply("probed it"),
@@ -654,9 +676,12 @@ async fn a_childs_approval_request_reaches_the_owner_and_its_answer_applies() {
     assert_eq!(
         requested
             .iter()
-            .map(|request| request.tool_name.as_str())
+            .map(|request| (request.tool_name.as_str(), request.origin.clone()))
             .collect::<Vec<_>>(),
-        ["probe", "probe"]
+        [
+            ("probe", ApprovalOrigin::Subagent("1".to_owned())),
+            ("probe", ApprovalOrigin::Subagent("2".to_owned())),
+        ]
     );
     assert_ne!(requested[0].id, requested[1].id);
     let seen = harness.provider.seen();

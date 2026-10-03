@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_contract::{
-    ApprovalRequest, ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode,
+    ApprovalOrigin, ApprovalRequest, ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode,
     ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest,
 };
 use tokio::sync::watch;
@@ -139,6 +139,17 @@ impl Owner {
         }
     }
 
+    pub(crate) fn clear(&self) {
+        let mut state = self.lock();
+        for slot in state.slots.values() {
+            slot.cancel.cancel();
+        }
+        *state = State {
+            issued: state.issued,
+            ..State::default()
+        };
+    }
+
     pub(crate) async fn observe(waiter: Waiter, parent: &CancellationToken) -> Observed {
         let Waiter {
             abandoned,
@@ -214,8 +225,14 @@ impl Owner {
             } = start;
             let active = work.clone();
             let agents = Arc::clone(&owner.agents);
+            let origin = child_id.clone();
             let run = tokio::spawn(async move {
-                let forward = |request: ApprovalRequest| agents.approval_requested(request);
+                let forward = |request: ApprovalRequest| {
+                    agents.approval_requested(ApprovalRequest {
+                        origin: ApprovalOrigin::Subagent(origin.clone()),
+                        ..request
+                    });
+                };
                 let mut runtime = runtime.lock_owned().await;
                 let tools = agents.work_tools();
                 runtime

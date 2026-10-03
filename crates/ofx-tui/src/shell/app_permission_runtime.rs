@@ -111,8 +111,9 @@ impl Shell<'_> {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        ApprovalRequest, ApprovalScope, CallDescription, Concurrency, FULL_ACCESS_WARNING,
-        PathAccess, RequestId, ToolActivity, ToolCallId, ToolEffect, TurnId, UiEvent,
+        ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription, Concurrency,
+        FULL_ACCESS_WARNING, PathAccess, RequestId, ToolActivity, ToolCallId, ToolEffect, TurnId,
+        UiEvent,
     };
 
     use super::*;
@@ -222,6 +223,7 @@ mod tests {
                 },
                 command: None,
                 file: None,
+                origin: ApprovalOrigin::ActiveSession,
             }),
         });
         test.screen();

@@ -7,6 +7,7 @@ mod app_permission_runtime;
 mod app_session_runtime;
 mod app_subagent_runtime;
 mod app_upgrade_runtime;
+mod approval_queue;
 mod codex_provider;
 mod context;
 mod file_mention_runtime;
