@@ -7,11 +7,7 @@ fn assistant(content: &str, calls: &[&str]) -> ChatMessage {
         content: Some(content.to_owned()),
         tool_calls: calls
             .iter()
-            .map(|id| ToolCall {
-                id: ToolCallId::new(*id),
-                name: "shell".to_owned(),
-                arguments: "{}".to_owned(),
-            })
+            .map(|id| ToolCall::new(*id, "shell", "{}"))
             .collect(),
         provider_replay: None,
     }

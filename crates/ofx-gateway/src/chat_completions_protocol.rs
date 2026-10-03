@@ -6,7 +6,7 @@ use std::mem;
 use ofx_config::{MAX_MODEL_BYTES, MaxTokensParameter, ToolChoiceMode, is_valid_model_id};
 use ofx_contract::{
     ChatMessage, Completion, DuplicateKeys, FinishReason, Json, ModelRequest, Object,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolSpec, Usage, parse_strict_json,
+    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolSpec, Usage, parse_strict_json,
     parse_strict_json_value,
 };
 use serde::Serialize;
@@ -970,11 +970,7 @@ impl Reducer {
         let tool_calls = self
             .tools
             .drain(..)
-            .map(|tool| ToolCall {
-                id: ToolCallId::new(tool.id.unwrap_or_default()),
-                name: tool.name,
-                arguments: tool.arguments,
-            })
+            .map(|tool| ToolCall::new(tool.id.unwrap_or_default(), tool.name, tool.arguments))
             .collect();
         let content = mem::take(&mut self.content);
         Ok(Completion {

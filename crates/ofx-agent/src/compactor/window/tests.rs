@@ -27,11 +27,7 @@ fn assistant(content: &str, calls: Vec<ToolCall>, replay: Option<ProviderReplay>
 }
 
 fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: name.to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new(id, name, arguments)
 }
 
 fn result(id: &str, name: &str, output: &str) -> ChatMessage {

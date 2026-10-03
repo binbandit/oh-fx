@@ -1,4 +1,4 @@
-use ofx_contract::ToolResultStatus;
+use ofx_contract::{ToolCallId, ToolResultStatus};
 use serde_json::json;
 
 use super::*;
@@ -75,11 +75,7 @@ impl Stream {
 }
 
 fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: name.to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new(id, name, arguments)
 }
 
 fn assistant(content: Option<&str>, tool_calls: Vec<ToolCall>) -> ChatMessage {

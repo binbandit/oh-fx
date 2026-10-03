@@ -342,16 +342,12 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::Path;
 
-    use ofx_contract::{CommandProfile, ToolCallId};
+    use ofx_contract::CommandProfile;
 
     use super::*;
 
     fn read(path: &str) -> ToolCall {
-        ToolCall {
-            id: ToolCallId::new("call-1"),
-            name: "read_file".to_owned(),
-            arguments: format!(r#"{{"path":"{path}"}}"#),
-        }
+        ToolCall::new("call-1", "read_file", format!(r#"{{"path":"{path}"}}"#))
     }
 
     fn approve_always(policy: &PermissionPolicy, action: GatedAction<'_>) {
@@ -434,13 +430,15 @@ mod tests {
         let root = fs::canonicalize(temp.path()).unwrap();
         let workspace = root.join("workspace");
         fs::create_dir_all(workspace.join("src")).unwrap();
-        let search = |name: &str, path: Option<&str>| ToolCall {
-            id: ToolCallId::new("call-1"),
-            name: name.to_owned(),
-            arguments: match path {
-                Some(path) => format!(r#"{{"pattern":"x","path":"{path}"}}"#),
-                None => r#"{"pattern":"x"}"#.to_owned(),
-            },
+        let search = |name: &str, path: Option<&str>| {
+            ToolCall::new(
+                "call-1",
+                name,
+                match path {
+                    Some(path) => format!(r#"{{"pattern":"x","path":"{path}"}}"#),
+                    None => r#"{"pattern":"x"}"#.to_owned(),
+                },
+            )
         };
         let outside = root.to_str().unwrap();
 
@@ -1057,11 +1055,7 @@ mod tests {
     #[test]
     fn calls_without_an_external_path_target_stay_inside_the_workspace() {
         let policy = PermissionPolicy::new(PermissionMode::Ask, "/");
-        let call = ToolCall {
-            id: ToolCallId::new("call-1"),
-            name: "unknown_tool".to_owned(),
-            arguments: r#"{"path":"/etc/hosts"}"#.to_owned(),
-        };
+        let call = ToolCall::new("call-1", "unknown_tool", r#"{"path":"/etc/hosts"}"#);
         assert_eq!(
             policy.admit(&call),
             Admission::Allowed(PathAccess::WorkspaceOnly)

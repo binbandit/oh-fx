@@ -517,11 +517,7 @@ fn text_reply(text: &str) -> Script {
 }
 
 fn echo_call(id: &str, arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: "echo".to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new(id, "echo", arguments)
 }
 
 fn tool_reply(calls: &[(&str, &str)]) -> Script {
@@ -714,11 +710,7 @@ fn provider_tool(name: &str, description: &str) -> Arc<dyn Tool> {
 
 #[tokio::test]
 async fn provider_executed_tools_become_guidance_instead_of_functions() {
-    let search = ToolCall {
-        id: ToolCallId::new("call-1"),
-        name: "search".to_owned(),
-        arguments: r#"{"query":"news"}"#.to_owned(),
-    };
+    let search = ToolCall::new("call-1", "search", r#"{"query":"news"}"#);
     let provider = FakeProvider::new(vec![
         Script::Reply(
             Vec::new(),
@@ -813,11 +805,7 @@ async fn unknown_tools_and_rejected_arguments_are_reported_and_panics_become_fai
             Vec::new(),
             completion(
                 None,
-                vec![ToolCall {
-                    id: ToolCallId::new("call-0"),
-                    name: "missing".to_owned(),
-                    arguments: "{}".to_owned(),
-                }],
+                vec![ToolCall::new("call-0", "missing", "{}")],
                 FinishReason::ToolCalls,
             ),
         ),
@@ -890,11 +878,7 @@ async fn modern_mixed_batch_materializes_unsupported_terminal_before_admission()
                 None,
                 vec![
                     echo_call("candidate_read", r#"{"text":"input"}"#),
-                    ToolCall {
-                        id: ToolCallId::new("terminal_unsupported"),
-                        name: "missing_tool".to_owned(),
-                        arguments: "{}".to_owned(),
-                    },
+                    ToolCall::new("terminal_unsupported", "missing_tool", "{}"),
                 ],
                 FinishReason::ToolCalls,
             ),

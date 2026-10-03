@@ -13,8 +13,8 @@ use ofx_contract::{
     AutoCompactPercent, BoxFuture, ChatMessage, CommandProfile, CommandRequest, Completion,
     FileMutation, FileMutationState, FinishReason, GatedAction, LivePermissionMode, ModelProvider,
     ModelRequest, PathAccess, PermissionGate, PermissionMode, ProviderError, SessionGrant,
-    StreamSink, SubagentProvider, SubagentRequest, Tool, ToolCall, ToolCallId, ToolContext,
-    ToolOutput, ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
+    StreamSink, SubagentProvider, SubagentRequest, Tool, ToolCall, ToolContext, ToolOutput,
+    ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
@@ -194,10 +194,8 @@ impl Session {
         let batch = calls
             .iter()
             .enumerate()
-            .map(|(index, (name, arguments))| ToolCall {
-                id: ToolCallId::new(format!("call-{}", index + 1)),
-                name: (*name).to_owned(),
-                arguments: (*arguments).to_owned(),
+            .map(|(index, (name, arguments))| {
+                ToolCall::new(format!("call-{}", index + 1), *name, *arguments)
             })
             .collect();
         self.provider.batches.lock().unwrap().push_back(batch);
@@ -233,11 +231,7 @@ impl Session {
             .batches
             .lock()
             .unwrap()
-            .push_back(vec![ToolCall {
-                id: ToolCallId::new("call-1"),
-                name: name.to_owned(),
-                arguments: arguments.to_owned(),
-            }]);
+            .push_back(vec![ToolCall::new("call-1", name, arguments)]);
         let approvals = self.approvals.clone();
         let mut requests = Vec::new();
         let mut finished = None;

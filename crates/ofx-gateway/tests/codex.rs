@@ -259,11 +259,11 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
     assert_eq!(first.content.as_deref(), Some("I will read it."));
     assert_eq!(
         first.tool_calls,
-        [ToolCall {
-            id: ToolCallId::new("call_1"),
-            name: "read_file".to_owned(),
-            arguments: r#"{"path":"README.md"}"#.to_owned(),
-        }]
+        [ToolCall::new(
+            "call_1",
+            "read_file",
+            r#"{"path":"README.md"}"#
+        )]
     );
     assert_eq!(first.usage.input_tokens, Some(10));
     assert_eq!(
@@ -476,11 +476,7 @@ async fn malformed_call_arguments_arrive_as_sent_and_replay_only_as_an_empty_obj
     assert_eq!(first.finish_reason, FinishReason::ToolCalls);
     assert_eq!(
         first.tool_calls,
-        [ToolCall {
-            id: ToolCallId::new("call_1"),
-            name: "read_file".to_owned(),
-            arguments: malformed.to_owned(),
-        }]
+        [ToolCall::new("call_1", "read_file", malformed)]
     );
 
     let result = ChatMessage::Tool {
