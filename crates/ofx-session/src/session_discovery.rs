@@ -2,6 +2,7 @@ use std::os::unix::fs::MetadataExt;
 
 use ofx_config::PrivateDir;
 
+use crate::session_children::has_owner_marker;
 use crate::session_error::SessionError;
 use crate::session_event::{ConversationEvent, decode_conversation_frame};
 use crate::session_log::managed_file::{Access, open_managed_file};
@@ -15,11 +16,14 @@ const MILLIS_PER_SECOND: i64 = 1_000;
 pub(crate) fn classify_session(
     sessions: &PrivateDir,
     id: &str,
-) -> Result<SessionSummary, SessionError> {
+) -> Result<Option<SessionSummary>, SessionError> {
     let dir = sessions
         .open_child(id)?
         .ok_or(SessionError::SessionNotFound)?;
     let metadata = read_metadata(&dir, id)?;
+    if metadata.subagent_child || has_owner_marker(&dir)? {
+        return Ok(None);
+    }
     let file = open_managed_file(&dir, EVENTS_FILE, Access::ReadOnly)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let stat = file.metadata()?;
@@ -44,7 +48,7 @@ pub(crate) fn classify_session(
             .updated_at_ms
             .max(modified_ms(stat.mtime(), stat.mtime_nsec()))
     };
-    Ok(SessionSummary {
+    Ok(Some(SessionSummary {
         id: metadata.id,
         workspace_root: metadata.workspace_root,
         origin_workspace_root: metadata.origin_workspace_root,
@@ -54,7 +58,7 @@ pub(crate) fn classify_session(
         conversation_language: metadata.conversation_language,
         history_len,
         has_checkpoint,
-    })
+    }))
 }
 
 fn modified_ms(seconds: i64, nanos: i64) -> i64 {

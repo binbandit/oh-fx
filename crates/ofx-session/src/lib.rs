@@ -5,6 +5,7 @@ mod result_store;
 mod session;
 mod session_adapter;
 mod session_catalog_cache;
+mod session_children;
 mod session_codec;
 mod session_commands;
 mod session_conversation_log;
@@ -22,6 +23,7 @@ mod session_title_generation;
 
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
+pub use session_children::ChildSessions;
 pub use session_codec::recovery_checkpoint::RouteCredential;
 pub use session_codec::{SavedProvider, SessionMetadata, SessionPreferences};
 pub use session_commands::resolve_model_query_from_ids;

@@ -112,6 +112,12 @@ impl PrivateDir {
         Ok(Some(directory))
     }
 
+    pub fn try_clone(&self) -> Result<Self, DurableError> {
+        Ok(Self {
+            fd: self.fd.try_clone().map_err(|_| DurableError::Failed)?,
+        })
+    }
+
     pub fn ensure_private(&self) -> Result<(), DurableError> {
         make_private_directory(&self.fd)
     }

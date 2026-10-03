@@ -52,6 +52,7 @@ impl Fixture {
             conversation_language: "en".to_owned(),
             preferences: preferences(),
             title: None,
+            subagent_child: false,
         };
         if turns == 0 {
             metadata.updated_at_ms = i64::try_from(modified_s).unwrap() * 1000;

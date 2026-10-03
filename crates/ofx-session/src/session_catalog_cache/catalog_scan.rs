@@ -101,7 +101,7 @@ fn observe_all(
         }
         let before = before.map(|seen| seen.fingerprint);
         let cached_row = cached.row(id);
-        let Ok(summary) = classify_session(sessions, id) else {
+        let Ok(listed) = classify_session(sessions, id) else {
             observed.skipped_invalid += 1;
             match cached_row {
                 Some(row) if before == Some(row.fingerprint) => observed.kept.push(row.clone()),
@@ -110,15 +110,16 @@ fn observe_all(
             }
             continue;
         };
-        let after = RowSummary::of(&summary)
-            .persistable()
+        let after = listed
+            .as_ref()
+            .is_none_or(|summary| RowSummary::of(summary).persistable())
             .then(|| fingerprint(sessions, id))
             .flatten();
         let stable = before.is_some() && before == after;
         let entry = Entry {
             id: id.clone(),
             fingerprint: after.filter(|_| stable),
-            listed: Some(summary),
+            listed,
         };
         observed.changed |= match entry.row() {
             Some(row) => cached_row != Some(&row),
