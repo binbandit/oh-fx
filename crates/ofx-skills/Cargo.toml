@@ -13,6 +13,7 @@ ofx-text.workspace = true
 ofx-workspace.workspace = true
 percent-encoding.workspace = true
 rustix = { workspace = true, features = ["fs"] }
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
