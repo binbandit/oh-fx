@@ -747,3 +747,65 @@ fn a_skill_context_notice_follows_the_group_its_call_settles_in() {
         "{screen}"
     );
 }
+
+#[test]
+fn text_buffered_before_a_tool_step_reaches_the_transcript_ahead_of_its_group() {
+    let mut test = running("go");
+    test.deliver(text("    echo before\n"));
+    test.deliver(read("a", "a.txt"));
+    test.deliver(finished("a", "read_file", success()));
+    test.deliver(text("after\n"));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    let code = screen.find("echo before").unwrap();
+    let group = screen.find("● 1 tool call · 1 read").unwrap();
+    let after = screen.find("  after").unwrap();
+    assert!(code < group && group < after, "{screen}");
+}
+
+#[test]
+fn each_step_boundary_finishes_the_text_before_it() {
+    let mut test = running("go");
+    test.deliver(text("    echo before approval\n"));
+    test.deliver(approval(
+        "a",
+        "read_file",
+        ToolActivity::Read,
+        ("Reading", "Read", "../notes.txt"),
+        None,
+    ));
+    test.deliver(read("a", "../notes.txt"));
+    test.deliver(finished("a", "read_file", success()));
+    test.deliver(text("    echo before rejection\n"));
+    test.deliver(UiEvent::ToolRejected {
+        turn_id: turn(),
+        call_id: ToolCallId::new("b"),
+        tool_name: "read_file".to_owned(),
+        arguments: "{\"path\":".to_owned(),
+        reason: ToolRejection::MalformedArguments,
+        description: None,
+        content: String::new(),
+    });
+    test.deliver(text("\n\n"));
+    test.deliver(read("c", "c.txt"));
+    test.deliver(finished("c", "read_file", success()));
+    test.deliver(text("Done.\n"));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    let positions: Vec<usize> = [
+        "echo before approval",
+        "└ Read ../notes.txt",
+        "echo before rejection",
+        "● 2 tool calls · 1 read · 1 failed",
+        "└ Read c.txt",
+        "  Done.",
+    ]
+    .iter()
+    .map(|needle| {
+        screen
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} in\n{screen}"))
+    })
+    .collect();
+    assert!(positions.is_sorted(), "{screen}");
+}

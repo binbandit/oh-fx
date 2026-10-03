@@ -372,6 +372,7 @@ impl Shell<'_> {
             return;
         };
         let mut events = Vec::new();
+        turn.markdown.flush(&mut events);
         turn.markdown.push(&PARAGRAPH_BREAK[..missing], &mut events);
         self.transcript.append_assistant(events, &self.theme);
     }
