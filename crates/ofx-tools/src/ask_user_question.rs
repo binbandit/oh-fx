@@ -79,10 +79,6 @@ impl Tool for AskUserQuestion {
             asker: self.asker.clone(),
         }))
     }
-
-    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
-        self.prepare(arguments).ok().map(|call| call.describe())
-    }
 }
 
 struct AskCall {

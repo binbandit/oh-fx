@@ -225,8 +225,8 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    fn describe_saved(&self, _arguments: &str) -> Option<CallDescription> {
-        None
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        self.prepare(arguments).ok().map(|call| call.describe())
     }
 }
 
