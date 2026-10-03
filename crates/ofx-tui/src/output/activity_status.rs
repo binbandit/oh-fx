@@ -141,53 +141,66 @@ impl fmt::Display for Elapsed {
     }
 }
 
-pub(crate) fn activity_phase(turn_started_ms: i64, now_ms: i64) -> i64 {
-    (now_ms - turn_started_ms).max(0) / ACTIVITY_BLINK_HALF_PERIOD_MS
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivityClock {
+    pub(crate) started_ms: i64,
+    pub(crate) now_ms: i64,
+    pub(crate) waiting: bool,
 }
 
-fn activity_blink_visible(turn_started_ms: i64, now_ms: i64) -> bool {
-    now_ms < turn_started_ms || activity_phase(turn_started_ms, now_ms) % 2 == 0
+impl ActivityClock {
+    pub(crate) fn running(started_ms: i64, now_ms: i64) -> Self {
+        Self {
+            started_ms,
+            now_ms,
+            waiting: false,
+        }
+    }
+
+    pub(crate) fn phase(self) -> i64 {
+        activity_phase(self.started_ms, self.now_ms)
+    }
+
+    pub(crate) fn next_blink_ms(self) -> Option<i64> {
+        (!self.waiting)
+            .then(|| self.started_ms + (self.phase() + 1) * ACTIVITY_BLINK_HALF_PERIOD_MS)
+    }
+
+    fn marker_visible(self) -> bool {
+        self.waiting || self.now_ms < self.started_ms || self.phase() % 2 == 0
+    }
+}
+
+fn activity_phase(turn_started_ms: i64, now_ms: i64) -> i64 {
+    (now_ms - turn_started_ms).max(0) / ACTIVITY_BLINK_HALF_PERIOD_MS
 }
 
 pub(crate) fn turn_activity_row(
     theme: &Theme,
     phase: TurnPhase,
-    turn_started_ms: i64,
-    now_ms: i64,
+    clock: ActivityClock,
     progress: TokenProgress,
     max_width: usize,
 ) -> Row {
-    activity_row(
-        theme,
-        phase.label(),
-        turn_started_ms,
-        now_ms,
-        progress,
-        max_width,
-    )
+    activity_row(theme, phase.label(), clock, progress, max_width)
 }
 
 pub(crate) fn activity_row(
     theme: &Theme,
     label: &str,
-    turn_started_ms: i64,
-    now_ms: i64,
+    clock: ActivityClock,
     progress: TokenProgress,
     max_width: usize,
 ) -> Row {
     let paint = theme.permission_auto;
     let mut row = Row::new();
-    let marker = if activity_blink_visible(turn_started_ms, now_ms) {
-        "•"
-    } else {
-        " "
-    };
+    let marker = if clock.marker_visible() { "•" } else { " " };
     row.push(marker, paint);
     row.push(" ", paint);
     row.push(label, paint);
-    if now_ms >= turn_started_ms {
+    if clock.now_ms >= clock.started_ms {
         row.push_fmt(
-            format_args!(" ({})", Elapsed((now_ms - turn_started_ms) / 1000)),
+            format_args!(" ({})", Elapsed((clock.now_ms - clock.started_ms) / 1000)),
             paint,
         );
     }
@@ -277,7 +290,14 @@ mod tests {
 
     fn label(phase: TurnPhase, started_ms: i64, now_ms: i64, progress: TokenProgress) -> String {
         let theme = Theme::builtin(false, false, true);
-        turn_activity_row(&theme, phase, started_ms, now_ms, progress, 80).text()
+        turn_activity_row(
+            &theme,
+            phase,
+            ActivityClock::running(started_ms, now_ms),
+            progress,
+            80,
+        )
+        .text()
     }
 
     #[test]
@@ -314,12 +334,37 @@ mod tests {
 
     #[test]
     fn the_marker_blinks_with_the_elapsed_seconds() {
-        assert!(activity_blink_visible(1_000, 1_000));
-        assert!(activity_blink_visible(1_000, 1_499));
-        assert!(!activity_blink_visible(1_000, 1_500));
-        assert!(activity_blink_visible(1_000, 2_000));
-        assert_eq!(activity_phase(1_000, 2_600), 3);
-        assert_eq!(activity_phase(1_000, 500), 0);
+        let visible = |now_ms| ActivityClock::running(1_000, now_ms).marker_visible();
+        assert!(visible(1_000));
+        assert!(visible(1_499));
+        assert!(!visible(1_500));
+        assert!(visible(2_000));
+        assert_eq!(ActivityClock::running(1_000, 2_600).phase(), 3);
+        assert_eq!(ActivityClock::running(1_000, 500).phase(), 0);
+        assert_eq!(
+            ActivityClock::running(1_000, 2_600).next_blink_ms(),
+            Some(3_000)
+        );
+    }
+
+    #[test]
+    fn a_waiting_clock_keeps_its_marker_lit_and_schedules_no_blink() {
+        let waiting = ActivityClock {
+            started_ms: 1_000,
+            now_ms: 2_600,
+            waiting: true,
+        };
+        assert!(waiting.marker_visible());
+        assert_eq!(waiting.next_blink_ms(), None);
+        let theme = Theme::builtin(false, false, true);
+        let row = turn_activity_row(
+            &theme,
+            TurnPhase::Running,
+            waiting,
+            TokenProgress::default(),
+            80,
+        );
+        assert_eq!(row.text(), "• Running (1s)");
     }
 
     #[test]
@@ -329,15 +374,20 @@ mod tests {
             input_tokens: 2,
             output_tokens: 28,
         };
-        let row = turn_activity_row(&theme, TurnPhase::Generating, 0, 2_000, progress, 80);
+        let row = turn_activity_row(
+            &theme,
+            TurnPhase::Generating,
+            ActivityClock::running(0, 2_000),
+            progress,
+            80,
+        );
         assert_eq!(row.text(), "• Generating (2s) (↑2 ↓28)");
         assert_eq!(row.segments()[0].paint, Paint::fg(252));
         assert_eq!(row.segments()[1].paint, Paint::fg(245));
         let hidden = turn_activity_row(
             &theme,
             TurnPhase::Generating,
-            0,
-            2_500,
+            ActivityClock::running(0, 2_500),
             TokenProgress::default(),
             80,
         );
@@ -347,8 +397,7 @@ mod tests {
             turn_activity_row(
                 &theme,
                 TurnPhase::Thinking,
-                0,
-                0,
+                ActivityClock::running(0, 0),
                 TokenProgress::default(),
                 8
             )

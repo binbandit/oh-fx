@@ -52,8 +52,7 @@ use crate::host::Clipboard;
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
 use crate::output::activity_status::{
-    ACTIVITY_BLINK_HALF_PERIOD_MS, TurnPhase, TurnTokens, activity_phase, clip_with_ellipsis,
-    turn_activity_row,
+    ActivityClock, TurnPhase, TurnTokens, clip_with_ellipsis, turn_activity_row,
 };
 use crate::output::compaction_activity::CompactionStatus;
 use crate::render::hint_line;
@@ -124,6 +123,8 @@ struct Submission {
 struct ActiveTurn {
     turn_id: Option<TurnId>,
     started_ms: i64,
+    waited_ms: i64,
+    waiting_since_ms: Option<i64>,
     phase: TurnPhase,
     tokens: TurnTokens,
     markdown: MarkdownProcessor,
@@ -137,12 +138,36 @@ impl ActiveTurn {
         Self {
             turn_id: None,
             started_ms,
+            waited_ms: 0,
+            waiting_since_ms: None,
             phase: TurnPhase::Thinking,
             tokens: TurnTokens::for_prompt(prompt),
             markdown: MarkdownProcessor::with_completions(Completions::ALL),
             leading_whitespace: LeadingWhitespace::default(),
             step_break: None,
             failure: None,
+        }
+    }
+
+    fn clock(&self, now_ms: i64) -> ActivityClock {
+        ActivityClock {
+            started_ms: self.started_ms + self.waited_ms,
+            now_ms: self
+                .waiting_since_ms
+                .filter(|since_ms| *since_ms < now_ms)
+                .unwrap_or(now_ms),
+            waiting: self.waiting_since_ms.is_some(),
+        }
+    }
+
+    fn wait(&mut self, waiting: bool, now_ms: i64) {
+        match (waiting, self.waiting_since_ms) {
+            (true, None) => self.waiting_since_ms = Some(now_ms),
+            (false, Some(since_ms)) => {
+                self.waited_ms += (now_ms - since_ms).max(0);
+                self.waiting_since_ms = None;
+            }
+            _ => {}
         }
     }
 }
@@ -407,15 +432,23 @@ impl<'a> Shell<'a> {
         self.turn.is_some() || self.compaction_running()
     }
 
-    fn activity_clock_ms(&self) -> Option<i64> {
+    fn activity_clock(&self, now_ms: i64) -> Option<ActivityClock> {
         self.compaction
             .and_then(|status| status.clock_ms())
-            .or_else(|| self.turn.as_ref().map(|turn| turn.started_ms))
+            .map(|started_ms| ActivityClock::running(started_ms, now_ms))
+            .or_else(|| self.turn.as_ref().map(|turn| turn.clock(now_ms)))
     }
 
     fn activity_phase(&self, now_ms: i64) -> Option<i64> {
-        self.activity_clock_ms()
-            .map(|started_ms| activity_phase(started_ms, now_ms))
+        self.activity_clock(now_ms).map(ActivityClock::phase)
+    }
+
+    fn sync_waiting_clock(&mut self) {
+        let waiting = self.approval.is_some() || self.question.is_some();
+        let now_ms = self.now_ms();
+        if let Some(turn) = &mut self.turn {
+            turn.wait(waiting, now_ms);
+        }
     }
 
     fn frame_due(&self, now_ms: i64) -> bool {
@@ -432,8 +465,7 @@ impl<'a> Shell<'a> {
                 turn_activity_row(
                     &self.theme,
                     turn.phase,
-                    turn.started_ms,
-                    now_ms,
+                    turn.clock(now_ms),
                     turn.tokens.progress(),
                     self.cols(),
                 )
@@ -455,6 +487,7 @@ impl<'a> Shell<'a> {
     }
 
     fn commit_frame(&mut self) -> Result<(), TerminalError> {
+        self.sync_waiting_clock();
         if self.prepare_file_picker() {
             self.mark_dirty();
         }
@@ -728,9 +761,9 @@ impl<'a> Shell<'a> {
 
     fn next_deadline_ms(&self, now_ms: i64) -> Option<i64> {
         let pending_input = self.input.has_pending_input().then_some(now_ms + 10);
-        let blink = self.activity_clock_ms().map(|started_ms| {
-            started_ms + (activity_phase(started_ms, now_ms) + 1) * ACTIVITY_BLINK_HALF_PERIOD_MS
-        });
+        let blink = self
+            .activity_clock(now_ms)
+            .and_then(ActivityClock::next_blink_ms);
         let file_picker = self
             .file_picker_busy()
             .then_some(now_ms + FILE_PICKER_POLL_MS);
@@ -781,6 +814,7 @@ mod tests {
     use rustix::termios::{self, LocalModes};
 
     use super::*;
+    use crate::output::activity_status::ACTIVITY_BLINK_HALF_PERIOD_MS;
     use crate::terminal::test_pty;
 
     #[test]
