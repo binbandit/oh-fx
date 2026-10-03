@@ -30,6 +30,7 @@ pub(super) struct SessionPicker {
     selected: usize,
     window_start: usize,
     refusal: Option<ResumeRefusal>,
+    accepting: Option<String>,
     query: String,
 }
 
@@ -44,6 +45,7 @@ impl SessionPicker {
             selected: 0,
             window_start: 0,
             refusal: None,
+            accepting: None,
             query,
         }
     }
@@ -187,9 +189,13 @@ impl Shell<'_> {
     }
 
     pub(super) fn session_resume_failed(&mut self, id: &str, refusal: ResumeRefusal) {
-        if let Some(picker) = &mut self.picker
-            && picker.selected_id().as_deref() == Some(id)
-        {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        if picker.accepting.as_deref() == Some(id) {
+            picker.accepting = None;
+        }
+        if picker.selected_id().as_deref() == Some(id) {
             picker.refusal = Some(refusal);
         }
     }
@@ -237,7 +243,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn submit_picker_selection(&mut self) {
-        let Some(picker) = &mut self.picker else {
+        let Some(picker) = self
+            .picker
+            .as_mut()
+            .filter(|picker| picker.accepting.is_none())
+        else {
             return;
         };
         if picker.load_more_selected() {
@@ -245,6 +255,7 @@ impl Shell<'_> {
             return;
         }
         if let Some(id) = picker.selected_id() {
+            picker.accepting = Some(id.clone());
             self.send(UiCommand::ResumeSession { id });
         }
     }
@@ -274,6 +285,9 @@ impl Shell<'_> {
     }
 
     pub(super) fn toggle_picker_scope(&mut self) {
+        if self.accepting_session() {
+            return;
+        }
         let Some(picker) = self.picker.take() else {
             return;
         };
@@ -283,10 +297,19 @@ impl Shell<'_> {
     }
 
     pub(super) fn close_picker(&mut self) {
+        if self.accepting_session() {
+            return;
+        }
         if self.picker.take().is_some() {
             self.composer.clear();
             self.send(UiCommand::CloseSessionPicker);
         }
+    }
+
+    fn accepting_session(&self) -> bool {
+        self.picker
+            .as_ref()
+            .is_some_and(|picker| picker.accepting.is_some())
     }
 
     pub(super) fn sync_picker_query(&mut self) {
@@ -492,6 +515,49 @@ mod tests {
         assert!(test.shell.composer.is_empty());
         let screen = test.screen();
         assert!(screen.contains("auto · model-a"), "{screen}");
+    }
+
+    fn escape(test: &mut TestShell) {
+        keys(test, b"\x1b");
+        test.advance(1_000);
+        test.draining(super::super::Shell::flush_pending_input)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_chosen_session_holds_the_picker_until_its_resume_settles() {
+        let mut test = TestShell::start();
+        opened(&mut test);
+        keys(&mut test, b"\r");
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::ResumeSession { id: "a".to_owned() })
+        );
+        let sent = test.sent().len();
+        escape(&mut test);
+        keys(&mut test, b"\x1b[Z\r");
+        keys(&mut test, b"for the old session\r");
+        assert_eq!(test.sent().len(), sent, "{:?}", test.sent());
+        let screen = test.screen();
+        assert!(
+            screen.contains("Sessions 0  [Current workspace]  All workspaces"),
+            "{screen}"
+        );
+        test.deliver(UiEvent::SessionResumeFailed {
+            id: "a".to_owned(),
+            refusal: ResumeRefusal::Unavailable,
+        });
+        escape(&mut test);
+        assert_eq!(test.sent().last(), Some(&UiCommand::CloseSessionPicker));
+        assert!(
+            !test
+                .sent()
+                .iter()
+                .any(|command| matches!(command, UiCommand::Submit { .. })),
+            "{:?}",
+            test.sent()
+        );
+        assert!(test.shell.composer.is_empty());
     }
 
     #[test]

@@ -6,9 +6,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use ofx_contract::{
-    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, SessionPage, SessionRow,
-    SessionScope, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, TurnId,
-    UiCommand, UiEvent,
+    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, ResumeRefusal, SessionPage,
+    SessionRow, SessionScope, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
+    TurnId, UiCommand, UiEvent,
 };
 
 use super::*;
@@ -286,6 +286,10 @@ fn an_open_session_picker_owns_the_footer_and_filters_by_a_typed_at() {
             id: "mailbox".to_owned()
         })
     );
+    test.deliver(UiEvent::SessionResumeFailed {
+        id: "mailbox".to_owned(),
+        refusal: ResumeRefusal::Unavailable,
+    });
     press(&mut test, ESCAPE);
     test.advance(40);
     test.draining(|shell| shell.flush_pending_input().unwrap());
