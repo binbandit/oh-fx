@@ -108,3 +108,50 @@ async fn a_call_the_mode_blocks_is_rejected_with_its_policy_message_and_never_ru
         })
     );
 }
+
+#[tokio::test]
+async fn a_mode_works_from_the_specs_read_when_the_agent_was_built() {
+    for id in ["full", "inspect"] {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let echo: Arc<dyn Tool> = Arc::new(SpecReadOnce {
+            inner: echo_tool(),
+            reads: Arc::clone(&reads),
+        });
+        let provider = FakeProvider::new(vec![
+            tool_reply(&[("call-1", r#"{"text":"found"}"#)]),
+            text_reply("ok"),
+        ]);
+        let mut agent =
+            new_agent(Arc::clone(&provider), vec![echo, mutate_tool()]).with_mode(mode(id));
+        let (report, _) = run(&mut agent, "go").await;
+        assert_eq!(report.outcome, TurnOutcome::Completed, "{id}");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "{id}");
+        assert_eq!(
+            provider.requests()[1].messages[2..],
+            [tool_message(
+                "call-1",
+                r#"echo {"text":"found"}"#,
+                ToolResultStatus::Success
+            )],
+            "{id}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn provider_executed_tools_offer_guidance_only_when_the_mode_allows_them() {
+    for (id, guidance) in [("full", Some("Search the web.")), ("inspect", None)] {
+        let provider = FakeProvider::new(vec![text_reply("Done.")]);
+        let tools = vec![provider_tool("search", "Search the web."), echo_tool()];
+        let mut agent = new_agent(Arc::clone(&provider), tools).with_mode(mode(id));
+        run(&mut agent, "go").await;
+        let request = &provider.requests()[0];
+        assert_eq!(advertised(request), ["echo"], "{id}");
+        let expected: Vec<&str> = [SYSTEM_PROMPT]
+            .into_iter()
+            .chain(guidance)
+            .chain([TURN_CONTEXT, RESPONSE_LANGUAGE_CONTROL])
+            .collect();
+        assert_eq!(request.instructions, expected, "{id}");
+    }
+}

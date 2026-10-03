@@ -1,26 +1,12 @@
-use std::sync::Arc;
-
 use super::*;
-use crate::{PermissionMode, ToolOutput, ToolSpec};
+use crate::{PermissionMode, ToolSpec};
 
-struct Named(ToolSpec);
-
-impl Tool for Named {
-    fn spec(&self) -> &ToolSpec {
-        &self.0
-    }
-
-    fn prepare(&self, _arguments: &str) -> Result<Box<dyn crate::PreparedCall>, ToolOutput> {
-        Err(ToolOutput::failure("unused"))
-    }
-}
-
-fn tool(name: &str) -> Arc<dyn Tool> {
-    Arc::new(Named(ToolSpec {
+fn spec(name: &str) -> ToolSpec {
+    ToolSpec {
         name: name.to_owned(),
         description: name.to_owned(),
         input_schema: "{}",
-    }))
+    }
 }
 
 static ASK_AND_CODE: [ModeSpec; 2] = [
@@ -70,10 +56,6 @@ static WITHOUT_MESSAGE: [ModeSpec; 1] = [ModeSpec {
     tool_policy_denial_message: None,
 }];
 
-fn names(tools: &[Arc<dyn Tool>]) -> Vec<&str> {
-    tools.iter().map(|tool| tool.spec().name.as_str()).collect()
-}
-
 #[test]
 fn mode_registry_looks_up_modes_by_id() {
     let registry = ModeRegistry {
@@ -93,9 +75,9 @@ fn mode_registry_applies_tool_policy_to_the_supplied_tool_set() {
         default_mode_id: "full",
         modes: &FULL_AND_INSPECT,
     };
-    let tools = [tool("inspect"), tool("mutate")];
+    let specs = [spec("inspect"), spec("mutate")];
     let set = ToolSet {
-        tools: &tools,
+        specs: &specs,
         read_only_tool_names: &["inspect"],
     };
     assert!(registry.tool_allowed(&set, "full", "mutate"));
@@ -127,38 +109,13 @@ fn a_read_only_mode_without_its_own_message_blocks_with_the_default_reason() {
         default_mode_id: "inspect",
         modes: &WITHOUT_MESSAGE,
     };
-    let tools = [tool("mutate")];
+    let specs = [spec("mutate")];
     let set = ToolSet {
-        tools: &tools,
+        specs: &specs,
         read_only_tool_names: &[],
     };
     let denied = registry
         .tool_policy_denied_json(&set, "inspect", "mutate")
         .unwrap();
     assert!(denied.contains(r#""message":"Tool blocked by the active mode policy.""#));
-}
-
-#[test]
-fn mode_projections_advertise_every_tool_or_only_the_read_only_ones_in_order() {
-    let registry = ModeRegistry {
-        default_mode_id: "full",
-        modes: &FULL_AND_INSPECT,
-    };
-    let tools = [tool("write_file"), tool("read_file"), tool("grep_files")];
-    let set = ToolSet {
-        tools: &tools,
-        read_only_tool_names: &["grep_files", "read_file", "glob_files"],
-    };
-    assert_eq!(
-        names(&registry.model_tools(&set, "full")),
-        ["write_file", "read_file", "grep_files"]
-    );
-    assert_eq!(
-        names(&registry.model_tools(&set, "missing")),
-        ["write_file", "read_file", "grep_files"]
-    );
-    assert_eq!(
-        names(&registry.model_tools(&set, "inspect")),
-        ["read_file", "grep_files"]
-    );
 }

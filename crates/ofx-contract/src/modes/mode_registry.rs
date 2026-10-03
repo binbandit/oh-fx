@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use super::mode_contract::{ModeSpec, ToolPolicy};
-use crate::tool_dispatch::Tool;
 use crate::tool_result_errors::pre_tool_use_blocked_json;
 use crate::tool_set::ToolSet;
 
@@ -16,17 +13,6 @@ pub struct ModeRegistry {
 impl ModeRegistry {
     pub fn lookup(&self, id: &str) -> Option<&'static ModeSpec> {
         self.modes.iter().find(|mode| mode.id == id)
-    }
-
-    pub fn model_tools(&self, set: &ToolSet<'_>, id: &str) -> Vec<Arc<dyn Tool>> {
-        let read_only = self
-            .lookup(id)
-            .is_some_and(|mode| mode.tool_policy == ToolPolicy::ReadOnly);
-        set.tools
-            .iter()
-            .filter(|tool| !read_only || set.is_read_only(&tool.spec().name))
-            .cloned()
-            .collect()
     }
 
     pub fn tool_allowed(&self, set: &ToolSet<'_>, id: &str, tool_name: &str) -> bool {
