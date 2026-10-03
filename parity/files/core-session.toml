@@ -37,8 +37,9 @@ note = "JavaScript host callback binding for the embedded runtime; excluded from
 
 [[file]]
 upstream = "src/core/session/legacy_background_migration.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "Clears background run_command records and logs that fx releases up to 0.0.7 left in session folders; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as architecture.md records."
 
 [[file]]
 upstream = "src/core/session/profile_usage_runtime.zig"
@@ -72,7 +73,7 @@ note = "Stored result handles and previews exist; paged ResultReader, image snap
 upstream = "src/core/session/session.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session.rs", "crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_store.rs"]
-note = "Modern event/log/store domain exists; legacy image snapshot repair and full recovery/child-session domain behavior are missing."
+note = "The modern event, log and store domain exists; the legacy image id repair only older fx sessions need is not needed, and the remaining recovery and child-session domain belongs to OH-37 and OH-28."
 
 [[file]]
 upstream = "src/core/session/session_adapter.zig"
@@ -104,7 +105,7 @@ modules = []
 upstream = "src/core/session/session_codec.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_codec.rs"]
-note = "Modern metadata/preferences codecs exist, and the recovery checkpoint form upstream writes today is read; legacy schema preference decoding, older checkpoint versions and the checkpoint encoder are missing."
+note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read; the legacy connection preferences and older checkpoint versions only older fx sessions hold are not needed, and the checkpoint encoder comes with recovery checkpoint writes (OH-37)."
 
 [[file]]
 upstream = "src/core/session/session_commands.zig"
@@ -121,7 +122,7 @@ modules = []
 upstream = "src/core/session/session_discovery.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_discovery.rs"]
-note = "Modern session classification exists; legacy candidate streaming, schema migration and fenced recovery discovery are missing."
+note = "Classification of the layout upstream writes today exists; schema-v3 and legacy snapshot candidates and the fenced legacy upgrade are not needed for the reason in session_migration's row, and the doctor inspection belongs to oh-fx doctor (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_display_metadata.zig"
@@ -139,6 +140,7 @@ note = "Modern conversation event encoding and sequencing exist, and file eviden
 upstream = "src/core/session/session_json.zig"
 status = "todo"
 modules = []
+note = "The legacy snapshot decoders and the snapshot writer upstream uses for test fixtures are not needed, since oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as architecture.md records; writeExecutionMemoryJson renders the session detail output of oh-fx session (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_layout.zig"
@@ -154,8 +156,9 @@ note = "Modern append/replay exists, and a writable open closes a turn from its 
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "Imports the session layouts older fx releases wrote: v1 and v2 session.json snapshots, which predate fx's public repository, and the schema-v3 semantic event log that releases 0.0.1 to 0.0.7 wrote before 0.0.8 cut over to the conversation layout; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as architecture.md records."
 
 [[file]]
 upstream = "src/core/session/session_projection.zig"
@@ -177,7 +180,7 @@ note = "Buffered line reading exists; exact-commit, recovery checkpoint and chil
 upstream = "src/core/session/session_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create/resume/list storage exists; legacy migration, doctor, image repair, projection caches and v2 routing are missing."
+note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, and doctor (OH-41), the projection caches (NEW-F of the OH-48 audit) and v2 routing (OH-27) remain."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"
@@ -189,6 +192,7 @@ note = "Workspace normalization and root validation exist; upstream sessionJsonP
 upstream = "src/core/session/session_store_types.zig"
 status = "todo"
 modules = []
+note = "The legacy snapshot ceilings and migration results are not needed for the reason in session_migration's row; the listing, resume and history page types live in ofx-session's own types, and the doctor results belong to oh-fx doctor (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_summary_codec.zig"
