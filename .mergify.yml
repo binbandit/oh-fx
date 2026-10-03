@@ -7,6 +7,9 @@ queue_rules:
     queue_conditions:
       - base = main
       - -draft
+      - or:
+          - -label = codex
+          - label = codex-approved
       # Review the source PR once, including PRs authored by Pullfrog itself.
       - check-success = @pullfrog/pullfrog
       - check-success = @pullfrog/pullfrog-approval
@@ -24,6 +27,9 @@ merge_protections_settings:
   auto_merge_conditions:
     - base = main
     - -draft
+    - or:
+        - -label = codex
+        - label = codex-approved
 
 merge_protections:
   - name: Resolve requested changes
@@ -31,3 +37,9 @@ merge_protections:
       - base = main
     success_conditions:
       - "#changes-requested-reviews-by = 0"
+  - name: Hold Codex pull requests for maintainer review
+    if:
+      - base = main
+      - label = codex
+    success_conditions:
+      - label = codex-approved
