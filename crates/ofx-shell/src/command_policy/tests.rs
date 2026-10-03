@@ -288,3 +288,29 @@ fn multibyte_text_is_scanned_byte_for_byte() {
     );
     assert_eq!(command_safer_alternative("çat file"), None);
 }
+
+#[test]
+fn nested_privilege_wrappers_resolve_to_the_wrapped_command() {
+    for command in [
+        "sudo -u root sudo rm x",
+        "sudo -- doas rm x",
+        "su -c 'sudo rm x'",
+        "doas FOO=1 su root -c \"rm x\"",
+    ] {
+        assert_eq!(
+            destructive_effect(command),
+            Some(DestructiveEffect::RemoveFiles),
+            "{command}"
+        );
+    }
+    for command in [
+        "sudo -u",
+        "sudo sudo",
+        "sudo -- ",
+        "su -c 'sudo'",
+        "sudo rm",
+    ] {
+        assert_eq!(destructive_effect(command), None, "{command}");
+    }
+    assert_eq!(destructive_effect(&"sudo ".repeat(100_000)), None);
+}
