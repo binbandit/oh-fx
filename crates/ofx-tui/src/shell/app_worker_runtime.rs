@@ -428,6 +428,7 @@ impl Shell<'_> {
     }
 
     fn turn_started(&mut self, turn_id: TurnId) {
+        self.statusline.turn_started();
         let Some(index) = self
             .outstanding
             .iter()
@@ -609,6 +610,9 @@ fn asks_the_user(tool_name: &str, description: Option<&CallDescription>) -> bool
 
 #[cfg(test)]
 mod recovery_rows;
+
+#[cfg(test)]
+mod statusline_rows;
 
 #[cfg(test)]
 mod tool_rows;

@@ -13,6 +13,7 @@ pub(crate) struct Statusline {
     toggles: StatuslineToggles,
     context_used: u64,
     context_total: Option<u32>,
+    window_stale: bool,
     identity_source: Option<Box<dyn WorkspaceIdentitySource>>,
     identity: WorkspaceIdentity,
     session_title: Option<String>,
@@ -35,6 +36,7 @@ impl Statusline {
             toggles,
             context_used: 0,
             context_total: None,
+            window_stale: false,
             identity_source,
             identity: WorkspaceIdentity::default(),
             session_title: None,
@@ -57,11 +59,18 @@ impl Statusline {
         if let Some(input) = input_tokens {
             self.context_used = input;
         }
-        self.context_total = context_window;
+        if !self.window_stale {
+            self.context_total = context_window;
+        }
     }
 
     pub(crate) fn model_changed(&mut self) {
         self.context_total = None;
+        self.window_stale = true;
+    }
+
+    pub(crate) fn turn_started(&mut self) {
+        self.window_stale = false;
     }
 
     pub(crate) fn conversation_cleared(&mut self) {
