@@ -20,7 +20,7 @@ use crate::legacy_elicitation_runtime::{
     ElicitationContext, method_not_found_response, server_request_failed_response,
 };
 use crate::mcp_contract::validate_json_rpc_response_envelope;
-use crate::protocol_messages::build_cancellation_notification;
+use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::timing::{spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
     Cancellation, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy,
@@ -507,7 +507,7 @@ impl Shared {
     }
 
     fn dispatch_frame(self: &Arc<Self>, frame: Vec<u8>) -> Result<(), McpError> {
-        let Ok(value) = serde_json::from_slice::<Value>(&frame) else {
+        let Some(value) = parse_json(&frame) else {
             self.record_rejected_output(&frame);
             return Err(McpError::McpInvalidJson);
         };
