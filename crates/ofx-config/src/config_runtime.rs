@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     AutoCompactPercent, PermissionAction, PermissionMode, PermissionRule, ReasoningEffort,
+    parse_strict_json_value,
 };
 use serde_json::{Map, Value};
 
@@ -17,7 +18,6 @@ use crate::context_limits::{
 use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
 use crate::settings_store::{MAX_PROVIDER_ORDER_ENTRIES, validate_provider_slug};
-use crate::strict_json;
 
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 const PROJECT_FILE: &str = ".oh-fx.json";
@@ -728,7 +728,7 @@ impl Settings {
             }
         };
         let bytes = bytes.strip_prefix(BYTE_ORDER_MARK).unwrap_or(&bytes);
-        if let Ok(Value::Object(object)) = strict_json::parse(bytes) {
+        if let Ok(Value::Object(object)) = parse_strict_json_value(bytes) {
             return Some(object);
         }
         self.diagnose(layer, DiagnosticCause::MalformedSettings, None);
@@ -2186,7 +2186,7 @@ mod tests {
                 LayerError::InvalidPermissionRuleTool,
             ),
         ] {
-            let Ok(Value::Object(object)) = strict_json::parse(text.as_bytes()) else {
+            let Ok(Value::Object(object)) = parse_strict_json_value(text.as_bytes()) else {
                 unreachable!()
             };
             assert_eq!(parse_layer(&object).map(|_| ()), Err(error), "{text}");

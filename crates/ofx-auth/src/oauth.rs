@@ -1,6 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ofx_config::parse_strict_json;
+use ofx_contract::parse_strict_json_value;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -158,7 +158,7 @@ pub(crate) fn parse_browser_token_set(bytes: &[u8]) -> Result<BrowserTokenSet, O
 }
 
 pub(crate) fn parse_object(bytes: &[u8]) -> Result<Map<String, Value>, OAuthError> {
-    match parse_strict_json(bytes) {
+    match parse_strict_json_value(bytes) {
         Ok(Value::Object(object)) => Ok(object),
         _ => Err(OAuthError::InvalidOAuthResponse),
     }
