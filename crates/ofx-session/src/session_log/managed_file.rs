@@ -4,7 +4,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_config::{AdvisoryLock, PrivateDir};
+use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags, RenameFlags, Stat};
 use rustix::io::Errno;
 use rustix::path::Arg;
@@ -195,16 +195,16 @@ pub(crate) fn lock_with_deadline(
     dir: &PrivateDir,
     name: &str,
     deadline: Duration,
-) -> Result<AdvisoryLock, SessionError> {
+) -> Result<Option<AdvisoryLock>, DurableError> {
     let started = Instant::now();
     loop {
         if let Some(lock) = dir.try_lock(name)? {
-            return Ok(lock);
+            return Ok(Some(lock));
         }
         if started.elapsed() >= deadline {
-            return Err(SessionError::SessionBusy);
+            return Ok(None);
         }
-        thread::sleep(LOCK_RETRY);
+        thread::sleep(LOCK_RETRY.min(deadline));
     }
 }
 

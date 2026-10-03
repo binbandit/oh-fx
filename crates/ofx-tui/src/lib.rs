@@ -14,6 +14,7 @@ mod transcript;
 
 pub use host::Clipboard;
 pub use shell::{
-    ShellOptions, SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell, ui_channel,
+    PromptHistory, ShellOptions, SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell,
+    ui_channel,
 };
 pub use terminal::TerminalError;

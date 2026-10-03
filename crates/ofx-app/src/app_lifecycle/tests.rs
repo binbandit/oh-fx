@@ -10,6 +10,7 @@ use ofx_auth::ChatGptEndpoints;
 use ofx_config::{PrivateDir, ProfilePaths, Settings};
 use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
 use ofx_testkit::{FakeServer, PtySession, Reply};
+use ofx_tui::PromptHistory;
 use serde_json::{Value, json};
 
 use super::*;
@@ -302,6 +303,7 @@ fn run_a_worker_that_panics() -> ! {
         workspace_root: PathBuf::from("/workspace"),
         commands: Vec::new(),
         command_categories: Vec::new(),
+        prompt_history: PromptHistory::disabled(),
     };
     let outcome = host(options, events, receiver, None, |events, mut commands| {
         let _ = commands.blocking_recv();
@@ -374,6 +376,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         workspace_root: PathBuf::from("/workspace"),
         commands: Vec::new(),
         command_categories: Vec::new(),
+        prompt_history: PromptHistory::disabled(),
     };
     let stopped = directory.join("stopped");
     let outcome = host(options, events, receiver, None, move |_, mut commands| {

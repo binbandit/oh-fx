@@ -1,5 +1,6 @@
 use std::fmt::Write;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::Command;
@@ -811,4 +812,61 @@ fn project_instruction_notices_reach_the_transcript_with_their_repair_hints() {
     assert!(!screen.contains(&omitted), "{screen}");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Noted."]))]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = home.shell(24, 80);
+    session.send(b"remember this prompt\r");
+    wait(&session, "Noted.");
+    session.send(b"/he\r");
+    wait(&session, "Commands 12");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+
+    let history = home.root.join("data/oh-fx/history.jsonl");
+    let workspace = fs::canonicalize(&home.workspace).expect("canonicalize the workspace");
+    let lines: Vec<Value> = fs::read_to_string(&history)
+        .expect("read the prompt history")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a JSON record"))
+        .collect();
+    let texts: Vec<&str> = lines
+        .iter()
+        .map(|line| line["text"].as_str().expect("text"))
+        .collect();
+    assert_eq!(texts, ["remember this prompt", "/help"]);
+    assert_eq!(lines[0]["schema_version"], 1);
+    assert_eq!(lines[0]["workspace_root"], workspace.to_str().unwrap());
+    assert_eq!(
+        fs::metadata(&history).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let mut session = home.shell(24, 80);
+    session.send(b"\x1b[A");
+    wait(&session, "┃ /help");
+    session.send(b"\x1b[A\x1b[A");
+    wait(&session, "┃ remember this prompt");
+    session.send(b"\x15\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn disabled_prompt_history_saves_nothing() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Unsaved."]))]);
+    let mut settings = settings(&server.base_url());
+    settings["prompt_history"] = json!({"enabled": false});
+    let home = Home::with_settings(&settings);
+    let mut session = home.shell(24, 80);
+    session.send(b"forget this prompt\r");
+    wait(&session, "Unsaved.");
+    session.send(b"\x1b[A");
+    session.send(b"x");
+    wait(&session, "┃ x");
+    session.send(b"\x15\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    assert!(!home.root.join("data/oh-fx/history.jsonl").exists());
 }

@@ -3,6 +3,7 @@ mod app_permission_runtime;
 mod app_worker_runtime;
 mod approval_runtime;
 mod event_loop;
+mod input_history_runtime;
 mod input_selection_runtime;
 mod input_submit_runtime;
 #[cfg(test)]
@@ -17,9 +18,11 @@ use ofx_contract::{PermissionMode, TurnId, UiCommand};
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
+pub use input_history_runtime::PromptHistory;
 
 use app_permission_runtime::YoloWarning;
 use approval_runtime::ApprovalPrompt;
+use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
 
 use crate::composer::Composer;
@@ -62,7 +65,6 @@ pub struct SlashCommandSpec {
     pub compacts: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellOptions {
     pub version: String,
     pub model: String,
@@ -72,6 +74,7 @@ pub struct ShellOptions {
     pub workspace_root: PathBuf,
     pub commands: Vec<SlashCommandSpec>,
     pub command_categories: Vec<String>,
+    pub prompt_history: PromptHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +120,7 @@ pub(crate) struct Shell<'a> {
     terminal: Terminal,
     input: TerminalInput,
     composer: Composer,
+    history: HistoryRecorder,
     gestures: gesture_state::State,
     transcript: Transcript,
     renderer: LiveRegionRenderer,
@@ -235,7 +239,7 @@ impl<'a> Shell<'a> {
 
     fn assemble(
         setup: Setup,
-        options: ShellOptions,
+        mut options: ShellOptions,
         events: UiEventReceiver,
         clipboard: Arc<dyn Clipboard>,
         send: Box<dyn FnMut(UiCommand) + 'a>,
@@ -262,10 +266,13 @@ impl<'a> Shell<'a> {
             version: options.version.clone(),
         });
         let yolo_warning = YoloWarning::new(options.full_access_warning);
+        let mut composer = Composer::new();
+        let history = HistoryRecorder::install(options.prompt_history.take(), &mut composer);
         Self {
             terminal: setup.terminal,
             input: setup.input,
-            composer: Composer::new(),
+            composer,
+            history,
             gestures: gesture_state::State::default(),
             transcript,
             renderer,
@@ -780,6 +787,7 @@ mod tests {
             workspace_root: PathBuf::from("/proj"),
             commands: Vec::new(),
             command_categories: Vec::new(),
+            prompt_history: PromptHistory::disabled(),
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
     }

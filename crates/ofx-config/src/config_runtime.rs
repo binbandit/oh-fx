@@ -185,6 +185,10 @@ pub enum LayerError {
     InvalidSkillSymlinkAuthorities,
     #[error("RetiredSkillMatchFuzzy")]
     RetiredSkillMatchFuzzy,
+    #[error("InvalidPromptHistoryType")]
+    InvalidPromptHistoryType,
+    #[error("InvalidPromptHistoryEnabledType")]
+    InvalidPromptHistoryEnabledType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -234,6 +238,7 @@ struct Layer {
     context_limits: ContextLimitOverrides,
     context: Option<bool>,
     skill_symlink_authorities: Option<Vec<PathBuf>>,
+    prompt_history: Option<bool>,
 }
 
 impl Layer {
@@ -361,6 +366,13 @@ impl Settings {
             .as_deref()
             .or(self.global.skill_symlink_authorities.as_deref())
             .unwrap_or_default()
+    }
+
+    pub fn prompt_history_enabled(&self) -> bool {
+        self.workspace
+            .prompt_history
+            .or(self.global.prompt_history)
+            .unwrap_or(true)
     }
 
     pub fn context_limits(&self) -> ContextLimits {
@@ -692,6 +704,15 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         LayerError::InvalidFastModeBindingType,
     )?;
     layer.context = parse_switch(object, "context", LayerError::InvalidContextType)?;
+    layer.prompt_history = match object.get("prompt_history") {
+        None => None,
+        Some(Value::Object(history)) => parse_switch(
+            history,
+            "enabled",
+            LayerError::InvalidPromptHistoryEnabledType,
+        )?,
+        Some(_) => return Err(LayerError::InvalidPromptHistoryType),
+    };
     if object.contains_key("skill_match_fuzzy") {
         rejected.push(LayerError::RetiredSkillMatchFuzzy);
     }
@@ -1184,6 +1205,14 @@ mod tests {
             ),
             (r#"{"fast_mode":"yes"}"#, DiagnosticCause::MalformedSettings),
             (
+                r#"{"prompt_history":true}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
+            (
+                r#"{"prompt_history":{"enabled":"no"}}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
+            (
                 r#"{"fast_mode_model_bound":1}"#,
                 DiagnosticCause::MalformedSettings,
             ),
@@ -1363,6 +1392,57 @@ mod tests {
                 fast,
                 "{entry} {model}"
             );
+        }
+    }
+
+    #[test]
+    fn prompt_history_follows_workspace_overrides_and_defaults_on() {
+        assert!(fixture_settings("{}").prompt_history_enabled());
+        assert!(fixture_settings(r#"{"prompt_history":{}}"#).prompt_history_enabled());
+        let off = fixture_settings(r#"{"prompt_history":{"enabled":false}}"#);
+        assert!(off.diagnostics().is_empty());
+        assert!(!off.prompt_history_enabled());
+        let overridden = fixture(None, None);
+        let workspace = serde_json::to_string(&overridden.workspace.to_string_lossy()).unwrap();
+        let json = format!(
+            r#"{{"prompt_history":{{"enabled":false}},"workspaces":{{{workspace}:{{"prompt_history":{{"enabled":true}}}}}}}}"#
+        );
+        fs::write(overridden.paths.config.join(SETTINGS_FILE), json).unwrap();
+        assert!(load(&overridden).unwrap().prompt_history_enabled());
+        let project = load(&fixture(
+            None,
+            Some(r#"{"prompt_history":{"enabled":false}}"#),
+        ))
+        .unwrap();
+        assert!(project.prompt_history_enabled());
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=prompt_history"
+        );
+    }
+
+    #[test]
+    fn a_skill_or_context_limit_diagnostic_keeps_prompt_history_disabled() {
+        for field in [
+            r#""skill_match_fuzzy":true"#,
+            r#""skill_symlink_authorities":"/nix/store""#,
+            r#""context_limits":{"unknown_limit":10}"#,
+        ] {
+            let global = fixture_settings(&format!(
+                r#"{{"prompt_history":{{"enabled":false}},{field}}}"#
+            ));
+            assert_eq!(global.diagnostics().len(), 1, "{field}");
+            assert!(!global.profile_is_unusable(), "{field}");
+            assert!(!global.prompt_history_enabled(), "{field}");
+            let scoped = fixture(None, None);
+            let workspace = serde_json::to_string(&scoped.workspace.to_string_lossy()).unwrap();
+            let json = format!(
+                r#"{{"workspaces":{{{workspace}:{{"prompt_history":{{"enabled":false}},{field}}}}}}}"#
+            );
+            fs::write(scoped.paths.config.join(SETTINGS_FILE), json).unwrap();
+            let loaded = load(&scoped).unwrap();
+            assert_eq!(loaded.diagnostics().len(), 1, "{field}");
+            assert!(!loaded.prompt_history_enabled(), "{field}");
         }
     }
 
