@@ -14,7 +14,9 @@ use crate::terminal::{ThemeMonitor, ThemeMonitorFeed, ThemeQuery, ThemeUpdate};
 pub(crate) use input_action::{
     Action, DecodedTerminalAction, MoveIntent, MoveKind, RawTerminalInput, ShortcutAction,
 };
-pub(crate) use paste_framing::{COMPOSER_INPUT_LIMIT_BYTES, PasteOutcome, PasteOwner};
+pub(crate) use paste_framing::{
+    COMPOSER_INPUT_LIMIT_BYTES, DECISION_INPUT_LIMIT_BYTES, PasteOutcome, PasteOwner,
+};
 pub(crate) use text_scalar::{DroppedText, TextDropReason, TextOwner};
 
 use ingress_queue::IngressQueue;

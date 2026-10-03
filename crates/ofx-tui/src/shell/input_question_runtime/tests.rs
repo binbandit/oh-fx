@@ -373,3 +373,28 @@ fn the_question_hint_outranks_an_armed_ctrl_c_exit() {
     assert_eq!(answers(&test), [answered(4, None)]);
     assert!(!test.shell.should_exit);
 }
+
+fn paste(test: &mut TestShell, pasted: &str) {
+    press(test, b"\x1b[200~");
+    for chunk in pasted.as_bytes().chunks(512) {
+        press(test, chunk);
+    }
+    press(test, b"\x1b[201~");
+}
+
+const LIMIT_NOTICE: &str = "That edit exceeds the input limit and was not applied.";
+
+#[test]
+fn typed_and_pasted_answers_stop_at_the_decision_input_limit() {
+    let mut test = asking(proceed());
+    press(&mut test, b"4");
+    paste(&mut test, &"a".repeat(4097));
+    assert!(test.written().contains(LIMIT_NOTICE));
+    paste(&mut test, &"a".repeat(4095));
+    press(&mut test, b"b");
+    press(&mut test, b"c");
+    assert!(test.written().contains(LIMIT_NOTICE));
+    press(&mut test, b"\r");
+    let expected = format!("{}b", "a".repeat(4095));
+    assert_eq!(answers(&test), [answered(4, Some(&[expected.as_str()]))]);
+}

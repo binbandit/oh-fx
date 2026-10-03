@@ -7,8 +7,8 @@ use crate::footer::question_freeform_layout::Direction;
 use crate::footer::question_ui::question_panel_rows;
 use crate::input::gesture_state::PressResult;
 use crate::input::{
-    Action, COMPOSER_INPUT_LIMIT_BYTES, DecodedTerminalAction, InputEvent, MoveKind, PasteOutcome,
-    PasteOwner, RawTerminalInput, ShortcutAction,
+    Action, COMPOSER_INPUT_LIMIT_BYTES, DECISION_INPUT_LIMIT_BYTES, DecodedTerminalAction,
+    InputEvent, MoveKind, PasteOutcome, PasteOwner, RawTerminalInput, ShortcutAction,
 };
 use crate::render_engine::transcript_blocks::Entry;
 use crate::row_text::Row;
@@ -212,7 +212,7 @@ impl Shell<'_> {
         let Some(prompt) = &mut self.question else {
             return;
         };
-        match prompt.insert(text, COMPOSER_INPUT_LIMIT_BYTES) {
+        match prompt.insert(text, DECISION_INPUT_LIMIT_BYTES) {
             Insertion::Inserted | Insertion::Inactive => {}
             Insertion::LimitExceeded => self.report_answer_limit(),
         }
