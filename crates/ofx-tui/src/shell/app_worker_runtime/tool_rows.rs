@@ -266,6 +266,51 @@ fn escape_cancels_running_calls_in_place_of_the_turn_notice() {
 }
 
 #[test]
+fn model_questions_stay_out_of_the_tool_groups() {
+    let mut test = running("go");
+    test.deliver(read("a", "README.md"));
+    test.deliver(finished("a", "read_file", success()));
+    test.deliver(started(
+        "q",
+        "ask_user_question",
+        ToolActivity::Ask,
+        ("Asking", "Asked", ""),
+    ));
+    test.deliver(finished("q", "ask_user_question", success()));
+    test.deliver(UiEvent::ToolRejected {
+        turn_id: turn(),
+        call_id: ToolCallId::new("r"),
+        tool_name: "ask_user_question".to_owned(),
+        arguments: "{\"questions\":".to_owned(),
+        reason: ToolRejection::MalformedArguments,
+        description: None,
+        content: String::new(),
+    });
+    test.deliver(text("Done.\n"));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    assert!(
+        screen.contains("● 1 tool call · 1 read\n└ Read README.md\n\n  Done."),
+        "{screen}"
+    );
+    assert!(!screen.contains("Ask"), "{screen}");
+    let mut test = running("go");
+    test.deliver(started(
+        "q",
+        "ask_user_question",
+        ToolActivity::Ask,
+        ("Asking", "Asked", ""),
+    ));
+    test.draining(super::super::Shell::cancel_visible_turn);
+    let screen = test.screen();
+    assert!(
+        screen.contains("■ Cancelled · What can oh-fx do differently?"),
+        "{screen}"
+    );
+    assert!(!screen.contains("tool call"), "{screen}");
+}
+
+#[test]
 fn escape_after_every_call_settled_keeps_the_turn_notice() {
     let mut test = running("go");
     test.deliver(read("a", "README.md"));

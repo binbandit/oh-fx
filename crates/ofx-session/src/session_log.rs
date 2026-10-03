@@ -20,7 +20,7 @@ use crate::session_codec::{
 use crate::session_display_metadata::derive_display_title;
 use crate::session_error::SessionError;
 use crate::session_event::{
-    ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent,
+    ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent, ToolResultEvent,
 };
 use crate::session_layout::is_valid_session_id;
 
@@ -34,7 +34,7 @@ use managed_file::{
     same_directory, sync_dir,
 };
 use turn_events::{TurnArtifacts, turn_events};
-use turn_restore::restored_history;
+use turn_restore::{complete_result_output, restored_history};
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
 const MANIFEST_FILE: &str = "session.json";
@@ -134,6 +134,10 @@ impl WritableSession {
 
     pub fn take_history(&mut self) -> SavedHistory {
         mem::take(&mut self.history)
+    }
+
+    pub fn tool_result_output(&self, result: &ToolResultEvent) -> Option<String> {
+        complete_result_output(result, &self.owned.dir)
     }
 
     pub fn restored_history(&mut self) -> Result<RestoredHistory, SessionError> {

@@ -1,11 +1,11 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_agent::{Agent, Compaction, CompactionError, TurnFailure, TurnReport};
+use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailure, TurnReport};
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, SkillBinding,
-    TurnOutcome, UiCommand, UiEvent,
+    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, QuestionRequest,
+    SkillBinding, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
@@ -194,10 +194,12 @@ pub(crate) struct Controller {
     agent: Agent,
     state: ControllerState,
     persistence: Option<Persistence>,
+    questions: Option<QuestionRequests>,
 }
 
 impl Controller {
-    pub(crate) fn new(setup: AgentSetup, emit: Emit, persistence: Option<Persistence>) -> Self {
+    pub(crate) fn new(mut setup: AgentSetup, emit: Emit, persistence: Option<Persistence>) -> Self {
+        let questions = setup.take_question_requests();
         let notices = ContextNotices {
             startup: setup.context_notices().to_vec(),
             claimed: HashSet::new(),
@@ -222,6 +224,7 @@ impl Controller {
             agent: state.setup.agent(),
             state,
             persistence,
+            questions,
         }
     }
 
@@ -269,6 +272,7 @@ impl Controller {
                 }
                 UiCommand::Cancel { .. }
                 | UiCommand::Approval { .. }
+                | UiCommand::QuestionAnswered { .. }
                 | UiCommand::CancelCompaction => {}
             }
         }
@@ -329,7 +333,11 @@ impl Controller {
                         Some(UiCommand::FullAccessWarningShown) => {
                             state.permissions.full_access_warning_shown();
                         }
-                        Some(UiCommand::Cancel { .. } | UiCommand::Approval { .. }) => {}
+                        Some(
+                            UiCommand::Cancel { .. }
+                            | UiCommand::Approval { .. }
+                            | UiCommand::QuestionAnswered { .. },
+                        ) => {}
                         Some(UiCommand::RunCommand { text }) => {
                             run_deferred_command(
                                 state,
@@ -417,6 +425,7 @@ impl Controller {
         let notices = Arc::clone(&self.state.context_notices);
         let state = &mut self.state;
         let persistence = &mut self.persistence;
+        let questions = &mut self.questions;
         let mut open = true;
         let report = {
             let mut sink = move |event: UiEvent| match event {
@@ -462,6 +471,11 @@ impl Controller {
                                 approvals.resolve(request_id, decision);
                             }
                         }
+                        Some(UiCommand::QuestionAnswered { request_id, answers }) => {
+                            if let Some(questions) = state.setup.questions() {
+                                questions.resolve(request_id, answers);
+                            }
+                        }
                         Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
                         Some(UiCommand::FullAccessWarningShown) => {
                             state.permissions.full_access_warning_shown();
@@ -472,6 +486,7 @@ impl Controller {
                         }
                         Some(UiCommand::CancelCompaction) => {}
                     },
+                    request = next_question(questions) => relay_question(state, running_turn(), request),
                 }
             }
         };
@@ -503,6 +518,24 @@ impl Controller {
         }
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
             self.clear(first_kept_prompt);
+        }
+    }
+}
+
+async fn next_question(requests: &mut Option<QuestionRequests>) -> QuestionRequest {
+    match requests {
+        Some(requests) => requests.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn relay_question(state: &ControllerState, turn: Option<TurnId>, request: QuestionRequest) {
+    match turn {
+        Some(turn_id) => state.emit(UiEvent::QuestionRequested { turn_id, request }),
+        None => {
+            if let Some(questions) = state.setup.questions() {
+                questions.resolve(request.id, None);
+            }
         }
     }
 }
@@ -2387,5 +2420,100 @@ mod tests {
         ] {
             assert_eq!(failure_status(&silent, CredentialSource::Configured), None);
         }
+    }
+
+    const QUESTION_ARGUMENTS: &str = r#"{"questions":[{"question":"Proceed?","options":[{"label":"Yes","description":"Go ahead"},{"label":"No"}]}]}"#;
+
+    async fn asked(harness: &mut Harness) -> (TurnId, QuestionRequest) {
+        let Some(UiEvent::QuestionRequested { turn_id, request }) = harness
+            .until(|event| matches!(event, UiEvent::QuestionRequested { .. }))
+            .await
+            .last()
+            .cloned()
+        else {
+            unreachable!()
+        };
+        (turn_id, request)
+    }
+
+    fn tool_results(body: &Value) -> Vec<String> {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .map(|message| message["content"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn questions_reach_the_shell_for_the_running_turn_and_answers_reach_the_model() {
+        let ask = chat_tool_call_events("call-1", "ask_user_question", QUESTION_ARGUMENTS);
+        let server = FakeServer::start([
+            Reply::sse(&ask),
+            Reply::sse(&chat_text_events(&["Stopping."])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("pick for me");
+        let (turn_id, request) = asked(&mut harness).await;
+        assert_eq!(turn_id, harness.running_turn());
+        assert_eq!(request.entries.len(), 1);
+        assert_eq!(request.entries[0].question, "Proceed?");
+        assert_eq!(request.entries[0].options.len(), 2);
+        assert_eq!(
+            request.entries[0].options[0].description.as_deref(),
+            Some("Go ahead")
+        );
+        let offered: Vec<String> = server.requests()[0].json()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            offered.iter().any(|name| name == "ask_user_question"),
+            "{offered:?}"
+        );
+        harness.send(UiCommand::QuestionAnswered {
+            request_id: request.id,
+            answers: Some(vec!["No".to_owned()]),
+        });
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            tool_results(&server.requests()[1].json()),
+            [r#"[{"question":"Proceed?","answer":"No"}]"#]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_stops_waiting_and_tells_the_model_the_question_was_cancelled() {
+        let ask = chat_tool_call_events("call-1", "ask_user_question", QUESTION_ARGUMENTS);
+        let server = FakeServer::start([
+            Reply::sse(&ask),
+            Reply::sse(&chat_text_events(&["Asking in text instead."])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("pick for me");
+        let (turn_id, request) = asked(&mut harness).await;
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.send(UiCommand::QuestionAnswered {
+            request_id: request.id,
+            answers: None,
+        });
+        let events = harness.until(finished(TurnOutcome::Interrupted)).await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::ToolFinished { content, .. } if content == "(user cancelled the question)"
+        )));
+        harness.send(UiCommand::QuestionAnswered {
+            request_id: request.id,
+            answers: Some(vec!["Yes".to_owned()]),
+        });
+        harness.submit("go on");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            tool_results(&server.requests()[1].json()),
+            ["(user cancelled the question)"]
+        );
     }
 }

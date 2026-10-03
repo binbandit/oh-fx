@@ -950,3 +950,69 @@ fn file_mentions_complete_in_new_and_resumed_sessions_and_are_saved_as_typed() {
         .concat()
     );
 }
+
+const DEPTH_QUESTION: &str = r#"{"questions":[{"question":"Which depth?","options":[{"label":"Thorough"},{"label":"Fast"}]}]}"#;
+
+fn appears_in_order(screen: &str, pieces: &[&str]) -> bool {
+    let mut rest = screen;
+    pieces.iter().all(|piece| match rest.find(piece) {
+        Some(at) => {
+            rest = &rest[at + piece.len()..];
+            true
+        }
+        None => false,
+    })
+}
+
+#[test]
+fn a_resumed_shell_replays_answered_questions_and_asks_new_ones() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "ask_user_question",
+            DEPTH_QUESTION,
+        )),
+        Reply::sse(&chat_text_events(&["Going fast."])),
+        Reply::sse(&chat_tool_call_events(
+            "call-2",
+            "ask_user_question",
+            DEPTH_QUESTION,
+        )),
+        Reply::sse(&chat_text_events(&["Now thorough."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"pick for me\r");
+    wait(&session, "Which depth?");
+    session.send(b"2");
+    wait(&session, "Going fast.");
+    exit(session);
+
+    let session = home.shell(&["-c"], "session resumed: pick for me");
+    let screen = wait(&session, "Going fast.");
+    assert!(screen.contains("  1) Which depth?\n     Fast"), "{screen}");
+    assert!(
+        appears_in_order(
+            &screen,
+            &["┃ pick for me", "  1) Which depth?", "Going fast."]
+        ),
+        "{screen}"
+    );
+    session.send(b"ask again\r");
+    wait(&session, "1–3 choose now");
+    session.send(b"1");
+    wait(&session, "Now thorough.");
+    exit(session);
+    let answers: Vec<String> = chat(&server.requests()[3])
+        .into_iter()
+        .filter(|(role, _)| role == "tool")
+        .map(|(_, content)| content)
+        .collect();
+    assert_eq!(
+        answers,
+        [
+            r#"[{"question":"Which depth?","answer":"Fast"}]"#,
+            r#"[{"question":"Which depth?","answer":"Thorough"}]"#,
+        ]
+    );
+}
