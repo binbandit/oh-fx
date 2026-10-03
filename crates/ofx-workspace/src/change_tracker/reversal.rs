@@ -4,13 +4,14 @@ use std::io::{self, Write};
 use std::os::fd::OwnedFd;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, openat, renameat, statat, unlinkat};
+use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, statat, unlinkat};
 use rustix::io::Errno;
 
 use super::FileOperation;
 use crate::path_error::PathError;
 use crate::pathing::{
-    FileIdentity, descriptor_identity, entry_identity, open_child_directory, open_directory,
+    FileIdentity, FileKind, descriptor_identity, entry_identity, open_child_directory,
+    open_directory,
 };
 
 const STAGE_FLAGS: OFlags = OFlags::RDWR
@@ -85,42 +86,70 @@ fn verified(directory: OwnedFd, expected: FileIdentity) -> Result<OwnedFd, Unava
 }
 
 fn restore(parent: &OwnedFd, name: &OsStr, content: &[u8]) -> Result<(), Unavailable> {
-    let mode = match statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => {
-            let mode = Mode::from_raw_mode(stat.st_mode);
-            if !mode.intersects(WRITE_BITS) {
-                return Err(Unavailable);
-            }
-            mode
-        }
-        Ok(_) | Err(Errno::NOENT) => DEFAULT_FILE_MODE,
-        Err(_) => return Err(Unavailable),
+    let existing = existing_entry(parent, name)?;
+    let mode = match existing.map(FileIdentity::kind) {
+        None | Some(FileKind::Symlink) => DEFAULT_FILE_MODE,
+        Some(FileKind::RegularFile) => writable_mode(parent, name)?,
+        Some(FileKind::Directory | FileKind::Other) => return Err(Unavailable),
     };
     let stage = stage_name(name);
     let descriptor = openat(parent, &stage, STAGE_FLAGS, mode)?;
     let identity = descriptor_identity(&descriptor).ok();
-    let placed = write_and_place(parent, &stage, name, File::from(descriptor), content);
+    let placed = write_and_place(
+        parent,
+        &stage,
+        name,
+        existing,
+        File::from(descriptor),
+        content,
+    );
     if placed.is_err() && identity.is_some() && entry_identity(parent, &stage).ok() == identity {
         let _ = unlinkat(parent, &stage, AtFlags::empty());
     }
     placed
 }
 
+fn existing_entry(parent: &OwnedFd, name: &OsStr) -> Result<Option<FileIdentity>, Unavailable> {
+    match entry_identity(parent, name) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(PathError::FileNotFound) => Ok(None),
+        Err(_) => Err(Unavailable),
+    }
+}
+
+fn writable_mode(parent: &OwnedFd, name: &OsStr) -> Result<Mode, Unavailable> {
+    let mode = Mode::from_raw_mode(statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?.st_mode);
+    if mode.intersects(WRITE_BITS) {
+        Ok(mode)
+    } else {
+        Err(Unavailable)
+    }
+}
+
 fn write_and_place(
     parent: &OwnedFd,
     stage: &OsStr,
     name: &OsStr,
+    existing: Option<FileIdentity>,
     mut file: File,
     content: &[u8],
 ) -> Result<(), Unavailable> {
     file.write_all(content)?;
     file.sync_all()?;
     drop(file);
+    if existing_entry(parent, name)? != existing {
+        return Err(Unavailable);
+    }
     renameat(parent, stage, parent, name)?;
     Ok(())
 }
 
 fn delete(parent: &OwnedFd, name: &OsStr) -> Result<(), Unavailable> {
+    match existing_entry(parent, name)?.map(FileIdentity::kind) {
+        None => return Ok(()),
+        Some(FileKind::RegularFile | FileKind::Symlink) => {}
+        Some(FileKind::Directory | FileKind::Other) => return Err(Unavailable),
+    }
     match unlinkat(parent, name, AtFlags::empty()) {
         Ok(()) | Err(Errno::NOENT) => Ok(()),
         Err(_) => Err(Unavailable),

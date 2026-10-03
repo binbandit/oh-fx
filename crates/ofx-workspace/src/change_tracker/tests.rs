@@ -1,7 +1,9 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, Permissions};
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
+use std::os::unix::net::UnixListener;
 use std::path::Path;
+use std::process::Command;
 
 use tempfile::TempDir;
 
@@ -378,4 +380,70 @@ fn undo_refuses_an_operation_whose_traversal_does_not_match_its_components() {
     tracker.push_operation(operation);
     assert_eq!(tracker.undo_last(), UndoResult::Unavailable(path.clone()));
     assert_eq!(fs::read_to_string(&path).unwrap(), "changed");
+}
+
+fn make_fifo(path: &Path) {
+    let status = Command::new("mkfifo").arg(path).status().unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn undo_leaves_a_fifo_or_socket_that_replaced_a_tracked_file_intact() {
+    let root = Root::new();
+    let fifo = root.join("fifo");
+    let socket = root.join("socket");
+    fs::write(&fifo, "changed").unwrap();
+    fs::write(&socket, "changed").unwrap();
+    let tracker = ChangeTracker::default();
+    tracker.push_operation(root.capture("fifo", Some("original")));
+    tracker.push_operation(root.capture("socket", Some("original")));
+    fs::remove_file(&fifo).unwrap();
+    fs::remove_file(&socket).unwrap();
+    make_fifo(&fifo);
+    let _listener = UnixListener::bind(&socket).unwrap();
+    assert_eq!(tracker.undo_last(), UndoResult::Unavailable(socket.clone()));
+    assert_eq!(tracker.undo_last(), UndoResult::Unavailable(fifo.clone()));
+    assert!(
+        fs::symlink_metadata(&socket)
+            .unwrap()
+            .file_type()
+            .is_socket()
+    );
+    assert!(fs::symlink_metadata(&fifo).unwrap().file_type().is_fifo());
+    assert_eq!(fs::read_dir(&root.path).unwrap().count(), 2);
+}
+
+#[test]
+fn undo_leaves_a_fifo_or_socket_at_a_created_path_intact() {
+    let root = Root::new();
+    let fifo = root.join("fifo");
+    let socket = root.join("socket");
+    let tracker = ChangeTracker::default();
+    tracker.push_operation(root.capture("fifo", None));
+    tracker.push_operation(root.capture("socket", None));
+    make_fifo(&fifo);
+    let _listener = UnixListener::bind(&socket).unwrap();
+    assert_eq!(tracker.undo_last(), UndoResult::Unavailable(socket.clone()));
+    assert_eq!(tracker.undo_last(), UndoResult::Unavailable(fifo.clone()));
+    assert!(
+        fs::symlink_metadata(&socket)
+            .unwrap()
+            .file_type()
+            .is_socket()
+    );
+    assert!(fs::symlink_metadata(&fifo).unwrap().file_type().is_fifo());
+}
+
+#[test]
+fn undo_removes_only_a_link_left_at_a_created_path() {
+    let root = Root::new();
+    let created = root.join("created.txt");
+    let target = root.join("target.txt");
+    fs::write(&target, "must stay untouched").unwrap();
+    let tracker = ChangeTracker::default();
+    tracker.push_operation(root.capture("created.txt", None));
+    symlink(&target, &created).unwrap();
+    assert_eq!(tracker.undo_last(), UndoResult::Deleted(created.clone()));
+    assert!(fs::symlink_metadata(&created).is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "must stay untouched");
 }
