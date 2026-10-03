@@ -75,6 +75,31 @@ fn answers(test: &TestShell) -> Vec<UiCommand> {
 }
 
 #[test]
+fn time_spent_answering_a_question_stops_the_turn_clock_but_not_the_turn_summary() {
+    let mut test = TestShell::start();
+    test.submit("pick for me");
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(1),
+    });
+    test.advance(2_000);
+    test.deliver(requested(1, 4, proceed()));
+    test.screen();
+    test.advance(45_000);
+    test.screen();
+    let now_ms = test.shell.now_ms();
+    assert_eq!(test.shell.next_deadline_ms(now_ms), None);
+    press(&mut test, b"1");
+    assert!(test.screen().contains("• Thinking (2s)"));
+    test.advance(1_000);
+    test.deliver(UiEvent::TurnFinished {
+        turn_id: TurnId::new(1),
+        outcome: TurnOutcome::Completed,
+    });
+    let screen = test.screen();
+    assert!(screen.contains("\n  48s (↑"), "{screen}");
+}
+
+#[test]
 fn a_question_replaces_the_composer_until_a_number_answers_it() {
     let mut test = asking(proceed());
     let screen = test.screen();
@@ -467,7 +492,7 @@ fn csi_u_digits_neither_choose_nor_type() {
         press(&mut test, b"\x1b[B");
         press(&mut test, sequence);
         test.advance(100);
-        test.step();
+        test.settle();
         press(&mut test, b"\t");
         assert!(answers(&test).is_empty(), "{sequence:?}");
         press(&mut test, b"\r");
