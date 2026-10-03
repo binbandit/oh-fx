@@ -669,7 +669,8 @@ fn user_permission_patches_write_top_level_and_keep_local_rules() {
     assert_eq!(
         save_permission_patch(&fixture.paths, None, add_rule("bash", "user *")),
         Ok(CommitOutcome::Committed {
-            permission_rules_removed: 0
+            permission_rules_removed: 0,
+            cleanup: LegacyCleanup::default(),
         })
     );
     assert_eq!(
@@ -727,7 +728,8 @@ fn permission_patches_need_an_absolute_workspace_and_isolate_remove_and_reset() 
             }
         ),
         Ok(CommitOutcome::Committed {
-            permission_rules_removed: 1
+            permission_rules_removed: 1,
+            cleanup: LegacyCleanup::default(),
         })
     );
     assert_eq!(
@@ -737,7 +739,8 @@ fn permission_patches_need_an_absolute_workspace_and_isolate_remove_and_reset() 
             PermissionPatch::Reset(AllowlistResetScope::All)
         ),
         Ok(CommitOutcome::Committed {
-            permission_rules_removed: 1
+            permission_rules_removed: 1,
+            cleanup: LegacyCleanup::default(),
         })
     );
     assert_eq!(
@@ -761,7 +764,8 @@ fn permission_patches_match_rules_stored_with_padded_keys() {
             }
         ),
         Ok(CommitOutcome::Committed {
-            permission_rules_removed: 1
+            permission_rules_removed: 1,
+            cleanup: LegacyCleanup::default(),
         })
     );
     assert_eq!(
@@ -786,7 +790,8 @@ fn permission_patches_match_rules_stored_with_padded_keys() {
             PermissionPatch::Reset(AllowlistResetScope::Commands)
         ),
         Ok(CommitOutcome::Committed {
-            permission_rules_removed: 2
+            permission_rules_removed: 2,
+            cleanup: LegacyCleanup::default(),
         })
     );
     assert_eq!(fixture.read(), "{}\n");
@@ -816,4 +821,35 @@ fn permission_patches_refuse_settings_the_loader_would_reject() {
         }
         assert_eq!(fixture.read(), text);
     }
+}
+
+#[test]
+fn startup_scrollback_is_saved_at_top_level_and_workspace_copies_are_migrated() {
+    let fixture = Fixture::with_settings(
+        "{\"workspaces\":{\"/work\":{\"startup_scrollback\":true,\"model\":\"kept\"},\"/other\":{\"startup_scrollback\":false}}}\n",
+    );
+    let recovery = fixture
+        .paths
+        .config
+        .join("backups/settings.json.preference-migration.startup_scrollback.json");
+    assert_eq!(
+        save_startup_scrollback(&fixture.paths, false),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 0,
+            cleanup: LegacyCleanup {
+                fields_removed: 2,
+                workspaces_changed: 2,
+                recovery_paths: vec![recovery.clone()],
+            },
+        })
+    );
+    assert_eq!(
+        fixture.read(),
+        "{\"workspaces\":{\"/work\":{\"model\":\"kept\"}},\"startup_scrollback\":false}\n"
+    );
+    assert!(recovery.exists());
+    assert_eq!(
+        save_startup_scrollback(&fixture.paths, false),
+        Ok(CommitOutcome::Unchanged)
+    );
 }

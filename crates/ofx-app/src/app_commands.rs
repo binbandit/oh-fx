@@ -10,7 +10,7 @@ use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 
 use crate::app_agent_runtime::ControllerState;
 use crate::app_session_runtime::{Persistence, RenameError, validate_session_title};
-use crate::session_commands::handle_allowlist;
+use crate::session_commands::{handle_allowlist, handle_settings};
 use crate::skill_commands::handle_skills;
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
@@ -86,14 +86,6 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
         return CommandEffect::None;
     };
     match command.kind {
-        SlashKind::Quit => {
-            state.emit(UiEvent::ExitRequested);
-            CommandEffect::None
-        }
-        SlashKind::Help => {
-            state.emit(UiEvent::HelpRequested);
-            CommandEffect::None
-        }
         SlashKind::ClearScreen | SlashKind::NewSession | SlashKind::ResetSession => {
             CommandEffect::Clear
         }
@@ -103,66 +95,9 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
         }
         SlashKind::ResumeSession => CommandEffect::OpenSessions,
         SlashKind::RenameSession => CommandEffect::Rename(command.payload.to_owned()),
-        SlashKind::Usage => {
-            state.notice(NoticeTone::Neutral, USAGE_TOPIC, PROFILE_USAGE_UNAVAILABLE);
-            CommandEffect::None
-        }
-        SlashKind::Status => {
-            state.notice(NoticeTone::Neutral, "status", &state.status_body());
-            CommandEffect::None
-        }
-        SlashKind::Stats => {
-            state.emit(UiEvent::StatsRequested);
-            CommandEffect::None
-        }
-        SlashKind::Alias => {
-            state.notice(NoticeTone::Neutral, ALIASES_TOPIC, ALIASES_UNAVAILABLE);
-            CommandEffect::None
-        }
         SlashKind::Fast => CommandEffect::ToggleFast,
         SlashKind::Compact => compaction_effect(state, work),
-        SlashKind::Allowlist => {
-            state.emit(UiEvent::Notice {
-                notice: handle_allowlist(&state.settings_access(), command.payload),
-            });
-            CommandEffect::None
-        }
-        SlashKind::Undo => {
-            let result = state
-                .change_tracker()
-                .map_or(UndoResult::Empty, ChangeTracker::undo_last);
-            state.notice(NoticeTone::Neutral, UNDO_TOPIC, &undo_message(&result));
-            CommandEffect::None
-        }
-        SlashKind::Copy => {
-            copy_last_reply(state);
-            CommandEffect::None
-        }
-        SlashKind::Workspace => {
-            state.notice(
-                NoticeTone::Error,
-                WORKSPACE_TOPIC,
-                WORKSPACE_ACCESS_UNAVAILABLE,
-            );
-            CommandEffect::None
-        }
-        SlashKind::Version => {
-            state.notice(NoticeTone::Neutral, "version", ofx_upgrade::VERSION);
-            CommandEffect::None
-        }
-        SlashKind::Model if command.payload.is_empty() => {
-            state.notice(NoticeTone::Neutral, "model", &model_status(state));
-            CommandEffect::None
-        }
-        SlashKind::Permissions => {
-            state.permissions().handle_command(command.payload);
-            CommandEffect::None
-        }
-        SlashKind::Skills => {
-            handle_skills(state, command.payload);
-            CommandEffect::None
-        }
-        SlashKind::Model => {
+        SlashKind::Model if !command.payload.is_empty() => {
             let resolved = resolve_model_query(state.models(), command.payload);
             let prefix = if work == Work::Turn {
                 "Next turn will use "
@@ -171,6 +106,10 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             };
             state.notice(NoticeTone::Neutral, "", &format!("{prefix}{resolved}"));
             CommandEffect::SwitchModel(resolved)
+        }
+        kind => {
+            report(state, kind, command.payload);
+            CommandEffect::None
         }
     }
 }
@@ -187,6 +126,53 @@ fn compaction_effect(state: &ControllerState, work: Work) -> CommandEffect {
             state.compaction(CompactionActivity::Ended(CompactionEnd::Busy));
             CommandEffect::None
         }
+    }
+}
+
+fn report(state: &ControllerState, kind: SlashKind, payload: &str) {
+    match kind {
+        SlashKind::Quit => state.emit(UiEvent::ExitRequested),
+        SlashKind::Help => state.emit(UiEvent::HelpRequested),
+        SlashKind::Usage => {
+            state.notice(NoticeTone::Neutral, USAGE_TOPIC, PROFILE_USAGE_UNAVAILABLE);
+        }
+        SlashKind::Status => state.notice(NoticeTone::Neutral, "status", &state.status_body()),
+        SlashKind::Stats => state.emit(UiEvent::StatsRequested),
+        SlashKind::Settings => {
+            for notice in handle_settings(&state.settings_access(), &state.session_facts(), payload)
+            {
+                state.emit(UiEvent::Notice { notice });
+            }
+        }
+        SlashKind::Alias => {
+            state.notice(NoticeTone::Neutral, ALIASES_TOPIC, ALIASES_UNAVAILABLE);
+        }
+        SlashKind::Allowlist => state.emit(UiEvent::Notice {
+            notice: handle_allowlist(&state.settings_access(), payload),
+        }),
+        SlashKind::Undo => {
+            let result = state
+                .change_tracker()
+                .map_or(UndoResult::Empty, ChangeTracker::undo_last);
+            state.notice(NoticeTone::Neutral, UNDO_TOPIC, &undo_message(&result));
+        }
+        SlashKind::Copy => copy_last_reply(state),
+        SlashKind::Workspace => state.notice(
+            NoticeTone::Error,
+            WORKSPACE_TOPIC,
+            WORKSPACE_ACCESS_UNAVAILABLE,
+        ),
+        SlashKind::Version => state.notice(NoticeTone::Neutral, "version", ofx_upgrade::VERSION),
+        SlashKind::Model => state.notice(NoticeTone::Neutral, "model", &model_status(state)),
+        SlashKind::Permissions => state.permissions().handle_command(payload),
+        SlashKind::Skills => handle_skills(state, payload),
+        SlashKind::ClearScreen
+        | SlashKind::NewSession
+        | SlashKind::ResetSession
+        | SlashKind::ResumeSession
+        | SlashKind::RenameSession
+        | SlashKind::Fast
+        | SlashKind::Compact => {}
     }
 }
 
@@ -310,6 +296,7 @@ mod tests {
                 "/skills",
                 "/copy",
                 "/compact",
+                "/settings",
                 "/alias",
                 "/fast",
                 "/workspace",
@@ -327,8 +314,8 @@ mod tests {
         assert_eq!(specs[4].description, "resume a saved session");
         assert_eq!(specs[5].description, "rename the current session");
         assert_eq!(specs[13].description, "browse and manage skills");
-        assert_eq!(specs[20].aliases, ["/exit"]);
-        assert_eq!(specs[20].description, "exit the interactive shell");
+        assert_eq!(specs[21].aliases, ["/exit"]);
+        assert_eq!(specs[21].description, "exit the interactive shell");
     }
 
     #[test]
@@ -358,6 +345,7 @@ mod tests {
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),
+                ("/settings", "Appearance"),
                 ("/alias", "Extensions"),
                 ("/fast", "Model"),
                 ("/workspace", "Workspace"),

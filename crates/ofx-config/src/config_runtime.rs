@@ -204,6 +204,8 @@ pub enum LayerError {
     InvalidPromptHistoryType,
     #[error("InvalidPromptHistoryEnabledType")]
     InvalidPromptHistoryEnabledType,
+    #[error("InvalidStartupScrollbackType")]
+    InvalidStartupScrollbackType,
     #[error("InvalidPermissionRulesType")]
     InvalidPermissionRulesType,
     #[error("InvalidPermissionAction")]
@@ -262,6 +264,7 @@ struct Layer {
     context: Option<bool>,
     skill_symlink_authorities: Option<Vec<PathBuf>>,
     prompt_history: Option<bool>,
+    startup_scrollback: Option<bool>,
     permission_rules: Option<Vec<PermissionRule>>,
     session_titles: Option<bool>,
 }
@@ -303,6 +306,25 @@ pub struct Settings {
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
     diagnostics: Vec<ConfigDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    CompiledDefault,
+    UserGlobal,
+    UserWorkspace,
+    ProcessOverride,
+}
+
+impl ConfigSource {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CompiledDefault => "compiled_default",
+            Self::UserGlobal => "user_global",
+            Self::UserWorkspace => "user_workspace",
+            Self::ProcessOverride => "process_override",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,6 +387,37 @@ impl Settings {
             .iter()
             .filter(|diagnostic| diagnostic.layer == ConfigLayer::User)
             .find_map(|diagnostic| diagnostic.cause.resolution_failure())
+    }
+
+    pub fn startup_scrollback(&self) -> bool {
+        self.workspace
+            .startup_scrollback
+            .or(self.global.startup_scrollback)
+            .unwrap_or(true)
+    }
+
+    pub fn startup_scrollback_source(&self) -> ConfigSource {
+        self.layer_source(|layer| layer.startup_scrollback.is_some())
+    }
+
+    pub fn gateway_model_source(&self, lookup: EnvironmentLookup<'_>) -> ConfigSource {
+        let gateway_selected = self
+            .selected_provider(lookup)
+            .is_ok_and(|provider| provider == ProviderId::Gateway);
+        if gateway_selected && environment_model(lookup).is_some() {
+            return ConfigSource::ProcessOverride;
+        }
+        self.layer_source(|layer| layer.saved_model(&ProviderId::Gateway).is_some())
+    }
+
+    fn layer_source(&self, holds: impl Fn(&Layer) -> bool) -> ConfigSource {
+        if holds(&self.workspace) {
+            ConfigSource::UserWorkspace
+        } else if holds(&self.global) {
+            ConfigSource::UserGlobal
+        } else {
+            ConfigSource::CompiledDefault
+        }
     }
 
     pub fn permission_sources(&self) -> PermissionSources<'_> {
@@ -786,6 +839,11 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         )?,
         Some(_) => return Err(LayerError::InvalidPromptHistoryType),
     };
+    layer.startup_scrollback = parse_switch(
+        object,
+        "startup_scrollback",
+        LayerError::InvalidStartupScrollbackType,
+    )?;
     layer.permission_rules = object
         .get("permission")
         .map(parse_permission_config)
@@ -2130,5 +2188,68 @@ mod tests {
         assert_eq!(settings.user_layer_failure(), Some("DurablePathUnsafe"));
         let large = load(&fixture(Some(&" ".repeat(MAX_SETTINGS_BYTES + 1)), None)).unwrap();
         assert_eq!(large.user_layer_failure(), Some("SettingsPrimaryTooLarge"));
+    }
+
+    #[test]
+    fn startup_scrollback_defaults_on_and_reports_the_layer_it_comes_from() {
+        let fixture = fixture(None, None);
+        let missing = load(&fixture).unwrap();
+        assert!(missing.startup_scrollback());
+        assert_eq!(
+            missing.startup_scrollback_source(),
+            ConfigSource::CompiledDefault
+        );
+        let global = workspace_settings(&fixture, r#""startup_scrollback":false,"#, "{}");
+        assert!(!global.startup_scrollback());
+        assert_eq!(global.startup_scrollback_source(), ConfigSource::UserGlobal);
+        let workspace = workspace_settings(
+            &fixture,
+            r#""startup_scrollback":false,"#,
+            r#"{"startup_scrollback":true}"#,
+        );
+        assert!(workspace.startup_scrollback());
+        assert_eq!(
+            workspace.startup_scrollback_source(),
+            ConfigSource::UserWorkspace
+        );
+        let malformed = load(&self::fixture(Some(r#"{"startup_scrollback":"on"}"#), None)).unwrap();
+        assert!(malformed.profile_is_unusable());
+        let project = load(&self::fixture(
+            None,
+            Some(r#"{"startup_scrollback":false}"#),
+        ))
+        .unwrap();
+        assert!(project.startup_scrollback());
+    }
+
+    #[test]
+    fn the_gateway_model_source_follows_layers_and_the_model_variable() {
+        let fixture = fixture(None, None);
+        let gateway = |name: &str| (name == "OH_FX_MODEL").then(|| " model ".to_owned());
+        let missing = load(&fixture).unwrap();
+        assert_eq!(
+            missing.gateway_model_source(&no_environment),
+            ConfigSource::CompiledDefault
+        );
+        assert_eq!(
+            missing.gateway_model_source(&gateway),
+            ConfigSource::ProcessOverride
+        );
+        let legacy = workspace_settings(&fixture, r#""model":"saved","#, "{}");
+        assert_eq!(
+            legacy.gateway_model_source(&no_environment),
+            ConfigSource::UserGlobal
+        );
+        let listed = workspace_settings(&fixture, "", r#"{"models":{"gateway":"saved"}}"#);
+        assert_eq!(
+            listed.gateway_model_source(&no_environment),
+            ConfigSource::UserWorkspace
+        );
+        let codex = workspace_settings(&fixture, r#""provider":"codex","#, "{}");
+        assert_eq!(
+            codex.gateway_model_source(&gateway),
+            ConfigSource::CompiledDefault
+        );
+        assert_eq!(ConfigSource::ProcessOverride.label(), "process_override");
     }
 }

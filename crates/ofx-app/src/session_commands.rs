@@ -1,15 +1,18 @@
+use std::env;
 use std::fmt::Write as _;
 use std::path::Path;
 
 use ofx_config::{
-    AllowlistResetScope, CommitOutcome, PermissionPatch, PermissionSources, ProfilePaths, Settings,
-    save_permission_patch,
+    AllowlistResetScope, CommitOutcome, ConfigSource, PermissionPatch, PermissionSources,
+    ProfilePaths, Settings, save_permission_patch, save_startup_scrollback,
 };
-use ofx_contract::{Notice, NoticeTone, PermissionAction, PermissionRule};
+use ofx_contract::{Notice, NoticeTone, PermissionAction, PermissionMode, PermissionRule};
 use ofx_permissions::{
     WEB_FETCH_PERMISSION, WEB_SEARCH_PERMISSION, canonical_web_fetch_domain_pattern,
     is_canonical_web_fetch_domain_pattern, permission_name_for_tool, web_fetch_rule_warning_count,
 };
+
+use crate::user_settings::{Unsaved, append_legacy_cleanup, not_saved_notice};
 
 const ALLOWLIST_TOPIC: &str = "allowlist";
 const SETTINGS_TOPIC: &str = "settings";
@@ -30,11 +33,20 @@ const KNOWN_PERMISSION_CATEGORIES: [&str; 6] = [
 ];
 const WORKSPACE_PATH_PERMISSIONS: [&str; 4] = ["edit", "read", "glob", "grep"];
 const SEPARATORS: [char; 2] = [' ', '\t'];
+const SETTINGS_USAGE: &str = "usage: /settings [startup-scrollback [on|off]]";
+const STARTUP_SCROLLBACK_LABEL: &str = "startup-scrollback";
+const SAVED_TO_USER_SETTINGS: &str = "saved to user settings (scope=user)";
 
 pub(crate) struct SettingsAccess<'a> {
     pub(crate) paths: Option<&'a ProfilePaths>,
     pub(crate) workspace_root: &'a Path,
     pub(crate) tool_names: Vec<String>,
+}
+
+pub(crate) struct SessionFacts<'a> {
+    pub(crate) model: &'a str,
+    pub(crate) permission_mode: PermissionMode,
+    pub(crate) step_limit: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +135,127 @@ pub(crate) fn handle_allowlist(access: &SettingsAccess<'_>, rest: &str) -> Notic
     usage(ALLOWLIST_USAGE)
 }
 
+pub(crate) fn handle_settings(
+    access: &SettingsAccess<'_>,
+    facts: &SessionFacts<'_>,
+    rest: &str,
+) -> Vec<Notice> {
+    let Some(first) = split_first_word(rest) else {
+        return vec![settings_status(access, facts)];
+    };
+    if !first.word.eq_ignore_ascii_case("startup-scrollback") {
+        return vec![usage(SETTINGS_USAGE)];
+    }
+    let enabled = match split_first_word(first.rest) {
+        Some(value) if !value.rest.is_empty() => return vec![usage(SETTINGS_USAGE)],
+        Some(value) if value.word.eq_ignore_ascii_case("on") => true,
+        Some(value) if value.word.eq_ignore_ascii_case("off") => false,
+        Some(_) => return vec![usage(SETTINGS_USAGE)],
+        None => match load(access) {
+            Ok(settings) => !settings.startup_scrollback(),
+            Err(error) => return vec![settings_load_error(&error)],
+        },
+    };
+    save_startup_scrollback_setting(access, enabled)
+}
+
+fn settings_status(access: &SettingsAccess<'_>, facts: &SessionFacts<'_>) -> Notice {
+    let settings = match load(access) {
+        Ok(settings) => settings,
+        Err(error) => return settings_load_error(&error),
+    };
+    let lookup = |name: &str| env::var(name).ok();
+    Notice::new(
+        NoticeTone::Neutral,
+        SETTINGS_TOPIC,
+        format!(
+            "model: {}\nmodel_config_source: {}\npermission_mode: {}\nworkspace: {}\nstep_limit: {}\nstartup_scrollback: {}",
+            facts.model,
+            settings.gateway_model_source(&lookup).label(),
+            facts.permission_mode.display_label(),
+            access.workspace_root.to_string_lossy(),
+            facts.step_limit,
+            on_off(settings.startup_scrollback()),
+        ),
+    )
+}
+
+fn save_startup_scrollback_setting(access: &SettingsAccess<'_>, enabled: bool) -> Vec<Notice> {
+    let saved = match access.paths {
+        Some(paths) => save_startup_scrollback(paths, enabled).map_err(Unsaved::Failed),
+        None => Err(Unsaved::HomeNotSet),
+    };
+    let outcome = match saved {
+        Ok(outcome) => outcome,
+        Err(unsaved) => return vec![not_saved_notice(STARTUP_SCROLLBACK_LABEL, &unsaved)],
+    };
+    let mut notices = Vec::new();
+    let settings = report_user_settings_commit(
+        access,
+        STARTUP_SCROLLBACK_LABEL,
+        &outcome,
+        |settings| Some(("startup_scrollback", settings.startup_scrollback_source())),
+        false,
+        &mut notices,
+    );
+    let detail = match settings.map(|settings| settings.startup_scrollback_source()) {
+        Some(ConfigSource::UserGlobal) => "(applies on next launch)".to_owned(),
+        Some(source) => format!("(saved user default; current source={})", source.label()),
+        None => "(saved user default; next-launch source unknown)".to_owned(),
+    };
+    notices.push(Notice::new(
+        NoticeTone::Neutral,
+        SETTINGS_TOPIC,
+        format!("startup_scrollback: {} {detail}", on_off(enabled)),
+    ));
+    notices
+}
+
+fn report_user_settings_commit(
+    access: &SettingsAccess<'_>,
+    label: &str,
+    outcome: &CommitOutcome,
+    shadow: impl Fn(&Settings) -> Option<(&'static str, ConfigSource)>,
+    announce: bool,
+    notices: &mut Vec<Notice>,
+) -> Option<Settings> {
+    let settings = match reload(access) {
+        Ok(settings) => settings,
+        Err(error) => {
+            let mut body =
+                format!("{SAVED_TO_USER_SETTINGS}; next-startup source unknown ({error})");
+            append_commit_cleanup(&mut body, outcome);
+            notices.push(Notice::new(NoticeTone::Warning, label, body));
+            return None;
+        }
+    };
+    let mut body = SAVED_TO_USER_SETTINGS.to_owned();
+    if let Some((field, source)) = shadow(&settings)
+        && source != ConfigSource::UserGlobal
+    {
+        let _ = write!(
+            body,
+            "; fresh sessions here use higher-precedence {field}={}",
+            source.label()
+        );
+    }
+    append_commit_cleanup(&mut body, outcome);
+    if announce || body != SAVED_TO_USER_SETTINGS {
+        notices.push(Notice::new(NoticeTone::Neutral, label, body));
+    }
+    Some(settings)
+}
+
+fn append_commit_cleanup(body: &mut String, outcome: &CommitOutcome) {
+    if let CommitOutcome::Committed { cleanup, .. } = outcome {
+        append_legacy_cleanup(body, cleanup);
+    }
+}
+
+const fn on_off(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
+}
+
 fn allowlist_add(access: &SettingsAccess<'_>, scope: PermissionScope, raw: &str) -> Notice {
     let Some(target) = parse_allowlist_target(&access.tool_names, raw) else {
         return usage(ADD_USAGE);
@@ -173,6 +306,7 @@ fn allowlist_reset(access: &SettingsAccess<'_>, scope: PermissionScope, raw: &st
         Ok(CommitOutcome::Unchanged) => 0,
         Ok(CommitOutcome::Committed {
             permission_rules_removed,
+            ..
         }) => permission_rules_removed,
         Err(error) => {
             return allowlist_error(format!(
