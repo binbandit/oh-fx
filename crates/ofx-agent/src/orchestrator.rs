@@ -14,13 +14,15 @@ use ofx_contract::{
     ModelRecoveryAction, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate,
     PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure,
     ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
-    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
+    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
+    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice,
+    ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId,
+    TurnOutcome, TurnStop, UiEvent, Usage, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
+    tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -1595,17 +1597,22 @@ impl<'a> Reviewing<'a> {
         &self,
         turn_id: TurnId,
         call: &ToolCall,
-        delegates: bool,
+        delegation: Option<&UnboundedSender<ChildStatus>>,
         path_access: PathAccess,
         cancel: &CancellationToken,
     ) -> ToolContext {
         let context =
             ToolContext::new(call.id.clone(), cancel.child_token(), path_access).with_turn(turn_id);
-        if delegates {
-            context.with_root_user_requests(self.delegated_requests())
-        } else {
-            context
-        }
+        let Some(statuses) = delegation else {
+            return context;
+        };
+        let statuses = statuses.clone();
+        let call_id = call.id.clone();
+        context
+            .with_root_user_requests(self.delegated_requests())
+            .with_subagent_status(SubagentStatusSink::new(move |status| {
+                let _ = statuses.send((call_id.clone(), status));
+            }))
     }
 }
 
@@ -1686,6 +1693,7 @@ async fn run_group<'c>(
     cancel: &CancellationToken,
 ) -> SettledGroup<'c> {
     let mut dispatched = Vec::with_capacity(group.len());
+    let (statuses, mut reported) = unbounded_channel();
     let mut blocked = None;
     let mut group = group.into_iter();
     for (call, prepared) in group.by_ref() {
@@ -1748,8 +1756,9 @@ async fn run_group<'c>(
                 }
                 let (held, review_hold) = match verdict {
                     Verdict::Run(path_access) => {
+                        let delegation = delegates.then_some(&statuses);
                         let context =
-                            reviewing.tool_context(turn_id, call, delegates, path_access, cancel);
+                            reviewing.tool_context(turn_id, call, delegation, path_access, cancel);
                         let task = tokio::spawn(async move { prepared.execute(context).await });
                         dispatched.push((call, Dispatched::Running(task)));
                         continue;
@@ -1774,7 +1783,10 @@ async fn run_group<'c>(
     }
     group.for_each(discard);
     SettledGroup {
-        outcomes: settle_group(turn_id, dispatched, events, cancel).await,
+        outcomes: {
+            drop(statuses);
+            settle_group(turn_id, dispatched, &mut reported, events, cancel).await
+        },
         blocked,
     }
 }
@@ -1782,6 +1794,7 @@ async fn run_group<'c>(
 async fn settle_group<'c>(
     turn_id: TurnId,
     dispatched: Vec<(&'c ToolCall, Dispatched)>,
+    reported: &mut UnboundedReceiver<ChildStatus>,
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> Vec<Settled<'c>> {
@@ -1802,7 +1815,8 @@ async fn settle_group<'c>(
                 (Some(output), true, review_hold)
             }
             Dispatched::Running(mut task) => {
-                let output = settle(call, &mut task, cancel, &mut grace_deadline).await;
+                let settling = settle(call, &mut task, cancel, &mut grace_deadline);
+                let output = forward_child_statuses(turn_id, settling, reported, events).await;
                 if let Some(output) = &output {
                     report_context_notices(turn_id, output, events);
                 }
@@ -1870,6 +1884,28 @@ fn tool_finished(turn_id: TurnId, call: &ToolCall, output: Option<&ToolOutput>) 
         process: output.and_then(|output| output.process),
         status_detail: output.and_then(|output| output.status_detail),
         file_change: output.and_then(|output| output.file_change),
+    }
+}
+
+type ChildStatus = (ToolCallId, SubagentStatus);
+
+async fn forward_child_statuses<T>(
+    turn_id: TurnId,
+    settling: impl Future<Output = T>,
+    reported: &mut UnboundedReceiver<ChildStatus>,
+    events: EventSink<'_>,
+) -> T {
+    tokio::pin!(settling);
+    loop {
+        tokio::select! {
+            biased;
+            Some((call_id, status)) = reported.recv() => events(UiEvent::SubagentStatus {
+                turn_id,
+                call_id,
+                status,
+            }),
+            settled = &mut settling => return settled,
+        }
     }
 }
 

@@ -46,7 +46,8 @@ pub use strict_json::{
 pub use subagent::{
     ChildKind, ChildPhase, ChildSnapshot, SteeringDelivery, SubagentAction, SubagentOverride,
     SubagentPlan, SubagentProvider, SubagentRejectCode, SubagentRequest, SubagentRequestError,
-    SubagentRequestInput, SubagentResult, valid_agent_name, valid_instructions,
+    SubagentRequestInput, SubagentResult, SubagentStatus, SubagentStatusSink, valid_agent_name,
+    valid_instructions,
 };
 pub use tool_args::{
     ToolArgValue, ToolArgs, ToolArgsError, parse_json_value, parse_tool_args_object,

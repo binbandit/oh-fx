@@ -8,4 +8,4 @@ pub use model_contract::{
     SubagentPlan, SubagentRejectCode, SubagentRequest, SubagentRequestError, SubagentRequestInput,
     SubagentResult,
 };
-pub use tool_provider::SubagentProvider;
+pub use tool_provider::{SubagentProvider, SubagentStatus, SubagentStatusSink};

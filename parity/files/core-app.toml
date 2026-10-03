@@ -20,7 +20,7 @@ note = "Native provider/tool bootstrap exists; Vercel/Grok routes, extra workspa
 upstream = "src/core/app/app_callbacks.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_agent_runtime.rs"]
-note = "Native event callbacks and authoritative tool rows exist; provisional lifecycle reconciliation, MCP progress/question callbacks and child-agent presentation callbacks remain absent."
+note = "Native event callbacks and authoritative tool rows exist; provisional lifecycle reconciliation, MCP progress/question callbacks and the child status line's input-token refresh remain absent."
 
 [[file]]
 upstream = "src/core/app/app_commands.zig"
