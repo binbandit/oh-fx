@@ -8,6 +8,7 @@ use crate::mcp_contract::{
     ProfileConfigWarningCause, TransportType, WorkspaceAdmission, source_allows_scope,
     source_allows_workspace_admission,
 };
+use crate::protocol_messages::parse_json;
 use crate::streamable_http::{validate_endpoint, validate_static_headers};
 use crate::uri::Uri;
 
@@ -358,8 +359,7 @@ enum ServerMapShape {
 }
 
 pub fn parse_profile_document(json_text: &[u8]) -> Result<ProfileParseResult, McpConfigError> {
-    let root: Value =
-        serde_json::from_slice(json_text).map_err(|_| McpConfigError::McpConfigInvalidJson)?;
+    let root = parse_json(json_text).ok_or(McpConfigError::McpConfigInvalidJson)?;
     let object = root
         .as_object()
         .ok_or(McpConfigError::McpConfigRootMustBeObject)?;
@@ -530,7 +530,7 @@ pub fn parse_workspace_document(
     choices: &ProjectMcpChoices,
 ) -> WorkspaceParseResult {
     let mut result = WorkspaceParseResult::default();
-    let Ok(root) = serde_json::from_slice::<Value>(json_text) else {
+    let Some(root) = parse_json(json_text) else {
         result.diagnostics.push(WorkspaceDiagnostic::new(
             WorkspaceDiagnosticCause::InvalidJson,
         ));

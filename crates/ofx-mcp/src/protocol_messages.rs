@@ -225,6 +225,10 @@ fn sanitize_model_text(text: &str) -> String {
     }
 }
 
+pub(crate) fn parse_json(bytes: &[u8]) -> Option<Value> {
+    serde_json::from_str(std::str::from_utf8(bytes).ok()?).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
