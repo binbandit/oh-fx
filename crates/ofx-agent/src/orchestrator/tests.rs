@@ -2161,6 +2161,20 @@ async fn retryable_failures_retry_with_upstream_pacing_and_report_recovery() {
             "✓ recovered · succeeded on attempt 3",
         ]
     );
+    let waits: Vec<Option<Duration>> = recoveries(&events)
+        .iter()
+        .map(|status| status.retry_wait)
+        .collect();
+    assert_eq!(
+        waits,
+        [
+            Some(Duration::from_millis(250)),
+            None,
+            Some(Duration::from_secs(2)),
+            None,
+            None,
+        ]
+    );
 }
 
 #[tokio::test(start_paused = true)]

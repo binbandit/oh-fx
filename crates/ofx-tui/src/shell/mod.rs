@@ -56,6 +56,7 @@ use crate::output::activity_status::{
     turn_activity_row,
 };
 use crate::output::compaction_activity::CompactionStatus;
+use crate::output::recovery_status::RecoveryStatus;
 use crate::render::hint_line;
 use crate::render_engine::frame_layout::{LiveParts, solve};
 use crate::render_engine::frame_sink::{Frame, FrameSink, LiveRegionRenderer};
@@ -132,6 +133,7 @@ struct ActiveTurn {
     leading_whitespace: LeadingWhitespace,
     step_break: Option<usize>,
     failure: Option<String>,
+    recovery: Option<RecoveryStatus>,
 }
 
 impl ActiveTurn {
@@ -145,6 +147,7 @@ impl ActiveTurn {
             leading_whitespace: LeadingWhitespace::default(),
             step_break: None,
             failure: None,
+            recovery: None,
         }
     }
 }
@@ -412,9 +415,16 @@ impl<'a> Shell<'a> {
     }
 
     fn activity_clock_ms(&self) -> Option<i64> {
+        if self.recovery().is_some() {
+            return None;
+        }
         self.compaction
             .and_then(|status| status.clock_ms())
             .or_else(|| self.turn.as_ref().map(|turn| turn.started_ms))
+    }
+
+    fn recovery(&self) -> Option<&RecoveryStatus> {
+        self.turn.as_ref().and_then(|turn| turn.recovery.as_ref())
     }
 
     fn activity_phase(&self, now_ms: i64) -> Option<i64> {
@@ -427,6 +437,9 @@ impl<'a> Shell<'a> {
     }
 
     fn activity_rows(&self, now_ms: i64) -> Vec<Row> {
+        if let Some(recovery) = self.recovery() {
+            return recovery.rows(&self.theme, self.cols());
+        }
         if let Some(status) = &self.compaction {
             return status.rows(&self.theme, now_ms, self.cols());
         }
@@ -754,6 +767,8 @@ impl<'a> Shell<'a> {
             self.yolo_warning.deadline_ms(),
             self.resize_due_ms,
             self.compaction.and_then(|status| status.expires_ms()),
+            self.recovery()
+                .and_then(|recovery| recovery.next_change_ms(now_ms)),
         ]
         .into_iter()
         .flatten()

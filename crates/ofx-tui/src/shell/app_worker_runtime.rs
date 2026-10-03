@@ -14,6 +14,7 @@ use super::leading_whitespace::LeadingWhitespace;
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
+use crate::output::recovery_status::RecoveryStatus;
 use crate::render_engine::transcript_blocks::{Entry, HelpEntry};
 use crate::transcript::tool_presentation::{Finished, Rejected, ToolActivityRow};
 
@@ -119,9 +120,13 @@ impl Shell<'_> {
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
             | UiEvent::ToolDeferred { .. }) => self.tool_event(event),
-            UiEvent::ContextNotice { .. }
-            | UiEvent::SteeringApplied { .. }
-            | UiEvent::Recovery { .. } => {}
+            UiEvent::ContextNotice { .. } | UiEvent::SteeringApplied { .. } => {}
+            UiEvent::Recovery { turn_id, status } => {
+                let now_ms = self.now_ms();
+                if let Some(turn) = self.visible_turn(turn_id) {
+                    turn.recovery = Some(RecoveryStatus::new(status, now_ms));
+                }
+            }
             UiEvent::UsageReported { turn_id, usage } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
                     turn.tokens.settle(usage.output_tokens);
@@ -224,6 +229,23 @@ impl Shell<'_> {
         self.compaction = None;
         self.mark_dirty();
         true
+    }
+
+    pub(super) fn refresh_recovery_status(&mut self, now_ms: i64) {
+        let Some(turn) = self.turn.as_mut() else {
+            return;
+        };
+        let changed = match &mut turn.recovery {
+            Some(recovery) if recovery.expired(now_ms) => {
+                turn.recovery = None;
+                true
+            }
+            Some(recovery) => recovery.refresh(now_ms),
+            None => false,
+        };
+        if changed {
+            self.mark_dirty();
+        }
     }
 
     pub(super) fn expire_compaction_feedback(&mut self, now_ms: i64) {
@@ -518,6 +540,9 @@ fn asks_the_user(tool_name: &str, description: Option<&CallDescription>) -> bool
         description.activity == ToolActivity::Ask
     })
 }
+
+#[cfg(test)]
+mod recovery_rows;
 
 #[cfg(test)]
 mod tool_rows;

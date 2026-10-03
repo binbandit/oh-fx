@@ -7,7 +7,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events, chat_tool_call_events};
+use ofx_testkit::{FakeServer, Gate, PtySession, Reply, chat_text_events, chat_tool_call_events};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -919,6 +919,41 @@ fn a_failed_turn_keeps_its_error_under_its_prompt_while_prompts_queue() {
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
     assert!(session.screen().contains(error));
+}
+
+#[test]
+fn a_retried_request_counts_down_in_the_footer_until_its_reply_arrives() {
+    let reply = Gate::default();
+    let server = FakeServer::start([
+        Reply::status_with_headers(
+            503,
+            &[("Retry-After", "2")],
+            r#"{"error":{"message":"overloaded"}}"#,
+        ),
+        Reply::sse(&chat_text_events(&["Recovered."])).after(&reply),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = home.shell(24, 100);
+    session.send(b"hi\r");
+    let label = "⚠ Provider unavailable · HTTP 503 · overloaded · retrying request";
+    let screen = wait(&session, &format!("{label} in 2s"));
+    assert!(!screen.contains("Thinking"), "{screen}");
+    wait(&session, &format!("{label} in 1s"));
+    let deadline = Instant::now() + WAIT;
+    while server.requests().len() < 2 {
+        assert!(Instant::now() < deadline, "the request was not retried");
+        thread::sleep(Duration::from_millis(20));
+    }
+    wait(&session, &format!("{label} in 2s"));
+    reply.open();
+    wait(&session, "Recovered.");
+    session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("⚠ Provider unavailable") && !screen.contains("✓ recovered")
+        })
+        .unwrap_or_else(|screen| panic!("the recovery status stayed:\n{screen}"));
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
 #[test]
