@@ -4,7 +4,7 @@ use ofx_session::{SavedProvider, SessionCatalog, SessionError, SessionPreference
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::{LaunchOverrides, LiveSession, ResumedSession};
+use super::{LaunchOverrides, LiveSession, RenameError, ResumedSession, validate_session_title};
 use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(super) const SESSION_TOPIC: &str = "session";
@@ -149,6 +149,13 @@ impl Persistence {
                 generation.run(&CancellationToken::new()).await;
             }));
         }
+    }
+
+    pub(crate) fn rename(&mut self, raw: &str) -> Result<String, RenameError> {
+        let title = validate_session_title(raw)?;
+        let live = self.live.as_ref().ok_or(RenameError::NoActiveSession)?;
+        live.rename(title).map_err(RenameError::NotSaved)?;
+        Ok(title.to_owned())
     }
 
     pub(crate) fn close(&mut self, agent: &mut Agent) {

@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{
-    CommandEffect, Work, handle_command, refuse_resume_during_turn, toggle_fast,
+    CommandEffect, Work, handle_command, refuse_resume_during_turn, rename_session, toggle_fast,
 };
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences};
@@ -333,6 +333,9 @@ impl Controller {
             }
             CommandEffect::Compact => return self.compact(commands).await,
             CommandEffect::OpenSessions => self.open_picker(SessionScope::CurrentWorkspace),
+            CommandEffect::Rename(title) => {
+                rename_session(&self.state, self.persistence.as_mut(), &title);
+            }
         }
         true
     }
@@ -698,6 +701,10 @@ async fn run_deferred_command(
             cancel.cancel();
             return;
         }
+        CommandEffect::Rename(title) => {
+            rename_session(state, persistence.as_mut(), &title);
+            return;
+        }
         CommandEffect::ToggleFast => {
             state.config_pending = true;
             if !toggle_fast(state).await {
@@ -790,7 +797,7 @@ mod tests {
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
     use ofx_session::{SessionPreferences, SessionStore};
     use ofx_testkit::{
-        FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+        FakeServer, Gate, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
     };
     use serde_json::{Value, json};
     use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -973,6 +980,16 @@ mod tests {
         async fn codex_saved(codex: &FakeServer, catalog: &FakeServer, settings: &Value) -> Self {
             let home = codex_home();
             let setup = agent_setup_with(&home, settings, codex_endpoints(codex, catalog)).await;
+            Self::saved(home, setup)
+        }
+
+        async fn start_saved(server: &FakeServer) -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let setup = agent_setup(&home, server).await;
+            Self::saved(home, setup)
+        }
+
+        fn saved(home: tempfile::TempDir, setup: AgentSetup) -> Self {
             let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
             let store =
                 SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
@@ -1795,8 +1812,122 @@ mod tests {
         assert_eq!(codex.requests().len(), 3);
     }
 
+    async fn rename_notice(harness: &mut Harness, command: &str) -> String {
+        harness.command(command);
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        notice_body(shown).join("\n")
+    }
+
+    fn rename_tone(harness: &Harness) -> NoticeTone {
+        harness
+            .seen
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                UiEvent::Notice { notice } => Some(notice.tone),
+                _ => None,
+            })
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn sessions_stay_untitled_when_session_titles_are_off() {
+    async fn rename_validates_the_title_and_saves_it_in_the_session() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        assert_eq!(
+            rename_notice(&mut harness, "/rename").await,
+            "|usage: /rename <title>"
+        );
+        assert_eq!(rename_tone(&harness), NoticeTone::Error);
+        let too_long = format!("/rename {}", "x".repeat(241));
+        assert_eq!(
+            rename_notice(&mut harness, &too_long).await,
+            "session|title is too long"
+        );
+        assert_eq!(
+            rename_notice(&mut harness, "/rename bad\x07title").await,
+            "session|title must be printable text"
+        );
+        assert_eq!(
+            rename_notice(&mut harness, "/rename   deploy pipeline fix ").await,
+            "session|renamed to \"deploy pipeline fix\""
+        );
+        assert_eq!(rename_tone(&harness), NoticeTone::Neutral);
+        assert_eq!(
+            saved_sessions(&harness.home)[0]["title"],
+            "deploy pipeline fix"
+        );
+        chat(&mut harness, &["ship it"]).await;
+        assert_eq!(
+            saved_sessions(&harness.home)[0]["title"],
+            "deploy pipeline fix"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_renamed_before_its_first_prompt_is_kept_and_never_generated() {
+        let codex = FakeServer::start([codex_text("done")]);
+        let catalog = codex_catalog(false, 8);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &codex_settings()).await;
+        assert_eq!(
+            rename_notice(&mut harness, "/rename Release prep").await,
+            "session|renamed to \"Release prep\""
+        );
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let mut titles: Vec<Value> = saved_sessions(&harness.home)
+            .iter()
+            .map(|session| session["title"].clone())
+            .collect();
+        titles.sort_by_key(Value::is_string);
+        assert_eq!(titles, [Value::Null, json!("Release prep")]);
+        assert_eq!(
+            rename_notice(&mut harness, "/rename Second").await,
+            "session|renamed to \"Second\""
+        );
+        chat(&mut harness, &["fix the renderer"]).await;
+        assert_eq!(codex.requests().len(), 1);
+        assert!(title_requests(&codex).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rename_during_a_turn_applies_at_once() {
+        let gate = Gate::default();
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"])).after(&gate)]);
+        let mut harness = Harness::start_saved(&server).await;
+        harness.submit("work");
+        harness
+            .until(|event| matches!(event, UiEvent::TurnStarted { .. }))
+            .await;
+        assert_eq!(
+            rename_notice(&mut harness, "/rename Busy work").await,
+            "session|renamed to \"Busy work\""
+        );
+        gate.open();
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(saved_sessions(&harness.home)[0]["title"], "Busy work");
+    }
+
+    #[tokio::test]
+    async fn rename_needs_a_saved_session() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        assert_eq!(
+            rename_notice(&mut harness, "/rename Release prep").await,
+            "session|no active session to rename"
+        );
+        assert_eq!(
+            rename_notice(&mut harness, "/rename  ").await,
+            "|usage: /rename <title>"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_keep_their_first_prompt_title_when_session_titles_are_off() {
         let codex = FakeServer::start([codex_text("done")]);
         let catalog = codex_catalog(false, 8);
         let settings = json!({
@@ -1805,9 +1936,12 @@ mod tests {
             "session_titles": false
         });
         let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
-        chat(&mut harness, &["fix the renderer"]).await;
+        chat(&mut harness, &["please fix the renderer"]).await;
         assert_eq!(codex.requests().len(), 1);
-        assert_eq!(saved_sessions(&harness.home)[0]["title"], Value::Null);
+        assert_eq!(
+            saved_sessions(&harness.home)[0]["title"],
+            "please fix the renderer"
+        );
     }
 
     #[tokio::test]

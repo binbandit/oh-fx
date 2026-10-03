@@ -2,13 +2,14 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
-use ofx_contract::{CompactionActivity, CompactionEnd, NoticeTone, UiEvent};
+use ofx_contract::{CompactionActivity, CompactionEnd, Notice, NoticeTone, UiEvent};
 use ofx_session::resolve_model_query_from_ids;
 use ofx_text::encode_terminal_safe;
 use ofx_tui::SlashCommandSpec;
 use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 
 use crate::app_agent_runtime::ControllerState;
+use crate::app_session_runtime::{Persistence, RenameError, validate_session_title};
 use crate::session_commands::handle_allowlist;
 use crate::skill_commands::handle_skills;
 
@@ -25,6 +26,8 @@ const PROFILE_USAGE_UNAVAILABLE: &str =
     "Durable profile usage is unavailable in this host; active session usage remains in memory.";
 const NOTHING_TO_UNDO: &str = "Nothing to undo.";
 const RESUME_DURING_TURN: &str = "resume is unavailable until the response finishes";
+const SESSION_TOPIC: &str = "session";
+const RENAME_USAGE: &str = "usage: /rename <title>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
@@ -34,6 +37,7 @@ pub(crate) enum CommandEffect {
     ToggleFast,
     Compact,
     OpenSessions,
+    Rename(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +98,7 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             CommandEffect::None
         }
         SlashKind::ResumeSession => CommandEffect::OpenSessions,
+        SlashKind::RenameSession => CommandEffect::Rename(command.payload.to_owned()),
         SlashKind::Usage => {
             state.notice(NoticeTone::Neutral, USAGE_TOPIC, PROFILE_USAGE_UNAVAILABLE);
             CommandEffect::None
@@ -195,6 +200,40 @@ fn display_path(path: &Path) -> String {
     encode_terminal_safe(path.as_os_str().as_bytes(), MAX_PATH_BYTES).text
 }
 
+pub(crate) fn rename_session(
+    state: &ControllerState,
+    persistence: Option<&mut Persistence>,
+    raw: &str,
+) {
+    let renamed = match persistence {
+        Some(persistence) => persistence.rename(raw),
+        None => validate_session_title(raw).and(Err(RenameError::NoActiveSession)),
+    };
+    state.emit(UiEvent::Notice {
+        notice: rename_notice(renamed),
+    });
+}
+
+fn rename_notice(renamed: Result<String, RenameError>) -> Notice {
+    let failure = |body: &str| Notice::new(NoticeTone::Error, SESSION_TOPIC, body);
+    match renamed {
+        Ok(title) => Notice::new(
+            NoticeTone::Neutral,
+            SESSION_TOPIC,
+            format!("renamed to \"{title}\""),
+        ),
+        Err(RenameError::EmptyTitle) => Notice::new(NoticeTone::Error, "", RENAME_USAGE),
+        Err(RenameError::TitleTooLong) => failure("title is too long"),
+        Err(RenameError::InvalidTitle) => failure("title must be printable text"),
+        Err(RenameError::NoActiveSession) => failure("no active session to rename"),
+        Err(RenameError::NotSaved(error)) => Notice::new(
+            NoticeTone::Warning,
+            SESSION_TOPIC,
+            format!("renamed for this process but not saved ({error})"),
+        ),
+    }
+}
+
 fn copy_last_reply(state: &ControllerState) {
     let Some(reply) = state.last_reply() else {
         state.notice(NoticeTone::Neutral, CLIPBOARD_TOPIC, NO_REPLY_TO_COPY);
@@ -240,6 +279,7 @@ mod tests {
                 "/new",
                 "/reset",
                 "/resume",
+                "/rename",
                 "/stats",
                 "/usage",
                 "/status",
@@ -263,9 +303,10 @@ mod tests {
         assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[2].description, "start a fresh session");
         assert_eq!(specs[4].description, "resume a saved session");
-        assert_eq!(specs[12].description, "browse and manage skills");
-        assert_eq!(specs[17].aliases, ["/exit"]);
-        assert_eq!(specs[17].description, "exit the interactive shell");
+        assert_eq!(specs[5].description, "rename the current session");
+        assert_eq!(specs[13].description, "browse and manage skills");
+        assert_eq!(specs[18].aliases, ["/exit"]);
+        assert_eq!(specs[18].description, "exit the interactive shell");
     }
 
     #[test]
@@ -284,6 +325,7 @@ mod tests {
                 ("/new", "Session"),
                 ("/reset", "Session"),
                 ("/resume", "Session"),
+                ("/rename", "Session"),
                 ("/stats", "Account"),
                 ("/usage", "Account"),
                 ("/status", "General"),

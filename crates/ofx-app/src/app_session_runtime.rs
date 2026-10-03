@@ -20,6 +20,7 @@ use session_titles::CachedTitle;
 pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
 pub use session_titles::TitleGeneration;
+pub(crate) use session_titles::{RenameError, validate_session_title};
 
 #[derive(Debug)]
 pub enum ResumeFailure {
@@ -153,6 +154,11 @@ impl LiveSession {
             session: Arc::downgrade(&self.session),
             cached: Arc::clone(&self.title),
         })
+    }
+
+    pub(crate) fn rename(&self, title: &str) -> Result<(), SessionError> {
+        *self.cached_title() = Some(title.to_owned());
+        self.session().rename(title)
     }
 
     pub(crate) fn titled(&self) -> bool {

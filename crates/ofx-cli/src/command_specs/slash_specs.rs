@@ -7,6 +7,7 @@ pub enum SlashKind {
     NewSession,
     ResetSession,
     ResumeSession,
+    RenameSession,
     Stats,
     Usage,
     Status,
@@ -207,6 +208,7 @@ mod tests {
                 "/new",
                 "/reset",
                 "/resume",
+                "/rename",
                 "/stats",
                 "/usage",
                 "/status",
@@ -239,6 +241,10 @@ mod tests {
         assert_eq!(
             spec(SlashKind::ResetSession).completion_description,
             "reset the current session context"
+        );
+        assert_eq!(
+            spec(SlashKind::RenameSession).completion_description,
+            "rename the current session"
         );
         assert_eq!(
             spec(SlashKind::Version).completion_description,
@@ -289,6 +295,7 @@ mod tests {
                 ("/new", "Session"),
                 ("/reset", "Session"),
                 ("/resume", "Session"),
+                ("/rename", "Session"),
                 ("/stats", "Account"),
                 ("/usage", "Account"),
                 ("/status", "General"),

@@ -243,6 +243,23 @@ fn turn(prompt: &str, reply: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn a_renamed_session_resumes_under_its_new_title() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Noted."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "Noted.");
+    session.send(b"/rename   Release prep \r");
+    wait(&session, "* session: renamed to \"Release prep\"");
+    exit(session);
+    let id = home.only_session();
+    assert_eq!(home.metadata(&id)["title"], "Release prep");
+    let session = home.shell(&["-c"], "session resumed: Release prep");
+    exit(session);
+    assert_eq!(home.session_ids(), [id]);
+}
+
+#[test]
 fn a_shell_saves_its_turns_and_continue_reopens_them_in_the_scrollback() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["First **answer**."])),
