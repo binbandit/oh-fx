@@ -60,9 +60,9 @@ note = "Durable profile server configuration and connected-tool composition exis
 
 [[file]]
 upstream = "src/builtins/modes.zig"
-status = "todo"
-modules = []
-note = "Complete ACP ask/code mode registry and supplied tool-set projection are unimplemented."
+status = "ported"
+modules = ["crates/ofx-app/src/modes.rs"]
+note = "The code and ask modes, with ask as the default, run ask; ACP session modes arrive with ofx-acp."
 
 [[file]]
 upstream = "src/builtins/providers.zig"
