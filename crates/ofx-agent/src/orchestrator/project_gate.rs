@@ -2,7 +2,7 @@ use std::mem;
 
 use ofx_contract::{
     ApplicableTarget, CallDescription, ChatMessage, Concurrency, PreparedCall, TargetKind,
-    ToolCall, ToolEffect, ToolRejection, ToolResultStatus, TurnId, UiEvent,
+    ToolCall, ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus, TurnId, UiEvent,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -243,6 +243,16 @@ impl Agent {
             tool_name: call.name.clone(),
             description,
         });
+        let deferral = if output == CONTEXT_DEFERRED_OUTPUT {
+            ToolDeferral::ProjectInstructions
+        } else {
+            ToolDeferral::TargetChanged
+        };
+        events(UiEvent::ToolDeferred {
+            turn_id,
+            call_id: call.id.clone(),
+            deferral,
+        });
         self.history.push(ChatMessage::Tool {
             call_id: call.id.clone(),
             tool_name: call.name.clone(),
@@ -282,13 +292,15 @@ fn completed_mutation(
     }
 }
 
-fn untargeted(prepared: Box<dyn PreparedCall>, description: CallDescription) -> CallDescription {
-    let title = contained(|| prepared.untargeted_title());
-    discard(prepared);
-    CallDescription {
-        title: title.unwrap_or(description.title),
-        ..description
+fn untargeted(
+    prepared: Box<dyn PreparedCall>,
+    mut description: CallDescription,
+) -> CallDescription {
+    if let Some(label) = contained(|| prepared.untargeted_label()).flatten() {
+        description.relabel(label);
     }
+    discard(prepared);
+    description
 }
 
 fn failed_gate(turn_id: TurnId, calls: &[ToolCall], events: EventSink<'_>) -> Stop {
@@ -299,7 +311,8 @@ fn failed_gate(turn_id: TurnId, calls: &[ToolCall], events: EventSink<'_>) -> St
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
             reason: ToolRejection::Panicked,
-            title: None,
+            description: None,
+            content: String::new(),
         });
     }
     Stop::failed(TurnFailure::ProjectContext)

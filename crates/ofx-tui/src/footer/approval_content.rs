@@ -110,7 +110,7 @@ impl ApprovalContent {
                 ),
                 (None, None) if !request.tool_arguments_preview.is_empty() => Self::generic(
                     vec![ActionBlock::Arguments {
-                        target: safe_text(request.title.as_bytes()),
+                        target: safe_text(request.description.title.as_bytes()),
                         preview: unambiguous(request.tool_arguments_preview.clone()),
                     }],
                     remember,
@@ -188,7 +188,9 @@ fn labelled_path(request: &ApprovalRequest, path: &Path) -> ActionBlock {
 }
 
 fn title_line(request: &ApprovalRequest) -> ActionBlock {
-    ActionBlock::Line(Phrase::plain(safe_text(request.title.as_bytes())))
+    ActionBlock::Line(Phrase::plain(safe_text(
+        request.description.title.as_bytes(),
+    )))
 }
 
 struct RunSettings<'a> {
@@ -389,7 +391,10 @@ fn safe_text(raw: &[u8]) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use ofx_contract::{ApprovalScope, PathAccess, RequestId};
+    use ofx_contract::{
+        ApprovalScope, CallDescription, Concurrency, PathAccess, RequestId, ToolActivity,
+        ToolCallId, ToolEffect,
+    };
 
     use super::*;
 
@@ -397,7 +402,14 @@ mod tests {
         ApprovalRequest {
             id: RequestId::new(1),
             tool_name: "shell".to_owned(),
-            title: "Running echo hi".to_owned(),
+            call_id: ToolCallId::new("call-1"),
+            description: CallDescription {
+                title: "Running echo hi".to_owned(),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Serial,
+            },
             tool_arguments_preview: String::new(),
             tool_arguments_truncated: false,
             scope: ApprovalScope {
@@ -702,7 +714,14 @@ mod tests {
         let read = |tool: &str, always| ApprovalRequest {
             id: RequestId::new(1),
             tool_name: tool.to_owned(),
-            title: "Reading ../workspace/../secret.txt".to_owned(),
+            call_id: ToolCallId::new("call-1"),
+            description: CallDescription {
+                title: "Reading ../workspace/../secret.txt".to_owned(),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Serial,
+            },
             tool_arguments_preview: String::new(),
             tool_arguments_truncated: false,
             scope: ApprovalScope {
@@ -756,7 +775,14 @@ mod tests {
         let change = |tool: &str, target: &str, state| ApprovalRequest {
             id: RequestId::new(1),
             tool_name: tool.to_owned(),
-            title: "Writing notes.md".to_owned(),
+            call_id: ToolCallId::new("call-1"),
+            description: CallDescription {
+                title: "Writing notes.md".to_owned(),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Serial,
+            },
             tool_arguments_preview: String::new(),
             tool_arguments_truncated: false,
             scope: ApprovalScope {
@@ -825,7 +851,14 @@ mod tests {
         let request = ApprovalRequest {
             id: RequestId::new(1),
             tool_name: "mcp_fixture_echo".to_owned(),
-            title: "Calling mcp_fixture_echo".to_owned(),
+            call_id: ToolCallId::new("call-1"),
+            description: CallDescription {
+                title: "Calling mcp_fixture_echo".to_owned(),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Serial,
+            },
             tool_arguments_preview: r#"{"text":"\x1b\x0a\xff sentinel"}"#.to_owned(),
             tool_arguments_truncated: false,
             scope: ApprovalScope {

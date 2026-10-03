@@ -297,6 +297,7 @@ impl PreparedCall for LoadCall {
     fn describe(&self) -> CallDescription {
         CallDescription {
             title: "Loading skill review".to_owned(),
+            label: None,
             activity: ToolActivity::Read,
             effect: ToolEffect::ReadOnly,
             concurrency: Concurrency::Parallel,

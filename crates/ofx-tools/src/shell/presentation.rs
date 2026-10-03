@@ -1,7 +1,7 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use ofx_contract::parse_tool_args_object;
+use ofx_contract::{ActionLabel, parse_json_value, parse_tool_args_object};
 use ofx_exec::ManagedExecutions;
 use ofx_text::encode_terminal_safe;
 use serde_json::{Map, Value};
@@ -9,49 +9,97 @@ use serde_json::{Map, Value};
 const MAX_RUN_COMMAND_ACTIVITY_BYTES: usize = 120;
 const MAX_RUN_COMMAND_ACTIVITY_SOURCE_BYTES: usize =
     MAX_RUN_COMMAND_ACTIVITY_BYTES * MAX_RUN_COMMAND_ACTIVITY_BYTES;
+const MAX_RUN_COMMAND_REFLOW_BYTES: usize = MAX_RUN_COMMAND_ACTIVITY_SOURCE_BYTES - 1;
 const NOOP_DIRECTORY_PREFIX: &[u8] = b"cd . &&";
 const SESSION_PREFIX: &str = "session ";
 
-pub(super) fn title(
+pub(super) struct ShellPresentation {
+    pub(super) title: String,
+    pub(super) label: Option<ActionLabel>,
+}
+
+pub(super) fn presentation(
     arguments: &str,
     workspace_root: &Path,
     executions: &ManagedExecutions,
-) -> String {
-    let (Ok(_), Ok(Value::Object(fields))) = (
+) -> ShellPresentation {
+    let (Ok(_), Some(Value::Object(fields))) = (
         parse_tool_args_object(arguments),
-        serde_json::from_str::<Value>(arguments),
+        parse_json_value(arguments),
     ) else {
-        return "Working: shell".to_owned();
+        return ShellPresentation {
+            title: "Working: shell".to_owned(),
+            label: None,
+        };
     };
     let root = workspace_root.as_os_str().as_bytes();
-    let target = || session_target(&fields, root, executions);
-    match fields.get("action") {
+    let target = |max_bytes| session_target(&fields, root, executions, max_bytes);
+    let (active, completed, title_target, label_target) = match fields.get("action") {
         Some(Value::String(action)) => match action.as_str() {
             "run" => match fields.get("command").and_then(Value::as_str) {
-                Some(command) => format!("Running {}", display_command(command.as_bytes(), root)),
-                None => "Running command".to_owned(),
+                Some(command) => (
+                    "Running",
+                    "Ran",
+                    display_command(command.as_bytes(), root, MAX_RUN_COMMAND_ACTIVITY_BYTES),
+                    display_command(command.as_bytes(), root, MAX_RUN_COMMAND_REFLOW_BYTES),
+                ),
+                None => fixed("Running", "Ran", "command"),
             },
             "interact" => match fields.get("chars").and_then(Value::as_str) {
-                Some(chars) if !chars.is_empty() => format!("Sending input to {}", target()),
-                _ => format!("Waiting for {}", target()),
+                Some(chars) if !chars.is_empty() => (
+                    "Sending input to",
+                    "Sent input to",
+                    target(MAX_RUN_COMMAND_ACTIVITY_BYTES),
+                    target(MAX_RUN_COMMAND_REFLOW_BYTES),
+                ),
+                _ => (
+                    "Waiting for",
+                    "Observed",
+                    target(MAX_RUN_COMMAND_ACTIVITY_BYTES),
+                    target(MAX_RUN_COMMAND_REFLOW_BYTES),
+                ),
             },
-            "stop" => format!("Stopping {}", target()),
-            other => format!("Running {other}"),
+            "stop" => (
+                "Stopping",
+                "Stopped",
+                target(MAX_RUN_COMMAND_ACTIVITY_BYTES),
+                target(MAX_RUN_COMMAND_REFLOW_BYTES),
+            ),
+            other => fixed("Running", "Ran", other),
         },
-        _ => "Running shell request".to_owned(),
+        _ => fixed("Running", "Ran", "shell request"),
+    };
+    ShellPresentation {
+        title: format!("{active} {title_target}"),
+        label: Some(ActionLabel {
+            active,
+            completed,
+            target: label_target,
+        }),
     }
+}
+
+fn fixed(
+    active: &'static str,
+    completed: &'static str,
+    target: &str,
+) -> (&'static str, &'static str, String, String) {
+    (active, completed, target.to_owned(), target.to_owned())
 }
 
 fn session_target(
     fields: &Map<String, Value>,
     root: &[u8],
     executions: &ManagedExecutions,
+    max_bytes: usize,
 ) -> String {
     let Some(session_id) = fields.get("session_id").and_then(Value::as_str) else {
         return "shell execution".to_owned();
     };
     match executions.command(session_id) {
-        Some(command) if !command.is_empty() => display_command(command.as_bytes(), root),
+        Some(command) if !command.is_empty() => {
+            display_command(command.as_bytes(), root, max_bytes)
+        }
         _ => format!(
             "{SESSION_PREFIX}{}",
             encode_terminal_safe(
@@ -63,10 +111,9 @@ fn session_target(
     }
 }
 
-fn display_command(command: &[u8], workspace_root: &[u8]) -> String {
-    let projected =
-        project_run_command(command, workspace_root, MAX_RUN_COMMAND_ACTIVITY_BYTES + 1);
-    encode_terminal_safe(&projected, MAX_RUN_COMMAND_ACTIVITY_BYTES).text
+fn display_command(command: &[u8], workspace_root: &[u8], max_bytes: usize) -> String {
+    let projected = project_run_command(command, workspace_root, max_bytes + 1);
+    encode_terminal_safe(&projected, max_bytes).text
 }
 
 fn project_run_command(command: &[u8], workspace_root: &[u8], capacity: usize) -> Vec<u8> {
@@ -161,8 +208,18 @@ mod tests {
         ManagedExecutions::new(SessionSupervisor::new("/nonexistent"))
     }
 
+    fn presented(arguments: &str) -> ShellPresentation {
+        presentation(arguments, Path::new("/work/space/"), &executions())
+    }
+
     fn titled(arguments: &str) -> String {
-        title(arguments, Path::new("/work/space/"), &executions())
+        presented(arguments).title
+    }
+
+    fn labelled(arguments: &str) -> Option<(&'static str, &'static str, String)> {
+        presented(arguments)
+            .label
+            .map(|label| (label.active, label.completed, label.target))
     }
 
     #[test]
@@ -202,6 +259,43 @@ mod tests {
             "Running ".len() + MAX_RUN_COMMAND_ACTIVITY_BYTES
         );
         assert!(shown.ends_with("..."));
+    }
+
+    #[test]
+    fn labels_keep_the_command_at_the_reflow_bound_for_every_tense() {
+        let command = "x".repeat(500);
+        let arguments = format!(r#"{{"action":"run","command":"cd /work/space && {command}"}}"#);
+        assert_eq!(
+            labelled(&arguments),
+            Some(("Running", "Ran", format!("cd . && {command}")))
+        );
+        assert!(titled(&arguments).ends_with("..."));
+        let huge = "y".repeat(MAX_RUN_COMMAND_ACTIVITY_SOURCE_BYTES * 2);
+        let (_, _, target) =
+            labelled(&format!(r#"{{"action":"run","command":"{huge}"}}"#)).unwrap();
+        assert_eq!(target.len(), MAX_RUN_COMMAND_REFLOW_BYTES);
+        assert!(target.ends_with("..."));
+        assert_eq!(
+            labelled(r#"{"action":"interact","session_id":"shell-9"}"#),
+            Some(("Waiting for", "Observed", "session shell-9".to_owned()))
+        );
+        assert_eq!(
+            labelled(r#"{"action":"interact","session_id":"shell-9","chars":"y"}"#),
+            Some((
+                "Sending input to",
+                "Sent input to",
+                "session shell-9".to_owned()
+            ))
+        );
+        assert_eq!(
+            labelled(r#"{"action":"stop"}"#),
+            Some(("Stopping", "Stopped", "shell execution".to_owned()))
+        );
+        assert_eq!(
+            labelled(r#"{"action":"run"}"#),
+            Some(("Running", "Ran", "command".to_owned()))
+        );
+        assert_eq!(labelled("[]"), None);
     }
 
     #[test]

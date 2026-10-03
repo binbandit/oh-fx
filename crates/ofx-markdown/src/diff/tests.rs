@@ -180,3 +180,47 @@ fn unchanged_content_reviews_as_a_single_notice() {
         [(ReviewOp::Notice, "No content changes".to_owned())]
     );
 }
+
+#[test]
+fn line_counts_match_upstream_file_change_stats() {
+    let counts = |old: &str, new: &str| {
+        let review = FileReview::new(old.as_bytes(), new.as_bytes());
+        (review.additions(), review.deletions())
+    };
+    assert_eq!(counts("a\nb\nc\n", "a\nb\nc\n"), (0, 0));
+    assert_eq!(counts("", ""), (0, 0));
+    assert_eq!(counts("", "a\nb\n"), (2, 0));
+    assert_eq!(counts("a\nb\n", ""), (0, 2));
+    assert_eq!(counts("alpha\nbeta\n", "alpha\ngamma\ndelta\n"), (2, 1));
+    assert_eq!(counts("a\nb\nc\nd\n", "a\nx\nc\ny\n"), (2, 2));
+    assert_eq!(counts("a\nb\nc\n", "c\nb\na\n"), (2, 2));
+    assert_eq!(counts("one", "one\ntwo"), (1, 0));
+    assert_eq!(counts("a\nb", "a\nb\n"), (1, 0));
+    assert_eq!(counts("a\nb\n", "a\nb"), (0, 1));
+    assert_eq!(counts("", "a"), (1, 0));
+    assert_eq!(
+        counts(
+            "x\n(trailing newline added)",
+            "x\n(trailing newline added)\n"
+        ),
+        (1, 0)
+    );
+    let old = format!(
+        "{}old\n{}",
+        numbered("line ", 0..5000),
+        numbered("line ", 5000..10_000)
+    );
+    let new = format!(
+        "{}new one\nnew two\n{}",
+        numbered("line ", 0..5000),
+        numbered("line ", 5000..10_000)
+    );
+    assert_eq!(counts(&old, &new), (2, 1));
+    let forward = numbered("", 0..9000);
+    let mut reversed = String::new();
+    for line in forward.lines().rev() {
+        let _ = writeln!(reversed, "{line}");
+    }
+    assert_eq!(counts(&forward, &reversed), (9000, 9000));
+    assert_eq!(counts(&forward, forward.trim_end_matches('\n')), (0, 1));
+}

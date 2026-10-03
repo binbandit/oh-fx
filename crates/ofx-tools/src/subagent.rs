@@ -51,6 +51,7 @@ impl Tool for SubagentTool {
         let description = CallDescription {
             title: format_subagent_plain_action(TOOL_NAME, arguments, SubagentActionState::Active)
                 .unwrap_or_else(|| UNTARGETED_TITLE.to_owned()),
+            label: None,
             activity: ToolActivity::Subagent,
             effect: if request.is_ok() {
                 ToolEffect::Mutating

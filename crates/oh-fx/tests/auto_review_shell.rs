@@ -14,7 +14,8 @@ use serde_json::{Value, json};
 const WAIT: Duration = Duration::from_secs(15);
 const APPROVAL_ARMING: Duration = Duration::from_millis(700);
 const PERMISSION_NEEDED: &str = "Permission needed · Choose one";
-const CANCELLATION: &str = "■ Cancelled · What can oh-fx do differently?";
+const CANCELLATION: &str =
+    "└ Cancelled touch marker\n\n■ Cancelled touch marker · What can oh-fx do differently?";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -308,6 +309,7 @@ fn ctrl_c_during_a_review_cancels_the_turn_without_running_the_command() {
         assert!(started.elapsed() < WAIT, "the review never started");
         thread::sleep(Duration::from_millis(20));
     }
+    wait(&session, "└ Running touch marker");
     session.send(b"\x03");
     wait(&session, CANCELLATION);
     assert!(!home.marker());

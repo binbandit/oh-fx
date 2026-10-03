@@ -544,5 +544,6 @@ pub(super) fn previewed_change(arguments: &str) -> Option<FileChange<'static>> {
         before: Some(b"before\n"),
         after: b"after\n",
         parents: Vec::new(),
+        line_counts: None,
     })
 }

@@ -211,7 +211,7 @@ pub(crate) fn clip_with_ellipsis(row: Row, max_width: usize) -> Row {
     }
 }
 
-fn omission_marker(cols: usize) -> &'static str {
+pub(crate) fn omission_marker(cols: usize) -> &'static str {
     match cols {
         0 => "",
         1 => ".",

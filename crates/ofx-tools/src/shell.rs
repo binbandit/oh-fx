@@ -21,7 +21,8 @@ use tokio_util::sync::CancellationToken;
 use crate::filesystem::tool_spec;
 use request::{Action, ShellRequest};
 use snapshot_format::{
-    command_result, format_snapshot, runtime_failure, snapshot_failed, stop_result_failed,
+    command_result, format_snapshot, process_presentation, runtime_failure, snapshot_failed,
+    stop_result_failed,
 };
 
 const TOOL_NAME: &str = "shell";
@@ -73,7 +74,7 @@ impl Tool for Shell {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let arguments = request::unwrap_request(arguments);
-        let title = presentation::title(
+        let presented = presentation::presentation(
             &arguments,
             &self.context.workspace_root,
             &self.context.executions,
@@ -88,7 +89,8 @@ impl Tool for Shell {
         let request = validated.as_ref().ok().map(Validated::command_request);
         Ok(Box::new(ShellCall {
             description: CallDescription {
-                title,
+                title: presented.title,
+                label: presented.label,
                 activity: ToolActivity::Command,
                 effect,
                 concurrency: Concurrency::Serial,
@@ -331,7 +333,9 @@ impl ShellContext {
         } else {
             ToolOutput::success(body)
         };
-        output.with_command_result(command_result(&snapshot))
+        output
+            .with_command_result(command_result(&snapshot))
+            .with_process(process_presentation(&snapshot))
     }
 }
 
@@ -342,7 +346,9 @@ fn finish_command(snapshot: &Snapshot) -> ToolOutput {
     } else {
         ToolOutput::success(body)
     };
-    output.with_command_result(command_result(snapshot))
+    output
+        .with_command_result(command_result(snapshot))
+        .with_process(process_presentation(snapshot))
 }
 
 fn effective_interact_yield_time(has_input: bool, requested_ms: u32) -> u32 {

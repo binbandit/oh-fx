@@ -1,4 +1,4 @@
-use ofx_contract::parse_tool_args_object;
+use ofx_contract::{parse_json_value, parse_tool_args_object};
 use ofx_exec::Profile;
 use ofx_text::parse_unsigned;
 use serde_json::{Map, Number, Value, json};
@@ -207,7 +207,7 @@ fn decode_input(arguments: &str) -> Option<ShellRequest> {
 fn parse_json(text: &str) -> Option<Value> {
     match parse_tool_args_object(text) {
         Err(ofx_contract::ToolArgsError::InvalidJson) => None,
-        _ => serde_json::from_str(text).ok(),
+        _ => parse_json_value(text),
     }
 }
 

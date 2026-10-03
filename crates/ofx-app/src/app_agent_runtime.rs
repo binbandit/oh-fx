@@ -1767,7 +1767,7 @@ mod tests {
                 unreachable!()
             };
             assert_eq!(request.tool_name, "read_file");
-            assert_eq!(request.title, "Reading ../outside.txt");
+            assert_eq!(request.description.title, "Reading ../outside.txt");
             harness.send(UiCommand::Approval {
                 request_id: request.id,
                 decision,

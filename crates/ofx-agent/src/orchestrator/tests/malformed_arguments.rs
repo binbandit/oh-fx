@@ -431,13 +431,7 @@ async fn malformed_arguments_are_judged_before_the_tool_is_looked_up() {
                 ToolRejection::MalformedArguments,
                 None
             ),
-            (
-                "call-2",
-                "missing",
-                "{}",
-                ToolRejection::Unsupported,
-                Some("Working: missing")
-            ),
+            ("call-2", "missing", "{}", ToolRejection::Unsupported, None),
         ]
     );
     let messages = &provider.requests()[1].messages;
