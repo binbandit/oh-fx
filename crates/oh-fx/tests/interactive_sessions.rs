@@ -243,6 +243,48 @@ fn turn(prompt: &str, reply: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn an_added_directory_that_cannot_be_used_ends_the_launch_before_the_shell_starts() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    fails_with(
+        home.spawn(&["--add-dir", "../missing"]),
+        "oh-fx: PathNotFound",
+    );
+    fails_with(home.spawn(&["--add-dir=."]), "oh-fx: PrimaryDirectory");
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn an_added_directory_is_named_to_the_model_in_the_shell() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Noted."]))]);
+    let home = Home::new(&server.base_url());
+    let shared = home.root.join("shared");
+    fs::create_dir(&shared).expect("create the added directory");
+    let session = home.shell(&["--add-dir", "../shared"], WELCOME);
+    session.send(b"hello\r");
+    wait(&session, "Noted.");
+    exit(session);
+    let shared = fs::canonicalize(&shared).expect("canonicalize the added directory");
+    let messages = server.requests()[0].json()["messages"].clone();
+    let system: Vec<&str> = messages
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .filter_map(|message| message["content"].as_str())
+        .collect();
+    let note = format!(
+        "Runtime context: the following additional directories are access-authorized for this run. Relative paths still resolve from the primary workspace. These directories do not contribute AGENTS.md or other project instructions.\n- {}\n",
+        shared.display()
+    );
+    let position = system
+        .iter()
+        .position(|text| *text == note)
+        .unwrap_or_else(|| panic!("{system:#?}"));
+    assert!(system[position + 1].starts_with("Runtime context: permission mode is auto."));
+}
+
+#[test]
 fn a_shell_saves_its_turns_and_continue_reopens_them_in_the_scrollback() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["First **answer**."])),
