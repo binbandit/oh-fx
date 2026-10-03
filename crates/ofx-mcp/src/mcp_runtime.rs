@@ -167,6 +167,16 @@ impl Settling {
                 .collect(),
         )
     }
+
+    pub async fn abandon(mut self) {
+        let tasks = std::mem::take(&mut self.0);
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
 }
 
 impl Future for Settling {
