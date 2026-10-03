@@ -2,28 +2,31 @@ name: Guard maintainer approval
 
 on:
   pull_request_target:
-    types: [synchronize]
+    types: [synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
   pull-requests: write
+  statuses: write
 
 jobs:
-  # No concurrency group: cancelling a superseded run could skip a removal the earlier push needs.
+  # Mergify requires a successful maintainer-approval status on the PR head, so a head without
+  # one is held until this job approves it. No concurrency group: every event writes its own status.
   guard:
     if: >-
-      contains(github.event.pull_request.labels.*.name, 'codex-approved') && (
-        contains(github.event.pull_request.labels.*.name, 'codex') ||
-        startsWith(github.event.pull_request.head.ref, 'codex/')
-      )
+      (contains(github.event.pull_request.labels.*.name, 'codex') ||
+        startsWith(github.event.pull_request.head.ref, 'codex/')) &&
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'codex-approved') ||
+        github.event.action != 'synchronize' && github.event.label.name == 'codex-approved')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       # No checkout: pushed commits are fetched as data and never executed.
-      # The approval stays only when replaying the reviewed change onto the pushed fork point,
-      # without conflicts, gives exactly the pushed tree. Anything else, or any failure, drops it.
+      # A push keeps the approval only when replaying the approved change onto the pushed fork point,
+      # without conflicts, gives exactly the pushed tree.
       - name: Replay the reviewed change
-        id: compare
+        id: replay
+        if: github.event.action == 'synchronize'
         shell: bash
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -48,17 +51,59 @@ jobs:
           fi
           echo "Reviewed change: $reviewed"
           echo "reviewed=$reviewed" >> "$GITHUB_OUTPUT"
-      - name: Remove the approval
-        if: ${{ !cancelled() && steps.compare.outputs.reviewed != 'unchanged' }}
-        shell: bash
+      - name: Record maintainer approval
+        if: ${{ !cancelled() }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          GH_TOKEN: ${{ github.token }}
-          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          REVIEWED: ${{ steps.replay.outputs.reviewed }}
           COMMENT: New commits since approval; `codex-approved` removed until the maintainer re-reviews.
-        run: |
-          issue="repos/$GITHUB_REPOSITORY/issues/$PULL_REQUEST"
-          approved="$(gh api --paginate "$issue/labels" --jq '.[] | select(.name == "codex-approved") | .name')"
-          if [ -n "$approved" ]; then
-            gh api --method DELETE "$issue/labels/codex-approved" --silent
-            gh api "$issue/comments" --silent -f body="$COMMENT"
-          fi
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { action, before, label, sender, pull_request: pull } = context.payload;
+            const approvedLabel = 'codex-approved';
+            const issue = { owner, repo, issue_number: pull.number };
+            const setStatus = (state, description) => github.rest.repos.createCommitStatus({
+              owner, repo, sha: pull.head.sha, context: 'maintainer-approval', state, description,
+            });
+            async function revoke(description, comment) {
+              await setStatus('failure', description);
+              try {
+                await github.rest.issues.removeLabel({ ...issue, name: approvedLabel });
+              } catch (error) {
+                if (error.status === 404) return;
+                throw error;
+              }
+              if (comment) await github.rest.issues.createComment({ ...issue, body: comment });
+            }
+            async function decide() {
+              if (action !== 'synchronize' && label?.name !== approvedLabel) return;
+              if (action === 'unlabeled') return setStatus('failure', `${approvedLabel} removed`);
+              if (action === 'labeled') {
+                const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner, repo, username: sender.login,
+                });
+                if (['admin', 'maintain'].includes(data.role_name)) {
+                  return setStatus('success', `approved at ${pull.head.sha.slice(0, 7)}`);
+                }
+                return revoke(`${approvedLabel} needs a maintainer`);
+              }
+              const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, { ...issue, per_page: 100 });
+              if (!labels.some(each => each.name === approvedLabel)) return;
+              // Only an approval this workflow wrote on the previous head carries over to the new one.
+              const { data: statuses } = await github.rest.repos.listCommitStatusesForRef({
+                owner, repo, ref: before, per_page: 100,
+              });
+              const previous = statuses.find(status => status.context === 'maintainer-approval');
+              if (previous?.state === 'success' && previous.creator?.login === 'github-actions[bot]' &&
+                  process.env.REVIEWED === 'unchanged') {
+                return setStatus('success', `replays approved ${before.slice(0, 7)}`);
+              }
+              return revoke('new commits need maintainer review', process.env.COMMENT);
+            }
+            try {
+              await decide();
+            } catch (error) {
+              await setStatus('failure', 'maintainer approval could not be verified').catch(() => {});
+              throw error;
+            }
