@@ -116,11 +116,14 @@ pub(crate) async fn compact(
 }
 
 fn user_messages<'a>(request: &Request<'a>) -> Vec<&'a str> {
-    let earlier = request
-        .earlier
-        .into_iter()
-        .flat_map(|earlier| &earlier.turns)
-        .map(|turn| turn.user.as_str());
+    let earlier = request.earlier.into_iter().flat_map(|earlier| {
+        earlier
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.users)
+            .chain(earlier.open.iter().flat_map(|open| &open.users))
+            .map(String::as_str)
+    });
     let open = request.last_turn_open.then(|| request.turns.len() - 1);
     let new = request.turns.iter().enumerate().flat_map(|(index, turn)| {
         let first = (Some(index) != open).then_some(turn.user);
@@ -188,6 +191,10 @@ fn earlier_tokens(earlier: &Payload) -> usize {
         estimator.consume(" ");
     }
     if let Some(open) = &earlier.open {
+        for user in &open.users {
+            estimator.consume(" ");
+            estimator.consume(user);
+        }
         estimator.consume(" ");
         estimator.consume(&open.work);
         estimator.consume(" ");
@@ -369,7 +376,7 @@ fn payload(plan: &Plan<'_>, written: &Written, numbers: &Numbers) -> Payload {
             .iter()
             .map(|turn| checkpoint::Turn {
                 number: turn.number,
-                user: turn.source.user.to_owned(),
+                users: owned(&turn.users),
                 work: turn_work(turn, written.work(turn.number)),
                 final_reply: turn.final_reply.to_owned(),
                 first_tool: turn.first_tool,
@@ -384,6 +391,7 @@ fn payload(plan: &Plan<'_>, written: &Written, numbers: &Numbers) -> Payload {
         used: ledger::add_used(&earlier.used, &tool_calls(plan.turns)),
         turns,
         open: plan.turns.get(plan.complete_end).map(|turn| OpenTurn {
+            users: owned(&turn.users),
             work: turn_work(turn, written.work(0)),
             text: turn.text.clone(),
             first_tool: turn.first_tool,
@@ -554,6 +562,7 @@ fn exit_code(output: &str) -> Option<i64> {
 
 struct Prepared<'a> {
     source: &'a Turn<'a>,
+    users: Vec<&'a str>,
     number: usize,
     tool_numbers: Vec<usize>,
     tools: Vec<PendingTool<'a>>,
@@ -633,8 +642,20 @@ fn prepare<'a>(
     let last_own = tools.last().map_or(0, |tool| tool.number);
     let first_earlier = continued.map_or(0, |earlier| earlier.first_tool);
     let last_earlier = continued.map_or(0, |earlier| earlier.last_tool);
+    let users = (!is_open)
+        .then_some(turn.user)
+        .into_iter()
+        .chain(
+            continued
+                .iter()
+                .flat_map(|earlier| &earlier.users)
+                .map(String::as_str),
+        )
+        .chain(added_users(turn))
+        .collect();
     Prepared {
         source: turn,
+        users,
         number: 0,
         tool_numbers: numbers,
         first_tool: if first_earlier > 0 {
@@ -708,16 +729,23 @@ fn final_index(turn: &Turn<'_>) -> Option<usize> {
     found
 }
 
+fn owned(users: &[&str]) -> Vec<String> {
+    users.iter().map(|user| (*user).to_owned()).collect()
+}
+
 fn user_messages_by_turn<'a>(turns: &[Prepared<'a>]) -> Vec<Message<'a>> {
     turns
         .iter()
         .flat_map(|turn| {
-            std::iter::once(turn.source.user)
-                .chain(added_users(turn.source))
-                .map(|text| Message {
+            let in_progress = turn.number == 0;
+            in_progress
+                .then_some(turn.source.user)
+                .into_iter()
+                .chain(turn.users.iter().copied())
+                .map(move |text| Message {
                     turn: turn.number,
                     text,
-                    in_progress: turn.number == 0,
+                    in_progress,
                 })
         })
         .collect()
@@ -812,7 +840,8 @@ fn heading(turn: &Prepared<'_>, findable: bool) -> Heading {
         ..Heading::default()
     };
     if findable {
-        result.begins = short_line(turn.source.user, MAX_BEGINS_BYTES);
+        let first_user = turn.users.first().copied().unwrap_or(turn.source.user);
+        result.begins = short_line(first_user, MAX_BEGINS_BYTES);
         result.tools = turn
             .tools
             .iter()
@@ -969,7 +998,10 @@ fn longest_earlier_text(plan: &Plan<'_>) -> usize {
         .turns
         .first()
         .and_then(|turn| turn.continued)
-        .map(|part| part.work.len());
+        .into_iter()
+        .flat_map(|part| {
+            std::iter::once(part.work.len()).chain(part.users.iter().map(String::len))
+        });
     entries.chain(continued).max().unwrap_or(0)
 }
 
@@ -1031,9 +1063,10 @@ fn longest_exact(turns: &[checkpoint::Turn]) -> usize {
     turns
         .iter()
         .map(|turn| {
-            turn.user
-                .len()
-                .max(turn.work.len())
+            turn.users
+                .iter()
+                .map(String::len)
+                .fold(turn.work.len(), usize::max)
                 .max(turn.final_reply.len())
         })
         .max()
@@ -1044,7 +1077,11 @@ fn clipped_turns(turns: &[checkpoint::Turn], clip: usize) -> Vec<checkpoint::Tur
     turns
         .iter()
         .map(|turn| checkpoint::Turn {
-            user: clipped(&turn.user, clip).into_owned(),
+            users: turn
+                .users
+                .iter()
+                .map(|user| clipped(user, clip).into_owned())
+                .collect(),
             work: clipped(&turn.work, clip).into_owned(),
             final_reply: clipped(&turn.final_reply, clip).into_owned(),
             ..turn.clone()
@@ -1078,6 +1115,13 @@ fn render_transcript(plan: &Plan<'_>, clip: usize, earlier_clip: usize) -> (Stri
                     text,
                     "[Earlier part of this turn, summarized]\n{}\n\n",
                     clipped(&part.work, earlier_clip)
+                );
+            }
+            for user in &part.users {
+                let _ = write!(
+                    text,
+                    "[User, added while the assistant worked]\n{}\n\n",
+                    clipped(user, earlier_clip)
                 );
             }
             if part.first_tool > 0 {

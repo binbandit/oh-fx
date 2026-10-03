@@ -20,7 +20,7 @@ pub(crate) struct Tool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Turn {
     pub(crate) number: usize,
-    pub(crate) user: String,
+    pub(crate) users: Vec<String>,
     pub(crate) work: String,
     pub(crate) final_reply: String,
     pub(crate) first_tool: usize,
@@ -30,6 +30,7 @@ pub(crate) struct Turn {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct OpenTurn {
+    pub(crate) users: Vec<String>,
     pub(crate) work: String,
     pub(crate) text: String,
     pub(crate) first_tool: usize,
@@ -135,6 +136,9 @@ pub(crate) fn render(payload: &Payload) -> String {
     }
     if let Some(open) = &payload.open {
         text.push_str("Turn in progress, whose first user message follows this:\n");
+        for user in &open.users {
+            let _ = write!(text, "User, added while the assistant worked:\n{user}\n\n");
+        }
         if !open.work.is_empty() {
             let _ = write!(text, "Assistant, in between so far:\n{}\n\n", open.work);
         }
@@ -151,7 +155,15 @@ pub(crate) fn render(payload: &Payload) -> String {
 
 fn render_turn(text: &mut String, turn: &Turn) {
     let number = turn.number;
-    let _ = write!(text, "Turn {number}\nUser {number}:\n{}\n\n", turn.user);
+    let _ = writeln!(text, "Turn {number}");
+    for (index, user) in turn.users.iter().enumerate() {
+        let added = if index > 0 {
+            ", added while the assistant worked"
+        } else {
+            ""
+        };
+        let _ = write!(text, "User {number}{added}:\n{user}\n\n");
+    }
     if !turn.work.is_empty() {
         let _ = write!(text, "Assistant {number}, in between:\n{}\n\n", turn.work);
     }

@@ -103,7 +103,7 @@ async fn a_running_turn_keeps_its_user_message_and_compacts_its_finished_steps()
         }
     );
     assert_eq!(compacted.payload.turns.len(), 1);
-    assert_eq!(compacted.payload.turns[0].user, "read the notes");
+    assert_eq!(compacted.payload.turns[0].users, ["read the notes"]);
     assert_eq!(compacted.payload.turns[0].final_reply, "Read them.");
     assert_eq!(compacted.payload.turns[0].work, "Read the notes.");
     let open = compacted.payload.open.as_ref().unwrap();
@@ -277,7 +277,7 @@ async fn steering_reaches_the_notes_request_as_a_user_message_added_while_the_tu
     let starts = [0, 8];
     let turns = history_turns(&history, &starts);
     let mut model = Notes::default();
-    compact(
+    let compacted = compact(
         Request {
             turns: &turns,
             active: true,
@@ -297,4 +297,11 @@ async fn steering_reaches_the_notes_request_as_a_user_message_added_while_the_tu
         "[Assistant]\nReading\n\n[User, added while the assistant worked]\nonly the first section\n\n"
     ));
     assert!(!model.prompts[0].0.contains("<user_steering>"));
+    assert_eq!(
+        compacted.payload.turns[0].users,
+        ["read the notes", "only the first section"]
+    );
+    assert!(compacted.text.contains(
+        "User 1:\nread the notes\n\nUser 1, added while the assistant worked:\nonly the first section\n\n"
+    ));
 }

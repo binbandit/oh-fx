@@ -21,7 +21,7 @@ fn sample() -> Payload {
         }],
         turns: vec![Turn {
             number: 1,
-            user: "Fix the build.\n\u{e9}t\u{e9}".to_owned(),
+            users: vec!["Fix the build.\n\u{e9}t\u{e9}".to_owned()],
             work: "Ran the build (T1, T2).".to_owned(),
             final_reply: "Fixed.".to_owned(),
             first_tool: 1,
@@ -40,6 +40,7 @@ fn sample() -> Payload {
             ],
         }],
         open: Some(OpenTurn {
+            users: vec!["use the staging db".to_owned()],
             work: "Started on the tests.".to_owned(),
             text: "Looking".to_owned(),
             first_tool: 3,
@@ -67,7 +68,7 @@ fn saved_checkpoints_use_the_upstream_marker_and_field_order() {
             r#""earlier":"","turns":[{"number":1,"users":["Fix the build.\n"#,
             "\u{e9}t\u{e9}",
             r#""],"work":"Ran the build (T1, T2).","final":"Fixed.","first_tool":1,"last_tool":2,"tools":[{"number":1,"line":"shell zig build (failed, exit 1)","why":"saw the failure"},{"number":2,"line":"mcp_linear_list_issues","why":""}]}],"#,
-            r#""open":{"users":[],"work":"Started on the tests.","text":"Looking","first_tool":3,"last_tool":3,"tools":[{"number":3,"line":"read_file src/a.zig","why":""}]},"#,
+            r#""open":{"users":["use the staging db"],"work":"Started on the tests.","text":"Looking","first_tool":3,"last_tool":3,"tools":[{"number":3,"line":"read_file src/a.zig","why":""}]},"#,
             r#""turn_count":1,"tool_count":3,"ledger_count":0,"highest":[3,0,0,1,0],"saved":false}"#,
         )
     );
@@ -94,7 +95,7 @@ fn upstream_payloads_fill_missing_fields_with_upstream_defaults() {
     );
     let (text, restored) = restore_checkpoint(&summary);
     let payload = restored.unwrap();
-    assert_eq!(payload.turns[0].user, "hi");
+    assert_eq!(payload.turns[0].users, ["hi"]);
     assert_eq!(payload.turns[0].final_reply, "hello");
     assert_eq!(payload.used[0].calls, 1);
     assert_eq!(payload.used[0].kind, UsedKind::Skill);
@@ -108,9 +109,9 @@ fn checkpoints_this_port_cannot_hold_fall_back_to_their_text() {
         r#"{"turns":[]}"#,
         r#"{"earlier":"before","saved":false}"#,
         r#"{"ledger_count":1,"saved":false}"#,
-        r#"{"turns":[{"number":1,"users":["a","b"]}],"saved":false}"#,
+        r#"{"turns":[{"number":1,"users":[]}],"saved":false}"#,
         r#"{"turns":[{"number":0,"users":["a"]}],"saved":false}"#,
-        r#"{"open":{"users":["more"]},"saved":false}"#,
+        r#"{"open":{"users":[3]},"saved":false}"#,
         r#"{"used":[{"name":"x"}],"saved":false}"#,
         r#"{"used":[{"kind":"tool","name":"x"}],"saved":false}"#,
         r#"{"highest":[1,2],"saved":false}"#,
@@ -127,6 +128,27 @@ fn checkpoints_this_port_cannot_hold_fall_back_to_their_text() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn user_messages_added_while_a_turn_ran_are_saved_and_shown_after_its_first() {
+    let json = r#"{"turns":[{"number":1,"users":["fix it","also the tests"],"final":"Done."}],"open":{"users":["use staging"]},"turn_count":1,"saved":false}"#;
+    let (text, restored) = restore_checkpoint(&format!("{MARKER}{json}"));
+    let payload = restored.unwrap();
+    assert_eq!(payload.turns[0].users, ["fix it", "also the tests"]);
+    assert_eq!(payload.open.as_ref().unwrap().users, ["use staging"]);
+    assert!(
+        text.contains("Turn 1\nUser 1:\nfix it\n\nUser 1, added while the assistant worked:\nalso the tests\n\nAssistant 1, final reply:\nDone.\n\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Turn in progress, whose first user message follows this:\nUser, added while the assistant worked:\nuse staging\n\n"),
+        "{text}"
+    );
+    assert_eq!(
+        restore_checkpoint(&encode_checkpoint(&payload)).1,
+        Some(payload)
+    );
 }
 
 #[test]
