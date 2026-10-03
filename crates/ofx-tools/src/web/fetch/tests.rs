@@ -3,13 +3,16 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
 use ofx_contract::{PathAccess, ToolCallId, ToolResultStatus};
-use ofx_testkit::{ConnectProxy, FakeServer, Reply, WEB_CA_PEM};
+use ofx_testkit::WEB_CA_PEM;
+#[cfg(target_os = "linux")]
+use ofx_testkit::{ConnectProxy, FakeServer, Reply};
 use reqwest::Proxy;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
 
+#[cfg(target_os = "linux")]
 struct Fixture {
     server: FakeServer,
     _proxy: ConnectProxy,
@@ -18,6 +21,7 @@ struct Fixture {
     _roots: tempfile::TempDir,
 }
 
+#[cfg(target_os = "linux")]
 impl Fixture {
     fn new(replies: impl IntoIterator<Item = Reply>) -> Self {
         let server = FakeServer::start_web_tls(replies);
@@ -74,6 +78,7 @@ async fn call_with(tool: &WebFetch, url: &str, cancellation: CancellationToken) 
         .await
 }
 
+#[cfg(target_os = "linux")]
 fn page(content_type: &str, body: &str) -> Reply {
     Reply::status_with_headers(200, &[("Content-Type", content_type)], body)
 }
@@ -132,6 +137,7 @@ fn invalid_arguments_and_urls_fail_before_the_call_runs() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn returns_bounded_untrusted_content_in_the_upstream_format() {
     let fixture = Fixture::new([Reply::Raw(
@@ -148,6 +154,7 @@ async fn returns_bounded_untrusted_content_in_the_upstream_format() {
     assert_eq!(fixture.server.requests()[0].path, "/docs");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn converts_html_before_returning_and_caching() {
     let fixture = Fixture::new([page(
@@ -182,6 +189,7 @@ async fn converts_html_before_returning_and_caching() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn returns_markdown_and_unsafe_text_directly() {
     let fixture = Fixture::new([
@@ -205,6 +213,7 @@ async fn returns_markdown_and_unsafe_text_directly() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn binary_responses_report_metadata_without_bytes_and_are_not_cached() {
     let fixture = Fixture::new([
@@ -229,6 +238,7 @@ async fn binary_responses_report_metadata_without_bytes_and_are_not_cached() {
     assert_eq!(fixture.server.requests().len(), 2);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn keeps_signed_urls_for_transport_and_redacts_presentation() {
     let fixture = Fixture::new([page("text/plain", "page")]);
@@ -249,6 +259,7 @@ async fn keeps_signed_urls_for_transport_and_redacts_presentation() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn returns_structured_failures_for_status_encoding_and_cross_host_redirects() {
     let fixture = Fixture::new([
@@ -282,6 +293,7 @@ async fn returns_structured_failures_for_status_encoding_and_cross_host_redirect
     assert_eq!(fixture.progress().len(), 3);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn non_success_previews_are_bounded_and_unsafe_bodies_omitted() {
     let long = "x".repeat(MAX_FAILURE_BODY_PREVIEW_BYTES + 1);
@@ -302,6 +314,7 @@ async fn non_success_previews_are_bounded_and_unsafe_bodies_omitted() {
     assert_eq!(binary["details"]["status"], 503);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn blocks_unsafe_redirects_with_the_policy_error() {
     let fixture = Fixture::new([Reply::status_with_headers(

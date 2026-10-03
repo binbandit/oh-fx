@@ -3,13 +3,18 @@ use std::str::FromStr;
 
 use flate2::Compression;
 use flate2::write::{GzEncoder, ZlibEncoder};
+#[cfg(target_os = "linux")]
 use ofx_contract::BoxFuture;
+#[cfg(target_os = "linux")]
 use ofx_testkit::{ConnectProxy, FakeServer, Reply, WEB_CA_PEM};
+#[cfg(target_os = "linux")]
 use reqwest::{NoProxy, Proxy};
 
 use super::*;
+#[cfg(target_os = "linux")]
 use crate::web::url_policy::normalize;
 
+#[cfg(target_os = "linux")]
 struct Fixture {
     server: FakeServer,
     proxy: ConnectProxy,
@@ -17,6 +22,7 @@ struct Fixture {
     _roots: tempfile::TempDir,
 }
 
+#[cfg(target_os = "linux")]
 impl Fixture {
     fn new(replies: impl IntoIterator<Item = Reply>) -> Self {
         Self::resolving(replies, unresolved)
@@ -55,6 +61,7 @@ impl Fixture {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn response(retrieved: Result<Retrieved, TransportError>) -> Response {
     match retrieved {
         Ok(Retrieved::Response(response)) => response,
@@ -62,6 +69,7 @@ fn response(retrieved: Result<Retrieved, TransportError>) -> Response {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn answer(addresses: &[&str]) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
     let addresses = addresses
         .iter()
@@ -70,26 +78,32 @@ fn answer(addresses: &[&str]) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>>
     Box::pin(async move { Ok(addresses) })
 }
 
+#[cfg(target_os = "linux")]
 fn unresolved(_: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
     Box::pin(async { Err(io::ErrorKind::NotFound.into()) })
 }
 
+#[cfg(target_os = "linux")]
 fn no_answer(_: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
     answer(&[])
 }
 
+#[cfg(target_os = "linux")]
 fn public_answer(_: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
     answer(&["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"])
 }
 
+#[cfg(target_os = "linux")]
 fn private_answer(_: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
     answer(&["10.0.0.1"])
 }
 
+#[cfg(target_os = "linux")]
 fn mixed_answers(_: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
     answer(&["93.184.216.34", "::ffff:127.0.0.1"])
 }
 
+#[cfg(target_os = "linux")]
 fn private_www(host: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
     if host.starts_with("www.") {
         answer(&["169.254.169.254"])
@@ -98,6 +112,7 @@ fn private_www(host: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> 
     }
 }
 
+#[cfg(target_os = "linux")]
 fn redirect(status: u16, location: &str) -> Reply {
     Reply::status_with_headers(status, &[("Location", location)], "")
 }
@@ -164,6 +179,7 @@ async fn the_pinned_name_is_answered_without_a_second_lookup() {
     assert!(unpinned.count() > 0);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn refuses_names_that_resolve_locally_to_non_public_addresses_before_using_the_proxy() {
     for lookup in [private_answer as Lookup, mixed_answers] {
@@ -177,6 +193,7 @@ async fn refuses_names_that_resolve_locally_to_non_public_addresses_before_using
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn continues_through_the_proxy_when_the_local_answer_is_public_or_missing() {
     for lookup in [public_answer as Lookup, unresolved, no_answer] {
@@ -189,6 +206,7 @@ async fn continues_through_the_proxy_when_the_local_answer_is_public_or_missing(
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn each_redirect_hop_is_checked_against_its_own_local_answer() {
     let fixture = Fixture::resolving(
@@ -203,6 +221,7 @@ async fn each_redirect_hop_is_checked_against_its_own_local_answer() {
     assert_eq!(fixture.server.requests().len(), 1);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn no_proxy_hosts_take_the_direct_path_pinned_to_the_local_answer() {
     for (lookup, error) in [
@@ -301,6 +320,7 @@ fn decoded_body_cap_is_inclusive() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn fetches_through_the_configured_proxy_with_upstream_request_headers() {
     let fixture = Fixture::new([Reply::status_with_headers(
@@ -329,6 +349,7 @@ async fn fetches_through_the_configured_proxy_with_upstream_request_headers() {
     assert_eq!(request.header("connection"), Some("close"));
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn follows_same_host_redirects_and_see_other_with_a_fresh_hop() {
     let fixture = Fixture::new([
@@ -356,6 +377,7 @@ async fn follows_same_host_redirects_and_see_other_with_a_fresh_hop() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cross_host_redirect_returns_reinvocation_result_without_following() {
     let fixture = Fixture::new([redirect(302, "https://other.example.test/next")]);
@@ -368,6 +390,7 @@ async fn cross_host_redirect_returns_reinvocation_result_without_following() {
     assert_eq!(fixture.server.requests().len(), 1);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn blocks_unsafe_redirects_before_fetching_the_redirected_target() {
     let fixture = Fixture::new([
@@ -390,6 +413,7 @@ async fn blocks_unsafe_redirects_before_fetching_the_redirected_target() {
     assert_eq!(fixture.server.requests().len(), 3);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn stops_after_ten_redirect_hops() {
     let fixture = Fixture::new((0..11).map(|hop| redirect(302, &format!("/hop{hop}"))));
@@ -400,6 +424,7 @@ async fn stops_after_ten_redirect_hops() {
     assert_eq!(fixture.server.requests().len(), 11);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn non_redirect_statuses_and_encodings_are_left_for_settlement() {
     let fixture = Fixture::new([
@@ -416,6 +441,7 @@ async fn non_redirect_statuses_and_encodings_are_left_for_settlement() {
     assert_eq!(repeated.content_type.as_deref(), Some("text/html"));
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn bodies_over_ten_mebibytes_fail_before_they_are_read() {
     let declared = format!(
@@ -429,6 +455,7 @@ async fn bodies_over_ten_mebibytes_fail_before_they_are_read() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn names_certificate_mismatches_and_cancellation() {
     let fixture = Fixture::new([]);

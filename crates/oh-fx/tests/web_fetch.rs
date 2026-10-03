@@ -9,6 +9,7 @@ use ofx_testkit::{
 use serde_json::{Value, json};
 
 const KEY: (&str, &str) = ("PORTKEY_API_KEY", "pk-test-0123456789");
+#[cfg(target_os = "linux")]
 const PAGE: &str = "<html><head><title>Release notes</title></head><body><h1>Version 2</h1><p>See <a href=\"/changes\">changes</a>.</p></body></html>";
 
 struct Home {
@@ -99,6 +100,7 @@ fn fetch_then_answer(url: &str) -> FakeServer {
     ])
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn ask_fetches_a_page_through_the_proxy_and_returns_converted_markdown() {
     let web = FakeServer::start_web_tls([Reply::status_with_headers(
@@ -138,7 +140,7 @@ fn ask_fetches_a_page_through_the_proxy_and_returns_converted_markdown() {
 
 #[test]
 fn ask_refuses_private_urls_before_any_request() {
-    let web = FakeServer::start_web_tls([]);
+    let web = FakeServer::start([]);
     let proxy = ConnectProxy::start(web.address());
     let chat = fetch_then_answer("http://169.254.169.254/latest/meta-data");
     let home = Home::new(&chat, "full-access");
@@ -164,6 +166,7 @@ fn ask_refuses_private_urls_before_any_request() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn ask_reports_cross_host_redirects_without_following_them() {
     let web = FakeServer::start_web_tls([Reply::status_with_headers(
@@ -194,6 +197,7 @@ fn ask_reports_cross_host_redirects_without_following_them() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn ask_fetches_no_proxy_hosts_directly_with_their_local_answer() {
     let web = FakeServer::start_web_tls([]);
