@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::Range;
 
 use ofx_contract::ApprovalDecision;
@@ -167,7 +168,7 @@ fn inline_panel(
     spacious: bool,
 ) -> PanelView {
     let action_rows = action.len();
-    let mut rows = vec![header_row(theme, content.kind, cols)];
+    let mut rows = vec![header_row(theme, content, cols)];
     if spacious {
         rows.push(Row::new());
     }
@@ -229,7 +230,7 @@ fn screen_panel(
     };
     let mut rows = Vec::new();
     if spaced {
-        rows.push(header_row(theme, content.kind, frame.cols));
+        rows.push(header_row(theme, content, frame.cols));
         rows.push(inset(content.question, Paint::PLAIN.with_bold()));
         rows.push(reason_row(theme, content.reason.as_deref()));
         rows.push(Row::new());
@@ -284,16 +285,26 @@ fn inset(text: &str, paint: Paint) -> Row {
     row
 }
 
-fn header_row(theme: &Theme, kind: &str, cols: usize) -> Row {
+fn header_row(theme: &Theme, content: &ApprovalContent, cols: usize) -> Row {
     let inner = cols.saturating_sub(INSET * 2);
-    let mut row = inset(HEADER, Paint::PLAIN.with_bold()).clipped(INSET + inner);
-    let title_width = visible_width(HEADER);
-    let kind_width = visible_width(kind);
+    let title = header(content);
+    let mut row = inset(&title, Paint::PLAIN.with_bold()).clipped(INSET + inner);
+    let title_width = visible_width(&title);
+    let kind_width = visible_width(content.kind);
     if title_width + kind_width < inner {
         row.push_spaces(inner - title_width - kind_width);
-        row.push(kind, theme.statusline);
+        row.push(content.kind, theme.statusline);
     }
     row
+}
+
+fn header(content: &ApprovalContent) -> Cow<'static, str> {
+    content
+        .requester
+        .as_ref()
+        .map_or(Cow::Borrowed(HEADER), |child| {
+            Cow::Owned(format!("Subagent {child} needs permission"))
+        })
 }
 
 fn reason_row(theme: &Theme, reason: Option<&str>) -> Row {
@@ -395,8 +406,9 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use ofx_contract::{
-        ApprovalRequest, ApprovalScope, CallDescription, CommandProfile, CommandRequest,
-        Concurrency, PathAccess, RequestId, SessionGrant, ToolActivity, ToolCallId, ToolEffect,
+        ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription, CommandProfile,
+        CommandRequest, Concurrency, PathAccess, RequestId, SessionGrant, ToolActivity, ToolCallId,
+        ToolEffect,
     };
 
     use super::super::command_text::grapheme_fuzz::{Xorshift, random_clusters};
@@ -433,6 +445,7 @@ mod tests {
             reason: Some("This action needs approval before oh-fx can continue.".to_owned()),
             action: vec![ActionBlock::Line(Phrase::plain(title))],
             remember: None,
+            requester: None,
         }
     }
 
@@ -480,6 +493,7 @@ mod tests {
                 terminal: false,
             }),
             file: None,
+            origin: ApprovalOrigin::ActiveSession,
         };
         ApprovalContent::from_request(&request, Path::new("/ws"))
     }
@@ -504,6 +518,24 @@ mod tests {
         assert_eq!(rows[4].segments()[1].paint, theme().tag);
         assert_eq!(rows[0].segments().last().unwrap().paint, theme().statusline);
         assert_eq!(rows[2].segments()[1].paint, theme().dim);
+    }
+
+    #[test]
+    fn a_subagents_request_names_the_child_in_the_header_and_keeps_its_kind() {
+        let content = ApprovalContent {
+            requester: Some("1".to_owned()),
+            ..command_content("touch child-marker")
+        };
+        let rows =
+            texts(&approval_panel_rows(&theme(), &content, &choices(None), 0, frame(120, 24)).rows);
+        assert_eq!(
+            rows[0],
+            format!(
+                "  Subagent 1 needs permission{}Command",
+                " ".repeat(116 - 27 - 7)
+            )
+        );
+        assert!(rows.iter().any(|row| row.contains("$ touch child-marker")));
     }
 
     #[test]
@@ -812,6 +844,7 @@ mod tests {
             },
             command: None,
             file: None,
+            origin: ApprovalOrigin::ActiveSession,
         };
         ApprovalContent::from_request(&request, Path::new("/ws"))
     }
@@ -841,6 +874,7 @@ mod tests {
             },
             command: None,
             file: None,
+            origin: ApprovalOrigin::ActiveSession,
         };
         ApprovalContent::from_request(&request, Path::new("/ws"))
     }
