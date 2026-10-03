@@ -679,6 +679,83 @@ async fn an_empty_system_prompt_is_left_out_of_the_instructions() {
     );
 }
 
+struct ProviderTool {
+    spec: ToolSpec,
+}
+
+impl Tool for ProviderTool {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    fn provider_executed(&self) -> bool {
+        true
+    }
+
+    fn prepare(&self, _arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        Err(ToolOutput::failure("search is unavailable here"))
+    }
+}
+
+fn provider_tool(name: &str, description: &str) -> Arc<dyn Tool> {
+    Arc::new(ProviderTool {
+        spec: ToolSpec {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            input_schema: r#"{"type":"object"}"#,
+        },
+    })
+}
+
+#[tokio::test]
+async fn provider_executed_tools_become_guidance_instead_of_functions() {
+    let search = ToolCall {
+        id: ToolCallId::new("call-1"),
+        name: "search".to_owned(),
+        arguments: r#"{"query":"news"}"#.to_owned(),
+    };
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            Vec::new(),
+            completion(None, vec![search], FinishReason::ToolCalls),
+        ),
+        text_reply("done"),
+    ]);
+    let tools = vec![
+        provider_tool("search", "Search the web."),
+        echo_tool(),
+        provider_tool("images", "Find images."),
+    ];
+    let mut agent = new_agent(Arc::clone(&provider), tools);
+    let (report, _) = run(&mut agent, "look it up").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert_eq!(
+        requests[0].instructions,
+        [
+            SYSTEM_PROMPT,
+            "Search the web.\n\nFind images.",
+            TURN_CONTEXT,
+            RESPONSE_LANGUAGE_CONTROL
+        ]
+    );
+    let offered: Vec<&str> = requests[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    assert_eq!(offered, ["echo"]);
+    assert_eq!(
+        requests[1].messages.last(),
+        Some(&ChatMessage::Tool {
+            call_id: ToolCallId::new("call-1"),
+            tool_name: "search".to_owned(),
+            content: "search is unavailable here".to_owned(),
+            status: ToolResultStatus::Failure,
+        })
+    );
+}
+
 #[tokio::test]
 async fn tool_calls_run_and_feed_results_back() {
     let provider = FakeProvider::new(vec![

@@ -111,10 +111,11 @@ fn ask_sends_global_ancestor_and_workspace_rules_after_the_system_prompt() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
     let texts = system_texts(&server.requests()[0]);
-    assert_eq!(texts.len(), 5);
+    assert_eq!(texts.len(), 6);
     assert!(texts[0].starts_with("# Identity and context\n"));
+    assert!(texts[1].starts_with("Search the current public web"));
     assert_eq!(
-        texts[1],
+        texts[2],
         format!(
             "{GUIDANCE}\n\n<global-rules from=\"{}\">\nGLOBAL RULE\n</global-rules>\n\n<scoped-rules from=\"{}\" scope=\"{}\">\nPARENT RULE\n</scoped-rules>\n\n<project-rules from=\"{}\">\nWORKSPACE RULE\n</project-rules>",
             display(&global),
@@ -123,9 +124,9 @@ fn ask_sends_global_ancestor_and_workspace_rules_after_the_system_prompt() {
             display(&project),
         )
     );
-    assert!(texts[2].starts_with("<fx-turn-context>\n"));
-    assert!(texts[3].starts_with("Runtime context: permission mode is auto."));
-    assert!(texts[4].starts_with("<response_language_control>"));
+    assert!(texts[3].starts_with("<fx-turn-context>\n"));
+    assert!(texts[4].starts_with("Runtime context: permission mode is auto."));
+    assert!(texts[5].starts_with("<response_language_control>"));
 }
 
 #[test]
@@ -145,7 +146,7 @@ fn the_context_setting_turns_project_instructions_off() {
     assert!(output.status.success(), "{}", stderr(&output));
     for request in server.requests() {
         let texts = system_texts(&request);
-        assert_eq!(texts.len(), 4);
+        assert_eq!(texts.len(), 5);
         assert!(texts.iter().all(|text| !text.contains("WORKSPACE RULE")));
     }
 }
@@ -174,7 +175,7 @@ fn limit_notices_print_on_stderr_in_raw_quiet_and_json_modes() {
     }
     let texts = system_texts(&server.requests()[0]);
     assert_eq!(
-        texts[1],
+        texts[2],
         format!(
             "{GUIDANCE}\n\n<project-rules from=\"{0}\">\nLINE-ONE\n</project-rules>\n\n<context_limit name=\"project_instruction_file_bytes\" action=\"truncated\" source_file=\"{0}\" observed_bytes=\"29\" effective_bytes=\"12\" source=\"global settings\" override=\"--context-limit project_instruction_file_bytes=BYTES|off\" />",
             display(&project)
@@ -212,7 +213,7 @@ fn a_workspace_outside_home_and_escaping_symlinks_are_reported_without_their_con
     );
     let texts = system_texts(&server.requests()[0]);
     assert_eq!(
-        texts[1],
+        texts[2],
         format!(
             "<project-rules-omitted from=\"{}\" reason=\"workspace is not below home\" />\n\n<project-rules-omitted from=\"{source}\" reason=\"symlinked rule file\" />",
             display(&workspace)
@@ -262,7 +263,7 @@ fn a_relative_home_resolves_against_the_working_directory() {
         (&requests[1], &configured, "CONFIGURED GLOBAL"),
     ] {
         assert_eq!(
-            system_texts(request)[1],
+            system_texts(request)[2],
             format!(
                 "{GUIDANCE}\n\n<global-rules from=\"{}\">\n{body}\n</global-rules>\n\n<project-rules from=\"{}\">\nWORKSPACE RULE\n</project-rules>",
                 display(global),
@@ -310,9 +311,9 @@ fn command_line_limits_override_settings_for_project_instructions() {
     );
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert!(system_texts(&requests[0])[1].contains("source=\"command line\""));
+    assert!(system_texts(&requests[0])[2].contains("source=\"command line\""));
     assert_eq!(
-        system_texts(&requests[1])[1],
+        system_texts(&requests[1])[2],
         format!(
             "<context_limit name=\"project_instructions_total_bytes\" action=\"omitted\" omitted_count=\"1\" observed_bytes=\"{}\" effective_bytes=\"0\" source=\"command line\" override=\"--context-limit project_instructions_total_bytes=BYTES|off\" />",
             GUIDANCE.len() + 2 + format!(
@@ -449,11 +450,11 @@ fn tool_targets_add_scoped_rules_and_a_lone_write_waits_for_them() {
         ])
     );
     let requests = server.requests();
-    assert_eq!(system_texts(&requests[0]).len(), 4);
-    assert_eq!(system_texts(&requests[1])[1], scoped(&sub));
+    assert_eq!(system_texts(&requests[0]).len(), 5);
+    assert_eq!(system_texts(&requests[1])[2], scoped(&sub));
     let texts = system_texts(&requests[3]);
-    assert_eq!(texts[1..3], [scoped(&sub), scoped(&deep)]);
-    assert!(texts[3].starts_with("<fx-turn-context>\n"));
+    assert_eq!(texts[2..4], [scoped(&sub), scoped(&deep)]);
+    assert!(texts[4].starts_with("<fx-turn-context>\n"));
     assert_eq!(
         tool_results(&requests[3]),
         [
@@ -524,7 +525,7 @@ fn batches_defer_only_the_writes_whose_own_scope_brings_new_rules() {
         display(&b),
         display(b.parent().unwrap())
     );
-    assert_eq!(system_texts(&requests[1])[1], combined);
+    assert_eq!(system_texts(&requests[1])[2], combined);
     assert_eq!(
         tool_results(&requests[1])
             .into_iter()
@@ -575,7 +576,7 @@ fn scoped_omission_notices_print_before_the_progress_lines_and_hide_link_targets
     );
     let requests = server.requests();
     assert_eq!(
-        system_texts(&requests[1])[1],
+        system_texts(&requests[1])[2],
         format!(
             "{GUIDANCE}\n\n<scoped-rules from=\"{}\" scope=\"{}\">\nREAL LINKED\n</scoped-rules>\n\n<project-rules-omitted from=\"{}\" reason=\"non-regular rule file\" />\n\n<project-rules-omitted from=\"{}\" reason=\"unreadable rule file\" />\n\n<project-rules-omitted from=\"{}\" reason=\"symlinked rule file\" />",
             source("work/linked/AGENTS.md"),
@@ -750,7 +751,7 @@ fn shell_runs_are_deferred_by_their_working_directory_rules_only() {
         stderr(&output)
     );
     let requests = server.requests();
-    assert_eq!(system_texts(&requests[1])[1], scoped(&sub));
+    assert_eq!(system_texts(&requests[1])[2], scoped(&sub));
     let results = tool_results(&requests[3]);
     assert_eq!(results[0], ("call_1".to_owned(), DEFERRED.to_owned()));
     for (call_id, content) in &results[2..6] {

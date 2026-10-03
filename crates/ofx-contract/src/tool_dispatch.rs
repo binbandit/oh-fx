@@ -198,6 +198,10 @@ pub trait QuestionAsker: Send + Sync {
 pub trait Tool: Send + Sync {
     fn spec(&self) -> &ToolSpec;
 
+    fn provider_executed(&self) -> bool {
+        false
+    }
+
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput>;
 
     fn history_arguments(&self, _arguments: &str) -> Option<String> {
