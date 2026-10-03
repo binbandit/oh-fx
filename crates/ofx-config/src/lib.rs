@@ -9,6 +9,7 @@ mod model_provider;
 mod paths;
 mod settings_store;
 mod strict_json;
+mod workspace_access;
 
 pub use config_runtime::{
     ConfigDiagnostic, LayerError, PermissionSources, SelectionError, Settings, SettingsError,
@@ -34,3 +35,7 @@ pub use settings_store::{
     save_permission_mode, save_permission_patch, save_workspace_entry, save_yolo_acknowledged,
 };
 pub use strict_json::{StrictJsonError, parse as parse_strict_json};
+pub use workspace_access::{
+    DirectoryError, MAX_ADDITIONAL_DIRECTORIES, SavedDirectory, canonical_existing_directory,
+    resolve_absolute_input, resolve_saved_directory,
+};

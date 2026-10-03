@@ -28,3 +28,4 @@ pub use app_session_runtime::{
 };
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 pub use ofx_tools::WebFetchProgress;
+pub use output_contracts::workspace::{WorkspaceSnapshot, workspace_error_message};

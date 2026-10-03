@@ -13,6 +13,7 @@ mod shell_call_record;
 mod status_command;
 mod upgrade_command;
 mod usage_command;
+mod workspace_command;
 
 use std::env;
 use std::ffi::OsString;
@@ -96,6 +97,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Provider(target) => provider_command::run(target),
             Command::Status(format) => status_command::run(format),
             Command::Usage(format) => usage_command::run(format),
+            Command::Workspace(args) => workspace_command::run(&args),
             other => unavailable_command(&other),
         },
     }

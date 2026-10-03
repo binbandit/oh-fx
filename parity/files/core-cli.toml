@@ -18,8 +18,8 @@ note = "Replay/session command arguments are parsed; replay execution and full t
 [[file]]
 upstream = "src/core/cli/cli_surface.zig"
 status = "partial"
-modules = ["crates/ofx-cli/src/cli_surface/mod.rs", "crates/ofx-cli/src/command_specs/mod.rs", "crates/oh-fx/src/main.rs", "crates/oh-fx/src/status_command.rs", "crates/oh-fx/src/usage_command.rs"]
-note = "CLI parsing/help and supported command dispatch, including status and usage, exist; doctor, ACP and several session/workspace command runtimes remain unavailable."
+modules = ["crates/ofx-cli/src/cli_surface/mod.rs", "crates/ofx-cli/src/command_specs/mod.rs", "crates/oh-fx/src/main.rs", "crates/oh-fx/src/status_command.rs", "crates/oh-fx/src/usage_command.rs", "crates/oh-fx/src/workspace_command.rs"]
+note = "CLI parsing/help and supported command dispatch, including status, usage and workspace, exist; doctor, ACP and several session command runtimes remain unavailable."
 
 [[file]]
 upstream = "src/core/cli/doctor_runtime.zig"

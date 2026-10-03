@@ -19,6 +19,7 @@ ofx-http.workspace = true
 ofx-session.workspace = true
 ofx-text.workspace = true
 ofx-upgrade.workspace = true
+ofx-workspace.workspace = true
 rustix = { workspace = true, features = ["stdio", "termios"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -18,6 +18,7 @@ use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
 use crate::settings_store::{MAX_PROVIDER_ORDER_ENTRIES, validate_provider_slug};
 use crate::strict_json;
+use crate::workspace_access::{MAX_ADDITIONAL_DIRECTORIES, parse_sources};
 
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 const PROJECT_FILE: &str = ".oh-fx.json";
@@ -64,6 +65,7 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
 const CONTEXT_LIMITS_REPAIR: &str = "; context_limits keys must be documented limit names with a non-negative integer or \"off\" value";
 const MAX_SKILL_SYMLINK_AUTHORITIES: usize = 32;
+const ADDITIONAL_DIRECTORIES_KEY: &str = "additional_directories";
 const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL";
 
 type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -84,6 +86,7 @@ enum DiagnosticCause {
     RetiredSkillMatchFuzzy,
     InvalidContextLimits,
     InvalidSkillSymlinkAuthorities,
+    InvalidAdditionalDirectories,
 }
 
 impl DiagnosticCause {
@@ -96,7 +99,7 @@ impl DiagnosticCause {
             Self::SettingsTooLarge => Some("SettingsPrimaryTooLarge"),
             Self::DurablePathUnsafe => Some("DurablePathUnsafe"),
             Self::InvalidModelId => Some("InvalidModelValue"),
-            Self::IgnoredProjectUserOnlySetting => None,
+            Self::IgnoredProjectUserOnlySetting | Self::InvalidAdditionalDirectories => None,
         }
     }
 
@@ -110,6 +113,7 @@ impl DiagnosticCause {
             Self::RetiredSkillMatchFuzzy => "retired_skill_match_fuzzy",
             Self::InvalidContextLimits => "invalid_context_limits",
             Self::InvalidSkillSymlinkAuthorities => "invalid_skill_symlink_authorities",
+            Self::InvalidAdditionalDirectories => "invalid_additional_directories",
         }
     }
 }
@@ -136,6 +140,10 @@ impl fmt::Display for ConfigDiagnostic {
                 "; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool",
             )?,
             DiagnosticCause::InvalidContextLimits => formatter.write_str(CONTEXT_LIMITS_REPAIR)?,
+            DiagnosticCause::InvalidAdditionalDirectories => write!(
+                formatter,
+                "; additional_directories must be an array of at most {MAX_ADDITIONAL_DIRECTORIES} unique absolute directory paths for the current primary workspace"
+            )?,
             DiagnosticCause::InvalidSkillSymlinkAuthorities => write!(
                 formatter,
                 "; skill_symlink_authorities must be an array of at most {MAX_SKILL_SYMLINK_AUTHORITIES} absolute directory paths without .. components"
@@ -300,6 +308,7 @@ pub struct Settings {
     global: Layer,
     workspace: Layer,
     workspace_entry: Option<Map<String, Value>>,
+    additional_directory_sources: Vec<String>,
     resumed: Layer,
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
@@ -343,6 +352,16 @@ impl Settings {
 
     pub fn workspace_entry(&self) -> Option<&Map<String, Value>> {
         self.workspace_entry.as_ref()
+    }
+
+    pub fn additional_directory_sources(&self) -> &[String] {
+        &self.additional_directory_sources
+    }
+
+    pub fn additional_directories_rejected(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.cause == DiagnosticCause::InvalidAdditionalDirectories)
     }
 
     pub fn profile_is_unusable(&self) -> bool {
@@ -641,6 +660,9 @@ impl Settings {
                 ProviderRegistry::parse(providers).map_err(SettingsError::Providers)?;
         }
         self.global = self.parse_profile_layer(profile)?;
+        if profile.contains_key(ADDITIONAL_DIRECTORIES_KEY) {
+            self.reject_additional_directories();
+        }
         let workspace_key = workspace_root.to_string_lossy();
         let workspace = match profile.get("workspaces") {
             None => None,
@@ -660,6 +682,12 @@ impl Settings {
         if let Some(entry) = workspace {
             self.workspace = self.parse_profile_layer(entry)?;
             self.workspace_entry = Some(entry.clone());
+            if let Some(value) = entry.get(ADDITIONAL_DIRECTORIES_KEY) {
+                match parse_sources(workspace_root, value) {
+                    Some(sources) => self.additional_directory_sources = sources,
+                    None => self.reject_additional_directories(),
+                }
+            }
         }
         Ok(())
     }
@@ -694,6 +722,14 @@ impl Settings {
         }
         self.diagnose(layer, DiagnosticCause::MalformedSettings, None);
         None
+    }
+
+    fn reject_additional_directories(&mut self) {
+        self.diagnose(
+            ConfigLayer::User,
+            DiagnosticCause::InvalidAdditionalDirectories,
+            Some(ADDITIONAL_DIRECTORIES_KEY.to_owned()),
+        );
     }
 
     fn diagnose(&mut self, layer: ConfigLayer, cause: DiagnosticCause, key: Option<String>) {
@@ -1081,6 +1117,55 @@ mod tests {
 
     fn fixture_settings(json: &str) -> Settings {
         load(&fixture(Some(json), None)).unwrap()
+    }
+
+    #[test]
+    fn saved_additional_directories_load_for_the_workspace_and_reject_invalid_lists() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let workspace = root.join("workspace");
+        let shared = root.join("shared");
+        let config = root.join("config");
+        for path in [&workspace, &shared, &config] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let paths = ProfilePaths {
+            config: config.clone(),
+            data: root.join("data"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let load = |settings: Value| {
+            fs::write(config.join(SETTINGS_FILE), settings.to_string()).unwrap();
+            Settings::load(&paths, &workspace).unwrap()
+        };
+        let key = workspace.to_str().unwrap();
+        let shared = shared.to_str().unwrap();
+        let valid =
+            load(serde_json::json!({"workspaces": {key: {"additional_directories": [shared]}}}));
+        assert_eq!(valid.additional_directory_sources(), [shared]);
+        assert!(valid.diagnostics().is_empty());
+        assert!(!valid.additional_directories_rejected());
+        let invalid = load(
+            serde_json::json!({"workspaces": {key: {"additional_directories": ["relative"]}}}),
+        );
+        assert!(invalid.additional_directory_sources().is_empty());
+        let rendered: Vec<String> = invalid
+            .diagnostics()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rendered,
+            [
+                "config user: invalid_additional_directories; key=additional_directories; additional_directories must be an array of at most 16 unique absolute directory paths for the current primary workspace"
+            ]
+        );
+        assert!(invalid.additional_directories_rejected());
+        assert!(!invalid.profile_is_unusable());
+        let global = load(serde_json::json!({"additional_directories": [shared]}));
+        assert!(global.additional_directories_rejected());
+        assert!(global.additional_directory_sources().is_empty());
     }
 
     #[test]

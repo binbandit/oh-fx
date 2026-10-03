@@ -196,7 +196,22 @@ pub(crate) fn parse_usage(args: Vec<OsString>) -> Result<OutputFormat, CliError>
     Ok(format_for(json))
 }
 
-pub(crate) fn parse_workspace(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub enum WorkspaceAction {
+    Add(OsString),
+    Remove(OsString),
+    Clear,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub struct WorkspaceArgs {
+    pub format: OutputFormat,
+    pub action: Option<WorkspaceAction>,
+}
+
+pub(crate) fn parse_workspace(args: Vec<OsString>) -> Result<WorkspaceArgs, CliError> {
     let error = argument_error(TopLevelKind::Workspace, ArgumentErrorCode::Workspace, &args);
     let mut json = false;
     let mut positional = Vec::new();
@@ -211,13 +226,22 @@ pub(crate) fn parse_workspace(args: Vec<OsString>) -> Result<OutputFormat, CliEr
             positional.push(arg);
         }
     }
-    match positional.as_slice() {
-        [] => {}
-        [action] if action == "list" || action == "clear" => {}
-        [action, path] if (action == "add" || action == "remove") && !path.is_empty() => {}
+    let action = match positional.as_slice() {
+        [] => None,
+        [action] if action == "list" => None,
+        [action] if action == "clear" => Some(WorkspaceAction::Clear),
+        [action, path] if action == "add" && !path.is_empty() => {
+            Some(WorkspaceAction::Add(path.clone()))
+        }
+        [action, path] if action == "remove" && !path.is_empty() => {
+            Some(WorkspaceAction::Remove(path.clone()))
+        }
         _ => return Err(error()),
-    }
-    Ok(format_for(json))
+    };
+    Ok(WorkspaceArgs {
+        format: format_for(json),
+        action,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

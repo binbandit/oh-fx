@@ -325,7 +325,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
         (&["session", "last", "--json"], "session"),
         (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),
-        (&["workspace", "--json"], "workspace"),
         (&["replay", "tape", "--json"], "replay"),
     ] {
         let output = oh_fx(args, &[]);
@@ -368,12 +367,18 @@ fn usage_answers_like_a_host_without_profile_usage() {
 
 #[test]
 fn usage_needs_home() {
+    let profile = tempfile::tempdir().expect("create a temporary profile");
     let run = |args: &[&str]| {
         spawn(
             Command::new(env!("CARGO_BIN_EXE_oh-fx"))
                 .args(args)
+                .current_dir(profile.path())
                 .env_clear()
                 .env("OH_FX_AUTO_UPGRADE", "0")
+                .env("XDG_CONFIG_HOME", profile.path().join("config"))
+                .env("XDG_STATE_HOME", profile.path().join("state"))
+                .env("XDG_DATA_HOME", profile.path().join("data"))
+                .env("XDG_CACHE_HOME", profile.path().join("cache"))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),

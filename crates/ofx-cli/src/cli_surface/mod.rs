@@ -15,7 +15,7 @@ use crate::cli_replay::parse_replay;
 use crate::command_specs::TopLevelKind;
 
 pub(crate) use arg_stream::{ArgStream, ValueForm, non_blank, requests_json};
-pub use command_args::OutputFormat;
+pub use command_args::{OutputFormat, WorkspaceAction, WorkspaceArgs};
 pub(crate) use failure::Report;
 pub use failure::{CliError, command_failure_json};
 pub use launch_modifiers::LaunchModifiers;
@@ -72,7 +72,7 @@ pub enum Command {
     Usage(OutputFormat),
     Upgrade(OutputFormat),
     Replay(OutputFormat),
-    Workspace(OutputFormat),
+    Workspace(WorkspaceArgs),
 }
 
 impl Command {
@@ -114,7 +114,7 @@ impl Command {
             | Self::Usage(format)
             | Self::Upgrade(format)
             | Self::Replay(format)
-            | Self::Workspace(format) => *format,
+            | Self::Workspace(WorkspaceArgs { format, .. }) => *format,
             Self::Ask(args) if args.output.json => OutputFormat::Json,
             Self::Ask(_)
             | Self::Acp

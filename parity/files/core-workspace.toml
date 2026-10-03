@@ -121,14 +121,14 @@ note = "Simple Unicode case folding and ASCII comparison behavior match the tran
 [[file]]
 upstream = "src/core/workspace/workspace_access.zig"
 status = "partial"
-modules = ["crates/ofx-workspace/src/pathing.rs"]
-note = "Primary workspace containment and external paths exist; saved additional roots, merged sources and mutable access scopes are absent."
+modules = ["crates/ofx-workspace/src/pathing.rs", "crates/ofx-workspace/src/workspace_access.rs", "crates/ofx-config/src/workspace_access.rs"]
+note = "Primary workspace containment, external paths and the saved additional roots that workspace reads and stages exist; command-line roots, saved-root suppression, availability refresh and access scopes for tools are absent."
 
 [[file]]
 upstream = "src/core/workspace/workspace_commands.zig"
-status = "todo"
-modules = []
-note = "Durable additional workspace-root mutations are unimplemented."
+status = "partial"
+modules = ["crates/ofx-workspace/src/workspace_commands.rs"]
+note = "Add, remove and clear with durable settings commits and indeterminate-commit reconciliation exist; carrying command-line directories into a saved add is absent."
 
 [[file]]
 upstream = "src/core/workspace/workspace_files.zig"

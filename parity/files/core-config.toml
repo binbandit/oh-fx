@@ -61,4 +61,4 @@ modules = []
 upstream = "src/core/config/settings_store.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/settings_store.rs"]
-note = "Permission/model preference writes, scoped permission-rule add/remove/reset patches and recovery backups exist; full settings catalog, workspace-directory mutation and project MCP mutation API remain incomplete."
+note = "Permission/model preference writes, scoped permission-rule add/remove/reset patches, workspace entry edits for additional directories and recovery backups exist; the full settings catalog and project MCP mutation API remain incomplete."

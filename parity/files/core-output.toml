@@ -34,8 +34,8 @@ modules = []
 [[file]]
 upstream = "src/core/output/output_contracts.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/output_contracts.rs", "crates/ofx-app/src/output_contracts/status.rs"]
-note = "Interactive and CLI status with the local MCP view are rendered; doctor, usage, workspace, session-list, MCP-health and sessions-v2 output snapshots remain missing."
+modules = ["crates/ofx-app/src/output_contracts.rs", "crates/ofx-app/src/output_contracts/status.rs", "crates/ofx-app/src/output_contracts/workspace.rs"]
+note = "Interactive and CLI status with the local MCP view and the workspace snapshot are rendered; doctor, usage, session-list, MCP-health and sessions-v2 output snapshots remain missing."
 
 [[file]]
 upstream = "src/core/output/transcript_presentation.zig"
