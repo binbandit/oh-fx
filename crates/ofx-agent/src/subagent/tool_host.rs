@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ofx_contract::{
     ApprovalRequest, BoxFuture, LivePermissionMode, ModelFailureDiagnostic, PermissionMode,
     ReasoningEffort, SubagentOverride, SubagentProvider, SubagentRequest, SubagentResult, Tool,
-    ToolContext, ToolOutput,
+    ToolContext, ToolOutput, TurnId,
 };
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
@@ -37,7 +37,7 @@ pub trait ChildAgents: Send + Sync {
 
     fn work_tools(&self) -> WorkTools;
 
-    fn approval_requested(&self, request: ApprovalRequest);
+    fn approval_requested(&self, turn_id: Option<TurnId>, request: ApprovalRequest);
 }
 
 pub struct SubagentHost {
@@ -49,6 +49,10 @@ impl SubagentHost {
         Self {
             owner: Arc::new(Owner::new(agents)),
         }
+    }
+
+    pub fn clear(&self) {
+        self.owner.clear();
     }
 }
 
@@ -70,7 +74,7 @@ async fn execute_managed(
 ) -> ToolOutput {
     let operation_id = operation_id(context.call_id.as_str());
     let root_user_requests = context.root_user_requests.clone().unwrap_or_default();
-    match owner.admit(request, &operation_id, root_user_requests) {
+    match owner.admit(request, &operation_id, root_user_requests, context.turn_id) {
         Admitted::Rejected(code) => output(SubagentResult::failure(code)),
         Admitted::Completed(finished) => complete(&finished),
         Admitted::Ready(waiter) => match Owner::observe(waiter, &context.cancellation).await {

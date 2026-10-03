@@ -110,6 +110,13 @@ pub struct ApprovalRequest {
     pub scope: ApprovalScope,
     pub command: Option<CommandRequest>,
     pub file: Option<FileMutation>,
+    pub origin: ApprovalOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalOrigin {
+    ActiveSession,
+    Subagent(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

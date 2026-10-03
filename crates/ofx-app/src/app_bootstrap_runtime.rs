@@ -4,12 +4,12 @@ use std::fs;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, Approvals, ProjectContext, QuestionRequests, Questions, RuntimeContext,
-    SkillContextProvider, SubagentHost,
+    Agent, AgentConfig, ProjectContext, QuestionRequests, Questions, RuntimeContext,
+    SkillContextProvider,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
@@ -17,8 +17,9 @@ use ofx_config::{
     ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
-    BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
-    ModelProvider, PermissionMode, QuestionAsker, ReviewTransport, Tool,
+    ApprovalDecision, BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode,
+    ModelCapabilities, ModelProvider, PermissionMode, QuestionAsker, RequestId, ReviewTransport,
+    Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -27,13 +28,14 @@ use ofx_gateway::{
 };
 use ofx_http::ClientError;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
-use ofx_tools::{SubagentTool, WebFetchProgress};
+use ofx_tools::WebFetchProgress;
 use ofx_workspace::ChangeTracker;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_subagent_runtime::ChildFactory;
+use crate::app_subagent_runtime::{ChildFactory, Delegation};
+use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
 };
@@ -134,14 +136,14 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     tools: Vec<Arc<dyn Tool>>,
-    subagent: Arc<dyn Tool>,
+    delegation: Delegation,
     context: Arc<dyn RuntimeContext>,
     permission_mode: LivePermissionMode,
     workspace_root: PathBuf,
     permissions: Arc<PermissionPolicy>,
     preferences: Option<ProfilePaths>,
     yolo_acknowledged: bool,
-    approvals: Option<Approvals>,
+    approvals: Option<Arc<ApprovalQueue>>,
     change_tracker: Option<ChangeTracker>,
     questions: Option<Questions>,
     question_requests: Option<QuestionRequests>,
@@ -291,6 +293,8 @@ impl Profile {
                 change_tracker: change_tracker.as_ref(),
             },
         );
+        let permissions = self.reviewed_policy(&permission_mode, &route.reviewer);
+        let approvals = interactive.then(ApprovalQueue::shared);
         let children = ChildFactory {
             provider: Arc::clone(&route.provider),
             executions: launch.executions.clone(),
@@ -298,11 +302,13 @@ impl Profile {
             capabilities: route.capabilities.clone(),
             connection: route.connection.clone(),
             reviewer: Arc::clone(&route.reviewer),
+            parent_permissions: Arc::clone(&permissions),
+            approvals: approvals.clone(),
             project: project.clone(),
             skills: Arc::clone(&skills),
             workspace_root: self.workspace_root.clone(),
             permission_mode: permission_mode.clone(),
-            config: config.clone(),
+            parent: Mutex::new(config.clone()),
         };
         Ok(AgentSetup {
             provider: route.provider,
@@ -313,23 +319,18 @@ impl Profile {
             connection: route.connection,
             source: route.source,
             tools,
-            subagent: Arc::new(SubagentTool::new(Arc::new(SubagentHost::new(Arc::new(
-                children,
-            ))))),
+            delegation: Delegation::new(children),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
                 permission_mode.clone(),
                 interactive,
             )),
-            permissions: Arc::new(
-                PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
-                    .with_reviewer(Reviewer::new(route.reviewer, DEFAULT_REVIEW_TIMEOUT)),
-            ),
+            permissions,
             permission_mode,
             preferences: self.paths.clone(),
             yolo_acknowledged: self.settings.yolo_acknowledged(),
             workspace_root: self.workspace_root.clone(),
-            approvals: interactive.then(Approvals::default),
+            approvals,
             change_tracker,
             questions,
             question_requests,
@@ -363,6 +364,17 @@ impl Profile {
             }),
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         }
+    }
+
+    fn reviewed_policy(
+        &self,
+        permission_mode: &LivePermissionMode,
+        reviewer: &Arc<dyn ReviewTransport>,
+    ) -> Arc<PermissionPolicy> {
+        Arc::new(
+            PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
+                .with_reviewer(Reviewer::new(Arc::clone(reviewer), DEFAULT_REVIEW_TIMEOUT)),
+        )
     }
 
     async fn route(
@@ -585,7 +597,7 @@ impl AgentSetup {
         )
     }
 
-    pub(crate) fn approvals(&self) -> Option<&Approvals> {
+    pub(crate) fn approvals(&self) -> Option<&Arc<ApprovalQueue>> {
         self.approvals.as_ref()
     }
 
@@ -595,6 +607,18 @@ impl AgentSetup {
 
     pub(crate) fn step_limit(&self) -> u64 {
         self.config.step_limit
+    }
+
+    pub(crate) fn answer_approval(&self, id: RequestId, decision: ApprovalDecision) {
+        if let Some(approvals) = &self.approvals {
+            approvals.resolve(id, decision);
+        }
+    }
+
+    pub(crate) fn end_turn_approvals(&self) {
+        if let Some(approvals) = &self.approvals {
+            approvals.turn_finished();
+        }
     }
 
     pub(crate) fn workspace_root(&self) -> &Path {
@@ -655,9 +679,17 @@ impl AgentSetup {
         }
     }
 
+    pub(crate) fn delegate_as(&self, config: &AgentConfig) {
+        self.delegation.children.follow(config);
+    }
+
+    pub(crate) fn forget_children(&self) {
+        self.delegation.host.clear();
+    }
+
     pub fn agent(&self, delegation: bool) -> Agent {
         let tools = if delegation {
-            tool_set::with_subagent(&self.tools, &self.subagent)
+            tool_set::with_subagent(&self.tools, &self.delegation.tool)
         } else {
             self.tools.clone()
         };
@@ -673,7 +705,7 @@ impl AgentSetup {
             agent = agent.with_capability_resolver(Arc::clone(capabilities));
         }
         if let Some(approvals) = &self.approvals {
-            agent = agent.with_approvals(approvals.clone());
+            agent = agent.with_approvals(approvals.approvals().clone());
         }
         match &self.project {
             Some((provider, snapshot)) => {
