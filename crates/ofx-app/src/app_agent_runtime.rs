@@ -2324,6 +2324,20 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn the_allowlist_takes_the_subagent_tool_as_upstream_does() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/allowlist add tool subagent");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        assert_eq!(
+            notice_body(shown),
+            [r#"allowlist|added tool subagent: "*" (scope=local)"#]
+        );
+    }
+
     async fn undo_notice(harness: &mut Harness) -> String {
         harness.command("/undo");
         let shown = harness
