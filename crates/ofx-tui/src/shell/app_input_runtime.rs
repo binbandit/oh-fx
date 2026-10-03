@@ -61,6 +61,7 @@ impl Shell<'_> {
             return self.handle_question_input(event);
         }
         let revision = self.composer.edit_revision();
+        let preserved = self.model_edit_preserved(&event);
         match event {
             InputEvent::Raw(raw) => self.handle_raw(raw)?,
             InputEvent::Text(character) => {
@@ -75,9 +76,13 @@ impl Shell<'_> {
         }
         if self.composer.edit_revision() != revision {
             self.file_picker_after_edit();
+            self.model_column_after_edit(preserved);
         }
         self.sync_skills_menu();
         self.sync_picker_query();
+        self.sync_model_menu();
+        self.settle_model_draft();
+        self.ensure_catalog();
         Ok(())
     }
 
@@ -102,13 +107,9 @@ impl Shell<'_> {
             b'\r' if self.picker_active() => self.submit_picker_selection(),
             b'\r' => self.handle_enter(),
             b'\t' if self.picker_active() => {}
-            b'\t' => {
-                if !self.cycle_skills_menu_source(1)
-                    && self.has_file_query()
-                    && self.autocomplete_file_picker() == InsertResult::LimitExceeded
-                {
-                    self.report_limit();
-                }
+            b'\t' => self.handle_tab(),
+            b' ' if self.model_query().is_some() && self.composer.selection().is_none() => {
+                self.advance_model_column_on_space();
             }
             7 | 22 | 24 => {}
             _ => {
@@ -167,9 +168,13 @@ impl Shell<'_> {
         self.gestures.disarm_escape_interrupt();
         self.gestures.disarm_escape_clear();
         if decoded.action == Action::TogglePermissionMode {
-            if !self.cycle_skills_menu_source(-1) {
+            if !self.cycle_model_menu_vendor(-1) && !self.cycle_skills_menu_source(-1) {
                 self.send(UiCommand::TogglePermissionMode);
             }
+            return;
+        }
+        if decoded.action == Action::OpenModelCatalog {
+            self.toggle_model_shortcut();
             return;
         }
         if let Some(action) = decoded.composer_shortcut {
@@ -222,7 +227,11 @@ impl Shell<'_> {
     }
 
     fn resolve_escape(&mut self, cancel_pending: bool) {
-        if self.cancel_skills_menu() || self.dismiss_file_picker() {
+        if self.cancel_model_menu()
+            || self.cancel_skills_menu()
+            || self.dismiss_model_column()
+            || self.dismiss_file_picker()
+        {
             self.gestures.disarm_escape_clear();
             self.gestures.disarm_escape_interrupt();
             return;
@@ -255,6 +264,9 @@ impl Shell<'_> {
     }
 
     fn handle_ctrl_c(&mut self) {
+        if self.exit_model_shortcut() {
+            return;
+        }
         if self.turn.is_some() && !self.composer.is_empty() {
             self.composer.clear();
             return;
@@ -280,6 +292,9 @@ impl Shell<'_> {
     }
 
     fn handle_ctrl_d(&mut self) {
+        if self.exit_model_shortcut() {
+            return;
+        }
         if !self.composer.is_empty() {
             self.composer.delete(DeletionKind::CharacterRight);
             return;
@@ -309,6 +324,10 @@ impl Shell<'_> {
                 | MoveKind::PageDown => {
                     self.move_vertical(intent.kind, intent.extend_selection);
                 }
+                MoveKind::CharacterLeft
+                    if !intent.extend_selection
+                        && self.composer.selection().is_none()
+                        && self.step_back_model_column() => {}
                 _ => {
                     self.composer.move_cursor(intent);
                 }
@@ -353,7 +372,7 @@ impl Shell<'_> {
             }
             ShortcutAction::Redraw => self.start_fresh_transcript(FreshScreen::Erase),
             ShortcutAction::InsertNewline => {
-                if !self.command_skills_menu_open() {
+                if !self.command_skills_menu_open() && self.model_menu.is_none() {
                     self.insert("\n");
                 }
             }
@@ -391,25 +410,55 @@ impl Shell<'_> {
     }
 
     fn handle_enter(&mut self) {
-        if self.submit_skills_menu_selection() {
+        if self.submit_model_menu() || self.submit_skills_menu_selection() {
             return;
         }
         if let Some(result) = self.submit_file_picker_on_enter() {
             if result == InsertResult::LimitExceeded {
                 self.report_limit();
             }
-        } else if !self.composer.replace_backslash_before_cursor_with_newline() {
-            self.submit();
+            return;
+        }
+        if self.bare_model_command() {
+            self.open_model_menu();
+            return;
+        }
+        if self.submit_model_column()
+            || self.submit_explicit_model()
+            || self.model_draft.is_some()
+            || self.composer.replace_backslash_before_cursor_with_newline()
+        {
+            return;
+        }
+        self.submit();
+    }
+
+    fn handle_tab(&mut self) {
+        if self.cycle_model_menu_vendor(1) || self.cycle_skills_menu_source(1) {
+            return;
+        }
+        if self.bare_model_command() {
+            self.open_current_model_column();
+        } else if self.has_file_query() {
+            if self.autocomplete_file_picker() == InsertResult::LimitExceeded {
+                self.report_limit();
+            }
+        } else {
+            self.autocomplete_model_column();
         }
     }
 
     fn move_footer_menu(&mut self, delta: i32) -> bool {
-        let delta_rows = isize::try_from(delta).unwrap_or_default();
+        let rows = isize::try_from(delta).unwrap_or_default();
         if self.picker_active() {
-            self.move_picker(delta_rows);
+            self.move_picker(rows);
             return true;
         }
-        self.move_skills_menu(delta_rows) || self.navigate_file_picker(delta)
+        self.move_model_menu(rows)
+            || self.move_skills_menu(rows)
+            || self.navigate_file_picker(delta)
+            || self.navigate_model_column(delta)
+            || (self.turn.is_some() && self.bare_model_command())
     }
 
     fn navigate_history(&mut self, delta: i32) {

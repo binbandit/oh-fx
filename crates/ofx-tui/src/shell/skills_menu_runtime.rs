@@ -4,8 +4,7 @@ use super::Shell;
 use super::skills_menu::{MentionAnchor, SkillsMenu};
 use crate::composer::InsertResult;
 use crate::composer::file_picker_path::contains_position;
-use crate::footer::input_presentation::input_row_limit;
-use crate::footer::skills_menu_presentation::{menu_row_budget, visible_item_rows};
+use crate::footer::skills_menu_presentation::{MAX_MENU_ROWS, visible_item_rows};
 use crate::input::COMPOSER_INPUT_LIMIT_BYTES;
 
 pub trait SkillCatalogSource {
@@ -17,6 +16,7 @@ impl Shell<'_> {
         let Some(menu) = SkillsMenu::open(items, focus) else {
             return;
         };
+        self.close_model_menu_for_skills();
         if let SkillMenuFocus::Query(query) = focus {
             self.composer.clear();
             if self.composer.insert_text(query, COMPOSER_INPUT_LIMIT_BYTES)
@@ -29,22 +29,8 @@ impl Shell<'_> {
         self.invalidate();
     }
 
-    pub(super) fn skills_menu_budget(&self) -> usize {
-        let composer_rows = self
-            .composer
-            .visual_layout(self.layout.cols)
-            .summary(None)
-            .total_rows
-            .min(input_row_limit(usize::from(self.layout.content_bottom)));
-        menu_row_budget(
-            usize::from(self.layout.rows),
-            composer_rows.saturating_sub(1),
-            self.banner_rows().len(),
-        )
-    }
-
     pub(super) fn move_skills_menu(&mut self, delta: isize) -> bool {
-        let budget = self.skills_menu_budget();
+        let budget = self.menu_budget(MAX_MENU_ROWS);
         let Some(menu) = self.visible_skills_menu_mut() else {
             return false;
         };
@@ -54,7 +40,7 @@ impl Shell<'_> {
     }
 
     pub(super) fn cycle_skills_menu_source(&mut self, delta: isize) -> bool {
-        let budget = self.skills_menu_budget();
+        let budget = self.menu_budget(MAX_MENU_ROWS);
         let Some(menu) = self.visible_skills_menu_mut() else {
             return false;
         };
@@ -112,7 +98,7 @@ impl Shell<'_> {
         let Some(menu) = &self.skills_menu else {
             return;
         };
-        let budget = self.skills_menu_budget();
+        let budget = self.menu_budget(MAX_MENU_ROWS);
         let text = self.composer.text();
         let query = match menu.mention_anchor() {
             None => text.to_owned(),
@@ -153,6 +139,7 @@ impl Shell<'_> {
             .selection()
             .map_or(self.composer.cursor(), |selection| selection.start);
         let mentions = self.skill_catalog.is_some()
+            && self.model_menu.is_none()
             && !self.command_skills_menu_open()
             && !self.picker_active()
             && !contains_position(self.composer.text(), start);
@@ -178,7 +165,7 @@ impl Shell<'_> {
     }
 
     pub(super) fn open_pasted_skill_mention(&mut self, start: usize, pasted: &str) {
-        if self.skills_menu.is_some() || self.skill_catalog.is_none() {
+        if self.skills_menu.is_some() || self.model_menu.is_some() || self.skill_catalog.is_none() {
             return;
         }
         let text = self.composer.text();
