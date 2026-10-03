@@ -252,7 +252,7 @@ impl Shell<'_> {
     }
 
     fn file_picker_distrusted(&self) -> bool {
-        self.dimensions_invalid || self.resize_due_ms.is_some()
+        self.dimensions_invalid || self.pending_resize.is_some()
     }
 
     pub(super) fn has_file_query(&self) -> bool {

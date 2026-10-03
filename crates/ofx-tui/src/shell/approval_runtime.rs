@@ -347,7 +347,7 @@ impl Shell<'_> {
     }
 
     fn affirmative_armed(&self, now_ms: i64) -> bool {
-        self.resize_due_ms.is_none()
+        self.pending_resize.is_none()
             && !self.dimensions_invalid
             && self
                 .approval
@@ -1371,7 +1371,9 @@ mod tests {
             press(&mut test, first);
             test.advance(100);
             test.settle();
-            press(&mut test, rest);
+            if !rest.is_empty() {
+                press(&mut test, rest);
+            }
             test.advance(100);
             test.settle();
             assert!(!approved(&test), "{first:?} {rest:?}");
