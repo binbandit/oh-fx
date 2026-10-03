@@ -9,17 +9,7 @@ use crate::secret::Secret;
 use tokio_util::sync::CancellationToken;
 
 impl GrokOAuth {
-    pub async fn run_login(
-        &self,
-        output: &mut (dyn Write + Send),
-        open_browser: bool,
-        cancel: &CancellationToken,
-    ) -> Result<(), GrokError> {
-        self.run_login_with_input(output, open_browser, cancel, &std::io::stdin())
-            .await
-    }
-
-    async fn run_login_with_input<F: AsFd>(
+    pub async fn run_login<F: AsFd>(
         &self,
         output: &mut (dyn Write + Send),
         open_browser: bool,
@@ -210,12 +200,7 @@ mod tests {
             drop(writer);
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
-                oauth.run_login_with_input(
-                    &mut Vec::new(),
-                    false,
-                    &CancellationToken::new(),
-                    &input,
-                ),
+                oauth.run_login(&mut Vec::new(), false, &CancellationToken::new(), &input),
             )
             .await
             .unwrap();
@@ -243,7 +228,7 @@ mod tests {
         let mut output = Vec::new();
         let finished = tokio::time::timeout(Duration::from_secs(1), async {
             tokio::join!(
-                oauth.run_login_with_input(&mut output, false, &cancel, &input),
+                oauth.run_login(&mut output, false, &cancel, &input),
                 interrupt
             )
         })
@@ -278,7 +263,7 @@ mod tests {
         writer.write_all(b"manual-code\n").unwrap();
         let mut output = Vec::new();
         oauth
-            .run_login_with_input(&mut output, false, &CancellationToken::new(), &input)
+            .run_login(&mut output, false, &CancellationToken::new(), &input)
             .await
             .unwrap();
         let output = String::from_utf8(output).unwrap();
