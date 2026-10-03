@@ -138,7 +138,7 @@ fn code_panel_rows(block: &CodeBlockPayload, cols: usize, theme: &Theme) -> Vec<
         resolve(&block.language)
     };
     let language = if block.language.is_empty() {
-        profile.map_or("", |profile| profile.label)
+        profile.map_or("", Profile::label)
     } else {
         block.language.as_str()
     };
