@@ -1,65 +1,67 @@
 use crate::command_specs::{
-    OptionDoc, SlashKind, SlashPresentationCategory, SlashSpec, TopLevelExample, TopLevelFlag,
-    TopLevelHelp, TopLevelHelpEntry, TopLevelKind, TopLevelResource, TopLevelSpec,
+    SlashKind, SlashPresentationCategory, SlashSpec, SourceOptionDoc, SourceTopLevelSpec,
+    TopLevelExample, TopLevelFlag, TopLevelHelp, TopLevelHelpEntry, TopLevelKind, TopLevelResource,
 };
 use crate::registry::SlashRegistry;
 
-const JSON_OPTION: OptionDoc =
-    OptionDoc::new("--json", "Emit machine-readable JSON instead of text");
+pub(crate) use crate::command_specs::packed_top_level::TOP_LEVEL_SPECS;
 
-pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
-    TopLevelSpec::new(TopLevelKind::Help, "help", "help", "Show this help")
+const JSON_OPTION: SourceOptionDoc =
+    SourceOptionDoc::new("--json", "Emit machine-readable JSON instead of text");
+
+pub(crate) const TOP_LEVEL_SOURCES: &[SourceTopLevelSpec] = &[
+    SourceTopLevelSpec::new(TopLevelKind::Help, "help", "help", "Show this help")
         .with_aliases(&["--help", "-h"]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Ask,
         "ask",
         "ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>",
         "Run one noninteractive request",
     )
     .with_options(&[
-        OptionDoc::new("--auto", "Automatically review unresolved permission requests"),
-        OptionDoc::new("--full-access", "Disable oh-fx permission checks"),
-        OptionDoc::new("--yolo", "Alias for --full-access"),
-        OptionDoc::new("--model <id>", "Override the model for this request"),
-        OptionDoc::new("--effort <level>", "Override the reasoning effort for this request"),
-        OptionDoc::new("--fast", "Enable Fast mode for this request when the model supports it"),
-        OptionDoc::new("--no-fast", "Disable Fast mode for this request"),
-        OptionDoc::new(
+        SourceOptionDoc::new("--auto", "Automatically review unresolved permission requests"),
+        SourceOptionDoc::new("--full-access", "Disable oh-fx permission checks"),
+        SourceOptionDoc::new("--yolo", "Alias for --full-access"),
+        SourceOptionDoc::new("--model <id>", "Override the model for this request"),
+        SourceOptionDoc::new("--effort <level>", "Override the reasoning effort for this request"),
+        SourceOptionDoc::new("--fast", "Enable Fast mode for this request when the model supports it"),
+        SourceOptionDoc::new("--no-fast", "Disable Fast mode for this request"),
+        SourceOptionDoc::new(
             "--provider-order <a,b,...>",
             "Prefer these gateway providers in order for this request",
         ),
-        OptionDoc::new(
+        SourceOptionDoc::new(
             "--provider-strict",
             "Restrict this request to only the providers in --provider-order",
         ),
-        OptionDoc::new(
+        SourceOptionDoc::new(
             "--no-provider-strict",
             "Clear the provider restriction for this request",
         ),
-        OptionDoc::new("--image PATH", "Attach an image file; repeat for multiple images"),
-        OptionDoc::new("--system TEXT", "Replace the built-in system prompt for this request"),
+        SourceOptionDoc::new("--image PATH", "Attach an image file; repeat for multiple images"),
+        SourceOptionDoc::new("--system TEXT", "Replace the built-in system prompt for this request"),
         JSON_OPTION,
-        OptionDoc::new("--quiet", "Suppress assistant output"),
-        OptionDoc::new(
+        SourceOptionDoc::new("--quiet", "Suppress assistant output"),
+        SourceOptionDoc::new(
             "--prompt-permissions",
             "Prompt for Y/N permission approval when stdin is a TTY",
         ),
-        OptionDoc::new(
+        SourceOptionDoc::new(
             "--no-save",
             "Do not save the session; incompatible with --resume and --resume-id",
         ),
-        OptionDoc::new(
+        SourceOptionDoc::new(
             "--sessions-v2",
             "Use the experimental v2 session store, also set by OH_FX_SESSIONS_V2=1; its sessions resume only with it",
         ),
-        OptionDoc::new("--no-color", "Render TTY output without colors or hyperlinks"),
-        OptionDoc::new("--resume <last|id>", "Continue the last session or a session by id"),
-        OptionDoc::new("--resume-id <id>", "Continue a session by exact id"),
-        OptionDoc::new(
+        SourceOptionDoc::new("--no-color", "Render TTY output without colors or hyperlinks"),
+        SourceOptionDoc::new("--resume <last|id>", "Continue the last session or a session by id"),
+        SourceOptionDoc::new("--resume-id <id>", "Continue a session by exact id"),
+        SourceOptionDoc::new(
             "--continue-recovery",
             "Resume the paused model response in the selected session",
         ),
-        OptionDoc::new("--", "Treat every following argument as prompt text"),
+        SourceOptionDoc::new("--", "Treat every following argument as prompt text"),
     ])
     .with_details(&[
         "The prompt may be passed as arguments or piped on stdin when no prompt args are given.",
@@ -69,65 +71,65 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
         "--system replaces only the built-in base prompt for this request; tool, skill, project, and runtime context still apply.",
         "With --prompt-permissions, JSON and quiet requests may prompt on stderr only when stdin is a TTY.",
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Acp,
         "acp",
         "acp [--model <id>] [--log-file <path>]",
         "Start an ACP server over stdio",
     )
     .with_options(&[
-        OptionDoc::new("--model <id>", "Override the default model"),
-        OptionDoc::new("--log-file <path>", "Write ACP logs to a file"),
+        SourceOptionDoc::new("--model <id>", "Override the default model"),
+        SourceOptionDoc::new("--log-file <path>", "Write ACP logs to a file"),
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Pr,
         "pr",
         "pr [--auto] [--create] [context]",
         "Draft or publish a pull request",
     )
     .with_options(&[
-        OptionDoc::new("--auto", "Automatically review unresolved permission requests"),
-        OptionDoc::new("--create", "Publish the drafted pull request via the GitHub CLI"),
+        SourceOptionDoc::new("--auto", "Automatically review unresolved permission requests"),
+        SourceOptionDoc::new("--create", "Publish the drafted pull request via the GitHub CLI"),
     ])
     .with_details(&[
         "Must run inside a git repository. Without --create, the drafted PR is printed only.",
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Issue,
         "issue",
         "issue [--auto] [--create] [context]",
         "Draft or publish a GitHub issue",
     )
     .with_options(&[
-        OptionDoc::new("--auto", "Automatically review unresolved permission requests"),
-        OptionDoc::new("--create", "Publish the drafted issue via the GitHub CLI"),
+        SourceOptionDoc::new("--auto", "Automatically review unresolved permission requests"),
+        SourceOptionDoc::new("--create", "Publish the drafted issue via the GitHub CLI"),
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Login,
         "login",
         "login [vercel|codex|grok]",
         "Sign in to Vercel or a selected provider",
     ),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Logout,
         "logout",
         "logout [vercel|codex|grok]",
         "Sign out of Vercel or a selected provider session",
     ),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Setup,
         "setup",
         "setup",
         "Configure an AI Gateway API key",
     ),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Status,
         "status",
         "status [--json]",
         "Show configuration and runtime information",
     )
     .with_options(&[JSON_OPTION]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Permissions,
         "permissions",
         "permissions [--json]",
@@ -143,7 +145,7 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
         "Change the mode from the interactive shell with `/permissions [ask|auto|full-access|reset]`,",
         "and manage persistent allow rules with `/allowlist`.",
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Mcp,
         "mcp",
         "mcp <command> ...",
@@ -164,69 +166,69 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
         "By default, list reads configuration without opening MCP transports.",
         "Use --connect to connect and discover servers before rendering health.",
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Models,
         "models",
         "models [--json]",
         "List available models",
     )
     .with_options(&[JSON_OPTION]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Provider,
         "provider",
         "provider <name>",
         "Choose the model provider used by oh-fx",
     ),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Doctor,
         "doctor",
         "doctor [--json]",
         "Run local health and preflight checks",
     )
     .with_options(&[JSON_OPTION]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Teams,
         "teams",
         "teams",
         "Choose the Vercel team used by AI Gateway",
     ),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Session,
         "session",
         "session <last|id>|--id <id> [--json] | session resume [last|<id>] | session resume --id <id> | session migrate <id>|--id <id> [--allow-large] [--json] | session recover <id>|--id <id> [--json]",
         "Inspect, resume, migrate, or recover saved sessions",
     )
     .with_options(&[
-        OptionDoc::new("last", "Inspect the current workspace session"),
-        OptionDoc::new("--id <id>", "Inspect a saved session by exact id"),
-        OptionDoc::new(
+        SourceOptionDoc::new("last", "Inspect the current workspace session"),
+        SourceOptionDoc::new("--id <id>", "Inspect a saved session by exact id"),
+        SourceOptionDoc::new(
             "resume [last|<id>]",
             "Resume the latest workspace session or a session by id",
         ),
-        OptionDoc::new("migrate <id>", "Migrate a saved session to the current format"),
-        OptionDoc::new(
+        SourceOptionDoc::new("migrate <id>", "Migrate a saved session to the current format"),
+        SourceOptionDoc::new(
             "recover <id>",
             "Copy a recoverable corrupt session into a new session",
         ),
-        OptionDoc::new("--allow-large", "Permit migrating an oversized session"),
+        SourceOptionDoc::new("--allow-large", "Permit migrating an oversized session"),
         JSON_OPTION,
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Sessions,
         "sessions",
         "sessions [--all] [--limit <1-100>] [--cursor <cursor>] [--json]",
         "List saved sessions for the current workspace",
     )
     .with_options(&[
-        OptionDoc::new(
+        SourceOptionDoc::new(
             "--all",
             "List saved sessions across every workspace in this profile",
         ),
-        OptionDoc::new("--limit <1-100>", "Set the maximum sessions returned per page"),
-        OptionDoc::new("--cursor <cursor>", "Continue from a prior sessions result"),
+        SourceOptionDoc::new("--limit <1-100>", "Set the maximum sessions returned per page"),
+        SourceOptionDoc::new("--cursor <cursor>", "Continue from a prior sessions result"),
         JSON_OPTION,
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Resume,
         "resume",
         "session resume [last|<id>] | session resume --id <id> | --resume [last|<id>] | resume [last|<id>] | resume --id <id> | --resume-last | --continue | -c | -r | --resume-<id>",
@@ -235,12 +237,12 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
     .with_aliases(&["--resume", "--resume-last", "--continue", "-c", "-r"])
     .hidden()
     .with_options(&[
-        OptionDoc::new("-r", "Choose the session to resume from a picker"),
-        OptionDoc::new("last", "Resume the most recent session"),
-        OptionDoc::new("<id>", "Resume a session by id"),
-        OptionDoc::new("--id <id>", "Resume a session by exact id"),
+        SourceOptionDoc::new("-r", "Choose the session to resume from a picker"),
+        SourceOptionDoc::new("last", "Resume the most recent session"),
+        SourceOptionDoc::new("<id>", "Resume a session by id"),
+        SourceOptionDoc::new("--id <id>", "Resume a session by exact id"),
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Credits,
         "credits",
         "credits [--json]",
@@ -248,14 +250,14 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
     )
     .with_aliases(&["balance"])
     .with_options(&[JSON_OPTION]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Usage,
         "usage",
         "usage [--period <24h|7d|30d>] [--json]",
         "Show local oh-fx token usage and spend",
     )
     .with_options(&[
-        OptionDoc::new(
+        SourceOptionDoc::new(
             "--period <24h|7d|30d>",
             "Select a rolling window (default: 30d)",
         ),
@@ -265,14 +267,14 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
         "Reports only usage recorded by oh-fx on this machine.",
         "This command reads local state and does not query account-wide Gateway reports.",
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Upgrade,
         "upgrade",
         "upgrade [--json]",
         "Upgrade oh-fx to the latest release",
     )
     .with_options(&[JSON_OPTION]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Replay,
         "replay",
         "replay <tape> [--frames] [--json] [--golden <path>] [--frames-dir <path>]",
@@ -280,25 +282,25 @@ pub(crate) const TOP_LEVEL_SPECS: &[TopLevelSpec] = &[
     )
     .hidden()
     .with_options(&[
-        OptionDoc::new("--frames", "Render each captured frame"),
-        OptionDoc::new("--golden <path>", "Write the final rendered grid to a file"),
-        OptionDoc::new("--frames-dir <path>", "Write rendered frames to a directory"),
+        SourceOptionDoc::new("--frames", "Render each captured frame"),
+        SourceOptionDoc::new("--golden <path>", "Write the final rendered grid to a file"),
+        SourceOptionDoc::new("--frames-dir <path>", "Write rendered frames to a directory"),
         JSON_OPTION,
     ]),
-    TopLevelSpec::new(
+    SourceTopLevelSpec::new(
         TopLevelKind::Workspace,
         "workspace",
         "workspace [list|add PATH|remove PATH|clear] [--json]",
         "Manage additional workspace directories",
     )
     .with_options(&[
-        OptionDoc::new(
+        SourceOptionDoc::new(
             "list",
             "List the primary and additional directories (default)",
         ),
-        OptionDoc::new("add PATH", "Persist an existing additional directory"),
-        OptionDoc::new("remove PATH", "Remove an additional directory"),
-        OptionDoc::new("clear", "Remove all additional directories"),
+        SourceOptionDoc::new("add PATH", "Persist an existing additional directory"),
+        SourceOptionDoc::new("remove PATH", "Remove an additional directory"),
+        SourceOptionDoc::new("clear", "Remove all additional directories"),
         JSON_OPTION,
     ])
     .with_details(&["Additional directories are stored for the current primary workspace."]),

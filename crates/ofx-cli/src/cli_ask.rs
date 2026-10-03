@@ -116,7 +116,7 @@ impl AskError {
             let _ = writeln!(
                 stderr,
                 "usage: {PRODUCT_NAME} {}",
-                TopLevelKind::Ask.spec().usage
+                TopLevelKind::Ask.spec().usage()
             );
         }
         Report::stderr(stderr)
