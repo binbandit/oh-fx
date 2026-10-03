@@ -5364,6 +5364,23 @@ mod tests {
             ApprovalOrigin::Subagent(child["id"].as_str().unwrap().to_owned())
         );
         assert_eq!(request.tool_name, "read_file");
+        let parent = saved_sessions(&harness.home)
+            .into_iter()
+            .find(|saved| saved["subagent_child"] != true)
+            .unwrap();
+        let registry: Value = serde_json::from_slice(
+            &fs::read(
+                harness
+                    .home
+                    .path()
+                    .join("data/sessions")
+                    .join(parent["id"].as_str().unwrap())
+                    .join("subagent/children.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(registry["children"][0]["phase"], "awaiting_approval");
         harness.send(UiCommand::Approval {
             request_id: request.id,
             decision: ApprovalDecision::Always,

@@ -561,3 +561,30 @@ async fn an_unreadable_registry_leaves_delegation_unavailable() {
         succeeded("fresh")
     );
 }
+
+#[tokio::test]
+async fn a_child_waiting_on_approval_is_saved_as_awaiting_it_until_its_work_ends() {
+    let harness = Harness::new(vec![Script::Probe, Script::Reply("probed it")]);
+    let store = Store::new("parent");
+    harness
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    let running = tokio::spawn(harness.call(
+        "call-1",
+        message("prober", None, "probe"),
+        &CancellationToken::new(),
+    ));
+    harness.agents.asked.notified().await;
+    let pending = store.last_saved();
+    assert_eq!(pending["children"][0]["phase"], "awaiting_approval");
+    assert_eq!(pending["generation"], 2);
+    let request = harness.agents.requested.lock().unwrap()[0].id;
+    harness
+        .agents
+        .approvals
+        .resolve(request, ofx_contract::ApprovalDecision::Once);
+    assert_eq!(running.await.unwrap(), succeeded("probed it"));
+    let finished = store.last_saved();
+    assert_eq!(finished["children"][0]["phase"], "idle");
+    assert_eq!(finished["generation"], 3);
+}

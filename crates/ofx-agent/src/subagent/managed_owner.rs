@@ -364,8 +364,10 @@ impl Owner {
             let active = work.clone();
             let agents = Arc::clone(&owner.agents);
             let origin = child_id.clone();
+            let waiting = Arc::clone(&owner);
             let run = tokio::spawn(async move {
                 let forward = |request: ApprovalRequest| {
+                    waiting.await_approval(&origin, &active.id);
                     agents.approval_requested(
                         turn_id,
                         ApprovalRequest {
@@ -415,6 +417,13 @@ impl Owner {
             observation,
             text: outcome.text,
         }));
+    }
+
+    fn await_approval(&self, child_id: &str, work_id: &str) {
+        let mut state = self.lock();
+        if state.registry.await_approval(child_id, work_id).is_ok() {
+            let _ = state.save();
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

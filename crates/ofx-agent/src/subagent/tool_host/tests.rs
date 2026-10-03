@@ -201,15 +201,15 @@ impl PreparedCall for ProbeCall {
     }
 }
 
-struct Agents {
+pub(super) struct Agents {
     provider: Arc<Provider>,
     created: Mutex<Vec<(ChildSettings, LivePermissionMode)>>,
     asks: bool,
-    approvals: Approvals,
-    requested: Mutex<Vec<ApprovalRequest>>,
+    pub(super) approvals: Approvals,
+    pub(super) requested: Mutex<Vec<ApprovalRequest>>,
     turns: Mutex<Vec<Option<TurnId>>>,
     decisions: Mutex<VecDeque<ApprovalDecision>>,
-    asked: Notify,
+    pub(super) asked: Notify,
     issued: AtomicUsize,
     released: Arc<AtomicUsize>,
 }
@@ -295,7 +295,7 @@ impl ChildAgents for Agents {
 
 pub(super) struct Harness {
     pub(super) provider: Arc<Provider>,
-    agents: Arc<Agents>,
+    pub(super) agents: Arc<Agents>,
     pub(super) host: SubagentHost,
 }
 

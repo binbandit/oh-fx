@@ -19,7 +19,7 @@ modules = []
 upstream = "src/core/subagent/child_state.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/child_state.rs", "crates/ofx-agent/src/subagent/child_state/registry_file.rs", "crates/ofx-session/src/session_children.rs"]
-note = "The registry tracks bounded children, work fingerprints, phases, outcomes and generations and is written to and read back from the parent's children.json as upstream does, with interruptActive on resume and each child session's owner marker; the awaiting_approval phase transition, v2 child-line folding and the Lost outcome are absent."
+note = "The registry tracks bounded children, work fingerprints, phases, outcomes and generations and is written to and read back from the parent's children.json as upstream does, with the awaiting_approval phase while a child's approval is pending, interruptActive on resume and each child session's owner marker; v2 child-line folding and the Lost outcome are absent."
 
 [[file]]
 upstream = "src/core/subagent/domain.zig"

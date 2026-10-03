@@ -338,3 +338,46 @@ fn work_left_running_by_an_earlier_process_is_interrupted() {
     settled.interrupt_active();
     assert_eq!(settled, registry);
 }
+
+#[test]
+fn a_pending_approval_marks_the_childs_work_as_awaiting_it() {
+    let mut registry = Registry::default();
+    registry
+        .append_persistent("child", "reviewer", "", work("work-1", 1))
+        .unwrap();
+    assert_eq!(
+        registry.await_approval("child", "other"),
+        Err(RegistryError::StaleWork)
+    );
+    assert_eq!(
+        registry.await_approval("missing", "work-1"),
+        Err(RegistryError::ChildNotFound)
+    );
+    registry.await_approval("child", "work-1").unwrap();
+    registry.await_approval("child", "work-1").unwrap();
+    let child = registry.find_by_id("child").unwrap();
+    assert_eq!(child.phase, ChildPhase::AwaitingApproval);
+    let rendered = String::from_utf8(registry.render("parent")).unwrap();
+    assert!(rendered.contains("\"generation\":3,"), "{rendered}");
+    assert!(
+        rendered.contains("\"phase\":\"awaiting_approval\""),
+        "{rendered}"
+    );
+    assert_eq!(
+        Registry::parse(rendered.as_bytes(), "parent"),
+        Ok(registry.clone())
+    );
+    let mut restarted = registry.clone();
+    assert!(restarted.interrupt_active());
+    assert_eq!(
+        restarted.find_by_id("child").unwrap().phase,
+        ChildPhase::Interrupted
+    );
+    registry
+        .finish("child", "work-1", Outcome::Completed, None)
+        .unwrap();
+    assert_eq!(
+        registry.find_by_id("child").unwrap().phase,
+        ChildPhase::Idle
+    );
+}
