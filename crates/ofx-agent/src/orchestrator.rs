@@ -497,10 +497,9 @@ impl Agent {
                     self.settle_measurement(measured, None);
                     continue;
                 }
-                Err(Stop::Interrupted { partial })
-                    if self.steer_after_cancel(turn.id, &partial, events) =>
-                {
+                Err(Stop::Interrupted { partial }) if self.steers_after_interrupt(cancel) => {
                     self.settle_measurement(measured, None);
+                    self.keep_interrupted_reply(&partial);
                     step += 1;
                     continue;
                 }
@@ -516,7 +515,7 @@ impl Agent {
             });
             step += 1;
             let reply = completion.content.as_deref();
-            if self.steered_after_reply(turn.id, reply, &step_cancel, cancel, events)? {
+            if self.steered_after_reply(reply, &step_cancel, cancel)? {
                 continue;
             }
             let more_steps = self.config.step_limit == 0 || step < self.config.step_limit;

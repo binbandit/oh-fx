@@ -66,7 +66,7 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<CancellationToken, Stop> {
-        if self.interrupt_requested(cancel) && !self.steer_after_cancel(turn_id, "", events) {
+        if self.interrupt_requested(cancel) && !self.steer_after_cancel(turn_id, cancel, events) {
             return Err(Stop::interrupted());
         }
         if !self.steer_at_model_boundary(turn_id, events) {
@@ -75,35 +75,15 @@ impl Agent {
         Ok(self.model_step(cancel))
     }
 
-    pub(super) fn steered_after_reply(
-        &mut self,
-        turn_id: TurnId,
-        content: Option<&str>,
-        step_cancel: &CancellationToken,
-        cancel: &CancellationToken,
-        events: EventSink<'_>,
-    ) -> Result<bool, Stop> {
-        if !step_cancel.is_cancelled() || cancel.is_cancelled() {
-            return Ok(false);
-        }
-        let partial = content.unwrap_or_default();
-        if self.steer_after_cancel(turn_id, partial, events) {
-            return Ok(true);
-        }
-        Err(Stop::Interrupted {
-            partial: partial.to_owned(),
-        })
+    pub(super) fn steers_after_interrupt(&self, cancel: &CancellationToken) -> bool {
+        !cancel.is_cancelled()
+            && self
+                .steering
+                .as_ref()
+                .is_some_and(|worker| worker.steering_interrupt())
     }
 
-    pub(super) fn steer_after_cancel(
-        &mut self,
-        turn_id: TurnId,
-        partial: &str,
-        events: EventSink<'_>,
-    ) -> bool {
-        let Boundary::Continue(steering) = self.steering_boundary(BoundaryKind::Cancelled) else {
-            return false;
-        };
+    pub(super) fn keep_interrupted_reply(&mut self, partial: &str) {
         if !partial.is_empty() {
             self.history.push(ChatMessage::Assistant {
                 content: Some(partial.to_owned()),
@@ -111,6 +91,39 @@ impl Agent {
                 provider_replay: None,
             });
         }
+    }
+
+    pub(super) fn steered_after_reply(
+        &mut self,
+        content: Option<&str>,
+        step_cancel: &CancellationToken,
+        cancel: &CancellationToken,
+    ) -> Result<bool, Stop> {
+        if !step_cancel.is_cancelled() || cancel.is_cancelled() {
+            return Ok(false);
+        }
+        let partial = content.unwrap_or_default();
+        if !self.steers_after_interrupt(cancel) {
+            return Err(Stop::Interrupted {
+                partial: partial.to_owned(),
+            });
+        }
+        self.keep_interrupted_reply(partial);
+        Ok(true)
+    }
+
+    fn steer_after_cancel(
+        &mut self,
+        turn_id: TurnId,
+        cancel: &CancellationToken,
+        events: EventSink<'_>,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let Boundary::Continue(steering) = self.steering_boundary(BoundaryKind::Cancelled) else {
+            return false;
+        };
         self.append_steering(turn_id, steering, events);
         true
     }

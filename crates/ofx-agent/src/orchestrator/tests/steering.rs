@@ -307,3 +307,127 @@ async fn an_interrupted_turn_keeps_steering_typed_right_after_a_tool_result() {
         .collect();
     assert_eq!(steering, [("check the tests too", 1)]);
 }
+
+#[tokio::test]
+async fn an_explicit_cancel_of_the_turn_token_wins_over_steering_admitted_before_it() {
+    let provider = FakeProvider::new(vec![streaming("partial")]);
+    let (mut agent, worker) = steered_agent(&provider);
+    worker.admit(plain(0, "go"));
+    let (report, events) = run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                worker.admit(plain(1, "keep going"));
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert!(applied(&events).is_empty());
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        agent.history,
+        [ChatMessage::user("go"), assistant("partial")]
+    );
+    let next = worker.take_next().unwrap();
+    assert!(next.is_continuation());
+    assert_eq!(next.text, "keep going");
+}
+
+fn limited_to_one_step(provider: &Arc<FakeProvider>) -> (Agent, Arc<WorkerRuntime>) {
+    let (mut agent, worker) = steered_agent(provider);
+    agent.set_config(AgentConfig {
+        step_limit: 1,
+        ..config()
+    });
+    (agent, worker)
+}
+
+#[tokio::test]
+async fn steering_that_no_model_step_is_left_to_answer_waits_for_a_continuation() {
+    let reply_then_steer = || {
+        Script::Reply(
+            vec![StreamEvent::TextDelta {
+                text: "partial".to_owned(),
+            }],
+            completion(Some("partial"), Vec::new(), FinishReason::Stop),
+        )
+    };
+    for script in [streaming("partial"), reply_then_steer()] {
+        let provider = FakeProvider::new(vec![script]);
+        let (mut agent, worker) = limited_to_one_step(&provider);
+        worker.admit(plain(0, "go"));
+        let mut sent = false;
+        let (report, events) = run_steered(
+            &mut agent,
+            &worker,
+            &CancellationToken::new(),
+            |event, worker, _| {
+                if matches!(event, UiEvent::AssistantText { .. }) && !sent {
+                    sent = true;
+                    worker.admit(plain(1, "keep going"));
+                }
+            },
+        )
+        .await;
+        assert_eq!(report.failure, Some(TurnFailure::StepLimitReached));
+        assert!(applied(&events).is_empty());
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(
+            agent.history,
+            [
+                ChatMessage::user("go"),
+                assistant("partial"),
+                assistant(STEP_LIMIT_NOTICE),
+            ]
+        );
+        let next = worker.take_next().unwrap();
+        assert!(next.is_continuation());
+        assert_eq!(next.text, "keep going");
+    }
+}
+
+#[tokio::test]
+async fn steering_after_a_cut_reply_is_taken_when_another_step_is_left() {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            vec![StreamEvent::TextDelta {
+                text: "partial".to_owned(),
+            }],
+            completion(Some("partial"), Vec::new(), FinishReason::Stop),
+        ),
+        text_reply("Steered."),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    agent.set_config(AgentConfig {
+        step_limit: 2,
+        ..config()
+    });
+    worker.admit(plain(0, "go"));
+    let mut sent = false;
+    let (report, events) = run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, _| {
+            if matches!(event, UiEvent::AssistantText { .. }) && !sent {
+                sent = true;
+                worker.admit(plain(1, "keep going"));
+            }
+        },
+    )
+    .await;
+    assert_eq!(report.final_text, "Steered.");
+    assert_eq!(applied(&events), [(1, "keep going")]);
+    assert_eq!(
+        provider.requests()[1].messages,
+        [
+            ChatMessage::user("go"),
+            assistant("partial"),
+            ChatMessage::user(steering_message("keep going")),
+        ]
+    );
+}
