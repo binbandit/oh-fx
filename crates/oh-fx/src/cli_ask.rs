@@ -13,8 +13,8 @@ use ofx_agent::{
 };
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
-    ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, open_store,
-    recovered_turn,
+    ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, default_mode,
+    open_store, recovered_turn,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -504,7 +504,9 @@ async fn prepare_agent(
             }
         },
     };
-    let mut agent = setup.agent(resumed.is_some() || store.is_some());
+    let mut agent = setup
+        .agent(resumed.is_some() || store.is_some())
+        .with_mode(default_mode());
     let saved = match (resumed, store) {
         (Some((store, resumed)), _) => Some(SavedAsk::resume(store, resumed, &setup, &mut agent)?),
         (None, Some(store)) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
