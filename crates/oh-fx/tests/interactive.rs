@@ -691,6 +691,94 @@ fn the_model_picker_chooses_the_model_for_the_next_turn_and_saves_it() {
     assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
 }
 
+fn with_connection(mut settings: Value, id: &str, connection: Value) -> Value {
+    settings["providers"][id] = connection;
+    settings
+}
+
+#[test]
+fn the_provider_column_moves_the_conversation_to_another_connection() {
+    let first = FakeServer::start([Reply::sse(&chat_text_events(&["First reply."]))]);
+    let second = FakeServer::start([Reply::sse(&chat_text_events(&["Second reply."]))]);
+    let settings = with_connection(
+        settings(&first.base_url()),
+        "other",
+        json!({
+            "protocol": "openai-chat-completions",
+            "base_url": second.base_url(),
+            "auth": {"type": "none"},
+            "models": ["other-model"]
+        }),
+    );
+    let home = Home::with_settings(&settings);
+    let session = home.shell(30, 100);
+    session.send(b"hello\r");
+    wait(&session, "First reply.");
+    session.send(b"/provider ");
+    let screen = wait(&session, "local · current");
+    assert!(screen.contains("codex"), "{screen}");
+    assert!(screen.contains("other"), "{screen}");
+    session.send(b"oth\x1b[C");
+    wait(&session, "* provider: Switched to other with other-model.");
+    wait(&session, "auto · other-model");
+    wait_saved(&home, "provider", &json!("other"));
+    assert_eq!(saved_settings(&home)["models"]["other"], "other-model");
+    session.send(b"again\r");
+    wait(&session, "Second reply.");
+    let request = second.requests()[0].json();
+    assert_eq!(request["model"], "other-model");
+    assert_eq!(user_messages(&second.requests()[0]), 2);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_switched_connection_sends_its_headers_and_trusts_its_ca_file() {
+    let local = FakeServer::start([]);
+    let secure = FakeServer::start_tls([Reply::sse(&chat_text_events(&["Secure reply."]))]);
+    let home = Home::with_settings(&json!({}));
+    let ca_file = home.root.join("ca-file.pem");
+    fs::write(&ca_file, ofx_testkit::TEST_CA_PEM).expect("write the CA file");
+    let system = home.root.join("system.pem");
+    fs::write(&system, ofx_testkit::OTHER_CA_PEM).expect("write the system roots");
+    let settings = with_connection(
+        settings(&local.base_url()),
+        "portkey",
+        json!({
+            "protocol": "openai-chat-completions",
+            "base_url": secure.base_url(),
+            "auth": {"type": "none"},
+            "headers": {
+                "x-portkey-api-key": "${PORTKEY_API_KEY}",
+                "x-portkey-provider": "${PORTKEY_PROVIDER:-openai}"
+            },
+            "tls": {"ca_file": ca_file},
+            "models": ["@openai/gpt-4o"]
+        }),
+    );
+    fs::write(settings_file(&home), settings.to_string()).expect("write settings.json");
+    let mut command = home.command();
+    command
+        .env("PORTKEY_API_KEY", "pk-switched-secret")
+        .env("SSL_CERT_FILE", &system);
+    let session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "auto · model-a");
+    session.send(b"/provider portkey\r");
+    wait(
+        &session,
+        "* provider: Switched to portkey with @openai/gpt-4o.",
+    );
+    session.send(b"hi\r");
+    wait(&session, "Secure reply.");
+    let requests = secure.requests();
+    assert_eq!(
+        requests[0].header("x-portkey-api-key"),
+        Some("pk-switched-secret")
+    );
+    assert_eq!(requests[0].header("x-portkey-provider"), Some("openai"));
+    assert_eq!(requests[0].json()["model"], "@openai/gpt-4o");
+    assert!(local.requests().is_empty());
+}
+
 #[test]
 fn a_saved_fast_choice_follows_only_the_model_it_was_saved_with() {
     let server = FakeServer::start([]);
