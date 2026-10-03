@@ -63,16 +63,12 @@ The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `
 | #1137 | `6bdd497` | (same) | `defer:tty` | future TTY sessions | The terminal host daemon, the tmux backend and the `FX_TERMINAL_HOST_*` variables are removed: tty terminals run inside the fx process and end when it exits. A resumed session's terminal answers with the new `TerminalEnded` code, and its tool row reads "ended when fx exited". Job-controlled commands end on exit. |
 | #1137 | `6bdd497` | (same) | `n/a` | none | The terminal host end-to-end suite, `terminal_client_fixture.zig`, the shell-path evals and the CI shard weights. |
 
-## Baseline behavior at 34f1ed1
-
-| Behavior | Status | oh-fx | Note |
-|---|---|---|---|
-| Streamed tool progress in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Responses tool identities publish provisional progress before arguments finish, without preparing or executing the call. Read, rejected read, parallel starts, and failed partial streams are covered. Rejected provisional calls count no executed step. The existing plain terminal transcript difference is recorded in [architecture.md](architecture.md); interactive provisional rows remain deferred. |
-
 ## d9f7766..34f1ed1
 
 | PR | Merge | Title | Status | oh-fx | Note |
 |---|---|---|---|---|---|
+| baseline | `34f1ed1` | Streamed tool lifecycle in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Validated Responses tool identities publish provisional progress before arguments finish; read, rejected read, parallel calls and partial failures are covered. Rejected provisional calls count no executed step. Plain transcript and retry differences are recorded in architecture.md. |
+| baseline | `34f1ed1` | Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle and assistant-boundary events; provisional rows and their replacement remain deferred. |
 | #1092 | `7087733` | Keep steering typed after a tool result when a turn is cancelled | `ported` | `ofx-agent`, `ofx-session` | A cancelled turn keeps the steering it took right after a tool result, with its tool-step boundary, and saves and restores it, as `buildInterruptedExecutionMemory` with `isSteering` does. The test "interrupted execution memory keeps steering typed right after a tool result" is ported, and the shell's end-to-end check saves the steering once. |
 | #1092 | `7087733` | (same) | `defer:subagents` | future subagent runtime | The end-to-end check in `gateway-stream-lifecycle.test.ts` steers a parent turn while a running child holds it (`STEERING_FIRST`); see [Steering](#steering). |
 | #1099 | `07f4e4d` | Keep the FIFO test's reader open until its writer joins | `n/a` | none | This fixes a race in a Zig test's blocked-writer thread. The Rust port of "linked metadata FIFO is rejected before descriptor open" starts no writer thread. |

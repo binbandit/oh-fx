@@ -682,7 +682,10 @@ fn web_fetch_progress(mode: OutputMode) -> Option<WebFetchProgress> {
 }
 
 fn write_stderr(text: &str) -> io::Result<()> {
-    let mut stderr = io::stderr().lock();
+    write_stderr_to(&mut io::stderr().lock(), text)
+}
+
+fn write_stderr_to(stderr: &mut dyn Write, text: &str) -> io::Result<()> {
     stderr.write_all(text.as_bytes())?;
     stderr.flush()
 }
@@ -1045,7 +1048,7 @@ impl Presenter {
                 reason,
                 description,
                 ..
-            } => self.tool_rejected(call_id, tool_name, &arguments, reason, description),
+            } => self.tool_rejected(&call_id, tool_name, &arguments, reason, description),
             UiEvent::ContextNotice { text, .. } => {
                 return self.context_notice(&text);
             }
@@ -1126,13 +1129,13 @@ impl Presenter {
 
     fn tool_rejected(
         &mut self,
-        call_id: ToolCallId,
+        call_id: &ToolCallId,
         tool_name: String,
         arguments: &str,
         reason: ToolRejection,
         description: Option<CallDescription>,
     ) -> io::Result<()> {
-        if !self.take_provisional_call(&call_id) {
+        if !self.take_provisional_call(call_id) {
             self.start_step();
         }
         let title = match reason {
@@ -1169,7 +1172,12 @@ impl Presenter {
             return Ok(());
         }
         let action = encode_terminal_safe(action_label.as_bytes(), usize::MAX).text;
-        self.write_status(StatusBlock::Progress, &format!("● {action}\x1b[0m\n"))
+        if self.mode == OutputMode::Terminal {
+            self.write_status(StatusBlock::Progress, &format!("● {action}\n"))
+        } else {
+            let _ = self.write_status(StatusBlock::Progress, &format!("● {action}\x1b[0m\n"));
+            Ok(())
+        }
     }
 
     fn recover(&mut self, status: RouteRecoveryStatus) -> io::Result<()> {
@@ -1189,7 +1197,7 @@ impl Presenter {
             return true;
         }
         self.claimed_notices.push(notice.to_owned());
-        match write_stderr(&format!("[notice] {notice}\n")) {
+        match write_stderr_to(&mut *self.stderr, &format!("[notice] {notice}\n")) {
             Ok(()) => true,
             Err(error) => {
                 self.write_error.get_or_insert(write_error_name(&error));
@@ -1338,8 +1346,7 @@ impl Presenter {
 
     fn write_status(&mut self, block: StatusBlock, line: &str) -> io::Result<()> {
         if self.mode != OutputMode::Terminal {
-            self.stderr.write_all(line.as_bytes())?;
-            return self.stderr.flush();
+            return write_stderr_to(&mut *self.stderr, line);
         }
         self.held_blank_text.clear();
         if self.open_status_block == Some(block) {
@@ -2418,7 +2425,7 @@ mod tests {
     fn provisional_reads_publish_before_arguments_complete_without_counting_a_step() {
         let (mut presenter, screen) = terminal_presenter();
         present(&mut presenter, [provisional("call-1")]);
-        assert_eq!(screen.text(), "● Reading\x1b[0m\n");
+        assert_eq!(screen.text(), "● Reading\n");
         assert_eq!(presenter.steps, 0);
         assert!(presenter.tool_calls.is_empty());
         present(
@@ -2428,7 +2435,7 @@ mod tests {
                 finished("call-1"),
             ],
         );
-        assert_eq!(screen.text(), "● Reading\x1b[0m\nReading a.txt\n");
+        assert_eq!(screen.text(), "● Reading\nReading a.txt\n");
         assert_eq!(presenter.steps, 1);
         assert_eq!(presenter.tool_calls.len(), 1);
     }
@@ -2477,7 +2484,7 @@ mod tests {
             assert_eq!(
                 stdout.text(),
                 if mode == OutputMode::Terminal {
-                    "● Fetching\x1b[0m\n"
+                    "● Fetching\n"
                 } else {
                     ""
                 },
@@ -2539,10 +2546,7 @@ mod tests {
             ],
         );
         assert_eq!(presenter.steps, 2);
-        assert_eq!(
-            screen.text(),
-            "● Reading\x1b[0m\n● Reading\x1b[0m\nReading b.txt\n"
-        );
+        assert_eq!(screen.text(), "● Reading\n● Reading\nReading b.txt\n");
     }
 
     #[test]
@@ -2566,7 +2570,7 @@ mod tests {
             ],
         );
         assert_eq!(presenter.steps, 1);
-        assert_eq!(screen.text(), "● Reading\x1b[0m\n");
+        assert_eq!(screen.text(), "● Reading\n");
     }
 
     #[test]
@@ -2649,6 +2653,9 @@ mod tests {
         }
 
         fn provisional_presentation(&self) -> Option<ofx_contract::CallPresentation> {
+            if self.spec.name == "write_file" {
+                return None;
+            }
             Some(ofx_contract::CallPresentation {
                 activity: ToolActivity::Read,
                 action_label: "Reading",
@@ -2684,6 +2691,7 @@ mod tests {
         fn describe(&self) -> CallDescription {
             CallDescription {
                 title: self.title.clone(),
+                label: None,
                 activity: ToolActivity::Read,
                 effect: ToolEffect::ReadOnly,
                 concurrency: Concurrency::Parallel,
@@ -2791,6 +2799,53 @@ mod tests {
         prose: bool,
         mode: OutputMode,
     ) -> (Presenter, Screen, Screen, TurnReport, usize) {
+        streamed_ask_from_events(calls, fail, retry, prose, mode, None).await
+    }
+
+    fn verify_streamed_event(
+        presenter: &mut Presenter,
+        event: UiEvent,
+        screens: (&Screen, &Screen),
+        executions: &std::sync::atomic::AtomicUsize,
+        flags: (bool, bool),
+        mode: OutputMode,
+    ) {
+        let (stdout, stderr) = screens;
+        let (retry, prose) = flags;
+        let provisional = matches!(event, UiEvent::ToolProvisional { .. });
+        let rejected = matches!(event, UiEvent::ToolRejected { .. });
+        assert!(presenter.handle(event));
+        if retry && rejected {
+            assert!(
+                !presenter
+                    .provisional_calls
+                    .contains(&ToolCallId::new("abandoned-read"))
+            );
+        }
+        if provisional {
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+            if mode == OutputMode::Terminal {
+                assert!(stdout.text().ends_with("● Reading\n"));
+            } else {
+                assert!(stderr.text().ends_with("● Reading\x1b[0m\n"));
+            }
+            if prose && mode == OutputMode::Json {
+                assert_eq!(presenter.output, "I will read it.");
+            }
+            if prose && mode == OutputMode::Raw {
+                assert_eq!(stdout.text(), "I will read it.");
+            }
+        }
+    }
+
+    async fn streamed_ask_from_events(
+        calls: &[(&str, &str)],
+        fail: bool,
+        retry: bool,
+        prose: bool,
+        mode: OutputMode,
+        events: Option<Vec<String>>,
+    ) -> (Presenter, Screen, Screen, TurnReport, usize) {
         let root = tempfile::tempdir().unwrap();
         let canonical = root.path().canonicalize().unwrap();
         fs::write(canonical.join("a.txt"), "alpha").unwrap();
@@ -2801,11 +2856,16 @@ mod tests {
         ];
         let mut replies = Vec::new();
         if retry {
-            let mut abandoned = streamed_read_events(&[("read", "{")], true);
+            let mut abandoned = streamed_read_events(&[("abandoned-read", "{")], true);
             *abandoned.last_mut().unwrap() = serde_json::json!({"type":"response.failed","response":{"error":{"code":"server_error","message":"retry this request"}}}).to_string();
             replies.push(Reply::sse(&abandoned));
         }
-        let initial = streamed_read_with_prose(calls, fail, prose);
+        let tool_name = if events.is_some() {
+            "write_file"
+        } else {
+            "read_file"
+        };
+        let initial = events.unwrap_or_else(|| streamed_read_with_prose(calls, fail, prose));
         replies.extend([Reply::sse(&initial), Reply::sse(&final_events)]);
         let server = FakeServer::start(replies);
         let provider = ofx_gateway::CodexProvider::new(
@@ -2820,7 +2880,7 @@ mod tests {
         let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tool = StreamedReadFixture {
             spec: ofx_contract::ToolSpec {
-                name: "read_file".to_owned(),
+                name: tool_name.to_owned(),
                 description: "Read a test file".to_owned(),
                 input_schema: r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
             },
@@ -2852,22 +2912,14 @@ mod tests {
             .run_turn(
                 "Read the files",
                 &mut |event| {
-                    let provisional = matches!(event, UiEvent::ToolProvisional { .. });
-                    assert!(presenter.handle(event));
-                    if provisional {
-                        assert_eq!(executions.load(Ordering::SeqCst), 0);
-                        if mode == OutputMode::Terminal {
-                            assert!(stdout.text().ends_with("● Reading\x1b[0m\n"));
-                        } else {
-                            assert!(stderr.text().ends_with("● Reading\x1b[0m\n"));
-                        }
-                        if prose && mode == OutputMode::Json {
-                            assert_eq!(presenter.output, "I will read it.");
-                        }
-                        if prose && mode == OutputMode::Raw {
-                            assert_eq!(stdout.text(), "I will read it.");
-                        }
-                    }
+                    verify_streamed_event(
+                        &mut presenter,
+                        event,
+                        (&stdout, &stderr),
+                        &executions,
+                        (retry, prose),
+                        mode,
+                    );
                 },
                 &CancellationToken::new(),
             )
@@ -2953,6 +3005,7 @@ mod tests {
         assert_eq!(report.outcome, TurnOutcome::Completed);
         assert_eq!(executions, 0);
         assert_eq!(presenter.steps, 0);
+        assert!(presenter.provisional_calls.is_empty());
         assert_eq!(stderr.text().matches("● Reading\x1b[0m\n").count(), 2);
         assert_eq!(presenter.output, "Finished.");
         assert_eq!(
@@ -3000,8 +3053,70 @@ mod tests {
         assert_eq!(stderr.text(), "");
         assert_eq!(
             stdout.text(),
-            "I will read it.\n\n● Reading\x1b[0m\nReading a.txt\n\nFinished."
+            "I will read it.\n\n● Reading\nReading a.txt\n\nFinished."
         );
+    }
+
+    #[tokio::test]
+    async fn streamed_ineligible_tool_starts_separate_adjacent_terminal_prose() {
+        let events = [
+            r#"{"type":"response.output_text.delta","delta":"Let me write."}"#,
+            r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"write","name":"write_file"}}"#,
+            r#"{"type":"response.output_text.delta","delta":"More."}"#,
+            r#"{"type":"response.failed","response":{"error":{"code":"invalid_request","message":"failed midway"}}}"#,
+        ];
+        let (_, stderr, stdout, report, executions) = streamed_ask_from_events(
+            &[],
+            true,
+            false,
+            false,
+            OutputMode::Terminal,
+            Some(events.into_iter().map(str::to_owned).collect()),
+        )
+        .await;
+        assert_eq!(report.outcome, TurnOutcome::Failed);
+        assert_eq!(executions, 0);
+        assert_eq!(stderr.text(), "");
+        assert_eq!(stdout.text(), "Let me write.\nMore.");
+    }
+
+    struct FailedWriter;
+
+    impl Write for FailedWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    #[test]
+    fn terminal_provisional_progress_uses_plain_bytes() {
+        let (mut presenter, stdout) = terminal_presenter();
+        present(&mut presenter, [provisional("read")]);
+        assert_eq!(stdout.text(), "● Reading\n");
+    }
+
+    #[test]
+    fn provisional_stderr_write_failures_do_not_stop_machine_output() {
+        for mode in [OutputMode::Raw, OutputMode::Json, OutputMode::Quiet] {
+            let mut presenter = json_presenter();
+            presenter.mode = mode;
+            presenter.stderr = Box::new(FailedWriter);
+            assert!(presenter.handle(provisional("read")));
+            assert!(presenter.write_error.is_none());
+            assert_eq!(presenter.provisional_calls, [ToolCallId::new("read")]);
+        }
+    }
+
+    #[test]
+    fn provisional_terminal_write_failures_still_stop_output() {
+        let (mut presenter, _) = terminal_presenter();
+        presenter.stdout = Box::new(FailedWriter);
+        assert!(!presenter.handle(provisional("read")));
+        assert_eq!(presenter.write_error, Some("Unexpected"));
     }
 
     #[test]
