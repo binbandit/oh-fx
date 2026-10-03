@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ofx_config::{DurableError, PrivateDir, parse_strict_json};
+use ofx_config::{DurableError, PrivateDir};
+use ofx_contract::parse_strict_json_value;
 use reqwest::StatusCode;
 use serde_json::{Map, Value};
 use tokio::time::Instant;
@@ -116,7 +117,7 @@ impl VersionLookup<'_> {
 }
 
 fn parse_codex_release(body: &[u8]) -> Option<Version> {
-    match parse_strict_json(body).ok()? {
+    match parse_strict_json_value(body).ok()? {
         Value::Object(release) => Version::parse(release.get("version")?.as_str()?),
         _ => None,
     }
@@ -127,7 +128,7 @@ fn load_cache(directory: &Path) -> Option<Cached> {
     let bytes = directory
         .read_private(CODEX_CACHE_FILE, MAX_CACHE_BYTES)
         .ok()??;
-    let Value::Object(record) = parse_strict_json(&bytes).ok()? else {
+    let Value::Object(record) = parse_strict_json_value(&bytes).ok()? else {
         return None;
     };
     parse_cache_record(&record)

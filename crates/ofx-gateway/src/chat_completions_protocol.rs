@@ -3,16 +3,14 @@ use std::collections::HashMap;
 use std::io;
 use std::mem;
 
-use ofx_config::{
-    MAX_MODEL_BYTES, MaxTokensParameter, ToolChoiceMode, is_valid_model_id, parse_strict_json,
-};
+use ofx_config::{MAX_MODEL_BYTES, MaxTokensParameter, ToolChoiceMode, is_valid_model_id};
 use ofx_contract::{
-    ChatMessage, Completion, FinishReason, ModelRequest, ToolArgumentIntegrity, ToolCall,
-    ToolCallId, ToolChoice, ToolSpec, Usage,
+    ChatMessage, Completion, DuplicateKeys, FinishReason, Json, ModelRequest, Object,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolSpec, Usage, parse_strict_json,
+    parse_strict_json_value,
 };
 use serde::Serialize;
 
-use crate::borrowed_json::{self, Json, Object};
 pub(crate) use crate::secret_mask::mask_configured_secrets;
 use crate::tool_call_ids::{Projection, ProjectionError};
 
@@ -431,7 +429,7 @@ pub(crate) fn redact_error_detail(raw: &[u8], secrets: &[String]) -> String {
     let text = String::from_utf8_lossy(raw);
     let trimmed = text.trim_matches([' ', '\t', '\r', '\n']);
     let json_shaped = trimmed.starts_with(['{', '[', '"']);
-    let detail = match parse_strict_json(raw) {
+    let detail = match parse_strict_json_value(raw) {
         Ok(value) => value.to_string(),
         Err(_) if json_shaped => return DETAIL_DECODE_NOTICE.to_owned(),
         Err(_) => text.into_owned(),
@@ -630,15 +628,16 @@ impl Reducer {
             return Ok(Deltas::default());
         }
         check_json_depth(data)?;
-        let Some(Json::Object(root)) = borrowed_json::parse(data) else {
+        let Some(Json::Object(root)) = parse_strict_json(data, DuplicateKeys::BeforeValue).ok()
+        else {
             return Err(ProtocolError::InvalidChunk);
         };
         if let Some(error) = non_null(&root, "error") {
-            self.failure_detail = Some(borrowed_json::compact(error));
+            self.failure_detail = Some(compact(error));
             return Err(ProtocolError::ProviderError);
         }
         if root.get("object").and_then(Json::as_str) == Some("error") {
-            self.failure_detail = Some(borrowed_json::compact(&root));
+            self.failure_detail = Some(compact(&root));
             return Err(ProtocolError::ProviderError);
         }
         accept_identity(
@@ -1093,6 +1092,10 @@ fn append_bounded(
     }
     destination.push_str(text);
     Ok(())
+}
+
+fn compact(value: &impl Serialize) -> String {
+    serde_json::to_string(value).unwrap_or_default()
 }
 
 #[cfg(test)]

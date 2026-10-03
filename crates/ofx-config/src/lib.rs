@@ -8,7 +8,6 @@ mod model_capabilities;
 mod model_provider;
 mod paths;
 mod settings_store;
-mod strict_json;
 
 pub use config_runtime::{
     ConfigDiagnostic, ConfigSource, LayerError, PermissionSources, SelectionError, Settings,
@@ -33,4 +32,3 @@ pub use settings_store::{
     SettingsWriteFailure, save_codex_model, save_model_preference, save_permission_mode,
     save_permission_patch, save_startup_scrollback, save_yolo_acknowledged,
 };
-pub use strict_json::{StrictJsonError, parse as parse_strict_json};

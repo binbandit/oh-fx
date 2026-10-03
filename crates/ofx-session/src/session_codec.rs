@@ -1,13 +1,13 @@
 pub(crate) mod recovery_checkpoint;
 
 use ofx_config::ProviderId;
-use ofx_contract::ReasoningEffort;
+use ofx_contract::{ReasoningEffort, StrictJsonError};
 use ofx_text::lowercase_hex;
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
 use crate::fixed_field::False;
-use crate::json_fields::{Fields, Json, JsonError, parse_json, string};
+use crate::json_fields::{Fields, Json, parse_json, string};
 use crate::session_error::SessionError;
 use crate::session_layout::is_valid_session_id;
 use crate::session_store_paths::is_valid_workspace_root;
@@ -152,8 +152,8 @@ pub(crate) fn decode_session_metadata(bytes: &[u8]) -> Result<SessionMetadata, S
         return Err(SessionError::SessionMetadataTooLarge);
     }
     let document = parse_json(bytes).map_err(|error| match error {
-        JsonError::Syntax => SessionError::InvalidSessionFormat,
-        JsonError::DuplicateField => SessionError::InvalidSessionMetadata,
+        StrictJsonError::Syntax => SessionError::InvalidSessionFormat,
+        StrictJsonError::DuplicateField => SessionError::InvalidSessionMetadata,
     })?;
     let undecodable = undecodable_metadata(&document);
     let metadata = metadata_from(document).ok_or(undecodable)?;

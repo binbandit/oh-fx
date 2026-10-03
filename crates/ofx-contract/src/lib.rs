@@ -8,6 +8,7 @@ mod permission_gate;
 mod session_picker;
 mod skill_menu;
 mod stream_provider;
+mod strict_json;
 mod subagent;
 mod tool_args;
 mod tool_dispatch;
@@ -38,6 +39,9 @@ pub use skill_menu::{
 pub use stream_provider::{
     BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
     ProviderOptions, StreamEvent, StreamSink,
+};
+pub use strict_json::{
+    DuplicateKeys, Json, Object, StrictJsonError, parse_strict_json, parse_strict_json_value,
 };
 pub use subagent::{
     ChildKind, ChildPhase, ChildSnapshot, SteeringDelivery, SubagentAction, SubagentOverride,

@@ -746,7 +746,6 @@ dependencies = [
  "ofx-text",
  "percent-encoding",
  "rustix",
- "serde",
  "serde_json",
  "sha2",
  "tempfile",
@@ -759,6 +758,7 @@ name = "ofx-contract"
 version = "0.1.0"
 dependencies = [
  "ofx-text",
+ "serde",
  "serde_json",
  "sha2",
  "tokio-util",

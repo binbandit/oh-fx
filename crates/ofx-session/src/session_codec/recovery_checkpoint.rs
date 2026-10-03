@@ -365,7 +365,7 @@ fn authority(value: Json<'_>) -> Option<()> {
     };
     let identified = match fields.required("credential_identity")? {
         Json::Null => false,
-        Json::Text(hex) if is_lowercase_digest(&hex) => true,
+        Json::String(hex) if is_lowercase_digest(&hex) => true,
         _ => return None,
     };
     if identified && !sourced {
@@ -383,11 +383,12 @@ fn is_lowercase_digest(hex: &str) -> bool {
 
 fn durable_text(value: Json<'_>) -> Option<String> {
     match value {
-        Json::Text(text) => Some(text.into_owned()),
-        Json::Object(entries) => match entries.as_slice() {
-            [(encoding, Json::Text(scheme)), (data, Json::Text(encoded))]
-                if encoding == "encoding" && scheme == "base64" && data == "data" =>
-            {
+        Json::String(text) => Some(text.into_owned()),
+        Json::Object(entries) => match entries.entries() {
+            [
+                (encoding, Json::String(scheme)),
+                (data, Json::String(encoded)),
+            ] if encoding == "encoding" && scheme == "base64" && data == "data" => {
                 String::from_utf8(STANDARD.decode(encoded.as_bytes()).ok()?).ok()
             }
             _ => None,
@@ -398,7 +399,7 @@ fn durable_text(value: Json<'_>) -> Option<String> {
 
 fn list<T>(value: Json<'_>, item: impl Fn(Json<'_>) -> Option<T>) -> Option<Vec<T>> {
     match value {
-        Json::List(items) => items.into_iter().map(item).collect(),
+        Json::Array(items) => items.into_iter().map(item).collect(),
         _ => None,
     }
 }
