@@ -225,7 +225,7 @@ fn is_absolute(path: &[u8]) -> bool {
     path.first() == Some(&SEPARATOR)
 }
 
-fn resolve_lexically(paths: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn resolve_lexically(paths: &[&[u8]]) -> Vec<u8> {
     let mut absolute = false;
     let mut components: Vec<&[u8]> = Vec::new();
     for path in paths {
