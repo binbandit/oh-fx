@@ -1,4 +1,4 @@
-use ofx_contract::CompactionEnd;
+use ofx_contract::{CompactionEnd, TurnId};
 
 use super::activity_status::{ActivityClock, TokenProgress, activity_row, static_status_rows};
 use crate::row_text::{Paint, Row};
@@ -27,6 +27,7 @@ pub(crate) struct CompactionStatus {
     phase: Phase,
     started_ms: i64,
     expires_ms: Option<i64>,
+    turn: Option<TurnId>,
 }
 
 impl CompactionStatus {
@@ -35,6 +36,7 @@ impl CompactionStatus {
             phase: Phase::Requested,
             started_ms: now_ms,
             expires_ms: None,
+            turn: None,
         }
     }
 
@@ -45,7 +47,15 @@ impl CompactionStatus {
                 phase: Phase::Preparing,
                 started_ms: now_ms,
                 expires_ms: None,
+                turn: None,
             },
+        }
+    }
+
+    pub(crate) fn turn_preparing(turn: TurnId, now_ms: i64) -> Self {
+        Self {
+            turn: Some(turn),
+            ..Self::preparing(None, now_ms)
         }
     }
 
@@ -55,7 +65,12 @@ impl CompactionStatus {
             phase: Phase::Ended(end),
             started_ms: now_ms,
             expires_ms: transient.then_some(now_ms.saturating_add(TRANSIENT_FEEDBACK_MS)),
+            turn: None,
         }
+    }
+
+    pub(crate) fn turn(&self) -> Option<TurnId> {
+        self.turn
     }
 
     pub(crate) fn summarizing(&mut self) {
@@ -75,7 +90,8 @@ impl CompactionStatus {
     }
 
     pub(crate) fn clock_ms(&self) -> Option<i64> {
-        (self.running() && self.phase != Phase::Requested).then_some(self.started_ms)
+        (self.running() && self.phase != Phase::Requested && self.turn.is_none())
+            .then_some(self.started_ms)
     }
 
     pub(crate) fn expires_ms(&self) -> Option<i64> {
@@ -86,7 +102,7 @@ impl CompactionStatus {
         self.expires_ms.is_some_and(|expiry| now_ms >= expiry)
     }
 
-    pub(crate) fn rows(&self, theme: &Theme, now_ms: i64, cols: usize) -> Vec<Row> {
+    pub(crate) fn rows(&self, theme: &Theme, clock: ActivityClock, cols: usize) -> Vec<Row> {
         let label = match self.phase {
             Phase::Requested => return Vec::new(),
             Phase::Preparing => "Preparing compaction",
@@ -100,7 +116,7 @@ impl CompactionStatus {
         vec![activity_row(
             theme,
             label,
-            ActivityClock::running(self.started_ms, now_ms),
+            clock,
             TokenProgress::default(),
             cols,
         )]

@@ -448,6 +448,11 @@ impl<'a> Shell<'a> {
         self.compaction.is_some_and(|status| status.running())
     }
 
+    fn manual_compaction_running(&self) -> bool {
+        self.compaction
+            .is_some_and(|status| status.running() && status.turn().is_none())
+    }
+
     fn working(&self) -> bool {
         self.turn.is_some() || self.compaction_running()
     }
@@ -489,7 +494,10 @@ impl<'a> Shell<'a> {
             return recovery.rows(&self.theme, self.cols());
         }
         if let Some(status) = &self.compaction {
-            return status.rows(&self.theme, now_ms, self.cols());
+            let clock = self
+                .activity_clock(now_ms)
+                .unwrap_or_else(|| ActivityClock::running(now_ms, now_ms));
+            return status.rows(&self.theme, clock, self.cols());
         }
         self.turn
             .iter()

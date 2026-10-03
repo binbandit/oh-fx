@@ -7,13 +7,13 @@ modules = []
 upstream = "src/core/output/activity_status.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/output/activity_status.rs"]
-note = "Turn clocks that stand still while an approval or question waits, blinking and token suffixes exist; upstream compaction-origin clock projections and completed-turn/progress label builders are missing."
+note = "Turn clocks that stand still while an approval or question waits, blinking, token suffixes, and the compaction-origin clock (manual compaction on its own clock, automatic and overflow compaction on the turn's) exist; upstream completed-turn/progress label builders are missing."
 
 [[file]]
 upstream = "src/core/output/compaction_activity.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/output/compaction_activity.rs"]
-note = "Manual compaction phases and feedback exist; identity-scoped operations, automatic/provider-overflow origins and publication provenance are absent."
+modules = ["crates/ofx-tui/src/output/compaction_activity.rs", "crates/ofx-agent/src/orchestrator/compaction.rs"]
+note = "Manual, automatic and provider-overflow compaction phases and feedback exist, an automatic operation scoped to its turn and settled when the turn ends without it; publication provenance (committed and uncertain saves) is absent."
 
 [[file]]
 upstream = "src/core/output/diff.zig"

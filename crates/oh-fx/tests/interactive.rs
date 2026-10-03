@@ -1109,6 +1109,42 @@ fn escape_pauses_a_connectivity_wait_until_the_next_prompt() {
 }
 
 #[test]
+fn a_context_overflow_shows_its_compaction_on_the_turn_until_the_retry() {
+    let summary = Gate::default();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "read_file",
+            r#"{"path":"notes.md"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::status(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 8192 tokens.","code":"context_length_exceeded"}}"#,
+        ),
+        Reply::sse(&chat_text_events(&[
+            "Turn 1\nIn between: Keep the first answer.",
+        ]))
+        .after(&summary),
+        Reply::sse(&chat_text_events(&["Second answer."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    fs::write(home.workspace.join("notes.md"), "the notes\n").expect("write the notes");
+    let mut session = home.shell(24, 100);
+    session.send(b"first\r");
+    wait(&session, "First answer.");
+    session.send(b"second\r");
+    let screen = wait(&session, "• Compacting (");
+    assert!(!screen.contains("Thinking"), "{screen}");
+    summary.open();
+    let screen = wait(&session, "Second answer.");
+    assert!(!screen.contains("ompacting"), "{screen}");
+    assert_eq!(server.requests().len(), 5);
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
 fn typing_during_startup_reaches_the_composer() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&settings(&server.base_url()));

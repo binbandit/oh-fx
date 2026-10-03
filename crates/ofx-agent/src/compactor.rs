@@ -68,20 +68,27 @@ pub(crate) struct Compacted {
     pub(crate) cut: Cut,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    Chosen,
+    Summarizing,
+}
+
 pub(crate) async fn compact(
     request: Request<'_>,
     summary_model: &mut dyn SummaryModel,
-    summarizing: &mut (dyn FnMut() + Send),
+    progress: &mut (dyn FnMut(Step) + Send),
     cancel: &CancellationToken,
 ) -> Result<Option<Compacted>, CompactionError> {
     let Some(chosen) = window::choose(request.turns, request.active, request.size, request.model)?
     else {
         return Ok(None);
     };
+    progress(Step::Chosen);
     if cancel.is_cancelled() {
         return Err(CompactionError::Cancelled);
     }
-    summarizing();
+    progress(Step::Summarizing);
     let turns = turns_from(request.turns, chosen.cut);
     let size = request.size;
     let summary = summarize::compact(
