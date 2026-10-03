@@ -2,7 +2,7 @@
 upstream = "src/core/app/app_agent_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/tool_set.rs"]
-note = "Native turn/tool dispatch and a reusable child-agent host exist; the interactive session does not offer the child host yet, and full terminal presentation and shared runtime hooks remain incomplete."
+note = "Native turn/tool dispatch and a reusable child-agent host exist; the interactive session offers the child host when it saves its session and asks a child's approvals on the parent's prompt, and full terminal presentation and shared runtime hooks remain incomplete."
 
 [[file]]
 upstream = "src/core/app/app_auth_runtime.zig"
