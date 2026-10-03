@@ -158,7 +158,7 @@ note = "Blocking execution, panic containment and prepared calls exist; host/MCP
 upstream = "src/core/tooling/tool_set.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/tool_set.rs"]
-note = "Composition registers read/glob/grep/write/edit/shell/skill/web_fetch and question; subagent host registration, capability search, vision, result retrieval and search/install tools are absent."
+note = "Composition registers read/glob/grep/write/edit/shell/skill/web_fetch and question, and subagent after shell for `ask` with a session store; capability search, vision, result retrieval and search/install tools are absent."
 
 [[file]]
 upstream = "src/core/tooling/tool_specs.zig"

@@ -63,5 +63,5 @@ note = "Managed request admission, invocation identity, inherited defaults and t
 [[file]]
 upstream = "src/core/subagent/tool_provider.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/subagent/tool_provider.rs", "crates/ofx-agent/src/subagent/tool_host.rs"]
-note = "Provider forwarding has a concrete managed host with cancellation-to-child_cancelled mapping; production composition does not yet install that host."
+modules = ["crates/ofx-contract/src/subagent/tool_provider.rs", "crates/ofx-agent/src/subagent/tool_host.rs", "crates/ofx-app/src/app_subagent_runtime.rs"]
+note = "Provider forwarding has a concrete managed host with cancellation-to-child_cancelled mapping; `ask` installs it when it saves its session, and the interactive session does not install it yet."
