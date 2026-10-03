@@ -347,7 +347,7 @@ impl Shell<'_> {
     }
 
     fn affirmative_armed(&self, now_ms: i64) -> bool {
-        self.resize_due_ms.is_none()
+        self.pending_resize.is_none()
             && !self.dimensions_invalid
             && self
                 .approval

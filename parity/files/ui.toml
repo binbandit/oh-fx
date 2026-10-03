@@ -325,7 +325,7 @@ note = "No Rust implementation of upstream Reason, ReasonSet, AnimationCandidate
 upstream = "src/ui/resize_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/mod.rs", "crates/ofx-tui/src/shell/approval_runtime.rs"]
-note = "Debounced native resizing and approval yes suppression during resize exist; upstream atomic ResizeApprovalInterlock and cursor-probe frame-commit lifecycle are absent."
+note = "Debounced native resizing that holds frames until the size settles, replays a size that returned to its start, and suppresses an approval yes exists; upstream light frames during a resize, the atomic ResizeApprovalInterlock and the cursor-probe frame-commit lifecycle are absent."
 
 [[file]]
 upstream = "src/ui/resize_tests.zig"
