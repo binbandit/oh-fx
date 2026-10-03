@@ -229,7 +229,6 @@ struct AskRequest<'a> {
 
 struct PreparedAsk {
     agent: Agent,
-    mcp: Option<Arc<McpRuntime>>,
     model: String,
     permission_mode: PermissionMode,
     source: CredentialSource,
@@ -372,11 +371,27 @@ async fn answer(
     cancel: &CancellationToken,
     received: &ReceivedSignals,
 ) -> Result<ExitCode, Signalled> {
+    let mut mcp = None;
+    let answered = respond(request, endpoints, echo, cancel, received, &mut mcp).await;
+    if let Some(mcp) = mcp {
+        mcp.shutdown(ShutdownMode::Immediate).await;
+    }
+    answered
+}
+
+async fn respond(
+    request: &AskRequest<'_>,
+    endpoints: SubscriptionEndpoints,
+    echo: Option<Arc<CommandEcho>>,
+    cancel: &CancellationToken,
+    received: &ReceivedSignals,
+    mcp: &mut Option<Arc<McpRuntime>>,
+) -> Result<ExitCode, Signalled> {
     let args = request.args;
-    let prepared = received.unless_signalled(prepare_agent(request, endpoints, cancel).await)?;
+    let prepared =
+        received.unless_signalled(prepare_agent(request, endpoints, cancel, mcp).await)?;
     let PreparedAsk {
         mut agent,
-        mcp,
         model,
         permission_mode,
         source,
@@ -404,9 +419,6 @@ async fn answer(
         )
         .await;
     drop(agent);
-    if let Some(mcp) = &mcp {
-        mcp.shutdown(ShutdownMode::Immediate).await;
-    }
     let report = received.unless_signalled(report)?;
     Ok(presenter.finish(&report, &model, saved))
 }
@@ -415,6 +427,7 @@ async fn prepare_agent(
     request: &AskRequest<'_>,
     endpoints: SubscriptionEndpoints,
     cancel: &CancellationToken,
+    mcp: &mut Option<Arc<McpRuntime>>,
 ) -> Result<PreparedAsk, Failure> {
     let args = request.args;
     let mut profile = Profile::load().map_err(|error| Failure::code(error.to_string()))?;
@@ -450,6 +463,7 @@ async fn prepare_agent(
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
     };
     let setup = profile.connect(launch, cancel).await?;
+    *mcp = setup.mcp().cloned();
     if let Some(mcp) = setup.mcp() {
         start_mcp(mcp, cancel).await?;
     }
@@ -470,7 +484,6 @@ async fn prepare_agent(
     };
     Ok(PreparedAsk {
         agent,
-        mcp: setup.mcp().cloned(),
         model: setup.model().to_owned(),
         permission_mode,
         source: setup.source(),
@@ -497,14 +510,18 @@ async fn start_mcp(mcp: &McpRuntime, cancel: &CancellationToken) -> Result<(), F
         lines.push_str(". Approve with oh-fx mcp trust approve <name> before retrying.\n");
     }
     write_stderr(&lines).map_err(|error| Failure::written(&error))?;
-    cancel
-        .run_until_cancelled(mcp.connect(StartupPhase::All))
-        .await;
-    let Some(failure) = mcp.required_startup_failure() else {
-        return Ok(());
-    };
-    mcp.shutdown(ShutdownMode::Immediate).await;
-    Err(Failure::notice("McpRequiredServerUnavailable", failure))
+    let mut connecting = mcp.connect(StartupPhase::All);
+    tokio::select! {
+        () = &mut connecting => {}
+        () = cancel.cancelled() => {
+            connecting.abandon().await;
+            return Ok(());
+        }
+    }
+    match mcp.required_startup_failure() {
+        Some(failure) => Err(Failure::notice("McpRequiredServerUnavailable", failure)),
+        None => Ok(()),
+    }
 }
 
 fn announce_settings(
