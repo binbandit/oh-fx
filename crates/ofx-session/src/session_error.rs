@@ -32,6 +32,8 @@ pub enum SessionError {
     ToolIdentityMismatch,
     #[error("InvalidCheckpointCoverage")]
     InvalidCheckpointCoverage,
+    #[error("InvalidRecoveryCheckpoint")]
+    InvalidRecoveryCheckpoint,
     #[error("InvalidContextHistoryStart")]
     InvalidContextHistoryStart,
     #[error("UnresolvedToolCall")]

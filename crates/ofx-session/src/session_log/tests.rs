@@ -11,8 +11,8 @@ use ofx_contract::{ReasoningEffort, ToolArgumentIntegrity, ToolResultStatus};
 use super::*;
 use crate::session_codec::SavedProvider;
 use crate::session_event::{
-    ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, ToolCallEvent, ToolResultEvent,
-    TurnCompletedEvent, UserEvent,
+    ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, InterruptReason,
+    InterruptedEvent, ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
 };
 
 struct Fixture {

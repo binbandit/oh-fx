@@ -88,6 +88,23 @@ impl ReplayScan {
         Ok(())
     }
 
+    pub(crate) fn observe_range(
+        &mut self,
+        file: &File,
+        start: u64,
+        end: u64,
+    ) -> Result<(), SessionError> {
+        let mut reader = LineReader::new(file, start, end)?;
+        loop {
+            let offset = reader.offset();
+            let LineRead::Line(line) = reader.next_line()? else {
+                return Ok(());
+            };
+            let envelope = decode_conversation_frame(&line)?;
+            self.observe(offset, envelope.seq, &envelope.event)?;
+        }
+    }
+
     pub(crate) fn rewind(&mut self, last_seq: u64, turn_open: bool) {
         self.last_seq = last_seq;
         if !turn_open {
