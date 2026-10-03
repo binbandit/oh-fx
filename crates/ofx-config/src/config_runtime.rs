@@ -3,7 +3,9 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use ofx_contract::{AutoCompactPercent, PermissionMode, ReasoningEffort};
+use ofx_contract::{
+    AutoCompactPercent, PermissionAction, PermissionMode, PermissionRule, ReasoningEffort,
+};
 use serde_json::{Map, Value};
 
 use crate::configured_provider::{
@@ -85,6 +87,19 @@ enum DiagnosticCause {
 }
 
 impl DiagnosticCause {
+    const fn resolution_failure(self) -> Option<&'static str> {
+        match self {
+            Self::MalformedSettings
+            | Self::RetiredSkillMatchFuzzy
+            | Self::InvalidContextLimits
+            | Self::InvalidSkillSymlinkAuthorities => Some("InvalidSettingsFormat"),
+            Self::SettingsTooLarge => Some("SettingsPrimaryTooLarge"),
+            Self::DurablePathUnsafe => Some("DurablePathUnsafe"),
+            Self::InvalidModelId => Some("InvalidModelValue"),
+            Self::IgnoredProjectUserOnlySetting => None,
+        }
+    }
+
     const fn label(self) -> &'static str {
         match self {
             Self::MalformedSettings => "malformed_settings",
@@ -189,6 +204,12 @@ pub enum LayerError {
     InvalidPromptHistoryType,
     #[error("InvalidPromptHistoryEnabledType")]
     InvalidPromptHistoryEnabledType,
+    #[error("InvalidPermissionRulesType")]
+    InvalidPermissionRulesType,
+    #[error("InvalidPermissionAction")]
+    InvalidPermissionAction,
+    #[error("InvalidPermissionRuleTool")]
+    InvalidPermissionRuleTool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -239,6 +260,7 @@ struct Layer {
     context: Option<bool>,
     skill_symlink_authorities: Option<Vec<PathBuf>>,
     prompt_history: Option<bool>,
+    permission_rules: Option<Vec<PermissionRule>>,
 }
 
 impl Layer {
@@ -280,6 +302,13 @@ pub struct Settings {
     diagnostics: Vec<ConfigDiagnostic>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionSources<'a> {
+    pub user: &'a [PermissionRule],
+    pub local: &'a [PermissionRule],
+    pub user_shadowed_by_local: bool,
+}
+
 impl From<LayerError> for DiagnosticCause {
     fn from(error: LayerError) -> Self {
         match error {
@@ -319,6 +348,40 @@ impl Settings {
                         | DiagnosticCause::DurablePathUnsafe
                 )
         })
+    }
+
+    pub fn unsafe_path_failure(&self) -> Option<&'static str> {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.cause == DiagnosticCause::DurablePathUnsafe)
+            .then_some("DurablePathUnsafe")
+    }
+
+    pub fn user_layer_failure(&self) -> Option<&'static str> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.layer == ConfigLayer::User)
+            .find_map(|diagnostic| diagnostic.cause.resolution_failure())
+    }
+
+    pub fn permission_sources(&self) -> PermissionSources<'_> {
+        PermissionSources {
+            user: self.global.permission_rules.as_deref().unwrap_or_default(),
+            local: self
+                .workspace
+                .permission_rules
+                .as_deref()
+                .unwrap_or_default(),
+            user_shadowed_by_local: self.workspace.permission_rules.is_some(),
+        }
+    }
+
+    pub fn effective_permission_rules(&self) -> &[PermissionRule] {
+        self.workspace
+            .permission_rules
+            .as_deref()
+            .or(self.global.permission_rules.as_deref())
+            .unwrap_or_default()
     }
 
     pub fn permission_mode(&self, lookup: EnvironmentLookup<'_>) -> PermissionMode {
@@ -713,6 +776,10 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         )?,
         Some(_) => return Err(LayerError::InvalidPromptHistoryType),
     };
+    layer.permission_rules = object
+        .get("permission")
+        .map(parse_permission_config)
+        .transpose()?;
     if object.contains_key("skill_match_fuzzy") {
         rejected.push(LayerError::RetiredSkillMatchFuzzy);
     }
@@ -725,6 +792,42 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         Err(error) => rejected.push(error),
     }
     Ok(ParsedLayer { layer, rejected })
+}
+
+fn parse_permission_config(value: &Value) -> Result<Vec<PermissionRule>, LayerError> {
+    let rule = |permission: &str, pattern: &str, action: &Value| {
+        let action = action
+            .as_str()
+            .and_then(PermissionAction::parse)
+            .ok_or(LayerError::InvalidPermissionAction)?;
+        Ok(PermissionRule {
+            permission: permission.to_owned(),
+            pattern: pattern.to_owned(),
+            action,
+        })
+    };
+    let permissions = match value {
+        Value::String(_) => return Ok(vec![rule("*", "*", value)?]),
+        Value::Object(permissions) => permissions,
+        _ => return Err(LayerError::InvalidPermissionRulesType),
+    };
+    let mut rules = Vec::new();
+    for (permission, entry) in permissions {
+        let permission = permission.trim_matches(TRIMMED);
+        if permission.is_empty() {
+            return Err(LayerError::InvalidPermissionRuleTool);
+        }
+        match entry {
+            Value::String(_) => rules.push(rule(permission, "*", entry)?),
+            Value::Object(patterns) => {
+                for (pattern, action) in patterns {
+                    rules.push(rule(permission, pattern.trim_matches(TRIMMED), action)?);
+                }
+            }
+            _ => return Err(LayerError::InvalidPermissionRulesType),
+        }
+    }
+    Ok(rules)
 }
 
 fn parse_skill_symlink_authorities(value: &Value) -> Result<Vec<PathBuf>, LayerError> {
@@ -1834,5 +1937,158 @@ mod tests {
             Ok(ProviderId::Gateway)
         );
         assert!(settings.diagnostics().is_empty());
+    }
+
+    fn rule_tuples(rules: &[PermissionRule]) -> Vec<(&str, &str, PermissionAction)> {
+        rules
+            .iter()
+            .map(|rule| (rule.permission.as_str(), rule.pattern.as_str(), rule.action))
+            .collect()
+    }
+
+    fn workspace_settings(fixture: &Fixture, global: &str, workspace: &str) -> Settings {
+        let settings = format!(
+            r#"{{{global}"workspaces":{{"{}":{workspace}}}}}"#,
+            fixture.workspace.display()
+        );
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), settings).unwrap();
+        load(fixture).unwrap()
+    }
+
+    #[test]
+    fn permission_rules_parse_from_the_workspace_override() {
+        let fixture = fixture(None, None);
+        let settings = workspace_settings(
+            &fixture,
+            "",
+            r#"{"permission":{"edit":{"src/*":"allow"},"bash":{"rm -rf*":"deny"},"open_url":"ask"}}"#,
+        );
+        assert!(settings.diagnostics().is_empty());
+        assert_eq!(
+            rule_tuples(settings.effective_permission_rules()),
+            [
+                ("edit", "src/*", PermissionAction::Allow),
+                ("bash", "rm -rf*", PermissionAction::Deny),
+                ("open_url", "*", PermissionAction::Ask),
+            ]
+        );
+        let sources = settings.permission_sources();
+        assert!(sources.user.is_empty());
+        assert_eq!(sources.local.len(), 3);
+        assert!(sources.user_shadowed_by_local);
+    }
+
+    #[test]
+    fn later_permission_layers_replace_earlier_rules() {
+        let fixture = fixture(None, None);
+        let settings = workspace_settings(
+            &fixture,
+            r#""permission":{"edit":"allow"},"#,
+            r#"{"permission":{"bash":"deny"}}"#,
+        );
+        assert_eq!(
+            rule_tuples(settings.effective_permission_rules()),
+            [("bash", "*", PermissionAction::Deny)]
+        );
+        assert_eq!(
+            rule_tuples(settings.permission_sources().user),
+            [("edit", "*", PermissionAction::Allow)]
+        );
+        let cleared = workspace_settings(
+            &fixture,
+            r#""permission":{"edit":"allow"},"#,
+            r#"{"permission":{}}"#,
+        );
+        assert!(cleared.effective_permission_rules().is_empty());
+        assert!(cleared.permission_sources().user_shadowed_by_local);
+        let inherited = workspace_settings(&fixture, r#""permission":"ask","#, "{}");
+        assert_eq!(
+            rule_tuples(inherited.effective_permission_rules()),
+            [("*", "*", PermissionAction::Ask)]
+        );
+        assert!(!inherited.permission_sources().user_shadowed_by_local);
+    }
+
+    #[test]
+    fn nested_permission_config_keeps_json_object_order_and_trims_names() {
+        let settings = load(&fixture(
+            Some(
+                r#"{"permission":{"*":"ask","bash":{"git *":"allow"," git push * ":"DENY"}," edit ":"deny"}}"#,
+            ),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(
+            rule_tuples(settings.effective_permission_rules()),
+            [
+                ("*", "*", PermissionAction::Ask),
+                ("bash", "git *", PermissionAction::Allow),
+                ("bash", "git push *", PermissionAction::Deny),
+                ("edit", "*", PermissionAction::Deny),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_permission_rules_make_the_profile_unusable() {
+        for (text, error) in [
+            (
+                r#"{"permission":5}"#,
+                LayerError::InvalidPermissionRulesType,
+            ),
+            (
+                r#"{"permission":{"bash":5}}"#,
+                LayerError::InvalidPermissionRulesType,
+            ),
+            (
+                r#"{"permission":"sometimes"}"#,
+                LayerError::InvalidPermissionAction,
+            ),
+            (
+                r#"{"permission":{"bash":{"git *":true}}}"#,
+                LayerError::InvalidPermissionAction,
+            ),
+            (
+                r#"{"permission":{" ":"allow"}}"#,
+                LayerError::InvalidPermissionRuleTool,
+            ),
+        ] {
+            let Ok(Value::Object(object)) = strict_json::parse(text.as_bytes()) else {
+                unreachable!()
+            };
+            assert_eq!(parse_layer(&object).map(|_| ()), Err(error), "{text}");
+            let settings = load(&fixture(Some(text), None)).unwrap();
+            assert!(settings.profile_is_unusable(), "{text}");
+            assert_eq!(settings.user_layer_failure(), Some("InvalidSettingsFormat"));
+        }
+    }
+
+    #[test]
+    fn project_permission_rules_are_ignored_like_every_profile_only_setting() {
+        let settings = load(&fixture(None, Some(r#"{"permission":{"bash":"allow"}}"#))).unwrap();
+        assert!(settings.effective_permission_rules().is_empty());
+        assert_eq!(
+            settings
+                .diagnostics()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["config project: ignored_project_user_only_setting; key=permission"]
+        );
+        assert_eq!(settings.user_layer_failure(), None);
+    }
+
+    #[test]
+    fn load_failures_name_upstreams_errors() {
+        let model = load(&fixture(Some(r#"{"model":" bad"}"#), None)).unwrap();
+        assert_eq!(model.user_layer_failure(), Some("InvalidModelValue"));
+        assert_eq!(model.unsafe_path_failure(), None);
+        let unsafe_path = fixture(None, None);
+        fs::create_dir(unsafe_path.paths.config.join(SETTINGS_FILE)).unwrap();
+        let settings = load(&unsafe_path).unwrap();
+        assert_eq!(settings.unsafe_path_failure(), Some("DurablePathUnsafe"));
+        assert_eq!(settings.user_layer_failure(), Some("DurablePathUnsafe"));
+        let large = load(&fixture(Some(&" ".repeat(MAX_SETTINGS_BYTES + 1)), None)).unwrap();
+        assert_eq!(large.user_layer_failure(), Some("SettingsPrimaryTooLarge"));
     }
 }

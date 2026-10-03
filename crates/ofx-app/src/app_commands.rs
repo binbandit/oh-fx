@@ -9,6 +9,7 @@ use ofx_tui::SlashCommandSpec;
 use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 
 use crate::app_agent_runtime::ControllerState;
+use crate::session_commands::handle_allowlist;
 use crate::skill_commands::handle_skills;
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
@@ -100,6 +101,12 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
                 CommandEffect::None
             }
         },
+        SlashKind::Allowlist => {
+            state.emit(UiEvent::Notice {
+                notice: handle_allowlist(&state.settings_access(), command.payload),
+            });
+            CommandEffect::None
+        }
         SlashKind::Undo => {
             let result = state
                 .change_tracker()
@@ -218,6 +225,7 @@ mod tests {
                 "/status",
                 "/model",
                 "/permissions",
+                "/allowlist",
                 "/undo",
                 "/skills",
                 "/copy",
@@ -234,9 +242,9 @@ mod tests {
             .collect();
         assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[2].description, "start a fresh session");
-        assert_eq!(specs[9].description, "browse and manage skills");
-        assert_eq!(specs[14].aliases, ["/exit"]);
-        assert_eq!(specs[14].description, "exit the interactive shell");
+        assert_eq!(specs[10].description, "browse and manage skills");
+        assert_eq!(specs[15].aliases, ["/exit"]);
+        assert_eq!(specs[15].description, "exit the interactive shell");
     }
 
     #[test]
@@ -258,6 +266,7 @@ mod tests {
                 ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/allowlist", "Security"),
                 ("/undo", "Session"),
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),

@@ -652,3 +652,168 @@ fn user_preferences_refuse_workspaces_that_are_not_an_object() {
     assert_eq!(fixture.save(MODEL), Err(SettingsWriteError::InvalidFormat));
     assert_eq!(fixture.read(), original);
 }
+
+fn add_rule(category: &'static str, pattern: &'static str) -> PermissionPatch<'static> {
+    PermissionPatch::Add {
+        category,
+        pattern,
+        action: PermissionAction::Allow,
+    }
+}
+
+#[test]
+fn user_permission_patches_write_top_level_and_keep_local_rules() {
+    let fixture = Fixture::with_settings(
+        "{\"permission\":{\"bash\":{\"global *\":\"allow\"}},\"workspaces\":{\"/work\":{\"permission\":{\"bash\":{\"local *\":\"allow\"}}}}}\n",
+    );
+    assert_eq!(
+        save_permission_patch(&fixture.paths, None, add_rule("bash", "user *")),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 0
+        })
+    );
+    assert_eq!(
+        fixture.read(),
+        "{\"permission\":{\"bash\":{\"global *\":\"allow\",\"user *\":\"allow\"}},\"workspaces\":{\"/work\":{\"permission\":{\"bash\":{\"local *\":\"allow\"}}}}}\n"
+    );
+    assert_eq!(
+        save_permission_patch(&fixture.paths, None, add_rule("bash", "user *")),
+        Ok(CommitOutcome::Unchanged)
+    );
+}
+
+#[test]
+fn local_permission_patches_create_the_workspace_entry_and_keep_its_order() {
+    let fixture = Fixture::new();
+    let workspace = Some(Path::new("/work"));
+    for (category, pattern) in [("bash", "git *"), ("read", "*"), ("bash", "echo")] {
+        save_permission_patch(&fixture.paths, workspace, add_rule(category, pattern)).unwrap();
+    }
+    assert_eq!(
+        fixture.read(),
+        "{\"workspaces\":{\"/work\":{\"permission\":{\"bash\":{\"git *\":\"allow\",\"echo\":\"allow\"},\"read\":{\"*\":\"allow\"}}}}}\n"
+    );
+    let settings = Settings::load(&fixture.paths, Path::new("/work")).unwrap();
+    let rules: Vec<(&str, &str)> = settings
+        .effective_permission_rules()
+        .iter()
+        .map(|rule| (rule.permission.as_str(), rule.pattern.as_str()))
+        .collect();
+    assert_eq!(rules, [("bash", "git *"), ("bash", "echo"), ("read", "*")]);
+}
+
+#[test]
+fn permission_patches_need_an_absolute_workspace_and_isolate_remove_and_reset() {
+    let fixture = Fixture::with_settings(
+        "{\"permission\":{\"bash\":{\"user *\":\"allow\"}},\"workspaces\":{\"/work\":{\"permission\":{\"bash\":{\"local *\":\"allow\",\"deny *\":\"deny\"},\"read\":{\"*\":\"allow\"}}}}}\n",
+    );
+    let workspace = Some(Path::new("/work"));
+    assert_eq!(
+        save_permission_patch(
+            &fixture.paths,
+            Some(Path::new("relative")),
+            PermissionPatch::Reset(AllowlistResetScope::All)
+        )
+        .map_err(|failure| failure.error),
+        Err(SettingsWriteError::InvalidField)
+    );
+    assert_eq!(
+        save_permission_patch(
+            &fixture.paths,
+            workspace,
+            PermissionPatch::Remove {
+                category: "bash",
+                pattern: "local *"
+            }
+        ),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 1
+        })
+    );
+    assert_eq!(
+        save_permission_patch(
+            &fixture.paths,
+            workspace,
+            PermissionPatch::Reset(AllowlistResetScope::All)
+        ),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 1
+        })
+    );
+    assert_eq!(
+        fixture.read(),
+        "{\"permission\":{\"bash\":{\"user *\":\"allow\"}},\"workspaces\":{\"/work\":{\"permission\":{\"bash\":{\"deny *\":\"deny\"}}}}}\n"
+    );
+}
+
+#[test]
+fn permission_patches_match_rules_stored_with_padded_keys() {
+    let fixture = Fixture::with_settings(
+        "{\"permission\":{\" bash \":{\" git status * \":\"allow\",\"keep *\":\"deny\"}}}\n",
+    );
+    assert_eq!(
+        save_permission_patch(
+            &fixture.paths,
+            None,
+            PermissionPatch::Remove {
+                category: "bash",
+                pattern: "git status *"
+            }
+        ),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 1
+        })
+    );
+    assert_eq!(
+        save_permission_patch(
+            &fixture.paths,
+            None,
+            PermissionPatch::Reset(AllowlistResetScope::Commands)
+        ),
+        Ok(CommitOutcome::Unchanged)
+    );
+    assert_eq!(
+        fixture.read(),
+        "{\"permission\":{\" bash \":{\"keep *\":\"deny\"}}}\n"
+    );
+    let fixture = Fixture::with_settings(
+        "{\"permission\":{\" bash \":{\" one * \":\"allow\",\"two *\":\"allow\"}}}\n",
+    );
+    assert_eq!(
+        save_permission_patch(
+            &fixture.paths,
+            None,
+            PermissionPatch::Reset(AllowlistResetScope::Commands)
+        ),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 2
+        })
+    );
+    assert_eq!(fixture.read(), "{}\n");
+}
+
+#[test]
+fn permission_patches_refuse_settings_the_loader_would_reject() {
+    let local = Some(Path::new("/work"));
+    for (text, workspaces) in [
+        (
+            "{\"permission\":{\"bash\":5},\"workspaces\":{\"/work\":{\"permission\":[]}}}\n",
+            &[None, local][..],
+        ),
+        (
+            "{\"workspaces\":{\"/work\":{\"permission\":{\"edit\":5}}}}\n",
+            &[local][..],
+        ),
+    ] {
+        let fixture = Fixture::with_settings(text);
+        for &workspace in workspaces {
+            assert_eq!(
+                save_permission_patch(&fixture.paths, workspace, add_rule("bash", "ls"))
+                    .map_err(|failure| failure.error),
+                Err(SettingsWriteError::InvalidFormat),
+                "{text} {workspace:?}"
+            );
+        }
+        assert_eq!(fixture.read(), text);
+    }
+}
