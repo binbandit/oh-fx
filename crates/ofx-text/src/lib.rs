@@ -1,5 +1,6 @@
 mod display_width;
 mod fmt;
+mod language_script;
 mod model_context_encoding;
 mod sorted_lines;
 mod text_utils;
@@ -14,6 +15,7 @@ pub use display_width::{
     wrap_cut_ignoring_ansi,
 };
 pub use fmt::{lowercase_hex, parse_unsigned, shell_word};
+pub use language_script::{Script, dominant_script};
 pub use model_context_encoding::write_scalar;
 pub use text_utils::{
     EncodedText, HeadRounding, contains_ignore_case, encode_terminal_safe,
