@@ -245,6 +245,10 @@ impl ProviderRegistry {
         Ok(Self { definitions })
     }
 
+    pub(crate) fn definitions(&self) -> &[ProviderDefinition] {
+        &self.definitions
+    }
+
     pub(crate) fn get(&self, id: &str) -> Option<&ProviderDefinition> {
         self.definitions
             .iter()
