@@ -19,6 +19,7 @@ pub enum SlashKind {
     Copy,
     Compact,
     Fast,
+    Workspace,
     Version,
     Quit,
 }
@@ -220,12 +221,17 @@ mod tests {
                 "/copy",
                 "/compact",
                 "/fast",
+                "/workspace",
                 "/version",
                 "/quit",
             ]
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
         assert_eq!(spec(SlashKind::Usage).aliases, ["/cost"]);
+        assert_eq!(
+            spec(SlashKind::Workspace).completion_description,
+            "manage additional workspace directories"
+        );
         assert_eq!(
             spec(SlashKind::Usage).completion_description,
             "show local oh-fx tokens, models, and spend"
@@ -307,6 +313,7 @@ mod tests {
                 ("/copy", "Session"),
                 ("/compact", "Session"),
                 ("/fast", "Model"),
+                ("/workspace", "Workspace"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]

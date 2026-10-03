@@ -26,7 +26,7 @@ note = "Native event callbacks and authoritative tool rows exist; provisional li
 upstream = "src/core/app/app_commands.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_commands.rs"]
-note = "Supported slash commands including saved allowlist management and the `/usage` answer for hosts without profile usage are routed; the usage dashboard, MCP/settings/workspace menus and the remaining upstream command handlers are absent."
+note = "Supported slash commands including saved allowlist management, the `/usage` answer for hosts without profile usage and the `/workspace` answer for runtimes without workspace access are routed; the usage dashboard, additional workspace directories, MCP/settings menus and the remaining upstream command handlers are absent."
 
 [[file]]
 upstream = "src/core/app/app_entry_runtime.zig"

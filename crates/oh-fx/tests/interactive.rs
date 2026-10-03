@@ -629,7 +629,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
     let menu = [
-        "Commands 19  [All]  General  Session  Account  Model",
+        "Commands 20  [All]  General  Session  Account  Model",
         "  /permissions    choose what oh-fx is allowed to do",
         "  /skills         browse and manage skills",
         "  /quit           exit the interactive shell",
@@ -645,6 +645,11 @@ fn slash_commands_switch_models_show_help_and_exit() {
         .unwrap_or_else(|screen| panic!("the help menu is incomplete:\n{screen}"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
+    session.send(b"/workspace add ../other\r");
+    wait(
+        &session,
+        "✗ workspace: Workspace access is unavailable in this runtime.",
+    );
     session.send(b"/cost\r");
     wait(
         &session,
@@ -980,11 +985,11 @@ fn project_instruction_notices_reach_the_transcript_with_their_repair_hints() {
 fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Noted."]))]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    let mut session = home.shell(30, 80);
+    let mut session = home.shell(48, 80);
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 19");
+    wait(&session, "Commands 20");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 

@@ -600,6 +600,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Model,
     ),
     SlashSpec::new(
+        SlashKind::Workspace,
+        "/workspace",
+        "manage additional workspace directories",
+        SlashPresentationCategory::Workspace,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Version,
         "/version",
         "show the oh-fx version",
