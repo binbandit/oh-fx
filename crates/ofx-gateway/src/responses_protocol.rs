@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ofx_config::parse_strict_json;
+use ofx_contract::parse_strict_json_value;
 use ofx_contract::{
     ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolSpec,
     Usage,
@@ -144,7 +144,7 @@ pub(crate) fn select_replay_parts(
     if parts.len() > max_bytes {
         return Err(ResponsesError::ProviderStateTooLarge);
     }
-    let Ok(Value::Array(items)) = parse_strict_json(parts.as_bytes()) else {
+    let Ok(Value::Array(items)) = parse_strict_json_value(parts.as_bytes()) else {
         return Err(ResponsesError::InvalidProviderState);
     };
     let total = items.len();
@@ -260,7 +260,7 @@ fn write_assistant(
     let mut legacy_phase = None;
     let mut span_end: Option<usize> = None;
     if let Some(parts) = replay {
-        let Ok(Value::Array(items)) = parse_strict_json(parts.as_bytes()) else {
+        let Ok(Value::Array(items)) = parse_strict_json_value(parts.as_bytes()) else {
             return Err(ResponsesError::InvalidProviderState);
         };
         for item in &items {
@@ -564,8 +564,8 @@ fn serialized_equal(left: &str, right: &str) -> bool {
         return true;
     }
     match (
-        parse_strict_json(left.as_bytes()),
-        parse_strict_json(right.as_bytes()),
+        parse_strict_json_value(left.as_bytes()),
+        parse_strict_json_value(right.as_bytes()),
     ) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
@@ -808,7 +808,7 @@ impl Reducer {
             json.len(),
             self.limits.aggregate_bytes,
         )?;
-        let parsed = parse_strict_json(json).map_err(|_| ResponsesError::InvalidEvent)?;
+        let parsed = parse_strict_json_value(json).map_err(|_| ResponsesError::InvalidEvent)?;
         let Value::Object(event) = parsed else {
             return Ok(false);
         };

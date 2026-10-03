@@ -12,7 +12,6 @@ ofx-contract.workspace = true
 ofx-text.workspace = true
 percent-encoding.workspace = true
 rustix = { workspace = true, features = ["fs"] }
-serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

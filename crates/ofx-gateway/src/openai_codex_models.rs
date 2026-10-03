@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ofx_config::parse_strict_json;
+use ofx_contract::parse_strict_json_value;
 use ofx_contract::{CODEX_ORIGINATOR, ModelCapabilities, is_valid_reasoning_effort};
 use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
 use reqwest::StatusCode;
@@ -157,7 +157,7 @@ fn models_url(base: &str, version: Option<&Version>) -> String {
 }
 
 fn parse_catalog(body: &[u8]) -> Option<Vec<CodexModel>> {
-    let Value::Object(root) = parse_strict_json(body).ok()? else {
+    let Value::Object(root) = parse_strict_json_value(body).ok()? else {
         return None;
     };
     let Value::Array(models) = root.get("models")? else {
