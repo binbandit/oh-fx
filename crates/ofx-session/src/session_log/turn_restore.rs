@@ -301,16 +301,22 @@ fn push_ending(messages: &mut Vec<ChatMessage>, ending: Ending) {
 }
 
 fn result_body(result: &ToolResultEvent, dir: &PrivateDir) -> String {
-    let preview = result.preview.as_deref().unwrap_or_default();
-    let truncated = result.completeness != ArtifactCompleteness::Complete;
-    if truncated {
+    if result.completeness != ArtifactCompleteness::Complete {
+        let preview = result.preview.as_deref().unwrap_or_default();
         return format_stored_result_output(&result.artifact_ref, preview, result.stored_bytes);
     }
+    complete_result_output(result, dir).unwrap_or_else(|| RESULT_UNAVAILABLE.to_owned())
+}
+
+pub(crate) fn complete_result_output(result: &ToolResultEvent, dir: &PrivateDir) -> Option<String> {
+    if result.completeness != ArtifactCompleteness::Complete {
+        return None;
+    }
+    let preview = result.preview.as_deref().unwrap_or_default();
     if u64::try_from(preview.len()).is_ok_and(|length| length == result.stored_bytes) {
-        return preview.to_owned();
+        return Some(preview.to_owned());
     }
     read_for_replay(dir, &result.artifact_ref, result.stored_bytes)
-        .unwrap_or_else(|| RESULT_UNAVAILABLE.to_owned())
 }
 
 fn tool_call(call: ToolCallEvent) -> ToolCall {

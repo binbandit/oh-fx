@@ -2,7 +2,8 @@ use std::borrow::Cow;
 use std::fmt::Write;
 
 use ofx_text::{
-    display_unit_at, encode_terminal_safe, is_terminal_control, prefix_by_width, visible_width,
+    DisplayUnit, display_unit_at, encode_terminal_safe, is_terminal_control, prefix_by_width,
+    visible_width,
 };
 
 use crate::render_engine::display_units::{Unit, display_units};
@@ -405,6 +406,45 @@ pub(crate) fn terminal_safe_keeping_breaks(text: &str) -> Cow<'_, str> {
     })
 }
 
+pub(crate) fn escaped_unit_at(text: &str, index: usize) -> DisplayUnit {
+    let unit = display_unit_at(text, index);
+    match text.get(index..index + unit.byte_len) {
+        Some(drawn) if drawn.contains(escaped_in_rows) => DisplayUnit {
+            byte_len: unit.byte_len,
+            cell_width: visible_width(&terminal_safe(drawn)),
+        },
+        _ => unit,
+    }
+}
+
+pub(crate) fn escaped_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut index = 0;
+    while index < text.len() {
+        let unit = escaped_unit_at(text, index);
+        width += unit.cell_width;
+        index += unit.byte_len.max(1);
+    }
+    width
+}
+
+pub(crate) fn escaped_prefix_by_width(text: &str, max_width: usize) -> &str {
+    if max_width == 0 {
+        return "";
+    }
+    let mut width = 0;
+    let mut index = 0;
+    while index < text.len() {
+        let unit = escaped_unit_at(text, index);
+        if unit.cell_width > max_width - width {
+            break;
+        }
+        width += unit.cell_width;
+        index += unit.byte_len.max(1);
+    }
+    &text[..index]
+}
+
 fn escape_where(text: &str, escaped: impl Fn(char) -> bool) -> Cow<'_, str> {
     if !text.contains(&escaped) {
         return Cow::Borrowed(text);
@@ -504,6 +544,19 @@ mod tests {
         assert_eq!(styled.segments().len(), 2);
         assert_eq!(styled.text(), " text");
         assert_eq!(styled.width(), 5);
+    }
+
+    #[test]
+    fn escaped_widths_measure_text_as_rows_draw_it() {
+        let text = "a\u{202e}é\u{85}b\u{1}";
+        assert_eq!(escaped_width(text), Row::plain(text).width());
+        assert_eq!(escaped_unit_at(text, 1).cell_width, 8);
+        assert_eq!(escaped_unit_at(text, 1).byte_len, 3);
+        assert_eq!(escaped_unit_at(text, 0), display_unit_at(text, 0));
+        assert_eq!(escaped_prefix_by_width("ab\u{202e}c", 9), "ab");
+        assert_eq!(escaped_prefix_by_width("ab\u{202e}c", 10), "ab\u{202e}");
+        assert_eq!(escaped_prefix_by_width("ab\u{202e}c", 0), "");
+        assert_eq!(escaped_width("plain é"), visible_width("plain é"));
     }
 
     #[test]

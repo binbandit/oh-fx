@@ -57,6 +57,9 @@ impl Shell<'_> {
         if self.approval.is_some() {
             return self.handle_approval_input(&event);
         }
+        if self.question.is_some() {
+            return self.handle_question_input(event);
+        }
         let revision = self.composer.edit_revision();
         match event {
             InputEvent::Raw(raw) => self.handle_raw(raw)?,
@@ -150,7 +153,10 @@ impl Shell<'_> {
 
     pub(super) fn handle_paste(&mut self, outcome: PasteOutcome) {
         match outcome {
-            PasteOutcome::Text { text, .. } => {
+            PasteOutcome::Text {
+                owner: PasteOwner::Composer,
+                text,
+            } => {
                 if self
                     .composer
                     .insert_paste(&text, COMPOSER_INPUT_LIMIT_BYTES)
@@ -161,12 +167,12 @@ impl Shell<'_> {
             }
             PasteOutcome::LimitExceeded { .. } => self.report_limit(),
             PasteOutcome::UnsupportedBytes { .. } => self.input_notice(PASTE_UNSUPPORTED_BYTES),
-            PasteOutcome::Secret { .. } | PasteOutcome::Discarded => {}
+            PasteOutcome::Text { .. } | PasteOutcome::Secret { .. } | PasteOutcome::Discarded => {}
             PasteOutcome::TrailingInput { .. } => self.input_notice(PASTE_TRAILING_INPUT),
         }
     }
 
-    fn input_notice(&mut self, body: &str) {
+    pub(super) fn input_notice(&mut self, body: &str) {
         self.push_entry(Entry::Notice(Notice::new(NoticeTone::Error, "input", body)));
     }
 

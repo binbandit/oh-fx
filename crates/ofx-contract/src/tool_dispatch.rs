@@ -5,7 +5,8 @@ use crate::ids::ToolCallId;
 use crate::permission_gate::{CommandRequest, FileChange, FileMutation, PathAccess};
 use crate::stream_provider::BoxFuture;
 use crate::types::{
-    CommandProcessPresentation, FileChangeStats, ToolResultStatus, ToolStatusDetail,
+    CommandProcessPresentation, FileChangeStats, QuestionBatchEntry, ToolResultStatus,
+    ToolStatusDetail,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +177,10 @@ impl ToolContext {
             path_access,
         }
     }
+}
+
+pub trait QuestionAsker: Send + Sync {
+    fn ask(&self, entries: Vec<QuestionBatchEntry>) -> BoxFuture<'static, Option<Vec<String>>>;
 }
 
 pub trait Tool: Send + Sync {

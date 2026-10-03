@@ -3,8 +3,8 @@ use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, Fi
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::tool_dispatch::CallDescription;
 use crate::types::{
-    CommandProcessPresentation, FileChangeStats, PermissionMode, RouteRecoveryStatus,
-    ToolResultStatus, ToolStatusDetail, Usage,
+    CommandProcessPresentation, FileChangeStats, PermissionMode, QuestionBatchEntry,
+    RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,6 +93,7 @@ pub enum CompactionActivity {
 pub enum HistoryEntry {
     User(String),
     Assistant(String),
+    QuestionsAnswered(Vec<(String, String)>),
     Cancelled,
     Notice(Notice),
 }
@@ -108,6 +109,12 @@ pub struct ApprovalRequest {
     pub scope: ApprovalScope,
     pub command: Option<CommandRequest>,
     pub file: Option<FileMutation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionRequest {
+    pub id: RequestId,
+    pub entries: Vec<QuestionBatchEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +178,10 @@ pub enum UiEvent {
         turn_id: TurnId,
         request: Box<ApprovalRequest>,
     },
+    QuestionRequested {
+        turn_id: TurnId,
+        request: QuestionRequest,
+    },
     UsageReported {
         turn_id: TurnId,
         usage: Usage,
@@ -223,6 +234,10 @@ pub enum UiCommand {
     Approval {
         request_id: RequestId,
         decision: ApprovalDecision,
+    },
+    QuestionAnswered {
+        request_id: RequestId,
+        answers: Option<Vec<String>>,
     },
     TogglePermissionMode,
     FullAccessWarningShown,

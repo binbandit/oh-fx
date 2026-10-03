@@ -13,6 +13,7 @@ pub(crate) fn replayed_entries(history: Vec<HistoryEntry>) -> impl Iterator<Item
             markdown.flush(&mut events);
             (!events.is_empty()).then_some(Entry::Assistant { events })
         }
+        HistoryEntry::QuestionsAnswered(answers) => Some(Entry::QuestionResolution { answers }),
         HistoryEntry::Cancelled => Some(Entry::Cancellation),
         HistoryEntry::Notice(notice) => Some(Entry::Notice(notice)),
     })

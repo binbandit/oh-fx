@@ -47,8 +47,8 @@ pub use tool_args::{
     ToolArgValue, ToolArgs, ToolArgsError, parse_json_value, parse_tool_args_object,
 };
 pub use tool_dispatch::{
-    ActionLabel, CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity,
-    ToolContext, ToolEffect, ToolOutput, ToolSpec,
+    ActionLabel, CallDescription, CallPresentation, Concurrency, PreparedCall, QuestionAsker, Tool,
+    ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
 };
 pub use tool_presentation::{
     SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
@@ -66,12 +66,12 @@ pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,
     FileChangeStats, FinishReason, LivePermissionMode, ModelFailureDiagnostic, ModelRecoveryAction,
-    ModelRecoveryCause, PermissionMode, ProviderReplay, ReasoningEffort, ReplaySource,
-    RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolChoice, ToolResultStatus, ToolStatusDetail, Usage, is_valid_reasoning_effort,
-    valid_credential_account_id,
+    ModelRecoveryCause, PermissionMode, ProviderReplay, QuestionBatchEntry, QuestionOption,
+    ReasoningEffort, ReplaySource, RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolResultStatus, ToolStatusDetail, Usage,
+    is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{
     ApprovalRequest, CompactionActivity, CompactionEnd, HistoryEntry, Notice, NoticeLink,
-    NoticeTone, ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent,
+    NoticeTone, QuestionRequest, ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent,
 };

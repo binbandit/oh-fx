@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use ofx_contract::{
-    CompactionActivity, Notice, NoticeTone, TurnId, TurnOutcome, UiCommand, UiEvent,
+    CallDescription, CompactionActivity, Notice, NoticeTone, ToolActivity, TurnId, TurnOutcome,
+    UiCommand, UiEvent,
 };
 
 use super::leading_whitespace::LeadingWhitespace;
@@ -17,6 +18,7 @@ use crate::render_engine::transcript_blocks::{Entry, HelpEntry};
 use crate::transcript::tool_presentation::{Finished, Rejected, ToolActivityRow};
 
 const PARAGRAPH_BREAK: &str = "\n\n";
+const ASK_USER_QUESTION: &str = "ask_user_question";
 
 #[derive(Clone)]
 pub struct UiEventSender {
@@ -108,6 +110,10 @@ impl Shell<'_> {
             UiEvent::ApprovalRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
                 self.approval_requested(turn_id, *request);
+            }
+            UiEvent::QuestionRequested { turn_id, request } => {
+                self.end_assistant_step(turn_id);
+                self.question_requested(turn_id, request);
             }
             event @ (UiEvent::ToolStarted { .. }
             | UiEvent::ToolRejected { .. }
@@ -228,11 +234,13 @@ impl Shell<'_> {
                 self.end_assistant_step(turn_id);
                 if let Some(turn) = self.visible_turn(turn_id) {
                     turn.phase = TurnPhase::Running;
-                    self.transcript.add_tool_row(ToolActivityRow::started(
-                        call_id,
-                        &tool_name,
-                        description,
-                    ));
+                    if !asks_the_user(&tool_name, Some(&description)) {
+                        self.transcript.add_tool_row(ToolActivityRow::started(
+                            call_id,
+                            &tool_name,
+                            description,
+                        ));
+                    }
                 }
             }
             UiEvent::ToolRejected {
@@ -245,7 +253,8 @@ impl Shell<'_> {
                 content,
             } => {
                 self.end_assistant_step(turn_id);
-                if self.is_visible_turn(turn_id) {
+                if self.is_visible_turn(turn_id) && !asks_the_user(&tool_name, description.as_ref())
+                {
                     let rejected = Rejected {
                         reason,
                         arguments: &arguments,
@@ -304,6 +313,7 @@ impl Shell<'_> {
         self.turn = None;
         self.compaction = None;
         self.dismiss_approval();
+        self.dismiss_question();
         self.composer.reset_for_session();
         self.start_fresh_transcript(FreshScreen::KeepScrollback);
         self.promote_next();
@@ -409,6 +419,7 @@ impl Shell<'_> {
             .is_some_and(|submission| submission.state == SubmissionState::Active);
         if was_visible && let Some(turn) = self.turn.take() {
             self.dismiss_approval();
+            self.dismiss_question();
             self.finish_visible_turn(turn, outcome);
         }
         self.promote_next();
@@ -463,11 +474,16 @@ impl Shell<'_> {
     }
 
     pub(super) fn cancel_visible_turn(&mut self) {
+        self.cancel_visible_turn_noting(Entry::Cancellation);
+    }
+
+    pub(super) fn cancel_visible_turn_noting(&mut self, entry: Entry) {
         if self.turn.take().is_none() {
             return;
         }
         self.reveal_pending_approval_call();
         self.dismiss_approval();
+        self.dismiss_question();
         let mut started = None;
         if let Some(submission) = self
             .outstanding
@@ -481,10 +497,16 @@ impl Shell<'_> {
             self.send(UiCommand::Cancel { turn_id });
         }
         if !self.transcript.cancel_active_tools() {
-            self.push_entry(Entry::Cancellation);
+            self.push_entry(entry);
         }
         self.promote_next();
     }
+}
+
+fn asks_the_user(tool_name: &str, description: Option<&CallDescription>) -> bool {
+    description.map_or(tool_name == ASK_USER_QUESTION, |description| {
+        description.activity == ToolActivity::Ask
+    })
 }
 
 #[cfg(test)]
