@@ -125,11 +125,23 @@ impl TestShell {
         self.screen.process(&pending);
         self.screen.screen_mut().set_size(rows, cols);
         rustix::termios::tcsetwinsize(&self.pty.master, winsize(rows, cols)).unwrap();
-        self.shell.resize_due_ms = Some(0);
+        self.shell.pending_resize = Some(super::PendingResize {
+            due_ms: 0,
+            replay: false,
+        });
         self.draining(|shell| {
             let now_ms = shell.now_ms();
             shell.apply_pending_resize(now_ms);
         });
+    }
+
+    pub(super) fn signal_resize(&mut self, rows: u16, cols: u16) {
+        let pending = std::mem::take(&mut self.output);
+        self.screen.process(&pending);
+        self.screen.screen_mut().set_size(rows, cols);
+        rustix::termios::tcsetwinsize(&self.pty.master, winsize(rows, cols)).unwrap();
+        let now_ms = self.shell.now_ms();
+        self.shell.handle_resize_signal(now_ms);
     }
 
     pub(super) fn draining<T>(&mut self, action: impl FnOnce(&mut Shell<'static>) -> T) -> T {
@@ -157,6 +169,10 @@ impl TestShell {
         });
         self.output.extend_from_slice(&output);
         (result, output.len())
+    }
+
+    pub(super) fn drained(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.output)
     }
 
     pub(super) fn written(&mut self) -> String {

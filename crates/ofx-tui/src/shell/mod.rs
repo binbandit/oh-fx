@@ -130,6 +130,12 @@ struct Submission {
     sequence: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingResize {
+    due_ms: i64,
+    replay: bool,
+}
+
 struct ActiveTurn {
     turn_id: Option<TurnId>,
     started_ms: i64,
@@ -218,7 +224,7 @@ pub(crate) struct Shell<'a> {
     clipboard: ClipboardRuntime,
     signals: SignalPipe,
     clock: Instant,
-    resize_due_ms: Option<i64>,
+    pending_resize: Option<PendingResize>,
     output: String,
     footer_row: usize,
     should_exit: bool,
@@ -396,7 +402,7 @@ impl<'a> Shell<'a> {
             clipboard: ClipboardRuntime::new(clipboard),
             signals: setup.signals,
             clock: Instant::now(),
-            resize_due_ms: None,
+            pending_resize: None,
             output: String::new(),
             footer_row: 0,
             should_exit: false,
@@ -434,10 +440,14 @@ impl<'a> Shell<'a> {
     }
 
     fn replay(&mut self) {
-        self.metrics.full_redraws += 1;
         self.forget_approval_review();
+        if let Some(pending) = &mut self.pending_resize {
+            pending.replay = true;
+            return;
+        }
+        self.metrics.full_redraws += 1;
         self.renderer.resize(self.layout.rows, self.layout.cols);
-        self.renderer.reset_screen(&mut self.output);
+        self.renderer.reset_screen();
         self.transcript.restart(self.cols());
         self.invalidate();
     }
@@ -533,7 +543,7 @@ impl<'a> Shell<'a> {
             self.mark_dirty();
         }
         let now_ms = self.now_ms();
-        if self.dimensions_invalid || !self.frame_due(now_ms) {
+        if self.dimensions_invalid || self.pending_resize.is_some() || !self.frame_due(now_ms) {
             return self.flush_output();
         }
         self.frame.stale = false;
@@ -690,6 +700,7 @@ impl<'a> Shell<'a> {
     }
 
     fn leave_normally(&mut self) -> Option<i32> {
+        self.renderer.flush_queued(&mut self.output);
         let _ = self.flush_output();
         let _ = self.terminal.write_all(b"\x1b]2;\x07");
         let cleanup = self.exit_cleanup();
@@ -702,7 +713,15 @@ impl<'a> Shell<'a> {
     }
 
     fn handle_resize_signal(&mut self, now_ms: i64) {
-        self.resize_due_ms = Some(now_ms + RESIZE_DEBOUNCE_MS);
+        let changed = self
+            .terminal
+            .query_layout(FOOTER_ROWS)
+            .is_ok_and(|layout| layout.rows != self.layout.rows || layout.cols != self.layout.cols);
+        let replay = changed || self.pending_resize.is_some_and(|pending| pending.replay);
+        self.pending_resize = Some(PendingResize {
+            due_ms: now_ms + RESIZE_DEBOUNCE_MS,
+            replay,
+        });
         if self.approval.is_some() {
             self.forget_approval_review();
             self.invalidate();
@@ -710,19 +729,20 @@ impl<'a> Shell<'a> {
     }
 
     fn apply_pending_resize(&mut self, now_ms: i64) {
-        let Some(due) = self.resize_due_ms else {
+        let Some(pending) = self.pending_resize else {
             return;
         };
-        if now_ms < due {
+        if now_ms < pending.due_ms {
             return;
         }
-        self.resize_due_ms = None;
+        self.pending_resize = None;
         let Ok(layout) = self.terminal.query_layout(FOOTER_ROWS) else {
             self.lose_dimensions();
             return;
         };
         self.metrics.debounced_resizes += 1;
-        if self.dimensions_invalid
+        if pending.replay
+            || self.dimensions_invalid
             || layout.rows != self.layout.rows
             || layout.cols != self.layout.cols
         {
@@ -747,6 +767,8 @@ impl<'a> Shell<'a> {
     }
 
     fn suspend(&mut self) -> Result<(), TerminalError> {
+        self.renderer.flush_queued(&mut self.output);
+        self.flush_output()?;
         let cleanup = self.exit_cleanup();
         let _ = self.terminal.write_all(b"\x1b]2;\x07");
         let layout = self
@@ -800,8 +822,8 @@ impl<'a> Shell<'a> {
         entries: impl IntoIterator<Item = Entry>,
     ) {
         match screen {
-            FreshScreen::Erase => self.renderer.reset_screen(&mut self.output),
-            FreshScreen::KeepScrollback => self.renderer.release_screen(&mut self.output),
+            FreshScreen::Erase => self.renderer.reset_screen(),
+            FreshScreen::KeepScrollback => self.renderer.release_screen(),
         }
         self.transcript.clear();
         self.transcript.restart(self.cols());
@@ -823,7 +845,7 @@ impl<'a> Shell<'a> {
             file_picker,
             self.gestures.next_expiry_ms(),
             self.yolo_warning.deadline_ms(),
-            self.resize_due_ms,
+            self.pending_resize.map(|pending| pending.due_ms),
             self.compaction.and_then(|status| status.expires_ms()),
             self.recovery()
                 .and_then(|recovery| recovery.next_change_ms(now_ms)),
@@ -896,6 +918,61 @@ mod tests {
     }
 
     #[test]
+    fn a_resize_that_ends_at_the_size_it_started_from_still_repaints() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        let redraws = test.shell.metrics.full_redraws;
+        test.signal_resize(24, 30);
+        test.signal_resize(24, 80);
+        test.advance(100);
+        test.step();
+        assert_eq!(test.shell.metrics.full_redraws, redraws + 1);
+        let written = test.written();
+        assert!(written.contains("\x1b[2J\x1b[3J"), "{written:?}");
+        let screen = test.screen();
+        assert!(screen.contains("Run /help for commands"), "{screen}");
+        assert!(screen.contains("auto · model-a"), "{screen}");
+    }
+
+    #[test]
+    fn nothing_is_drawn_at_the_old_size_while_a_resize_settles() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        test.signal_resize(24, 40);
+        test.type_bytes(b"x");
+        test.step();
+        assert_eq!(test.written(), "");
+        test.advance(100);
+        test.step();
+        let written = test.written();
+        let hidden = written.find("\x1b[?25l").unwrap();
+        let cleared = written.find("\x1b[0m\x1b[2J\x1b[3J\x1b[H").unwrap();
+        assert!(hidden < cleared, "{written:?}");
+        let screen = test.screen();
+        assert!(screen.contains("┃ x"), "{screen}");
+        assert!(
+            screen.lines().all(|row| row.chars().count() <= 40),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_theme_change_while_a_resize_settles_replays_once_at_the_new_size() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        let redraws = test.shell.metrics.full_redraws;
+        test.signal_resize(24, 40);
+        test.draining(|shell| shell.apply_theme(true));
+        assert_eq!(test.written(), "");
+        test.advance(100);
+        test.step();
+        assert_eq!(test.shell.metrics.full_redraws, redraws + 1);
+        let written = test.written();
+        assert_eq!(written.matches("\x1b[3J").count(), 1, "{written:?}");
+        assert!(written.contains("\x1b[0;1;38;5;235moh-fx"), "{written:?}");
+    }
+
+    #[test]
     fn frames_are_only_built_when_something_visible_changed() {
         let mut test = test_shell::TestShell::start();
         test.screen();
@@ -934,6 +1011,58 @@ mod tests {
         assert!(dark.contains("\x1b[0;1;38;5;255moh-fx"), "{dark:?}");
         test.draining(|shell| shell.apply_theme(false));
         assert!(test.written().is_empty());
+    }
+
+    fn every_line(output: &[u8]) -> Vec<String> {
+        let mut parser = vt100::Parser::new(24, 80, 500);
+        parser.process(output);
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let depth = parser.screen().scrollback();
+        let mut lines = Vec::new();
+        for offset in (1..=depth).rev() {
+            parser.screen_mut().set_scrollback(offset);
+            lines.extend(parser.screen().rows(0, 80).next());
+        }
+        parser.screen_mut().set_scrollback(0);
+        lines.extend(parser.screen().rows(0, 80));
+        lines
+    }
+
+    fn exit_after(test: &mut test_shell::TestShell) -> Vec<u8> {
+        let exited = test.draining(|shell| shell.step().unwrap());
+        assert!(exited.is_some());
+        assert_eq!(test.draining(|shell| shell.shutdown(None)), None);
+        test.drained()
+    }
+
+    #[test]
+    fn a_clear_and_ctrl_d_in_one_wake_still_keep_the_transcript_in_scrollback() {
+        let mut test = test_shell::TestShell::start();
+        for index in 0..30 {
+            test.shell.input_notice(&format!("kept line {index:02}"));
+        }
+        let mut output = test.written().into_bytes();
+        test.queue(UiEvent::ConversationCleared {
+            first_kept_prompt: 0,
+        });
+        test.type_bytes(b"\x04");
+        output.extend(exit_after(&mut test));
+        let lines = every_line(&output);
+        for kept in ["kept line 00", "kept line 29"] {
+            assert!(
+                lines.iter().any(|line| line.contains(kept)),
+                "{kept}: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_l_and_ctrl_d_in_one_read_still_clear_history_on_exit() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        test.type_bytes(b"\x0c\x04");
+        let output = String::from_utf8_lossy(&exit_after(&mut test)).into_owned();
+        assert!(output.contains("\x1b[3J"), "{output:?}");
     }
 
     #[test]

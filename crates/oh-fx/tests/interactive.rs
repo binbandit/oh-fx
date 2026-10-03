@@ -983,6 +983,7 @@ fn resizing_replays_the_transcript_at_the_new_width() {
     let mut session = home.shell(20, 100);
     session.send(b"wrap\r");
     wait(&session, "word11");
+    let start = session.output().len();
     session.resize(20, 30).expect("resize the pty");
     let screen = session
         .wait_for(WAIT, |screen| {
@@ -990,6 +991,14 @@ fn resizing_replays_the_transcript_at_the_new_width() {
         })
         .unwrap_or_else(|screen| panic!("expected re-wrapped rows:\n{screen}"));
     assert!(screen.contains("  word00 word01 word02 word03\n"));
+    let replay = session.output()[start..].to_vec();
+    assert_eq!(count(&replay, b"\x1b[3J"), 1);
+    assert_eq!(
+        count(&replay, b"\x1b[?2026h\x1b[?25l\x1b[0m\x1b[2J\x1b[3J\x1b[H"),
+        1,
+        "{:?}",
+        String::from_utf8_lossy(&replay)
+    );
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).is_some());
 }
