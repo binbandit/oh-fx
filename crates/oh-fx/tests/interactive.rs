@@ -629,7 +629,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
     let menu = [
-        "Commands 17  [All]  General  Session  Account  Model",
+        "Commands 18  [All]  General  Session  Account  Model",
         "  /permissions    choose what oh-fx is allowed to do",
         "  /skills         browse and manage skills",
         "  /quit           exit the interactive shell",
@@ -644,6 +644,11 @@ fn slash_commands_switch_models_show_help_and_exit() {
         .unwrap_or_else(|screen| panic!("the help menu is incomplete:\n{screen}"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
+    session.send(b"/cost\r");
+    wait(
+        &session,
+        "* usage: Durable profile usage is unavailable in this host; active session usage",
+    );
     session.send(b"/stats\r");
     wait(&session, "* stats: ansi_bytes=");
     session.send(b"/copy\r");
@@ -978,7 +983,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 17");
+    wait(&session, "Commands 18");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 

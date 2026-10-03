@@ -528,6 +528,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Account,
     ),
     SlashSpec::new(
+        SlashKind::Usage,
+        "/usage",
+        "show local oh-fx tokens, models, and spend",
+        SlashPresentationCategory::Account,
+    )
+    .with_aliases(&["/cost"]),
+    SlashSpec::new(
         SlashKind::Status,
         "/status",
         "show runtime configuration",
