@@ -341,6 +341,7 @@ impl Profile {
             skills: Arc::clone(&skills),
             mcp: ParentCatalog::shared(mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>)),
             workspace_root: self.workspace_root.clone(),
+            additional_roots: self.additional_roots(),
             permission_mode: permission_mode.clone(),
             parent: Mutex::new(config.clone()),
             mode: launch.mode,
@@ -358,14 +359,7 @@ impl Profile {
             tools,
             delegation: Delegation::new(children),
             mcp,
-            context: Arc::new(
-                HostRuntimeContext::new(
-                    self.workspace_root.clone(),
-                    permission_mode.clone(),
-                    interactive,
-                )
-                .with_additional_roots(self.additional_roots()),
-            ),
+            context: self.runtime_context(&permission_mode, interactive),
             permissions,
             permission_mode,
             preferences: self.paths.clone(),
@@ -383,6 +377,21 @@ impl Profile {
             mode: launch.mode,
             config,
         })
+    }
+
+    fn runtime_context(
+        &self,
+        permission_mode: &LivePermissionMode,
+        interactive: bool,
+    ) -> Arc<HostRuntimeContext> {
+        Arc::new(
+            HostRuntimeContext::new(
+                self.workspace_root.clone(),
+                permission_mode.clone(),
+                interactive,
+            )
+            .with_additional_roots(self.additional_roots()),
+        )
     }
 
     fn load_skills(&self, limits: &ContextLimits, interactive: bool) -> Arc<HostSkills> {
@@ -1123,6 +1132,75 @@ mod tests {
             profile.apply_launch(&[OsString::from("../missing")], false),
             Err(WorkspaceAccessError::PathNotFound)
         );
+    }
+
+    fn system_texts(request: &ofx_testkit::RecordedRequest) -> Vec<String> {
+        request.json()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "system")
+            .map(|message| message["content"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn children_share_the_launchs_additional_directories() {
+        let server = FakeServer::start([
+            Reply::sse(&ofx_testkit::chat_tool_call_events(
+                "call_1",
+                "subagent",
+                r#"{"request":{"action":"run","task":"look around"}}"#,
+            )),
+            Reply::sse(&ofx_testkit::chat_text_events(&["child report"])),
+            Reply::sse(&ofx_testkit::chat_text_events(&["parent done"])),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let shared = root.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let mut profile = profile(
+            &root,
+            &format!(
+                r#"{{"provider":"local","providers":{{"local":{{"protocol":"openai-chat-completions","base_url":"{}","auth":{{"type":"none"}},"models":["model-a"]}}}}}}"#,
+                server.base_url()
+            ),
+        );
+        profile
+            .apply_launch(&[OsString::from("../shared")], false)
+            .unwrap();
+        let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+        let setup = profile
+            .connect(
+                Launch {
+                    model: None,
+                    permission_mode: PermissionMode::Ask,
+                    system_prompt: None,
+                    reasoning_effort: None,
+                    fast_mode: None,
+                    context_limits: &[],
+                    command_timeout: None,
+                    executions: &executions,
+                    web_fetch_progress: None,
+                    endpoints: SubscriptionEndpoints::default(),
+                    mode: None,
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut agent = setup.agent(true);
+        let report = agent
+            .run_turn("go", &mut |_| {}, &CancellationToken::new())
+            .await;
+        assert_eq!(report.final_text, "parent done");
+        let note = format!(
+            "Runtime context: the following additional directories are access-authorized for this run. Relative paths still resolve from the primary workspace. These directories do not contribute AGENTS.md or other project instructions.\n- {}\n",
+            shared.display()
+        );
+        let requests = server.requests();
+        assert!(system_texts(&requests[0]).contains(&note));
+        assert!(system_texts(&requests[1]).contains(&note));
     }
 
     #[test]
