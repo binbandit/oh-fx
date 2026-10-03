@@ -80,6 +80,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - Saved sessions live in `$XDG_DATA_HOME/oh-fx/sessions/<id>`, and the session `-c` reopens for each workspace is named in `$XDG_DATA_HOME/oh-fx/continue/<sha256 of the workspace root>`, where upstream uses `~/.fx/sessions` and `~/.fx/continue`. File names, JSON fields, schema versions, and permissions inside them follow upstream.
 - Prompt history lives in `$XDG_DATA_HOME/oh-fx/history.jsonl`, guarded by `history.lock` beside it, where upstream uses `~/.fx/history.jsonl` and `~/.fx/history.lock`. Its records, size caps, compaction, deduplication, and permissions follow upstream.
 - The `@` file index cache lives in `$XDG_CACHE_HOME/oh-fx/file-index/<sha256 of the indexed roots>.idx`, where upstream uses `~/.fx/file-index`. Its format, size caps, integrity check, and permissions follow upstream.
+- Profile MCP servers live in `$XDG_CONFIG_HOME/oh-fx/mcp.json`, written with the `mcp.lock` advisory lock beside it, where upstream uses `~/.fx/mcp.json`. A workspace keeps its servers in `.mcp.json` at its root, the name other MCP clients read, and the project trust choices (`enabledMcpjsonServers`, `disabledMcpjsonServers`, and `enableAllProjectMcpServers`) live under the workspace's entry in the profile `settings.json`, as upstream keeps them.
 
 ## Deliberate differences from upstream
 
@@ -262,6 +263,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - A summary request is retried as the turn loop retries a model request that has streamed nothing, at most 10 attempts on the same backoff, and shows no retry notice. Upstream leaves those retries to its provider transport; oh-fx's transports do not retry, so the agent does.
 - Compaction writes no trace lines and keeps no trace ring for `/trace`, since oh-fx has no trace log yet.
 - Compaction reads tool call arguments with serde_json, where upstream uses `std.json`. Arguments that repeat a key are read with the key's last value, where upstream treats them as plain text, and arguments with a number beyond a 64-bit float's range are treated as plain text, where upstream reads them. This changes only the one-line index of a call's argument values in the notes request and the skills and MCP features the checkpoint lists as used.
+- Adding or removing a profile MCP server fails with `StreamTooLong` and leaves `mcp.json` untouched when the canonical file it would write exceeds 1 MiB, the limit a profile is read with. Upstream writes the larger file, which its next read then refuses with the same error.
 
 ## Parity tracking
 
