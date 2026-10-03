@@ -77,8 +77,7 @@ pub(crate) async fn login_grok<F: AsFd>(
             input,
         )
         .await
-        .map_err(|error| ActivationFailure::Detail(ofx_auth::grok_login_failure_detail(error)))?;
-    crate::provider_activation::activate_grok(profile).await
+        .map_err(|error| ActivationFailure::Detail(ofx_auth::grok_login_failure_detail(error)))
 }
 
 pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {

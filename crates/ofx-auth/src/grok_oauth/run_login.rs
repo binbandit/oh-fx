@@ -206,7 +206,11 @@ mod tests {
             .unwrap();
             assert_eq!(result, Err(expected));
             assert!(server.requests().is_empty());
-            assert!(oauth.store.load().unwrap().is_none());
+            assert!(
+                crate::grok_oauth::tests::saved_session(&oauth)
+                    .await
+                    .is_none()
+            );
         }
     }
 
@@ -235,7 +239,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(finished.0, Err(GrokError::Cancelled));
-        assert!(oauth.store.load().unwrap().is_none());
+        assert!(
+            crate::grok_oauth::tests::saved_session(&oauth)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -271,6 +279,10 @@ mod tests {
         assert!(output.ends_with("\n\nWaiting for browser authorization...\nPaste the code shown by xAI and press enter if the browser doesn't return.\n"));
         assert_eq!(server.requests().len(), 2);
         assert!(String::from_utf8_lossy(&server.requests()[0].body).contains("code=manual-code"));
-        assert!(oauth.store.load().unwrap().is_some());
+        assert!(
+            crate::grok_oauth::tests::saved_session(&oauth)
+                .await
+                .is_some()
+        );
     }
 }
