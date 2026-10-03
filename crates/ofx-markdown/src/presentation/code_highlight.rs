@@ -58,10 +58,13 @@ impl Highlighted {
 }
 
 pub fn highlight(source: &str, profile: &Profile, base: Option<Slot>) -> Vec<Line> {
+    let mut line_comments = profile.line_comments();
     let mut highlighter = Highlighter {
         out: Highlighted::new(base),
         source,
         profile,
+        block_comment: profile.block_comment(),
+        line_comments: [line_comments.next(), line_comments.next()],
         command_position: profile.command_words(),
         close_braces: CloseBraceSearch::default(),
     };
@@ -76,6 +79,8 @@ struct Highlighter<'a> {
     out: Highlighted,
     source: &'a str,
     profile: &'a Profile,
+    block_comment: Option<BlockComment>,
+    line_comments: [Option<&'static str>; 2],
     command_position: bool,
     close_braces: CloseBraceSearch,
 }
@@ -110,12 +115,12 @@ impl Highlighter<'_> {
             self.command_position = self.profile.command_words();
             return index + 1;
         }
-        if let Some(end) = block_comment_end(source, index, self.profile.block_comment)
-            .or_else(|| line_comment_end(source, index, self.profile.line_comments))
+        if let Some(end) = block_comment_end(source, index, self.block_comment)
+            .or_else(|| line_comment_end(source, index, self.line_comments.into_iter().flatten()))
         {
             return self.token(Slot::SyntaxComment, index, end);
         }
-        if self.profile.quotes.contains(&byte) {
+        if self.profile.quotes().contains(&byte) {
             let end = quoted_end(bytes, index);
             if byte == b'"' && self.profile.dollar_vars() {
                 append_double_quoted(&mut self.out, &source[index..end]);
@@ -136,8 +141,8 @@ impl Highlighter<'_> {
         if let Some(end) = self.shell_word(index) {
             return end;
         }
-        if self.profile.operators.contains(&byte) {
-            let end = operator_run_end(bytes, index, self.profile.operators);
+        if self.profile.operators().contains(&byte) {
+            let end = operator_run_end(bytes, index, self.profile.operators());
             let run = &source[index..end];
             self.out.styled(Slot::SyntaxOperator, run);
             self.command_position = !run.contains(['<', '>']);
@@ -180,12 +185,12 @@ impl Highlighter<'_> {
         }
         if self.profile.dollar_vars()
             && byte == b'~'
-            && tilde_start(bytes, index, self.profile.operators)
+            && tilde_start(bytes, index, self.profile.operators())
         {
             return Some(self.token(Slot::SyntaxVariable, index, index + 1));
         }
         if self.profile.dash_flags() && byte == b'-' {
-            let end = flag_end(bytes, index, self.profile.operators)?;
+            let end = flag_end(bytes, index, self.profile.operators())?;
             return Some(self.token(Slot::SyntaxNumber, index, end));
         }
         None
@@ -228,9 +233,9 @@ fn word_slot(
     if after_separator {
         return None;
     }
-    if profile.keywords.contains(token, profile.keyword_case) {
+    if profile.keywords().contains(token, profile.keyword_case()) {
         Some(Slot::SyntaxKeyword)
-    } else if profile.literals.contains(token, profile.keyword_case) {
+    } else if profile.literals().contains(token, profile.keyword_case()) {
         Some(Slot::SyntaxNumber)
     } else {
         None
@@ -355,10 +360,14 @@ fn block_comment_end(source: &str, index: usize, comment: Option<BlockComment>) 
     )
 }
 
-fn line_comment_end(source: &str, index: usize, prefixes: &[&str]) -> Option<usize> {
+fn line_comment_end(
+    source: &str,
+    index: usize,
+    prefixes: impl Iterator<Item = &'static str>,
+) -> Option<usize> {
     let rest = &source.as_bytes()[index..];
     if !prefixes
-        .iter()
+        .into_iter()
         .any(|prefix| rest.starts_with(prefix.as_bytes()))
     {
         return None;

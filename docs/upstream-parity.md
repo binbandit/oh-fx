@@ -17,6 +17,8 @@ oh-fx follows [vercel-labs/fx](https://github.com/vercel-labs/fx). This page rec
 
 A pull request that lands in more than one place has one row per status.
 
+Syntax-highlighting profile storage uses pointerless tables as recorded in [architecture.md](architecture.md). This representation change preserves the existing tokenizer behavior and does not complete a deferred behavior in this ledger.
+
 ## d9f7766..34f1ed1
 
 | PR | Merge | Title | Status | oh-fx | Note |
