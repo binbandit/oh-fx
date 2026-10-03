@@ -321,7 +321,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
         (&["models", "--json"][..], "models"),
         (&["doctor", "--json"], "doctor"),
         (&["balance", "--json"], "credits"),
-        (&["usage", "--json"], "usage"),
         (&["sessions", "--json"], "sessions"),
         (&["session", "last", "--json"], "session"),
         (&["session", "migrate", "x", "--json"], "session"),
@@ -344,6 +343,53 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
             "{args:?}"
         );
     }
+}
+
+#[test]
+fn usage_answers_like_a_host_without_profile_usage() {
+    for args in [&["usage"][..], &["usage", "--period", "7d"]] {
+        let output = oh_fx(args, &[]);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            "oh-fx usage: local usage data is unavailable\n",
+            "{args:?}"
+        );
+    }
+    let output = oh_fx(&["usage", "--json", "--period", "24h"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        stdout(&output),
+        "{\"kind\":\"usage\",\"error\":\"local usage data is unavailable\",\"code\":\"ProfileUsageUnavailable\"}\n"
+    );
+}
+
+#[test]
+fn usage_needs_home() {
+    let run = |args: &[&str]| {
+        spawn(
+            Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+                .args(args)
+                .env_clear()
+                .env("OH_FX_AUTO_UPGRADE", "0")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .wait_with_output()
+        .expect("wait for oh-fx")
+    };
+    let output = run(&["usage"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "oh-fx usage: HOME is not set\n");
+    let output = run(&["usage", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stdout(&output),
+        "{\"kind\":\"usage\",\"error\":\"HOME is not set\",\"code\":\"HomeNotSet\"}\n"
+    );
 }
 
 #[test]
