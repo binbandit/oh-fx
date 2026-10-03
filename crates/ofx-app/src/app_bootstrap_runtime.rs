@@ -322,6 +322,7 @@ impl Profile {
                     .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
                 web_fetch_progress: launch.web_fetch_progress,
                 change_tracker: change_tracker.as_ref(),
+                additional_roots: self.additional_roots(),
             },
         );
         let permissions = self.reviewed_policy(&permission_mode, &route.reviewer);

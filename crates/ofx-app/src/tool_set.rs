@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ pub(crate) struct ToolHooks<'a> {
     pub(crate) questions: Option<Arc<dyn QuestionAsker>>,
     pub(crate) web_fetch_progress: Option<WebFetchProgress>,
     pub(crate) change_tracker: Option<&'a ChangeTracker>,
+    pub(crate) additional_roots: Vec<PathBuf>,
 }
 
 pub(crate) fn ask_tools(
@@ -28,9 +29,12 @@ pub(crate) fn ask_tools(
     search: Arc<CapabilitySearch>,
     hooks: ToolHooks<'_>,
 ) -> Vec<Arc<dyn Tool>> {
-    let mut edit_file = EditFile::new(workspace_root).with_permission_mode(permission_mode.clone());
-    let mut write_file =
-        WriteFile::new(workspace_root).with_permission_mode(permission_mode.clone());
+    let mut edit_file = EditFile::new(workspace_root)
+        .with_permission_mode(permission_mode.clone())
+        .with_additional_roots(hooks.additional_roots.clone());
+    let mut write_file = WriteFile::new(workspace_root)
+        .with_permission_mode(permission_mode.clone())
+        .with_additional_roots(hooks.additional_roots);
     if let Some(tracker) = hooks.change_tracker {
         edit_file = edit_file.with_change_tracker(tracker.clone());
         write_file = write_file.with_change_tracker(tracker.clone());

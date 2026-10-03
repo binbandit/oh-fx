@@ -209,11 +209,12 @@ impl PermissionGate for PermissionPolicy {
         if mode == PermissionMode::Yolo {
             return Admission::Allowed(PathAccess::WorkspaceOrExternal);
         }
-        let inside = path_inside(&self.workspace_root, &mutation.target);
-        let access = if inside {
-            PathAccess::WorkspaceOnly
+        let (inside, access) = if path_inside(&self.workspace_root, &mutation.target) {
+            (true, PathAccess::WorkspaceOnly)
+        } else if let Some(root) = self.additional_root(&mutation.target) {
+            (true, PathAccess::Within(root.to_path_buf()))
         } else {
-            PathAccess::WorkspaceOrExternal
+            (false, PathAccess::WorkspaceOrExternal)
         };
         let reversible = inside || mutation.state == FileMutationState::Creates;
         if self
@@ -703,6 +704,43 @@ mod tests {
                 "yolo {target} {state:?}"
             );
         }
+    }
+
+    #[test]
+    fn file_changes_in_an_additional_directory_are_reversible_and_confined_to_it() {
+        use FileMutationState::{Changes, Creates, Unchanged, Unread};
+
+        let shared = PathBuf::from("/srv/shared");
+        let within = Admission::Allowed(PathAccess::Within(shared.clone()));
+        let policy = |mode| {
+            PermissionPolicy::new(mode, "/workspace").with_additional_roots(vec![shared.clone()])
+        };
+        let auto = policy(PermissionMode::Auto);
+        let ask = policy(PermissionMode::Ask);
+        for state in [Changes, Creates, Unchanged] {
+            let change = mutation("/srv/shared/notes.txt", state);
+            assert_eq!(auto.admit_file_mutation(&change), within, "auto {state:?}");
+        }
+        assert_eq!(
+            auto.admit_file_mutation(&mutation("/srv/shared/notes.txt", Unread)),
+            Admission::ReviewRequired
+        );
+        assert_eq!(
+            auto.admit_file_mutation(&mutation("/srv/shared/.git/config", Changes)),
+            Admission::ReviewRequired
+        );
+        assert_eq!(
+            ask.admit_file_mutation(&mutation("/srv/shared/notes.txt", Unchanged)),
+            within
+        );
+        assert_eq!(
+            ask.admit_file_mutation(&mutation("/srv/shared/notes.txt", Changes)),
+            Admission::ApprovalRequired
+        );
+        assert_eq!(
+            auto.admit_file_mutation(&mutation("/srv/other/notes.txt", Unread)),
+            Admission::ReviewRequired
+        );
     }
 
     #[test]
