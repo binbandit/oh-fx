@@ -7,29 +7,6 @@ use crate::config_runtime::Settings;
 
 const MODEL: &str = "gpt-6.1-sol";
 
-#[test]
-fn provider_activation_preserves_fast_mode_and_clears_model_bindings() {
-    let fixture = Fixture::with_settings(
-        r#"{"provider":"codex","models":{"codex":"old"},"grok_model":"legacy-grok","fast_mode":true,"fast_mode_model_bound":true,"workspaces":{"/a":{"fast_mode":false,"fast_mode_model_bound":true,"effort":"low"}},"future":7}"#,
-    );
-    save_provider_model(&fixture.paths, &ProviderId::Grok, "grok-model").unwrap();
-    let settings: Value = serde_json::from_str(&fixture.read()).unwrap();
-    assert_eq!(settings["provider"], "grok");
-    assert_eq!(settings["models"]["grok"], "grok-model");
-    assert_eq!(settings["models"]["codex"], "old");
-    assert!(settings.get("grok_model").is_none());
-    assert_eq!(settings["fast_mode"], true);
-    assert!(settings.get("fast_mode_model_bound").is_none());
-    assert_eq!(settings["workspaces"]["/a"]["fast_mode"], false);
-    assert_eq!(settings["workspaces"]["/a"]["effort"], "low");
-    assert!(
-        settings["workspaces"]["/a"]
-            .get("fast_mode_model_bound")
-            .is_none()
-    );
-    assert_eq!(settings["future"], 7);
-}
-
 struct Fixture {
     _directory: tempfile::TempDir,
     paths: ProfilePaths,

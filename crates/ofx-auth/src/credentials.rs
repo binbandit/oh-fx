@@ -1,4 +1,4 @@
-pub const GROK_SOURCE_LABEL: &str = "Grok subscription";
+pub(crate) const GROK_SOURCE_LABEL: &str = "Grok subscription";
 
 pub const MISSING_CHATGPT_CREDENTIAL_MESSAGE: &str =
     "oh-fx needs a Codex subscription login for this model. Run oh-fx login codex.";
