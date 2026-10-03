@@ -628,7 +628,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 16");
+    let screen = wait(&session, "Commands 17");
     assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
     assert!(screen.contains("  /skills         browse and manage skills"));
     assert!(screen.contains("  /quit           exit the interactive shell"));
@@ -974,7 +974,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 16");
+    wait(&session, "Commands 17");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 
