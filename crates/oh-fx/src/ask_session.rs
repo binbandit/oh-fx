@@ -20,6 +20,7 @@ impl SavedAsk {
     ) -> Result<Self, SessionError> {
         let live = LiveSession::resume(resumed, session_route(setup)?, agent);
         live.attach(agent);
+        setup.bind_children(live.children(&store));
         Ok(Self {
             store,
             live,
@@ -37,6 +38,7 @@ impl SavedAsk {
         let preferences = configured_preferences(profile, setup, route.provider().clone());
         let live = LiveSession::start(&store, preferences, route)?;
         live.attach(agent);
+        setup.bind_children(live.children(&store));
         Ok(Self {
             store,
             live,

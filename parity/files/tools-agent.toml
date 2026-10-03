@@ -8,7 +8,7 @@ note = "Batch validation, exact sentinels, terminal-safe prompts and ordered ans
 upstream = "src/tools/agent/subagent.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/subagent.rs", "crates/ofx-agent/src/subagent/tool_host.rs"]
-note = "Subagent decoding and a managed child host run Agent turns; `ask` and the interactive session register the tool when they save their session; durable child sessions, model catalog override resolution and the live input-token status are absent."
+note = "Subagent decoding and a managed child host run Agent turns; `ask` and the interactive session register the tool when they save their session, and each child is saved as its own session; restoring children on resume, model catalog override resolution and the live input-token status are absent."
 
 [[file]]
 upstream = "src/tools/agent/vision.zig"

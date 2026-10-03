@@ -100,8 +100,9 @@ modules = ["crates/ofx-session/src/session_catalog_cache.rs", "crates/ofx-sessio
 
 [[file]]
 upstream = "src/core/session/session_child_store.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_children.rs"]
+note = "Only the subagent control directory exists, with a child's owner marker and the parent's registry file under its lock; background, command, browser, tool-result, terminal and client-context children are absent."
 
 [[file]]
 upstream = "src/core/session/session_codec.zig"

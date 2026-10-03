@@ -1,3 +1,4 @@
+mod child_sessions;
 mod launch_overrides;
 mod persistence;
 mod resume_transcript;
@@ -6,7 +7,7 @@ mod session_titles;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_agent::Agent;
+use ofx_agent::{Agent, ChildStore};
 use ofx_config::SelectionError;
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
 use ofx_session::{
@@ -16,6 +17,7 @@ use ofx_session::{
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
 
+use child_sessions::SessionChildren;
 pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
 pub use session_titles::TitleGeneration;
@@ -153,6 +155,16 @@ impl LiveSession {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn children(&self, store: &SessionStore) -> Option<Arc<dyn ChildStore>> {
+        let sessions = store.children(&self.id).ok()?;
+        let language = self.session().metadata().conversation_language.clone();
+        Some(Arc::new(SessionChildren::new(
+            sessions,
+            self.provider.clone(),
+            language,
+        )))
     }
 
     pub fn attach(&self, agent: &mut Agent) {

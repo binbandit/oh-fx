@@ -459,7 +459,17 @@ fn the_shell_asks_a_childs_approval_on_the_parents_prompt() {
     fs::write(home.root.join("notes.txt"), "hi from outside\n").expect("write the notes");
     let mut session = home.shell();
     session.send(b"delegate the reading\r");
-    let screen = wait(&session, "Subagent 1 needs permission");
+    let screen = wait(&session, " needs permission");
+    let child_id = session_dirs(&home)
+        .iter()
+        .map(|dir| manifest(dir))
+        .find(|saved| saved["subagent_child"] == true)
+        .and_then(|saved| saved["id"].as_str().map(str::to_owned))
+        .expect("the child's session");
+    assert!(
+        screen.contains(&format!("Subagent {child_id} needs permission")),
+        "{screen}"
+    );
     for line in ["read_file ", "notes.txt", "❯ 1. Yes", "3. No"] {
         assert!(screen.contains(line), "{line}\n{screen}");
     }
@@ -567,4 +577,84 @@ fn a_childs_commands_stop_with_its_work_and_stay_out_of_the_parents_output() {
         "{}",
         tool_result(&requests[4])
     );
+}
+
+fn session_dirs(home: &Home) -> Vec<PathBuf> {
+    fs::read_dir(home.root.join("data/oh-fx/sessions"))
+        .expect("the sessions directory")
+        .map(|entry| entry.expect("an entry").path())
+        .collect()
+}
+
+fn manifest(dir: &std::path::Path) -> Value {
+    serde_json::from_slice(&fs::read(dir.join("session.json")).expect("a manifest"))
+        .expect("a manifest object")
+}
+
+#[test]
+fn a_named_agent_is_saved_as_its_own_session_beside_its_parent() {
+    let server = FakeServer::start([
+        delegate(
+            "call_1",
+            &json!({"action": "message", "agent": "reviewer", "instructions": "Be terse.", "message": "review \"a\""}),
+        ),
+        text("a looks fine"),
+        text("parent done"),
+        text("continued"),
+    ]);
+    let home = Home::connected(&server);
+    let output = home.ask(&["ask", "review a"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let dirs = session_dirs(&home);
+    assert_eq!(dirs.len(), 2);
+    let (children, parents): (Vec<_>, Vec<_>) = dirs
+        .iter()
+        .partition(|dir| manifest(dir)["subagent_child"] == true);
+    let ([child], [parent]) = (children.as_slice(), parents.as_slice()) else {
+        panic!("one parent and one child: {dirs:?}");
+    };
+    let parent_id = manifest(parent)["id"].as_str().expect("an id").to_owned();
+    let child_id = manifest(child)["id"].as_str().expect("an id").to_owned();
+    assert_eq!(
+        fs::read_to_string(child.join("subagent/owner.json")).expect("an owner marker"),
+        format!("{{\"schema_version\":1,\"parent_id\":\"{parent_id}\"}}")
+    );
+    let registry_bytes =
+        fs::read_to_string(parent.join("subagent/children.json")).expect("the registry");
+    let registry: Value = serde_json::from_str(&registry_bytes).expect("a registry object");
+    let record = &registry["children"][0];
+    let work_id = record["last_work_id"].as_str().expect("a work id");
+    let fingerprint = record["last_request_fingerprint"]
+        .as_str()
+        .expect("a fingerprint");
+    assert_eq!(
+        registry_bytes,
+        format!(
+            "{{\"schema_version\":2,\"parent_id\":\"{parent_id}\",\"generation\":2,\"children\":[{{\"id\":\"{child_id}\",\"kind\":\"persistent\",\"persistent\":{{\"agent\":\"reviewer\",\"instructions\":\"Be terse.\"}},\"phase\":\"idle\",\"work_generation\":1,\"active\":null,\"last_work_id\":\"{work_id}\",\"last_request_fingerprint\":\"{fingerprint}\",\"last_outcome\":\"completed\",\"last_failure\":null}}]}}"
+        )
+    );
+    let events = fs::read_to_string(child.join("events.jsonl")).expect("the child's events");
+    assert!(
+        events.contains(&format!(
+            "\"event\":{{\"user\":{{\"text\":\"review \\\"a\\\"\",\"images\":[],\"work_id\":\"{work_id}\"}}}}"
+        )),
+        "{events}"
+    );
+    assert!(events.contains("\"text\":\"a looks fine\""), "{events}");
+    let continued = home.ask(&["ask", "--resume", "last", "next"]);
+    assert!(continued.status.success(), "{}", stderr(&continued));
+    assert_eq!(
+        conversation(&server.requests()[3])
+            .iter()
+            .filter(|(role, _)| role == "user")
+            .count(),
+        2
+    );
+    let refused = home.ask(&["ask", "--resume-id", &child_id, "hi"]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert_eq!(
+        stderr(&refused),
+        "oh-fx ask: subagent child sessions cannot be resumed directly; message the named agent from its parent session\n"
+    );
+    assert_eq!(server.requests().len(), 4);
 }
