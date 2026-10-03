@@ -13,7 +13,7 @@ use ofx_agent::{
 };
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
-    ResumedSession, SubscriptionEndpoints, WebFetchProgress, open_store,
+    ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, open_store,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -232,6 +232,7 @@ struct PreparedAsk {
     source: CredentialSource,
     context_notices: Vec<String>,
     saved: Option<SavedAsk>,
+    title: Option<TitleGeneration>,
 }
 
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -378,6 +379,7 @@ async fn answer(
         source,
         context_notices,
         saved,
+        title,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
@@ -388,6 +390,10 @@ async fn answer(
             cancel.cancel();
         }
     }
+    let titling = title.map(|title| {
+        let cancel = cancel.clone();
+        tokio::spawn(async move { title.run(&cancel).await })
+    });
     let report = agent
         .run_turn(
             request.prompt,
@@ -399,6 +405,9 @@ async fn answer(
             cancel,
         )
         .await;
+    if let Some(titling) = titling {
+        let _ = titling.await;
+    }
     drop(agent);
     let report = received.unless_signalled(report)?;
     Ok(presenter.finish(&report, &model, saved))
@@ -458,6 +467,9 @@ async fn prepare_agent(
             }
         },
     };
+    let title = saved
+        .as_ref()
+        .and_then(|saved| saved.title_generation(&setup, request.prompt, &agent));
     Ok(PreparedAsk {
         agent,
         model: setup.model().to_owned(),
@@ -465,6 +477,7 @@ async fn prepare_agent(
         source: setup.source(),
         context_notices: setup.context_notices().to_vec(),
         saved,
+        title,
     })
 }
 
@@ -1307,7 +1320,11 @@ mod tests {
 
     const SIGNAL_CHILD_VARIABLE: &str = "OH_FX_TEST_STALLED_REFRESH_AUTH_URL";
     const SIGNAL_RECORDED: &str = "first signal recorded: ";
+    const TITLE_CHILD_URL: &str = "OH_FX_TEST_TITLED_ASK_URL";
+    const TITLE_CHILD_ARGS: &str = "OH_FX_TEST_TITLED_ASK_ARGS";
     const EXPIRED_SESSION: &str = r#"{"version":1,"access_token":"saved-access-token","refresh_token":"rt-refresh-secret-0123456789","expires_at_ms":1,"account_id":"acct_test"}
+"#;
+    const VALID_SESSION: &str = r#"{"version":1,"access_token":"eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl","refresh_token":"rt-refresh-secret-0123456789","expires_at_ms":4102444800000,"account_id":"acct_test"}
 "#;
 
     struct ExpiredLogin {
@@ -1318,6 +1335,10 @@ mod tests {
 
     impl ExpiredLogin {
         fn new() -> Self {
+            Self::with_session(EXPIRED_SESSION)
+        }
+
+        fn with_session(saved: &str) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let root = directory.path();
             let paths = ProfilePaths {
@@ -1337,7 +1358,7 @@ mod tests {
             )
             .unwrap();
             let session = paths.data.join("chatgpt-auth.json");
-            fs::write(&session, EXPIRED_SESSION).unwrap();
+            fs::write(&session, saved).unwrap();
             fs::set_permissions(&session, fs::Permissions::from_mode(0o600)).unwrap();
             Self {
                 directory,
@@ -1534,6 +1555,131 @@ mod tests {
     #[test]
     fn a_termination_followed_by_an_interrupt_exits_by_the_termination() {
         assert_a_stalled_login_refresh_exits_by_the_first(&[("TERM", SIGTERM), ("INT", SIGINT)]);
+    }
+
+    fn codex_text(text: &str) -> Reply {
+        let delta = serde_json::to_string(text).unwrap();
+        Reply::sse(&[
+            r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}"#.to_owned(),
+            format!(r#"{{"type":"response.output_text.delta","output_index":0,"delta":{delta}}}"#),
+            r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}"#.to_owned(),
+        ])
+    }
+
+    fn titled_ask(login: &ExpiredLogin, codex: &FakeServer, args: &[&str]) -> process::Output {
+        let root = login.root();
+        process::Command::new(env::current_exe().unwrap())
+            .args([
+                "cli_ask::tests::ask_child_that_may_name_its_session",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env_clear()
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env(TITLE_CHILD_URL, codex.base_url())
+            .env(TITLE_CHILD_ARGS, serde_json::to_string(args).unwrap())
+            .current_dir(&login.workspace)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    fn saved_sessions(login: &ExpiredLogin) -> Vec<Value> {
+        let Ok(entries) = fs::read_dir(login.paths.data.join("sessions")) else {
+            return Vec::new();
+        };
+        entries
+            .map(|entry| {
+                let manifest = entry.unwrap().path().join("session.json");
+                serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "run as a child process by the ask session title tests"]
+    fn ask_child_that_may_name_its_session() {
+        let (Ok(base_url), Ok(args)) = (env::var(TITLE_CHILD_URL), env::var(TITLE_CHILD_ARGS))
+        else {
+            return;
+        };
+        let words: Vec<String> = serde_json::from_str(&args).unwrap();
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let args = ask_args(&words);
+        let prompt = args.resolve_prompt(read_stdin_prompt).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let received = watch_signals(cancel.clone());
+        let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+        let request = AskRequest {
+            args: &args,
+            prompt: &prompt,
+            context_limits: &[],
+            executions: &executions,
+        };
+        let answered = runtime.block_on(answer(
+            &request,
+            endpoints(&base_url),
+            None,
+            &cancel,
+            &received,
+        ));
+        assert_eq!(settle(answered, &received), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn a_fresh_saved_ask_names_its_session_beside_the_first_turn() {
+        let login = ExpiredLogin::with_session(VALID_SESSION);
+        let codex = FakeServer::start([
+            codex_text("Fix the renderer"),
+            codex_text("Fix the renderer"),
+        ]);
+        let output = titled_ask(&login, &codex, &["ask", "please fix the renderer"]);
+        assert!(output.status.success(), "{output:?}");
+        let sessions = saved_sessions(&login);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["title"], "Fix the renderer");
+        let requests = codex.requests();
+        assert_eq!(requests.len(), 2);
+        let titles: Vec<_> = requests
+            .iter()
+            .filter(|request| request.json()["model"] == "gpt-5.6-luna")
+            .collect();
+        assert_eq!(titles.len(), 1);
+        assert_eq!(titles[0].json()["tool_choice"], "none");
+        assert!(
+            titles[0].json()["input"]
+                .to_string()
+                .contains("please fix the renderer")
+        );
+        assert_eq!(titles[0].header("session-id"), sessions[0]["id"].as_str());
+    }
+
+    #[test]
+    fn an_unsaved_ask_or_one_with_titles_off_sends_no_title_request() {
+        let login = ExpiredLogin::with_session(VALID_SESSION);
+        let codex = FakeServer::start([codex_text("one"), codex_text("two")]);
+        let unsaved = titled_ask(&login, &codex, &["ask", "--no-save", "fix the renderer"]);
+        assert!(unsaved.status.success(), "{unsaved:?}");
+        assert!(saved_sessions(&login).is_empty());
+        fs::write(
+            login.paths.config.join("settings.json"),
+            r#"{"provider":"codex","models":{"codex":"gpt-5.4"},"session_titles":false}"#,
+        )
+        .unwrap();
+        let disabled = titled_ask(&login, &codex, &["ask", "fix the renderer"]);
+        assert!(disabled.status.success(), "{disabled:?}");
+        assert_eq!(codex.requests().len(), 2);
+        assert_eq!(saved_sessions(&login)[0]["title"], Value::Null);
     }
 
     fn ask_args(args: &[&str]) -> AskArgs {
