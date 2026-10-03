@@ -628,7 +628,7 @@ impl Reducer {
             return Ok(Deltas::default());
         }
         check_json_depth(data)?;
-        let Some(Json::Object(root)) = parse_strict_json(data, DuplicateKeys::BeforeValue).ok()
+        let Some(Json::Object(root)) = parse_strict_json(data, DuplicateKeys::AfterObject).ok()
         else {
             return Err(ProtocolError::InvalidChunk);
         };

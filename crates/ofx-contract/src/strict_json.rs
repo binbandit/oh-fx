@@ -18,6 +18,7 @@ pub enum StrictJsonError {
 pub enum DuplicateKeys {
     BeforeValue,
     AfterValue,
+    AfterObject,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,6 +221,9 @@ impl<'de> Visitor<'de> for Seed {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut fields: A) -> Result<Json<'de>, A::Error> {
+        if self.0 == DuplicateKeys::AfterObject {
+            return object_checked_once(fields);
+        }
         let mut keys = Keys::default();
         let mut entries = Vec::new();
         while let Some(Key(key)) = fields.next_key()? {
@@ -236,6 +240,28 @@ impl<'de> Visitor<'de> for Seed {
         }
         Ok(Json::Object(Object { entries }))
     }
+}
+
+fn object_checked_once<'de, A: MapAccess<'de>>(mut fields: A) -> Result<Json<'de>, A::Error> {
+    let mut entries: Vec<(Cow<'de, str>, Json<'de>)> = Vec::new();
+    while let Some(Key(key)) = fields.next_key()? {
+        let value = fields.next_value_seed(Seed(DuplicateKeys::AfterObject))?;
+        entries.push((key, value));
+    }
+    let repeated = if entries.len() <= PAIRWISE_KEY_CHECK_LIMIT {
+        entries
+            .iter()
+            .enumerate()
+            .any(|(index, (key, _))| entries[..index].iter().any(|(prior, _)| prior == key))
+    } else {
+        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_ref()).collect();
+        keys.sort_unstable();
+        keys.windows(2).any(|pair| pair[0] == pair[1])
+    };
+    if repeated {
+        return Err(de::Error::custom("duplicate field"));
+    }
+    Ok(Json::Object(Object { entries }))
 }
 
 #[derive(Default)]
