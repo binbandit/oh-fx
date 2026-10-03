@@ -113,7 +113,7 @@ note = "Worker event delivery, authoritative tool rows and compaction persistenc
 upstream = "src/core/app/app_workspace_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/file_mention_runtime.rs", "crates/ofx-tui/src/shell/directory_completion_job.rs"]
-note = "Native workspace file mentions/completion exist; additional roots, scope adoption and workspace transition support are absent."
+note = "Native workspace file mentions/completion exist and the launch applies additional directories; indexing additional roots, scope refresh and workspace transition support are absent."
 
 [[file]]
 upstream = "src/core/app/input_approval_runtime.zig"
