@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 const REVIEW_CONTEXT_LINES: usize = 5;
 const CANONICAL_MAX_INDEXED_LINES: usize = 16_384;
 const CANONICAL_MAX_MATRIX_CELLS: usize = 1_000_000;
@@ -299,19 +301,7 @@ fn compute<'a>(
 ) -> Vec<DiffLine<'a>> {
     let old_lines: Vec<&[u8]> = text_lines(old_text).chain(old_marker).collect();
     let new_lines: Vec<&[u8]> = text_lines(new_text).chain(new_marker).collect();
-    let stride = new_lines.len() + 1;
-    let mut table = vec![0_u32; (old_lines.len() + 1) * stride];
-    for old_index in 1..=old_lines.len() {
-        for new_index in 1..=new_lines.len() {
-            table[old_index * stride + new_index] =
-                if old_lines[old_index - 1] == new_lines[new_index - 1] {
-                    table[(old_index - 1) * stride + new_index - 1] + 1
-                } else {
-                    table[old_index * stride + new_index - 1]
-                        .max(table[(old_index - 1) * stride + new_index])
-                };
-        }
-    }
+    let table = LcsTable::new(&old_lines, &new_lines);
     let mut result = Vec::with_capacity(old_lines.len().max(new_lines.len()));
     let mut old_cursor = old_lines.len();
     let mut new_cursor = new_lines.len();
@@ -328,8 +318,8 @@ fn compute<'a>(
             new_cursor -= 1;
         } else if new_cursor > 0
             && (old_cursor == 0
-                || table[old_cursor * stride + new_cursor - 1]
-                    >= table[(old_cursor - 1) * stride + new_cursor])
+                || table.length(old_cursor, new_cursor - 1)
+                    >= table.length(old_cursor - 1, new_cursor))
         {
             result.push(DiffLine {
                 op: LineOp::Add,
@@ -346,6 +336,72 @@ fn compute<'a>(
     }
     result.reverse();
     result
+}
+
+struct LcsTable {
+    prefix: usize,
+    stride: usize,
+    lengths: Vec<u16>,
+}
+
+impl LcsTable {
+    fn new(old_lines: &[&[u8]], new_lines: &[&[u8]]) -> Self {
+        let prefix = old_lines
+            .iter()
+            .zip(new_lines)
+            .take_while(|(old, new)| old == new)
+            .count();
+        let suffix = old_lines[prefix..]
+            .iter()
+            .rev()
+            .zip(new_lines[prefix..].iter().rev())
+            .take_while(|(old, new)| old == new)
+            .count();
+        let (old_ids, new_ids) = line_ids(
+            &old_lines[prefix..old_lines.len() - suffix],
+            &new_lines[prefix..new_lines.len() - suffix],
+        );
+        let stride = new_ids.len() + 1;
+        let mut lengths = vec![0_u16; (old_ids.len() + 1) * stride];
+        for (old_index, old_id) in old_ids.iter().enumerate() {
+            let (above, current) = lengths[old_index * stride..].split_at_mut(stride);
+            let mut left = 0;
+            let cells = current[1..].iter_mut().zip(&new_ids);
+            for ((cell, new_id), (diagonal, up)) in cells.zip(above.iter().zip(&above[1..])) {
+                left = if old_id == new_id {
+                    diagonal + 1
+                } else {
+                    left.max(*up)
+                };
+                *cell = left;
+            }
+        }
+        Self {
+            prefix,
+            stride,
+            lengths,
+        }
+    }
+
+    fn length(&self, old_count: usize, new_count: usize) -> usize {
+        if old_count <= self.prefix || new_count <= self.prefix {
+            return old_count.min(new_count);
+        }
+        let row = old_count - self.prefix;
+        let column = new_count - self.prefix;
+        self.prefix + usize::from(self.lengths[row * self.stride + column])
+    }
+}
+
+fn line_ids<'a>(old_lines: &[&'a [u8]], new_lines: &[&'a [u8]]) -> (Vec<u32>, Vec<u32>) {
+    let mut ids: HashMap<&'a [u8], u32> = HashMap::with_capacity(old_lines.len() + new_lines.len());
+    let mut id = |line: &&'a [u8]| {
+        let next = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+        *ids.entry(*line).or_insert(next)
+    };
+    let old_ids = old_lines.iter().map(&mut id).collect();
+    let new_ids = new_lines.iter().map(&mut id).collect();
+    (old_ids, new_ids)
 }
 
 fn text_lines(text: &[u8]) -> impl Iterator<Item = &[u8]> {
