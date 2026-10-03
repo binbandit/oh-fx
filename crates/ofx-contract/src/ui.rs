@@ -337,9 +337,6 @@ pub enum UiEvent {
     ProviderSelected {
         provider: String,
     },
-    UpgradeStatus {
-        label: String,
-    },
     PermissionModeChanged {
         mode: PermissionMode,
         full_access_warning: bool,
@@ -366,6 +363,9 @@ pub enum UiEvent {
     TurnCompaction {
         turn_id: TurnId,
         activity: CompactionActivity,
+    },
+    UpgradeStatus {
+        label: String,
     },
     SkillsMenu {
         items: Vec<SkillMenuItem>,

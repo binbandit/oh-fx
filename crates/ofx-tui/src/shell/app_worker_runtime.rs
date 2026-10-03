@@ -184,7 +184,6 @@ impl Shell<'_> {
             UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
             UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),
-            UiEvent::UpgradeStatus { label } => self.upgrade_status_changed(label),
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,
@@ -197,6 +196,7 @@ impl Shell<'_> {
                     self.turn_compaction(turn_id, activity);
                 }
             }
+            UiEvent::UpgradeStatus { label } => self.upgrade_status_changed(label),
             UiEvent::SkillsMenu { items, focus } => self.open_skills_menu(items, &focus),
             UiEvent::ConversationCleared { first_kept_prompt } => {
                 self.conversation_cleared(first_kept_prompt);

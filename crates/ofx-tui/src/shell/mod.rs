@@ -252,7 +252,6 @@ pub(crate) struct Shell<'a> {
     model_draft: Option<ComposerStash>,
     catalog: CatalogLoad,
     provider_column: ProviderColumn,
-    upgrade_status: String,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
     events: UiEventReceiver,
@@ -266,6 +265,7 @@ pub(crate) struct Shell<'a> {
     should_exit: bool,
     frame: FrameCache,
     metrics: Metrics,
+    upgrade_status: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,7 +457,6 @@ impl<'a> Shell<'a> {
             model_draft: None,
             catalog: CatalogLoad::default(),
             provider_column: ProviderColumn::default(),
-            upgrade_status: String::new(),
             yolo_warning,
             picker: None,
             events,
@@ -474,6 +473,7 @@ impl<'a> Shell<'a> {
                 ..FrameCache::default()
             },
             metrics: Metrics::default(),
+            upgrade_status: String::new(),
         };
         if picking {
             shell.session_picker_opened(SessionScope::CurrentWorkspace);
@@ -943,13 +943,6 @@ impl<'a> Shell<'a> {
         window_title(&self.options, self.session_title.as_deref())
     }
 
-    fn upgrade_status_changed(&mut self, label: String) {
-        if label != self.upgrade_status {
-            self.upgrade_status = label;
-            self.invalidate();
-        }
-    }
-
     fn session_title_changed(&mut self, title: Option<String>) {
         self.statusline.session_title_changed(title.as_deref());
         self.session_title = title;
@@ -962,6 +955,13 @@ impl<'a> Shell<'a> {
         if theme != self.theme {
             self.theme = theme;
             self.replay();
+        }
+    }
+
+    fn upgrade_status_changed(&mut self, label: String) {
+        if label != self.upgrade_status {
+            self.upgrade_status = label;
+            self.invalidate();
         }
     }
 

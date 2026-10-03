@@ -1047,7 +1047,6 @@ impl Presenter {
             | UiEvent::ModelCatalog { .. }
             | UiEvent::ProviderPicker { .. }
             | UiEvent::ProviderSelected { .. }
-            | UiEvent::UpgradeStatus { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
             | UiEvent::StatuslineMenuOpened
@@ -1058,6 +1057,7 @@ impl Presenter {
             | UiEvent::StatsRequested
             | UiEvent::CompactionActivity { .. }
             | UiEvent::TurnCompaction { .. }
+            | UiEvent::UpgradeStatus { .. }
             | UiEvent::SkillsMenu { .. }
             | UiEvent::ConversationCleared { .. }
             | UiEvent::SessionPickerOpened { .. }
