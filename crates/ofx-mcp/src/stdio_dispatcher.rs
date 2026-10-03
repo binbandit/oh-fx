@@ -256,10 +256,8 @@ impl StdioDispatcher {
     }
 
     pub(crate) async fn settled_diagnostics(&self) -> ChildDiagnostics {
-        let mut reader_done = self.shared.reader_done.subscribe();
-        let _ = timeout(STDERR_EOF_GRACE * 2, reader_done.wait_for(|done| *done)).await;
-        let mut stderr_done = self.shared.stderr_done.subscribe();
-        let _ = timeout(STDERR_EOF_GRACE, stderr_done.wait_for(|done| *done)).await;
+        wait_until_set(&self.shared.reader_done, STDERR_EOF_GRACE * 2).await;
+        wait_until_set(&self.shared.stderr_done, STDERR_EOF_GRACE).await;
         self.child_diagnostics()
     }
 
@@ -324,13 +322,13 @@ impl StdioDispatcher {
         shared.responses.close(McpError::McpConnectionClosed);
         shared.close_stdin().await;
         match mode {
-            StopMode::Graceful => shared.wait_reader_done(SHUTDOWN_GRACE).await,
-            StopMode::Immediate => shared.wait_reader_done(IMMEDIATE_DRAIN).await,
+            StopMode::Graceful => wait_until_set(&shared.reader_done, SHUTDOWN_GRACE).await,
+            StopMode::Immediate => wait_until_set(&shared.reader_done, IMMEDIATE_DRAIN).await,
             StopMode::Forced | StopMode::Abandon => {}
         }
         if matches!(mode, StopMode::Graceful | StopMode::Forced) && shared.child_may_be_running() {
             terminate_child_gracefully(shared.pid);
-            shared.wait_reader_done(TERMINATION_GRACE).await;
+            wait_until_set(&shared.reader_done, TERMINATION_GRACE).await;
         }
         shared.kill_child();
         let reader = lock(&self.reader).take();
@@ -439,11 +437,6 @@ impl Shared {
         if self.child_may_be_running() {
             terminate_child(self.pid);
         }
-    }
-
-    async fn wait_reader_done(&self, limit: Duration) {
-        let mut done = self.reader_done.subscribe();
-        let _ = timeout(limit, done.wait_for(|done| *done)).await;
     }
 
     async fn close_stdin(&self) {
@@ -594,6 +587,11 @@ impl Shared {
                 .await;
         });
     }
+}
+
+async fn wait_until_set(flag: &watch::Sender<bool>, limit: Duration) {
+    let mut set = flag.subscribe();
+    let _ = timeout(limit, set.wait_for(|set| *set)).await;
 }
 
 struct PendingMetaGuard<'a> {
