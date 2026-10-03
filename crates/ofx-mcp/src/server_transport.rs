@@ -189,24 +189,19 @@ async fn connect_stdio_once(
     deadline: Instant,
 ) -> Result<Connected, StartupFailure> {
     let handshake = negotiate_stdio(launch, options, deadline).await?;
-    let dispatcher = handshake.dispatcher;
-    match finish_stdio_startup(
-        &dispatcher,
-        &handshake.response,
-        handshake.version,
+    let started = Started {
+        info: server_info(&handshake.response, handshake.version.as_str()),
+        transport: Transport::Stdio(handshake.dispatcher),
+        wire: handshake.version.wire(),
+        notifications: handshake.notifications,
+    };
+    finish_startup(
+        started,
+        STDIO_INITIALIZED_NOTIFICATION,
         deadline,
+        stdio_discovery_error,
     )
     .await
-    {
-        Ok((info, catalog)) => Ok(Connected {
-            transport: Transport::Stdio(dispatcher),
-            info,
-            wire: handshake.version.wire(),
-            catalog,
-            notifications: handshake.notifications,
-        }),
-        Err(error) => Err(fail_launch(dispatcher, error, StopMode::Graceful).await),
-    }
 }
 
 async fn negotiate_stdio(
@@ -325,20 +320,6 @@ async fn fail_launch(
     StartupFailure::new(error, Some(diagnostics))
 }
 
-async fn finish_stdio_startup(
-    dispatcher: &StdioDispatcher,
-    response: &Value,
-    version: LegacyStdioVersion,
-    deadline: Instant,
-) -> Result<(ServerInfo, ToolCatalog), McpError> {
-    let info = server_info(response, version.as_str())?;
-    dispatcher
-        .notify(STDIO_INITIALIZED_NOTIFICATION.to_owned(), deadline)
-        .await?;
-    let catalog = discover_tools(dispatcher, deadline, stdio_discovery_error).await?;
-    Ok((info, catalog))
-}
-
 pub(crate) async fn connect_http(
     config: &McpServerConfig,
     options: &ConnectOptions,
@@ -362,24 +343,20 @@ pub(crate) async fn connect_http(
     let (client, response) = timeout_at(deadline, initialize)
         .await
         .map_err(|_| McpError::McpRequestTimedOut)??;
-    match finish_http_startup(&client, &response, deadline).await {
-        Ok((info, catalog)) => {
-            if wants_notification_stream(info.capabilities) {
-                client.start_notification_listener();
-            }
-            Ok(Connected {
-                wire: client.version().wire(),
-                transport: Transport::Http(client),
-                info,
-                catalog,
-                notifications,
-            })
-        }
-        Err(error) => {
-            client.shutdown(ShutdownMode::Graceful).await;
-            Err(error.into())
-        }
+    let started = Started {
+        info: server_info(&response, client.version().as_str()),
+        wire: client.version().wire(),
+        transport: Transport::Http(client),
+        notifications,
+    };
+    let connected =
+        finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error).await?;
+    if let Transport::Http(client) = &connected.transport
+        && wants_notification_stream(connected.info.capabilities)
+    {
+        client.start_notification_listener();
     }
+    Ok(connected)
 }
 
 fn http_endpoint(
@@ -403,19 +380,6 @@ fn http_endpoint(
     Ok((endpoint, notifications))
 }
 
-async fn finish_http_startup(
-    client: &LegacyHttpClient,
-    response: &Value,
-    deadline: Instant,
-) -> Result<(ServerInfo, ToolCatalog), McpError> {
-    let info = server_info(response, client.version().as_str())?;
-    client
-        .notify(HTTP_INITIALIZED_NOTIFICATION.to_owned(), deadline)
-        .await?;
-    let catalog = discover_tools(client, deadline, |error| error).await?;
-    Ok((info, catalog))
-}
-
 pub(crate) async fn connect_sse(
     config: &McpServerConfig,
     options: &ConnectOptions,
@@ -424,27 +388,22 @@ pub(crate) async fn connect_sse(
     let (endpoint, notifications) = http_endpoint(config, options)?;
     let client =
         LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline).await?;
-    match finish_sse_startup(&client, options, deadline).await {
-        Ok((info, catalog)) => Ok(Connected {
-            transport: Transport::Sse(client),
-            info,
-            wire: None,
-            catalog,
-            notifications,
-        }),
-        Err(error) => {
-            client.shutdown(ShutdownMode::Graceful).await;
-            Err(error.into())
-        }
-    }
+    let transport = Transport::Sse(client);
+    let started = Started {
+        info: initialize_sse(&transport, options, deadline).await,
+        transport,
+        wire: None,
+        notifications,
+    };
+    finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error).await
 }
 
-async fn finish_sse_startup(
-    client: &LegacySseClient,
+async fn initialize_sse(
+    transport: &Transport,
     options: &ConnectOptions,
     deadline: Instant,
-) -> Result<(ServerInfo, ToolCatalog), McpError> {
-    let id = client.next_request_id()?;
+) -> Result<ServerInfo, McpError> {
+    let id = transport.next_request_id()?;
     let body = build_legacy_initialize_request(
         id,
         SSE_PROTOCOL_VERSION,
@@ -452,7 +411,7 @@ async fn finish_sse_startup(
         ElicitationCapabilities::default(),
         &options.client_version,
     );
-    let response = client
+    let response = transport
         .request(TransportRequest::new(
             id,
             body,
@@ -462,12 +421,61 @@ async fn finish_sse_startup(
         .await?;
     let value: Value = serde_json::from_str(&response).map_err(|_| McpError::McpInvalidJson)?;
     validate_initialize_response(&value)?;
-    let info = server_info(&value, SSE_PROTOCOL_VERSION)?;
-    client
-        .notify(HTTP_INITIALIZED_NOTIFICATION.to_owned(), deadline)
-        .await?;
-    let catalog = discover_tools(client, deadline, |error| error).await?;
+    server_info(&value, SSE_PROTOCOL_VERSION)
+}
+
+struct Started {
+    transport: Transport,
+    info: Result<ServerInfo, McpError>,
+    wire: Option<ElicitationWire>,
+    notifications: mpsc::UnboundedReceiver<Value>,
+}
+
+async fn finish_startup(
+    started: Started,
+    initialized: &str,
+    deadline: Instant,
+    request_error: fn(McpError) -> McpError,
+) -> Result<Connected, StartupFailure> {
+    let Started {
+        transport,
+        info,
+        wire,
+        notifications,
+    } = started;
+    match discover(&transport, info, initialized, deadline, request_error).await {
+        Ok((info, catalog)) => Ok(Connected {
+            transport,
+            info,
+            wire,
+            catalog,
+            notifications,
+        }),
+        Err(error) => Err(abandon(transport, error).await),
+    }
+}
+
+async fn discover(
+    transport: &Transport,
+    info: Result<ServerInfo, McpError>,
+    initialized: &str,
+    deadline: Instant,
+    request_error: fn(McpError) -> McpError,
+) -> Result<(ServerInfo, ToolCatalog), McpError> {
+    let info = info?;
+    transport.notify(initialized.to_owned(), deadline).await?;
+    let catalog = discover_tools(transport, deadline, request_error).await?;
     Ok((info, catalog))
+}
+
+async fn abandon(transport: Transport, error: McpError) -> StartupFailure {
+    match transport {
+        Transport::Stdio(dispatcher) => fail_launch(dispatcher, error, StopMode::Graceful).await,
+        transport => {
+            transport.shutdown(ShutdownMode::Graceful).await;
+            error.into()
+        }
+    }
 }
 
 fn wants_notification_stream(capabilities: ServerCapabilities) -> bool {
@@ -496,6 +504,10 @@ pub(crate) fn server_info(
     })
 }
 
+fn same_error(error: McpError) -> McpError {
+    error
+}
+
 fn stdio_discovery_error(error: McpError) -> McpError {
     match error {
         McpError::Cancelled | McpError::McpRequestTimedOut => error,
@@ -504,7 +516,7 @@ fn stdio_discovery_error(error: McpError) -> McpError {
 }
 
 pub(crate) async fn discover_tools(
-    transport: &impl McpTransport,
+    transport: &Transport,
     deadline: Instant,
     request_error: fn(McpError) -> McpError,
 ) -> Result<ToolCatalog, McpError> {
