@@ -66,16 +66,10 @@ fn path_target(workspace_root: &Path, call: &ToolCall) -> Option<(PathBuf, Permi
 mod tests {
     use std::fs;
 
-    use ofx_contract::ToolCallId;
-
     use super::*;
 
     fn call(name: &str, arguments: &str) -> ToolCall {
-        ToolCall {
-            id: ToolCallId::new("call-1"),
-            name: name.to_owned(),
-            arguments: arguments.to_owned(),
-        }
+        ToolCall::new("call-1", name, arguments)
     }
 
     #[test]

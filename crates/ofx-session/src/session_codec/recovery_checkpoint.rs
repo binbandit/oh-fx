@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD;
 use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
     HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, StepResult, ToolArgumentIntegrity,
-    ToolCall, ToolCallId, ToolResultStatus, TurnEnd, TurnStop,
+    ToolCall, ToolResultStatus, TurnEnd, TurnStop,
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
@@ -290,11 +290,7 @@ fn tool_call(value: Json<'_>) -> Option<ToolCall> {
     {
         "{}".clone_into(&mut arguments);
     }
-    fields.finish(ToolCall {
-        id: ToolCallId::new(id),
-        name,
-        arguments,
-    })
+    fields.finish(ToolCall::new(id, name, arguments))
 }
 
 fn tool_result(value: Json<'_>) -> Option<SavedToolResult> {

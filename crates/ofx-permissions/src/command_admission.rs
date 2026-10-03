@@ -51,7 +51,7 @@ fn runs_without_review(workspace_root: &Path, request: &CommandRequest) -> bool 
 mod tests {
     use std::path::PathBuf;
 
-    use ofx_contract::{CommandProfile, ToolCallId};
+    use ofx_contract::CommandProfile;
 
     use super::*;
 
@@ -149,10 +149,12 @@ mod tests {
 
     #[test]
     fn shell_calls_that_do_not_describe_their_command_never_run_below_full_access() {
-        let call = |name: &str| ToolCall {
-            id: ToolCallId::new("call-1"),
-            name: name.to_owned(),
-            arguments: r#"{"request":{"action":"run","command":"git status"}}"#.to_owned(),
+        let call = |name: &str| {
+            ToolCall::new(
+                "call-1",
+                name,
+                r#"{"request":{"action":"run","command":"git status"}}"#,
+            )
         };
         assert_eq!(
             undescribed_shell_call_admission(PermissionMode::Auto, &call("shell")),

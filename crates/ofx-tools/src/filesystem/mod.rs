@@ -132,11 +132,7 @@ pub(crate) mod tests {
             tool: &dyn Tool,
             arguments: &str,
         ) -> (ToolOutput, ToolOutput) {
-            let call = ToolCall {
-                id: ToolCallId::new("call-1"),
-                name: tool.spec().name.clone(),
-                arguments: arguments.to_owned(),
-            };
+            let call = ToolCall::new("call-1", tool.spec().name.clone(), arguments);
             let policy = PermissionPolicy::new(PermissionMode::Ask, &self.workspace);
             assert_eq!(policy.admit(&call), Admission::ApprovalRequired);
             let offered = policy.approval_scope(GatedAction::Call(&call)).always;

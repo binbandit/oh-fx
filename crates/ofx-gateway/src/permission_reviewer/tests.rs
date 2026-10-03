@@ -3,8 +3,7 @@ use std::sync::Mutex;
 
 use ofx_config::{MaxTokensParameter, ToolChoiceMode};
 use ofx_contract::{
-    ChatMessage, ProviderOptions, StreamSink, ToolCall, ToolCallId, ToolChoice, ToolResultStatus,
-    ToolSpec,
+    ChatMessage, ProviderOptions, StreamSink, ToolCall, ToolChoice, ToolResultStatus, ToolSpec,
 };
 use serde_json::Value;
 
@@ -62,11 +61,11 @@ impl ModelProvider for Scripted {
 fn decision() -> Completion {
     Completion {
         content: Some("{\"decision\":\"clear\"}".to_owned()),
-        tool_calls: vec![ToolCall {
-            id: ToolCallId::new("review"),
-            name: "permission_decision".to_owned(),
-            arguments: "{\"decision\":\"caution\"}".to_owned(),
-        }],
+        tool_calls: vec![ToolCall::new(
+            "review",
+            "permission_decision",
+            "{\"decision\":\"caution\"}",
+        )],
         finish_reason: FinishReason::ToolCalls,
         usage: Usage {
             input_tokens: Some(9),
@@ -87,11 +86,11 @@ fn review_tools() -> [ToolSpec; 1] {
 }
 
 fn review_messages() -> [ChatMessage; 3] {
-    let call = ToolCall {
-        id: ToolCallId::new("call_review"),
-        name: "shell".to_owned(),
-        arguments: r#"{"action":"run","command":"rm -rf build"}"#.to_owned(),
-    };
+    let call = ToolCall::new(
+        "call_review",
+        "shell",
+        r#"{"action":"run","command":"rm -rf build"}"#,
+    );
     [
         ChatMessage::user("review_context_kind: normal\n"),
         ChatMessage::Assistant {

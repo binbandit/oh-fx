@@ -315,11 +315,7 @@ pub(crate) fn complete_result_output(result: &ToolResultEvent, dir: &PrivateDir)
 }
 
 fn tool_call(call: ToolCallEvent) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(call.call_id),
-        name: call.tool_name,
-        arguments: call.arguments_json,
-    }
+    ToolCall::new(call.call_id, call.tool_name, call.arguments_json)
 }
 
 #[cfg(test)]

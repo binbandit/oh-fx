@@ -137,11 +137,7 @@ fn prose(text: &str) -> ReviewTransportOutcome {
 }
 
 fn decision_call(arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new("review"),
-        name: TOOL_NAME.to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new("review", TOOL_NAME, arguments)
 }
 
 fn completion(content: Option<&str>, tool_calls: Vec<ToolCall>) -> Completion {
@@ -158,11 +154,7 @@ fn completion(content: Option<&str>, tool_calls: Vec<ToolCall>) -> Completion {
 }
 
 fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: name.to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new(id, name, arguments)
 }
 
 fn command_subject<'a>(

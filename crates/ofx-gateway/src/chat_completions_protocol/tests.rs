@@ -1,4 +1,6 @@
-use ofx_contract::{ProviderOptions, ProviderReplay, ReplaySource, ToolResultStatus, ToolSpec};
+use ofx_contract::{
+    ProviderOptions, ProviderReplay, ReplaySource, ToolCallId, ToolResultStatus, ToolSpec,
+};
 use serde_json::{Value, json};
 
 use super::*;
@@ -119,11 +121,7 @@ fn usage_snapshot(reducer: &mut Reducer, usage: &str) -> ProtocolResult<()> {
 }
 
 fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: name.to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new(id, name, arguments)
 }
 
 fn tool_result(id: &str, name: &str, content: &str) -> ChatMessage {

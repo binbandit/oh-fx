@@ -119,11 +119,7 @@ impl ModelProvider for Provider {
 fn probe_completion(probes: usize, arguments: &str) -> Completion {
     Completion {
         content: None,
-        tool_calls: vec![ToolCall {
-            id: ToolCallId::new(format!("probe-{probes}")),
-            name: "probe".to_owned(),
-            arguments: arguments.to_owned(),
-        }],
+        tool_calls: vec![ToolCall::new(format!("probe-{probes}"), "probe", arguments)],
         finish_reason: FinishReason::ToolCalls,
         usage: Usage::default(),
         provider_replay: None,
@@ -1171,11 +1167,7 @@ fn intent_host(provider: &Arc<ScriptedProvider>, gate: &Arc<IntentGate>) -> Arc<
 }
 
 fn tool_call(id: &str, name: &str, arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: name.to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new(id, name, arguments)
 }
 
 #[tokio::test]

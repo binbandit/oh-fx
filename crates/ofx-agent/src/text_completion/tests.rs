@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ofx_contract::{ChatMessage, ProviderError, ProviderOptions, ToolCall, ToolCallId, ToolChoice};
+use ofx_contract::{ChatMessage, ProviderError, ProviderOptions, ToolCall, ToolChoice};
 
 use super::*;
 use crate::scripted_provider::{ScriptedProvider, calling, failure, text};
@@ -34,11 +34,7 @@ async fn a_complete_reply_is_returned_whole() {
 async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     let messages = [ChatMessage::user("write them")];
     let cancel = CancellationToken::new();
-    let call = ToolCall {
-        id: ToolCallId::new("c"),
-        name: "shell".to_owned(),
-        arguments: "{}".to_owned(),
-    };
+    let call = ToolCall::new("c", "shell", "{}");
     let calls = ScriptedProvider::new(vec![Ok(calling(call))]);
     assert_eq!(
         complete(&calls, &request(&messages), 1024, &cancel).await,

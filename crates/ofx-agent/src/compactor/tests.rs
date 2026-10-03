@@ -26,11 +26,7 @@ fn assistant(content: &str, call: Option<&str>) -> ChatMessage {
     ChatMessage::Assistant {
         content: Some(content.to_owned()),
         tool_calls: call
-            .map(|id| ToolCall {
-                id: ToolCallId::new(id),
-                name: "read_file".to_owned(),
-                arguments: format!("{{\"path\":\"{id}.md\"}}"),
-            })
+            .map(|id| ToolCall::new(id, "read_file", format!("{{\"path\":\"{id}.md\"}}")))
             .into_iter()
             .collect(),
         provider_replay: None,

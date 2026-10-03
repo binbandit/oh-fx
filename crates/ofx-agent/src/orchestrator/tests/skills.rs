@@ -316,11 +316,7 @@ fn skill_reply(id: &str, arguments: &str) -> Script {
         Vec::new(),
         completion(
             None,
-            vec![ToolCall {
-                id: ToolCallId::new(id),
-                name: "skill".to_owned(),
-                arguments: arguments.to_owned(),
-            }],
+            vec![ToolCall::new(id, "skill", arguments)],
             FinishReason::ToolCalls,
         ),
     )
