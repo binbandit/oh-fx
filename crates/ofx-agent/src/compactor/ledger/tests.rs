@@ -393,6 +393,9 @@ fn the_request_asks_only_for_the_new_turns_and_numbers_entries_after_the_highest
         assert!(text.contains(part), "{part}");
     }
     assert!(text.contains(" The highest IDs so far: R2, F7, S1. Number new entries after them."));
+    assert!(text.contains(
+        "or answers or finishes an earlier open entry, end with \"replaces\" and that entry's ID."
+    ));
     for example in ["T40", "M2", "replaces D", "replaces S"] {
         assert!(!text.contains(example), "{example}");
     }
