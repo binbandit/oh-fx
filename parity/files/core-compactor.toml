@@ -54,4 +54,4 @@ modules = []
 upstream = "src/core/compactor/window.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/window.rs"]
-note = "Window sizing, reserve thresholds and turn/tool-step cuts exist; upstream steering costs/cut positions are absent, and replay tokens match model name without provider credential-authority matching."
+note = "Window sizing, reserve thresholds, steering costs and turn, tool-step and steering cuts exist; replay tokens match model name without provider credential-authority matching."
