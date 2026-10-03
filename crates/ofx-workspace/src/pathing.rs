@@ -84,13 +84,34 @@ fn resolve_workspace_or_external_path_with_home(
     resolve_path(workspace_root, input_path, home, PathScope::External)
 }
 
+pub(crate) fn resolve_workspace_or_external_literal_path(
+    workspace_root: &Path,
+    path: &str,
+    home: Option<&OsStr>,
+) -> Result<PathBuf, PathError> {
+    resolve_cleaned_path(workspace_root, path, home, PathScope::External)
+}
+
 fn resolve_path(
     workspace_root: &Path,
     input_path: &str,
     home: Option<&OsStr>,
     scope: PathScope,
 ) -> Result<PathBuf, PathError> {
-    let path = input_path.trim_matches(PATH_ENTRY_WHITESPACE);
+    resolve_cleaned_path(
+        workspace_root,
+        input_path.trim_matches(PATH_ENTRY_WHITESPACE),
+        home,
+        scope,
+    )
+}
+
+fn resolve_cleaned_path(
+    workspace_root: &Path,
+    path: &str,
+    home: Option<&OsStr>,
+    scope: PathScope,
+) -> Result<PathBuf, PathError> {
     if path.is_empty() || path.contains('\0') {
         return Err(PathError::InvalidPath);
     }

@@ -57,12 +57,14 @@ impl Attribute {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub(crate) struct Paint {
     pub(crate) fg: Option<Color>,
+    bg: Option<Color>,
     attributes: u8,
 }
 
 impl Paint {
     pub(crate) const PLAIN: Self = Self {
         fg: None,
+        bg: None,
         attributes: 0,
     };
 
@@ -71,7 +73,19 @@ impl Paint {
     }
 
     pub(crate) const fn colored(fg: Option<Color>) -> Self {
-        Self { fg, attributes: 0 }
+        Self {
+            fg,
+            bg: None,
+            attributes: 0,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn on(self, index: u8) -> Self {
+        Self {
+            bg: Some(Color::Indexed(index)),
+            ..self
+        }
     }
 
     pub(crate) const fn bold_fg(index: u8) -> Self {
@@ -81,8 +95,8 @@ impl Paint {
     #[must_use]
     pub(crate) const fn with(self, attribute: Attribute) -> Self {
         Self {
-            fg: self.fg,
             attributes: self.attributes | attribute.bit(),
+            ..self
         }
     }
 
@@ -112,6 +126,9 @@ impl Paint {
                 out.push(';');
                 out.push_str(attribute.sgr());
             }
+        }
+        if let Some(color) = self.bg {
+            write_color(out, 48, color);
         }
         if let Some(color) = self.fg {
             write_color(out, 38, color);

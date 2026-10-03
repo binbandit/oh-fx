@@ -7,6 +7,7 @@ mod app_permission_runtime;
 mod app_upgrade_runtime;
 mod codex_provider;
 mod context;
+mod file_mention_runtime;
 mod native;
 mod output_contracts;
 mod prompt_history_runtime;

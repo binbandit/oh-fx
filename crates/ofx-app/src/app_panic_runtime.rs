@@ -320,6 +320,7 @@ mod tests {
             commands: Vec::new(),
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
+            file_mentions: None,
         };
         let outcome = panics.contain_shell(|| {
             run_shell(options, events, NativeClipboard, |command| {

@@ -27,11 +27,11 @@ pub(crate) fn solve(parts: LiveParts<'_>, max_rows: usize) -> LiveLayout {
     let banner_rows = footer.len();
     let composer_rows = parts.composer.rows.len();
     footer.extend(parts.composer.rows.iter().cloned());
-    if !parts.menu.is_empty() {
+    if parts.menu.is_empty() {
         footer.push(Row::new());
+    } else {
         footer.extend(parts.menu);
     }
-    footer.push(Row::new());
     footer.push(parts.hint);
     let mut body = Vec::new();
     let mut leading_gaps: usize = 0;
@@ -137,6 +137,23 @@ mod tests {
         );
         assert_eq!(layout.cursor, Some((5, 2)));
         assert_eq!(layout.composer_start, 5);
+    }
+
+    #[test]
+    fn a_footer_menu_takes_the_place_of_the_gap_above_the_status_line() {
+        let composer = prompt();
+        let mut parts = parts(&composer, false, &[], &[]);
+        parts.menu = vec![
+            Row::plain("──"),
+            Row::plain("  src/main.rs"),
+            Row::plain("──"),
+        ];
+        let layout = solve(parts, 30);
+        assert_eq!(
+            texts(&layout),
+            ["┃ ", "──", "  src/main.rs", "──", "auto · m"]
+        );
+        assert_eq!(layout.cursor, Some((0, 2)));
     }
 
     #[test]

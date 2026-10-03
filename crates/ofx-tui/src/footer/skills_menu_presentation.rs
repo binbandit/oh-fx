@@ -2,8 +2,9 @@ use std::borrow::Cow;
 
 use ofx_text::{prefix_by_width, visible_width};
 
+use crate::list_window::update_edge_start;
 use crate::row_text::{Paint, Row, terminal_safe};
-use crate::shell::skills_menu::{SOURCE_FILTERS, SkillsMenu, edge_window_start, filter_label};
+use crate::shell::skills_menu::{SOURCE_FILTERS, SkillsMenu, filter_label};
 use crate::theme::Theme;
 
 const MAX_MENU_ROWS: usize = 8;
@@ -76,12 +77,24 @@ pub(crate) fn visible_item_rows(menu: &SkillsMenu, budget: usize) -> usize {
     MenuLayout::build(menu.matches().len(), budget).visible_items
 }
 
-pub(crate) fn skills_menu_rows(
+pub(crate) fn skills_menu_band(
     menu: &SkillsMenu,
     budget: usize,
     width: usize,
     theme: &Theme,
 ) -> Vec<Row> {
+    let rows = skills_menu_rows(menu, budget, width, theme);
+    if rows.is_empty() {
+        return rows;
+    }
+    let mut band = Vec::with_capacity(rows.len() + 2);
+    band.push(Row::new());
+    band.extend(rows);
+    band.push(Row::new());
+    band
+}
+
+fn skills_menu_rows(menu: &SkillsMenu, budget: usize, width: usize, theme: &Theme) -> Vec<Row> {
     let matches = menu.matches();
     let layout = MenuLayout::build(matches.len(), budget);
     let mut rows = Vec::with_capacity(layout.row_count);
@@ -96,7 +109,7 @@ pub(crate) fn skills_menu_rows(
         return rows;
     }
     let selected = menu.selected() % matches.len();
-    let window_start = edge_window_start(
+    let window_start = update_edge_start(
         menu.window_start(),
         matches.len(),
         selected,
