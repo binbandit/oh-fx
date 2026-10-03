@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
 
-use super::super::command_text::{approval_text, approval_text_boundary, encoded_token};
+use super::super::command_text::{approval_text, approval_text_chunk_end, encoded_token};
 
 pub(super) const CHUNK_BYTES: usize = 4096;
 const LOOKAHEAD_BYTES: usize = 64;
@@ -138,9 +138,7 @@ impl<'a> Encoded<'a> {
             self.starts.push_back((self.buffer.len(), self.next));
             match self.source {
                 Source::Raw(raw) => {
-                    let end = (self.next + CHUNK_BYTES..raw.len())
-                        .find(|index| approval_text_boundary(raw, *index))
-                        .unwrap_or(raw.len());
+                    let end = approval_text_chunk_end(raw, self.next, CHUNK_BYTES);
                     self.buffer.push_str(&approval_text(&raw[self.next..end]));
                     self.next = end;
                 }
@@ -303,7 +301,12 @@ mod tests {
 
     #[test]
     fn a_large_single_line_of_tabs_or_wide_characters_resumes_near_any_row() {
-        for line in ["\t".repeat(300_000), "\u{4e2d}".repeat(100_000)] {
+        for line in [
+            "\t".repeat(300_000),
+            "\u{4e2d}".repeat(100_000),
+            "\u{1f1fa}\u{1f1f8}".repeat(40_000),
+            "\u{fe0f}".repeat(100_000),
+        ] {
             let raw = line.as_bytes();
             let widths = Widths {
                 first: 70,
@@ -315,7 +318,7 @@ mod tests {
                 .map(|pair| pair[1].raw - pair[0].raw)
                 .max()
                 .unwrap();
-            assert!(gaps <= CHUNK_BYTES + 4, "{gaps}");
+            assert!(gaps <= CHUNK_BYTES + 64, "{gaps}");
             let (whole, result) = walked(Source::Raw(raw), widths, Resume::START);
             assert!(result.drawable);
             for row in [0, 1, result.rows / 2, result.rows - 3, result.rows - 1] {
