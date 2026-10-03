@@ -116,6 +116,8 @@ impl PreparedCall for ScopedCall {
             label: None,
             activity: if writes {
                 ToolActivity::Write
+            } else if self.has("delegate") {
+                ToolActivity::Subagent
             } else {
                 ToolActivity::Read
             },
@@ -733,6 +735,37 @@ async fn a_parallel_group_runs_together_only_while_every_target_is_fresh() {
             r#"start call-3 Scoping {"read":"/w/c"}"#,
             r#"start call-4 Scoping {"read":"/w/d"}"#,
             "finish call-3",
+            "finish call-4",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn delegations_and_reads_run_as_separate_parallel_groups() {
+    let mut harness = harness(
+        vec![
+            scoped_reply(&[
+                ("call-1", r#"{"read":"/w/c"}"#),
+                ("call-2", r#"{"read":"/w/d","delegate":true}"#),
+                ("call-3", r#"{"read":"/w/e","delegate":true}"#),
+                ("call-4", r#"{"read":"/w/f"}"#),
+            ]),
+            text_reply("done"),
+        ],
+        ProjectContext::default(),
+    );
+    let (report, events) = run(&mut harness.agent, "batch").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        lifecycle(&events),
+        [
+            r#"start call-1 Scoping {"read":"/w/c"}"#,
+            "finish call-1",
+            r#"start call-2 Scoping {"read":"/w/d","delegate":true}"#,
+            r#"start call-3 Scoping {"read":"/w/e","delegate":true}"#,
+            "finish call-2",
+            "finish call-3",
+            r#"start call-4 Scoping {"read":"/w/f"}"#,
             "finish call-4",
         ]
     );

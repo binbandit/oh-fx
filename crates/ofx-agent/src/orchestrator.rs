@@ -13,9 +13,9 @@ use ofx_contract::{
     ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
     ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
     ReviewRequest, ReviewVerdict, Reviewed, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding,
-    StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
-    ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec,
-    TurnId, TurnOutcome, TurnStop, UiEvent, Usage, malformed_tool_arguments_json,
+    StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall,
+    ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
+    ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage, malformed_tool_arguments_json,
     non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
     tool_permission_denied_json, tool_review_held_json,
 };
@@ -904,14 +904,14 @@ impl Agent {
             Some(uncompleted) => uncompleted.complete(&calls[start].name),
             None => self.prepare(&calls[start], malformed[start].take()),
         };
-        let parallel = head.is_parallel();
+        let parallel = head.parallel_group();
         let mut group = vec![(&calls[start], head)];
         for (call, malformed) in calls[start + 1..].iter().zip(&mut malformed[start + 1..]) {
-            if !parallel {
+            if parallel.is_none() {
                 break;
             }
             let uncompleted = self.prepare_uncompleted(call, malformed.take());
-            if !uncompleted.is_parallel() {
+            if uncompleted.parallel_group() != parallel {
                 carried.0 = Some(uncompleted);
                 break;
             }
@@ -1153,9 +1153,26 @@ impl Drop for Deferred {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParallelGroup {
+    ReadOnly,
+    Subagent,
+}
+
+fn parallel_group(description: &CallDescription) -> Option<ParallelGroup> {
+    match (description.concurrency, description.activity) {
+        (Concurrency::Serial, _) => None,
+        (Concurrency::Parallel, ToolActivity::Subagent) => Some(ParallelGroup::Subagent),
+        (Concurrency::Parallel, _) => Some(ParallelGroup::ReadOnly),
+    }
+}
+
 impl Prepared {
-    fn is_parallel(&self) -> bool {
-        matches!(self, Self::Ready(_, description, ..) if description.concurrency == Concurrency::Parallel)
+    fn parallel_group(&self) -> Option<ParallelGroup> {
+        match self {
+            Self::Ready(_, description, ..) => parallel_group(description),
+            Self::Rejected(_) => None,
+        }
     }
 
     fn complete(self, tool_name: &str) -> Self {

@@ -364,7 +364,11 @@ impl PreparedCall for EchoCall {
         CallDescription {
             title: format!("Echoing {}", self.arguments),
             label: None,
-            activity: ToolActivity::Read,
+            activity: if self.arguments.contains("delegate") {
+                ToolActivity::Subagent
+            } else {
+                ToolActivity::Read
+            },
             effect: if self.arguments.contains("inert") {
                 ToolEffect::None
             } else {
@@ -1307,6 +1311,37 @@ async fn parallel_calls_overlap_and_report_results_in_call_order() {
         [
             tool_message("call-1", r#"echo {"meet":1}"#, ToolResultStatus::Success),
             tool_message("call-2", r#"echo {"meet":2}"#, ToolResultStatus::Success),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn delegations_run_in_their_own_parallel_group_apart_from_reads() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"text":"read"}"#),
+            ("call-2", r#"{"delegate":1,"meet":1}"#),
+            ("call-3", r#"{"delegate":2,"meet":2}"#),
+            ("call-4", r#"{"text":"again"}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = tokio::time::timeout(Duration::from_secs(10), run(&mut agent, "go"))
+        .await
+        .expect("delegations overlap");
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        dispatch_order(&events),
+        [
+            "start call-1",
+            "finish call-1",
+            "start call-2",
+            "start call-3",
+            "finish call-2",
+            "finish call-3",
+            "start call-4",
+            "finish call-4",
         ]
     );
 }
