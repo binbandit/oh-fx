@@ -944,3 +944,46 @@ fn saved_tool_results_read_back_whole_from_their_preview_or_their_artifact() {
     }
     assert_eq!(outputs(&resumed), [Some("short".to_owned()), None]);
 }
+
+#[test]
+fn saved_results_larger_than_replay_limit_keep_the_complete_sidecar() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let calls = [call("large-result", "read_file")];
+    let output = "z".repeat(8 * 1024 * 1024 + 1);
+    let turn = HistoryTurn {
+        user: "read",
+        steps: vec![step(
+            "",
+            &calls,
+            vec![result(&calls[0], &output, ToolResultStatus::Success)],
+        )],
+        end: replied("done"),
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
+    let resumed = resume_session(&fixture.sessions, "restored", LOCK_DEADLINE).unwrap();
+    let mut found = false;
+    resumed
+        .visit_transcript(|turn| {
+            for event in turn.events {
+                if let ConversationEvent::ToolResult(result) = event {
+                    found = true;
+                    assert_eq!(result.stored_bytes, u64::try_from(output.len()).unwrap());
+                    assert_eq!(resumed.tool_result_output(&result), None);
+                    assert_eq!(
+                        fs::read(
+                            fixture
+                                .dir()
+                                .join("tool-results")
+                                .join(&result.artifact_ref)
+                        )
+                        .unwrap(),
+                        output.as_bytes()
+                    );
+                }
+            }
+        })
+        .unwrap();
+    assert!(found);
+}
