@@ -236,6 +236,9 @@ pub fn save_permission_patch(
     workspace_root: Option<&Path>,
     patch: PermissionPatch<'_>,
 ) -> Result<CommitOutcome, SettingsWriteFailure> {
+    if workspace_root.is_some_and(|root| !root.is_absolute()) {
+        return Err(SettingsWriteError::InvalidField.into());
+    }
     let workspace = workspace_root.map(Path::to_string_lossy);
     commit(
         paths,
