@@ -1714,3 +1714,69 @@ fn a_resumed_shell_labels_saved_tool_results_and_drops_the_call_an_interruption_
     assert!(!screen.contains("Tool cancelled"), "{screen}");
     exit(session);
 }
+
+#[test]
+fn a_resumed_subagent_row_reads_its_outcome_from_the_whole_saved_result() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let partial = "partial work ".repeat(600);
+    let output =
+        json!({"ok": false, "result": partial, "error_code": "child_interrupted"}).to_string();
+    assert!(output.len() > 4096);
+    let handle = "result-subagent-0011223344556677-8899aabbccddeeff.txt";
+    let results = home.sessions().join(&id).join("tool-results");
+    fs::create_dir(&results).expect("create the result store");
+    fs::set_permissions(&results, fs::Permissions::from_mode(0o700))
+        .expect("make the result store private");
+    fs::write(results.join(handle), &output).expect("store the whole result");
+    fs::set_permissions(results.join(handle), fs::Permissions::from_mode(0o600))
+        .expect("make the result private");
+    let preview = &output[..4096];
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "delegate it"}})),
+            saved_call(
+                5,
+                "c1",
+                "subagent",
+                &json!({"request": {"action": "run", "task": "inspect auth"}}),
+            ),
+            frame(
+                6,
+                &json!({"tool_result": {
+                    "call_id": "c1",
+                    "tool_name": "subagent",
+                    "status": "failure",
+                    "artifact_ref": handle,
+                    "stored_bytes": output.len(),
+                    "completeness": "complete",
+                    "preview": preview,
+                }}),
+            ),
+            frame(7, &json!({"assistant": {"text": "Delegated."}})),
+            frame(8, &json!({"turn_completed": {}})),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "Delegated.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ delegate it",
+                "Subagent interrupted · inspect auth",
+                "Delegated."
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+}

@@ -101,12 +101,13 @@ impl TurnReplay<'_, '_> {
         let Some(call) = self.running.remove(&result.call_id) else {
             return;
         };
+        let output = self
+            .session
+            .tool_result_output(&result)
+            .or(result.preview)
+            .unwrap_or_default();
         let answers = (result.status == ToolResultStatus::Success)
-            .then(|| {
-                answered_questions(&result.tool_name, || {
-                    self.session.tool_result_output(&result)
-                })
-            })
+            .then(|| answered_questions(&result.tool_name, || Some(output.clone())))
             .flatten();
         let entry = match answers {
             Some(answers) => HistoryEntry::QuestionsAnswered(answers),
@@ -116,7 +117,7 @@ impl TurnReplay<'_, '_> {
                 arguments: call.arguments,
                 description: call.description,
                 status: result.status,
-                output: result.preview.unwrap_or_default(),
+                output,
             }),
         };
         self.shown[call.slot] = Some(entry);
