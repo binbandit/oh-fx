@@ -526,6 +526,9 @@ impl Controller {
             .as_mut()
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
         self.state.session_title.set(None);
+        for prompt in &self.state.queue {
+            observe_prompt(self.persistence.as_ref(), &prompt.text);
+        }
         self.remember_agent_facts();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
