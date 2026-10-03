@@ -55,6 +55,13 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 
 The `slack` command (`slack install`, `slack status`, and `slack refresh`) predates this range and is omitted for the same reason as the Slack MCP preset. `oh-fx slack` fails as any unknown command does.
 
+## Capability search at the sync point
+
+| Surface | Status | oh-fx | Note |
+|---|---|---|---|
+| Installed-skill `capability_search` | `ported` | `ofx-text`, `ofx-skills`, `ofx-tools`, `ofx-app` | Pinned schema and description, fresh policy-bound discovery, exact directory locations, intent ranking, five-result pages, UTF-8 description clipping, private cursor-envelope budgeting, and the actual search-to-`skill` consumer. Valid large queries use wider evidence counters as documented in architecture. The tool remains offered with zero skills. Interactive mode retains the empty MCP host and reports no_match for empty results; noninteractive ask reports MCP unavailable. Advertised skill identities remain retained until the next turn, matching upstream when a skill is renamed in place. |
+| MCP capability search and schema loading | `defer:mcp` | future MCP host | Without a configured MCP search host, results retain upstream's `mcp_state: unavailable`; an exact server filter skips skill discovery. MCP retrieval, dynamic binding, selection, and schema loading remain pending. |
+
 ## Deferred areas
 
 Port each area from the latest upstream. These notes list what changed in the range above, so the port can be checked against it.

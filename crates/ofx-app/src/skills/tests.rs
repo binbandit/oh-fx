@@ -57,6 +57,7 @@ impl Fixture {
             Some(&self.paths),
             settings,
             limits,
+            false,
         )
     }
 
@@ -176,6 +177,7 @@ fn a_workspace_and_home_reached_through_a_symlink_scan_up_to_home_without_warnin
         Some(&fixture.paths),
         &Settings::default(),
         &ContextLimits::default(),
+        false,
     );
     assert_eq!(
         names(&skills),
@@ -200,6 +202,7 @@ fn without_home_no_skills_are_discovered_or_loaded() {
         Some(&fixture.paths),
         &Settings::default(),
         &ContextLimits::default(),
+        false,
     );
     assert!(names(&skills).is_empty());
     assert!(!skills.uses_context_window());

@@ -897,6 +897,7 @@ dependencies = [
  "ofx-workspace",
  "percent-encoding",
  "rustix",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
