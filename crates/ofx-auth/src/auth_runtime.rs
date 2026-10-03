@@ -2,9 +2,10 @@ use ofx_config::ProviderId;
 use ofx_contract::valid_credential_account_id;
 use tokio_util::sync::CancellationToken;
 
-use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode, now_ms};
+use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode};
 use crate::provider_catalog;
 use crate::session_presence::Presence;
+use crate::subscription_access::now_ms;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CredentialFailureReason {
@@ -65,6 +66,30 @@ fn classify_credential_failure(error: ChatGptError) -> CredentialFailureReason {
             CredentialFailureReason::PersistenceUncertain
         }
         ChatGptError::ChatGptAccountChanged => CredentialFailureReason::AuthorityChanged,
+        _ => CredentialFailureReason::TemporaryUnavailable,
+    }
+}
+
+fn classify_grok_credential_failure(
+    error: crate::grok_oauth::GrokError,
+) -> CredentialFailureReason {
+    use crate::grok_oauth::GrokError;
+    match error {
+        GrokError::AccessDenied | GrokError::CredentialRefreshRejected => {
+            CredentialFailureReason::InvalidCredential
+        }
+        GrokError::CredentialStorageUnavailable
+        | GrokError::DurablePathUnsafe
+        | GrokError::InsecureAuthFile
+        | GrokError::InvalidGrokAuthSession
+        | GrokError::PrivateStatePermissionsUnsupported => CredentialFailureReason::InvalidStorage,
+        GrokError::CredentialRefreshPersistenceUncertain
+        | GrokError::CredentialPersistenceFailed
+        | GrokError::DurableReplacePreRenameFailed
+        | GrokError::DurableReplacePostRenameFailed => {
+            CredentialFailureReason::PersistenceUncertain
+        }
+        GrokError::GrokAccountChanged => CredentialFailureReason::AuthorityChanged,
         _ => CredentialFailureReason::TemporaryUnavailable,
     }
 }
@@ -158,6 +183,82 @@ async fn load_chatgpt_credential(
     oauth.load_access(mode, cancel).await
 }
 
+pub fn grok_login_failure_detail(error: crate::grok_oauth::GrokError) -> String {
+    use crate::grok_oauth::GrokError;
+    let reason = classify_grok_credential_failure(error);
+    match reason {
+        CredentialFailureReason::InvalidStorage | CredentialFailureReason::PersistenceUncertain => {
+            let normalized =
+                preparation_error(reason).expect("storage failures have preparation guidance");
+            format!(
+                "{}: {}",
+                crate::credentials::GROK_SOURCE_LABEL,
+                normalized.notice()
+            )
+        }
+        _ => match error {
+            GrokError::AccessDenied | GrokError::GrokAuthorizationFailed => {
+                "authorization denied".to_owned()
+            }
+            GrokError::LoginTimedOut => "authorization expired; run oh-fx login again".to_owned(),
+            _ => "failed to sign in".to_owned(),
+        },
+    }
+}
+
+pub async fn prepare_grok_credential(
+    oauth: &crate::grok_oauth::GrokOAuth,
+    cancel: &CancellationToken,
+) -> Result<Option<crate::grok_oauth::GrokAccess>, PreparationError> {
+    use crate::grok_oauth::{GrokError, GrokRefreshMode};
+    let result = if oauth.storage_presence() == Presence::Unavailable {
+        Err(GrokError::CredentialStorageUnavailable)
+    } else {
+        match oauth.load_access(GrokRefreshMode::Stored, cancel).await {
+            Ok(Some(stored)) => {
+                refresh_grok_credential(
+                    oauth,
+                    GrokRefreshMode::IfNeeded,
+                    stored.account_id(),
+                    cancel,
+                )
+                .await
+            }
+            Ok(None) => Ok(None),
+            Err(error) => Err(error),
+        }
+    };
+    let access = match result {
+        Ok(Some(access)) => access,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            return match preparation_error(classify_grok_credential_failure(error)) {
+                Some(normalized) => Err(normalized),
+                None => Ok(None),
+            };
+        }
+    };
+    let blocked = access.access_token().is_empty()
+        || access.refresh_after_ms() <= now_ms()
+        || !valid_credential_account_id(access.account_id());
+    Ok((!blocked).then_some(access))
+}
+
+pub(crate) async fn refresh_grok_credential(
+    oauth: &crate::grok_oauth::GrokOAuth,
+    mode: crate::grok_oauth::GrokRefreshMode,
+    expected_account_id: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<crate::grok_oauth::GrokAccess>, crate::grok_oauth::GrokError> {
+    let Some(access) = oauth.load_access(mode, cancel).await? else {
+        return Ok(None);
+    };
+    if access.account_id() != expected_account_id {
+        return Err(crate::grok_oauth::GrokError::GrokAccountChanged);
+    }
+    Ok(Some(access))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +295,40 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(
                 preparation_error(classify_credential_failure(error)),
+                expected,
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn grok_credential_failures_preserve_storage_authority_and_refresh_categories() {
+        use crate::grok_oauth::GrokError;
+        for (error, expected) in [
+            (
+                GrokError::InvalidGrokAuthSession,
+                Some(PreparationError::CredentialStorageUnavailable),
+            ),
+            (
+                GrokError::GrokAccountChanged,
+                Some(PreparationError::CredentialAuthorityChanged),
+            ),
+            (
+                GrokError::CredentialRefreshPersistenceUncertain,
+                Some(PreparationError::CredentialRefreshPersistenceUncertain),
+            ),
+            (
+                GrokError::ConnectionFailed,
+                Some(PreparationError::CredentialTemporarilyUnavailable),
+            ),
+            (
+                GrokError::LockBusy,
+                Some(PreparationError::CredentialTemporarilyUnavailable),
+            ),
+            (GrokError::CredentialRefreshRejected, None),
+        ] {
+            assert_eq!(
+                preparation_error(classify_grok_credential_failure(error)),
                 expected,
                 "{error}"
             );

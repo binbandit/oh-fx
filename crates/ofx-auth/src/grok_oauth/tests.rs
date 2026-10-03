@@ -52,12 +52,16 @@ fn grok_refresh_accepts_missing_rotation_but_rejects_malformed_lifetimes() {
     ] {
         assert_eq!(
             parse_refresh_token_response(body).err(),
-            Some(GrokError::InvalidGrokOAuthResponse)
+            Some(ParseRefreshError::InvalidShape)
         );
     }
 }
 
 use ofx_testkit::{FakeServer, Reply};
+
+fn authorization_value(prepared: &GrokSignIn, key: &str) -> zeroize::Zeroizing<String> {
+    query_value_non_empty(prepared.authorization_url().split_once('?').unwrap().1, key).unwrap()
+}
 
 fn oauth_for(server: &FakeServer, directory: PathBuf) -> GrokOAuth {
     GrokOAuth::new(
@@ -104,7 +108,7 @@ async fn grok_refresh_uses_form_and_authenticated_userinfo_with_optional_rotatio
     assert_eq!(access.into_token(), "new-access");
     let saved = oauth.store.load().unwrap().unwrap();
     assert_eq!(saved.refresh_token.expose(), "refresh+original");
-    assert!(saved.expires_at_ms > crate::chatgpt_oauth::now_ms());
+    assert!(saved.expires_at_ms > now_ms());
     let requests = server.requests();
     assert_eq!(requests[0].body,b"grant_type=refresh_token&client_id=b1a00492-073a-47ea-816f-4c329264a828&refresh_token=refresh%2Boriginal");
     assert_eq!(requests[1].method, "GET");
@@ -278,8 +282,11 @@ async fn grok_manual_signin_uses_ephemeral_redirect_and_saves_userinfo_identity(
     let directory = tempfile::tempdir().unwrap();
     let oauth = oauth_for(&server, directory.path().join("profile"));
     let prepared = oauth.start_sign_in().await.unwrap();
-    assert_ne!(prepared.listener.port(), 0);
-    assert!(prepared.redirect_uri.ends_with("/callback"));
+    let redirect = authorization_value(&prepared, "redirect_uri");
+    let redirect_url = reqwest::Url::parse(&redirect).unwrap();
+    let port = redirect_url.port().unwrap();
+    assert!(![8976, 8977].contains(&port));
+    assert_eq!(redirect_url.path(), "/callback");
     assert!(
         prepared
             .authorization_url()
@@ -297,12 +304,18 @@ async fn grok_manual_signin_uses_ephemeral_redirect_and_saves_userinfo_identity(
     prepared.finish(&CancellationToken::new()).await.unwrap();
     assert_eq!(oauth.store.load().unwrap().unwrap().account_id, "acct_test");
     let requests = server.requests();
+    let body = String::from_utf8_lossy(&requests[0].body);
+    let verifier = query_value_non_empty(&body, "code_verifier").unwrap();
+    assert_eq!(
+        oauth::pkce_challenge(&verifier),
+        authorization_value(&prepared, "code_challenge").as_str()
+    );
     let expected = format!(
         "grant_type=authorization_code&client_id={CLIENT_ID}&code=auth%2Bcode&code_verifier={}&redirect_uri={}",
-        prepared.verifier.expose(),
+        verifier.as_str(),
         {
             let mut form = FormBody::default();
-            form.append("redirect_uri", &prepared.redirect_uri);
+            form.append("redirect_uri", &redirect);
             form.as_str()
                 .strip_prefix("redirect_uri=")
                 .unwrap()
@@ -310,6 +323,12 @@ async fn grok_manual_signin_uses_ephemeral_redirect_and_saves_userinfo_identity(
         }
     );
     assert_eq!(requests[0].body, expected.as_bytes());
+    assert_eq!(requests[0].path, "/v1/token");
+    assert_eq!(
+        requests[0].header("content-type"),
+        Some("application/x-www-form-urlencoded")
+    );
+    assert_eq!(requests[1].path, "/v1/userinfo");
 }
 
 #[tokio::test]
@@ -415,18 +434,26 @@ async fn grok_manual_code_arriving_during_callback_wait_completes_signin() {
 
 #[tokio::test]
 async fn grok_userinfo_transport_rejects_redirects_and_bounds_response_size() {
-    for reply in [
-        Reply::status_with_headers(302, &[("Location", "http://example.com/")], ""),
-        Reply::status(200, "x".repeat(64 * 1024 + 1)),
-    ] {
+    for redirect in [true, false] {
+        let destination = FakeServer::start([]);
+        let reply = if redirect {
+            Reply::status_with_headers(302, &[("Location", &destination.base_url())], "")
+        } else {
+            Reply::status(200, "x".repeat(64 * 1024 + 1))
+        };
         let server = FakeServer::start([reply]);
         let directory = tempfile::tempdir().unwrap();
         let oauth = oauth_for(&server, directory.path().join("profile"));
-        assert!(matches!(
-            oauth.fetch_account_id("access").await,
-            Err(GrokError::GrokUserInfoRequestFailed | GrokError::OAuthResponseTooLarge)
-        ));
+        assert_eq!(
+            oauth.fetch_account_id("access").await.err(),
+            Some(if redirect {
+                GrokError::GrokUserInfoRequestFailed
+            } else {
+                GrokError::OAuthResponseTooLarge
+            })
+        );
         assert_eq!(server.requests().len(), 1);
+        assert!(destination.requests().is_empty());
     }
 }
 
@@ -508,11 +535,13 @@ async fn grok_callback_success_response_follows_authenticated_session_persistenc
     let directory = tempfile::tempdir().unwrap();
     let oauth = oauth_for(&server, directory.path().join("profile"));
     let prepared = oauth.start_sign_in().await.unwrap();
+    let redirect = reqwest::Url::parse(&authorization_value(&prepared, "redirect_uri")).unwrap();
+    let state = authorization_value(&prepared, "state");
     let callback = async {
-        let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", prepared.listener.port()))
+        let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", redirect.port().unwrap()))
             .await
             .unwrap();
-        socket.write_all(format!("GET /callback?code=browser-code&state={} HTTP/1.1\r\nOrigin: https://accounts.x.ai\r\n\r\n",prepared.state.expose()).as_bytes()).await.unwrap();
+        socket.write_all(format!("GET /callback?code=browser-code&state={} HTTP/1.1\r\nOrigin: https://accounts.x.ai\r\n\r\n",state.as_str()).as_bytes()).await.unwrap();
         let mut response = String::new();
         socket.read_to_string(&mut response).await.unwrap();
         assert!(oauth.store.load().unwrap().is_some());
@@ -540,4 +569,227 @@ async fn grok_signin_rejects_missing_lifetime_before_requesting_userinfo() {
     );
     assert_eq!(server.requests().len(), 1);
     assert!(oauth.store.load().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn grok_cancelled_signin_waiting_for_storage_preserves_previous_session() {
+    for retain_previous in [false, true] {
+        let server = FakeServer::start([
+            Reply::status(
+                200,
+                r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
+            ),
+            Reply::status(200, r#"{"sub":"acct_test"}"#),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let oauth = oauth_for(&server, directory.path().join("profile"));
+        let previous = stored_session();
+        oauth.store.save_new_session(&previous).await.unwrap();
+        let mutation = oauth
+            .store
+            .begin_existing_mutation()
+            .await
+            .unwrap()
+            .unwrap();
+        if !retain_previous {
+            mutation.delete().unwrap();
+        }
+        let prepared = oauth.start_sign_in().await.unwrap();
+        prepared.submit_manual_code("code").unwrap();
+        let cancel = CancellationToken::new();
+        let interrupt = async {
+            while server.requests().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            cancel.cancel();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            drop(mutation);
+        };
+        let (result, ()) = tokio::join!(prepared.finish(&cancel), interrupt);
+        assert_eq!(result, Err(GrokError::Cancelled));
+        assert_eq!(
+            oauth.store.load().unwrap(),
+            retain_previous.then_some(previous)
+        );
+    }
+}
+
+#[tokio::test]
+async fn grok_refresh_cancellation_bounds_token_and_userinfo_waits() {
+    for after_token in [false, true] {
+        let gate = ofx_testkit::Gate::default();
+        let token = Reply::status(
+            200,
+            r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
+        );
+        let userinfo = Reply::status(200, r#"{"sub":"acct_test"}"#);
+        let replies = if after_token {
+            [token, userinfo.after(&gate)]
+        } else {
+            [token.after(&gate), userinfo]
+        };
+        let server = FakeServer::start(replies);
+        let directory = tempfile::tempdir().unwrap();
+        let oauth = oauth_for(&server, directory.path().join("profile"));
+        let previous = stored_session();
+        oauth.store.save_new_session(&previous).await.unwrap();
+        let cancel = CancellationToken::new();
+        let interrupt = async {
+            while server.requests().len() < if after_token { 2 } else { 1 } {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            cancel.cancel();
+        };
+        let loaded = tokio::time::timeout(Duration::from_secs(3), async {
+            let (result, ()) = tokio::join!(
+                oauth.load_access(GrokRefreshMode::Force, &cancel),
+                interrupt
+            );
+            result
+        })
+        .await;
+        gate.open();
+        assert!(
+            loaded.is_ok(),
+            "refresh ignored cancellation: after_token={after_token}"
+        );
+        assert_eq!(loaded.unwrap().err(), Some(GrokError::Cancelled));
+        assert_eq!(
+            oauth.store.load().unwrap(),
+            if after_token { None } else { Some(previous) }
+        );
+    }
+}
+
+#[tokio::test]
+async fn grok_refresh_rotation_arriving_during_cancellation_is_saved() {
+    let gate = ofx_testkit::Gate::default();
+    let server = FakeServer::start([
+        Reply::status(
+            200,
+            r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
+        )
+        .after(&gate),
+        Reply::status(200, r#"{"sub":"acct_test"}"#),
+    ]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("profile"));
+    oauth
+        .store
+        .save_new_session(&stored_session())
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let interrupt = async {
+        while server.requests().is_empty() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        gate.open();
+    };
+    let (result, ()) = tokio::join!(
+        oauth.load_access(GrokRefreshMode::Force, &cancel),
+        interrupt
+    );
+    assert_eq!(result.unwrap().unwrap().access_token.expose(), "new");
+    assert_eq!(
+        oauth.store.load().unwrap().unwrap().refresh_token.expose(),
+        "rotated"
+    );
+}
+
+#[tokio::test]
+async fn grok_refresh_cancellation_has_one_grace_across_both_requests() {
+    let token_gate = ofx_testkit::Gate::default();
+    let identity_gate = ofx_testkit::Gate::default();
+    let server = FakeServer::start([
+        Reply::status(
+            200,
+            r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
+        )
+        .after(&token_gate),
+        Reply::status(200, r#"{"sub":"acct_test"}"#).after(&identity_gate),
+    ]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("profile"));
+    oauth
+        .store
+        .save_new_session(&stored_session())
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let interrupt = async {
+        while server.requests().is_empty() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        token_gate.open();
+        while server.requests().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        identity_gate.open();
+    };
+    let (result, ()) = tokio::join!(
+        oauth.load_access(GrokRefreshMode::Force, &cancel),
+        interrupt
+    );
+    assert_eq!(result.err(), Some(GrokError::Cancelled));
+    assert!(oauth.store.load().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn grok_signin_debug_redacts_browser_authorization_secrets() {
+    let server = FakeServer::start([]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("profile"));
+    let prepared = oauth.start_sign_in().await.unwrap();
+    let debug = format!("{prepared:?}");
+    assert!(!debug.contains(prepared.authorization_url()));
+    let state = query_value_non_empty(
+        prepared.authorization_url().split_once('?').unwrap().1,
+        "state",
+    )
+    .unwrap();
+    assert!(!debug.contains(state.as_str()));
+}
+
+#[tokio::test]
+async fn grok_refresh_non_json_success_response_preserves_previous_session() {
+    let server = FakeServer::start([Reply::status(200, "<html>proxy</html>")]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().join("profile"));
+    let previous = stored_session();
+    oauth.store.save_new_session(&previous).await.unwrap();
+    assert_eq!(
+        oauth
+            .load_access(GrokRefreshMode::Force, &CancellationToken::new())
+            .await
+            .err(),
+        Some(GrokError::GrokOAuthRequestFailed)
+    );
+    assert_eq!(oauth.store.load().unwrap(), Some(previous));
+}
+
+#[test]
+fn grok_constructor_rejects_non_loopback_oauth_endpoints() {
+    let directory = tempfile::tempdir().unwrap();
+    let defaults = GrokEndpoints::default();
+    for index in 0..4 {
+        let mut endpoints = defaults.clone();
+        let target = match index {
+            0 => &mut endpoints.issuer,
+            1 => &mut endpoints.token_url,
+            2 => &mut endpoints.userinfo_url,
+            _ => &mut endpoints.revoke_url,
+        };
+        *target = "https://example.com/oauth".to_owned();
+        assert_eq!(
+            GrokOAuth::new(directory.path().join("profile"), "oh-fx/test", endpoints).unwrap_err(),
+            GrokError::InvalidGrokOAuthEndpoint
+        );
+    }
 }

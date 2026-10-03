@@ -168,6 +168,10 @@ pub enum LayerError {
     InvalidCodexModelType,
     #[error("InvalidCodexModelValue")]
     InvalidCodexModelValue,
+    #[error("InvalidGrokModelType")]
+    InvalidGrokModelType,
+    #[error("InvalidGrokModelValue")]
+    InvalidGrokModelValue,
     #[error("TooManyModelPreferences")]
     TooManyModelPreferences,
     #[error("InvalidPermissionModeType")]
@@ -248,6 +252,7 @@ struct Layer {
     provider: Option<String>,
     model: Option<String>,
     codex_model: Option<String>,
+    grok_model: Option<String>,
     models: Vec<(ProviderId, String)>,
     permission_mode: Option<PermissionMode>,
     yolo_acknowledged: Option<bool>,
@@ -276,6 +281,7 @@ impl Layer {
             .map(|(_, model)| model.as_str());
         let legacy = match provider {
             ProviderId::Codex => self.codex_model.as_deref(),
+            ProviderId::Grok => self.grok_model.as_deref(),
             _ => self.model.as_deref(),
         };
         listed.or(legacy)
@@ -516,9 +522,13 @@ impl Settings {
     }
 
     pub fn saved_codex_model(&self) -> Option<&str> {
+        self.saved_model(&ProviderId::Codex)
+    }
+
+    pub fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
         self.workspace
-            .codex_model()
-            .or_else(|| self.global.codex_model())
+            .saved_model(provider)
+            .or_else(|| self.global.saved_model(provider))
     }
 
     pub fn selected_connection(
@@ -900,9 +910,18 @@ fn parse_routing(object: &Map<String, Value>) -> Result<Layer, LayerError> {
         }
         Some(_) => return Err(LayerError::InvalidModelType),
     };
+    let grok_model = match object.get("grok_model") {
+        None => None,
+        Some(Value::String(model)) => {
+            validate_model_id(model).map_err(|_| LayerError::InvalidGrokModelValue)?;
+            Some(model.clone())
+        }
+        Some(_) => return Err(LayerError::InvalidGrokModelType),
+    };
     Ok(Layer {
         provider,
         codex_model,
+        grok_model,
         models,
         ..Layer::default()
     })
@@ -1042,6 +1061,17 @@ mod tests {
 
     fn fixture_settings(json: &str) -> Settings {
         load(&fixture(Some(json), None)).unwrap()
+    }
+
+    #[test]
+    fn saved_grok_model_uses_its_own_legacy_setting_and_never_the_gateway_model() {
+        let gateway = fixture_settings(r#"{"model":"gateway-model"}"#);
+        assert_eq!(gateway.saved_model(&ProviderId::Grok), None);
+        let legacy = fixture_settings(r#"{"model":"gateway-model","grok_model":"saved-grok"}"#);
+        assert_eq!(legacy.saved_model(&ProviderId::Grok), Some("saved-grok"));
+        let listed =
+            fixture_settings(r#"{"grok_model":"old-grok","models":{"grok":"listed-grok"}}"#);
+        assert_eq!(listed.saved_model(&ProviderId::Grok), Some("listed-grok"));
     }
 
     #[test]
@@ -1266,6 +1296,11 @@ mod tests {
             ),
             (r#"{"model":7,"models":7}"#, LayerError::InvalidModelType),
             (r#"{"codex_model":7}"#, LayerError::InvalidCodexModelType),
+            (r#"{"grok_model":7}"#, LayerError::InvalidGrokModelType),
+            (
+                r#"{"grok_model":" grok"}"#,
+                LayerError::InvalidGrokModelValue,
+            ),
             (
                 r#"{"codex_model":" gpt"}"#,
                 LayerError::InvalidCodexModelValue,

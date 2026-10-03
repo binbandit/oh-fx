@@ -58,6 +58,12 @@ impl CatalogCredential {
             account_id,
         }
     }
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+    pub(crate) fn account_id(&self) -> &str {
+        &self.account_id
+    }
 }
 
 impl fmt::Debug for CatalogCredential {
@@ -121,7 +127,9 @@ impl CodexModelCatalog {
             }
             Ok((status, _)) => Err(failure_for_http_status(status.as_u16())),
             Err(BoundedFailure::Cancelled) => Err(CatalogFailure::Cancellation),
-            Err(BoundedFailure::Failed) => Err(CatalogFailure::Transport),
+            Err(BoundedFailure::Failed | BoundedFailure::TooLarge) => {
+                Err(CatalogFailure::Transport)
+            }
         }
     }
 

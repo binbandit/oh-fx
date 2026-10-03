@@ -712,6 +712,7 @@ dependencies = [
  "ofx-http",
  "ofx-testkit",
  "reqwest",
+ "rustix",
  "serde_json",
  "sha2",
  "subtle",

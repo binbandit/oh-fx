@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -15,9 +15,7 @@ use zeroize::Zeroizing;
 use crate::browser_callback::{
     AwaitError, BindError, CallbackListener, Classifier, ParseResult, Response,
 };
-use crate::chatgpt_session::{
-    DeleteOutcome, MUTATION_LOCK_WAIT, Mutation, Session, SessionStore, refresh_deadline_ms,
-};
+use crate::chatgpt_session::{DeleteOutcome, MUTATION_LOCK_WAIT, Mutation, Session, SessionStore};
 use crate::oauth::{
     self, BrowserTokenSet, FormBody, OAuthError, parse_object, pkce_challenge,
     query_value_non_empty, random_url_safe_secret,
@@ -134,30 +132,7 @@ pub enum RefreshMode {
     Force,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatGptAccess {
-    access_token: Secret,
-    account_id: String,
-    refresh_after_ms: i64,
-}
-
-impl ChatGptAccess {
-    pub fn account_id(&self) -> &str {
-        &self.account_id
-    }
-
-    pub fn refresh_after_ms(&self) -> i64 {
-        self.refresh_after_ms
-    }
-
-    pub fn into_token(self) -> String {
-        self.access_token.into_inner()
-    }
-
-    pub(crate) fn access_token(&self) -> &str {
-        self.access_token.expose()
-    }
-}
+pub type ChatGptAccess = crate::subscription_access::SubscriptionAccess;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatGptEndpoints {
@@ -271,7 +246,7 @@ impl ChatGptOAuth {
         if mode == RefreshMode::Force || session.expired(now_ms()) {
             session = self.refresh_session(&mutation, &session, cancel).await?;
         }
-        Ok(Some(take_access(session)))
+        Ok(Some(session.into_access()))
     }
 
     async fn finish_browser_login(
@@ -358,7 +333,7 @@ impl ChatGptOAuth {
             Err(
                 ChatGptError::CredentialRefreshRejected | ChatGptError::InvalidChatGptOAuthResponse,
             ) => {
-                retire_refresh_session(mutation)?;
+                mutation.retire()?;
                 return Err(ChatGptError::CredentialRefreshRejected);
             }
             Err(error) => return Err(error),
@@ -366,7 +341,7 @@ impl ChatGptOAuth {
         let replacement = match refresh_replacement(token, session, now_ms()) {
             Ok(replacement) => replacement,
             Err(error) => {
-                retire_refresh_session(mutation)?;
+                mutation.retire()?;
                 return Err(if error == ChatGptError::ChatGptAccountChanged {
                     error
                 } else {
@@ -375,7 +350,7 @@ impl ChatGptOAuth {
             }
         };
         if mutation.save(&replacement).is_err() {
-            let _ = retire_refresh_session(mutation);
+            let _ = mutation.retire();
             return Err(ChatGptError::CredentialRefreshPersistenceUncertain);
         }
         Ok(replacement)
@@ -419,28 +394,16 @@ struct BrowserLogin<'a> {
     state: Secret,
 }
 
-#[derive(Debug)]
-struct RefreshTokenResponse {
-    access_token: Secret,
-    refresh_token: Option<Secret>,
-    expires_in: Option<i64>,
-}
+use crate::subscription_refresh::RefreshTokenResponse;
 
 fn parse_refresh_token_response(bytes: &[u8]) -> Result<RefreshTokenResponse, ChatGptError> {
-    let invalid = ChatGptError::InvalidChatGptOAuthResponse;
-    let object = parse_object(bytes).map_err(|_| invalid)?;
-    let access_token = oauth::required_string(&object, "access_token").map_err(|_| invalid)?;
-    let refresh_token = match object.get("refresh_token") {
-        None => None,
-        Some(Value::String(token)) if !token.is_empty() => Some(Secret::new(token.clone())),
-        Some(_) => return Err(invalid),
-    };
-    let expires_in =
-        oauth::optional_positive_integer(&object, "expires_in").map_err(|_| invalid)?;
-    Ok(RefreshTokenResponse {
-        access_token,
-        refresh_token,
-        expires_in,
+    crate::subscription_refresh::parse_refresh_token_response(bytes).map_err(|error| match error {
+        crate::subscription_refresh::ParseRefreshError::InvalidJson => {
+            ChatGptError::ChatGptOAuthRequestFailed
+        }
+        crate::subscription_refresh::ParseRefreshError::InvalidShape => {
+            ChatGptError::InvalidChatGptOAuthResponse
+        }
     })
 }
 
@@ -449,15 +412,6 @@ fn chatgpt_refresh_requires_sign_in(body: &[u8]) -> bool {
         body.windows(code.len())
             .any(|window| window == code.as_bytes())
     })
-}
-
-fn retire_refresh_session(mutation: &Mutation) -> Result<(), ChatGptError> {
-    match mutation.delete() {
-        Ok(DeleteOutcome::Deleted | DeleteOutcome::Missing) => Ok(()),
-        Ok(DeleteOutcome::DeletedNotDurable) | Err(_) => {
-            Err(ChatGptError::CredentialRefreshPersistenceUncertain)
-        }
-    }
 }
 
 fn refresh_replacement(
@@ -489,14 +443,6 @@ fn complete_sign_in(token: BrowserTokenSet, now_ms: i64) -> Result<Session, Chat
         expires_at_ms,
         account_id,
     })
-}
-
-fn take_access(session: Session) -> ChatGptAccess {
-    ChatGptAccess {
-        refresh_after_ms: refresh_deadline_ms(session.expires_at_ms),
-        access_token: session.access_token,
-        account_id: session.account_id,
-    }
 }
 
 fn jwt_payload(token: &str) -> Result<serde_json::Map<String, Value>, ChatGptError> {
@@ -620,13 +566,7 @@ fn states_match(received: &str, expected: &str) -> bool {
     bool::from(received.as_bytes().ct_eq(expected.as_bytes()))
 }
 
-pub(crate) fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(0)
-}
+pub(crate) use crate::subscription_access::now_ms;
 
 #[cfg(test)]
 mod tests;

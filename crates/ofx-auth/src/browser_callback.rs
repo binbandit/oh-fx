@@ -212,38 +212,60 @@ async fn read_request(stream: &mut TcpStream, allowed_origin: Option<&'static st
 }
 
 fn classify_request(head: &[u8], allowed_origin: Option<&'static str>) -> Request {
-    let Ok(head) = std::str::from_utf8(head) else {
+    let line_end = find(head, b"\r\n").unwrap_or(head.len());
+    let Ok(line) = std::str::from_utf8(&head[..line_end]) else {
         return Request::NotCallback;
     };
-    let mut lines = head.split("\r\n");
-    let mut parts = lines.next().unwrap_or_default().splitn(3, ' ');
+    let mut parts = line.splitn(3, ' ');
     let (Some(method), Some(target), Some(_)) = (parts.next(), parts.next(), parts.next()) else {
         return Request::NotCallback;
     };
-    let headers: Vec<_> = lines.filter_map(|line| line.split_once(':')).collect();
-    let header = |name: &str| {
-        headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.trim_matches([' ', '\t']))
+    let Some(allowed_origin) = allowed_origin else {
+        return if method == "GET" {
+            Request::Callback(target.to_owned(), None)
+        } else {
+            Request::NotCallback
+        };
     };
-    let origin = header("origin");
-    let matched_origin = allowed_origin.filter(|allowed| Some(*allowed) == origin);
+    let headers = head.get(line_end + 2..).unwrap_or_default();
+    let origin = request_header(headers, b"origin");
+    let matched_origin = (origin == Some(allowed_origin.as_bytes())).then_some(allowed_origin);
     if method == "OPTIONS" {
         if let Some(allowed) = matched_origin
-            && header("access-control-request-method")
-                .is_some_and(|method| method.eq_ignore_ascii_case("GET"))
+            && request_header(headers, b"access-control-request-method")
+                .is_some_and(|method| method.eq_ignore_ascii_case(b"GET"))
             && (target == "/callback" || target.starts_with("/callback?"))
         {
             return Request::Preflight(allowed);
         }
         return Request::NotCallback;
     }
-    if method != "GET" || (allowed_origin.is_some() && origin.is_some() && matched_origin.is_none())
-    {
+    if method != "GET" || (origin.is_some() && matched_origin.is_none()) {
         return Request::NotCallback;
     }
     Request::Callback(target.to_owned(), matched_origin)
+}
+
+fn request_header<'a>(mut headers: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
+    while !headers.is_empty() {
+        let end = find(headers, b"\r\n").unwrap_or(headers.len());
+        let line = &headers[..end];
+        headers = headers.get(end + 2..).unwrap_or_default();
+        let Some(colon) = line.iter().position(|&byte| byte == b':') else {
+            continue;
+        };
+        if line[..colon].eq_ignore_ascii_case(name) {
+            let mut value = &line[colon + 1..];
+            while matches!(value.first(), Some(b' ' | b'\t')) {
+                value = &value[1..];
+            }
+            while matches!(value.last(), Some(b' ' | b'\t')) {
+                value = &value[..value.len() - 1];
+            }
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -332,6 +354,60 @@ mod tests {
         let mut response = String::new();
         let _ = stream.read_to_string(&mut response);
         response
+    }
+
+    #[test]
+    fn configured_origin_keeps_byte_exact_header_values() {
+        for header in [
+            b"Origin: https://accounts.x.ai\xff".as_slice(),
+            b"Origin: \x0bhttps://accounts.x.ai",
+        ] {
+            let mut request = b"GET /callback?code=granted HTTP/1.1\r\n".to_vec();
+            request.extend_from_slice(header);
+            assert!(matches!(
+                classify_request(&request, Some("https://accounts.x.ai")),
+                Request::NotCallback
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_callback_accepts_non_utf8_unrelated_headers() {
+        for origin in [None, Some("https://accounts.x.ai")] {
+            let listener = listener().await;
+            let port = listener.port();
+            let client = tokio::spawn(async move {
+                let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                    .await
+                    .unwrap();
+                stream.write_all(b"GET /callback?code=granted HTTP/1.1\r\nOrigin: https://accounts.x.ai\r\nCookie: a=\xff\r\n\r\n").await.unwrap();
+                let mut response = String::new();
+                stream.read_to_string(&mut response).await.unwrap();
+                response
+            });
+            let cancel = CancellationToken::new();
+            let accepted = tokio::time::timeout(Duration::from_secs(1), async {
+                match origin {
+                    None => listener.accept(&granted(), &cancel).await,
+                    Some(origin) => {
+                        listener
+                            .accept_with_origin(&granted(), &cancel, Some(origin))
+                            .await
+                    }
+                }
+            })
+            .await
+            .expect("callback must complete despite unrelated header bytes")
+            .unwrap();
+            assert_eq!(accepted.callback, "granted");
+            accepted.respond(Response::Ok).await.unwrap();
+            let response = client.await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+            assert_eq!(
+                response.contains("Access-Control-Allow-Origin:"),
+                origin.is_some()
+            );
+        }
     }
 
     #[tokio::test]

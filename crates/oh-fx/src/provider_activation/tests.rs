@@ -53,6 +53,8 @@ impl Fixture {
                 },
             },
             lookup: |_| None,
+            grok: ofx_auth::GrokEndpoints::default(),
+            grok_models: ofx_gateway::GrokModelsEndpoints::default(),
         }
     }
 
@@ -313,4 +315,129 @@ fn the_saved_model_wins_only_when_the_catalog_lists_it() {
     );
     assert_eq!(select_catalog_model(&models, None), Some("gpt-6.1-sol"));
     assert_eq!(select_catalog_model(&[], Some("gpt-6.1-sol")), None);
+}
+
+pub(crate) fn grok_catalog(ids: &[&str]) -> Reply {
+    Reply::status(200, json!({"data":ids.iter().map(|id|json!({"model":id,"api_backend":"responses","context_window":100_000,"supports_reasoning_effort":false,"reasoning_efforts":[]})).collect::<Vec<_>>()} ).to_string())
+}
+
+impl Fixture {
+    pub(crate) fn grok_profile(&self, auth: &FakeServer, catalog: &FakeServer) -> Profile {
+        let mut profile = self.profile(auth, catalog);
+        profile.grok = ofx_auth::GrokEndpoints {
+            issuer: auth.base_url(),
+            token_url: format!("{}/oauth/token", auth.base_url()),
+            userinfo_url: format!("{}/userinfo", auth.base_url()),
+            revoke_url: format!("{}/revoke", auth.base_url()),
+        };
+        profile.grok_models = ofx_gateway::GrokModelsEndpoints {
+            models: format!("{}/models", catalog.base_url()),
+            modalities: format!("{}/modalities", catalog.base_url()),
+            client_version: format!("{}/version", catalog.base_url()),
+        };
+        profile
+    }
+
+    pub(crate) fn grok_credential_file(&self) -> PathBuf {
+        self.paths.data.join("grok-auth.json")
+    }
+
+    pub(crate) fn grok_signed_in(&self) {
+        fs::create_dir_all(&self.paths.data).unwrap();
+        fs::set_permissions(&self.paths.data, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(self.grok_credential_file(),json!({"version":1,"access_token":"grok-access-secret","refresh_token":"grok-refresh-secret","expires_at_ms":FAR_FUTURE_MS,"account_id":"grok-account"}).to_string()).unwrap();
+        fs::set_permissions(
+            self.grok_credential_file(),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn grok_activation_uses_its_authenticated_catalog_and_preserves_saved_preferences() {
+    let fixture = Fixture::new();
+    fixture.grok_signed_in();
+    fixture.write_settings(
+        r#"{"theme":"dark","fast_mode":true,"models":{"codex":"gpt-old","grok":"grok-second"}}"#,
+    );
+    let auth = FakeServer::start([]);
+    let catalog = FakeServer::start([
+        Reply::status(200, "1.0.13\n"),
+        grok_catalog(&["grok-first", "grok-second"]),
+        Reply::status(503, ""),
+    ]);
+    assert_eq!(
+        activate_grok(&fixture.grok_profile(&auth, &catalog)).await,
+        Ok(())
+    );
+    let settings: Value = serde_json::from_str(&fixture.settings().unwrap()).unwrap();
+    assert_eq!(settings["provider"], "grok");
+    assert_eq!(settings["models"]["grok"], "grok-second");
+    assert_eq!(settings["models"]["codex"], "gpt-old");
+    assert_eq!(settings["fast_mode"], true);
+    let requests = catalog.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].path, "/v1/version");
+    assert_eq!(requests[1].path, "/v1/models");
+    assert_eq!(requests[2].path, "/v1/modalities");
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some("Bearer grok-access-secret")
+    );
+    assert_eq!(requests[1].header("x-userid"), Some("grok-account"));
+    assert_eq!(requests[1].header("x-xai-token-auth"), Some("xai-grok-cli"));
+    assert_eq!(requests[1].header("x-grok-client-version"), Some("1.0.13"));
+    assert_eq!(requests[1].header("x-grok-client-identifier"), Some("fx"));
+    assert_eq!(requests[2].header("x-userid"), None);
+    assert_eq!(requests[2].header("x-xai-token-auth"), None);
+    assert!(auth.requests().is_empty());
+}
+
+#[tokio::test]
+async fn grok_missing_credential_uses_activation_guidance_without_catalog_requests() {
+    let fixture = Fixture::new();
+    let auth = FakeServer::start([]);
+    let catalog = FakeServer::start([]);
+    assert_eq!(
+        activate_grok(&fixture.grok_profile(&auth, &catalog)).await,
+        failure("Grok credential is unavailable")
+    );
+    assert!(auth.requests().is_empty());
+    assert!(catalog.requests().is_empty());
+    assert!(fixture.settings().is_none());
+}
+
+#[tokio::test]
+async fn grok_catalog_failures_preserve_previous_selection_and_saved_login() {
+    for (reply, expected) in [
+        (
+            Reply::status(401, "{}"),
+            "could not load the target model catalog (authentication)",
+        ),
+        (
+            Reply::status(200, "{\"data\":{}}"),
+            "could not load the target model catalog (malformed_response)",
+        ),
+        (grok_catalog(&[]), "target model catalog is empty"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.grok_signed_in();
+        fixture.write_settings(r#"{"theme":"dark","provider":"codex","models":{"codex":"old"}}"#);
+        let auth = FakeServer::start([]);
+        let catalog = FakeServer::start([
+            Reply::status(200, "1.0.13\n"),
+            reply,
+            Reply::status(503, ""),
+        ]);
+        assert_eq!(
+            activate_grok(&fixture.grok_profile(&auth, &catalog)).await,
+            failure(expected)
+        );
+        assert_eq!(
+            fixture.settings().as_deref(),
+            Some(r#"{"theme":"dark","provider":"codex","models":{"codex":"old"}}"#)
+        );
+        assert!(fixture.grok_credential_file().is_file());
+    }
 }

@@ -1,13 +1,18 @@
 use crate::browser_callback::ParseResult;
-use crate::chatgpt_session::DeleteOutcome;
-use crate::grok_session::{Mutation, Session, SessionStore, refresh_deadline_ms, valid_account_id};
+use crate::grok_session::{Mutation, Session, SessionStore, valid_account_id};
 use crate::oauth::OAuthError;
 use crate::oauth::{self, FormBody, parse_object, query_value_non_empty};
 use crate::oauth_transport::TransportError;
 use crate::oauth_transport::{Method, Transport};
 use crate::secret::Secret;
+use crate::subscription_access::now_ms;
+use crate::subscription_refresh::{
+    ParseRefreshError, RefreshTokenResponse, parse_refresh_token_response,
+};
+use crate::subscription_session::DeleteOutcome;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio_util::sync::CancellationToken;
@@ -73,8 +78,16 @@ pub enum GrokError {
     GrokUserInfoRequestFailed,
     #[error("InvalidGrokAuthorizationCode")]
     InvalidGrokAuthorizationCode,
-    #[error("InvalidE2EGrokEndpoint")]
-    InvalidE2EGrokEndpoint,
+    #[error("InvalidGrokOAuthEndpoint")]
+    InvalidGrokOAuthEndpoint,
+    #[error("GrokLoginStateUnavailable")]
+    GrokLoginStateUnavailable,
+    #[error("GrokAuthorizationCodeTooLong")]
+    GrokAuthorizationCodeTooLong,
+    #[error("ReadFailed")]
+    ReadFailed,
+    #[error("WriteFailed")]
+    WriteFailed,
     #[error("RandomSourceUnavailable")]
     RandomSourceUnavailable,
 }
@@ -99,8 +112,9 @@ impl From<OAuthError> for GrokError {
     }
 }
 
+mod run_login;
 mod sign_in;
-pub use sign_in::GrokSignIn;
+use sign_in::GrokSignIn;
 
 #[cfg(test)]
 mod tests;
@@ -111,29 +125,13 @@ const LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 const MAX_MANUAL_CODE_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrokRefreshMode {
+pub(crate) enum GrokRefreshMode {
     IfNeeded,
     Force,
     Stored,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrokAccess {
-    access_token: Secret,
-    account_id: String,
-    refresh_after_ms: i64,
-}
-impl GrokAccess {
-    pub fn account_id(&self) -> &str {
-        &self.account_id
-    }
-    pub fn refresh_after_ms(&self) -> i64 {
-        self.refresh_after_ms
-    }
-    pub fn into_token(self) -> String {
-        self.access_token.into_inner()
-    }
-}
+pub(crate) type GrokAccess = crate::subscription_access::SubscriptionAccess;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrokEndpoints {
@@ -179,7 +177,7 @@ impl GrokOAuth {
         })
     }
 
-    pub async fn start_sign_in(&self) -> Result<GrokSignIn, GrokError> {
+    pub(crate) async fn start_sign_in(&self) -> Result<GrokSignIn, GrokError> {
         GrokSignIn::new(self.clone()).await
     }
 
@@ -204,25 +202,38 @@ impl GrokOAuth {
         })
     }
 
-    pub async fn load_access(
+    pub(crate) fn storage_presence(&self) -> crate::session_presence::Presence {
+        self.store.presence()
+    }
+
+    pub(crate) async fn load_access(
         &self,
         mode: GrokRefreshMode,
         cancel: &CancellationToken,
     ) -> Result<Option<GrokAccess>, GrokError> {
         if mode == GrokRefreshMode::Stored {
-            return self.store.load().map(|session| session.map(take_access));
+            return self
+                .store
+                .load()
+                .map(|session| session.map(Session::into_access));
         }
-        let mutation = tokio::select! { biased; () = cancel.cancelled() => return Err(GrokError::Cancelled), begun = self.store.begin_existing_mutation() => begun? };
+        let mutation = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(GrokError::Cancelled),
+            begun = self.store.begin_existing_mutation() => begun?,
+        };
         let Some(mutation) = mutation else {
             return Ok(None);
         };
         let Some(mut session) = mutation.load()? else {
             return Ok(None);
         };
-        if mode == GrokRefreshMode::Force || session.expired(crate::chatgpt_oauth::now_ms()) {
-            session = self.refresh_session(&mutation, &session).await?;
+        if mode == GrokRefreshMode::Force || session.expired(now_ms()) {
+            session = self
+                .refresh_session_cancellable(&mutation, &session, cancel)
+                .await?;
         }
-        Ok(Some(take_access(session)))
+        Ok(Some(session.into_access()))
     }
 
     async fn fetch_account_id(&self, token: &str) -> Result<String, GrokError> {
@@ -272,7 +283,7 @@ impl GrokOAuth {
         Ok(Session {
             access_token: token.access_token,
             refresh_token: token.refresh_token,
-            expires_at_ms: oauth::expiry_timestamp_ms(crate::chatgpt_oauth::now_ms(), expiry)?,
+            expires_at_ms: oauth::expiry_timestamp_ms(now_ms(), expiry)?,
             account_id,
         })
     }
@@ -314,13 +325,45 @@ impl GrokOAuth {
                 },
             );
         }
-        parse_refresh_token_response(&response.body)
+        parse_refresh_token_response(&response.body).map_err(|error| match error {
+            ParseRefreshError::InvalidJson => GrokError::GrokOAuthRequestFailed,
+            ParseRefreshError::InvalidShape => GrokError::InvalidGrokOAuthResponse,
+        })
+    }
+
+    async fn refresh_session_cancellable(
+        &self,
+        mutation: &Mutation,
+        session: &Session,
+        cancel: &CancellationToken,
+    ) -> Result<Session, GrokError> {
+        if cancel.is_cancelled() {
+            return Err(GrokError::Cancelled);
+        }
+        let received_token = AtomicBool::new(false);
+        let exchange = self.refresh_session(mutation, session, &received_token);
+        tokio::pin!(exchange);
+        tokio::select! {
+            biased;
+            result = &mut exchange => result,
+            () = cancel.cancelled() => {
+                if let Ok(result) = tokio::time::timeout(Duration::from_secs(2), &mut exchange).await {
+                    result
+                } else {
+                    if received_token.load(Ordering::Acquire) {
+                        mutation.retire()?;
+                    }
+                    Err(GrokError::Cancelled)
+                }
+            }
+        }
     }
 
     async fn refresh_session(
         &self,
         mutation: &Mutation,
         current: &Session,
+        received_token: &AtomicBool,
     ) -> Result<Session, GrokError> {
         mutation.require_writable()?;
         let token = match self
@@ -329,16 +372,17 @@ impl GrokOAuth {
         {
             Ok(token) => token,
             Err(GrokError::CredentialRefreshRejected | GrokError::InvalidGrokOAuthResponse) => {
-                retire_refresh_session(mutation)?;
+                mutation.retire()?;
                 return Err(GrokError::CredentialRefreshRejected);
             }
             Err(error) => return Err(error),
         };
+        received_token.store(true, Ordering::Release);
         let replacement = self.refresh_replacement(token, current).await;
         let replacement = match replacement {
             Ok(session) => session,
             Err(error) => {
-                retire_refresh_session(mutation)?;
+                mutation.retire()?;
                 return Err(if error == GrokError::GrokAccountChanged {
                     error
                 } else {
@@ -347,7 +391,7 @@ impl GrokOAuth {
             }
         };
         if mutation.save(&replacement).is_err() {
-            let _ = retire_refresh_session(mutation);
+            let _ = mutation.retire();
             return Err(GrokError::CredentialRefreshPersistenceUncertain);
         }
         Ok(replacement)
@@ -370,50 +414,10 @@ impl GrokOAuth {
             refresh_token: token
                 .refresh_token
                 .unwrap_or_else(|| current.refresh_token.clone()),
-            expires_at_ms: oauth::expiry_timestamp_ms(crate::chatgpt_oauth::now_ms(), expiry)?,
+            expires_at_ms: oauth::expiry_timestamp_ms(now_ms(), expiry)?,
             account_id,
         })
     }
-}
-
-fn take_access(session: Session) -> GrokAccess {
-    GrokAccess {
-        refresh_after_ms: refresh_deadline_ms(session.expires_at_ms),
-        access_token: session.access_token,
-        account_id: session.account_id,
-    }
-}
-fn retire_refresh_session(mutation: &Mutation) -> Result<(), GrokError> {
-    match mutation.delete() {
-        Ok(DeleteOutcome::Deleted | DeleteOutcome::Missing) => Ok(()),
-        Ok(DeleteOutcome::DeletedNotDurable) | Err(_) => {
-            Err(GrokError::CredentialRefreshPersistenceUncertain)
-        }
-    }
-}
-#[derive(Debug)]
-struct RefreshTokenResponse {
-    access_token: Secret,
-    refresh_token: Option<Secret>,
-    expires_in: Option<i64>,
-}
-
-fn parse_refresh_token_response(bytes: &[u8]) -> Result<RefreshTokenResponse, GrokError> {
-    let invalid = GrokError::InvalidGrokOAuthResponse;
-    let object = parse_object(bytes).map_err(|_| invalid)?;
-    let access_token = oauth::required_string(&object, "access_token").map_err(|_| invalid)?;
-    let refresh_token = match object.get("refresh_token") {
-        None => None,
-        Some(Value::String(token)) if !token.is_empty() => Some(Secret::new(token.clone())),
-        Some(_) => return Err(invalid),
-    };
-    let expires_in =
-        oauth::optional_positive_integer(&object, "expires_in").map_err(|_| invalid)?;
-    Ok(RefreshTokenResponse {
-        access_token,
-        refresh_token,
-        expires_in,
-    })
 }
 
 fn build_browser_authorization_url(
@@ -481,7 +485,7 @@ impl GrokEndpoints {
             (&self.revoke_url, &defaults.revoke_url),
         ] {
             if url != default && !is_loopback_http_url(url) {
-                return Err(GrokError::InvalidE2EGrokEndpoint);
+                return Err(GrokError::InvalidGrokOAuthEndpoint);
             }
         }
         Ok(())

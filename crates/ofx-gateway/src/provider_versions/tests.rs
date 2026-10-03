@@ -287,3 +287,13 @@ async fn provider_version_lookups_stop_at_the_outer_deadline() {
     );
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+#[test]
+fn grok_release_version_uses_plain_text_and_rejects_header_injection() {
+    assert_eq!(
+        parse_grok_release(b"1.0.13\n").map(|version| version.0),
+        Some("1.0.13".to_owned())
+    );
+    assert_eq!(parse_grok_release(b"1.0.13\nHeader: injected"), None);
+    assert_eq!(parse_grok_release(br#"{"version":"1.0.13"}"#), None);
+}
