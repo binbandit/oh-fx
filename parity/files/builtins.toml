@@ -1,0 +1,83 @@
+[[file]]
+upstream = "src/builtins/browser_workspace_tools.zig"
+status = "not-applicable"
+modules = []
+note = "Browser-host workspace/tool-set projection; the native product does not ship the browser workspace host."
+
+[[file]]
+upstream = "src/builtins/commands.zig"
+status = "partial"
+modules = ["crates/ofx-cli/src/commands.rs", "crates/ofx-app/src/app_commands.rs"]
+note = "Top-level commands/help and active subset of slash commands exist; full slash-command registry and reserved menus/commands are absent."
+
+[[file]]
+upstream = "src/builtins/context.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/context.rs", "crates/ofx-agent/src/project_context.rs"]
+note = "Project/global instructions and delivery budgets exist; model prompt overlays and reconstruction of file-evidence context are absent."
+
+[[file]]
+upstream = "src/builtins/gateway.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/chat_completions.rs"]
+note = "Custom/Codex requests exist; Vercel gateway credential transport and web-search backend selection are absent."
+
+[[file]]
+upstream = "src/builtins/gateway/permission_reviewer.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/permission_reviewer.rs"]
+note = "Review request/response transport exists; Vercel reviewer route, Jev override and session usage recording are absent."
+
+[[file]]
+upstream = "src/builtins/gateway/typesafe_permission_reviewer.zig"
+status = "todo"
+modules = []
+note = "Jev typesafe decision transport and parser are unimplemented."
+
+[[file]]
+upstream = "src/builtins/hooks.zig"
+status = "todo"
+modules = []
+note = "Interactive lifecycle hook registration are unimplemented."
+
+[[file]]
+upstream = "src/builtins/hooks/herdr.zig"
+status = "todo"
+modules = []
+note = "Herdr interactive lifecycle socket delivery are unimplemented."
+
+[[file]]
+upstream = "src/builtins/hooks/notifications.zig"
+status = "todo"
+modules = []
+note = "Sound/attention hook delivery pacing are unimplemented."
+
+[[file]]
+upstream = "src/builtins/mcp.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/profile_store.rs"]
+note = "Durable profile server configuration operations exist; the /mcp live handler, connected-tool composition and workspace authority previews are absent."
+
+[[file]]
+upstream = "src/builtins/modes.zig"
+status = "todo"
+modules = []
+note = "Complete ACP ask/code mode registry and supplied tool-set projection are unimplemented."
+
+[[file]]
+upstream = "src/builtins/providers.zig"
+status = "todo"
+modules = []
+note = "Built-in provider bundle including gateway/Grok routing are unimplemented."
+
+[[file]]
+upstream = "src/builtins/skills.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/skills.rs", "crates/ofx-app/src/skill_commands.rs"]
+note = "Visible skill roots, loading, create/remove/path commands exist; remote installation transactions and source installation are unavailable."
+
+[[file]]
+upstream = "src/builtins/tools.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/tool_set.rs", "crates/ofx-contract/src/tool_dispatch.rs"]
+note = "Implemented local tool schemas are composed; complete built-in registry order/schemas, provider search and remaining tools are absent."

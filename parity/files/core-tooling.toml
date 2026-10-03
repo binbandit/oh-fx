@@ -1,0 +1,203 @@
+[[file]]
+upstream = "src/core/tooling/capability_retrieval.zig"
+status = "todo"
+modules = []
+note = "Capability corpus relevance scoring, source/cursor validation and retrieval are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/captured_command.zig"
+status = "todo"
+modules = []
+note = "Recognition of historical captured command records are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/command_output_content.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/output_echo.rs", "crates/ofx-tools/src/shell/snapshot_format.rs"]
+note = "Output sanitization and shell snapshots exist; cross-stream canonical foreground comparison records and callback-order reservation are absent."
+
+[[file]]
+upstream = "src/core/tooling/command_policy.zig"
+status = "todo"
+modules = []
+note = "Destructive effect annotations, risk notes and safer command alternatives are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/command_result_mapping.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/shell/snapshot_format.rs"]
+note = "Exit/stopped/error shell results are formatted; command result mapping lacks replay artifact identities and indeterminate-termination evidence envelopes."
+
+[[file]]
+upstream = "src/core/tooling/file_mutation.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/file_mutation.rs"]
+note = "Canonical targets, preimages, no-op verification, transactional mutations and committed undo-operation capture exist; session ReadTracker full-file freshness authority is absent."
+
+[[file]]
+upstream = "src/core/tooling/file_mutation_contract.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-tools/src/file_mutation_execution.rs", "crates/ofx-permissions/src/permissions/file_mutation_targets.rs"]
+note = "Typed mutation inputs, preimages and filesystem identities exist; proofCharge/proofValid bounded target-proof validation, policy-evaluated authorization equality and resultIsNoop output recognition are absent."
+
+[[file]]
+upstream = "src/core/tooling/file_mutation_execution.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/file_mutation_execution.rs"]
+note = "Prepared mutations revalidate approved filesystem identities, execute transactionally and publish committed operations to the session change tracker; upstream ReadTracker authority and result-commit publication tokens are absent."
+
+[[file]]
+upstream = "src/core/tooling/host_tool_runtime.zig"
+status = "todo"
+modules = []
+note = "Host dynamic schemas, provider-only projection and host executor lookup are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/model_request_budget.zig"
+status = "todo"
+modules = []
+note = "Conservative serialized input caps for web-search workers are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/model_tool_schema.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/filesystem/read_file.rs", "crates/ofx-gateway/src/chat_completions.rs"]
+note = "Existing tools carry static JSON schemas and gateway serialization; generic nested union/schema builder and complete built-in schema set are absent."
+
+[[file]]
+upstream = "src/core/tooling/result_commit.zig"
+status = "todo"
+modules = []
+note = "Result commit/cancel identity tokens are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/tool_admission.zig"
+status = "partial"
+modules = ["crates/ofx-permissions/src/tool_admission.rs", "crates/ofx-tools/src/tool_admission.rs"]
+note = "File target preflight, reviews and permission decisions exist; direct execution branch proofs and dynamic MCP authority revalidation are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_args.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_args.rs", "crates/ofx-tools/src/tool_args.rs"]
+note = "Object parsing and typed required/optional arguments exist; normalizeCompositeObjectValue string-to-object conversion is absent from the typed ToolArgs representation."
+
+[[file]]
+upstream = "src/core/tooling/tool_content.zig"
+status = "todo"
+modules = []
+note = "Rich media result parsing and text-only media projection are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/tool_dispatch.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_dispatch.rs"]
+note = "Tool/PreparedCall traits replace the registry coupling; dynamic schema registry, provider-executed tools and run_command compatibility dispatch are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_mcp_dispatch.zig"
+status = "todo"
+modules = []
+note = "MCP selected-tool execution and read-only classification are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/tool_mcp_feature_dispatch.zig"
+status = "todo"
+modules = []
+note = "Server-qualified MCP resource/prompt tools and typed input-required results are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/tool_mcp_registry.zig"
+status = "todo"
+modules = []
+note = "Selected/unselected dynamic MCP resolution are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/tool_mcp_runtime.zig"
+status = "todo"
+modules = []
+note = "MCP advertised dynamic capability execution and availability checks are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/tool_presentation.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_presentation.rs", "crates/ofx-tools/src/shell/presentation.rs"]
+note = "Filesystem/shell/subagent plain labels exist; provider-search alias lifecycle, dynamic tool labels and complete completed-result presentation are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_projection.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/tool_set.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "Local tools are advertised to requests; per-provider tool projection, provider search gates and read-only projection sets are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_result_display.zig"
+status = "todo"
+modules = []
+note = "contentForDisplay path/content envelope stripping and malformed-envelope preservation are absent; this source does not implement JSON unwrapping."
+
+[[file]]
+upstream = "src/core/tooling/tool_result_errors.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_result_errors.rs"]
+note = "Permission/review/malformed arguments and execution failures are encoded; terminal field-correction inspection and unavailable host-tool results are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_result_limits.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_result_limits.rs"]
+note = "Sanitization and bounded inline model output exist; saved large results with read_tool_result handles and persisted preview projection are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/tool_runtime.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "Blocking execution, panic containment and prepared calls exist; host/MCP tool authorization, Vision preparation and dynamic availability are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_set.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/tool_set.rs"]
+note = "Composition registers read/glob/grep/write/edit/shell/skill/web_fetch and question; subagent host registration, capability search, vision, result retrieval and search/install tools are absent."
+
+[[file]]
+upstream = "src/core/tooling/tool_specs.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_dispatch.rs", "crates/ofx-gateway/src/responses_protocol.rs"]
+note = "ToolSpec schemas are serialized in requests; generic registry presentation label-value projection and dynamic tool gateway schemas are absent."
+
+[[file]]
+upstream = "src/core/tooling/web_fetch_content_contract.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/web/content.rs"]
+note = "Content kinds and conversion cap are implemented; the upstream declared-versus-sniffed classification provenance field is absent."
+
+[[file]]
+upstream = "src/core/tooling/web_fetch_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/web/web_fetch_runtime.rs"]
+note = "Fifteen-minute converted-page cache, LRU count/content/metadata weight eviction and owned snapshots exist; binary ArtifactRef store identity/handle validation and artifact-eviction refetch are absent."
+
+[[file]]
+upstream = "src/core/tooling/web_search_contract.zig"
+status = "todo"
+modules = []
+note = "Web-search backend identities and ordered result transfer are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/web_search_policy.zig"
+status = "todo"
+modules = []
+note = "Admitted backend selection and strict domain-filter compatibility are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/web_search_provider.zig"
+status = "todo"
+modules = []
+note = "Web-search provider request/callback contracts are unimplemented."
+
+[[file]]
+upstream = "src/core/tooling/web_search_runtime.zig"
+status = "todo"
+modules = []
+note = "Configured primary/secondary web-search execution and result accounting are unimplemented."

@@ -1,0 +1,84 @@
+[[file]]
+upstream = "src/core/hosts/browser_capabilities.zig"
+status = "not-applicable"
+modules = []
+note = "Embedded browser model-context capability declaration; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/hosts/host.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hosts/js_host_clipboard.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host callback binding for the embedded runtime; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/hosts/js_host_steering.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host callback binding for the embedded runtime; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/hosts/js_host_tools.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host callback binding for the embedded runtime; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/hosts/js_host_url_opener.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host callback binding for the embedded runtime; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/hosts/js_host_workspace.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host callback binding for the embedded runtime; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/hosts/native.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/native.rs"]
+note = "Native text clipboard command execution exists; upstream file clipboard materialization and native secret-store provider wiring are missing."
+
+[[file]]
+upstream = "src/core/hosts/native_keychain.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hosts/native_secret_store.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hosts/runtime_profile.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hosts/target.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/hosts/url_opener.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/url_opener.rs"]
+note = "URL validation and platform spawning exist; Rust reports spawn success while upstream waits for a successful child exit."
+
+[[file]]
+upstream = "src/core/hosts/wasm.zig"
+status = "not-applicable"
+modules = []
+note = "WebAssembly target host capability/panic binding; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/hosts/wasm_panic.zig"
+status = "not-applicable"
+modules = []
+note = "WebAssembly target host capability/panic binding; excluded from the native Rust executable target."

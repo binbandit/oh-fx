@@ -1,0 +1,35 @@
+[[file]]
+upstream = "benchmarks/activity_progress.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig transcript activity benchmark harness; not shipped native binary behavior. Transcript implementation is tracked separately."
+
+[[file]]
+upstream = "benchmarks/approval_review.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig approval diff benchmark harness; not shipped native binary behavior. Approval and diff implementation are tracked separately."
+
+[[file]]
+upstream = "benchmarks/file_index_bench.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig file-index latency benchmark harness; not shipped native binary behavior. File-index implementation is tracked separately."
+
+[[file]]
+upstream = "benchmarks/libfx/fake-inference-server.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig fake inference server for benchmarks; not part of the shipped native binary."
+
+[[file]]
+upstream = "build.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig build graph; Cargo builds the Rust native binary. Zig build machinery and JavaScript-host artifacts are not shipped."
+
+[[file]]
+upstream = "tests/e2e/fixtures/mcp-stdio-dispatcher-driver.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream Zig MCP dispatcher test driver; not part of the shipped native binary. MCP dispatcher behavior is tracked by its implementation row."

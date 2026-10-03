@@ -1,0 +1,232 @@
+[[file]]
+upstream = "src/core/session/artifact_digest.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/command_replay_store.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/generation_fact_codec.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/generation_usage_provider.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/history_snapshot.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/js_host_prompt_history.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host callback binding for the embedded runtime; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/session/js_host_session_store.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host callback binding for the embedded runtime; excluded from the native Rust executable target."
+
+[[file]]
+upstream = "src/core/session/legacy_background_migration.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/profile_usage_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/profile_usage_store.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/prompt_history_provider.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/prompt_history_runtime.rs", "crates/ofx-session/src/prompt_history_store.rs"]
+note = "Shell history loading and accepted-prompt append integration exist; the host callback provider contract and clearWorkspace operation are missing."
+
+[[file]]
+upstream = "src/core/session/prompt_history_store.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/prompt_history_store.rs"]
+note = "Append and recent-entry loading exist; clearWorkspace is missing; invalid-UTF8 history handling remains a documented difference."
+
+[[file]]
+upstream = "src/core/session/result_store.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/result_store.rs"]
+note = "Stored result handles and previews exist; paged ResultReader, image snapshots and compactor content packs are missing."
+
+[[file]]
+upstream = "src/core/session/session.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_store.rs"]
+note = "Modern event/log/store domain exists; legacy image snapshot repair and full recovery/child-session domain behavior are missing."
+
+[[file]]
+upstream = "src/core/session/session_adapter.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_adapter.rs"]
+note = "Environment-flag parsing exists; v1/v2 store routing, recovery, doctor and child-session adapters are missing."
+
+[[file]]
+upstream = "src/core/session/session_authority.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_catalog.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_catalog_cache.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_child_store.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_codec.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_codec.rs"]
+note = "Modern metadata/preferences codecs exist; legacy schema preference decoding and recovery checkpoint codecs are missing."
+
+[[file]]
+upstream = "src/core/session/session_commands.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_commands.rs", "crates/ofx-app/src/app_commands.rs", "crates/ofx-app/src/session_commands.rs"]
+note = "Model query resolution, permissions/fast-mode commands and saved allowlist view/add/remove/reset controllers exist; live permission-rule replacement, settings menus and workspace-history controllers remain absent."
+
+[[file]]
+upstream = "src/core/session/session_compaction.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_discovery.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_discovery.rs"]
+note = "Modern session classification exists; legacy candidate streaming, schema migration and fenced recovery discovery are missing."
+
+[[file]]
+upstream = "src/core/session/session_display_metadata.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_display_metadata.rs"]
+note = "Display-title derivation exists; bounded display sidecar encoding/loading and image preview fallback are missing."
+
+[[file]]
+upstream = "src/core/session/session_event.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_event.rs"]
+note = "Modern conversation event encoding and sequencing exist; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing."
+
+[[file]]
+upstream = "src/core/session/session_json.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_layout.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_layout.rs"]
+note = "Session-ID validation/generation exists; terminal-specific IDs and v2 directory routing are missing."
+
+[[file]]
+upstream = "src/core/session/session_log.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_log.rs"]
+note = "Modern append/replay exists; recovery checkpoint prefix validation/copy and legacy history imports are missing."
+
+[[file]]
+upstream = "src/core/session/session_migration.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_projection.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_relationship_index_codec.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_replay.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_replay.rs"]
+note = "Buffered line reading exists; exact-commit, recovery checkpoint and child-identity replay coordination are missing."
+
+[[file]]
+upstream = "src/core/session/session_store.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_store.rs"]
+note = "Modern create/resume/list storage exists; legacy migration, doctor, image repair, projection caches and v2 routing are missing."
+
+[[file]]
+upstream = "src/core/session/session_store_paths.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_store_paths.rs"]
+note = "Workspace normalization and root validation exist; upstream sessionJsonPath/sessionDirPath path-builder facade is missing."
+
+[[file]]
+upstream = "src/core/session/session_store_types.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_summary_codec.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_summary_codec.rs"]
+note = "Resumable pagination/filtering and ordering exist; the separate sessionListPageFromSummaries all-session listing is missing."
+
+[[file]]
+upstream = "src/core/session/session_title_generation.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_usage.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/session_usage_sidecar.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/usage_menu.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/usage_recovery.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/usage_report.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session/web_fetch_artifacts.zig"
+status = "todo"
+modules = []

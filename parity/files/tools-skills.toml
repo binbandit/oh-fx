@@ -1,0 +1,17 @@
+[[file]]
+upstream = "src/tools/skills/install_skill.zig"
+status = "todo"
+modules = []
+note = "Skill installation tool are unimplemented."
+
+[[file]]
+upstream = "src/tools/skills/skill.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/skill.rs"]
+note = "Whole skill/resource and legacy named offset reads, notices and resolved identities exist; complete_skill model-content-kind publication and diagnostic trace delivery are absent."
+
+[[file]]
+upstream = "src/tools/skills/skill_search.zig"
+status = "todo"
+modules = []
+note = "Skill search relevance and result presentation are unimplemented."

@@ -1,0 +1,132 @@
+[[file]]
+upstream = "src/gateway/chat_completions.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/chat_completions.rs"]
+note = "Custom chat-completions transport is implemented; Vercel Gateway transport routing and upstream retry ownership are absent."
+
+[[file]]
+upstream = "src/gateway/chat_completions_protocol.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/chat_completions_protocol.rs"]
+note = "Function selection, request validation and streaming reduction exist; upstream image content parts and provider replay projection are incomplete, alongside documented gateway-dialect differences."
+
+[[file]]
+upstream = "src/gateway/client.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/client.rs"]
+note = "Request and HTTP failure helpers exist; Vercel-specific client endpoints and hosted-provider integration are absent."
+
+[[file]]
+upstream = "src/gateway/generation_usage.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/host_model_catalog.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/host_stream_provider.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/js_host_model_catalog.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host FFI entrypoint; this ledger targets the native Rust executable, not the upstream JS host ABI."
+
+[[file]]
+upstream = "src/gateway/js_host_stream_provider.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host FFI entrypoint; this ledger targets the native Rust executable, not the upstream JS host ABI."
+
+[[file]]
+upstream = "src/gateway/openai_codex.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/openai_codex.rs"]
+note = "Responses transport and replay are implemented; provisional tool-start delivery is tracked separately by OH-6 and must be verified against the merged base."
+
+[[file]]
+upstream = "src/gateway/openai_codex_models.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/openai_codex_models.rs"]
+note = "Codex catalog endpoint parsing and model capabilities exist; upstream file-input/caching/search capability metadata is not fully represented in Rust contracts."
+
+[[file]]
+upstream = "src/gateway/openai_codex_permission_reviewer.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/permission_reviewer.rs"]
+note = "Direct Codex Responses review uses catalog-selected gpt-5.6-luna and discards stream text; upstream wrapper extractAccountId validation is replaced by provider credential preparation."
+
+[[file]]
+upstream = "src/gateway/provider_versions.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/provider_versions.rs"]
+note = "Bounded Codex npm release lookup exists; upstream Grok stable endpoint/plain-version parsing and Grok environment overrides are absent."
+
+[[file]]
+upstream = "src/gateway/responses_permission_reviewer.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/permission_reviewer.rs"]
+note = "Codex permission-review transport is implemented; shared reviewer routing to Grok and other Responses providers is absent."
+
+[[file]]
+upstream = "src/gateway/responses_protocol.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/responses_protocol.rs"]
+note = "Responses argument, text and reasoning reconciliation exists; provisional tool-start delivery is tracked by OH-6 and is not established by this baseline."
+
+[[file]]
+upstream = "src/gateway/sse.zig"
+status = "ported"
+modules = ["crates/ofx-http/src/sse.rs"]
+note = "SSE framing, data concatenation, terminal dispatch and byte limits are covered by the Rust SSE tests."
+
+[[file]]
+upstream = "src/gateway/tool_call_ids.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/tool_call_ids.rs"]
+note = "Portable wire-ID projection, opaque replay protection and collision handling exist; upstream provider-executed ToolCall.provenance protection has no Rust call-provenance field."
+
+[[file]]
+upstream = "src/gateway/vercel_failure_diagnostics.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/vercel_model_policy.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/vercel_protocol.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/web_search.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/web_search_types.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/xai_grok.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/xai_grok_models.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/gateway/xai_grok_permission_reviewer.zig"
+status = "todo"
+modules = []

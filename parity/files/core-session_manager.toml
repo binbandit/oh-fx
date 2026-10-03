@@ -1,0 +1,49 @@
+[[file]]
+upstream = "src/core/session_manager/api.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/catalog.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/diag.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/fold.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/log.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/schema.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/session.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/storage.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/storage_fault.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/session_manager/trace.zig"
+status = "todo"
+modules = []

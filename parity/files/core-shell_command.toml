@@ -1,0 +1,17 @@
+[[file]]
+upstream = "src/core/shell_command/command_classification.zig"
+status = "todo"
+modules = []
+note = "Literal-pattern classification, base-command token extraction, delegated analysis tails and terminal-exit segment selection are absent; lexing and reversible-effect recognition belong to separate source files."
+
+[[file]]
+upstream = "src/core/shell_command/command_effect.zig"
+status = "partial"
+modules = ["crates/ofx-shell/src/command_effect.rs"]
+note = "Reversible automatic command recognition exists; direct read-only plans, pipeline authority and approval reason planning are absent."
+
+[[file]]
+upstream = "src/core/shell_command/command_lex.zig"
+status = "partial"
+modules = ["crates/ofx-shell/src/command_lex.rs"]
+note = "Argument tokenization, redirection kinds and unsafe compounds are implemented; direct pipeline stage splitting is absent."

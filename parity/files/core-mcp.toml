@@ -1,0 +1,329 @@
+[[file]]
+upstream = "src/core/mcp/access_policy.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/atomic_value.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/catalog_freshness.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/catalog_refresh.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/catalog_state.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/command_provider.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/command_provider.rs"]
+note = "Add-command parsing exists; resource listing, server summaries, authenticate/logout and delegate execution are missing."
+
+[[file]]
+upstream = "src/core/mcp/connection_control.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/controlled_lock.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/docker_run.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/elicitation.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/elicitation_interaction.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/feature_catalog.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/feature_catalog_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/feature_operations.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/feature_result.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/feature_snapshot.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/feature_transport.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/features/common.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/features/completion.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/features/prompts.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/features/resources.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/features/tools.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/health.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/json_number.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/json_schema_pattern.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/json_schema_unicode_letter.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/legacy_elicitation_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/legacy_http_sse.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/legacy_sse.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/legacy_streamable_http.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/legacy_url_completion.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/mcp_auth.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/mcp_auth_store.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/mcp_contract.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/mcp_contract.rs"]
+note = "Configuration and admission types exist; transport precommit, server-request, notification and progress sinks and response-envelope validation are missing."
+
+[[file]]
+upstream = "src/core/mcp/mcp_json.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/mcp_runtime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/menu_state.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/message_carrier.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/model_catalog.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/mrtr.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/operation_authority.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/operation_control.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/project_config.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/project_config.rs"]
+note = "Configuration parsing and merge exist; ACP-primary ordered workspace merge and retained-workspace-authority detection are missing."
+
+[[file]]
+upstream = "src/core/mcp/protocol_messages.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/protocol_negotiation.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/selected_schema.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/server_auth.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/server_connection.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/server_lifecycle.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/server_lifetime.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/server_subscriptions.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/server_transport.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/server_views.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/slack_preset.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/startup_admission.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/stdio_dispatcher.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/streamable_http.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/streamable_http.rs"]
+note = "Endpoint and header validation exist; MCP POST transport, cancellation control, authentication rejection and protocol-session handling are missing."
+
+[[file]]
+upstream = "src/core/mcp/tool_catalog.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/tool_names.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/tool_operations.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/tool_result.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/tool_search.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/tool_snapshot.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/tool_subscription.zig"
+status = "todo"
+modules = []
+
+[[file]]
+upstream = "src/core/mcp/workspace_config.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/workspace_config.rs"]
+note = "Bounded workspace configuration loading and environment expansion exist; upstream caller-selected ConfigScope loading is missing."
