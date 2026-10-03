@@ -37,6 +37,7 @@ note = "Child turns preserve final or partial text, cancellation and bounded fai
 upstream = "src/core/subagent/live_metrics.zig"
 status = "todo"
 modules = []
+note = "A child's input tokens are not tracked while it works, so its status line shows the model and effort without them."
 
 [[file]]
 upstream = "src/core/subagent/managed_owner.zig"
@@ -59,7 +60,7 @@ modules = []
 upstream = "src/core/subagent/tool_host.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/tool_host.rs", "crates/ofx-agent/src/subagent/managed_owner.rs"]
-note = "Managed request admission, invocation identity, inherited defaults and terminal result projection exist; catalog override resolution, host authority snapshots, child feedback and throttled status presentation are absent."
+note = "Managed request admission, invocation identity, inherited defaults and terminal result projection exist; catalog override resolution, host authority snapshots and child feedback are absent, and the child's status is published once with its model and effort, without upstream's throttled input-token refresh."
 
 [[file]]
 upstream = "src/core/subagent/tool_provider.zig"
