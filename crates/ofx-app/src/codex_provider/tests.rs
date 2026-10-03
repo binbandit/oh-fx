@@ -371,6 +371,53 @@ async fn ask_refreshes_an_expired_login_and_streams_a_tool_step_through_response
 }
 
 #[tokio::test]
+async fn codex_turns_carry_the_web_search_guidance_and_answer_its_calls_as_unavailable() {
+    let fixture = Fixture::new();
+    fixture.write_session(FAR_FUTURE_MS, 0o600);
+    let auth = FakeServer::start([]);
+    let search = events(&[
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"web_search","arguments":""}}),
+        json!({"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"query\":\"zig news\"}"}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+    ]);
+    let codex = FakeServer::start([Reply::sse(&search), Reply::sse(&text_events("Done."))]);
+    let provider = fixture.provider(&auth, &codex).await.expect("provider");
+    let mut agent = fixture.agent(provider);
+    let (report, seen) = run(&mut agent, "What is new in Zig?").await;
+
+    assert_eq!(report.outcome, TurnOutcome::Completed, "{report:?}");
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolStarted { .. })),
+        "{seen:?}"
+    );
+    let requests = codex.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].json();
+    assert_offers_the_ask_tools(&first, &fixture.canonical_workspace());
+    let guidance = ofx_tools::WebSearch::default().spec().description.clone();
+    let instructions = first["instructions"].as_str().expect("instructions");
+    let (system, rest) = instructions
+        .split_once(&format!("\n\n{guidance}\n\n"))
+        .expect("the guidance follows the system prompt");
+    assert_eq!(system, GATEWAY_SYSTEM_PROMPT);
+    assert!(rest.starts_with("<fx-turn-context>\n"), "{rest}");
+    let input = requests[1].json()["input"]
+        .as_array()
+        .expect("input")
+        .clone();
+    assert_eq!(
+        input.last(),
+        Some(&json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "web_search is unavailable: no local runtime with a configured Gateway transport policy is installed"
+        }))
+    );
+}
+
+#[tokio::test]
 async fn an_unauthorized_reply_refreshes_the_login_once_and_replays_the_request() {
     let fixture = Fixture::new();
     fixture.write_session(FAR_FUTURE_MS, 0o600);
