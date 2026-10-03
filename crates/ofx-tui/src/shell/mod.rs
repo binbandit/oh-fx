@@ -716,6 +716,7 @@ impl<'a> Shell<'a> {
     }
 
     fn session_title_changed(&mut self, title: Option<String>) {
+        self.statusline.session_title_changed(title.as_deref());
         self.session_title = title;
         let _ = self.terminal.write_all(self.window_title().as_bytes());
     }
@@ -815,7 +816,7 @@ fn window_title(options: &ShellOptions, session_title: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use ofx_contract::UiEvent;
+    use ofx_contract::{StatuslineItem, UiEvent};
     use rustix::process::{Signal, getpid, kill_process};
     use rustix::termios::{self, LocalModes};
 
@@ -976,6 +977,25 @@ mod tests {
             window_title(&options, Some(&format!("{exact}y"))),
             format!("\x1b]2;{}...\x07", "x".repeat(125))
         );
+    }
+
+    #[test]
+    fn the_status_line_shows_the_session_title_after_the_model() {
+        let mut test = test_shell::TestShell::start_with(|options| {
+            options.statusline.set(StatuslineItem::Session, true);
+        });
+        test.screen();
+        test.deliver(UiEvent::SessionTitleChanged {
+            title: Some("Fix the renderer".to_owned()),
+        });
+        let screen = test.screen();
+        assert!(
+            screen.contains("auto · model-a · Fix the renderer"),
+            "{screen}"
+        );
+        test.deliver(UiEvent::SessionTitleChanged { title: None });
+        let screen = test.screen();
+        assert!(!screen.contains("Fix the renderer"), "{screen}");
     }
 
     #[test]

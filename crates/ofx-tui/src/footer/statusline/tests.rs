@@ -148,3 +148,14 @@ fn identities_below_seven_cells_keep_only_the_path_tail() {
         Some(MARKER)
     );
 }
+
+#[test]
+fn the_session_title_shows_only_while_its_item_is_on() {
+    let (mut statusline, _) = counting(&[]);
+    statusline.session_title_changed(Some("Fix the renderer"));
+    assert_eq!(statusline.view().session_title, None);
+    statusline.set(StatuslineItem::Session, true);
+    assert_eq!(statusline.view().session_title, Some("Fix the renderer"));
+    statusline.session_title_changed(None);
+    assert_eq!(statusline.view().session_title, None);
+}

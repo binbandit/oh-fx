@@ -526,11 +526,15 @@ fn statusline_toggles_the_context_and_workspace_segments() {
     let screen = wait(&session, "* statusline: workspace: off");
     assert!(!screen.contains("(feature/pty)"), "{screen}");
     assert!(screen.contains("auto · model-a · 0k/128k 0%"), "{screen}");
+    session.send(b"/statusline session\r");
+    wait(&session, "* statusline: session: on");
+    session.send(b"/rename Release prep\r");
+    wait(&session, "auto · model-a · Release prep · 0k/128k 0%");
     session.send(b"/statusline branch\r");
     wait(&session, "usage: /statusline [context|session|workspace]");
     assert_eq!(
         saved_settings(&home)["statusLine"],
-        json!({"workspace": false, "context": true})
+        json!({"workspace": false, "context": true, "session": true})
     );
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
