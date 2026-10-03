@@ -1994,6 +1994,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_fresh_session_is_named_while_the_previous_title_request_still_waits() {
+        let held = Gate::default();
+        let codex = FakeServer::start([
+            codex_text("First").after(&held),
+            codex_text("First").after(&held),
+            codex_text("Second title"),
+            codex_text("Second title"),
+        ]);
+        let catalog = codex_catalog(false, 8);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &codex_settings()).await;
+        harness.submit("fix the renderer");
+        harness
+            .until(|event| matches!(event, UiEvent::TurnStarted { .. }))
+            .await;
+        while codex.requests().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        harness.submit("now the tests");
+        timeout(
+            Duration::from_secs(10),
+            until_titled(&mut harness, "Second title"),
+        )
+        .await
+        .expect("the fresh session is named");
+        let titles = title_requests(&codex);
+        assert_eq!(titles.len(), 2);
+        let fresh = saved_sessions(&harness.home)
+            .into_iter()
+            .find(|session| session["title"] == "Second title")
+            .expect("the fresh session keeps its generated title");
+        assert_eq!(titles[1].header("session-id"), fresh["id"].as_str());
+        assert_ne!(titles[0].header("session-id"), fresh["id"].as_str());
+    }
+
+    #[tokio::test]
     async fn sessions_keep_their_first_prompt_title_when_session_titles_are_off() {
         let codex = FakeServer::start([codex_text("done")]);
         let catalog = codex_catalog(false, 8);

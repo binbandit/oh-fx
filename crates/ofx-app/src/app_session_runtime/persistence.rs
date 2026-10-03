@@ -177,6 +177,9 @@ impl Persistence {
     }
 
     pub(crate) fn close(&mut self, agent: &mut Agent) {
+        if let Some(task) = self.title_task.take() {
+            task.abort();
+        }
         agent.detach_session();
         if let Some(live) = self.live.take()
             && !live.titled()
