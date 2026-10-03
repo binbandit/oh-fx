@@ -223,6 +223,13 @@ impl ReasoningEffort {
             Self::Named(name) => Some(name),
         }
     }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Auto => "auto",
+            Self::Named(name) => name,
+        }
+    }
 }
 
 pub fn is_valid_reasoning_effort(raw: &str) -> bool {
@@ -543,6 +550,8 @@ mod tests {
             ReasoningEffort::Named("low".to_owned()).into_named(),
             Some("low".to_owned())
         );
+        assert_eq!(ReasoningEffort::parse("default").unwrap().label(), "auto");
+        assert_eq!(ReasoningEffort::parse("xHigh").unwrap().label(), "xHigh");
     }
 
     #[test]

@@ -759,6 +759,7 @@ version = "0.1.0"
 dependencies = [
  "ofx-text",
  "serde_json",
+ "sha2",
  "tokio-util",
 ]
 
