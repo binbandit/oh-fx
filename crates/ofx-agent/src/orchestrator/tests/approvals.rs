@@ -1,5 +1,6 @@
 use ofx_contract::{
-    ApprovalDecision, ApprovalRequest, ApprovalScope, GatedAction, RequestId, SessionGrant,
+    ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope, GatedAction, RequestId,
+    SessionGrant,
 };
 
 use super::*;
@@ -152,6 +153,7 @@ async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remem
                 scope: approved_tree(1),
                 command: None,
                 file: None,
+                origin: ApprovalOrigin::ActiveSession,
             }]
         );
         assert_eq!(

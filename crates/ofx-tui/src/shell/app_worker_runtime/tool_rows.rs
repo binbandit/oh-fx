@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ActionLabel, ApprovalRequest, ApprovalScope, CallDescription, CommandProcessPresentation,
-    CommandProfile, CommandRequest, Concurrency, FileChangeStats, FileMutation, FileMutationState,
-    PathAccess, RequestId, ReviewHold, ToolActivity, ToolCallId, ToolDeferral, ToolEffect,
-    ToolRejection, ToolResultStatus, ToolStatusDetail, TurnId, TurnOutcome, UiCommand, UiEvent,
-    tool_permission_denied_json, tool_review_held_json,
+    ActionLabel, ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription,
+    CommandProcessPresentation, CommandProfile, CommandRequest, Concurrency, FileChangeStats,
+    FileMutation, FileMutationState, PathAccess, RequestId, ReviewHold, ToolActivity, ToolCallId,
+    ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnId,
+    TurnOutcome, UiCommand, UiEvent, tool_permission_denied_json, tool_review_held_json,
 };
 
 use super::super::test_shell::TestShell;
@@ -346,7 +346,21 @@ fn approval(
             },
             command: None,
             file,
+            origin: ApprovalOrigin::ActiveSession,
         }),
+    }
+}
+
+fn from_child(event: UiEvent) -> UiEvent {
+    match event {
+        UiEvent::ApprovalRequested {
+            turn_id,
+            mut request,
+        } => {
+            request.origin = ApprovalOrigin::Subagent("1".to_owned());
+            UiEvent::ApprovalRequested { turn_id, request }
+        }
+        other => other,
     }
 }
 
@@ -377,6 +391,25 @@ fn a_call_awaiting_approval_shows_as_running_and_settles_with_its_decision() {
         screen.contains("● 1 tool call · 1 read · 1 denied\n└ Denied ../notes.txt\n"),
         "{screen}"
     );
+}
+
+#[test]
+fn a_childs_pending_approval_adds_no_row_to_the_parents_transcript() {
+    let mut test = running("go");
+    test.deliver(from_child(approval(
+        "a",
+        "read_file",
+        ToolActivity::Read,
+        ("Reading", "Read", "../notes.txt"),
+        None,
+    )));
+    let screen = test.screen();
+    assert!(screen.contains("Subagent 1 needs permission"), "{screen}");
+    assert!(!screen.contains("tool call"), "{screen}");
+    test.draining(super::super::Shell::cancel_visible_turn);
+    let screen = test.screen();
+    assert!(!screen.contains("tool call"), "{screen}");
+    assert!(!screen.contains("Reading ../notes.txt"), "{screen}");
 }
 
 #[test]
