@@ -108,9 +108,9 @@ note = "Zig type-erased allocation-free sort implementation is replaced by Rust 
 
 [[file]]
 upstream = "src/core/shared/text_utils.zig"
-status = "ported"
-modules = ["crates/ofx-text/src/text_utils.rs", "crates/ofx-tui/src/footer/command_text.rs", "crates/ofx-tui/src/row_text.rs"]
-note = "The terminal-safe prefix and suffix width cuts live beside their approval consumers in ofx-tui's command_text, with upstream's tests, and row_text's escaped_width measures raw text as rows draw it, the role terminalSafeVisibleWidth plays upstream."
+status = "partial"
+modules = ["crates/ofx-text/src/text_utils.rs", "crates/ofx-tui/src/footer/command_text.rs"]
+note = "The terminal-safe prefix and suffix width cuts live beside their approval consumers in ofx-tui's command_text, with upstream's tests. terminalSafeVisibleWidth is not ported: row_text's escaped_width is the narrower generic-row width, where a zero-width space measures 0 cells, not the 8-cell \\u{200b} escape upstream measures, so the full terminal-safe width stays with its deferred callers, the compact command menu and the steering rows of the footer input."
 
 [[file]]
 upstream = "src/core/shared/theme.zig"
