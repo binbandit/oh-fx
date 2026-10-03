@@ -22,6 +22,7 @@ mod session_picker_runtime;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
 mod statusline_menu_runtime;
+mod steering_runtime;
 #[cfg(test)]
 mod test_shell;
 
@@ -67,7 +68,7 @@ use crate::footer::picker_presentation::{catalog_menu_hint_row, menu_hint_row, m
 use crate::footer::question_ui::question_hint_row;
 use crate::footer::skills_menu_presentation::{MAX_MENU_ROWS, skills_menu_band};
 use crate::footer::statusline::Statusline;
-use crate::host::{Clipboard, ForegroundLifecycle, ForegroundState};
+use crate::host::{Clipboard, ForegroundLifecycle, ForegroundState, SteeringQueue};
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
 use crate::output::activity_status::{
@@ -121,6 +122,7 @@ pub struct ShellOptions {
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
     pub skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     pub lifecycle: Option<Box<dyn ForegroundLifecycle>>,
+    pub steering: Option<Box<dyn SteeringQueue>>,
     pub opening: Opening,
     pub statusline: StatuslineToggles,
     pub workspace_identity: Option<Box<dyn WorkspaceIdentitySource>>,
@@ -1247,6 +1249,7 @@ mod tests {
             file_mentions: None,
             skill_catalog: None,
             lifecycle: None,
+            steering: None,
             opening: Opening::Welcome,
             statusline: StatuslineToggles::default(),
             workspace_identity: None,
