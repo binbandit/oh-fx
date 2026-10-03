@@ -81,12 +81,20 @@ pub(crate) struct KeptReplay {
 }
 
 impl KeptReplay {
-    pub(crate) fn belongs_to(&self, assistant: &str, call_ids: &[&str]) -> bool {
+    pub(crate) fn belongs_to(
+        &self,
+        assistant: &str,
+        call_ids: &[&str],
+        projected: &ProviderReplay,
+    ) -> bool {
         self.call_ids
             .iter()
             .map(String::as_str)
             .eq(call_ids.iter().copied())
             && (!self.call_ids.is_empty() || self.assistant == assistant)
+            && self.replay.source.provider.id().label() == projected.source.provider
+            && self.replay.source.model == projected.source.model
+            && self.replay.parts_json == projected.parts_json
     }
 }
 

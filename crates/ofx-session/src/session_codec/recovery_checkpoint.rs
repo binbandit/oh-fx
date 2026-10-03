@@ -155,6 +155,14 @@ impl RecoveryCheckpoint {
         }
     }
 
+    pub(crate) fn positional_replays(&self) -> Vec<Option<SavedReplay>> {
+        self.execution
+            .tool_steps
+            .iter()
+            .map(|step| step.durable_replay.clone())
+            .collect()
+    }
+
     pub(crate) fn saved_replays(&self) -> Vec<KeptReplay> {
         self.execution
             .tool_steps

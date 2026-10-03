@@ -627,3 +627,126 @@ fn a_compaction_during_a_continued_turn_keeps_the_recovered_replay_bindings() {
         [bound_replay("11"), bound_replay("22")]
     );
 }
+
+fn standalone_step(binding: &str) -> String {
+    format!(
+        "{{\"assistant\":\"Checking.\",\"provider_replay\":{},\"tool_calls\":[],\"tool_results\":[]}}",
+        bound_replay(binding)
+    )
+}
+
+fn standalone_turn<'a>(
+    steps: usize,
+    replay: &'a ProviderReplay,
+    end: TurnEnd<'a>,
+) -> HistoryTurn<'a> {
+    HistoryTurn {
+        user: "fix the build",
+        steps: (0..steps)
+            .map(|_| HistoryStep {
+                assistant: "Checking.",
+                provider_replay: Some(replay),
+                tool_calls: &[],
+                tool_results: Vec::new(),
+            })
+            .collect(),
+        steering: Vec::new(),
+        end,
+    }
+}
+
+fn standalone_checkpoint(fixture: &Fixture) {
+    fixture.save_checkpoint(
+        3,
+        &checkpoint(
+            "fix the build",
+            &[standalone_step("11"), standalone_step("22")],
+            "",
+            "",
+        ),
+    );
+}
+
+#[test]
+fn recovered_steps_with_the_same_text_keep_their_own_replays_when_settled() {
+    let fixture = Fixture::new();
+    fixture.start_under(portkey(0x33), &finished_turn());
+    standalone_checkpoint(&fixture);
+    fixture.resume().unwrap().settle_recovery().unwrap();
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22")]
+    );
+}
+
+#[test]
+fn recovered_steps_with_the_same_text_keep_their_own_replays_when_continued() {
+    let fixture = Fixture::new();
+    let running = portkey(0x33);
+    fixture.start_under(running.clone(), &finished_turn());
+    standalone_checkpoint(&fixture);
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.take_recovery().is_some());
+    let replay = projected_replay();
+    let finished = standalone_turn(
+        3,
+        &replay,
+        TurnEnd::Replied {
+            text: "fixed",
+            provider_replay: None,
+        },
+    );
+    resumed.record_turn(&finished, &running).unwrap();
+    let running_replay = format!(
+        "{{\"source\":{{\"provider\":{},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
+        serde_json::to_string(&running).unwrap()
+    );
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22"), running_replay]
+    );
+}
+
+#[test]
+fn a_compaction_that_saves_an_earlier_recovered_step_leaves_the_later_one_its_replay() {
+    let fixture = Fixture::new();
+    let running = portkey(0x33);
+    fixture.start_under(running.clone(), &finished_turn());
+    standalone_checkpoint(&fixture);
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.take_recovery().is_some());
+    let replay = projected_replay();
+    let prefix = standalone_turn(
+        1,
+        &replay,
+        TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        },
+    );
+    resumed
+        .record_compaction(
+            "<summary>first step</summary>",
+            HistoryCut {
+                turns: 1,
+                tool_steps: 1,
+                steering: 0,
+            },
+            Some(&prefix),
+            &running,
+        )
+        .unwrap();
+    let rest = standalone_turn(
+        1,
+        &replay,
+        TurnEnd::Replied {
+            text: "fixed",
+            provider_replay: None,
+        },
+    );
+    resumed.record_turn(&rest, &running).unwrap();
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22")]
+    );
+}

@@ -11,7 +11,7 @@ use crate::session_log::conversation_progress::ProgressPoint;
 use crate::session_log::conversation_writer::ConversationWriter;
 use crate::session_log::managed_file::read_managed_file;
 use crate::session_log::now_ms;
-use crate::session_log::turn_events::{TurnArtifacts, turn_events};
+use crate::session_log::turn_events::{KeptReplays, TurnArtifacts, turn_events};
 
 const RECOVERY_FILE: &str = "recovery.json";
 const RECOVERY_ASKED_FILE: &str = "recovery.asked";
@@ -80,12 +80,12 @@ pub(crate) fn commit_checkpoint(
     } else {
         ProgressPoint::default()
     };
-    let saved_replays = checkpoint.saved_replays();
+    let replays = checkpoint.positional_replays();
     let artifacts = TurnArtifacts {
         dir,
         provider,
         timestamp_ms,
-        saved_replays: &saved_replays,
+        kept: KeptReplays::ByPosition(&replays),
     };
     let mut events = turn_events(&artifacts, &checkpoint.interrupted_turn(), written)?;
     if let Some(ConversationEvent::Interrupted(interrupted)) = events.last_mut() {
