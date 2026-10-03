@@ -181,16 +181,12 @@ impl CatalogBuilder {
             Some(_) => {}
             None => self.cache_scope = Some(page.cache_scope),
         }
-        let mut page_names = HashSet::new();
         for tool in &page.tools {
-            if self.names.contains(&tool.name) || !page_names.insert(tool.name.as_str()) {
+            if !self.names.insert(tool.name.clone()) {
                 return Err(McpError::DuplicateTool);
             }
         }
-        for tool in page.tools {
-            self.names.insert(tool.name.clone());
-            self.tools.push(tool);
-        }
+        self.tools.extend(page.tools);
         if let Some(cursor) = &page.next_cursor {
             self.cursors.insert(cursor.clone());
         }
@@ -203,7 +199,7 @@ impl CatalogBuilder {
             return Err(McpError::InvalidListResult);
         }
         self.tools
-            .sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+            .sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
         Ok(ToolCatalog { tools: self.tools })
     }
 }
