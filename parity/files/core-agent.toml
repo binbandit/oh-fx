@@ -128,7 +128,7 @@ note = "Turn completion, failed partial text and logging exist; retained candida
 upstream = "src/core/agent/runtime/gateway_step.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/stream_provider.rs"]
-note = "Model requests and provider completion are implemented; tool image projection and detailed delivery-certainty evidence are absent."
+note = "Model requests, provider completion and provider admission are implemented; tool image projection, usage observations at admission and detailed delivery-certainty evidence are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/image_provider.zig"
@@ -158,7 +158,7 @@ note = "Backoff and retry causes are implemented; partial-output restart, uncert
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction and steering exist; vision, dynamic tool advertisement and durable recovery remain absent."
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering and the pending recovery status published at provider admission exist; vision, dynamic tool advertisement and durable recovery remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
@@ -260,7 +260,7 @@ note = "Vision call image preparation and model execution are unimplemented."
 upstream = "src/core/agent/stream_provider.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/stream_provider.rs"]
-note = "Streaming text/reasoning and completions exist; tool-start/input callbacks, image request modes and delivery evidence are absent on main."
+note = "Streaming text/reasoning, provider admission and completions exist; tool-start/input callbacks, image request modes and delivery evidence are absent on main."
 
 [[file]]
 upstream = "src/core/agent/tool_preparation.zig"
@@ -272,4 +272,4 @@ note = "Built-in call preparation and panic containment exist; dynamic host tool
 upstream = "src/core/agent/worker_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_agent_runtime.rs"]
-note = "Worker commands drive turn execution and cancellation; active-turn steering and subagent worker origin handling are absent."
+note = "Worker commands drive turn execution, cancellation and recovery pauses; active-turn steering and subagent worker origin handling are absent."

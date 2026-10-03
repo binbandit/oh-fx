@@ -142,7 +142,7 @@ note = "The startup runtime loads 100 workspace-scoped recent entries and instal
 upstream = "src/core/app/input_interrupt_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
-note = "Turn cancellation and compaction cancellation exist; upstream paused route recovery/connectivity wait and trace interrupt actions are absent."
+note = "Turn cancellation, compaction cancellation and pausing a connectivity wait with Escape exist; trace interrupt actions are absent."
 
 [[file]]
 upstream = "src/core/app/input_limit_feedback.zig"

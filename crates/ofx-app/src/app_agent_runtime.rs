@@ -20,6 +20,7 @@ use crate::app_commands::{
 };
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
+use crate::approval_queue::ApprovalQueue;
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess};
 use crate::skills::HostSkills;
@@ -332,6 +333,7 @@ impl Controller {
                 UiCommand::ResumeSession { id } => self.resume_session(&id),
                 UiCommand::CloseSessionPicker => self.close_picker(),
                 UiCommand::Cancel { .. }
+                | UiCommand::PauseRecovery { .. }
                 | UiCommand::Approval { .. }
                 | UiCommand::QuestionAnswered { .. }
                 | UiCommand::CancelCompaction => {}
@@ -401,6 +403,7 @@ impl Controller {
                         }
                         Some(
                             UiCommand::Cancel { .. }
+                            | UiCommand::PauseRecovery { .. }
                             | UiCommand::Approval { .. }
                             | UiCommand::QuestionAnswered { .. },
                         ) => {}
@@ -579,41 +582,20 @@ impl Controller {
         self.state.skills().refresh();
         self.start_title_generation(&prompt.text);
         let cancel = CancellationToken::new();
-        let emit = Arc::clone(&self.state.emit);
+        let pause = self.agent.recovery_pause();
         let running = Arc::new(Mutex::new(None));
-        let started = Arc::clone(&running);
         let running_turn = || *running.lock().unwrap_or_else(PoisonError::into_inner);
-        let notices = Arc::clone(&self.state.context_notices);
-        let approvals = self.state.setup.approvals().cloned();
+        let mut sink = turn_events(
+            Arc::clone(&self.state.emit),
+            Arc::clone(&running),
+            self.state.setup.approvals().cloned(),
+            Arc::clone(&self.state.context_notices),
+        );
         let state = &mut self.state;
         let persistence = &mut self.persistence;
         let questions = &mut self.questions;
         let mut open = true;
         let report = {
-            let mut sink = move |event: UiEvent| match event {
-                UiEvent::TurnFinished { .. } => {}
-                UiEvent::TurnStarted { turn_id } => {
-                    *started.lock().unwrap_or_else(PoisonError::into_inner) = Some(turn_id);
-                    if let Some(approvals) = &approvals {
-                        approvals.turn_started(turn_id);
-                    }
-                    emit(event);
-                }
-                UiEvent::ApprovalRequested { turn_id, request } => match &approvals {
-                    Some(approvals) => approvals.own(turn_id, *request),
-                    None => emit(UiEvent::ApprovalRequested { turn_id, request }),
-                },
-                UiEvent::ContextNotice { text, .. } => {
-                    let claimed = notices
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .claim(&text);
-                    if let Some(notice) = claimed {
-                        emit(UiEvent::Notice { notice });
-                    }
-                }
-                event => emit(event),
-            };
             let turn =
                 self.agent
                     .run_turn_with_skills(&prompt.text, &prompt.skills, &mut sink, &cancel);
@@ -633,6 +615,12 @@ impl Controller {
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {
+                                cancel.cancel();
+                            }
+                        }
+                        Some(UiCommand::PauseRecovery { turn_id }) => {
+                            if running_turn() == Some(turn_id) {
+                                pause.request();
                                 cancel.cancel();
                             }
                         }
@@ -804,6 +792,38 @@ fn save_session_preferences(
         .and_then(|persistence| persistence.select_model(&state.model, state.fast_mode))
 }
 
+fn turn_events(
+    emit: Emit,
+    started: Arc<Mutex<Option<TurnId>>>,
+    approvals: Option<Arc<ApprovalQueue>>,
+    notices: Arc<Mutex<ContextNotices>>,
+) -> impl FnMut(UiEvent) + Send {
+    move |event: UiEvent| match event {
+        UiEvent::TurnFinished { .. } => {}
+        UiEvent::TurnStarted { turn_id } => {
+            *started.lock().unwrap_or_else(PoisonError::into_inner) = Some(turn_id);
+            if let Some(approvals) = &approvals {
+                approvals.turn_started(turn_id);
+            }
+            emit(event);
+        }
+        UiEvent::ApprovalRequested { turn_id, request } => match &approvals {
+            Some(approvals) => approvals.own(turn_id, *request),
+            None => emit(UiEvent::ApprovalRequested { turn_id, request }),
+        },
+        UiEvent::ContextNotice { text, .. } => {
+            let claimed = notices
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .claim(&text);
+            if let Some(notice) = claimed {
+                emit(UiEvent::Notice { notice });
+            }
+        }
+        event => emit(event),
+    }
+}
+
 fn compaction_activity(result: Result<Compaction, CompactionError>) -> CompactionActivity {
     let end = match result {
         Ok(Compaction::Compacted) => return CompactionActivity::Compacted,
@@ -826,7 +846,9 @@ fn compaction_activity(result: Result<Compaction, CompactionError>) -> Compactio
 fn failure_status(failure: &TurnFailure, source: CredentialSource) -> Option<String> {
     match failure {
         TurnFailure::Provider(error) => Some(provider_status(error, source)),
-        TurnFailure::StepLimitReached | TurnFailure::RepeatedMalformedArguments => None,
+        TurnFailure::StepLimitReached
+        | TurnFailure::RepeatedMalformedArguments
+        | TurnFailure::RecoveryPaused => None,
         _ => Some(format!("⚠ {}", failure.code())),
     }
 }
@@ -3305,6 +3327,7 @@ mod tests {
         for silent in [
             TurnFailure::StepLimitReached,
             TurnFailure::RepeatedMalformedArguments,
+            TurnFailure::RecoveryPaused,
         ] {
             assert_eq!(failure_status(&silent, CredentialSource::Configured), None);
         }

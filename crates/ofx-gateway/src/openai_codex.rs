@@ -9,7 +9,7 @@ use ofx_contract::{
 };
 use ofx_http::{ClientError, ConnectionOptions, SseDecoder, build_connection_client};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use reqwest::{Response, StatusCode};
+use reqwest::{RequestBuilder, Response, StatusCode};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
@@ -161,15 +161,14 @@ impl CodexProvider {
         }
         self.refresh_if_due(cancel).await;
         let mut sent = Vec::new();
-        let mut response = self
-            .post(&body, request.session_id, &mut sent, cancel)
-            .await?;
+        let first = self.request(&body, request.session_id, &mut sent)?;
+        sink.emit(StreamEvent::Admitted);
+        let mut response = self.post(first, &sent, cancel).await?;
         if response.status() == StatusCode::UNAUTHORIZED
             && self.replace_access(CodexRefresh::Force, cancel).await
         {
-            response = self
-                .post(&body, request.session_id, &mut sent, cancel)
-                .await?;
+            let replay = self.request(&body, request.session_id, &mut sent)?;
+            response = self.post(replay, &sent, cancel).await?;
         }
         self.receive(response, &sent, sink, cancel, request.model)
             .await
@@ -222,13 +221,12 @@ impl CodexProvider {
         true
     }
 
-    async fn post(
+    fn request(
         &self,
         body: &str,
         session_id: Option<&str>,
         sent: &mut Vec<Zeroizing<String>>,
-        cancel: &CancellationToken,
-    ) -> Result<Response, ProviderError> {
+    ) -> Result<RequestBuilder, ProviderError> {
         let (token, account_id) = {
             let access = lock(&self.access);
             (
@@ -256,8 +254,16 @@ impl CodexProvider {
                 .header("session-id", session_id)
                 .header("x-client-request-id", session_id);
         }
-        let builder = builder.body(body.to_owned());
         sent.push(token);
+        Ok(builder.body(body.to_owned()))
+    }
+
+    async fn post(
+        &self,
+        builder: RequestBuilder,
+        sent: &[Zeroizing<String>],
+        cancel: &CancellationToken,
+    ) -> Result<Response, ProviderError> {
         match send(builder, cancel).await {
             Ok(response) => Ok(response),
             Err(SendFailure::Cancelled) => Err(ProviderError::cancelled()),

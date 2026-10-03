@@ -556,7 +556,8 @@ async fn errors_mask_the_token_their_request_sent_after_another_request_rotates_
         .unwrap();
         let cancel = CancellationToken::new();
         let mut sent = Vec::new();
-        let response = codex.post("{}", None, &mut sent, &cancel).await.unwrap();
+        let builder = codex.request("{}", None, &mut sent).unwrap();
+        let response = codex.post(builder, &sent, &cancel).await.unwrap();
         assert!(codex.replace_access(CodexRefresh::Force, &cancel).await);
         assert_eq!(*codex.secrets(&sent), [SENT, ROTATED]);
         let mut sink = |_: StreamEvent| {};
@@ -608,6 +609,59 @@ async fn a_retried_request_masks_every_token_it_sent() {
     assert!(rendered.contains("failed for"), "{rendered}");
     assert!(!rendered.contains(SENT), "{rendered}");
     assert!(!rendered.contains(ROTATED), "{rendered}");
+}
+
+#[tokio::test]
+async fn a_request_replayed_after_a_401_is_admitted_once_before_it_is_sent() {
+    let server = FakeServer::start([
+        Reply::status(401, json!({"error": {"code": "token_expired"}}).to_string()),
+        Reply::status(500, json!({"error": {"code": "server_error"}}).to_string()),
+    ]);
+    let codex = CodexProvider::new(
+        CodexAccess::new("sent".to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(Rotating("rotated")),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let messages = [ChatMessage::user("Hello.")];
+    let request = request(&messages, &[], &[]);
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let error = codex
+        .stream(&request, &mut sink, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, Some(500));
+    assert_eq!(server.requests().len(), 2);
+    assert_eq!(events, [StreamEvent::Admitted]);
+}
+
+#[tokio::test]
+async fn a_request_without_a_valid_account_is_refused_before_admission() {
+    let server = FakeServer::start([]);
+    let codex = CodexProvider::new(
+        CodexAccess::new("token".to_owned(), "two words".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let messages = [ChatMessage::user("Hello.")];
+    let request = request(&messages, &[], &[]);
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let error = codex
+        .stream(&request, &mut sink, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "InvalidChatGptSubscriptionAccount");
+    assert!(server.requests().is_empty());
+    assert!(events.is_empty());
 }
 
 #[tokio::test]

@@ -29,6 +29,7 @@ pub struct ProviderOptions<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
+    Admitted,
     TextDelta { text: String },
     ReasoningDelta { text: String },
 }

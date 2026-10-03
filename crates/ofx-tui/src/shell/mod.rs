@@ -137,6 +137,7 @@ struct ActiveTurn {
     step_break: Option<usize>,
     failure: Option<String>,
     recovery: Option<RecoveryStatus>,
+    pause_requested: bool,
 }
 
 impl ActiveTurn {
@@ -151,6 +152,7 @@ impl ActiveTurn {
             step_break: None,
             failure: None,
             recovery: None,
+            pause_requested: false,
         }
     }
 }
@@ -177,6 +179,7 @@ pub(crate) struct Shell<'a> {
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
+    kept_recovery: Option<RecoveryStatus>,
     session_title: Option<String>,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
@@ -352,6 +355,7 @@ impl<'a> Shell<'a> {
             question: None,
             skills_menu: None,
             skill_catalog,
+            kept_recovery: None,
             session_title: None,
             yolo_warning,
             picker: None,
@@ -435,7 +439,9 @@ impl<'a> Shell<'a> {
     }
 
     fn recovery(&self) -> Option<&RecoveryStatus> {
-        self.turn.as_ref().and_then(|turn| turn.recovery.as_ref())
+        self.turn
+            .as_ref()
+            .map_or(self.kept_recovery.as_ref(), |turn| turn.recovery.as_ref())
     }
 
     fn activity_phase(&self, now_ms: i64) -> Option<i64> {
