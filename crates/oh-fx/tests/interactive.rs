@@ -1161,7 +1161,7 @@ fn native_cancel_stays_live_while_an_install_waits_for_its_lock() {
 
 #[test]
 fn native_approval_stays_live_while_an_install_waits_for_its_lock() {
-    let gate = ofx_testkit::Gate::default();
+    let gate = Gate::default();
     let server = FakeServer::start([
         Reply::sse(&chat_tool_call_events(
             "read-1",
