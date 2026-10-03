@@ -106,7 +106,7 @@ fn right_arrow_at_the_end_of_the_text_chooses_the_provider() {
     press(&mut test, b"plain");
     press(&mut test, LEFT);
     press(&mut test, RIGHT);
-    assert!(chosen(&test).len() == 1);
+    assert_eq!(chosen(&test), ["codex"]);
 }
 
 #[test]
