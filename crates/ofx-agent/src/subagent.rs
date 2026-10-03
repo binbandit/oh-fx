@@ -4,5 +4,6 @@ mod managed_owner;
 mod tool_host;
 
 pub use tool_host::{
-    ChildAgents, ChildDefaults, ChildRecord, ChildSettings, ChildStore, SubagentHost, WorkTools,
+    ChildAgents, ChildDefaults, ChildRecord, ChildSettings, ChildStore, ResumedChild, SubagentHost,
+    WorkTools,
 };

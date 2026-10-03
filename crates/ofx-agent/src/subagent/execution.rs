@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use ofx_contract::{
-    ApprovalRequest, LivePermissionMode, ModelFailureDiagnostic, TurnOutcome, UiEvent,
+    ApprovalRequest, LivePermissionMode, ModelFailureDiagnostic, RestoredHistory, TurnOutcome,
+    UiEvent,
 };
 use ofx_text::is_terminal_safe;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +45,11 @@ impl ChildRuntime {
             permission_mode,
             record: None,
         }
+    }
+
+    pub(crate) fn restored(mut self, history: RestoredHistory) -> Self {
+        self.agent.restore(history);
+        self
     }
 
     pub(crate) fn saved(mut self, child_id: &str, record: Arc<dyn ChildRecord>) -> Self {
