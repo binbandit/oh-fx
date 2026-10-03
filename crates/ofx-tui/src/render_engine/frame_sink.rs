@@ -23,6 +23,8 @@ pub(crate) trait FrameSink {
 
     fn release_screen(&mut self);
 
+    fn flush_queued(&mut self, out: &mut String);
+
     fn resize(&mut self, rows: u16, cols: u16);
 
     fn live_row(&self, index: usize) -> u16;
@@ -225,6 +227,13 @@ impl FrameSink for LiveRegionRenderer {
         }
         move_to(&mut self.in_frame, 1, 1);
         self.restart_at_top();
+    }
+
+    fn flush_queued(&mut self, out: &mut String) {
+        out.push_str(&self.before_frame);
+        out.push_str(&self.in_frame);
+        self.before_frame.clear();
+        self.in_frame.clear();
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {

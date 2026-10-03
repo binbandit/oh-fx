@@ -689,6 +689,7 @@ impl<'a> Shell<'a> {
     }
 
     fn leave_normally(&mut self) -> Option<i32> {
+        self.renderer.flush_queued(&mut self.output);
         let _ = self.flush_output();
         let _ = self.terminal.write_all(b"\x1b]2;\x07");
         let cleanup = self.exit_cleanup();
@@ -755,6 +756,8 @@ impl<'a> Shell<'a> {
     }
 
     fn suspend(&mut self) -> Result<(), TerminalError> {
+        self.renderer.flush_queued(&mut self.output);
+        self.flush_output()?;
         let cleanup = self.exit_cleanup();
         let _ = self.terminal.write_all(b"\x1b]2;\x07");
         let layout = self
@@ -996,6 +999,58 @@ mod tests {
         assert!(dark.contains("\x1b[0;1;38;5;255moh-fx"), "{dark:?}");
         test.draining(|shell| shell.apply_theme(false));
         assert!(test.written().is_empty());
+    }
+
+    fn every_line(output: &[u8]) -> Vec<String> {
+        let mut parser = vt100::Parser::new(24, 80, 500);
+        parser.process(output);
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let depth = parser.screen().scrollback();
+        let mut lines = Vec::new();
+        for offset in (1..=depth).rev() {
+            parser.screen_mut().set_scrollback(offset);
+            lines.extend(parser.screen().rows(0, 80).next());
+        }
+        parser.screen_mut().set_scrollback(0);
+        lines.extend(parser.screen().rows(0, 80));
+        lines
+    }
+
+    fn exit_after(test: &mut test_shell::TestShell) -> Vec<u8> {
+        let exited = test.draining(|shell| shell.step().unwrap());
+        assert!(exited.is_some());
+        assert_eq!(test.draining(|shell| shell.shutdown(None)), None);
+        test.drained()
+    }
+
+    #[test]
+    fn a_clear_and_ctrl_d_in_one_wake_still_keep_the_transcript_in_scrollback() {
+        let mut test = test_shell::TestShell::start();
+        for index in 0..30 {
+            test.shell.input_notice(&format!("kept line {index:02}"));
+        }
+        let mut output = test.written().into_bytes();
+        test.queue(UiEvent::ConversationCleared {
+            first_kept_prompt: 0,
+        });
+        test.type_bytes(b"\x04");
+        output.extend(exit_after(&mut test));
+        let lines = every_line(&output);
+        for kept in ["kept line 00", "kept line 29"] {
+            assert!(
+                lines.iter().any(|line| line.contains(kept)),
+                "{kept}: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_l_and_ctrl_d_in_one_read_still_clear_history_on_exit() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        test.type_bytes(b"\x0c\x04");
+        let output = String::from_utf8_lossy(&exit_after(&mut test)).into_owned();
+        assert!(output.contains("\x1b[3J"), "{output:?}");
     }
 
     #[test]

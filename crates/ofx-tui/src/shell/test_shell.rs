@@ -171,6 +171,10 @@ impl TestShell {
         (result, output.len())
     }
 
+    pub(super) fn drained(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.output)
+    }
+
     pub(super) fn written(&mut self) -> String {
         self.draining(|shell| shell.commit_frame().unwrap());
         let output = std::mem::take(&mut self.output);
