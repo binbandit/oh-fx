@@ -241,6 +241,23 @@ fn ask_saves_its_turn_and_resuming_sends_it_ahead_of_the_next_prompt() {
 }
 
 #[test]
+fn ask_saves_the_conversation_language_of_its_prompt() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["один"])),
+        Reply::sse(&chat_text_events(&["two"])),
+        Reply::sse(&chat_text_events(&["three"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let first = home.ask_json(&["Проверь этот файл"], &[]);
+    let id = session_id(&first);
+    assert_eq!(home.metadata(&id)["conversation_language"], "und-Cyrl");
+    home.ask_json(&["--resume", &id, "42?"], &[]);
+    assert_eq!(home.metadata(&id)["conversation_language"], "und-Cyrl");
+    home.ask_json(&["--resume", &id, "ランディングページを開いて"], &[]);
+    assert_eq!(home.metadata(&id)["conversation_language"], "ja");
+}
+
+#[test]
 fn resumed_tool_steps_are_sent_exactly_as_the_model_first_saw_them() {
     let server = FakeServer::start([
         Reply::sse(&chat_tool_call_events(
