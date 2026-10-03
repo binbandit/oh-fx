@@ -900,7 +900,7 @@ mod tests {
     fn a_narrow_terminal_wraps_the_review_and_refuses_a_yes_until_the_choices_fit() {
         let mut test = editing();
         test.resize(24, 40);
-        let after = format!("{}\nshort\n", "w".repeat(45));
+        let after = format!("{}\nx{}\nshort\n", "w".repeat(45), "\u{4e2d}".repeat(20));
         test.deliver(file_request(
             4,
             "edit_file",
@@ -915,7 +915,13 @@ mod tests {
                 "w".repeat(30),
                 "w".repeat(15)
             ),
-            "      2   short",
+            &format!(
+                "      2 + x{}\n          {}\n",
+                "\u{4e2d}".repeat(14),
+                "\u{4e2d}".repeat(6)
+            ),
+            "      3   short",
+            "  Permission needed · Review change\n",
             "  notes.md  ·  Apply this change?",
             "❯ ! 1  Apply once · resize to review",
             "  enter confirm    esc cancel",
