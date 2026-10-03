@@ -41,8 +41,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/docker_run.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/docker_run.rs"]
+note = "Direct docker run detection, the private cidfile and container cleanup exist; reading the cidfile checks its metadata and then reopens the path, which accepts a hardlink and races a symlink swap, where upstream rejects hardlinks and validates the opened regular file without following the final symlink."
 
 [[file]]
 upstream = "src/core/mcp/elicitation.zig"
@@ -106,8 +107,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/features/tools.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/features/tools.rs"]
+note = "tools/list paging under the tool cap, tool validation and tools/call result parsing exist; the per-scope catalog cache shared with resources and prompts is missing."
 
 [[file]]
 upstream = "src/core/mcp/health.zig"
@@ -131,23 +133,25 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/legacy_elicitation_runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/legacy_elicitation_runtime.rs"]
+note = "Server requests the client does not serve are refused; elicitation forms, URL elicitation and their completion tracking are missing."
 
 [[file]]
 upstream = "src/core/mcp/legacy_http_sse.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-mcp/src/legacy_http_sse.rs"]
 
 [[file]]
 upstream = "src/core/mcp/legacy_sse.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-mcp/src/legacy_sse.rs"]
 
 [[file]]
 upstream = "src/core/mcp/legacy_streamable_http.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/legacy_streamable_http.rs"]
+note = "Sessions, JSON and SSE responses, Last-Event-ID resumption, the notification stream and teardown exist; OAuth challenges are missing, so a 401 fails with McpAuthenticationRequired."
 
 [[file]]
 upstream = "src/core/mcp/legacy_url_completion.zig"
@@ -218,13 +222,15 @@ note = "Configuration parsing and merge exist; ACP-primary ordered workspace mer
 
 [[file]]
 upstream = "src/core/mcp/protocol_messages.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/protocol_messages.rs"]
+note = "Initialize, tools/list, tools/call and cancellation messages and capability and identity parsing exist; modern request metadata for the 2026-07-28 protocol is missing."
 
 [[file]]
 upstream = "src/core/mcp/protocol_negotiation.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-mcp/src/protocol_negotiation.rs"]
+note = "The opt-in 2026-07-28 protocol is omitted as recorded in architecture.md."
 
 [[file]]
 upstream = "src/core/mcp/selected_schema.zig"
@@ -233,13 +239,15 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/server_auth.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/server_auth.rs"]
+note = "Static headers, header_env and bearer_token_env resolve when a server connects; stored OAuth credentials, challenges, refresh and logout are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_connection.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/server_connection.rs"]
+note = "Connection state, request ids, cancellation and queued notifications exist; resource, prompt and completion feature caches and host-channel connections are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_lifecycle.zig"
@@ -258,8 +266,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/server_transport.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/server_transport.rs", "crates/ofx-mcp/src/transport.rs"]
+note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder and server instructions exist; upstream's startup failure messages with the child's exit and stderr, the 2026-07-28 discovery path and OAuth-authenticated connections are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_views.zig"
@@ -273,13 +282,14 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/startup_admission.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-mcp/src/startup_admission.rs"]
 
 [[file]]
 upstream = "src/core/mcp/stdio_dispatcher.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/stdio_dispatcher.rs"]
+note = "NDJSON framing, stderr capture, request correlation and graceful, immediate and drop-time shutdown exist; server-request waits for elicitation and the lifecycle-controlled notification variants are missing."
 
 [[file]]
 upstream = "src/core/mcp/streamable_http.zig"
@@ -299,8 +309,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/tool_operations.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/tool_operations.rs"]
+note = "Tool calls from the published snapshot with the response frame cap and progress notifications exist; input-required results are missing."
 
 [[file]]
 upstream = "src/core/mcp/tool_result.zig"
