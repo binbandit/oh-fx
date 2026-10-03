@@ -535,7 +535,7 @@ impl Settings {
         self.saved_model(&ProviderId::Codex)
     }
 
-    pub fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
+    fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
         self.workspace
             .saved_model(provider)
             .or_else(|| self.global.saved_model(provider))

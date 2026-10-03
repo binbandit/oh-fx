@@ -168,7 +168,6 @@ pub enum CommitOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Patch<'a> {
     CodexModel(&'a str),
-    ProviderModel(&'a ProviderId, &'a str),
     ModelPreference {
         provider: &'a ProviderId,
         model: &'a str,
@@ -199,16 +198,6 @@ struct Migration {
 
 pub fn save_codex_model(paths: &ProfilePaths, model: &str) -> Result<(), SettingsWriteError> {
     commit(paths, Patch::CodexModel(model), &mut || {})
-        .map(drop)
-        .map_err(|failure| failure.error)
-}
-
-pub fn save_provider_model(
-    paths: &ProfilePaths,
-    provider: &ProviderId,
-    model: &str,
-) -> Result<(), SettingsWriteError> {
-    commit(paths, Patch::ProviderModel(provider, model), &mut || {})
         .map(drop)
         .map_err(|failure| failure.error)
 }
@@ -441,11 +430,13 @@ fn apply(
         ..Application::default()
     };
     match patch {
-        Patch::CodexModel(model) | Patch::ProviderModel(&ProviderId::Codex, model) => {
-            application.changed |= apply_provider_model(root, &ProviderId::Codex, model)?;
-        }
-        Patch::ProviderModel(provider, model) => {
-            application.changed |= apply_provider_model(root, provider, model)?;
+        Patch::CodexModel(model) => {
+            application.changed |= put_model(root, &ProviderId::Codex, model)?;
+            application.changed |= put_string(root, "provider", ProviderId::Codex.label());
+            if root.shift_remove(FAST_MODE_MODEL_BOUND).is_some() {
+                application.changed = true;
+            }
+            clear_workspace_fast_mode_bindings(root);
         }
         Patch::ModelPreference {
             provider,
@@ -607,20 +598,6 @@ fn canonical_permission_key(object: &Map<String, Value>, expected: &str) -> Opti
         .keys()
         .find(|key| key.trim_matches([' ', '\t', '\r', '\n']) == expected)
         .cloned()
-}
-
-fn apply_provider_model(
-    root: &mut Map<String, Value>,
-    provider: &ProviderId,
-    model: &str,
-) -> Result<bool, SettingsWriteError> {
-    let mut changed = put_model(root, provider, model)?;
-    changed |= put_string(root, "provider", provider.label());
-    if root.shift_remove(FAST_MODE_MODEL_BOUND).is_some() {
-        changed = true;
-    }
-    clear_workspace_fast_mode_bindings(root);
-    Ok(changed)
 }
 
 fn migrate_workspace_preference(
