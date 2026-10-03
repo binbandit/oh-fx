@@ -2617,8 +2617,11 @@ async fn known_streamed_starts_end_visible_text_before_provisional() {
         .iter()
         .position(|event| matches!(event, UiEvent::ToolProvisional { .. }))
         .unwrap();
-    assert!(matches!(&events[start - 1], UiEvent::AssistantText { text, .. } if text == "\n"));
-    assert_eq!(assistant_text(&events), "Reading\n");
+    assert!(matches!(
+        &events[start - 1],
+        UiEvent::AssistantBoundary { .. }
+    ));
+    assert_eq!(assistant_text(&events), "Reading");
 }
 
 #[tokio::test(start_paused = true)]
@@ -2656,10 +2659,10 @@ async fn failed_local_streamed_starts_retry_without_executing_the_call() {
 
 #[tokio::test]
 async fn unknown_starts_preserve_text_and_known_ineligible_starts_end_it_once() {
-    for (tool_name, activity, expected) in [
-        ("missing", ToolActivity::Read, "text"),
-        ("echo", ToolActivity::Write, "text\n"),
-        ("echo", ToolActivity::Ask, "text\n"),
+    for (tool_name, activity, expected_boundaries) in [
+        ("missing", ToolActivity::Read, 0),
+        ("echo", ToolActivity::Write, 1),
+        ("echo", ToolActivity::Ask, 1),
     ] {
         let provider = FakeProvider::new(vec![Script::Reply(
             vec![
@@ -2676,7 +2679,14 @@ async fn unknown_starts_preserve_text_and_known_ineligible_starts_end_it_once() 
             vec![stream_start_tool(activity, Arc::new(AtomicUsize::new(0)))],
         );
         let (_, events) = run(&mut agent, "read").await;
-        assert_eq!(assistant_text(&events), expected);
+        assert_eq!(assistant_text(&events), "text");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+                .count(),
+            expected_boundaries
+        );
         assert!(
             !events
                 .iter()
@@ -2705,7 +2715,14 @@ async fn parallel_streamed_starts_do_not_add_repeated_text_boundaries() {
         )],
     );
     let (_, events) = run(&mut agent, "read").await;
-    assert_eq!(assistant_text(&events), "text\n");
+    assert_eq!(assistant_text(&events), "text");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+            .count(),
+        1
+    );
     assert_eq!(
         events
             .iter()

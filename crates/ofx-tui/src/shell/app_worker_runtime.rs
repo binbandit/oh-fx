@@ -119,7 +119,8 @@ impl Shell<'_> {
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
             | UiEvent::ToolDeferred { .. }) => self.tool_event(event),
-            UiEvent::ToolProvisional { .. }
+            UiEvent::AssistantBoundary { .. }
+            | UiEvent::ToolProvisional { .. }
             | UiEvent::ContextNotice { .. }
             | UiEvent::SteeringApplied { .. }
             | UiEvent::Recovery { .. } => {}
