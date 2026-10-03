@@ -11,7 +11,21 @@ pub struct ProjectMcpSettingsChange {
     pub authority_reduced: bool,
 }
 
-pub fn apply_project_mcp_action(
+pub fn apply_project_mcp_action_to_entry(
+    entry: &mut Value,
+    action: &ProjectMcpAction,
+) -> Result<ProjectMcpSettingsChange, InvalidProjectMcpChoices> {
+    let mut workspace = match entry {
+        Value::Null => Map::new(),
+        Value::Object(workspace) => workspace.clone(),
+        _ => return Err(InvalidProjectMcpChoices),
+    };
+    let change = apply_project_mcp_action(&mut workspace, action)?;
+    *entry = Value::Object(workspace);
+    Ok(change)
+}
+
+pub(crate) fn apply_project_mcp_action(
     workspace: &mut Map<String, Value>,
     action: &ProjectMcpAction,
 ) -> Result<ProjectMcpSettingsChange, InvalidProjectMcpChoices> {
@@ -134,5 +148,23 @@ mod tests {
             Value::Object(workspace),
             json!({"enabledMcpjsonServers": "a"})
         );
+    }
+
+    #[test]
+    fn a_settings_entry_is_created_for_a_choice_and_refused_when_it_is_not_an_object() {
+        let mut entry = Value::Null;
+        let change = apply_project_mcp_action_to_entry(
+            &mut entry,
+            &ProjectMcpAction::Approve("docs".to_owned()),
+        )
+        .unwrap();
+        assert!(change.changed);
+        assert_eq!(entry, json!({"enabledMcpjsonServers": ["docs"]}));
+        let mut invalid = json!([1]);
+        assert_eq!(
+            apply_project_mcp_action_to_entry(&mut invalid, &ProjectMcpAction::Reset),
+            Err(InvalidProjectMcpChoices)
+        );
+        assert_eq!(invalid, json!([1]));
     }
 }

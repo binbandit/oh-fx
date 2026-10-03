@@ -534,7 +534,7 @@ async fn prepare_agent(
 
 async fn start_mcp(mcp: &McpRuntime, cancel: &CancellationToken) -> Result<(), Failure> {
     let mut lines = String::new();
-    for diagnostic in mcp.workspace_diagnostics() {
+    for diagnostic in &mcp.workspace_diagnostics() {
         lines.push_str("oh-fx ask: ");
         lines.push_str(&render_workspace_diagnostic(diagnostic));
         lines.push('\n');

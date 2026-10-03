@@ -13,6 +13,7 @@ use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 
 use crate::app_agent_runtime::ControllerState;
 use crate::app_session_runtime::{Persistence, RenameError, validate_session_title};
+use crate::mcp_commands::handle_mcp;
 use crate::session_commands::{handle_allowlist, handle_settings};
 use crate::skill_commands::handle_skills;
 
@@ -190,6 +191,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         SlashKind::Model => state.notice(NoticeTone::Neutral, "model", state.model()),
         SlashKind::Permissions => state.permissions().handle_command(payload),
         SlashKind::Shell => state.permissions().reload_shell(payload),
+        SlashKind::Mcp => handle_mcp(state, payload),
         SlashKind::Skills => handle_skills(state, payload),
         SlashKind::ClearScreen
         | SlashKind::NewSession
@@ -387,6 +389,7 @@ mod tests {
                 "/permissions",
                 "/allowlist",
                 "/undo",
+                "/mcp",
                 "/skills",
                 "/copy",
                 "/compact",
@@ -409,13 +412,17 @@ mod tests {
         assert_eq!(specs[2].description, "start a fresh session");
         assert_eq!(specs[4].description, "resume a saved session");
         assert_eq!(specs[5].description, "rename the current session");
-        assert_eq!(specs[13].description, "browse and manage skills");
         assert_eq!(
-            specs[21].description,
+            specs[13].description,
+            "manage local and remote MCP servers, resources, prompts, and project trust"
+        );
+        assert_eq!(specs[14].description, "browse and manage skills");
+        assert_eq!(
+            specs[22].description,
             "reload shell startup files for commands"
         );
-        assert_eq!(specs[23].aliases, ["/exit"]);
-        assert_eq!(specs[23].description, "exit the interactive shell");
+        assert_eq!(specs[24].aliases, ["/exit"]);
+        assert_eq!(specs[24].description, "exit the interactive shell");
     }
 
     #[test]
@@ -442,6 +449,7 @@ mod tests {
                 ("/permissions", "Security"),
                 ("/allowlist", "Security"),
                 ("/undo", "Session"),
+                ("/mcp", "Extensions"),
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),

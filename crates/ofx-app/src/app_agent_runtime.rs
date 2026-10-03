@@ -19,6 +19,7 @@ use crate::app_commands::{
     CommandEffect, ModelChange, ModelPick, Outcome, Work, change_model, handle_command, listed,
     refuse_resume_during_turn, rename_session,
 };
+use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
 use crate::approval_queue::ApprovalQueue;
@@ -54,6 +55,7 @@ pub(crate) struct ControllerState {
     context_to_compact: bool,
     session_title: SessionTitle,
     statusline: StatuslineToggles,
+    mcp: Option<McpHost>,
 }
 
 struct Prompt {
@@ -151,6 +153,10 @@ impl ControllerState {
 
     pub(crate) fn session_title(&self) -> &SessionTitle {
         &self.session_title
+    }
+
+    pub(crate) fn mcp(&self) -> Option<&McpHost> {
+        self.mcp.as_ref()
     }
 
     pub(crate) fn claim_context_notice(&self, text: &str) -> bool {
@@ -351,6 +357,7 @@ impl Controller {
             startup: setup.context_notices().to_vec(),
             claimed: HashSet::new(),
         };
+        let mcp = setup.mcp_host(Arc::clone(&emit));
         let state = ControllerState {
             session_title: SessionTitle::new(Arc::clone(&emit)),
             model: setup.model().to_owned(),
@@ -369,6 +376,7 @@ impl Controller {
             last_reply: None,
             history_turns: 0,
             context_to_compact: false,
+            mcp,
         };
         if let Some(approvals) = state.setup.approvals() {
             approvals.attach(Arc::clone(&state.emit));
@@ -4304,5 +4312,131 @@ mod tests {
             tool_results(&server.requests()[1].json()),
             ["(user cancelled the question)"]
         );
+    }
+
+    const MCP_SERVER: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"docs\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      reply "$id" '{"tools":[{"name":"search","inputSchema":{"type":"object"}}]}' ;;
+  esac
+done
+"#;
+
+    fn mcp_notice(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::Notice { notice } if notice.topic == "mcp")
+    }
+
+    async fn mcp_notices(harness: &mut Harness, count: usize) -> Vec<String> {
+        let mut notices = Vec::new();
+        while notices.len() < count {
+            let shown = harness.until(mcp_notice).await;
+            notices.extend(notice_body(shown));
+        }
+        notices
+    }
+
+    #[tokio::test]
+    async fn mcp_commands_that_need_a_home_say_it_is_unavailable() {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await.without_preferences();
+        let mut harness = Harness::with_setup(home, setup);
+        for command in ["/mcp path", "/mcp reload", "/mcp trust approve docs"] {
+            harness.command(command);
+            assert_eq!(
+                mcp_notices(&mut harness, 1).await,
+                ["mcp|HOME is not available."],
+                "{command}"
+            );
+        }
+        harness.command("/mcp");
+        assert_eq!(
+            mcp_notices(&mut harness, 1).await,
+            ["mcp|MCP: no servers configured. Use /mcp add <name> <command> [args...]."]
+        );
+        harness.command("/mcp resource list");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        assert_eq!(
+            notice_body(shown),
+            ["|usage: /mcp resource list <server> or /mcp resource templates <server>"]
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_reload_reports_that_it_started_and_how_it_finished() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/mcp reload");
+        assert_eq!(
+            mcp_notices(&mut harness, 2).await,
+            [
+                "mcp|MCP reconnection started. Your existing MCP servers will stay active while the new configuration is checked.",
+                "mcp|MCP configuration reloaded. No servers are configured."
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn trusting_a_project_server_saves_the_choice_and_starts_it() {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let workspace = fs::canonicalize(home.path()).unwrap().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join(".mcp.json"),
+            json!({"mcpServers": {"docs": {"command": "/bin/sh", "args": ["-c", MCP_SERVER]}}})
+                .to_string(),
+        )
+        .unwrap();
+        let setup = agent_setup(&home, &server).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.command("/mcp");
+        assert_eq!(
+            mcp_notices(&mut harness, 1).await,
+            [
+                "mcp|MCP: 1 server — 0 ready, 0 connecting, 0 needs auth, 0 failed. Pending approval: docs. Use /mcp list for details."
+            ]
+        );
+        harness.command("/mcp trust approve docs");
+        assert_eq!(
+            mcp_notices(&mut harness, 2).await,
+            [
+                "mcp|Approving project MCP server 'docs'.",
+                "mcp|MCP configuration reloaded successfully."
+            ]
+        );
+        let settings: Value = serde_json::from_str(
+            &fs::read_to_string(harness.home.path().join("config/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["workspaces"][workspace.to_string_lossy().as_ref()]["enabledMcpjsonServers"],
+            json!(["docs"])
+        );
+        harness.command("/mcp list");
+        let listing = mcp_notices(&mut harness, 1).await.pop().unwrap();
+        assert!(
+            listing.contains(
+                "docs source=workspace scope=workspace policy=optional transport=stdio state=ready"
+            ),
+            "{listing}"
+        );
+        assert!(listing.contains("    admission=approved\n"), "{listing}");
+        harness.command("/mcp trust reject docs");
+        let notices = mcp_notices(&mut harness, 2).await;
+        assert_eq!(notices[0], "mcp|Rejecting project MCP server 'docs'.");
+        assert_eq!(notices[1], "mcp|MCP configuration reloaded successfully.");
+        harness.command("/mcp list");
+        let listing = mcp_notices(&mut harness, 1).await.pop().unwrap();
+        assert!(listing.contains("state=disabled"), "{listing}");
+        assert!(listing.contains("    admission=rejected\n"), "{listing}");
     }
 }

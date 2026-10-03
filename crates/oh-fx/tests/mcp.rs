@@ -1,12 +1,15 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events};
+use ofx_testkit::{
+    FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+};
 use serde_json::{Value, json};
 
 const FIXTURE_SERVER: &str = r#"#!/bin/sh
@@ -26,6 +29,7 @@ while IFS= read -r line; do
   esac
 done
 "#;
+const SHELL_WAIT: Duration = Duration::from_secs(15);
 const FAILING_SERVER: &str = "#!/bin/sh\necho 'fatal: missing token' >&2\nexit 3\n";
 const LAUNCH_MARKER: &str = "#!/bin/sh\ntouch \"$MCP_STATE/launched\"\nexit 1\n";
 const LINGERING_SERVER: &str = r#"#!/bin/sh
@@ -105,6 +109,31 @@ impl Home {
             json!({ "mcp": servers }).to_string(),
         )
         .expect("write mcp.json");
+    }
+
+    fn shell(&self) -> PtySession {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
+            .current_dir(&self.workspace)
+            .env_clear()
+            .env("HOME", &self.root)
+            .env("PATH", "/usr/bin:/bin")
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_STATE_HOME", self.root.join("state"))
+            .env("XDG_DATA_HOME", self.root.join("data"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("SHELL", "/bin/sh")
+            .env("TERM", "xterm-256color")
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .env("MCP_STATE", &self.state)
+            .process_group(0);
+        let session = PtySession::spawn(command, 40, 200).expect("spawn oh-fx in a pty");
+        session
+            .wait_for(SHELL_WAIT, |screen| {
+                screen.contains("Run /help for commands")
+            })
+            .expect("the shell starts");
+        session
     }
 
     fn ask(&self, args: &[&str]) -> Output {
@@ -491,4 +520,112 @@ fn an_exited_unreaped_process_does_not_count_as_running() {
         "the exited process {pid} still counts as running"
     );
     child.wait().expect("reap the process");
+}
+
+fn shown(session: &PtySession, needle: &str) -> String {
+    session
+        .wait_for(SHELL_WAIT, |screen| screen.contains(needle))
+        .unwrap_or_else(|screen| panic!("expected {needle:?} on screen:\n{screen}"))
+}
+
+fn summary_once_settled(session: &PtySession, expected: &str) {
+    for _ in 0..50 {
+        session.send(b"/mcp\r");
+        let settled = session.wait_for(Duration::from_millis(300), |screen| {
+            screen.contains(expected)
+        });
+        if settled.is_ok() {
+            return;
+        }
+    }
+    panic!("expected {expected:?} on screen:\n{}", session.screen());
+}
+
+fn exit(mut session: PtySession) {
+    session.send(b"\x04");
+    assert!(
+        session
+            .wait_exit(SHELL_WAIT)
+            .expect("ctrl+d exits")
+            .success()
+    );
+}
+
+#[test]
+fn the_mcp_command_summarizes_lists_and_reloads_profile_servers() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&fixture(&home));
+    let session = home.shell();
+    summary_once_settled(
+        &session,
+        "MCP: 1 server — 1 ready, 0 connecting, 0 needs auth, 0 failed. Use /mcp list for details.",
+    );
+    session.send(b"/mcp list\r");
+    shown(&session, "MCP health (1 server):");
+    shown(
+        &session,
+        "fixture source=profile scope=profile policy=optional transport=stdio state=ready auth=none status=ready",
+    );
+    shown(
+        &session,
+        "tools=1 resources=0 templates=0 prompts=0 cache=fresh subscription=unavailable",
+    );
+    session.send(b"/mcp path\r");
+    shown(
+        &session,
+        &home
+            .root
+            .join("config/oh-fx/mcp.json")
+            .display()
+            .to_string(),
+    );
+    let mut servers = fixture(&home);
+    servers["second"] = servers["fixture"].clone();
+    home.profile_servers(&servers);
+    session.send(b"/mcp reload\r");
+    shown(
+        &session,
+        "MCP reconnection started. Your existing MCP servers will stay active while the new configuration is checked.",
+    );
+    shown(&session, "MCP configuration reloaded successfully.");
+    summary_once_settled(&session, "MCP: 2 servers — 2 ready");
+    session.send(b"/mcp wat\r");
+    shown(
+        &session,
+        "usage: /mcp [list|resource|prompt|add|remove|path|reload|auth|logout|trust]",
+    );
+    exit(session);
+}
+
+#[test]
+fn the_mcp_command_approves_a_project_server_and_starts_it() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let script = home.script("docs.sh", FIXTURE_SERVER);
+    fs::write(
+        home.workspace.join(".mcp.json"),
+        json!({"mcpServers": {"docs": {"command": "/bin/sh", "args": [script]}}}).to_string(),
+    )
+    .expect("write .mcp.json");
+    let session = home.shell();
+    shown(
+        &session,
+        "Skipped unapproved project MCP servers: docs. Approve with /mcp trust approve <name>.",
+    );
+    summary_once_settled(&session, "Pending approval: docs.");
+    session.send(b"/mcp trust approve docs\r");
+    shown(&session, "Approving project MCP server 'docs'.");
+    shown(&session, "MCP configuration reloaded successfully.");
+    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    let settings: Value = serde_json::from_str(
+        &fs::read_to_string(home.root.join("config/oh-fx/settings.json")).expect("read settings"),
+    )
+    .expect("settings are JSON");
+    let workspace = fs::canonicalize(&home.workspace).expect("canonical workspace");
+    assert_eq!(
+        settings["workspaces"][workspace.to_string_lossy().as_ref()]["enabledMcpjsonServers"],
+        json!(["docs"])
+    );
+    exit(session);
 }
