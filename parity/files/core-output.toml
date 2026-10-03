@@ -34,8 +34,8 @@ modules = []
 [[file]]
 upstream = "src/core/output/output_contracts.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/output_contracts.rs"]
-note = "Interactive status is rendered; doctor/usage, MCP-health and sessions-v2 output snapshots remain missing. #1112's ultrafast_requested is in the interactive status body; the status --json snapshot arrives with the status command."
+modules = ["crates/ofx-app/src/output_contracts.rs", "crates/ofx-app/src/output_contracts/status.rs"]
+note = "Interactive and CLI status with the local MCP view are rendered; doctor, usage, workspace, session-list, MCP-health and sessions-v2 output snapshots remain missing. #1112's ultrafast_requested is in the interactive status body but not yet in oh-fx status."
 
 [[file]]
 upstream = "src/core/output/transcript_presentation.zig"

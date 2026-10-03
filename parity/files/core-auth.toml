@@ -7,7 +7,7 @@ modules = []
 upstream = "src/core/auth/auth_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/auth_runtime.rs"]
-note = "Codex credential preparation and refresh exist; Vercel/Grok preparation, inventory and provider transition handling are absent."
+note = "Codex credential preparation, refresh and the unrefreshed stored-login read for status exist; Vercel/Grok preparation, inventory and provider transition handling are absent."
 
 [[file]]
 upstream = "src/core/auth/auth_transition.zig"
