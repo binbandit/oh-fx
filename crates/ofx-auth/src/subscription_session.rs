@@ -160,6 +160,14 @@ impl<P: SessionPolicy> SessionStore<P> {
         mutation.save(session)
     }
 
+    pub(crate) fn load_unlocked(&self) -> Result<Option<Session>, P::Error> {
+        match PrivateDir::open_existing_private(&self.directory) {
+            Ok(Some(directory)) => load_from_dir::<P>(&directory),
+            Ok(None) => Ok(None),
+            Err(error) => Err(storage_error::<P>(error)),
+        }
+    }
+
     pub(crate) async fn begin_existing_mutation(&self) -> Result<Option<Mutation<P>>, P::Error> {
         match PrivateDir::open_existing_private(&self.directory) {
             Ok(Some(directory)) => lock_mutation::<P>(directory).await.map(Some),

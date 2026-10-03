@@ -32,8 +32,10 @@ use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
 use crate::skill_mention_runtime::SkillMentions;
 use startup_resume::open_requested;
+pub use startup_status::{StartupStatus, StartupStatusError};
 
 mod startup_resume;
+mod startup_status;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const WORKER_THREAD: &str = "oh-fx-agent";
