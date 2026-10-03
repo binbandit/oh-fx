@@ -123,6 +123,7 @@ pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
 }
 
 fn install(state: &ControllerState, source: &str, filter: Option<&str>) {
+    let installation = state.skills().installations().start();
     state.notice(
         NoticeTone::Neutral,
         TOPIC,
@@ -150,6 +151,7 @@ fn install(state: &ControllerState, source: &str, filter: Option<&str>) {
         Err(_) => "Failed to install. Check the source path or URL and try again.".to_owned(),
     };
     state.notice(NoticeTone::Neutral, TOPIC, &notice);
+    drop(installation);
 }
 
 fn open_menu(state: &ControllerState, found: &SkillDiscovery, focus: SkillMenuFocus) {

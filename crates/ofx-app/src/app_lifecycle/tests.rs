@@ -9,7 +9,7 @@ use std::time::Instant;
 use ofx_auth::ChatGptEndpoints;
 use ofx_config::{PrivateDir, ProfilePaths, Settings};
 use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
-use ofx_testkit::{FakeServer, PtySession, Reply};
+use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events};
 use ofx_tui::PromptHistory;
 use serde_json::{Value, json};
 
@@ -62,9 +62,9 @@ fn worker_panics_are_reported_instead_of_printed_and_clean_exits_are_quiet() {
     let panics = PanicCapture::install(WORKER_THREAD, drop);
     let (shell, _events) = ui_channel().unwrap();
     let finished = Worker::spawn(shell.clone(), || {}).unwrap();
-    assert!(finished.finish(None, &panics).is_ok());
+    assert!(finished.finish(None, None, &panics).is_ok());
     let crashed = Worker::spawn(shell, || panic!("worker exploded")).unwrap();
-    let message = crashed.finish(None, &panics).unwrap_err().to_string();
+    let message = crashed.finish(None, None, &panics).unwrap_err().to_string();
     assert!(
         message.starts_with("oh-fx: the agent stopped unexpectedly: panicked at "),
         "{message}"
@@ -314,15 +314,22 @@ fn run_a_worker_that_panics() -> ! {
         workspace_identity: None,
         theme: None,
     };
-    let outcome = host(options, events, receiver, None, |events, mut commands| {
-        let _ = commands.blocking_recv();
-        assert!(panic::catch_unwind(|| panic!("tool exploded")).is_err());
-        events.send(UiEvent::Notice {
-            notice: Notice::new(NoticeTone::Neutral, "", "still serving"),
-        });
-        let _ = commands.blocking_recv();
-        panic!("worker exploded");
-    });
+    let outcome = host(
+        options,
+        events,
+        receiver,
+        None,
+        None,
+        |events, mut commands| {
+            let _ = commands.blocking_recv();
+            assert!(panic::catch_unwind(|| panic!("tool exploded")).is_err());
+            events.send(UiEvent::Notice {
+                notice: Notice::new(NoticeTone::Neutral, "", "still serving"),
+            });
+            let _ = commands.blocking_recv();
+            panic!("worker exploded");
+        },
+    );
     if let Err(error) = &outcome {
         eprintln!("{error}");
     }
@@ -394,9 +401,182 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         theme: None,
     };
     let stopped = directory.join("stopped");
-    let outcome = host(options, events, receiver, None, move |_, mut commands| {
-        while commands.blocking_recv().is_some() {}
-        fs::write(stopped, "").unwrap();
-    });
+    let outcome = host(
+        options,
+        events,
+        receiver,
+        None,
+        None,
+        move |_, mut commands| {
+            while commands.blocking_recv().is_some() {}
+            fs::write(stopped, "").unwrap();
+        },
+    );
     process::exit(i32::from(outcome.is_err()));
+}
+
+const INSTALL_TEST: &str =
+    "app_lifecycle::tests::quit_drains_accepted_installs_after_the_provider_worker_grace";
+const CHILD_INSTALL: &str = "OH_FX_LIFECYCLE_CHILD_INSTALL";
+
+#[test]
+fn quit_drains_accepted_installs_after_the_provider_worker_grace() {
+    if let Some(home) = env::var_os(CHILD_INSTALL) {
+        run_a_local_install_session(Path::new(&home));
+    }
+    let home = tempfile::tempdir().unwrap();
+    let home_path = fs::canonicalize(home.path()).unwrap();
+    let paths = profile_paths(&home_path);
+    let workspace = home_path.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let locks = paths.config.join(".skill-install-locks");
+    fs::create_dir_all(&locks).unwrap();
+    fs::set_permissions(&locks, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut held = Vec::new();
+    for name in ["first-pack", "second-pack", "final-pack"] {
+        let source = home_path.join(name);
+        fs::create_dir(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: install fixture\n---\nbody\n"),
+        )
+        .unwrap();
+        if name != "final-pack" {
+            let file = fs::File::create(locks.join(name)).unwrap();
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .unwrap();
+            rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+            held.push(file);
+        }
+    }
+    let server = FakeServer::start([Reply::held_sse(&chat_text_events(&["STREAM_READY"])[..2])]);
+    fs::write(paths.config.join("settings.json"), json!({
+        "provider":"local", "providers":{"local":{"protocol":"openai-chat-completions", "base_url":server.base_url(), "auth":{"type":"none"}, "models":["model-a"]}}
+    }).to_string()).unwrap();
+    let mut command = Command::new(env::current_exe().unwrap());
+    command
+        .args([INSTALL_TEST, "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD_INSTALL, &home_path)
+        .env("TERM", "xterm-256color")
+        .env("OH_FX_AUTO_UPGRADE", "0");
+    let mut session = PtySession::spawn(command, 40, 160).unwrap();
+    session
+        .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
+        .unwrap();
+    session.send(b"start\r");
+    session
+        .wait_for(WAIT, |screen| screen.contains("Generating"))
+        .unwrap();
+    for name in ["first-pack", "second-pack", "final-pack"] {
+        session.send(format!("/skills install {}\r", home_path.join(name).display()).as_bytes());
+    }
+    session.send(b"/stats\r");
+    session
+        .wait_for(WAIT, |screen| screen.contains("ansi_bytes"))
+        .unwrap();
+    assert!(!paths.config.join("skills/final-pack").exists());
+    session.send(b"/quit\r");
+    let status = session
+        .wait_exit(WAIT)
+        .expect("quit drains accepted installs");
+    assert!(status.success(), "{status:?}");
+    assert!(session.cooked().unwrap());
+    let root = paths.config.join("skills");
+    assert!(
+        root.join("final-pack/SKILL.md").is_file(),
+        "quit abandoned an accepted installation"
+    );
+    assert!(!root.join("first-pack").exists());
+    assert!(!root.join("second-pack").exists());
+    assert!(
+        fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".skill-install-")),
+        "quit left a staging transaction"
+    );
+    drop(held);
+}
+
+fn run_a_local_install_session(home: &Path) -> ! {
+    let paths = profile_paths(home);
+    let workspace = fs::canonicalize(home.join("workspace")).unwrap();
+    let settings = Settings::load(&paths, &workspace).unwrap();
+    let profile = Profile::new(workspace, Some(home.into()), Some(paths), settings).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+    let setup = runtime
+        .block_on(profile.connect_interactive(
+            Launch {
+                model: None,
+                permission_mode: PermissionMode::Auto,
+                system_prompt: None,
+                reasoning_effort: None,
+                fast_mode: None,
+                context_limits: &[],
+                command_timeout: None,
+                executions: &executions,
+                endpoints: SubscriptionEndpoints::default(),
+                web_fetch_progress: None,
+            },
+            &CancellationToken::new(),
+        ))
+        .unwrap();
+    let session = Session {
+        profile,
+        setup,
+        executions,
+        permission_mode: PermissionMode::Auto,
+        persistence: None,
+        history: None,
+    };
+    process::exit(i32::from(run(session, None, runtime).is_err()));
+}
+
+#[test]
+fn installation_shutdown_guards_release_after_failure_and_unwinding() {
+    let _serial = HOOK_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
+    let panics = PanicCapture::install(WORKER_THREAD, drop);
+    let installations = Arc::new(Installations::default());
+    let accepted = installations.start();
+    let running = installations.start();
+    drop(accepted);
+    assert!(installations.wait_for_running(Duration::ZERO));
+    drop(running);
+    assert!(!installations.wait_for_running(Duration::ZERO));
+    let guard = installations.start();
+    let (shell, _events) = ui_channel().unwrap();
+    let crashed = Worker::spawn(shell, move || {
+        let _guard = guard;
+        panic!("installation worker exploded");
+    })
+    .unwrap();
+    assert!(crashed.finish(None, Some(&installations), &panics).is_err());
+    assert!(!installations.wait_for_running(Duration::ZERO));
+}
+
+#[test]
+fn unrelated_provider_work_keeps_the_existing_shutdown_grace() {
+    let _serial = HOOK_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
+    let panics = PanicCapture::install(WORKER_THREAD, drop);
+    let installations = Installations::default();
+    let (release, wait) = mpsc::channel();
+    let (done, completed) = mpsc::channel();
+    let (shell, _events) = ui_channel().unwrap();
+    let worker = Worker::spawn(shell, move || {
+        let _ = wait.recv();
+        let _ = done.send(());
+    })
+    .unwrap();
+    assert!(worker.finish(None, Some(&installations), &panics).is_ok());
+    assert!(matches!(
+        completed.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    release.send(()).unwrap();
+    completed.recv_timeout(WAIT).unwrap();
 }
