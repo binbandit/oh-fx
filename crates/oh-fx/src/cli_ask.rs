@@ -791,7 +791,7 @@ struct RecoveryRecord {
 }
 
 impl RecoveryRecord {
-    fn new(status: &RouteRecoveryStatus) -> Self {
+    fn new(status: &RouteRecoveryStatus, durable: bool) -> Self {
         Self {
             state: if status.is_terminal() {
                 "failed"
@@ -806,7 +806,7 @@ impl RecoveryRecord {
             attempt: status.reported_attempt(),
             attempt_limit: status.attempt_limit,
             delay_seconds: status.delay_seconds,
-            durable: false,
+            durable,
             message: status.label(),
         }
     }
@@ -1349,6 +1349,7 @@ impl Presenter {
             && self.write_error.is_none()
             && summary.error.is_none();
         let untouched = summary.auth_failure && self.steps == 0;
+        let durable = saved.is_some();
         let session_id = saved
             .map(|saved| saved.close(untouched))
             .unwrap_or_default();
@@ -1384,7 +1385,10 @@ impl Presenter {
                 reason: "http_unauthorized",
                 http_status: 401,
             }),
-            recovery: self.recovery.as_ref().map(RecoveryRecord::new),
+            recovery: self
+                .recovery
+                .as_ref()
+                .map(|status| RecoveryRecord::new(status, durable)),
         })
     }
 
@@ -1909,7 +1913,7 @@ mod tests {
         let result = RunResult {
             tool_calls: &records,
             error: None,
-            recovery: Some(RecoveryRecord::new(&recovered)),
+            recovery: Some(RecoveryRecord::new(&recovered, false)),
             ..RunResult::error("")
         };
         assert_eq!(
@@ -1928,8 +1932,8 @@ mod tests {
             retry_wait: None,
         };
         assert_eq!(
-            serde_json::to_string(&RecoveryRecord::new(&retrying)).unwrap(),
-            r#"{"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":2,"durable":false,"message":"⚠ Rate limited · HTTP 429 · slow · retrying request in 2s"}"#
+            serde_json::to_string(&RecoveryRecord::new(&retrying, true)).unwrap(),
+            r#"{"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":2,"durable":true,"message":"⚠ Rate limited · HTTP 429 · slow · retrying request in 2s"}"#
         );
     }
 
@@ -1966,7 +1970,7 @@ mod tests {
             ["[notice] ⚠ Provider unavailable · ConnectionFailed · retrying request\n"]
         );
         assert_eq!(
-            serde_json::to_string(&RecoveryRecord::new(&stopped)).unwrap(),
+            serde_json::to_string(&RecoveryRecord::new(&stopped, false)).unwrap(),
             r#"{"state":"failed","kind":"terminal_provider_error","cause":"provider_unavailable","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"⚠ Provider unavailable · ConnectionFailed · stopped after 2 attempts"}"#
         );
     }

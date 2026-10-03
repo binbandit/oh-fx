@@ -13,12 +13,12 @@ use ofx_contract::{
     FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRequest, PathAccess,
     PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RecoveredTurn,
-    RecoveryStrategy, RequestId, ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed,
-    RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent,
-    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
+    RecoveryProgress, RecoveryStrategy, RequestId, ReviewFailure, ReviewHold, ReviewRequest,
+    ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus,
+    SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool, ToolActivity,
+    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect,
+    ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent,
+    Usage, malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
     tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
@@ -815,7 +815,7 @@ impl Agent {
             };
             if error.kind == ProviderErrorKind::Cancelled || cancel.is_cancelled() {
                 let recovery = recovering_from.map(|cause| (cause, consumed));
-                return Err(self.interruption(turn_id, recovery, &error, partial, events));
+                return Err(self.interruption(turn, recovery, &error, partial, events));
             }
             let cause = recovery_cause(error.kind).filter(|_| partial.is_empty());
             let Some(cause) = cause.filter(|_| attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS) else {
@@ -828,10 +828,14 @@ impl Agent {
                 ) {
                     events(UiEvent::Recovery { turn_id, status });
                 }
-                return Err(Stop::Failed {
-                    failure: TurnFailure::Provider(error),
-                    partial,
+                let paused = cause.map(|cause| {
+                    self.record_recovery(turn, cause, RecoveryProgress::Paused, consumed)
                 });
+                let failure = match paused {
+                    Some(Err(failure)) => TurnFailure::Persistence(failure),
+                    Some(Ok(())) | None => TurnFailure::Provider(error),
+                };
+                return Err(Stop::Failed { failure, partial });
             };
             if cause == ModelRecoveryCause::ProviderUnavailable {
                 turn.fast_mode = false;
@@ -840,6 +844,17 @@ impl Agent {
             let retry_after = error.retry_after.map(|delay| delay.as_secs());
             let decision = decide(cause, retry_after, pacing);
             let mut status = retry_status(attempt, cause, &decision, &error);
+            if let Err(failure) = self.record_recovery(
+                turn,
+                cause,
+                RecoveryProgress::Waiting(decision.action),
+                consumed,
+            ) {
+                return Err(Stop::Failed {
+                    failure: TurnFailure::Persistence(failure),
+                    partial,
+                });
+            }
             events(UiEvent::Recovery {
                 turn_id,
                 status: status.clone(),
@@ -848,7 +863,7 @@ impl Agent {
                 biased;
                 () = cancel.cancelled() => {
                     let recovery = Some((cause, consumed));
-                    return Err(self.interruption(turn_id, recovery, &error, String::new(), events));
+                    return Err(self.interruption(turn, recovery, &error, String::new(), events));
                 }
                 () = tokio::time::sleep(decision.delay) => {}
             }
@@ -867,17 +882,27 @@ impl Agent {
 
     fn interruption(
         &self,
-        turn_id: TurnId,
+        turn: &Turn,
         recovery: Option<(ModelRecoveryCause, usize)>,
         error: &ProviderError,
         partial: String,
         events: EventSink<'_>,
     ) -> Stop {
-        let Some((cause, attempt)) = recovery.filter(|_| self.recovery_pause.requested()) else {
+        let Some((cause, attempt)) = recovery else {
             return Stop::Interrupted { partial };
         };
+        if !self.recovery_pause.requested() {
+            self.discard_recovery();
+            return Stop::Interrupted { partial };
+        }
+        if let Err(failure) = self.record_recovery(turn, cause, RecoveryProgress::Paused, attempt) {
+            return Stop::Failed {
+                failure: TurnFailure::Persistence(failure),
+                partial,
+            };
+        }
         events(UiEvent::Recovery {
-            turn_id,
+            turn_id: turn.id,
             status: RouteRecoveryStatus {
                 kind: RouteRecoveryKind::TerminalProviderError,
                 failed_attempt: attempt,

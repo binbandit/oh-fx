@@ -28,7 +28,7 @@ use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_session_runtime::{
-    LaunchOverrides, Persistence, configured_preferences, open_store, running_provider,
+    LaunchOverrides, Persistence, configured_preferences, open_store, session_route,
 };
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
@@ -150,9 +150,9 @@ async fn bootstrap(
         None if resume == Some(&RequestedResume::Pick) => Opening::SessionPicker,
         None => Opening::Welcome,
     };
-    let persistence = match (store, running_provider(&setup)) {
-        (Ok(store), Ok(provider)) => {
-            let preferences = configured_preferences(&profile, &setup, provider.clone());
+    let persistence = match (store, session_route(&setup)) {
+        (Ok(store), Ok(route)) => {
+            let preferences = configured_preferences(&profile, &setup, route.provider.clone());
             let overrides = LaunchOverrides {
                 model: modifiers.model().map(|_| setup.model().to_owned()),
                 effort: modifiers.reasoning_effort().cloned(),
@@ -160,7 +160,7 @@ async fn bootstrap(
             };
             Some(Persistence::new(
                 store,
-                provider,
+                route,
                 preferences,
                 overrides,
                 resumed,

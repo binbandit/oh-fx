@@ -1,11 +1,13 @@
 use ofx_contract::{
-    ChatMessage, ConversationLog, HistoryTurn, LogFailure, RestoredHistory, TurnEnd, TurnStop,
+    ChatMessage, ConversationLog, HistoryTurn, LogFailure, ModelRecoveryCause, RecoveryPoint,
+    RecoveryProgress, RestoredHistory, TurnEnd, TurnStop,
 };
 
 use super::turn_ledger::TurnRecord;
 use super::{Agent, Turn};
 use crate::compactor::{Compacted, encode_checkpoint, restore_checkpoint};
 use crate::execution_memory::{history_turn, logged_steps};
+use crate::model_response_recovery::DEFAULT_MAX_PROVIDER_ATTEMPTS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Ending {
@@ -114,19 +116,53 @@ impl Agent {
         let Some(log) = self.log.as_mut() else {
             return Ok(());
         };
-        let active = turn.map(|turn| {
-            let parsed = history_turn(&self.history, turn.start, self.history.len());
-            HistoryTurn {
-                user: parsed.user,
-                steps: logged_steps(&parsed.steps, &turn.raw_outputs),
-                steering: parsed.logged_steering(),
-                end: TurnEnd::Replied {
-                    text: "",
-                    provider_replay: None,
-                },
-            }
-        });
+        let active = turn.map(|turn| turn_so_far(&self.history, turn));
         let cut = self.ledger.logged_cut(compacted.cut);
         log.record_compaction(&encode_checkpoint(&compacted.payload), cut, active.as_ref())
+    }
+
+    pub(super) fn record_recovery(
+        &self,
+        turn: &Turn,
+        cause: ModelRecoveryCause,
+        progress: RecoveryProgress,
+        consumed_attempts: usize,
+    ) -> Result<(), LogFailure> {
+        let Some(log) = self.log.as_ref() else {
+            return Ok(());
+        };
+        if turn.start >= self.history.len() {
+            return Ok(());
+        }
+        log.record_recovery(&RecoveryPoint {
+            turn_id: turn.id,
+            turn: turn_so_far(&self.history, turn),
+            cause,
+            progress,
+            model: &self.config.model,
+            requested_fast_mode: self.config.fast_mode,
+            fast_mode: turn.fast_mode,
+            attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
+            consumed_attempts,
+        })
+    }
+
+    pub(super) fn discard_recovery(&self) {
+        if let Some(log) = self.log.as_ref() {
+            let _ = log.clear_recovery();
+        }
+    }
+}
+
+fn turn_so_far<'a>(history: &'a [ChatMessage], turn: &Turn) -> HistoryTurn<'a> {
+    let parsed = history_turn(history, turn.start, history.len());
+    HistoryTurn {
+        user: parsed.user,
+        steps: logged_steps(&parsed.steps, &turn.raw_outputs),
+        steering: parsed.logged_steering(),
+        end: TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        },
     }
 }
