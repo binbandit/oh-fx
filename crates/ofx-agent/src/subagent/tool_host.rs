@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ofx_contract::{
     ApprovalRequest, BoxFuture, LivePermissionMode, ModelFailureDiagnostic, PermissionMode,
-    ReasoningEffort, SubagentOverride, SubagentProvider, SubagentRequest, SubagentResult,
+    ReasoningEffort, SubagentOverride, SubagentProvider, SubagentRequest, SubagentResult, Tool,
     ToolContext, ToolOutput,
 };
 use ofx_text::lowercase_hex;
@@ -25,10 +25,17 @@ pub struct ChildDefaults {
     pub permission_mode: PermissionMode,
 }
 
+pub struct WorkTools {
+    pub tools: Vec<Arc<dyn Tool>>,
+    pub release: BoxFuture<'static, ()>,
+}
+
 pub trait ChildAgents: Send + Sync {
     fn defaults(&self) -> ChildDefaults;
 
     fn agent(&self, settings: &ChildSettings, permission_mode: LivePermissionMode) -> Agent;
+
+    fn work_tools(&self) -> WorkTools;
 
     fn approval_requested(&self, request: ApprovalRequest);
 }

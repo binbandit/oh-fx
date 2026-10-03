@@ -13,15 +13,16 @@ use ofx_contract::{
     AutoCompactPercent, BoxFuture, ChatMessage, CommandProfile, CommandRequest, Completion,
     FileMutation, FileMutationState, FinishReason, GatedAction, LivePermissionMode, ModelProvider,
     ModelRequest, PathAccess, PermissionGate, PermissionMode, ProviderError, SessionGrant,
-    StreamSink, ToolCall, ToolCallId, ToolResultStatus, UiEvent, Usage,
-    tool_permission_denied_json,
+    StreamSink, SubagentProvider, SubagentRequest, Tool, ToolCall, ToolCallId, ToolContext,
+    ToolOutput, ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
+use ofx_tools::SubagentTool;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-use super::{ToolHooks, ask_tools};
+use super::{ToolHooks, ask_tools, with_subagent};
 
 const OUTSIDE_THE_APPROVED_TREE: &str = r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"read_file failed","details":{"field":"path","path":"../link/data.txt","error":"PathOutsideWorkspace"},"suggestion":"Run glob_files to discover matching paths, or check the path relative to the workspace."}}"#;
 
@@ -869,4 +870,50 @@ async fn questions_run_without_approval_in_every_mode_and_ask_has_no_one_to_answ
             "{mode:?}"
         );
     }
+}
+
+struct NoChildren;
+
+impl SubagentProvider for NoChildren {
+    fn execute(
+        &self,
+        _request: SubagentRequest,
+        _context: ToolContext,
+    ) -> BoxFuture<'static, ToolOutput> {
+        Box::pin(async { ToolOutput::failure("unused") })
+    }
+}
+
+#[test]
+fn delegation_places_subagent_after_shell_as_upstream_orders_its_tools() {
+    let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+    let tools = ask_tools(
+        Path::new("/"),
+        &executions,
+        None,
+        &PermissionMode::Ask.into(),
+        crate::skills::rootless_skill_tool(),
+        ToolHooks::default(),
+    );
+    let subagent: Arc<dyn Tool> = Arc::new(SubagentTool::new(Arc::new(NoChildren)));
+    let names = |tools: &[Arc<dyn Tool>]| -> Vec<String> {
+        tools.iter().map(|tool| tool.spec().name.clone()).collect()
+    };
+    assert_eq!(
+        names(&with_subagent(&tools, &subagent)),
+        [
+            "read_file",
+            "glob_files",
+            "grep_files",
+            "edit_file",
+            "write_file",
+            "shell",
+            "subagent",
+            "skill",
+            "ask_user_question",
+            "web_fetch",
+            "web_search",
+        ]
+    );
+    assert!(!names(&tools).iter().any(|name| name == "subagent"));
 }

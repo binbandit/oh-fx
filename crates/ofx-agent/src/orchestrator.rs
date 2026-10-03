@@ -184,6 +184,21 @@ struct LastReply {
     text: Arc<str>,
 }
 
+fn describe_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<ToolSpec>, String) {
+    let tool_specs: Vec<ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
+    let (remote, offered): (Vec<_>, Vec<_>) = tools
+        .iter()
+        .zip(&tool_specs)
+        .partition(|(tool, _)| tool.provider_executed());
+    let offered_specs = offered.into_iter().map(|(_, spec)| spec.clone()).collect();
+    let tool_guidance = remote
+        .iter()
+        .map(|(_, spec)| spec.description.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (tool_specs, offered_specs, tool_guidance)
+}
+
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
@@ -220,17 +235,7 @@ impl Agent {
         permissions: Arc<dyn PermissionGate>,
         config: AgentConfig,
     ) -> Self {
-        let tool_specs: Vec<ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
-        let (remote, offered): (Vec<_>, Vec<_>) = tools
-            .iter()
-            .zip(&tool_specs)
-            .partition(|(tool, _)| tool.provider_executed());
-        let offered_specs = offered.into_iter().map(|(_, spec)| spec.clone()).collect();
-        let tool_guidance = remote
-            .iter()
-            .map(|(_, spec)| spec.description.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let (tool_specs, offered_specs, tool_guidance) = describe_tools(&tools);
         Self {
             provider,
             tools,
@@ -299,6 +304,11 @@ impl Agent {
         &self.config
     }
 
+    pub(crate) fn replace_tools(&mut self, tools: Vec<Arc<dyn Tool>>) {
+        (self.tool_specs, self.offered_specs, self.tool_guidance) = describe_tools(&tools);
+        self.tools = tools;
+    }
+
     pub(crate) fn inherit_root_user_requests(&mut self, requests: Arc<RootUserRequests>) {
         self.inherited_requests = Some(requests);
     }
@@ -338,7 +348,17 @@ impl Agent {
         self.run_turn_with_skills(prompt, &[], events, cancel).await
     }
 
-    pub async fn run_turn_with_skills(
+    pub fn run_turn_with_skills<'a>(
+        &'a mut self,
+        prompt: &'a str,
+        skills: &'a [SkillBinding],
+        events: EventSink<'a>,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, TurnReport> {
+        Box::pin(self.turn(prompt, skills, events, cancel))
+    }
+
+    async fn turn(
         &mut self,
         prompt: &str,
         skills: &[SkillBinding],

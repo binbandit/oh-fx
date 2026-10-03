@@ -110,7 +110,7 @@ for victim in victims:
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 27] = [
+const TESTS: [(&str, Test); 28] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -122,6 +122,10 @@ const TESTS: [(&str, Test); 27] = [
     (
         "a_slow_command_yields_a_retained_session_that_stop_ends",
         a_slow_command_yields_a_retained_session_that_stop_ends,
+    ),
+    (
+        "a_separate_runtime_shares_only_the_supervisor",
+        a_separate_runtime_shares_only_the_supervisor,
     ),
     (
         "observing_returns_only_output_produced_since_the_last_delivery",
@@ -477,6 +481,61 @@ fn a_slow_command_yields_a_retained_session_that_stop_ends() {
             .expect("the test step succeeds");
         assert_eq!(retained.state, stopped.state);
     });
+}
+
+fn a_separate_runtime_shares_only_the_supervisor() {
+    let echoed = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&echoed);
+    let echo: OutputEcho = Arc::new(move |chunk: &[u8]| {
+        recorded
+            .lock()
+            .expect("the test step succeeds")
+            .extend_from_slice(chunk);
+        Ok(())
+    });
+    block_on(async {
+        let parent = executions().with_output_echo(echo);
+        let cancel = CancellationToken::new();
+        let own = parent
+            .start_captured(run("exec sleep 60", Duration::ZERO), &cancel)
+            .await
+            .expect("the test step succeeds");
+        let child = parent.separate();
+        let started = child
+            .start_captured(
+                run(
+                    "printf 'child\\n'; exec sleep 60",
+                    Duration::from_millis(300),
+                ),
+                &cancel,
+            )
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(started.execution_id, own.execution_id);
+        assert_eq!(text(&started), "child\n");
+        child.shutdown().await;
+        let stopped = child
+            .wait(&started.execution_id, Duration::ZERO, &cancel)
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(
+            stopped.state,
+            SnapshotState::Stopped(Some(CommandStatus::Signal(15)))
+        );
+        let untouched = parent
+            .wait(&own.execution_id, Duration::ZERO, &cancel)
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(untouched.state, SnapshotState::Running);
+        assert!(
+            parent
+                .start_captured(run("true", LONG), &cancel)
+                .await
+                .is_ok()
+        );
+        parent.shutdown().await;
+    });
+    assert!(echoed.lock().expect("the test step succeeds").is_empty());
 }
 
 fn observing_returns_only_output_produced_since_the_last_delivery() {
