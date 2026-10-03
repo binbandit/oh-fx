@@ -107,7 +107,9 @@ impl VersionLookup<'_> {
             Ok((StatusCode::OK, body)) => {
                 parse_codex_release(&body).ok_or(VersionError::Unavailable)
             }
-            Ok(_) | Err(BoundedFailure::Failed) => Err(VersionError::Unavailable),
+            Ok(_) | Err(BoundedFailure::Failed | BoundedFailure::TooLarge) => {
+                Err(VersionError::Unavailable)
+            }
             Err(BoundedFailure::Cancelled) => Err(VersionError::Cancelled),
         }
     }

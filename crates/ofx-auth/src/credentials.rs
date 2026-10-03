@@ -1,3 +1,5 @@
+pub(crate) const GROK_SOURCE_LABEL: &str = "Grok subscription";
+
 pub const MISSING_CHATGPT_CREDENTIAL_MESSAGE: &str =
     "oh-fx needs a Codex subscription login for this model. Run oh-fx login codex.";
 pub const CHATGPT_RELOGIN_MESSAGE: &str = "Run oh-fx login codex to sign in again.";
