@@ -847,6 +847,29 @@ fn preference_changes_rewrite_metadata_durably() {
 }
 
 #[test]
+fn a_session_whose_turns_carry_upstream_file_evidence_loads_and_resumes() {
+    let fixture = Fixture::new();
+    drop(fixture.start("evidence"));
+    let frames = [
+        "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":2,\"event\":{\"user\":{\"text\":\"read it\",\"images\":[],\"work_id\":null}}}\n",
+        "{\"schema_version\":3,\"seq\":2,\"timestamp_ms\":2,\"event\":{\"assistant\":{\"text\":\"done\",\"provider_replay\":null,\"standalone_response\":false}}}\n",
+        "{\"schema_version\":3,\"seq\":3,\"timestamp_ms\":2,\"event\":{\"turn_completed\":{\"files\":[{\"path\":\"src/main.rs\",\"new_path\":null,\"tool_call_id\":\"call_1\",\"tool_name\":\"read_file\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":true,\"stale\":false}],\"turn_summary\":null}}}\n",
+    ];
+    for frame in frames {
+        fixture.append_raw("evidence", frame.as_bytes());
+    }
+    let loaded = load_session(&fixture.sessions, "evidence").unwrap();
+    assert_eq!(loaded.history.turns.len(), 1);
+    let mut resumed = fixture.resume("evidence").unwrap();
+    assert_eq!(resumed.take_history().turns.len(), 1);
+    resumed.append(3, &[user("next"), completed()]).unwrap();
+    drop(resumed);
+    let log = fs::read_to_string(fixture.events("evidence")).unwrap();
+    assert!(log.starts_with(&frames.concat()), "{log}");
+    assert_eq!(log.lines().count(), 5);
+}
+
+#[test]
 fn a_model_choice_saves_its_fast_mode_and_keeps_the_other_preferences() {
     let fixture = Fixture::new();
     let mut session = fixture.start("chosen");
