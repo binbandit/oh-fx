@@ -516,9 +516,13 @@ impl Settings {
     }
 
     pub fn saved_codex_model(&self) -> Option<&str> {
+        self.saved_model(&ProviderId::Codex)
+    }
+
+    pub fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
         self.workspace
-            .codex_model()
-            .or_else(|| self.global.codex_model())
+            .saved_model(provider)
+            .or_else(|| self.global.saved_model(provider))
     }
 
     pub fn connections(&self) -> &[ProviderDefinition] {
