@@ -275,6 +275,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         lifecycle: lifecycle.as_ref().map(|client| {
             Box::new(HerdrObserver(Arc::clone(client))) as Box<dyn ofx_tui::ForegroundLifecycle>
         }),
+        steering: None,
         opening: session.opening,
         statusline: session.setup.statusline(),
         workspace_identity: Some(Box::new(StatuslineIdentity::new(
