@@ -358,6 +358,12 @@ impl PreparedCall for EchoCall {
         self.arguments.contains("mcp_call")
     }
 
+    fn review_schema(&self) -> Option<String> {
+        self.arguments
+            .contains("mcp_schema")
+            .then(|| format!("schema {}", self.arguments))
+    }
+
     fn refusal(&self) -> Option<&ToolOutput> {
         assert!(
             !self.arguments.contains("refusal_panic"),

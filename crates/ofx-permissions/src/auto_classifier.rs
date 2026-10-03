@@ -197,7 +197,12 @@ fn unavailable(failure: ReviewFailure, usage: Usage) -> Reviewed {
 
 fn review_view(action: &Action<'_>) -> ReviewView {
     match action {
-        Action::Command { .. } | Action::ShellInput { .. } => ReviewView::Contextual,
+        Action::Command { .. }
+        | Action::ShellInput { .. }
+        | Action::Tool {
+            schema_required: true,
+            ..
+        } => ReviewView::Contextual,
         Action::FileMutation { .. } | Action::Tool { .. } => ReviewView::Normal,
     }
 }

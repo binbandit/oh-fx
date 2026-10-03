@@ -129,6 +129,7 @@ pub struct ReviewRequest<'a> {
     pub call: &'a ToolCall,
     pub action: GatedAction<'a>,
     pub file: Option<&'a FileChange<'a>>,
+    pub schema: Option<&'a str>,
     pub attempt_available: bool,
 }
 
