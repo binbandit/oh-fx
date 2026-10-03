@@ -63,6 +63,12 @@ The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `
 | #1137 | `6bdd497` | (same) | `defer:tty` | future TTY sessions | The terminal host daemon, the tmux backend and the `FX_TERMINAL_HOST_*` variables are removed: tty terminals run inside the fx process and end when it exits. A resumed session's terminal answers with the new `TerminalEnded` code, and its tool row reads "ended when fx exited". Job-controlled commands end on exit. |
 | #1137 | `6bdd497` | (same) | `n/a` | none | The terminal host end-to-end suite, `terminal_client_fixture.zig`, the shell-path evals and the CI shard weights. |
 
+## Baseline behavior at 34f1ed1
+
+| Behavior | Status | oh-fx | Note |
+|---|---|---|---|
+| Streamed tool progress in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Responses tool identities publish provisional progress before arguments finish, without preparing or executing the call. Read, rejected read, parallel starts, and failed partial streams are covered. Rejected provisional calls count no executed step. The existing plain terminal transcript difference is recorded in [architecture.md](architecture.md); interactive provisional rows remain deferred. |
+
 ## d9f7766..34f1ed1
 
 | PR | Merge | Title | Status | oh-fx | Note |
