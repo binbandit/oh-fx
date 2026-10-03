@@ -19,7 +19,7 @@ pub use openai_codex::{
     CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh,
 };
 pub use openai_codex_models::{
-    CatalogCredential, CodexModel, CodexModelCatalog, CodexModelsEndpoints,
+    CODEX_TITLE_MODEL, CatalogCredential, CodexModel, CodexModelCatalog, CodexModelsEndpoints,
 };
 pub use permission_reviewer::{ChatCompletionsReviewTransport, CodexReviewTransport};
 pub use provider_failure::{HttpFailure, http_failure};

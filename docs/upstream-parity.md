@@ -79,6 +79,7 @@ The private result reader supports bounded raw pages, and storage no longer appl
 - **Turn loop:** `ofx-agent` needs a turn-progress sink. Upstream calls `AgentRuntimeDeps.append_turn_piece` at every model-request boundary. It calls it again with `running_calls` before tool calls run, so a crash mid-tool keeps the call.
 - **`ask`:** `ask --json` reports `session_id` only after the first turn is saved, and keeps `recovery.durable` false on v2.
 - **Commands:** `sessions`, `session`, `session recover`, and `doctor` run on v2. `session migrate` refuses on v2.
+- **Titles:** `/rename` and title generation (`Session.rename`, `installGeneratedTitle`) write a `set title` record, and a fresh session's first turn sets the derived title.
 - **Interactive, ACP, and subagents:**
   - The interactive app and ACP save and load v2 sessions.
   - Subagents become v2 children, and `subagentFailureLabel` reads `child_lost` as `Interrupted`.

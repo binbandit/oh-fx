@@ -94,8 +94,8 @@ note = "Native HOME resolution and visible-skill discovery are implemented by Ho
 [[file]]
 upstream = "src/core/app/app_session_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/app_session_runtime.rs"]
-note = "V1 session save/resume exists; session-v2, resume/rename pickers and catalog/cache management are absent."
+modules = ["crates/ofx-app/src/app_session_runtime.rs", "crates/ofx-app/src/app_session_runtime/session_titles.rs"]
+note = "V1 session save/resume, the session picker, generated session titles, and /rename exist; session-v2 and catalog/cache management are absent."
 
 [[file]]
 upstream = "src/core/app/app_upgrade_runtime.zig"

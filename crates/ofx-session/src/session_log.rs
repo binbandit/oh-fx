@@ -132,6 +132,36 @@ impl WritableSession {
         }
     }
 
+    pub fn title(&self) -> Option<&str> {
+        self.metadata.title.as_deref()
+    }
+
+    pub fn rename(&mut self, title: &str) -> Result<(), SessionError> {
+        let mut proposed = self.metadata.clone();
+        proposed.title = Some(title.to_owned());
+        self.write_metadata(proposed)
+    }
+
+    pub fn install_generated_title(&mut self, title: &str) -> Result<bool, SessionError> {
+        if let Some(persisted) = &self.metadata.title
+            && self.derived_title()?.as_ref() != Some(persisted)
+        {
+            return Ok(false);
+        }
+        self.rename(title)?;
+        Ok(true)
+    }
+
+    fn derived_title(&self) -> Result<Option<String>, SessionError> {
+        let mut prompts = SavedHistory::default();
+        self.visit_transcript(|turn| {
+            prompts.turns.push(SavedTurn {
+                events: turn.events.into_iter().take(1).collect(),
+            });
+        })?;
+        Ok((!prompts.turns.is_empty()).then(|| derive_display_title(&prompts)))
+    }
+
     pub fn take_history(&mut self) -> SavedHistory {
         mem::take(&mut self.history)
     }

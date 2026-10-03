@@ -100,6 +100,16 @@ mod tests {
     #[test]
     fn parse_returns_empty_payload_for_bare_prefix_commands() {
         assert_eq!(parse("/model"), Some((SlashKind::Model, "")));
+        assert_eq!(parse("/rename"), Some((SlashKind::RenameSession, "")));
+    }
+
+    #[test]
+    fn parse_keeps_the_whole_rename_title_as_its_payload() {
+        assert_eq!(
+            parse("/rename  deploy pipeline fix \t"),
+            Some((SlashKind::RenameSession, "deploy pipeline fix"))
+        );
+        assert_eq!(parse("/renamed title"), None);
     }
 
     #[test]
