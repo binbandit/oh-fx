@@ -251,22 +251,32 @@ fn every_commit_backs_up_the_previous_settings_and_keeps_five() {
 
 #[test]
 fn backup_names_order_by_sequence_then_timestamp_then_name() {
-    assert!(backup_name_newer_than(
-        "settings.json.backup.100-0000000000000002-aa",
-        "settings.json.backup.100-0000000000000001-bb"
-    ));
-    assert!(!backup_name_newer_than(
+    let names = [
+        "settings.json.backup.100",
         "settings.json.backup.999-0000000000000001-aa",
-        "settings.json.backup.100-0000000000000002-bb"
-    ));
-    assert!(backup_name_newer_than(
+        "settings.json.backup.100-0000000000000002-aa",
+        "settings.json.backup.7-0000000000000002-ab",
+        "settings.json.backup.999",
         "settings.json.backup.1-0000000000000001-aa",
-        "settings.json.backup.999"
-    ));
-    assert!(backup_name_newer_than(
+        "settings.json.backup.100-0000000000000001-bb",
         "settings.json.backup.200",
-        "settings.json.backup.100"
-    ));
+        "settings.json.backup.-x",
+        "settings.json.backup.200-0000000000000001-aa",
+    ];
+    assert_eq!(
+        newest_first(names.iter().map(|name| (*name).to_owned())),
+        [
+            "settings.json.backup.100-0000000000000002-aa",
+            "settings.json.backup.7-0000000000000002-ab",
+            "settings.json.backup.999-0000000000000001-aa",
+            "settings.json.backup.200-0000000000000001-aa",
+            "settings.json.backup.100-0000000000000001-bb",
+            "settings.json.backup.1-0000000000000001-aa",
+            "settings.json.backup.999",
+            "settings.json.backup.200",
+            "settings.json.backup.100",
+        ]
+    );
     assert_eq!(
         parse_sequence("settings.json.corrupt.5-00000000000000ff-cafe"),
         Some(255)
