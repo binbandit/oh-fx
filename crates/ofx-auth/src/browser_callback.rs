@@ -46,11 +46,12 @@ pub(crate) type Classifier<C, E> = Arc<dyn Fn(&str) -> ParseResult<C, E> + Send 
 pub(crate) struct Accepted<C> {
     stream: TcpStream,
     pub(crate) callback: C,
+    cors_origin: Option<&'static str>,
 }
 
 impl<C> Accepted<C> {
     pub(crate) async fn respond(mut self, outcome: Response) -> io::Result<()> {
-        write_response(&mut self.stream, outcome).await
+        write_response_with_origin(&mut self.stream, outcome, self.cors_origin).await
     }
 }
 
@@ -88,6 +89,19 @@ impl CallbackListener {
         C: Send + 'static,
         E: Send + 'static,
     {
+        self.accept_with_origin(classify, cancel, None).await
+    }
+
+    pub(crate) async fn accept_with_origin<C, E>(
+        &self,
+        classify: &Classifier<C, E>,
+        cancel: &CancellationToken,
+        allowed_origin: Option<&'static str>,
+    ) -> Result<Accepted<C>, AwaitError<E>>
+    where
+        C: Send + 'static,
+        E: Send + 'static,
+    {
         let mut connections: JoinSet<Result<Option<Accepted<C>>, E>> = JoinSet::new();
         loop {
             tokio::select! {
@@ -102,7 +116,7 @@ impl CallbackListener {
                 }
                 incoming = self.listener.accept() => match incoming {
                     Ok((stream, _)) if connections.len() < MAX_OPEN_CONNECTIONS => {
-                        connections.spawn(serve(stream, Arc::clone(classify)));
+                        connections.spawn(serve(stream, Arc::clone(classify), allowed_origin));
                     }
                     Ok(_) => {}
                     Err(error) if transient_accept_error(&error) => {}
@@ -124,7 +138,8 @@ fn transient_accept_error(error: &io::Error) -> bool {
 }
 
 enum Request {
-    Callback(String),
+    Callback(String, Option<&'static str>),
+    Preflight(&'static str),
     NotCallback,
     Silent,
 }
@@ -132,9 +147,22 @@ enum Request {
 async fn serve<C, E>(
     mut stream: TcpStream,
     classify: Classifier<C, E>,
+    allowed_origin: Option<&'static str>,
 ) -> Result<Option<Accepted<C>>, E> {
-    let target = match tokio::time::timeout(SOCKET_TIMEOUT, read_request(&mut stream)).await {
-        Ok(Request::Callback(target)) => target,
+    let (target, cors_origin) = match tokio::time::timeout(
+        SOCKET_TIMEOUT,
+        read_request(&mut stream, allowed_origin),
+    )
+    .await
+    {
+        Ok(Request::Callback(target, origin)) => (target, origin),
+        Ok(Request::Preflight(origin)) => {
+            let reply = format!(
+                "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {origin}\r\nAccess-Control-Allow-Methods: GET\r\nAccess-Control-Allow-Private-Network: true\r\nVary: Origin, Access-Control-Request-Method, Access-Control-Request-Private-Network\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = tokio::time::timeout(SOCKET_TIMEOUT, stream.write_all(reply.as_bytes())).await;
+            return Ok(None);
+        }
         Ok(Request::NotCallback) => {
             let _ = write_response(&mut stream, Response::Unrelated).await;
             return Ok(None);
@@ -142,19 +170,23 @@ async fn serve<C, E>(
         Ok(Request::Silent) | Err(_) => return Ok(None),
     };
     match classify(&target) {
-        ParseResult::Accepted(callback) => Ok(Some(Accepted { stream, callback })),
+        ParseResult::Accepted(callback) => Ok(Some(Accepted {
+            stream,
+            callback,
+            cors_origin,
+        })),
         ParseResult::Unrelated => {
-            let _ = write_response(&mut stream, Response::Unrelated).await;
+            let _ = write_response_with_origin(&mut stream, Response::Unrelated, cors_origin).await;
             Ok(None)
         }
         ParseResult::Failed(error) => {
-            let _ = write_response(&mut stream, Response::Failed).await;
+            let _ = write_response_with_origin(&mut stream, Response::Failed, cors_origin).await;
             Err(error)
         }
     }
 }
 
-async fn read_request(stream: &mut TcpStream) -> Request {
+async fn read_request(stream: &mut TcpStream, allowed_origin: Option<&'static str>) -> Request {
     let mut bytes = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
     loop {
@@ -171,7 +203,7 @@ async fn read_request(stream: &mut TcpStream) -> Request {
         bytes.extend_from_slice(&chunk[..read]);
         if let Some(end) = find(&bytes, TERMINATOR) {
             bytes.truncate(end);
-            return classify_request(&bytes);
+            return classify_request(&bytes, allowed_origin);
         }
         if bytes.len() > MAX_REQUEST_BYTES {
             return Request::NotCallback;
@@ -179,16 +211,39 @@ async fn read_request(stream: &mut TcpStream) -> Request {
     }
 }
 
-fn classify_request(head: &[u8]) -> Request {
-    let line_end = find(head, b"\r\n").unwrap_or(head.len());
-    let Ok(line) = std::str::from_utf8(&head[..line_end]) else {
+fn classify_request(head: &[u8], allowed_origin: Option<&'static str>) -> Request {
+    let Ok(head) = std::str::from_utf8(head) else {
         return Request::NotCallback;
     };
-    let mut parts = line.splitn(3, ' ');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some("GET"), Some(target), Some(_)) => Request::Callback(target.to_owned()),
-        _ => Request::NotCallback,
+    let mut lines = head.split("\r\n");
+    let mut parts = lines.next().unwrap_or_default().splitn(3, ' ');
+    let (Some(method), Some(target), Some(_)) = (parts.next(), parts.next(), parts.next()) else {
+        return Request::NotCallback;
+    };
+    let headers: Vec<_> = lines.filter_map(|line| line.split_once(':')).collect();
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.trim_matches([' ', '\t']))
+    };
+    let origin = header("origin");
+    let matched_origin = allowed_origin.filter(|allowed| Some(*allowed) == origin);
+    if method == "OPTIONS" {
+        if let Some(allowed) = matched_origin
+            && header("access-control-request-method")
+                .is_some_and(|method| method.eq_ignore_ascii_case("GET"))
+            && (target == "/callback" || target.starts_with("/callback?"))
+        {
+            return Request::Preflight(allowed);
+        }
+        return Request::NotCallback;
     }
+    if method != "GET" || (allowed_origin.is_some() && origin.is_some() && matched_origin.is_none())
+    {
+        return Request::NotCallback;
+    }
+    Request::Callback(target.to_owned(), matched_origin)
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -204,6 +259,14 @@ fn callback_page(title: &str, detail: &str) -> String {
 }
 
 async fn write_response(stream: &mut TcpStream, outcome: Response) -> io::Result<()> {
+    write_response_with_origin(stream, outcome, None).await
+}
+
+async fn write_response_with_origin(
+    stream: &mut TcpStream,
+    outcome: Response,
+    origin: Option<&str>,
+) -> io::Result<()> {
     let (status, body) = match outcome {
         Response::Ok => (
             "200 OK",
@@ -221,8 +284,11 @@ async fn write_response(stream: &mut TcpStream, outcome: Response) -> io::Result
             "<!doctype html><title>Not found</title>Not found.".to_owned(),
         ),
     };
+    let cors = origin
+        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"))
+        .unwrap_or_default();
     let reply = format!(
-        "HTTP/1.1 {status}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\n{cors}Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let written = async {
@@ -418,6 +484,44 @@ mod tests {
                 .await
                 .unwrap_err(),
             BindError::PortUnavailable
+        );
+    }
+    #[tokio::test]
+    async fn browser_callback_permits_only_the_configured_origin_and_preflight() {
+        let listener = listener().await;
+        let port = listener.port();
+        let probe = tokio::task::spawn_blocking(move || {
+            let preflight = exchange(
+                port,
+                "OPTIONS /callback HTTP/1.1\r\nOrigin: https://accounts.x.ai\r\nAccess-Control-Request-Method: GET\r\n\r\n",
+            );
+            let wrong = exchange(
+                port,
+                "GET /callback?code=granted HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n",
+            );
+            let success = exchange(
+                port,
+                "GET /callback?code=granted HTTP/1.1\r\nOrigin: https://accounts.x.ai\r\n\r\n",
+            );
+            (preflight, wrong, success)
+        });
+        let accepted = listener
+            .accept_with_origin(
+                &granted(),
+                &CancellationToken::new(),
+                Some("https://accounts.x.ai"),
+            )
+            .await
+            .unwrap();
+        accepted.respond(Response::Ok).await.unwrap();
+        let (preflight, wrong, success) = probe.await.unwrap();
+        assert!(preflight.starts_with("HTTP/1.1 204 No Content\r\n"));
+        assert!(preflight.contains("Access-Control-Allow-Private-Network: true\r\n"));
+        assert!(wrong.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(!wrong.contains("Access-Control-Allow-Origin"));
+        assert!(
+            success
+                .contains("Access-Control-Allow-Origin: https://accounts.x.ai\r\nVary: Origin\r\n")
         );
     }
 }

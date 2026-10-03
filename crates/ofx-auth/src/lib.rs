@@ -3,6 +3,8 @@ mod browser_callback;
 mod chatgpt_oauth;
 mod chatgpt_session;
 mod credentials;
+mod grok_oauth;
+mod grok_session;
 mod oauth;
 mod oauth_transport;
 mod provider_catalog;
@@ -22,3 +24,7 @@ pub use credentials::{
     MISSING_CHATGPT_CREDENTIAL_MESSAGE, is_valid_auth_mode, parse_auth_mode,
 };
 pub use provider_catalog::{label as provider_route_name, parse as parse_login_provider};
+
+pub use grok_oauth::{
+    GrokAccess, GrokEndpoints, GrokError, GrokLogoutResult, GrokOAuth, GrokRefreshMode, GrokSignIn,
+};
