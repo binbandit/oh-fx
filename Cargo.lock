@@ -921,7 +921,6 @@ name = "ofx-tools"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "getrandom 0.4.3",
  "memchr",
  "ofx-config",
  "ofx-contract",
@@ -979,6 +978,7 @@ dependencies = [
 name = "ofx-workspace"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "memchr",
  "ofx-config",
  "ofx-text",

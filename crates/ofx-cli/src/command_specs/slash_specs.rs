@@ -10,6 +10,7 @@ pub enum SlashKind {
     Status,
     Model,
     Permissions,
+    Undo,
     Skills,
     Copy,
     Compact,
@@ -206,6 +207,7 @@ mod tests {
                 "/status",
                 "/model",
                 "/permissions",
+                "/undo",
                 "/skills",
                 "/copy",
                 "/compact",
@@ -251,6 +253,10 @@ mod tests {
             spec(SlashKind::Compact).completion_description,
             "summarize context into a fresh window"
         );
+        assert_eq!(
+            spec(SlashKind::Undo).completion_description,
+            "undo the latest tracked file operation"
+        );
     }
 
     #[test]
@@ -271,6 +277,7 @@ mod tests {
                 ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/undo", "Session"),
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),

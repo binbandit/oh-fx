@@ -10,7 +10,7 @@ use ofx_contract::{
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
-use ofx_workspace::{TargetMode, resolve_file_mutation_target};
+use ofx_workspace::{ChangeTracker, TargetMode, resolve_file_mutation_target};
 
 use crate::file_mutation::{
     MAX_ENCODED_PATH_BYTES, MutationInput, PrepareFailure, PreparedMutation,
@@ -26,6 +26,7 @@ pub(crate) struct MutationRequest {
     pub(crate) presentation: CallPresentation,
     pub(crate) workspace_root: PathBuf,
     pub(crate) permission_mode: Option<LivePermissionMode>,
+    pub(crate) change_tracker: Option<ChangeTracker>,
 }
 
 impl MutationRequest {
@@ -68,6 +69,7 @@ impl MutationRequest {
             requested_path,
             full_access: false,
             permission_mode: self.permission_mode.clone(),
+            change_tracker: self.change_tracker.clone(),
             input,
             stage: Stage::Deferred(targets),
         })
@@ -168,6 +170,7 @@ struct Plan {
     requested_path: String,
     full_access: bool,
     permission_mode: Option<LivePermissionMode>,
+    change_tracker: Option<ChangeTracker>,
     input: MutationInput,
     stage: Stage,
 }
@@ -300,8 +303,14 @@ impl Plan {
             };
         }
         match prepared.apply(&context.cancellation) {
-            Ok(committed) => ToolOutput::success(committed.annotate(prepared.success_message()))
-                .with_file_change(prepared.change_stats()),
+            Ok(committed) => {
+                let output = ToolOutput::success(committed.annotate(prepared.success_message()))
+                    .with_file_change(prepared.change_stats());
+                if let Some(tracker) = &self.change_tracker {
+                    tracker.push_operation(prepared.into_tracked_operation(committed));
+                }
+                output
+            }
             Err(rejection) => rejection.output(),
         }
     }

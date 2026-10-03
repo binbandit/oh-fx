@@ -7,6 +7,8 @@ use tempfile::TempDir;
 
 use super::*;
 
+const STAGE_PREFIX: &str = ".fx-stage-";
+
 struct Fixture {
     _temp: TempDir,
     root: PathBuf,

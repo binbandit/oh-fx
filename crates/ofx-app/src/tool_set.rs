@@ -8,6 +8,7 @@ use ofx_tools::{
     EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool, WebFetch, WebFetchProgress,
     WriteFile,
 };
+use ofx_workspace::ChangeTracker;
 
 pub(crate) fn ask_tools(
     workspace_root: &Path,
@@ -16,13 +17,21 @@ pub(crate) fn ask_tools(
     permission_mode: &LivePermissionMode,
     skill: Arc<SkillTool>,
     web_fetch_progress: Option<WebFetchProgress>,
+    change_tracker: Option<&ChangeTracker>,
 ) -> Vec<Arc<dyn Tool>> {
+    let mut edit_file = EditFile::new(workspace_root).with_permission_mode(permission_mode.clone());
+    let mut write_file =
+        WriteFile::new(workspace_root).with_permission_mode(permission_mode.clone());
+    if let Some(tracker) = change_tracker {
+        edit_file = edit_file.with_change_tracker(tracker.clone());
+        write_file = write_file.with_change_tracker(tracker.clone());
+    }
     vec![
         Arc::new(ReadFile::new(workspace_root)),
         Arc::new(GlobFiles::new(workspace_root)),
         Arc::new(GrepFiles::new(workspace_root)),
-        Arc::new(EditFile::new(workspace_root).with_permission_mode(permission_mode.clone())),
-        Arc::new(WriteFile::new(workspace_root).with_permission_mode(permission_mode.clone())),
+        Arc::new(edit_file),
+        Arc::new(write_file),
         Arc::new(Shell::new(
             workspace_root,
             executions.clone(),

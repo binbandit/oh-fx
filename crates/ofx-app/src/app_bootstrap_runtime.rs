@@ -24,6 +24,7 @@ use ofx_gateway::{ChatCompletionsProvider, ChatCompletionsReviewTransport, Codex
 use ofx_http::ClientError;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_tools::WebFetchProgress;
+use ofx_workspace::ChangeTracker;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
@@ -133,6 +134,7 @@ pub struct AgentSetup {
     preferences: Option<ProfilePaths>,
     yolo_acknowledged: bool,
     approvals: Option<Approvals>,
+    change_tracker: Option<ChangeTracker>,
     refreshes: Option<Arc<DetachedRefreshes>>,
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     skills: Arc<HostSkills>,
@@ -274,6 +276,7 @@ impl Profile {
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         };
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
+        let change_tracker = interactive.then(ChangeTracker::default);
         Ok(AgentSetup {
             provider: route.provider,
             configured_model: route.configured_model,
@@ -287,6 +290,7 @@ impl Profile {
                 &permission_mode,
                 skills.tool(),
                 launch.web_fetch_progress,
+                change_tracker.as_ref(),
             ),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
@@ -302,6 +306,7 @@ impl Profile {
             yolo_acknowledged: self.settings.yolo_acknowledged(),
             workspace_root: self.workspace_root.clone(),
             approvals: interactive.then(Approvals::default),
+            change_tracker,
             refreshes,
             project,
             skills,
@@ -518,6 +523,10 @@ impl AgentSetup {
 
     pub(crate) fn approvals(&self) -> Option<&Approvals> {
         self.approvals.as_ref()
+    }
+
+    pub(crate) fn change_tracker(&self) -> Option<&ChangeTracker> {
+        self.change_tracker.as_ref()
     }
 
     pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {
