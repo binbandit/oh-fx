@@ -1643,6 +1643,7 @@ mod tests {
                     endpoints,
                     web_fetch_progress: None,
                     mode: None,
+                    permission_prompts: false,
                 },
                 &CancellationToken::new(),
             )
