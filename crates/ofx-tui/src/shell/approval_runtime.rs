@@ -1371,7 +1371,9 @@ mod tests {
             press(&mut test, first);
             test.advance(100);
             test.settle();
-            press(&mut test, rest);
+            if !rest.is_empty() {
+                press(&mut test, rest);
+            }
             test.advance(100);
             test.settle();
             assert!(!approved(&test), "{first:?} {rest:?}");
