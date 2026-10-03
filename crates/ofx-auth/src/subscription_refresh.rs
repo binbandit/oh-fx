@@ -1,4 +1,4 @@
-use ofx_config::parse_strict_json;
+use ofx_contract::parse_strict_json_value;
 use serde_json::Value;
 
 use crate::oauth;
@@ -20,7 +20,7 @@ pub(crate) enum ParseRefreshError {
 pub(crate) fn parse_refresh_token_response(
     bytes: &[u8],
 ) -> Result<RefreshTokenResponse, ParseRefreshError> {
-    let value = parse_strict_json(bytes).map_err(|_| ParseRefreshError::InvalidJson)?;
+    let value = parse_strict_json_value(bytes).map_err(|_| ParseRefreshError::InvalidJson)?;
     let Value::Object(object) = value else {
         return Err(ParseRefreshError::InvalidShape);
     };

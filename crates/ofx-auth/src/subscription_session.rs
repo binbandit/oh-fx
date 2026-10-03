@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ofx_config::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome, parse_strict_json};
+use ofx_config::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
+use ofx_contract::parse_strict_json_value;
 use ofx_contract::valid_credential_account_id;
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
@@ -223,7 +224,7 @@ fn durable_error<P: SessionPolicy>(error: DurableError) -> P::Error {
 
 pub(crate) fn parse(bytes: &[u8]) -> Result<Session, SessionError> {
     let invalid = SessionError::InvalidSession;
-    let Ok(Value::Object(object)) = parse_strict_json(bytes) else {
+    let Ok(Value::Object(object)) = parse_strict_json_value(bytes) else {
         return Err(invalid);
     };
     if object.get("version").and_then(Value::as_i64) != Some(SCHEMA_VERSION)

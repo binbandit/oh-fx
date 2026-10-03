@@ -1,4 +1,3 @@
-mod borrowed_json;
 mod chat_completions;
 mod chat_completions_protocol;
 mod client;
