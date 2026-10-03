@@ -22,26 +22,63 @@ pub(crate) enum Listing {
 pub(crate) fn run(format: OutputFormat) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
     let profile = Profile::from_environment();
-    let listing = if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        runtime.block_on(list_models(
-            &profile,
-            format,
-            crate::login_command::host_managed(),
-            &mut io::stdout().lock(),
-            &mut io::stderr(),
-        ))
-    } else {
-        let _ = writeln!(io::stderr(), "oh-fx: TransportUnavailable");
-        Listing::Failed
-    };
+    let listing = codex_selection(&profile, &mut io::stderr())
+        .err()
+        .unwrap_or_else(|| listed(&profile, format));
     match listing {
         Listing::Listed => ExitCode::SUCCESS,
         Listing::Failed => ExitCode::FAILURE,
         Listing::NotCodex => crate::not_available(&Command::Models(format)),
     }
+}
+
+fn listed(profile: &Profile, format: OutputFormat) -> Listing {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        let _ = writeln!(io::stderr(), "oh-fx: TransportUnavailable");
+        return Listing::Failed;
+    };
+    runtime.block_on(list_models(
+        profile,
+        format,
+        crate::login_command::host_managed(),
+        &mut io::stdout().lock(),
+        &mut io::stderr(),
+    ))
+}
+
+fn codex_selection(profile: &Profile, stderr: &mut dyn Write) -> Result<(), Listing> {
+    let mut fatal = |text: &str| {
+        let _ = writeln!(stderr, "oh-fx: {text}");
+        Listing::Failed
+    };
+    let Ok(workspace) = &profile.workspace else {
+        return Err(fatal("WorkspaceUnavailable"));
+    };
+    let settings = match &profile.paths {
+        Some(paths) => match Settings::load(paths, workspace) {
+            Ok(settings) => settings,
+            Err(error) => return Err(fatal(&error.to_string())),
+        },
+        None => Settings::default(),
+    };
+    if settings.profile_is_unusable() {
+        return Err(fatal("InvalidProfileConfiguration"));
+    }
+    match settings.codex_selected(&profile.lookup) {
+        Ok(true) => {}
+        Ok(false) => return Err(Listing::NotCodex),
+        Err(error) => return Err(fatal(error.code())),
+    }
+    if let Err(error) = settings.selected_codex_model(None, &profile.lookup) {
+        return Err(fatal(&error.to_string()));
+    }
+    for diagnostic in settings.diagnostics() {
+        let _ = writeln!(stderr, "oh-fx: {diagnostic}");
+    }
+    Ok(())
 }
 
 pub(crate) async fn list_models(
@@ -55,30 +92,6 @@ pub(crate) async fn list_models(
         let _ = writeln!(stderr, "oh-fx: {text}");
         Listing::Failed
     };
-    let Ok(workspace) = &profile.workspace else {
-        return fatal(stderr, "WorkspaceUnavailable");
-    };
-    let settings = match &profile.paths {
-        Some(paths) => match Settings::load(paths, workspace) {
-            Ok(settings) => settings,
-            Err(error) => return fatal(stderr, &error.to_string()),
-        },
-        None => Settings::default(),
-    };
-    if settings.profile_is_unusable() {
-        return fatal(stderr, "InvalidProfileConfiguration");
-    }
-    match settings.codex_selected(&profile.lookup) {
-        Ok(true) => {}
-        Ok(false) => return Listing::NotCodex,
-        Err(error) => return fatal(stderr, error.code()),
-    }
-    if let Err(error) = settings.selected_codex_model(None, &profile.lookup) {
-        return fatal(stderr, &error.to_string());
-    }
-    for diagnostic in settings.diagnostics() {
-        let _ = writeln!(stderr, "oh-fx: {diagnostic}");
-    }
     let listed = match catalog_credential(profile, host_managed).await {
         Ok(credential) => fetch(profile, credential.as_ref()).await,
         Err(failure) => Err(failure),

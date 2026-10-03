@@ -14,7 +14,10 @@ struct Listed {
 async fn list(profile: &Profile, format: OutputFormat, host_managed: bool) -> Listed {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let listing = list_models(profile, format, host_managed, &mut stdout, &mut stderr).await;
+    let listing = match codex_selection(profile, &mut stderr) {
+        Ok(()) => list_models(profile, format, host_managed, &mut stdout, &mut stderr).await,
+        Err(listing) => listing,
+    };
     Listed {
         listing,
         stdout: String::from_utf8(stdout).unwrap(),
@@ -157,8 +160,10 @@ async fn a_json_failure_that_cannot_be_written_is_reported_on_stderr() {
     let auth = FakeServer::start([]);
     let server = FakeServer::start([]);
     let mut stderr = Vec::new();
+    let profile = fixture.profile(&auth, &server);
+    assert_eq!(codex_selection(&profile, &mut stderr), Ok(()));
     let listing = list_models(
-        &fixture.profile(&auth, &server),
+        &profile,
         OutputFormat::Json,
         false,
         &mut Unwritable,
@@ -255,6 +260,38 @@ async fn settings_diagnostics_are_reported_before_the_listing() {
         listed.stderr,
         "oh-fx: config project: ignored_project_user_only_setting; key=provider\n"
     );
+}
+
+#[test]
+fn settings_are_answered_before_any_async_runtime_starts() {
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([]);
+    let selection = |profile: &Profile| {
+        let mut stderr = Vec::new();
+        let selected = codex_selection(profile, &mut stderr);
+        (selected, String::from_utf8(stderr).unwrap())
+    };
+    let fixture = signed_in_with_codex();
+    let mut profile = fixture.profile(&auth, &server);
+    assert_eq!(selection(&profile), (Ok(()), String::new()));
+    profile.lookup = |name| (name == "OH_FX_PROVIDER").then(|| "gateway".to_owned());
+    assert_eq!(selection(&profile), (Err(Listing::NotCodex), String::new()));
+    let broken = Fixture::new();
+    broken.write_settings("{\"provider\":");
+    assert_eq!(
+        selection(&broken.profile(&auth, &server)),
+        (
+            Err(Listing::Failed),
+            "oh-fx: InvalidProfileConfiguration\n".to_owned()
+        )
+    );
+    let unselected = Fixture::new();
+    unselected.write_settings(r#"{"provider":"codex"}"#);
+    assert_eq!(
+        selection(&unselected.profile(&auth, &server)).0,
+        Err(Listing::Failed)
+    );
+    assert!(server.requests().is_empty());
 }
 
 #[test]
