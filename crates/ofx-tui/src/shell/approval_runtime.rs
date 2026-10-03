@@ -646,6 +646,38 @@ mod tests {
     }
 
     #[test]
+    fn the_turn_clock_stands_still_with_its_marker_lit_while_an_approval_waits() {
+        let mut test = TestShell::start();
+        test.submit("read the notes");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.advance(3_000);
+        test.deliver(request(1, 4));
+        assert!(test.screen().contains("• Thinking (3s)"));
+        test.advance(1_500);
+        assert!(test.screen().contains("• Thinking (3s)"));
+        test.advance(30_000);
+        let screen = test.screen();
+        assert!(screen.contains("• Thinking (3s)"), "{screen}");
+        let now_ms = test.shell.now_ms();
+        assert_eq!(test.shell.next_deadline_ms(now_ms), None);
+        assert!(!test.shell.frame_due(now_ms + 10_000));
+        press(&mut test, b"1");
+        assert!(approved(&test));
+        assert!(test.screen().contains("• Thinking (3s)"));
+        test.advance(2_000);
+        assert!(test.screen().contains("• Thinking (5s)"));
+        test.advance(1_600);
+        test.deliver(UiEvent::TurnFinished {
+            turn_id: TurnId::new(1),
+            outcome: TurnOutcome::Completed,
+        });
+        let screen = test.screen();
+        assert!(screen.contains("\n  38s (↑"), "{screen}");
+    }
+
+    #[test]
     fn a_request_replaces_the_composer_until_a_number_decides() {
         let mut test = approving();
         let screen = test.screen();
@@ -920,10 +952,10 @@ mod tests {
             let mut test = command_prompt_with_theme_monitor();
             press(&mut test, first);
             test.advance(100);
-            test.step();
+            test.settle();
             press(&mut test, rest);
             test.advance(100);
-            test.step();
+            test.settle();
             assert!(!approved(&test), "{first:?} {rest:?}");
             assert!(test.shell.composer.is_empty(), "{first:?} {rest:?}");
         }

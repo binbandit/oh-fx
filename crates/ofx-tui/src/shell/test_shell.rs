@@ -176,6 +176,10 @@ impl TestShell {
         assert!(self.draining(|shell| shell.step().unwrap().is_none()));
     }
 
+    pub(super) fn settle(&mut self) {
+        self.draining(|shell| shell.flush_pending_input().unwrap());
+    }
+
     pub(super) fn submit(&mut self, text: &str) {
         self.shell.invalidate();
         self.shell
