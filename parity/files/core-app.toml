@@ -31,8 +31,8 @@ note = "Supported slash commands including saved allowlist management, the `/usa
 [[file]]
 upstream = "src/core/app/app_entry_runtime.zig"
 status = "partial"
-modules = ["crates/oh-fx/src/main.rs", "crates/ofx-app/src/app_lifecycle.rs"]
-note = "Native command and interactive entry exist; cooperative embedded-host execution is absent."
+modules = ["crates/oh-fx/src/main.rs", "crates/ofx-app/src/app_lifecycle.rs", "crates/ofx-app/src/app_upgrade_runtime/relaunch.rs"]
+note = "Native command and interactive entry exist, with the upgrade relaunch after a validated resume handoff and upstream's failure messages; cooperative embedded-host execution is absent."
 
 [[file]]
 upstream = "src/core/app/app_host_config_runtime.zig"
@@ -100,9 +100,9 @@ note = "V1 session save/resume, the session picker, generated session titles, /r
 
 [[file]]
 upstream = "src/core/app/app_upgrade_runtime.zig"
-status = "partial"
-modules = ["crates/ofx-app/src/app_upgrade_runtime.rs"]
-note = "Upgrade status and application exist; upstream process-relaunch handoff preserving full session/launch state is incomplete."
+status = "ported"
+modules = ["crates/ofx-app/src/app_upgrade_runtime.rs", "crates/ofx-app/src/app_upgrade_runtime/ready_upgrade.rs", "crates/ofx-tui/src/shell/upgrade_shortcut.rs"]
+note = "Ctrl+G's busy checks, readiness, resume-handoff validation and executable path run in upstream's order; the shell checks its own state first, and refusals for state oh-fx does not have, plus the fixed-buffer relaunch failure, are left out, as docs/differences/upgrade.md records."
 
 [[file]]
 upstream = "src/core/app/app_worker_runtime.zig"

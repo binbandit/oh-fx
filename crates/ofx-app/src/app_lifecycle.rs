@@ -33,7 +33,9 @@ use crate::app_session_runtime::{
     LaunchOverrides, Persistence, configured_preferences, open_store, session_route,
 };
 use crate::app_steering_runtime::WaitingSteering;
-use crate::app_upgrade_runtime::{self, SessionUpgrader};
+use crate::app_upgrade_runtime::{
+    self, InteractiveUpgrade, RelaunchFailure, SessionUpgrader, UpgradeShortcut,
+};
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
 use crate::herdr::{Herdr, HerdrObserver};
@@ -215,6 +217,7 @@ fn profile_failure_lines(error: &ProfileError) -> Vec<String> {
 enum SessionError {
     Terminal(TerminalError),
     AgentStopped(Option<String>),
+    Relaunch(RelaunchFailure),
 }
 
 impl fmt::Display for SessionError {
@@ -228,6 +231,7 @@ impl fmt::Display for SessionError {
                 write!(formatter, "oh-fx: the agent stopped unexpectedly: {report}")
             }
             Self::AgentStopped(None) => write!(formatter, "oh-fx: the agent stopped unexpectedly"),
+            Self::Relaunch(failure) => write!(formatter, "{failure}"),
         }
     }
 }
@@ -264,6 +268,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         sender.send(UiEvent::Notice { notice });
     }
     let lifecycle = Herdr::from_env().map(Arc::new);
+    let upgrade = InteractiveUpgrade::start(sender.clone());
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
@@ -308,17 +313,18 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         steering,
         runtime,
         lifecycle,
+        upgrade.shortcut(),
     );
-    let upgrader = app_upgrade_runtime::start_session_upgrader(sender.clone());
     host(
         options,
         sender,
         receiver,
         refreshes.as_deref(),
         Some(&installations),
-        upgrader.as_ref(),
+        upgrade.upgrader(),
         agent,
-    )
+    )?;
+    upgrade.relaunch().map_err(SessionError::Relaunch)
 }
 
 fn agent_work(
@@ -328,6 +334,7 @@ fn agent_work(
     steering: Arc<WorkerRuntime>,
     runtime: Runtime,
     herdr: Option<Arc<Herdr>>,
+    upgrade: UpgradeShortcut,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
     let refreshes = setup.refreshes();
     let mcp = setup.mcp().cloned();
@@ -341,7 +348,8 @@ fn agent_work(
             steering,
         )
         .with_herdr(herdr)
-        .requesting_ultrafast(ultrafast_requested);
+        .requesting_ultrafast(ultrafast_requested)
+        .with_upgrade(upgrade);
         runtime.block_on(async {
             let discovery = mcp.clone().map(|mcp| {
                 tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))

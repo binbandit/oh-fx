@@ -27,6 +27,7 @@ mod statusline_menu_runtime;
 mod steering_runtime;
 #[cfg(test)]
 mod test_shell;
+mod upgrade_shortcut;
 
 use std::collections::VecDeque;
 use std::mem;

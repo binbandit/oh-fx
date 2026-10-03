@@ -23,10 +23,10 @@ pub use launch_modifiers::LaunchModifiers;
 pub(crate) use model_overrides::{ModelOverride, ModelOverrides};
 
 use launch_modifiers::parse_launch_modifiers;
-pub use resume::RequestedResume;
 use resume::{
     InvalidResumeArgs, RESUME_ID_ALIAS_PREFIX, resume_alias_target, resume_subcommand_target,
 };
+pub use resume::{RequestedResume, UPGRADE_RELAUNCH_ARG};
 pub use workflow_args::WorkflowArgs;
 use workflow_args::parse_workflow_args;
 

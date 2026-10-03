@@ -446,6 +446,7 @@ pub enum UiCommand {
     },
     TogglePermissionMode,
     FullAccessWarningShown,
+    ApplyReadyUpgrade,
     CancelCompaction,
     OpenSessions {
         scope: SessionScope,
