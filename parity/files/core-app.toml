@@ -26,7 +26,7 @@ note = "Native event callbacks and authoritative tool rows exist; provisional li
 upstream = "src/core/app/app_commands.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_commands.rs"]
-note = "Supported slash commands including saved allowlist management, the `/usage` answer for hosts without profile usage, the `/workspace` answer for runtimes without workspace access, the `/alias` availability notice, `/settings` with its status and startup-scrollback setting, and `/statusline` with its saved segment toggles are routed; the usage dashboard, additional workspace directories, the MCP and settings menus and the remaining upstream command handlers are absent."
+note = "Supported slash commands including saved allowlist management, the `/usage` answer for hosts without profile usage, the `/workspace` answer for runtimes without workspace access, the `/alias` availability notice, `/settings` with its status and startup-scrollback setting, and `/statusline` with its saved segment toggles are routed; the usage dashboard, additional workspace directories, the MCP and settings menus and the remaining upstream command handlers are absent. #1112's /ultrafast and #1137's /shell reload are not yet routed."
 
 [[file]]
 upstream = "src/core/app/app_entry_runtime.zig"

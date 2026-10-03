@@ -20,16 +20,6 @@ modules = ["crates/ofx-vt/src/engine.rs"]
 note = "The grid's text model is ported for replay: parsing, cursor movement, wrapping, erasing, insertion and deletion, scroll regions, the alternate screen, synchronized output, resizing, and snapshots. Cell styles, hyperlinks, terminal replies, checkpoints, and diffs are not."
 
 [[file]]
-upstream = "src/core/terminal/host.zig"
-status = "todo"
-modules = []
-
-[[file]]
-upstream = "src/core/terminal/host_policy.zig"
-status = "todo"
-modules = []
-
-[[file]]
 upstream = "src/core/terminal/identity.zig"
 status = "todo"
 modules = []
@@ -50,11 +40,6 @@ status = "todo"
 modules = []
 
 [[file]]
-upstream = "src/core/terminal/protocol.zig"
-status = "todo"
-modules = []
-
-[[file]]
 upstream = "src/core/terminal/recovery.zig"
 status = "todo"
 modules = []
@@ -63,15 +48,16 @@ modules = []
 upstream = "src/core/terminal/shell_resolver.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/shell_resolver.rs"]
-note = "Captured invocation, login-shell fallback and clean/user environment selection exist; interactive resolve and bootstrap/source command construction are missing."
+note = "Captured invocation, login-shell fallback and clean/user environment selection exist; interactive resolve and bootstrap/source command construction are missing. #1137's configured login shell lookup and startup snapshot routing are not yet synced."
+
+[[file]]
+upstream = "src/core/terminal/shell_snapshot.zig"
+status = "todo"
+modules = []
+note = "#1137: user-profile commands capture the login shell's startup state once per process and restore it for later commands, refreshing when a watched startup file changes; not yet ported."
 
 [[file]]
 upstream = "src/core/terminal/store.zig"
-status = "todo"
-modules = []
-
-[[file]]
-upstream = "src/core/terminal/tmux_session.zig"
 status = "todo"
 modules = []
 

@@ -35,6 +35,12 @@ modules = ["crates/ofx-gateway/src/gateway_error_format.rs"]
 note = "HTTP diagnostic and error formatting and secret masking exist; formatSchemaDiagnostic serves the Vercel failure diagnostics (OH-8), and formatMarkedLine has no caller outside upstream's tests."
 
 [[file]]
+upstream = "src/core/shared/history_range.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator/turn_ledger.rs", "crates/ofx-session/src/session_log/conversation_progress.rs"]
+note = "Moved unchanged out of session.zig by #1108. The agent's turn ledger counts saved turns and maps cuts onto them, and the session log applies a saved cut on resume; slicing a resumed history's tool steps and steering at a cut comes with saved compaction records (OH-18)."
+
+[[file]]
 upstream = "src/core/shared/http_pool.zig"
 status = "partial"
 modules = ["crates/ofx-http/src/client.rs"]
