@@ -7,7 +7,7 @@ modules = []
 upstream = "src/core/output/activity_status.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/output/activity_status.rs"]
-note = "Turn clocks, blinking and token suffixes exist; upstream compaction-origin clock projections and completed-turn/progress label builders are missing."
+note = "Turn clocks that stand still while an approval or question waits, blinking and token suffixes exist; upstream compaction-origin clock projections and completed-turn/progress label builders are missing."
 
 [[file]]
 upstream = "src/core/output/compaction_activity.zig"
