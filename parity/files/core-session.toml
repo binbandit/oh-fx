@@ -20,8 +20,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/session/history_snapshot.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "Resume replays events.jsonl itself: a 7.5 MB, 3,000-turn log replays in 15 ms, so the binary history-cache.bin mirror would add a codec for every event type and a writer on every open for little gain, as architecture.md records. Upstream rebuilds the disposable file on its next writable open of a session that lacks it."
 
 [[file]]
 upstream = "src/core/session/js_host_prompt_history.zig"
@@ -83,8 +84,9 @@ note = "Environment-flag parsing exists; v1/v2 store routing, recovery, doctor a
 
 [[file]]
 upstream = "src/core/session/session_authority.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "Classifies the schema-v3 layout of older fx releases by its authority marker; not needed for the reason in session_migration's row."
 
 [[file]]
 upstream = "src/core/session/session_catalog.zig"
@@ -93,8 +95,8 @@ modules = []
 
 [[file]]
 upstream = "src/core/session/session_catalog_cache.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-session/src/session_catalog_cache.rs", "crates/ofx-session/src/session_catalog_cache/catalog_codec.rs", "crates/ofx-session/src/session_catalog_cache/catalog_scan.rs", "crates/ofx-session/src/session_catalog_cache/fingerprint.rs"]
 
 [[file]]
 upstream = "src/core/session/session_child_store.zig"
@@ -128,7 +130,7 @@ note = "Classification of the layout upstream writes today exists; schema-v3 and
 upstream = "src/core/session/session_display_metadata.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_display_metadata.rs"]
-note = "Display-title derivation exists; bounded display sidecar encoding/loading and image preview fallback are missing."
+note = "Display-title derivation exists; the display.json sidecar belongs to the schema-v3 layout and is not needed for the reason in session_migration's row, and the first-prompt preview and image-only fallback remain (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_event.zig"
@@ -162,8 +164,9 @@ note = "Imports the session layouts older fx releases wrote: v1 and v2 session.j
 
 [[file]]
 upstream = "src/core/session/session_projection.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "Reads the manifest and checkpoint projections of the schema-v3 layout older fx releases wrote; not needed for the reason in session_migration's row."
 
 [[file]]
 upstream = "src/core/session/session_relationship_index_codec.zig"
@@ -180,7 +183,7 @@ note = "Buffered line reading exists; exact-commit, recovery checkpoint and chil
 upstream = "src/core/session/session_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, and doctor (OH-41), the projection caches (NEW-F of the OH-48 audit) and v2 routing (OH-27) remain."
+note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, the .resume-catalog index exists, history-cache.bin is left out as architecture.md records, and doctor (OH-41) and v2 routing (OH-27) remain."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"
