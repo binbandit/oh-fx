@@ -1,8 +1,10 @@
 mod review_request;
 
 use std::fmt;
+use std::iter;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalScope, BoxFuture, CommandRequest, FileMutation,
@@ -50,7 +52,8 @@ const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
 pub struct PermissionPolicy {
     mode: LivePermissionMode,
     workspace_root: PathBuf,
-    session_grants: SessionGrants,
+    session_grants: Arc<SessionGrants>,
+    inherited_grants: Option<Arc<SessionGrants>>,
     reviewer: Option<Reviewer>,
 }
 
@@ -61,6 +64,7 @@ impl fmt::Debug for PermissionPolicy {
             .field("mode", &self.mode)
             .field("workspace_root", &self.workspace_root)
             .field("session_grants", &self.session_grants)
+            .field("inherited_grants", &self.inherited_grants)
             .field("reviewer", &self.reviewer.is_some())
             .finish()
     }
@@ -71,7 +75,8 @@ impl PermissionPolicy {
         Self {
             mode: mode.into(),
             workspace_root: workspace_root.into(),
-            session_grants: SessionGrants::default(),
+            session_grants: Arc::default(),
+            inherited_grants: None,
             reviewer: None,
         }
     }
@@ -93,6 +98,12 @@ impl PermissionPolicy {
         self.reviewer = Some(reviewer);
         self
     }
+
+    #[must_use]
+    pub fn inheriting_grants_of(mut self, parent: &Self) -> Self {
+        self.inherited_grants = Some(Arc::clone(&parent.session_grants));
+        self
+    }
 }
 
 impl PermissionGate for PermissionPolicy {
@@ -109,10 +120,7 @@ impl PermissionGate for PermissionPolicy {
                 Admission::Allowed(PathAccess::WorkspaceOnly)
             }
             Some(target) => TreePermission::of_tool(&call.name)
-                .and_then(|permission| {
-                    self.session_grants
-                        .granted_root(&self.workspace_root, permission, &target)
-                })
+                .and_then(|permission| self.granted_root(permission, &target))
                 .map_or(Admission::ApprovalRequired, |root| {
                     Admission::Allowed(PathAccess::Within(root))
                 }),
@@ -121,7 +129,10 @@ impl PermissionGate for PermissionPolicy {
     }
 
     fn admit_command(&self, request: &CommandRequest) -> Admission {
-        if self.session_grants.allow_command(request) {
+        if self
+            .grant_sets()
+            .any(|grants| grants.allow_command(request))
+        {
             return Admission::Allowed(PathAccess::WorkspaceOrExternal);
         }
         command_admission(self.mode.get(), &self.workspace_root, request)
@@ -168,8 +179,7 @@ impl PermissionGate for PermissionPolicy {
         };
         let reversible = inside || mutation.state == FileMutationState::Creates;
         if self
-            .session_grants
-            .granted_root(&self.workspace_root, TreePermission::Edit, &mutation.target)
+            .granted_root(TreePermission::Edit, &mutation.target)
             .is_some()
         {
             return Admission::Allowed(access);
@@ -217,6 +227,16 @@ impl PermissionGate for PermissionPolicy {
 }
 
 impl PermissionPolicy {
+    fn grant_sets(&self) -> impl Iterator<Item = &SessionGrants> {
+        iter::once(&*self.session_grants).chain(self.inherited_grants.as_deref())
+    }
+
+    fn granted_root(&self, permission: TreePermission, target: &Path) -> Option<PathBuf> {
+        self.grant_sets()
+            .filter_map(|grants| grants.granted_root(&self.workspace_root, permission, target))
+            .min_by_key(|root| root.as_os_str().len())
+    }
+
     fn call_approval_scope(&self, call: &ToolCall) -> ApprovalScope {
         let target = external_path_target(&self.workspace_root, call);
         let tree = target
@@ -958,6 +978,48 @@ mod tests {
                 "{different:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_policy_inheriting_grants_admits_what_either_remembers_and_keeps_its_own() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        for tree in ["parent", "child"] {
+            fs::create_dir(root.join(tree)).unwrap();
+            fs::write(root.join(tree).join("a.txt"), "text\n").unwrap();
+        }
+        let parent = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        let child =
+            PermissionPolicy::new(PermissionMode::Ask, &workspace).inheriting_grants_of(&parent);
+        let command = CommandRequest::Run {
+            command: "cargo test".to_owned(),
+            cwd: workspace.clone(),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+        };
+        approve_always(&parent, GatedAction::Call(&read("../parent/a.txt")));
+        approve_always(&parent, GatedAction::Command(&command));
+        approve_always(&child, GatedAction::Call(&read("../child/a.txt")));
+        let within = |tree: &str| Admission::Allowed(PathAccess::Within(root.join(tree)));
+        assert_eq!(child.admit(&read("../parent/a.txt")), within("parent"));
+        assert_eq!(child.admit(&read("../child/a.txt")), within("child"));
+        assert_eq!(
+            child.admit_command(&command),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
+        assert_eq!(
+            parent.admit(&read("../child/a.txt")),
+            Admission::ApprovalRequired
+        );
+        assert_eq!(child.session_grant_count(), 1);
+        parent.forget_approvals();
+        assert_eq!(
+            child.admit(&read("../parent/a.txt")),
+            Admission::ApprovalRequired
+        );
     }
 
     #[test]
