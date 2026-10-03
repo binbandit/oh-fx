@@ -46,11 +46,11 @@ macro_rules! fixed_field {
 }
 
 fixed_field!(Null, Value::Null, Json::Null);
-fixed_field!(NoItems, Value::Array(Vec::new()), Json::List(items) if items.is_empty());
+fixed_field!(NoItems, Value::Array(Vec::new()), Json::Array(items) if items.is_empty());
 fixed_field!(False, Value::Bool(false), Json::Bool(false));
-fixed_field!(ValidIdentity, Value::from("valid"), Json::Text(text) if text == "valid");
-fixed_field!(LocalProvenance, Value::from("fx_local"), Json::Text(text) if text == "fx_local");
-fixed_field!(TurnOrigin, Value::from("turn"), Json::Text(text) if text == "turn");
+fixed_field!(ValidIdentity, Value::from("valid"), Json::String(text) if text == "valid");
+fixed_field!(LocalProvenance, Value::from("fx_local"), Json::String(text) if text == "fx_local");
+fixed_field!(TurnOrigin, Value::from("turn"), Json::String(text) if text == "turn");
 
 #[cfg(test)]
 mod tests {

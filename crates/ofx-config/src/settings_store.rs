@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ofx_contract::{PermissionAction, PermissionMode};
+use ofx_contract::{PermissionAction, PermissionMode, parse_strict_json_value};
 use serde_json::{Map, Value};
 
 use crate::config_runtime::{
@@ -13,7 +13,6 @@ use crate::configured_provider::is_valid_model_id;
 use crate::io::{AdvisoryLock, DurableError, PrivateDir};
 use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
-use crate::strict_json;
 
 pub(crate) const MAX_PROVIDER_ORDER_ENTRIES: usize = 8;
 const MAX_PROVIDER_SLUG_BYTES: usize = 64;
@@ -364,7 +363,7 @@ fn lock(directory: &PrivateDir) -> Result<AdvisoryLock, SettingsWriteError> {
 
 fn parse_root(bytes: &[u8]) -> Option<Map<String, Value>> {
     let bytes = bytes.strip_prefix(BYTE_ORDER_MARK).unwrap_or(bytes);
-    match strict_json::parse(bytes) {
+    match parse_strict_json_value(bytes) {
         Ok(Value::Object(root)) => Some(root),
         _ => None,
     }
@@ -729,7 +728,7 @@ fn clear_workspace_fast_mode_bindings(root: &mut Map<String, Value>) {
 }
 
 fn validate_candidate(candidate: &str, patch: Patch<'_>) -> Result<(), SettingsWriteError> {
-    let Ok(Value::Object(root)) = strict_json::parse(candidate.as_bytes()) else {
+    let Ok(Value::Object(root)) = parse_strict_json_value(candidate.as_bytes()) else {
         return Err(SettingsWriteError::InvalidFormat);
     };
     if let Patch::Permission {

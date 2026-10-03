@@ -30,7 +30,7 @@ fn event_from(value: Json<'_>) -> Option<ConversationEvent> {
     if tagged.len() != 1 {
         return None;
     }
-    let (tag, body) = tagged.into_iter().next()?;
+    let (tag, body) = tagged.into_entries().into_iter().next()?;
     let mut fields = Fields::new(body)?;
     let event = match tag.as_ref() {
         "user" => ConversationEvent::User(user(&mut fields)?),
@@ -143,7 +143,7 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
 }
 
 fn files(value: Json<'_>) -> Option<Vec<FileEvidence>> {
-    let Json::List(items) = value else {
+    let Json::Array(items) = value else {
         return None;
     };
     items.into_iter().map(file_evidence).collect()

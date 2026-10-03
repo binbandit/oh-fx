@@ -218,11 +218,11 @@ const MAX_JSON_BYTES: usize = 1024 * 1024;
 #[cfg(test)]
 impl ProviderRegistry {
     pub(crate) fn parse_json(json: &[u8]) -> Result<Self, ConfiguredProviderError> {
-        use crate::strict_json::{self, StrictJsonError};
+        use ofx_contract::{StrictJsonError, parse_strict_json_value};
         if json.len() > MAX_JSON_BYTES {
             return Err(ConfiguredProviderError::LimitExceeded);
         }
-        let value = strict_json::parse(json).map_err(|error| match error {
+        let value = parse_strict_json_value(json).map_err(|error| match error {
             StrictJsonError::DuplicateField => ConfiguredProviderError::DuplicateField,
             StrictJsonError::Syntax => ConfiguredProviderError::InvalidJson,
         })?;
