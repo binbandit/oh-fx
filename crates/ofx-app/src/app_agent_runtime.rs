@@ -3393,6 +3393,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_switched_to_codex_is_named_with_the_codex_title_model() {
+        let codex = FakeServer::start([
+            codex_text("Fix the renderer"),
+            codex_text("Fix the renderer"),
+        ]);
+        let catalog = codex_catalog(false, 4);
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([]);
+        let mut settings = switching_settings("local", &local, &other);
+        settings["session_titles"] = json!(true);
+        let home = codex_home();
+        let setup = agent_setup_with(&home, &settings, codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::saved(home, setup);
+        harness.send(select_provider("codex"));
+        harness.until(provider_notice).await;
+        chat(&mut harness, &["please fix the renderer"]).await;
+        within(until_titled(&mut harness, "Fix the renderer")).await;
+        assert_eq!(title_requests(&codex).len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_switch_moves_the_conversation_and_keeps_fast_mode_and_effort() {
         let codex = FakeServer::start([codex_text("one"), codex_text("three")]);
         let catalog = codex_catalog(true, 4);
