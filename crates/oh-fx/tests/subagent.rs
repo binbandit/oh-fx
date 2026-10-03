@@ -386,6 +386,15 @@ fn a_childs_command_review_weighs_the_users_request_not_the_parents_task() {
     assert_eq!(conversation(&requests[1]), [turn("user", task)]);
 }
 
+fn saved_child_id(home: &Home) -> String {
+    session_dirs(home)
+        .iter()
+        .map(|dir| manifest(dir))
+        .find(|saved| saved["subagent_child"] == true)
+        .and_then(|saved| saved["id"].as_str().map(str::to_owned))
+        .expect("the child's session")
+}
+
 #[test]
 fn the_shell_reviews_a_childs_edit_with_its_diff() {
     let server = FakeServer::start([
@@ -411,14 +420,19 @@ fn the_shell_reviews_a_childs_edit_with_its_diff() {
     session.send(b"delegate the fix\r");
     let screen = session
         .wait_for(WAIT, |screen| {
-            screen.contains("Subagent 1 needs permission") || screen.contains("Permission needed")
+            screen.contains(" needs permission") || screen.contains("Permission needed")
         })
         .unwrap_or_else(|screen| panic!("no approval:\n{screen}"));
-    if !screen.contains("Subagent 1 needs permission") {
+    if !screen.contains(" needs permission") {
         thread::sleep(APPROVAL_ARMING);
         session.send(b"1");
     }
-    let screen = wait(&session, "Subagent 1 needs permission");
+    let screen = wait(&session, " needs permission");
+    let child_id = saved_child_id(&home);
+    assert!(
+        screen.contains(&format!("Subagent {child_id} needs permission")),
+        "{screen}"
+    );
     for line in [
         "      2 - beta",
         "      2 + BETA",
@@ -460,12 +474,7 @@ fn the_shell_asks_a_childs_approval_on_the_parents_prompt() {
     let mut session = home.shell();
     session.send(b"delegate the reading\r");
     let screen = wait(&session, " needs permission");
-    let child_id = session_dirs(&home)
-        .iter()
-        .map(|dir| manifest(dir))
-        .find(|saved| saved["subagent_child"] == true)
-        .and_then(|saved| saved["id"].as_str().map(str::to_owned))
-        .expect("the child's session");
+    let child_id = saved_child_id(&home);
     assert!(
         screen.contains(&format!("Subagent {child_id} needs permission")),
         "{screen}"
