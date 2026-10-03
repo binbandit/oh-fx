@@ -1019,3 +1019,91 @@ fn a_batch_cut_anywhere_by_a_crash_is_removed_as_a_whole() {
         }
     }
 }
+
+fn replied_turn(user: &str) -> HistoryTurn<'_> {
+    HistoryTurn {
+        user,
+        steps: Vec::new(),
+        steering: Vec::new(),
+        end: TurnEnd::Replied {
+            text: "ok",
+            provider_replay: None,
+        },
+    }
+}
+
+fn saved_language(fixture: &Fixture, id: &str) -> String {
+    let manifest = fs::read(fixture.dir(id).join(MANIFEST_FILE)).unwrap();
+    decode_session_metadata(&manifest)
+        .unwrap()
+        .conversation_language
+}
+
+#[test]
+fn a_committed_turn_saves_the_language_of_the_latest_prompt() {
+    let fixture = Fixture::new();
+    let provider = SavedProvider::new(ProviderId::Gateway, None).unwrap();
+    let mut session = fixture.start("language");
+    session.observe_prompt("12345 !!!");
+    session
+        .record_turn(&replied_turn("12345 !!!"), &provider)
+        .unwrap();
+    assert_eq!(saved_language(&fixture, "language"), "und");
+    session.observe_prompt("Проверь файл, please");
+    let before = fs::read(fixture.dir("language").join(MANIFEST_FILE)).unwrap();
+    session.observe_prompt("12345 !!!");
+    assert_eq!(
+        fs::read(fixture.dir("language").join(MANIFEST_FILE)).unwrap(),
+        before
+    );
+    session
+        .record_turn(&replied_turn("12345 !!!"), &provider)
+        .unwrap();
+    assert_eq!(saved_language(&fixture, "language"), "und-Cyrl");
+    assert_eq!(session.metadata().conversation_language, "und-Cyrl");
+    let saved = fs::read(fixture.dir("language").join(MANIFEST_FILE)).unwrap();
+    session.observe_prompt("ещё раз");
+    session
+        .record_turn(&replied_turn("ещё раз"), &provider)
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.dir("language").join(MANIFEST_FILE)).unwrap(),
+        saved
+    );
+    drop(session);
+    let mut resumed = fixture.resume("language").unwrap();
+    resumed.observe_prompt("42");
+    resumed.record_turn(&replied_turn("42"), &provider).unwrap();
+    assert_eq!(saved_language(&fixture, "language"), "und-Cyrl");
+    resumed.observe_prompt("ランディングページを開いて");
+    resumed
+        .record_turn(&replied_turn("ランディングページを開いて"), &provider)
+        .unwrap();
+    assert_eq!(saved_language(&fixture, "language"), "ja");
+}
+
+#[test]
+fn a_turn_left_unsaved_keeps_its_prompt_language_for_the_next_commit() {
+    let fixture = Fixture::new();
+    let provider = SavedProvider::new(ProviderId::Gateway, None).unwrap();
+    let mut session = fixture.start("unsaved");
+    session.observe_prompt("افتح الصفحة الرئيسية");
+    session
+        .record_turn(
+            &HistoryTurn {
+                user: "افتح الصفحة الرئيسية",
+                steps: Vec::new(),
+                steering: Vec::new(),
+                end: TurnEnd::Stopped {
+                    reason: TurnStop::Failed,
+                    partial: "",
+                },
+            },
+            &provider,
+        )
+        .unwrap();
+    assert_eq!(saved_language(&fixture, "unsaved"), "und");
+    session.observe_prompt("?");
+    session.record_turn(&replied_turn("?"), &provider).unwrap();
+    assert_eq!(saved_language(&fixture, "unsaved"), "und-Arab");
+}

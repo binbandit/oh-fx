@@ -44,6 +44,10 @@ impl SavedAsk {
         })
     }
 
+    pub(crate) fn observe_prompt(&self, prompt: &str) {
+        self.live.observe_prompt(prompt);
+    }
+
     pub(crate) fn title_generation(
         &self,
         setup: &AgentSetup,

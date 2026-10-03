@@ -472,6 +472,9 @@ async fn prepare_agent(
         (None, Some(store)) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
         (None, None) => None,
     };
+    if let Some(saved) = &saved {
+        saved.observe_prompt(request.prompt);
+    }
     let title = saved
         .as_ref()
         .and_then(|saved| saved.title_generation(&setup, request.prompt, &agent));

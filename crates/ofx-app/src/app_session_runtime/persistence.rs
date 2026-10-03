@@ -120,6 +120,12 @@ impl Persistence {
         self.remember(live.id())
     }
 
+    pub(crate) fn observe_prompt(&self, prompt: &str) {
+        if let Some(live) = &self.live {
+            live.observe_prompt(prompt);
+        }
+    }
+
     pub(crate) fn select_model(&mut self, model: &str, fast_mode: bool) -> Option<Notice> {
         model.clone_into(&mut self.preferences.model);
         self.preferences.fast_mode = fast_mode;
