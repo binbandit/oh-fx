@@ -355,7 +355,7 @@ note = "Native mode, layout and lifecycle exist; upstream alternate-screen mouse
 upstream = "src/ui/terminal/theme_detection.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/terminal/theme_detection.rs"]
-note = "Light/dark override, background probe and COLORFGBG fallback exist; upstream named user theme selection is absent. #1127 ends the startup background probe at a device-attributes fence; not yet synced."
+note = "Light/dark pins from OH_FX_THEME or the theme setting, background probe and COLORFGBG fallback exist; upstream named user theme selection is absent. #1127 ends the startup background probe at a device-attributes fence; not yet synced."
 
 [[file]]
 upstream = "src/ui/terminal/theme_monitor.zig"
