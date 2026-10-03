@@ -283,6 +283,7 @@ impl Profile {
             launch.command_timeout,
             &permission_mode,
             skills.tool(),
+            skills.search(),
             ToolHooks {
                 questions: questions
                     .clone()

@@ -2730,6 +2730,235 @@ mod tests {
         .unwrap();
     }
 
+    #[tokio::test]
+    async fn capability_search_is_offered_for_zero_one_and_many_skills() {
+        for count in [0, 1, 40] {
+            let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+            let mut harness = Harness::start(&server).await;
+            for index in 0..count {
+                let name = format!("review-{index}");
+                write_skill(&harness.home, &format!("skills/{name}"), &name);
+            }
+            harness.submit("find a capability");
+            harness.until(finished(TurnOutcome::Completed)).await;
+            let body = server.requests()[0].json();
+            let offered: Vec<_> = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|tool| tool["function"]["name"] == "capability_search")
+                .collect();
+            assert_eq!(offered.len(), 1, "skill count: {count}");
+            let names: Vec<_> = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().unwrap())
+                .collect();
+            let search_index = names
+                .iter()
+                .position(|name| *name == "capability_search")
+                .unwrap();
+            assert_eq!(names[search_index + 1], "skill");
+
+            assert_eq!(
+                offered[0]["function"]["parameters"],
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 4096,
+                            "description": "Natural-language capability needed for the current task."},
+                        "server": {"type": "string", "minLength": 1,
+                            "description": "Optional exact configured MCP server alias."}
+                    },
+                    "additionalProperties": false,
+                    "required": ["query"]
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn capability_search_returns_a_location_consumed_by_the_existing_skill_tool() {
+        let home = tempfile::tempdir().unwrap();
+        write_skill(&home, "skills/review", "review");
+        let location = fs::canonicalize(home.path().join("workspace/skills/review"))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let arguments = json!({"location": location}).to_string();
+        let server = FakeServer::start([
+            Reply::sse(&chat_tool_call_events(
+                "search-1",
+                "capability_search",
+                r#"{"query":"review"}"#,
+            )),
+            Reply::sse(&chat_tool_call_events("skill-1", "skill", &arguments)),
+            Reply::sse(&chat_text_events(&["done"])),
+        ]);
+        let setup = agent_setup(&home, &server).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.submit("find and load review");
+        timeout(
+            Duration::from_secs(10),
+            harness.until(|event| matches!(event, UiEvent::TurnFinished { .. })),
+        )
+        .await
+        .unwrap();
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        let search_body = requests[1].json();
+        let search_output = search_body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["tool_call_id"] == "search-1")
+            .unwrap();
+        let result: Value =
+            serde_json::from_str(search_output["content"].as_str().unwrap()).unwrap();
+        assert_eq!(result["skills"][0]["location"], location);
+        assert_eq!(result["counts"], json!({"skills": 1, "mcp_tools": 0}));
+        assert_eq!(result["mcp_state"], "unavailable");
+        assert!(result.get("state").is_none());
+        let loaded_body = requests[2].json();
+        let loaded = loaded_body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["tool_call_id"] == "skill-1")
+            .unwrap();
+        assert!(loaded["content"].as_str().unwrap().contains("review steps"));
+        let requested: Value = serde_json::from_str(&arguments).unwrap();
+        assert_eq!(requested["location"], result["skills"][0]["location"]);
+    }
+
+    #[tokio::test]
+    async fn capability_search_server_scope_does_not_fall_back_to_skills() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_tool_call_events(
+                "search-1",
+                "capability_search",
+                r#"{"query":"review","server":"absent"}"#,
+            )),
+            Reply::sse(&chat_text_events(&["done"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, "skills/review", "review");
+        harness.submit("search the absent server");
+        timeout(
+            Duration::from_secs(10),
+            harness.until(|event| matches!(event, UiEvent::TurnFinished { .. })),
+        )
+        .await
+        .unwrap();
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let body = requests[1].json();
+        let output = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["tool_call_id"] == "search-1")
+            .unwrap();
+        let result: Value = serde_json::from_str(output["content"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "skills": [], "mcp_tools": [],
+                "counts": {"skills": 0, "mcp_tools": 0},
+                "total_matches": {"skills": 0, "mcp_tools": 0},
+                "mcp_state": "unavailable"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_search_rediscovers_skills_between_steps_of_one_turn() {
+        let gate = Gate::default();
+        let server = FakeServer::start([
+            Reply::sse(&chat_tool_call_events(
+                "search-1",
+                "capability_search",
+                r#"{"query":"review"}"#,
+            )),
+            Reply::sse(&chat_tool_call_events(
+                "search-2",
+                "capability_search",
+                r#"{"query":"late"}"#,
+            ))
+            .after(&gate),
+            Reply::sse(&chat_text_events(&["done"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, "skills/review", "review");
+        harness.submit("search twice");
+        timeout(
+            Duration::from_secs(10),
+            harness.until(|event| matches!(event, UiEvent::ToolFinished { .. })),
+        )
+        .await
+        .unwrap();
+        write_skill(&harness.home, "skills/late", "late");
+        gate.open();
+        timeout(
+            Duration::from_secs(10),
+            harness.until(|event| matches!(event, UiEvent::TurnFinished { .. })),
+        )
+        .await
+        .unwrap();
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        let body = requests[2].json();
+        let output = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["tool_call_id"] == "search-2")
+            .unwrap();
+        let result: Value = serde_json::from_str(output["content"].as_str().unwrap()).unwrap();
+        assert_eq!(result["skills"][0]["name"], "late");
+        assert_eq!(result["counts"]["skills"], 1);
+        assert!(!system_text(&requests[0].json()).contains("- late:"));
+    }
+
+    #[tokio::test]
+    async fn capability_search_turn_obeys_existing_outer_cancellation() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_tool_call_events(
+                "search-1",
+                "capability_search",
+                r#"{"query":"review"}"#,
+            )),
+            Reply::held_sse(&chat_text_events(&["partial"])[..2]),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, "skills/review", "review");
+        harness.submit("search and explain");
+        let events = timeout(
+            Duration::from_secs(10),
+            harness.until(|event| matches!(event, UiEvent::AssistantText { .. })),
+        )
+        .await
+        .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::ToolFinished {
+                status: ToolResultStatus::Success,
+                ..
+            }
+        )));
+        harness.send(UiCommand::Cancel {
+            turn_id: harness.running_turn(),
+        });
+        timeout(
+            Duration::from_secs(10),
+            harness.until(finished(TurnOutcome::Interrupted)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(server.requests().len(), 2);
+    }
+
     fn system_text(body: &Value) -> String {
         body["messages"]
             .as_array()

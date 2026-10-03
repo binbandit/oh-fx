@@ -158,6 +158,7 @@ impl Session {
                 None,
                 mode,
                 crate::skills::rootless_skill_tool(),
+                crate::skills::rootless_capability_search(),
                 ToolHooks::default(),
             ),
             Arc::new(NoContext),

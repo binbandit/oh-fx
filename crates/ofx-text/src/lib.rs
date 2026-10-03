@@ -1,6 +1,7 @@
 mod display_width;
 mod fmt;
 mod language_script;
+mod lexical_relevance;
 mod model_context_encoding;
 mod sorted_lines;
 mod text_utils;
@@ -27,3 +28,5 @@ pub use text_utils::{
 pub use token_estimate::StreamingEstimator;
 pub use url_display::{clipped_label, redact_url_for_display};
 pub use utf8_validator::{InvalidUtf8, Utf8Validator};
+
+pub use lexical_relevance::{LexicalDocument, PreparedQuery, QueryTooLong, rank_intent};
