@@ -84,6 +84,27 @@ pub(crate) fn validate_header_value(value: &str) -> Result<(), HeaderError> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaType {
+    Json,
+    EventStream,
+}
+
+pub(crate) fn parse_media_type(value: &str) -> Option<MediaType> {
+    let media_type = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim_matches([' ', '\t']);
+    if media_type.eq_ignore_ascii_case("application/json") {
+        Some(MediaType::Json)
+    } else if media_type.eq_ignore_ascii_case("text/event-stream") {
+        Some(MediaType::EventStream)
+    } else {
+        None
+    }
+}
+
 fn is_http_token(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|byte| {
@@ -157,6 +178,20 @@ mod tests {
             validate_endpoint("https://example.com/mcp#fragment"),
             Err(EndpointError::InvalidEndpoint)
         );
+    }
+
+    #[test]
+    fn modern_mcp_response_media_types_tolerate_case_and_parameters_only() {
+        assert_eq!(
+            parse_media_type("Application/JSON; charset=utf-8"),
+            Some(MediaType::Json)
+        );
+        assert_eq!(
+            parse_media_type(" text/event-stream ;q=1"),
+            Some(MediaType::EventStream)
+        );
+        assert_eq!(parse_media_type("text/plain"), None);
+        assert_eq!(parse_media_type("application/json-seq"), None);
     }
 
     #[test]

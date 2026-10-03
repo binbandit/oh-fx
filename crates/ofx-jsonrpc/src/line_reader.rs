@@ -22,7 +22,7 @@ impl<R: AsyncBufRead + Unpin> LineReader<R> {
         }
     }
 
-    pub async fn read_line(&mut self, limit: usize) -> io::Result<Option<LineRead>> {
+    pub async fn read_line(&mut self, limit: impl Fn() -> usize) -> io::Result<Option<LineRead>> {
         if self.discarding && !self.discard_rest_of_line().await? {
             return Ok(None);
         }
@@ -34,7 +34,7 @@ impl<R: AsyncBufRead + Unpin> LineReader<R> {
             }
             let newline = available.iter().position(|byte| *byte == b'\n');
             let chunk = &available[..newline.unwrap_or(available.len())];
-            if line.len() + chunk.len() > limit {
+            if line.len() + chunk.len() > limit() {
                 let consumed = chunk.len();
                 self.inner.consume(consumed);
                 self.discarding = newline.is_none();
@@ -119,7 +119,7 @@ mod tests {
     async fn reader_accepts_an_exact_fragmented_frame() {
         let mut reader = reader(b"12345678\n", 2);
         assert_eq!(
-            reader.read_line(8).await.unwrap(),
+            reader.read_line(|| 8).await.unwrap(),
             Some(LineRead::Line(b"12345678".to_vec()))
         );
     }
@@ -127,9 +127,12 @@ mod tests {
     #[tokio::test]
     async fn reader_drains_one_oversized_fragmented_frame_and_resumes_at_the_next_frame() {
         let mut reader = reader(b"123456789\n{\"id\":2}\n", 3);
-        assert_eq!(reader.read_line(8).await.unwrap(), Some(LineRead::Overflow));
         assert_eq!(
-            reader.read_line(8).await.unwrap(),
+            reader.read_line(|| 8).await.unwrap(),
+            Some(LineRead::Overflow)
+        );
+        assert_eq!(
+            reader.read_line(|| 8).await.unwrap(),
             Some(LineRead::Line(b"{\"id\":2}".to_vec()))
         );
     }
@@ -137,21 +140,39 @@ mod tests {
     #[tokio::test]
     async fn reader_reports_one_overflow_when_an_oversized_frame_ends_at_eof() {
         let mut reader = reader(b"123456789", 2);
-        assert_eq!(reader.read_line(8).await.unwrap(), Some(LineRead::Overflow));
-        assert_eq!(reader.read_line(8).await.unwrap(), None);
+        assert_eq!(
+            reader.read_line(|| 8).await.unwrap(),
+            Some(LineRead::Overflow)
+        );
+        assert_eq!(reader.read_line(|| 8).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn skips_empty_lines_and_reports_a_partial_final_line() {
         let mut reader = reader(b"\n\none\npartial", 4);
         assert_eq!(
-            reader.read_line(8).await.unwrap(),
+            reader.read_line(|| 8).await.unwrap(),
             Some(LineRead::Line(b"one".to_vec()))
         );
         assert_eq!(
-            reader.read_line(8).await.unwrap(),
+            reader.read_line(|| 8).await.unwrap(),
             Some(LineRead::Incomplete)
         );
-        assert_eq!(reader.read_line(8).await.unwrap(), None);
+        assert_eq!(reader.read_line(|| 8).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn the_limit_is_read_again_for_every_chunk_of_a_frame() {
+        let mut reader = reader(b"123456789\n", 2);
+        let reads = std::cell::Cell::new(0);
+        let limit = || {
+            reads.set(reads.get() + 1);
+            if reads.get() == 1 { 4 } else { 16 }
+        };
+        assert_eq!(
+            reader.read_line(limit).await.unwrap(),
+            Some(LineRead::Line(b"123456789".to_vec()))
+        );
+        assert!(reads.get() > 1);
     }
 }
