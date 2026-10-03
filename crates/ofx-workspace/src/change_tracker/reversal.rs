@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::os::fd::OwnedFd;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, statat, unlinkat};
+use rustix::fs::{AtFlags, Mode, OFlags, fchmod, openat, renameat, statat, unlinkat};
 use rustix::io::Errno;
 
 use super::FileOperation;
@@ -87,22 +87,32 @@ fn verified(directory: OwnedFd, expected: FileIdentity) -> Result<OwnedFd, Unava
 
 fn restore(parent: &OwnedFd, name: &OsStr, content: &[u8]) -> Result<(), Unavailable> {
     let existing = existing_entry(parent, name)?;
-    let mode = match existing.map(FileIdentity::kind) {
-        None | Some(FileKind::Symlink) => DEFAULT_FILE_MODE,
-        Some(FileKind::RegularFile) => writable_mode(parent, name)?,
+    let captured = match existing.map(FileIdentity::kind) {
+        None | Some(FileKind::Symlink) => None,
+        Some(FileKind::RegularFile) => Some(writable_mode(parent, name)?),
         Some(FileKind::Directory | FileKind::Other) => return Err(Unavailable),
     };
     let stage = stage_name(name);
-    let descriptor = openat(parent, &stage, STAGE_FLAGS, mode)?;
-    let identity = descriptor_identity(&descriptor).ok();
-    let placed = write_and_place(
+    let descriptor = openat(
         parent,
         &stage,
-        name,
-        existing,
-        File::from(descriptor),
-        content,
-    );
+        STAGE_FLAGS,
+        captured.unwrap_or(DEFAULT_FILE_MODE),
+    )?;
+    let identity = descriptor_identity(&descriptor).ok();
+    let placed = captured
+        .map_or(Ok(()), |mode| fchmod(&descriptor, mode))
+        .map_err(Unavailable::from)
+        .and_then(|()| {
+            write_and_place(
+                parent,
+                &stage,
+                name,
+                existing,
+                File::from(descriptor),
+                content,
+            )
+        });
     if placed.is_err() && identity.is_some() && entry_identity(parent, &stage).ok() == identity {
         let _ = unlinkat(parent, &stage, AtFlags::empty());
     }

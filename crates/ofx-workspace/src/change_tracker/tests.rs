@@ -447,3 +447,35 @@ fn undo_removes_only_a_link_left_at_a_created_path() {
     assert!(fs::symlink_metadata(&created).is_err());
     assert_eq!(fs::read_to_string(&target).unwrap(), "must stay untouched");
 }
+
+#[test]
+fn a_restored_file_keeps_permission_bits_the_umask_would_clear() {
+    let root = Root::new();
+    let tracker = ChangeTracker::default();
+    for (name, mode) in [("open.sh", 0o777), ("shared.txt", 0o666)] {
+        let path = root.join(name);
+        fs::write(&path, "changed").unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(mode)).unwrap();
+        tracker.push_operation(root.capture(name, Some("original")));
+        assert_eq!(tracker.undo_last(), UndoResult::Restored(path.clone()));
+        let restored = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(restored & PERMISSION_BITS, mode, "{name}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+    }
+}
+
+#[test]
+fn a_file_restored_where_none_remains_is_created_under_the_umask() {
+    let root = Root::new();
+    let reference = root.join("reference.txt");
+    fs::write(&reference, "reference").unwrap();
+    let path = root.join("removed.txt");
+    let tracker = ChangeTracker::default();
+    tracker.push_operation(root.capture("removed.txt", Some("original")));
+    assert_eq!(tracker.undo_last(), UndoResult::Restored(path.clone()));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & PERMISSION_BITS,
+        fs::metadata(&reference).unwrap().permissions().mode() & PERMISSION_BITS
+    );
+}
