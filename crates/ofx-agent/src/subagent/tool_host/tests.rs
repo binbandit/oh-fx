@@ -3,16 +3,18 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApplicableTarget, AutoCompactPercent, CallDescription, ChatMessage, Completion,
-    Concurrency, FinishReason, ModelProvider, ModelRequest, PathAccess, PermissionGate,
-    PreparedCall, ProviderError, ProviderErrorKind, ReviewRequest, ReviewVerdict, Reviewed,
-    StreamEvent, StreamSink, SubagentRequestInput, Tool, ToolActivity, ToolCall, ToolCallId,
-    ToolEffect, ToolResultStatus, ToolSpec, Usage,
+    Admission, ApplicableTarget, ApprovalDecision, AutoCompactPercent, CallDescription,
+    ChatMessage, Completion, Concurrency, FinishReason, ModelProvider, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ReviewRequest, ReviewVerdict,
+    Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool, ToolActivity, ToolCall,
+    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, Usage,
 };
+use serde_json::Value;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
+use crate::approvals::Approvals;
 use crate::orchestrator::{AgentConfig, RuntimeContext};
 use crate::scripted_provider::{ScriptedProvider, calling, text};
 
@@ -20,6 +22,7 @@ const BASE_PROMPT: &str = "base prompt";
 
 enum Script {
     Reply(&'static str),
+    Probe,
     Fail(ProviderError),
     Hold,
 }
@@ -66,8 +69,20 @@ impl ModelProvider for Provider {
             messages: request.messages.to_vec(),
         });
         let script = self.scripts.lock().unwrap().pop_front();
+        let probes = request.messages.len();
         Box::pin(async move {
             match script {
+                Some(Script::Probe) => Ok(Completion {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: ToolCallId::new(format!("probe-{probes}")),
+                        name: "probe".to_owned(),
+                        arguments: "{}".to_owned(),
+                    }],
+                    finish_reason: FinishReason::ToolCalls,
+                    usage: Usage::default(),
+                    provider_replay: None,
+                }),
                 Some(Script::Reply(text)) => {
                     sink.emit(StreamEvent::TextDelta {
                         text: text.to_owned(),
@@ -105,11 +120,11 @@ impl RuntimeContext for NoContext {
     }
 }
 
-struct AllowAll;
+struct AskEveryCall;
 
-impl PermissionGate for AllowAll {
+impl PermissionGate for AskEveryCall {
     fn admit(&self, _call: &ToolCall) -> Admission {
-        Admission::Allowed(PathAccess::WorkspaceOnly)
+        Admission::ApprovalRequired
     }
 
     fn applicable_target(&self, _call: &ToolCall) -> Option<ApplicableTarget> {
@@ -119,9 +134,46 @@ impl PermissionGate for AllowAll {
     fn forget_approvals(&self) {}
 }
 
+struct Probe {
+    spec: ToolSpec,
+}
+
+struct ProbeCall;
+
+impl Tool for Probe {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    fn prepare(&self, _arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        Ok(Box::new(ProbeCall))
+    }
+}
+
+impl PreparedCall for ProbeCall {
+    fn describe(&self) -> CallDescription {
+        CallDescription {
+            title: "Probing".to_owned(),
+            label: None,
+            activity: ToolActivity::Read,
+            effect: ToolEffect::ReadOnly,
+            concurrency: Concurrency::Serial,
+        }
+    }
+
+    fn execute(self: Box<Self>, _context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+        Box::pin(async { ToolOutput::success("probed") })
+    }
+}
+
 struct Agents {
     provider: Arc<Provider>,
     created: Mutex<Vec<(ChildSettings, LivePermissionMode)>>,
+    asks: bool,
+    approvals: Approvals,
+    requested: Mutex<Vec<ApprovalRequest>>,
+    decisions: Mutex<VecDeque<ApprovalDecision>>,
+    asked: Notify,
 }
 
 impl ChildAgents for Agents {
@@ -141,11 +193,17 @@ impl ChildAgents for Agents {
             .lock()
             .unwrap()
             .push((settings.clone(), permission_mode));
-        Agent::new(
+        let agent = Agent::new(
             Arc::clone(&self.provider) as Arc<dyn ModelProvider>,
-            Vec::new(),
+            vec![Arc::new(Probe {
+                spec: ToolSpec {
+                    name: "probe".to_owned(),
+                    description: "Probe the workspace.".to_owned(),
+                    input_schema: "{}",
+                },
+            })],
             Arc::new(NoContext),
-            Arc::new(AllowAll),
+            Arc::new(AskEveryCall),
             AgentConfig {
                 model: settings.model.clone(),
                 system_prompt: BASE_PROMPT.to_owned(),
@@ -155,7 +213,20 @@ impl ChildAgents for Agents {
                 fast_mode: settings.fast_mode,
                 auto_compact_percent: AutoCompactPercent::resolve(None, None),
             },
-        )
+        );
+        if self.asks {
+            agent.with_approvals(self.approvals.clone())
+        } else {
+            agent
+        }
+    }
+
+    fn approval_requested(&self, request: ApprovalRequest) {
+        if let Some(decision) = self.decisions.lock().unwrap().pop_front() {
+            self.approvals.resolve(request.id, decision);
+        }
+        self.requested.lock().unwrap().push(request);
+        self.asked.notify_one();
     }
 }
 
@@ -167,10 +238,23 @@ struct Harness {
 
 impl Harness {
     fn new(scripts: Vec<Script>) -> Self {
+        Self::asking(scripts, true)
+    }
+
+    fn unattended(scripts: Vec<Script>) -> Self {
+        Self::asking(scripts, false)
+    }
+
+    fn asking(scripts: Vec<Script>, asks: bool) -> Self {
         let provider = Provider::new(scripts);
         let agents = Arc::new(Agents {
             provider: Arc::clone(&provider),
             created: Mutex::new(Vec::new()),
+            asks,
+            approvals: Approvals::default(),
+            requested: Mutex::new(Vec::new()),
+            decisions: Mutex::new(VecDeque::new()),
+            asked: Notify::new(),
         });
         Self {
             host: SubagentHost::new(Arc::clone(&agents) as Arc<dyn ChildAgents>),
@@ -437,6 +521,97 @@ async fn a_cancelled_parent_cancels_its_child_and_a_busy_child_refuses_new_work(
     assert_eq!(harness.provider.seen().len(), 2);
 }
 
+fn tool_results(seen: &Seen) -> Vec<String> {
+    seen.messages
+        .iter()
+        .filter_map(|message| match message {
+            ChatMessage::Tool { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_childs_approval_request_reaches_the_owner_and_its_answer_applies() {
+    let harness = Harness::new(vec![
+        Script::Probe,
+        Script::Reply("probed it"),
+        Script::Probe,
+        Script::Reply("probe refused"),
+    ]);
+    harness
+        .agents
+        .decisions
+        .lock()
+        .unwrap()
+        .extend([ApprovalDecision::Once, ApprovalDecision::Deny]);
+    assert_eq!(
+        harness
+            .run("call-1", message("prober", None, "probe"))
+            .await,
+        succeeded("probed it")
+    );
+    assert_eq!(
+        harness.run("call-2", run("probe again")).await,
+        succeeded("probe refused")
+    );
+    let requested = harness.agents.requested.lock().unwrap().clone();
+    assert_eq!(
+        requested
+            .iter()
+            .map(|request| request.tool_name.as_str())
+            .collect::<Vec<_>>(),
+        ["probe", "probe"]
+    );
+    assert_ne!(requested[0].id, requested[1].id);
+    let seen = harness.provider.seen();
+    assert_eq!(tool_results(&seen[1]), ["probed"]);
+    assert_ne!(tool_results(&seen[3]), ["probed"]);
+}
+
+#[tokio::test]
+async fn cancelling_the_parent_withdraws_its_childs_pending_approval() {
+    let harness = Harness::new(vec![Script::Probe, Script::Reply("after cancel")]);
+    let cancel = CancellationToken::new();
+    let first = tokio::spawn(harness.call("call-1", message("prober", None, "probe"), &cancel));
+    harness.agents.asked.notified().await;
+    let pending = harness.agents.requested.lock().unwrap()[0].id;
+    cancel.cancel();
+    assert_eq!(first.await.unwrap(), rejected("child_cancelled"));
+    let after = tokio::time::timeout(
+        Duration::from_secs(5),
+        harness.run("call-2", message("prober", None, "next")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(after, succeeded("after cancel"));
+    assert!(
+        !harness
+            .agents
+            .approvals
+            .resolve(pending, ApprovalDecision::Once)
+    );
+    let seen = harness.provider.seen();
+    assert_eq!(seen.len(), 2);
+    assert!(!tool_results(&seen[1]).contains(&"probed".to_owned()));
+}
+
+#[tokio::test]
+async fn a_child_with_no_way_to_ask_fails_its_call_instead_of_waiting() {
+    let harness = Harness::unattended(vec![Script::Probe]);
+    let output = tokio::time::timeout(Duration::from_secs(5), harness.run("call-1", run("probe")))
+        .await
+        .expect("the child does not wait for an answer");
+    assert_eq!(output.status, ToolResultStatus::Failure);
+    let result: Value = serde_json::from_str(&output.content).unwrap();
+    assert_eq!(result["error_code"], "child_failed");
+    assert_eq!(
+        result["result"],
+        "Subagent failed: agent_turn_failed: NonInteractivePermissionRequired. Earlier tool calls may have completed; their effects are not rolled back."
+    );
+    assert!(harness.agents.requested.lock().unwrap().is_empty());
+}
+
 #[test]
 fn internal_operation_identity_is_deterministic_and_invocation_bound() {
     let first = operation_id("call-1");
@@ -638,7 +813,7 @@ impl Tool for Described {
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
-        let arguments: serde_json::Value = serde_json::from_str(arguments).unwrap();
+        let arguments: Value = serde_json::from_str(arguments).unwrap();
         Ok(Box::new(DescribedCall {
             description: self.description.clone(),
             task: arguments["task"].as_str().unwrap_or_default().to_owned(),
@@ -708,6 +883,8 @@ impl ChildAgents for IntentChildren {
             intent_config(),
         )
     }
+
+    fn approval_requested(&self, _request: ApprovalRequest) {}
 }
 
 fn intent_host(provider: &Arc<ScriptedProvider>, gate: &Arc<IntentGate>) -> Arc<SubagentHost> {

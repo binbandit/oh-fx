@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_contract::{
-    ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode, ModelFailureDiagnostic,
-    RootUserRequests, SubagentPlan, SubagentRequest,
+    ApprovalRequest, ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode,
+    ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -214,9 +214,11 @@ impl Owner {
                 runtime,
             } = start;
             let active = work.clone();
+            let agents = Arc::clone(&owner.agents);
             let run = tokio::spawn(async move {
+                let forward = |request: ApprovalRequest| agents.approval_requested(request);
                 let mut runtime = runtime.lock_owned().await;
-                runtime.run(&active, &instructions, &cancel).await
+                runtime.run(&active, &instructions, &forward, &cancel).await
             });
             let outcome = run.await.unwrap_or_else(|_| WorkOutcome::panicked());
             owner.finish(&child_id, &work.id, outcome, &sender);

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use ofx_contract::{LivePermissionMode, ModelFailureDiagnostic, TurnOutcome, UiEvent};
+use ofx_contract::{
+    ApprovalRequest, LivePermissionMode, ModelFailureDiagnostic, TurnOutcome, UiEvent,
+};
 use ofx_text::is_terminal_safe;
 use tokio_util::sync::CancellationToken;
 
@@ -45,6 +47,7 @@ impl ChildRuntime {
         &mut self,
         work: &ActiveWork,
         instructions: &str,
+        approvals: &(dyn Fn(ApprovalRequest) + Sync),
         cancel: &CancellationToken,
     ) -> WorkOutcome {
         let mut config = self.agent.config().clone();
@@ -61,6 +64,7 @@ impl ChildRuntime {
                 &mut |event| match event {
                     UiEvent::AssistantText { text, .. } => partial.push_str(&text),
                     UiEvent::ToolStarted { .. } | UiEvent::ToolRejected { .. } => partial.clear(),
+                    UiEvent::ApprovalRequested { request, .. } => approvals(*request),
                     _ => {}
                 },
                 cancel,

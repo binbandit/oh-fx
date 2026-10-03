@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use ofx_contract::{
-    BoxFuture, LivePermissionMode, ModelFailureDiagnostic, PermissionMode, ReasoningEffort,
-    SubagentOverride, SubagentProvider, SubagentRequest, SubagentResult, ToolContext, ToolOutput,
+    ApprovalRequest, BoxFuture, LivePermissionMode, ModelFailureDiagnostic, PermissionMode,
+    ReasoningEffort, SubagentOverride, SubagentProvider, SubagentRequest, SubagentResult,
+    ToolContext, ToolOutput,
 };
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
@@ -28,6 +29,8 @@ pub trait ChildAgents: Send + Sync {
     fn defaults(&self) -> ChildDefaults;
 
     fn agent(&self, settings: &ChildSettings, permission_mode: LivePermissionMode) -> Agent;
+
+    fn approval_requested(&self, request: ApprovalRequest);
 }
 
 pub struct SubagentHost {
