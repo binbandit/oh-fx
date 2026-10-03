@@ -199,7 +199,7 @@ note = "Text, paste placeholders and skill tokens wrap and navigate; registered 
 upstream = "src/ui/render.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/render.rs", "crates/ofx-tui/src/theme.rs"]
-note = "Welcome, compact model labels and hints exist; upstream named-theme application with sampled RGB shading and session-status/resume-handoff renderers are absent."
+note = "Welcome, compact model labels, hints and the status line's session, context and workspace segments exist; the effort and Fast segments, upstream named-theme application with sampled RGB shading and session-status/resume-handoff renderers are absent."
 
 [[file]]
 upstream = "src/ui/render_engine.zig"

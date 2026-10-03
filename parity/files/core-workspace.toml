@@ -102,9 +102,8 @@ note = "Bounded rendering diagnostic event ring are unimplemented."
 
 [[file]]
 upstream = "src/core/workspace/statusline_identity.zig"
-status = "partial"
-modules = ["crates/ofx-workspace/src/current_branch.rs", "crates/ofx-tui/src/footer/mod.rs"]
-note = "Current branch identity is displayed; independently cached/disabled refresh state and complete statusline identity snapshot are absent."
+status = "ported"
+modules = ["crates/ofx-workspace/src/statusline_identity.rs", "crates/ofx-tui/src/footer/statusline.rs"]
 
 [[file]]
 upstream = "src/core/workspace/tool_call_metrics.zig"
