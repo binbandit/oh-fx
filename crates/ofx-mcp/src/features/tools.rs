@@ -664,7 +664,7 @@ fn is_valid_base64(value: &str) -> bool {
     if padding > 2 {
         return false;
     }
-    let data = &bytes[..bytes.len() - padding];
+    let data = bytes.get(..bytes.len() - padding).unwrap_or_default();
     let Some(indices) = data
         .iter()
         .map(|byte| base64_index(*byte))

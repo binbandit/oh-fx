@@ -497,10 +497,9 @@ async fn start_mcp(mcp: &McpRuntime, cancel: &CancellationToken) -> Result<(), F
         lines.push_str(". Approve with oh-fx mcp trust approve <name> before retrying.\n");
     }
     write_stderr(&lines).map_err(|error| Failure::written(&error))?;
-    tokio::select! {
-        () = cancel.cancelled() => {}
-        () = mcp.connect(StartupPhase::All) => {}
-    }
+    cancel
+        .run_until_cancelled(mcp.connect(StartupPhase::All))
+        .await;
     let Some(failure) = mcp.required_startup_failure() else {
         return Ok(());
     };

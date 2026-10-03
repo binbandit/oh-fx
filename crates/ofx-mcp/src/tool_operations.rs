@@ -11,7 +11,7 @@ use crate::features::tools::{
 use crate::protocol_messages::build_tool_call_request;
 use crate::server_connection::{McpClient, lock};
 use crate::server_transport::discover_tools;
-use crate::transport::{ProgressSink, ServerRequestPolicy, TransportRequest};
+use crate::transport::{McpTransport, ProgressSink, ServerRequestPolicy, TransportRequest};
 
 pub(crate) const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const MAX_RESULT_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -39,8 +39,7 @@ pub(crate) fn response_frame_cap(max_tool_result_bytes: usize) -> usize {
 impl McpClient {
     pub(crate) async fn list_tools(&self) -> Result<Arc<ToolCatalog>, McpError> {
         let deadline = Instant::now() + self.operation_timeout;
-        let catalog =
-            Arc::new(discover_tools(self.transport.as_ref(), deadline, |error| error).await?);
+        let catalog = Arc::new(discover_tools(&self.transport, deadline, |error| error).await?);
         *lock(&self.catalog) = Arc::clone(&catalog);
         self.tools_stale.store(false, Ordering::Release);
         Ok(catalog)

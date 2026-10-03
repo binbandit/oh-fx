@@ -1,5 +1,7 @@
+use std::future::{Future, poll_fn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::Poll;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -12,7 +14,7 @@ use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
     ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse, connect_stdio,
 };
-use crate::transport::{McpTransport, ShutdownMode};
+use crate::transport::{McpTransport, ShutdownMode, Transport};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ServerNotification {
@@ -29,13 +31,13 @@ pub(crate) enum ServerNotification {
 }
 
 pub(crate) struct McpClient {
-    pub(crate) transport: Box<dyn McpTransport>,
+    pub(crate) transport: Transport,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
     pub(crate) operation_timeout: Duration,
     pub(crate) catalog: Mutex<Arc<ToolCatalog>>,
     pub(crate) tools_stale: AtomicBool,
-    notifications: tokio::sync::Mutex<mpsc::UnboundedReceiver<Value>>,
+    notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
 }
 
 impl McpClient {
@@ -64,7 +66,7 @@ impl McpClient {
             operation_timeout: Duration::from_millis(config.operation_timeout_ms.into()),
             catalog: Mutex::new(Arc::new(connected.catalog)),
             tools_stale: AtomicBool::new(false),
-            notifications: tokio::sync::Mutex::new(connected.notifications),
+            notifications: Mutex::new(connected.notifications),
         }
     }
 
@@ -80,21 +82,27 @@ impl McpClient {
         Arc::clone(&lock(&self.catalog))
     }
 
-    pub(crate) async fn next_notification(&self) -> Option<ServerNotification> {
-        let mut notifications = self.notifications.lock().await;
-        loop {
-            let value = notifications.recv().await?;
-            if let Some(notification) = self.classify_notification(&value) {
-                return Some(notification);
+    pub(crate) fn next_notification(&self) -> impl Future<Output = Option<ServerNotification>> {
+        poll_fn(|context| {
+            let mut notifications = lock(&self.notifications);
+            loop {
+                let Poll::Ready(value) = notifications.poll_recv(context) else {
+                    return Poll::Pending;
+                };
+                let Some(value) = value else {
+                    return Poll::Ready(None);
+                };
+                if let Some(notification) = self.classify_notification(&value) {
+                    return Poll::Ready(Some(notification));
+                }
             }
-        }
+        })
     }
 
     pub(crate) fn receive_pending_notifications(&self) {
-        if let Ok(mut notifications) = self.notifications.try_lock() {
-            while let Ok(value) = notifications.try_recv() {
-                self.classify_notification(&value);
-            }
+        let mut notifications = lock(&self.notifications);
+        while let Ok(value) = notifications.try_recv() {
+            self.classify_notification(&value);
         }
     }
 

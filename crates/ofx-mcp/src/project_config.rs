@@ -654,18 +654,14 @@ fn expand_workspace_template(
     budget: &mut ExpansionBudget,
 ) -> TemplateExpansion {
     let mut output = String::new();
-    let mut cursor = 0;
-    while let Some(relative_start) = input[cursor..].find("${") {
-        let start = cursor + relative_start;
-        if !append_expanded(&mut output, &input[cursor..start], budget) {
+    let mut rest = input;
+    while let Some((text, after)) = rest.split_once("${") {
+        if !append_expanded(&mut output, text, budget) {
             return TemplateExpansion::LimitExceeded;
         }
-        let expression_start = start + 2;
-        let Some(relative_end) = input[expression_start..].find('}') else {
+        let Some((expression, remainder)) = after.split_once('}') else {
             return TemplateExpansion::Invalid;
         };
-        let end = expression_start + relative_end;
-        let expression = &input[expression_start..end];
         let (variable_name, default_value) = match expression.split_once(":-") {
             Some((name, default)) => (name, Some(default)),
             None => (expression, None),
@@ -683,9 +679,9 @@ fn expand_workspace_template(
         if !append_expanded(&mut output, &replacement, budget) {
             return TemplateExpansion::LimitExceeded;
         }
-        cursor = end + 1;
+        rest = remainder;
     }
-    if !append_expanded(&mut output, &input[cursor..], budget) {
+    if !append_expanded(&mut output, rest, budget) {
         return TemplateExpansion::LimitExceeded;
     }
     TemplateExpansion::Expanded(output)

@@ -8,7 +8,7 @@ use ofx_http::ConnectionOptions;
 use ofx_text::{HeadRounding, encode_terminal_safe, mask_secrets, write_head_tail_bounded};
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::features::tools::{CatalogBuilder, Limits, ToolCatalog};
@@ -32,7 +32,8 @@ use crate::stdio_dispatcher::{
     ChildDiagnostics, StderrCapture, StdioDispatcher, StdioLaunch, StopMode,
 };
 use crate::streamable_http::validate_endpoint;
-use crate::transport::{McpTransport, ShutdownMode, TransportRequest};
+use crate::timing::timeout_at;
+use crate::transport::{McpTransport, ShutdownMode, Transport, TransportRequest};
 
 pub(crate) const DISCOVERY_RESPONSE_FRAME_CAP_BYTES: usize = 1024 * 1024;
 
@@ -88,7 +89,7 @@ impl fmt::Display for StartupFailure {
 impl std::error::Error for StartupFailure {}
 
 pub(crate) struct Connected {
-    pub(crate) transport: Box<dyn McpTransport>,
+    pub(crate) transport: Transport,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
     pub(crate) catalog: ToolCatalog,
@@ -198,7 +199,7 @@ async fn connect_stdio_once(
     .await
     {
         Ok((info, catalog)) => Ok(Connected {
-            transport: Box::new(dispatcher),
+            transport: Transport::Stdio(dispatcher),
             info,
             wire: handshake.version.wire(),
             catalog,
@@ -368,7 +369,7 @@ pub(crate) async fn connect_http(
             }
             Ok(Connected {
                 wire: client.version().wire(),
-                transport: Box::new(client),
+                transport: Transport::Http(client),
                 info,
                 catalog,
                 notifications,
@@ -425,7 +426,7 @@ pub(crate) async fn connect_sse(
         LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline).await?;
     match finish_sse_startup(&client, options, deadline).await {
         Ok((info, catalog)) => Ok(Connected {
-            transport: Box::new(client),
+            transport: Transport::Sse(client),
             info,
             wire: None,
             catalog,
@@ -503,7 +504,7 @@ fn stdio_discovery_error(error: McpError) -> McpError {
 }
 
 pub(crate) async fn discover_tools(
-    transport: &dyn McpTransport,
+    transport: &impl McpTransport,
     deadline: Instant,
     request_error: fn(McpError) -> McpError,
 ) -> Result<ToolCatalog, McpError> {
@@ -649,54 +650,56 @@ fn display_plain(plain: &str) -> String {
 }
 
 fn without_trailing_word(text: &str) -> &str {
-    text.rfind(WORD_SEPARATORS).map_or("", |end| &text[..=end])
+    text.rfind(WORD_SEPARATORS)
+        .and_then(|end| text.get(..=end))
+        .unwrap_or_default()
 }
 
 fn without_leading_word(text: &str) -> &str {
     text.find(WORD_SEPARATORS)
-        .map_or("", |start| &text[start..])
+        .and_then(|start| text.get(start..))
+        .unwrap_or_default()
 }
 
 fn without_ansi(raw: &[u8]) -> String {
     let mut out = Vec::with_capacity(raw.len());
-    let mut index = 0;
-    while index < raw.len() {
-        let escape = raw[index..]
-            .iter()
-            .position(|byte| *byte == 0x1b)
-            .map_or(raw.len(), |offset| index + offset);
-        out.extend_from_slice(&raw[index..escape]);
-        if escape == raw.len() {
-            break;
-        }
-        index = ansi_sequence_end(raw, escape);
+    let mut rest = raw;
+    while let Some((text, sequence)) = rest
+        .iter()
+        .position(|byte| *byte == 0x1b)
+        .and_then(|escape| rest.split_at_checked(escape))
+    {
+        out.extend_from_slice(text);
+        rest = sequence
+            .get(ansi_sequence_len(sequence)..)
+            .unwrap_or_default();
     }
+    out.extend_from_slice(rest);
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn ansi_sequence_end(text: &[u8], index: usize) -> usize {
-    let Some(kind) = text.get(index + 1) else {
-        return text.len();
-    };
-    match kind {
-        b'[' => text[index + 2..]
+fn ansi_sequence_len(sequence: &[u8]) -> usize {
+    match sequence.get(1) {
+        None => sequence.len(),
+        Some(b'[') => sequence
             .iter()
+            .skip(2)
             .position(|byte| (b'@'..=b'~').contains(byte))
-            .map_or(text.len(), |offset| index + 2 + offset + 1),
-        b']' => {
-            let mut position = index + 2;
-            while position < text.len() {
-                if text[position] == 0x07 {
+            .map_or(sequence.len(), |offset| offset + 3),
+        Some(b']') => {
+            let mut position = 2;
+            while let Some(byte) = sequence.get(position) {
+                if *byte == 0x07 {
                     return position + 1;
                 }
-                if text[position] == 0x1b && text.get(position + 1) == Some(&b'\\') {
+                if *byte == 0x1b && sequence.get(position + 1) == Some(&b'\\') {
                     return position + 2;
                 }
                 position += 1;
             }
-            text.len()
+            sequence.len()
         }
-        _ => (index + 2).min(text.len()),
+        Some(_) => 2,
     }
 }
 

@@ -71,9 +71,12 @@ fn candidate_with_suffix(base: &str, suffix: Option<usize>) -> String {
         Some(index) => {
             let suffix = format!("_{index}");
             let prefix_len = base.len().min(MAX_NAME_LEN - suffix.len());
-            format!("{}{suffix}", &base[..prefix_len])
+            format!("{}{suffix}", base.get(..prefix_len).unwrap_or_default())
         }
-        None => base[..base.len().min(MAX_NAME_LEN)].to_owned(),
+        None => base
+            .get(..base.len().min(MAX_NAME_LEN))
+            .unwrap_or_default()
+            .to_owned(),
     }
 }
 
