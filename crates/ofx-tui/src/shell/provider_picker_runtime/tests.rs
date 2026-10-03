@@ -160,12 +160,15 @@ fn keys_are_limited_while_a_turn_runs() {
 fn the_command_reply_seeds_the_composer_and_refreshes_the_providers() {
     let mut test = TestShell::start();
     press(&mut test, b"draft");
+    assert!(test.screen().contains("┃ draft"));
     test.deliver(UiEvent::ProviderPicker {
         prefix: "/login ".to_owned(),
         providers: vec!["codex".to_owned(), "fresh".to_owned()],
     });
     assert_eq!(test.shell.composer.text(), "/login ");
-    assert_eq!(column_rows(&test.screen()), ["codex", "fresh"]);
+    let screen = test.screen();
+    assert!(screen.contains("┃ /login"), "{screen}");
+    assert_eq!(column_rows(&screen), ["codex", "fresh"]);
     press(&mut test, b"\x15kept draft\x10");
     test.deliver(UiEvent::ProviderPicker {
         prefix: "/provider ".to_owned(),

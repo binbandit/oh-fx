@@ -93,6 +93,7 @@ impl Shell<'_> {
         self.skills_menu = None;
         self.composer.replace_text(prefix);
         self.provider_column = ProviderColumn::default();
+        self.invalidate();
     }
 
     pub(super) fn provider_column_after_edit(&mut self) {
