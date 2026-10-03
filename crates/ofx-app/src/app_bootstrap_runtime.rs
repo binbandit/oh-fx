@@ -264,6 +264,7 @@ impl Profile {
             self.paths.as_ref(),
             &self.settings,
             &limits,
+            interactive,
         ));
         let mut project = self.project_context(&limits);
         let context_notices = project

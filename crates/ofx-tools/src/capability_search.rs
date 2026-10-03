@@ -20,14 +20,22 @@ pub struct CapabilitySearch {
     context: Arc<SearchContext>,
 }
 
+#[derive(Clone)]
 struct SearchContext {
     discovery: SkillDiscoveryContext,
     policy: RootPolicy,
     limits: ContextLimits,
     max_tool_result_bytes: usize,
+    interactive_host: bool,
 }
 
 impl CapabilitySearch {
+    #[must_use]
+    pub fn with_interactive_host(mut self, interactive: bool) -> Self {
+        Arc::make_mut(&mut self.context).interactive_host = interactive;
+        self
+    }
+
     pub fn new(
         discovery: SkillDiscoveryContext,
         policy: RootPolicy,
@@ -45,6 +53,7 @@ impl CapabilitySearch {
                 policy,
                 limits,
                 max_tool_result_bytes,
+                interactive_host: false,
             }),
         }
     }
@@ -76,18 +85,6 @@ impl Input {
         }
         Ok(Self { query, server })
     }
-
-    fn label(&self) -> ActionLabel {
-        ActionLabel {
-            active: "Searching capabilities",
-            completed: "Searched capabilities",
-            target: self
-                .server
-                .as_deref()
-                .unwrap_or_else(|| self.query.raw())
-                .to_owned(),
-        }
-    }
 }
 
 impl Tool for CapabilitySearch {
@@ -96,7 +93,18 @@ impl Tool for CapabilitySearch {
     }
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let checked = Input::decode(arguments);
-        let label = checked.as_ref().ok().map(Input::label);
+        let label = parse_arguments(NAME, arguments)
+            .ok()
+            .map(|object| ActionLabel {
+                active: "Searching capabilities",
+                completed: "Searched capabilities",
+                target: object
+                    .optional_string("server")
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| object.optional_string("query"))
+                    .unwrap_or("capabilities")
+                    .to_owned(),
+            });
         let description = CallDescription {
             title: format_plain_action(NAME, label.as_ref()),
             label,
@@ -165,21 +173,35 @@ impl SearchContext {
                     result.count,
                     result.total_matches,
                     output_cap,
+                    self.interactive_host,
                 ),
                 Err(error) => {
                     ToolOutput::failure(format!("capability_search skill search failed: {error}"))
                 }
             }
         } else {
-            combine("", 0, 0, output_cap)
+            combine("", 0, 0, output_cap, self.interactive_host)
         };
         result.with_context_notices(notices)
     }
 }
 
-fn combine(items: &str, count: usize, total: usize, max_bytes: usize) -> ToolOutput {
+fn combine(
+    items: &str,
+    count: usize,
+    total: usize,
+    max_bytes: usize,
+    interactive: bool,
+) -> ToolOutput {
+    let state = if !interactive {
+        ",\"mcp_state\":\"unavailable\""
+    } else if total == 0 {
+        ",\"state\":\"no_match\""
+    } else {
+        ""
+    };
     let output = format!(
-        "{{\"skills\":[{items}],\"mcp_tools\":[],\"counts\":{{\"skills\":{count},\"mcp_tools\":0}},\"total_matches\":{{\"skills\":{total},\"mcp_tools\":0}},\"mcp_state\":\"unavailable\"}}"
+        "{{\"skills\":[{items}],\"mcp_tools\":[],\"counts\":{{\"skills\":{count},\"mcp_tools\":0}},\"total_matches\":{{\"skills\":{total},\"mcp_tools\":0}}{state}}}"
     );
     if output.len() > max_bytes {
         ToolOutput::failure(

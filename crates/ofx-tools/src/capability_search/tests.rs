@@ -299,3 +299,39 @@ async fn description_limit_preserves_complete_utf8_and_domain_budget_error() {
         "capability_search skill search failed: SkillSearchResultLimitTooSmall"
     );
 }
+
+#[test]
+fn malformed_object_presentations_keep_source_defaults() {
+    for (args, title) in [
+        ("{}", "Searching capabilities capabilities"),
+        (r#"{"query":null}"#, "Searching capabilities capabilities"),
+        (r#"{"query":"q","server":""}"#, "Searching capabilities q"),
+        ("[]", "Working: capability_search"),
+        ("{", "Working: capability_search"),
+    ] {
+        assert_eq!(tool(16384).prepare(args).unwrap().describe().title, title);
+    }
+}
+
+#[tokio::test]
+async fn interactive_empty_host_reports_no_match_for_both_scopes() {
+    for args in [
+        r#"{"query":"absent"}"#,
+        r#"{"query":"absent","server":"absent"}"#,
+    ] {
+        let output = tool(16384)
+            .with_interactive_host(true)
+            .prepare(args)
+            .unwrap()
+            .execute(ToolContext::new(
+                ToolCallId::new("scope"),
+                CancellationToken::new(),
+                PathAccess::WorkspaceOnly,
+            ))
+            .await;
+        assert_eq!(
+            output.content,
+            r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"state":"no_match"}"#
+        );
+    }
+}
