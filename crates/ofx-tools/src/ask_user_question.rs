@@ -2,9 +2,9 @@ use std::future::ready;
 use std::sync::Arc;
 
 use ofx_contract::{
-    BoxFuture, CallDescription, Concurrency, PreparedCall, QuestionAsker, QuestionBatchEntry,
-    QuestionOption, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
-    format_unknown_action, parse_tool_args_object,
+    ActionLabel, BoxFuture, CallDescription, CallPresentation, Concurrency, PreparedCall,
+    QuestionAsker, QuestionBatchEntry, QuestionOption, Tool, ToolActivity, ToolContext, ToolEffect,
+    ToolOutput, ToolSpec, format_unknown_action, parse_tool_args_object,
 };
 use ofx_text::encode_terminal_safe;
 use serde_json::Value;
@@ -12,7 +12,13 @@ use serde_json::Value;
 const TOOL_NAME: &str = "ask_user_question";
 const DESCRIPTION: &str = "Ask the user 1-4 multiple-choice questions in interactive runs only when a concrete decision blocks progress after local files, git state, or tool output cannot answer it. When to use: choose among precise, mutually exclusive paths before acting, especially user-preference decisions. When NOT to use: safety-review escalation, discoverable facts, GitHub handles unless account/private-access specific, gh/auth/tool blockers, trivial yes/no checks, open-ended discussion, or noninteractive runs; noninteractive runs should surface a blocker in freeform text instead.";
 const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"questions":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"question":{"type":"string","description":"Specific blocking decision shown to the user; do not ask for facts tools can inspect."},"options":{"type":"array","minItems":2,"maxItems":6,"items":{"type":"object","properties":{"label":{"type":"string","description":"Short precise action label, 1-5 words."},"description":{"type":"string","description":"Optional one-line consequence or scope of this option."}},"required":["label"]}}},"required":["question","options"]}}},"required":["questions"]}"#;
-const ACTION_TITLE: &str = "Asking ";
+const PRESENTATION: CallPresentation = CallPresentation {
+    activity: ToolActivity::Ask,
+    action_label: "Asking",
+    completed_label: "Asked",
+    label_argument: "",
+    label_default: "",
+};
 const CANCEL_SENTINEL: &str = "(user cancelled the question)";
 const NOT_AVAILABLE_SENTINEL: &str =
     "(ask_user_question is only available in the interactive shell; ask the user freeform instead)";
@@ -52,12 +58,13 @@ impl Tool for AskUserQuestion {
             .as_ref()
             .is_ok_and(|arguments| arguments.get("permission_request_id").is_some())
             .then(|| ToolOutput::failure(LEGACY_PERMISSION_REQUEST_SENTINEL));
+        let label = parsed.is_ok().then(|| PRESENTATION.label(""));
         let description = CallDescription {
-            title: match parsed {
-                Ok(_) => ACTION_TITLE.to_owned(),
-                Err(_) => format_unknown_action(TOOL_NAME),
-            },
-            activity: ToolActivity::Ask,
+            title: label
+                .as_ref()
+                .map_or_else(|| format_unknown_action(TOOL_NAME), ActionLabel::title),
+            label,
+            activity: PRESENTATION.activity,
             effect: if refusal.is_some() {
                 ToolEffect::None
             } else {
