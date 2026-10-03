@@ -19,7 +19,7 @@ use ofx_config::{
 use ofx_contract::{
     ApprovalDecision, BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode,
     ModelCapabilities, ModelProvider, PermissionMode, QuestionAsker, RequestId, ReviewTransport,
-    Tool,
+    StatuslineToggles, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -147,6 +147,7 @@ pub struct AgentSetup {
     change_tracker: Option<ChangeTracker>,
     questions: Option<Questions>,
     question_requests: Option<QuestionRequests>,
+    statusline: StatuslineToggles,
     refreshes: Option<Arc<DetachedRefreshes>>,
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     skills: Arc<HostSkills>,
@@ -336,6 +337,7 @@ impl Profile {
             change_tracker,
             questions,
             question_requests,
+            statusline: self.settings.statusline(),
             refreshes,
             project,
             skills,
@@ -645,6 +647,10 @@ impl AgentSetup {
 
     pub(crate) fn take_question_requests(&mut self) -> Option<QuestionRequests> {
         self.question_requests.take()
+    }
+
+    pub(crate) fn statusline(&self) -> StatuslineToggles {
+        self.statusline
     }
 
     pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {

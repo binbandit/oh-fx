@@ -80,7 +80,7 @@ pub(crate) fn slash_command_categories() -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) -> CommandEffect {
+pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work) -> CommandEffect {
     let Some(command) = SLASH_REGISTRY.parse_command(text) else {
         state.notice(NoticeTone::Error, "command", UNKNOWN_COMMAND);
         return CommandEffect::None;
@@ -129,7 +129,7 @@ fn compaction_effect(state: &ControllerState, work: Work) -> CommandEffect {
     }
 }
 
-fn report(state: &ControllerState, kind: SlashKind, payload: &str) {
+fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
     match kind {
         SlashKind::Quit => state.emit(UiEvent::ExitRequested),
         SlashKind::Help => state.emit(UiEvent::HelpRequested),
@@ -157,6 +157,7 @@ fn report(state: &ControllerState, kind: SlashKind, payload: &str) {
             state.notice(NoticeTone::Neutral, UNDO_TOPIC, &undo_message(&result));
         }
         SlashKind::Copy => copy_last_reply(state),
+        SlashKind::Statusline => state.toggle_statusline(payload),
         SlashKind::Workspace => state.notice(
             NoticeTone::Error,
             WORKSPACE_TOPIC,
@@ -299,6 +300,7 @@ mod tests {
                 "/settings",
                 "/alias",
                 "/fast",
+                "/statusline",
                 "/workspace",
                 "/version",
                 "/quit",
@@ -314,8 +316,8 @@ mod tests {
         assert_eq!(specs[4].description, "resume a saved session");
         assert_eq!(specs[5].description, "rename the current session");
         assert_eq!(specs[13].description, "browse and manage skills");
-        assert_eq!(specs[21].aliases, ["/exit"]);
-        assert_eq!(specs[21].description, "exit the interactive shell");
+        assert_eq!(specs[22].aliases, ["/exit"]);
+        assert_eq!(specs[22].description, "exit the interactive shell");
     }
 
     #[test]
@@ -348,6 +350,7 @@ mod tests {
                 ("/settings", "Appearance"),
                 ("/alias", "Extensions"),
                 ("/fast", "Model"),
+                ("/statusline", "Appearance"),
                 ("/workspace", "Workspace"),
                 ("/version", "General"),
                 ("/quit", "General"),

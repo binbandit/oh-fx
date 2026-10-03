@@ -265,6 +265,10 @@ impl Row {
             .sum()
     }
 
+    pub(crate) fn byte_len(&self) -> usize {
+        self.segments.iter().map(|segment| segment.text.len()).sum()
+    }
+
     #[cfg(test)]
     pub(crate) fn text(&self) -> String {
         self.segments

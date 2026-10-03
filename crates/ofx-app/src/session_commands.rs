@@ -4,15 +4,18 @@ use std::path::Path;
 
 use ofx_config::{
     AllowlistResetScope, CommitOutcome, ConfigSource, PermissionPatch, PermissionSources,
-    ProfilePaths, Settings, save_permission_patch, save_startup_scrollback,
+    ProfilePaths, Settings, save_permission_patch, save_startup_scrollback, save_statusline_item,
 };
-use ofx_contract::{Notice, NoticeTone, PermissionAction, PermissionMode, PermissionRule};
+use ofx_contract::{
+    Notice, NoticeTone, PermissionAction, PermissionMode, PermissionRule, StatuslineItem,
+    StatuslineToggles, UiEvent,
+};
 use ofx_permissions::{
     WEB_FETCH_PERMISSION, WEB_SEARCH_PERMISSION, canonical_web_fetch_domain_pattern,
     is_canonical_web_fetch_domain_pattern, permission_name_for_tool, web_fetch_rule_warning_count,
 };
 
-use crate::user_settings::{Unsaved, append_legacy_cleanup, not_saved_notice};
+use crate::user_settings::{Unsaved, append_legacy_cleanup, not_saved_notice, unsaved_notice};
 
 const ALLOWLIST_TOPIC: &str = "allowlist";
 const SETTINGS_TOPIC: &str = "settings";
@@ -36,6 +39,8 @@ const SEPARATORS: [char; 2] = [' ', '\t'];
 const SETTINGS_USAGE: &str = "usage: /settings [startup-scrollback [on|off]]";
 const STARTUP_SCROLLBACK_LABEL: &str = "startup-scrollback";
 const SAVED_TO_USER_SETTINGS: &str = "saved to user settings (scope=user)";
+const STATUSLINE_TOPIC: &str = "statusline";
+const STATUSLINE_USAGE: &str = "usage: /statusline [context|session|workspace]";
 
 pub(crate) struct SettingsAccess<'a> {
     pub(crate) paths: Option<&'a ProfilePaths>,
@@ -209,6 +214,74 @@ fn save_startup_scrollback_setting(access: &SettingsAccess<'_>, enabled: bool) -
         format!("startup_scrollback: {} {detail}", on_off(enabled)),
     ));
     notices
+}
+
+pub(crate) fn handle_statusline(
+    access: &SettingsAccess<'_>,
+    toggles: &mut StatuslineToggles,
+    rest: &str,
+) -> Vec<UiEvent> {
+    let requested = rest.trim_matches(SEPARATORS);
+    if requested.is_empty() {
+        return vec![notice_event(statusline_status(*toggles))];
+    }
+    let Some(item) = StatuslineItem::ALL
+        .into_iter()
+        .find(|item| item.label() == requested)
+    else {
+        return vec![notice_event(usage(STATUSLINE_USAGE))];
+    };
+    let enabled = !toggles.enabled(item);
+    toggles.set(item, enabled);
+    let mut events = vec![UiEvent::StatuslineChanged { item, enabled }];
+    let mut notices = Vec::new();
+    let saved = match access.paths {
+        Some(paths) => save_statusline_item(paths, item, enabled).map_err(Unsaved::Failed),
+        None => Err(Unsaved::HomeNotSet),
+    };
+    match saved {
+        Ok(outcome) => {
+            report_user_settings_commit(
+                access,
+                STATUSLINE_TOPIC,
+                &outcome,
+                |settings| {
+                    settings
+                        .statusline_source(item)
+                        .map(|source| (statusline_field(item), source))
+                },
+                true,
+                &mut notices,
+            );
+        }
+        Err(unsaved) => notices.push(unsaved_notice(STATUSLINE_TOPIC, &unsaved)),
+    }
+    notices.push(Notice::new(
+        NoticeTone::Neutral,
+        STATUSLINE_TOPIC,
+        format!("{}: {}", item.label(), on_off(enabled)),
+    ));
+    events.extend(notices.into_iter().map(notice_event));
+    events
+}
+
+fn statusline_status(toggles: StatuslineToggles) -> Notice {
+    let body = StatuslineItem::ALL
+        .map(|item| format!("{}: {}", item.label(), on_off(toggles.enabled(item))))
+        .join("\n");
+    Notice::new(NoticeTone::Neutral, STATUSLINE_TOPIC, body)
+}
+
+const fn statusline_field(item: StatuslineItem) -> &'static str {
+    match item {
+        StatuslineItem::Context => "statusLine.context",
+        StatuslineItem::Session => "statusLine.session",
+        StatuslineItem::Workspace => "statusLine.workspace",
+    }
+}
+
+fn notice_event(notice: Notice) -> UiEvent {
+    UiEvent::Notice { notice }
 }
 
 fn report_user_settings_commit(
