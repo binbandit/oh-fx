@@ -51,16 +51,21 @@ fn draft_window(draft: &str, cursor: usize, max_width: usize) -> (&str, &str, &s
     } else {
         (1, cursor)
     };
+    let before = &draft[..cursor];
     let mut before_start = 0;
-    let mut before_width = visible_width(&draft[..cursor]);
-    while before_start < cursor && before_width + cursor_width > max_width {
-        let leading = display_unit_at(draft, before_start);
+    let mut before_width = visible_width(before);
+    while before_start < cursor {
+        let leading = display_unit_at(before, before_start);
+        let fits = before_width + cursor_width <= max_width;
+        if fits && leading.cell_width > 0 {
+            break;
+        }
         before_width = before_width.saturating_sub(leading.cell_width);
         before_start += leading.byte_len.max(1);
     }
     let after_width = max_width.saturating_sub(before_width + cursor_width);
     (
-        &draft[before_start..cursor],
+        &before[before_start..],
         &draft[cursor..cursor_end],
         prefix_by_width(&draft[cursor_end..], after_width),
     )
@@ -77,5 +82,13 @@ mod tests {
         assert_eq!(draft_window("abcdef", 3, 3), ("bc", "d", ""));
         assert_eq!(draft_window("ab文字", 2, 4), ("ab", "文", ""));
         assert_eq!(draft_window("文字x", 3, 2), ("", "字", ""));
+    }
+
+    #[test]
+    fn a_cursor_inside_a_joined_emoji_keeps_the_window_within_the_draft_before_it() {
+        let draft = "👩\u{200d}💻";
+        let cursor = "👩\u{200d}".len();
+        assert_eq!(draft_window(draft, cursor, 2), ("", "💻", ""));
+        assert_eq!(draft_window(draft, cursor, 4), ("👩\u{200d}", "💻", ""));
     }
 }
