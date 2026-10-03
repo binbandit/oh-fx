@@ -50,6 +50,7 @@ struct Selection {
     choice: FileMatch,
 }
 
+#[derive(Default)]
 pub(super) struct PickerBand {
     pub(super) rows: Vec<Row>,
     pub(super) receipt: Option<Receipt>,
@@ -248,6 +249,7 @@ impl Shell<'_> {
         self.approval.is_none()
             && self.question.is_none()
             && self.skills_menu.is_none()
+            && self.model_menu.is_none()
             && self.picker.is_none()
     }
 
@@ -299,15 +301,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn file_picker_band(&self, input_extra: usize, banner_rows: usize) -> PickerBand {
-        let empty = PickerBand {
-            rows: Vec::new(),
-            receipt: None,
-        };
         if !self.file_picker_eligible() {
-            return empty;
+            return PickerBand::default();
         }
         let Some(query) = self.file_picker.query(&self.composer) else {
-            return empty;
+            return PickerBand::default();
         };
         let picker = &self.file_picker;
         let view = picker.state.view(picker.index, picker.window_start);

@@ -1,25 +1,16 @@
 use std::borrow::Cow;
 
-use ofx_text::{prefix_by_width, visible_width};
+use ofx_text::visible_width;
 
+use crate::footer::picker_presentation::single_line_ellipsized;
 use crate::list_window::update_edge_start;
 use crate::row_text::{Paint, Row, terminal_safe};
 use crate::shell::skills_menu::{SOURCE_FILTERS, SkillsMenu, filter_label};
 use crate::theme::Theme;
 
-const MAX_MENU_ROWS: usize = 8;
-const FIXED_FOOTER_ROWS: usize = 5;
-const MINIMUM_TRANSCRIPT_ROWS: usize = 5;
+pub(crate) const MAX_MENU_ROWS: usize = 8;
 const HEADER_ROWS: usize = 2;
 const COLUMN_GAP: usize = 4;
-const CTRL_C_EXIT_HINT: &str = "press ctrl+c again to exit";
-const HINTS: [&str; 5] = [
-    "↑↓ navigate     tab source     enter use     esc close",
-    "↑↓ navigate  tab source  enter use  esc close",
-    "↑↓ move  tab source  enter  esc",
-    "enter use  esc close",
-    "enter esc",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MenuLayout {
@@ -60,17 +51,6 @@ impl MenuLayout {
             row_count: HEADER_ROWS + visible_items,
         }
     }
-}
-
-pub(crate) fn menu_row_budget(
-    terminal_rows: usize,
-    input_extra: usize,
-    banner_rows: usize,
-) -> usize {
-    let available = terminal_rows
-        .saturating_sub(FIXED_FOOTER_ROWS + input_extra + banner_rows)
-        .saturating_sub(MINIMUM_TRANSCRIPT_ROWS);
-    MAX_MENU_ROWS.min(available.max(1))
 }
 
 pub(crate) fn visible_item_rows(menu: &SkillsMenu, budget: usize) -> usize {
@@ -145,17 +125,6 @@ fn skills_menu_rows(menu: &SkillsMenu, budget: usize, width: usize, theme: &Them
         ));
     }
     rows
-}
-
-pub(crate) fn skills_menu_hint_row(theme: &Theme, width: usize, ctrl_c_pending: bool) -> Row {
-    if ctrl_c_pending {
-        return Row::styled(CTRL_C_EXIT_HINT, theme.statusline).clipped(width);
-    }
-    let hint = HINTS
-        .into_iter()
-        .find(|hint| visible_width(hint) <= width)
-        .unwrap_or(HINTS[HINTS.len() - 1]);
-    Row::styled(hint, theme.dim).clipped(width)
 }
 
 fn header_row(menu: &SkillsMenu, count: usize, width: usize, theme: &Theme) -> Row {
@@ -242,22 +211,6 @@ fn item_row(name: &str, scope: &str, columns: Columns, paint: Paint, width: usiz
     row
 }
 
-fn single_line_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
-    let text = if text.contains(['\n', '\r']) {
-        Cow::Owned(text.replace(['\n', '\r'], " "))
-    } else {
-        Cow::Borrowed(text)
-    };
-    if visible_width(&text) <= width {
-        return text;
-    }
-    match width {
-        0 => Cow::Borrowed(""),
-        1 => Cow::Borrowed("…"),
-        _ => Cow::Owned(format!("{}…", prefix_by_width(&text, width - 1))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -265,6 +218,7 @@ mod tests {
     use ofx_contract::{SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource};
 
     use super::*;
+    use crate::footer::picker_presentation::{catalog_menu_hint_row, menu_row_budget};
 
     fn theme() -> Theme {
         Theme::builtin(false, false, true)
@@ -342,9 +296,10 @@ mod tests {
         );
         assert_eq!(visible_item_rows(&menu, 3), 1);
         assert_eq!(visible_item_rows(&menu, 8), 2);
-        assert_eq!(menu_row_budget(24, 0, 0), 8);
-        assert_eq!(menu_row_budget(16, 1, 0), 5);
-        assert_eq!(menu_row_budget(8, 0, 0), 1);
+        assert_eq!(menu_row_budget(24, 0, 0, MAX_MENU_ROWS), 8);
+        assert_eq!(menu_row_budget(16, 1, 0, MAX_MENU_ROWS), 5);
+        assert_eq!(menu_row_budget(8, 0, 0, MAX_MENU_ROWS), 1);
+        assert_eq!(menu_row_budget(40, 0, 0, 23), 23);
     }
 
     #[test]
@@ -393,7 +348,7 @@ mod tests {
 
     #[test]
     fn the_hint_row_shortens_with_the_width() {
-        let hint = |width| skills_menu_hint_row(&theme(), width, false).text();
+        let hint = |width| catalog_menu_hint_row(&theme(), width, false, "source").text();
         assert_eq!(
             hint(80),
             "↑↓ navigate     tab source     enter use     esc close"
@@ -401,7 +356,7 @@ mod tests {
         assert_eq!(hint(40), "↑↓ move  tab source  enter  esc");
         assert_eq!(hint(5), "enter");
         assert_eq!(
-            skills_menu_hint_row(&theme(), 80, true).text(),
+            catalog_menu_hint_row(&theme(), 80, true, "source").text(),
             "press ctrl+c again to exit"
         );
     }

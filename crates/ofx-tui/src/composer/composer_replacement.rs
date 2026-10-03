@@ -47,6 +47,16 @@ impl Composer {
         self.replace_selection_bounded(text, max_len)
     }
 
+    pub(crate) fn replace_text(&mut self, text: &str) {
+        self.vertical.reset();
+        self.edit.discard_selection();
+        self.entities.clear();
+        self.edit.swap_input(&mut text.to_owned());
+        self.edit_history.reset();
+        self.limit_rejection.clear();
+        self.auto_separator = None;
+    }
+
     pub(crate) fn delete_selection(&mut self) -> bool {
         let Some(selection) = self.edit.selection_range() else {
             return false;
