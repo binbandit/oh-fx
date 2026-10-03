@@ -845,3 +845,53 @@ fn a_manual_compaction_after_an_unsaved_turn_covers_only_the_saved_turns_it_summ
         .concat()
     );
 }
+
+fn after<'a>(screen: &'a str, marker: &str) -> &'a str {
+    let start = screen
+        .rfind(marker)
+        .unwrap_or_else(|| panic!("expected {marker:?} on screen:\n{screen}"));
+    &screen[start..]
+}
+
+#[test]
+fn the_skills_discovery_warning_shows_again_in_a_new_and_in_a_resumed_conversation() {
+    const WARNING: &str = "skill discovery warning";
+    let server = FakeServer::start(
+        (1..=5).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))),
+    );
+    let home = Home::new(&server.base_url());
+    let broken = home.workspace.join("skills/broken");
+    fs::create_dir_all(&broken).expect("create the skill directory");
+    fs::write(broken.join("SKILL.md"), "---\ndescription: nameless\n---\n")
+        .expect("write the skill");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"question 1\r");
+    let screen = wait(&session, "answer 1");
+    assert!(after(&screen, "┃ question 1").contains(WARNING), "{screen}");
+    session.send(b"question 2\r");
+    let screen = wait(&session, "answer 2");
+    assert!(
+        !after(&screen, "┃ question 2").contains(WARNING),
+        "{screen}"
+    );
+    session.send(b"/new\r");
+    session.send(b"question 3\r");
+    let screen = wait(&session, "answer 3");
+    assert!(!screen.contains("answer 2"), "{screen}");
+    assert!(after(&screen, "┃ question 3").contains(WARNING), "{screen}");
+    session.send(b"question 4\r");
+    let screen = wait(&session, "answer 4");
+    assert!(
+        !after(&screen, "┃ question 4").contains(WARNING),
+        "{screen}"
+    );
+    exit(session);
+
+    let session = home.shell(&["-c"], "session resumed");
+    let screen = wait(&session, "answer 4");
+    assert!(!screen.contains(WARNING), "{screen}");
+    session.send(b"question 5\r");
+    let screen = wait(&session, "answer 5");
+    assert!(after(&screen, "┃ question 5").contains(WARNING), "{screen}");
+    exit(session);
+}
