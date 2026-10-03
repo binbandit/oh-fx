@@ -34,6 +34,33 @@ pub fn tool_execution_failure_json(failure: &ExecutionFailure<'_>) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailValue<'a> {
+    Text(&'a str),
+    Unsigned(u64),
+    Boolean(bool),
+}
+
+pub fn valued_execution_failure_json(
+    tool_name: &str,
+    message: &str,
+    details: &[(&str, DetailValue<'_>)],
+    suggestion: Option<&str>,
+) -> String {
+    let details = details
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                DetailValue::Text(text) => masked(text),
+                DetailValue::Unsigned(number) => Value::from(*number),
+                DetailValue::Boolean(flag) => Value::Bool(*flag),
+            };
+            ((*name).to_owned(), value)
+        })
+        .collect();
+    failure_json(tool_name, message, details, suggestion)
+}
+
 pub fn malformed_tool_arguments_json(
     tool_name: &str,
     diagnostic: &ToolArgumentDiagnostic,
@@ -229,6 +256,26 @@ mod tests {
                 suggestion: None,
             }),
             "{\"error\":{\"type\":\"tool_execution_failed\",\"tool_name\":\"grep_files\",\"message\":\"grep_files failed\"}}"
+        );
+    }
+
+    #[test]
+    fn valued_execution_failures_keep_numbers_and_flags_unquoted() {
+        assert_eq!(
+            valued_execution_failure_json(
+                "web_fetch",
+                "web_fetch received non-success HTTP status",
+                &[
+                    (
+                        "url",
+                        DetailValue::Text("https://example.com/?token=abcdefghijklmnop")
+                    ),
+                    ("status", DetailValue::Unsigned(404)),
+                    ("body_truncated", DetailValue::Boolean(false)),
+                ],
+                None,
+            ),
+            "{\"error\":{\"type\":\"tool_execution_failed\",\"tool_name\":\"web_fetch\",\"message\":\"web_fetch received non-success HTTP status\",\"details\":{\"url\":\"https://example.com/?token=[redacted]\",\"status\":404,\"body_truncated\":false}}}"
         );
     }
 

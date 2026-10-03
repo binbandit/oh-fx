@@ -20,6 +20,10 @@ pub struct ToolArgs {
 }
 
 impl ToolArgs {
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.fields.iter().map(|(name, _)| name.as_str())
+    }
+
     pub fn get(&self, key: &str) -> Option<&ToolArgValue> {
         self.fields
             .iter()

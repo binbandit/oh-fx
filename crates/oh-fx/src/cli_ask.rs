@@ -13,6 +13,7 @@ use ofx_agent::{
 };
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, SubscriptionEndpoints,
+    WebFetchProgress,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -21,7 +22,7 @@ use ofx_config::{
     Settings, save_yolo_acknowledged,
 };
 use ofx_contract::{
-    FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
+    CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
     RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
     TurnOutcome, UiEvent, Usage,
 };
@@ -45,6 +46,7 @@ use crate::shell_call_record::{
 };
 
 const UNAVAILABLE_CODE: &str = "NotAvailableYet";
+const WEB_FETCH_TOOL: &str = "web_fetch";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
 const HOME_NOT_SET: &str = "HomeNotSet";
 const PERMISSION_REQUIRED_HEADLINE: &str =
@@ -433,6 +435,7 @@ async fn prepare_agent(
         command_timeout: args.timeout_ms.map(Duration::from_millis),
         executions: request.executions,
         endpoints,
+        web_fetch_progress: web_fetch_progress(output_mode(args.output)),
     };
     let setup = profile.connect(launch, cancel).await?;
     let mut agent = setup.agent();
@@ -560,6 +563,15 @@ fn without_leading_blank_lines(text: &str) -> &str {
     text[..blank]
         .rfind('\n')
         .map_or(text, |end| &text[end + 1..])
+}
+
+fn web_fetch_progress(mode: OutputMode) -> Option<WebFetchProgress> {
+    if mode == OutputMode::Terminal {
+        return None;
+    }
+    Some(Arc::new(|line: &str| {
+        let _ = write_stderr(&format!("{line}\n"));
+    }))
 }
 
 fn write_stderr(text: &str) -> io::Result<()> {
@@ -848,21 +860,10 @@ impl Presenter {
             }
             UiEvent::ToolStarted {
                 call_id,
+                tool_name,
                 description,
                 ..
-            } => {
-                self.start_step();
-                if description.activity == ToolActivity::Command {
-                    self.command_calls.push(call_id.clone());
-                }
-                let line = self.progress_line(&description.title);
-                if description.effect == ToolEffect::None {
-                    self.settling_progress.push((call_id, line));
-                    Ok(())
-                } else {
-                    self.write_status(StatusBlock::Progress, &line)
-                }
-            }
+            } => self.tool_started(call_id, &tool_name, &description),
             UiEvent::ToolFinished {
                 call_id,
                 tool_name,
@@ -934,6 +935,28 @@ impl Presenter {
                 self.write_error.get_or_insert(write_error_name(&error));
                 false
             }
+        }
+    }
+
+    fn tool_started(
+        &mut self,
+        call_id: ToolCallId,
+        tool_name: &str,
+        description: &CallDescription,
+    ) -> io::Result<()> {
+        self.start_step();
+        if description.activity == ToolActivity::Command {
+            self.command_calls.push(call_id.clone());
+        }
+        if self.mode != OutputMode::Terminal && tool_name == WEB_FETCH_TOOL {
+            return Ok(());
+        }
+        let line = self.progress_line(&description.title);
+        if description.effect == ToolEffect::None {
+            self.settling_progress.push((call_id, line));
+            Ok(())
+        } else {
+            self.write_status(StatusBlock::Progress, &line)
         }
     }
 

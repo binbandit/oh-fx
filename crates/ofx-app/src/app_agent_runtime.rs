@@ -603,6 +603,7 @@ mod tests {
                     command_timeout: None,
                     executions: &executions,
                     endpoints,
+                    web_fetch_progress: None,
                 },
                 &CancellationToken::new(),
             )

@@ -157,6 +157,7 @@ impl Session {
                 None,
                 mode,
                 crate::skills::rootless_skill_tool(),
+                None,
             ),
             Arc::new(NoContext),
             gate,
