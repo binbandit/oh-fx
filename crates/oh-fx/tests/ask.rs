@@ -1745,6 +1745,36 @@ fn saved_additional_directories_apply_until_no_additional_dirs_suppresses_them()
 }
 
 #[test]
+fn auto_mode_edits_an_existing_file_in_an_added_directory_without_review() {
+    let outside = OutsideFile::new();
+    let shared = Path::new(&outside.path).parent().unwrap().to_owned();
+    let edit = json!({
+        "path": outside.path,
+        "old_string": "outside secret",
+        "new_string": "shared note",
+    })
+    .to_string();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events("call_1", "edit_file", &edit)),
+        Reply::sse(&chat_text_events(&["Edited."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "auto"));
+    let output = home.ask(
+        &[
+            OsStr::new("--add-dir"),
+            shared.as_os_str(),
+            OsStr::new("ask"),
+            OsStr::new("edit it"),
+        ],
+        &KEY,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Edited.");
+    assert_eq!(fs::read_to_string(&outside.path).unwrap(), "shared note\n");
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[test]
 fn added_directories_that_cannot_be_used_fail_before_any_request() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&portkey_settings(&server.base_url()));
