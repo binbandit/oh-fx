@@ -1,14 +1,14 @@
 use std::mem;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, ChatMessage, Concurrency, PreparedCall, TargetKind,
-    ToolCall, ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus, TurnId, UiEvent,
+    ApplicableTarget, CallDescription, ChatMessage, PreparedCall, TargetKind, ToolCall,
+    ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus, TurnId, UiEvent,
 };
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Agent, EventSink, Prepared, Rejection, Stop, ToolOutput, TurnFailure, completed, contained,
-    discard,
+    Agent, EventSink, ParallelGroup, Prepared, Rejection, Stop, ToolOutput, TurnFailure, completed,
+    contained, discard, parallel_group,
 };
 
 pub(super) const CONTEXT_DEFERRED_OUTPUT: &str = "Scoped project instructions were added before execution. Review them and reissue this tool call if it is still appropriate.";
@@ -45,13 +45,11 @@ impl Drop for ProjectGate {
 }
 
 impl GatedCall {
-    fn is_parallel(&self) -> bool {
+    fn parallel_group(&self) -> Option<ParallelGroup> {
         match self {
-            Self::Terminal(prepared) => prepared.is_parallel(),
-            Self::Candidate(candidate) => {
-                candidate.description.concurrency == Concurrency::Parallel
-            }
-            Self::Released => false,
+            Self::Terminal(prepared) => prepared.parallel_group(),
+            Self::Candidate(candidate) => parallel_group(&candidate.description),
+            Self::Released => None,
         }
     }
 
@@ -180,8 +178,10 @@ impl Agent {
         start: usize,
     ) -> GatedGroup<'c> {
         let mut end = start + 1;
-        if !gate.delta && gate.calls[start].is_parallel() {
-            while end < calls.len() && gate.calls[end].is_parallel() {
+        if !gate.delta
+            && let Some(group) = gate.calls[start].parallel_group()
+        {
+            while end < calls.len() && gate.calls[end].parallel_group() == Some(group) {
                 end += 1;
             }
         }

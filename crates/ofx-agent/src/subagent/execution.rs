@@ -1,0 +1,142 @@
+use std::sync::Arc;
+
+use ofx_contract::{
+    ApprovalRequest, LivePermissionMode, ModelFailureDiagnostic, TurnOutcome, UiEvent,
+};
+use ofx_text::is_terminal_safe;
+use tokio_util::sync::CancellationToken;
+
+use super::child_state::{ActiveWork, Outcome};
+use crate::orchestrator::{Agent, TurnFailure, TurnReport};
+
+const MAX_DIAGNOSTIC_BYTES: usize = 256;
+
+pub(crate) struct ChildRuntime {
+    agent: Agent,
+    base_prompt: String,
+    permission_mode: LivePermissionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkOutcome {
+    pub(crate) outcome: Outcome,
+    pub(crate) failure: Option<ModelFailureDiagnostic>,
+    pub(crate) text: Option<String>,
+}
+
+impl WorkOutcome {
+    pub(crate) fn panicked() -> Self {
+        Self {
+            outcome: Outcome::Failed,
+            failure: Some(failure_diagnostic_value("agent_execution", "Panicked")),
+            text: None,
+        }
+    }
+}
+
+impl ChildRuntime {
+    pub(crate) fn new(agent: Agent, permission_mode: LivePermissionMode) -> Self {
+        Self {
+            base_prompt: agent.config().system_prompt.clone(),
+            agent,
+            permission_mode,
+        }
+    }
+
+    pub(crate) async fn run(
+        &mut self,
+        work: &ActiveWork,
+        instructions: &str,
+        approvals: &(dyn Fn(ApprovalRequest) + Sync),
+        cancel: &CancellationToken,
+    ) -> WorkOutcome {
+        let mut config = self.agent.config().clone();
+        config.system_prompt = system_prompt(&self.base_prompt, instructions);
+        self.agent.set_config(config);
+        self.agent
+            .inherit_root_user_requests(Arc::clone(&work.root_user_requests));
+        self.permission_mode.set(work.permission_mode);
+        let mut partial = String::new();
+        let report = self
+            .agent
+            .run_turn(
+                &work.message,
+                &mut |event| match event {
+                    UiEvent::AssistantText { text, .. } => partial.push_str(&text),
+                    UiEvent::ToolStarted { .. } | UiEvent::ToolRejected { .. } => partial.clear(),
+                    UiEvent::ApprovalRequested { request, .. } => approvals(*request),
+                    _ => {}
+                },
+                cancel,
+            )
+            .await;
+        work_outcome(report, partial, cancel.is_cancelled())
+    }
+}
+
+pub(crate) fn system_prompt(base: &str, instructions: &str) -> String {
+    if instructions.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{base}\n\n<subagent_instructions>\n{instructions}\n</subagent_instructions>")
+    }
+}
+
+fn work_outcome(report: TurnReport, partial: String, cancelled: bool) -> WorkOutcome {
+    let outcome = if cancelled {
+        Outcome::Cancelled
+    } else {
+        match report.outcome {
+            TurnOutcome::Completed => Outcome::Completed,
+            TurnOutcome::Interrupted => Outcome::Interrupted,
+            TurnOutcome::Failed => Outcome::Failed,
+        }
+    };
+    let failure =
+        (outcome == Outcome::Failed).then(|| turn_failure_diagnostic(report.failure.as_ref()));
+    let text = match report.outcome {
+        TurnOutcome::Completed => Some(report.final_text),
+        TurnOutcome::Interrupted | TurnOutcome::Failed => (!partial.is_empty()).then_some(partial),
+    };
+    WorkOutcome {
+        outcome,
+        failure,
+        text,
+    }
+}
+
+fn turn_failure_diagnostic(failure: Option<&TurnFailure>) -> ModelFailureDiagnostic {
+    match failure {
+        Some(TurnFailure::Provider(error)) if error.status.is_some() => {
+            let title = if matches!(error.status, Some(401 | 403)) {
+                "API access denied"
+            } else {
+                "API request failed"
+            };
+            let detail = error.diagnostic.as_deref().unwrap_or(&error.code);
+            failure_diagnostic_value("provider_http_error", &format!("{title} · {detail}"))
+        }
+        Some(failure) => failure_diagnostic_value("agent_turn_failed", failure.code()),
+        None => failure_diagnostic_value("agent_execution", "ProviderFailed"),
+    }
+}
+
+pub(crate) fn failure_diagnostic_value(code: &str, detail: &str) -> ModelFailureDiagnostic {
+    let prefix = &code[..code.floor_char_boundary(MAX_DIAGNOSTIC_BYTES)];
+    let room = MAX_DIAGNOSTIC_BYTES
+        .saturating_sub(prefix.len())
+        .saturating_sub(2);
+    let detail = if is_terminal_safe(detail.as_bytes()) {
+        &detail[..detail.floor_char_boundary(room)]
+    } else {
+        ""
+    };
+    if detail.is_empty() {
+        ModelFailureDiagnostic::new(prefix)
+    } else {
+        ModelFailureDiagnostic::new(&format!("{prefix}: {detail}"))
+    }
+}
+
+#[cfg(test)]
+mod tests;

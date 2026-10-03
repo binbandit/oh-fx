@@ -108,6 +108,13 @@ pub struct FileChange<'a> {
     pub line_counts: Option<&'a OnceLock<FileChangeStats>>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RootUserRequests {
+    pub current: String,
+    pub earlier: Vec<String>,
+    pub compacted_turns: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ReviewRequest<'a> {
     pub model: &'a str,
