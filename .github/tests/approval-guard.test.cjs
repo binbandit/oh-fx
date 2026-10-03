@@ -12,9 +12,9 @@ function stepLine(name, pattern) {
   assert.notEqual(index, -1, `Missing ${pattern} in step: ${name}`);
   return index;
 }
-function stepScript(name) {
-  const start = stepLine(name, /^ +run: \|$/);
-  const indent = ' '.repeat(lines[start].indexOf('run:') + 2);
+function stepScript(name, key = 'run') {
+  const start = stepLine(name, new RegExp(`^ +${key}: \\|$`));
+  const indent = ' '.repeat(lines[start].indexOf(`${key}:`) + 2);
   const script = [];
   for (const line of lines.slice(start + 1)) {
     if (line.trim() && !line.startsWith(indent)) break;
@@ -23,8 +23,8 @@ function stepScript(name) {
   return script.join('\n');
 }
 const compare = stepScript('Replay the reviewed change');
-const remove = stepScript('Remove the approval');
-const comment = lines[stepLine('Remove the approval', /^ +COMMENT: /)].replace(/^ +COMMENT: /, '');
+const record = stepScript('Record maintainer approval', 'script');
+const comment = lines[stepLine('Record maintainer approval', /^ +COMMENT: /)].replace(/^ +COMMENT: /, '');
 const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'approval-guard-')));
 test.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
 const env = {
@@ -165,29 +165,122 @@ test('an unreachable approved commit or a missing base branch drops the approval
   assert.equal(repo.reviewed(repo.approved, repo.approved, 'missing'), 'reviewed=changed');
 });
 
-test('remove the label and comment only while the label is present', () => {
-  assert.equal(comment, 'New commits since approval; `codex-approved` removed until the maintainer re-reviews.');
-  const bin = fs.mkdtempSync(path.join(scratch, 'bin-'));
-  const log = path.join(bin, 'calls');
-  fs.writeFileSync(path.join(bin, 'gh'), [
-    '#!/usr/bin/env node',
-    `require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
-    "if (process.argv.includes('--jq')) process.stdout.write(process.env.FAKE_LABEL);",
-  ].join('\n'), { mode: 0o755 });
-  const calls = label => {
-    fs.rmSync(log, { force: true });
-    bash(remove, {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_LABEL: label,
-      GITHUB_REPOSITORY: 'owner/repo', PULL_REQUEST: '42', COMMENT: comment,
-    });
-    return fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+const head = 'a'.repeat(40);
+const before = 'b'.repeat(40);
+const approval = { context: 'maintainer-approval', state: 'success', creator: { login: 'github-actions[bot]' } };
+async function decide(action, {
+  label = 'codex-approved', role = 'admin', labels = ['codex', 'codex-approved'], statuses = [approval],
+  reviewed = 'unchanged', failing = {},
+} = {}) {
+  const writes = [];
+  const endpoint = (name, respond) => async params => {
+    if (failing[name]) throw Object.assign(new Error(`${name} failed`), { status: failing[name] });
+    return { data: respond(params) };
   };
-  const issue = 'repos/owner/repo/issues/42';
-  const list = ['api', '--paginate', `${issue}/labels`, '--jq', '.[] | select(.name == "codex-approved") | .name'];
-  assert.deepEqual(calls('codex-approved\n'), [
-    list,
-    ['api', '--method', 'DELETE', `${issue}/labels/codex-approved`, '--silent'],
-    ['api', `${issue}/comments`, '--silent', '-f', `body=${comment}`],
-  ]);
-  assert.deepEqual(calls(''), [list]);
+  const github = {
+    paginate: async (method, params) => (await method(params)).data,
+    rest: {
+      repos: {
+        getCollaboratorPermissionLevel: endpoint('permission', ({ owner, repo, username }) => {
+          assert.deepEqual([owner, repo, username], ['owner', 'repo', 'sender']);
+          return { permission: role === 'maintain' ? 'write' : role, role_name: role };
+        }),
+        listCommitStatusesForRef: endpoint('statuses', ({ ref }) => {
+          assert.equal(ref, before);
+          return statuses;
+        }),
+        createCommitStatus: endpoint('status', ({ sha, context, state, description }) => {
+          assert.deepEqual([sha, context], [head, 'maintainer-approval']);
+          writes.push(`${state}: ${description}`);
+          return {};
+        }),
+      },
+      issues: {
+        listLabelsOnIssue: endpoint('labels', () => labels.map(name => ({ name }))),
+        removeLabel: endpoint('unlabel', ({ issue_number, name }) => {
+          writes.push(`unlabel #${issue_number} ${name}`);
+          return [];
+        }),
+        createComment: endpoint('comment', ({ issue_number, body }) => {
+          writes.push(`comment #${issue_number}: ${body}`);
+          return {};
+        }),
+      },
+    },
+  };
+  const context = { repo: { owner: 'owner', repo: 'repo' }, payload: {
+    action, before, after: head, sender: { login: 'sender' }, label: { name: label },
+    pull_request: { number: 42, head: { sha: head } },
+  } };
+  Object.assign(process.env, { REVIEWED: reviewed, COMMENT: comment });
+  try {
+    await new AsyncFunction('github', 'context', 'core', record)(github, context, {});
+    return { writes };
+  } catch (error) {
+    return { writes, error: error.message };
+  } finally {
+    delete process.env.REVIEWED;
+    delete process.env.COMMENT;
+  }
+}
+const revoked = ['failure: new commits need maintainer review', 'unlabel #42 codex-approved', `comment #42: ${comment}`];
+
+test('a maintainer or admin adding the label approves the current head', async () => {
+  for (const role of ['admin', 'maintain']) {
+    assert.deepEqual(await decide('labeled', { role }), { writes: ['success: approved at aaaaaaa'] });
+  }
+});
+
+test('the label from anyone else is removed and fails the head', async () => {
+  for (const role of ['write', 'triage', 'read', 'none']) {
+    assert.deepEqual(await decide('labeled', { role }),
+      { writes: ['failure: codex-approved needs a maintainer', 'unlabel #42 codex-approved'] });
+  }
+});
+
+test('removing the label fails the head, and other labels change nothing', async () => {
+  assert.deepEqual(await decide('unlabeled', { labels: ['codex'] }), { writes: ['failure: codex-approved removed'] });
+  for (const action of ['labeled', 'unlabeled']) {
+    assert.deepEqual(await decide(action, { label: 'codex' }), { writes: [] });
+  }
+});
+
+test('a push that replays a guard-approved head carries the approval to the new head', async () => {
+  assert.deepEqual(await decide('synchronize'), { writes: ['success: replays approved bbbbbbb'] });
+});
+
+test('a changed push, or a push from a head the guard never approved, revokes the approval', async () => {
+  for (const options of [
+    { reviewed: 'changed' },
+    { reviewed: '' },
+    { statuses: [] },
+    { statuses: [{ ...approval, state: 'failure' }, approval] },
+    { statuses: [{ ...approval, creator: { login: 'someone' } }] },
+  ]) {
+    assert.deepEqual(await decide('synchronize', options), { writes: revoked }, JSON.stringify(options));
+  }
+  assert.deepEqual(await decide('synchronize', { reviewed: 'changed', failing: { unlabel: 404 } }),
+    { writes: revoked.slice(0, 1) });
+});
+
+test('a push to a PR without the label leaves its new head without a status', async () => {
+  assert.deepEqual(await decide('synchronize', { labels: ['codex'] }), { writes: [] });
+});
+
+test('API failures fail closed', async () => {
+  const unverified = 'failure: maintainer approval could not be verified';
+  assert.deepEqual(await decide('labeled', { failing: { permission: 502 } }),
+    { writes: [unverified], error: 'permission failed' });
+  assert.deepEqual(await decide('synchronize', { failing: { labels: 502 } }),
+    { writes: [unverified], error: 'labels failed' });
+  assert.deepEqual(await decide('synchronize', { failing: { statuses: 502 } }),
+    { writes: [unverified], error: 'statuses failed' });
+  assert.deepEqual(await decide('synchronize', { reviewed: 'changed', failing: { unlabel: 502 } }),
+    { writes: [revoked[0], unverified], error: 'unlabel failed' });
+  assert.deepEqual(await decide('labeled', { failing: { status: 502 } }), { writes: [], error: 'status failed' });
+});
+
+test('the comment matches the agreed wording', () => {
+  assert.equal(comment, 'New commits since approval; `codex-approved` removed until the maintainer re-reviews.');
 });

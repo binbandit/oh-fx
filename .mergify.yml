@@ -9,7 +9,9 @@ queue_rules:
       - -draft
       - or:
           - -label = codex
-          - label = codex-approved
+          - and:
+              - label = codex-approved
+              - check-success = @github-actions/maintainer-approval
       # Review the source PR once, including PRs authored by Pullfrog itself.
       - check-success = @pullfrog/pullfrog
       - check-success = @pullfrog/pullfrog-approval
@@ -38,7 +40,9 @@ merge_protections_settings:
     - -draft
     - or:
         - -label = codex
-        - label = codex-approved
+        - and:
+            - label = codex-approved
+            - check-success = @github-actions/maintainer-approval
 
 merge_protections:
   - name: Resolve requested changes
@@ -52,3 +56,4 @@ merge_protections:
       - label = codex
     success_conditions:
       - label = codex-approved
+      - check-success = @github-actions/maintainer-approval
