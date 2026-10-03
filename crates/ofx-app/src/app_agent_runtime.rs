@@ -705,6 +705,11 @@ impl Controller {
         for prompt in &self.state.queue {
             observe_prompt(self.persistence.as_ref(), &prompt.text);
         }
+        for input in &self.state.pending_install_inputs {
+            if let InstallInput::Prompt(prompt) = input {
+                observe_prompt(self.persistence.as_ref(), &prompt.text);
+            }
+        }
         self.remember_agent_facts();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
@@ -3993,10 +3998,17 @@ mod tests {
     fn held_install_lock(
         home: &tempfile::TempDir,
     ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        held_install_lock_for(home, "install-pack")
+    }
+
+    fn held_install_lock_for(
+        home: &tempfile::TempDir,
+        name: &str,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
         let locks = home.path().join("config/.skill-install-locks");
         fs::create_dir_all(&locks).unwrap();
         fs::set_permissions(&locks, fs::Permissions::from_mode(0o700)).unwrap();
-        let file = fs::File::create(locks.join("install-pack")).unwrap();
+        let file = fs::File::create(locks.join(name)).unwrap();
         file.set_permissions(fs::Permissions::from_mode(0o600))
             .unwrap();
         rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
@@ -4189,6 +4201,71 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn clear_retains_language_of_a_prompt_waiting_for_the_next_install() {
+        let server = FakeServer::start([
+            Reply::held_sse(&chat_text_events(&["active"])[..2]),
+            Reply::sse(&chat_text_events(&["Готово."])),
+        ]);
+        let mut harness = Harness::start_saved(&server).await;
+        write_skill(&harness.home, "first-pack", "first-skill");
+        write_skill(&harness.home, "install-pack", "second-skill");
+        let first = fs::canonicalize(harness.home.path().join("workspace/first-pack")).unwrap();
+        let second = fs::canonicalize(harness.home.path().join("workspace/install-pack")).unwrap();
+        let (release_first, worker_first) = held_install_lock_for(&harness.home, "first-pack");
+        let (release_second, worker_second) = held_install_lock(&harness.home);
+        harness.submit("active");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.command(&format!("/skills install {}", first.display()));
+        harness.command("/clear");
+        harness.command(&format!("/skills install {}", second.display()));
+        harness.submit("Открой файл");
+        harness.command("/stats");
+        harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        release_first.send(()).unwrap();
+        timeout(
+            Duration::from_secs(10),
+            harness.until(|event| {
+                matches!(
+                    event,
+                    UiEvent::ConversationCleared {
+                        first_kept_prompt: 1
+                    }
+                )
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(server.requests().len(), 1);
+        assert!(
+            !harness
+                .home
+                .path()
+                .join("config/skills/install-pack")
+                .exists()
+        );
+        release_second.send(()).unwrap();
+        timeout(
+            Duration::from_secs(10),
+            harness.until(finished(TurnOutcome::Completed)),
+        )
+        .await
+        .unwrap();
+        let sessions = saved_sessions(&harness.home);
+        let fresh = sessions
+            .iter()
+            .find(|session| session["title"] == "Открой файл")
+            .unwrap_or_else(|| panic!("fresh prompt session absent: {sessions:?}"));
+        assert_eq!(fresh["conversation_language"], "und-Cyrl");
+        assert_eq!(server.requests().len(), 2);
+        worker_first.join().unwrap();
+        worker_second.join().unwrap();
     }
 
     #[tokio::test]
