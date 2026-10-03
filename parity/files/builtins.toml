@@ -55,8 +55,8 @@ note = "Sound/attention hook delivery pacing are unimplemented."
 [[file]]
 upstream = "src/builtins/mcp.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/profile_store.rs"]
-note = "Durable profile server configuration operations exist; the /mcp live handler, connected-tool composition and workspace authority previews are absent."
+modules = ["crates/ofx-mcp/src/profile_store.rs", "crates/ofx-mcp/src/native_config.rs"]
+note = "Durable profile server configuration and connected-tool composition exist; the /mcp live handler and workspace authority previews are absent."
 
 [[file]]
 upstream = "src/builtins/modes.zig"
