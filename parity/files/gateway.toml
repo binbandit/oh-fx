@@ -8,7 +8,7 @@ note = "Custom chat-completions transport is implemented; Vercel Gateway transpo
 upstream = "src/gateway/chat_completions_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/chat_completions_protocol.rs"]
-note = "Streaming chat completion reduction is implemented; documented gateway-dialect acceptance and hardened failure diagnostics differ from upstream."
+note = "Function selection, request validation and streaming reduction exist; upstream image content parts and provider replay projection are incomplete, alongside documented gateway-dialect differences."
 
 [[file]]
 upstream = "src/gateway/client.zig"
@@ -20,19 +20,16 @@ note = "Request and HTTP failure helpers exist; Vercel-specific client endpoints
 upstream = "src/gateway/generation_usage.zig"
 status = "todo"
 modules = []
-note = "Vercel Gateway protocol, usage/search events and model policy are not implemented."
 
 [[file]]
 upstream = "src/gateway/host_model_catalog.zig"
 status = "todo"
 modules = []
-note = "Generic host-owned catalog/stream transport contracts and their cooperative polling behavior have no Rust implementation."
 
 [[file]]
 upstream = "src/gateway/host_stream_provider.zig"
 status = "todo"
 modules = []
-note = "Generic host-owned catalog/stream transport contracts and their cooperative polling behavior have no Rust implementation."
 
 [[file]]
 upstream = "src/gateway/js_host_model_catalog.zig"
@@ -56,19 +53,19 @@ note = "Responses transport and replay are implemented; provisional tool-start d
 upstream = "src/gateway/openai_codex_models.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/openai_codex_models.rs"]
-note = "Codex model catalog is implemented; catalog fallback and startup lookup timing use documented differences, while interactive model-picker integration is incomplete."
+note = "Codex catalog endpoint parsing and model capabilities exist; upstream file-input/caching/search capability metadata is not fully represented in Rust contracts."
 
 [[file]]
 upstream = "src/gateway/openai_codex_permission_reviewer.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/permission_reviewer.rs"]
-note = "Codex permission-review transport is implemented; shared reviewer routing to Grok and other Responses providers is absent."
+note = "Direct Codex Responses review uses catalog-selected gpt-5.6-luna and discards stream text; upstream wrapper extractAccountId validation is replaced by provider credential preparation."
 
 [[file]]
 upstream = "src/gateway/provider_versions.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/provider_versions.rs"]
-note = "Codex release lookup/cache is implemented; upstream shared provider-version selection for other subscription providers is absent."
+note = "Bounded Codex npm release lookup exists; upstream Grok stable endpoint/plain-version parsing and Grok environment overrides are absent."
 
 [[file]]
 upstream = "src/gateway/responses_permission_reviewer.zig"
@@ -92,52 +89,44 @@ note = "SSE framing, data concatenation, terminal dispatch and byte limits are c
 upstream = "src/gateway/tool_call_ids.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/tool_call_ids.rs"]
-note = "Responses replay identity projection is implemented; cross-provider identity ownership for Vercel and Grok is absent."
+note = "Portable wire-ID projection, opaque replay protection and collision handling exist; upstream provider-executed ToolCall.provenance protection has no Rust call-provenance field."
 
 [[file]]
 upstream = "src/gateway/vercel_failure_diagnostics.zig"
 status = "todo"
 modules = []
-note = "Vercel Gateway protocol, usage/search events and model policy are not implemented."
 
 [[file]]
 upstream = "src/gateway/vercel_model_policy.zig"
 status = "todo"
 modules = []
-note = "Vercel Gateway protocol, usage/search events and model policy are not implemented."
 
 [[file]]
 upstream = "src/gateway/vercel_protocol.zig"
 status = "todo"
 modules = []
-note = "Vercel Gateway protocol, usage/search events and model policy are not implemented."
 
 [[file]]
 upstream = "src/gateway/web_search.zig"
 status = "todo"
 modules = []
-note = "Vercel Gateway protocol, usage/search events and model policy are not implemented."
 
 [[file]]
 upstream = "src/gateway/web_search_types.zig"
 status = "todo"
 modules = []
-note = "Vercel Gateway protocol, usage/search events and model policy are not implemented."
 
 [[file]]
 upstream = "src/gateway/xai_grok.zig"
 status = "todo"
 modules = []
-note = "Grok subscription transport, model discovery and permission-review transport are not implemented."
 
 [[file]]
 upstream = "src/gateway/xai_grok_models.zig"
 status = "todo"
 modules = []
-note = "Grok subscription transport, model discovery and permission-review transport are not implemented."
 
 [[file]]
 upstream = "src/gateway/xai_grok_permission_reviewer.zig"
 status = "todo"
 modules = []
-note = "Grok subscription transport, model discovery and permission-review transport are not implemented."

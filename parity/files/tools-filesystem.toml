@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/tools/filesystem/edit_file.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tools/src/filesystem/edit_file.rs"]
-note = "Exact replacement and staged edits exist; session read-freshness tracking and full review authority are absent."
+note = "Required-field decoding, preparation bounds and mutation-input delegation match the leaf source; Rust PreparedCall/ownership replaces canonical-runtime input handoff as documented. Freshness/execution gaps belong to file_mutation sources."
 
 [[file]]
 upstream = "src/tools/filesystem/glob_files.zig"
@@ -24,6 +24,6 @@ note = "Bounded text reads and line selection exist; image attachment results an
 
 [[file]]
 upstream = "src/tools/filesystem/write_file.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tools/src/filesystem/write_file.rs"]
-note = "Transactional writes and prepared changes exist; session read-freshness tracking and full review authority are absent."
+note = "Required-field decoding, preparation bounds and mutation-input delegation match the leaf source; Rust PreparedCall/ownership replaces canonical-runtime input handoff as documented. Freshness/execution gaps belong to file_mutation sources."

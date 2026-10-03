@@ -2,7 +2,6 @@
 upstream = "src/core/auth/api_key_validator.zig"
 status = "todo"
 modules = []
-note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
 
 [[file]]
 upstream = "src/core/auth/auth_runtime.zig"
@@ -14,25 +13,24 @@ note = "Codex credential preparation and refresh exist; Vercel/Grok preparation,
 upstream = "src/core/auth/auth_transition.zig"
 status = "todo"
 modules = []
-note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
 
 [[file]]
 upstream = "src/core/auth/browser_callback.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/browser_callback.rs"]
-note = "Loopback callback validation exists; upstream callback form-response handling and all non-Codex login flows are absent."
+note = "Loopback GET callback validation and success/failure HTML responses exist; upstream exact-origin form POST acceptance, CORS handling and separate lifecycle-cancellation input are absent."
 
 [[file]]
 upstream = "src/core/auth/chatgpt_oauth.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/chatgpt_oauth.rs"]
-note = "Codex browser login, token refresh and logout exist; interactive login-picker integration is absent."
+note = "Browser PKCE login, callback validation, token refresh and session retirement exist; upstream per-operation auth trace diagnostics are absent."
 
 [[file]]
 upstream = "src/core/auth/chatgpt_session.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/chatgpt_session.rs"]
-note = "Codex session parsing and durable file mutation exist; upstream native keychain storage backend is absent."
+note = "Native token/account parsing, expiry skew and locked durable file mutation exist; upstream step-specific auth trace diagnostics are absent. Upstream uses profile files, not a native keychain backend."
 
 [[file]]
 upstream = "src/core/auth/credential_authority.zig"
@@ -50,13 +48,11 @@ note = "Auth mode and Codex guidance exist; catalog access authority, Vercel tea
 upstream = "src/core/auth/grok_oauth.zig"
 status = "todo"
 modules = []
-note = "Grok OAuth sign-in, refresh and durable session storage are not implemented."
 
 [[file]]
 upstream = "src/core/auth/grok_session.zig"
 status = "todo"
 modules = []
-note = "Grok OAuth sign-in, refresh and durable session storage are not implemented."
 
 [[file]]
 upstream = "src/core/auth/js_host_auth.zig"
@@ -68,7 +64,6 @@ note = "Excluded JavaScript host authentication FFI entrypoint and host-owned se
 upstream = "src/core/auth/login_flow.zig"
 status = "todo"
 modules = []
-note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
 
 [[file]]
 upstream = "src/core/auth/oauth.zig"
@@ -80,13 +75,12 @@ note = "PKCE, endpoint validation and OAuth decoding exist; Vercel device author
 upstream = "src/core/auth/oauth_session.zig"
 status = "todo"
 modules = []
-note = "Vercel OAuth session file/keychain storage, mutation authority and refresh deadlines are not implemented; Codex session storage is separate."
 
 [[file]]
 upstream = "src/core/auth/oauth_transport.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/oauth_transport.rs"]
-note = "OAuth HTTP execution exists; JavaScript host-owned HTTP transport delegation is excluded and native Vercel/Grok consumers are absent."
+note = "Native OAuth HTTP get/form/json execution exists; upstream injectable unavailable Provider contract is replaced by a concrete HTTP executor."
 
 [[file]]
 upstream = "src/core/auth/provider_catalog.zig"
@@ -98,7 +92,6 @@ note = "Provider aliases and route labels are implemented; upstream catalog entr
 upstream = "src/core/auth/provider_picker_catalog.zig"
 status = "todo"
 modules = []
-note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
 
 [[file]]
 upstream = "src/core/auth/secret.zig"
@@ -110,4 +103,4 @@ note = "Owned secret bytes are zeroed on drop and clearing, matching the upstrea
 upstream = "src/core/auth/session_presence.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/session_presence.rs"]
-note = "Private profile-file presence checks exist; upstream native keychain session-presence selection is absent."
+note = "Private profile-file presence and writable-target checks exist; upstream storageError diagnostic tracing is absent and missing-directory checks use the documented nearest-existing-ancestor policy. Upstream uses profile files, not a keychain."

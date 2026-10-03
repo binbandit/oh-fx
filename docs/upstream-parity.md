@@ -21,9 +21,9 @@ Syntax-highlighting profile storage uses pointerless tables as recorded in [arch
 
 ## Source file map
 
-`parity/files/` records every `.zig` file under the pinned upstream checkout's `src/`, grouped by directory. Each entry names its status and any corresponding Rust modules. Partial ports identify missing behavior; exclusions explain host entrypoints, fixtures or Zig-specific ownership machinery that does not require a Rust module. A file marked `ported` matches upstream or a deliberate difference recorded in [architecture.md](architecture.md).
+`parity/files/` records every Git-tracked `.zig` file in the pinned upstream repository, grouped by directory. Each entry names its status and any corresponding Rust modules. Partial ports identify missing behavior; exclusions explain host entrypoints, fixtures or Zig-specific ownership machinery that does not require a Rust module. A file marked `ported` matches upstream or a deliberate difference recorded in [architecture.md](architecture.md).
 
-The full checkout commit is read from `parity/UPSTREAM`. With that checkout available locally, run `cargo xtask parity --upstream <path>` or set `OH_FX_UPSTREAM` and run `cargo xtask parity`. The command fetches nothing and rejects a different checkout commit, missing or stale entries, duplicate entries, invalid statuses, missing required notes and nonexistent or escaping Rust module paths. It prints a count for each status. CI clones the pinned checkout and requires this check through Repository checks.
+The full checkout commit is read from `parity/UPSTREAM`. With that checkout available locally, run `cargo xtask parity --upstream <path>` or set `OH_FX_UPSTREAM` and run `cargo xtask parity`. The command fetches nothing and rejects a different checkout commit, missing or stale entries, duplicate entries, invalid statuses, missing required notes and nonexistent or escaping Rust module paths. It prints a count for each status. `cargo xtask lint` validates the local schema, statuses, notes and module paths without an upstream checkout, so pre-push CI includes that validation. Full coverage reads the pinned Git tree rather than dirty or untracked files. CI fetches that tree without checking out source blobs and requires coverage through Repository checks.
 
 The file map measures structural coverage. Byte-exact schema, help and prompt goldens remain a separate follow-up.
 
@@ -138,6 +138,6 @@ Port `src/gateway/xai_grok_models.zig` as of #1110 or later.
 
    Check pull requests that are still open in oh-fx as well. A change to an area that exists only on an open branch belongs in that branch before it merges.
 
-4. Add the rows under a new `<old>..<new>` heading. Move the sync point to the last merge reviewed, and update the date.
+4. Add the rows under a new `<old>..<new>` heading. Move the sync point to the last merge reviewed, update the date and `parity/UPSTREAM` to its full commit, and reconcile every file-map row against the new tree. The checker requires the documented Sync point to match that pin.
 
-When a deferred area is ported, move its rows to `ported` in the same pull request.
+When a deferred area is ported, move its rows to `ported` and update its file-map statuses in the same pull request. Partial implementations must retain concrete missing-behavior notes.

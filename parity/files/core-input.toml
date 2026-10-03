@@ -24,8 +24,9 @@ note = "Text and paste-block kill/yank are implemented; image-backed kill and ya
 
 [[file]]
 upstream = "src/core/input/composer_line_continuation.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/composer_line_continuation.rs"]
+note = "Backslash-to-newline edits and history recording exist; upstream model-picker flow clearing and completion-index resets are absent."
 
 [[file]]
 upstream = "src/core/input/composer_replacement.zig"
@@ -35,8 +36,9 @@ note = "Bounded text/range replacement is implemented; upstream image-backed ent
 
 [[file]]
 upstream = "src/core/input/composer_selection.zig"
-status = "ported"
-modules = ["crates/ofx-tui/src/composer/composer_selection.rs"]
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/composer_selection.rs", "crates/ofx-tui/src/composer/composer_replacement.rs"]
+note = "Select-all and text selection deletion exist; upstream pointer-selection begin, extend and finish transitions and image-aware selection deletion are absent."
 
 [[file]]
 upstream = "src/core/input/composer_skill_binding.zig"
@@ -58,23 +60,27 @@ note = "No Rust implementation of upstream Prepared, prepare, replace behavior."
 
 [[file]]
 upstream = "src/core/input/composer_undo.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/composer_undo.rs"]
+note = "Text undo/redo and stale/structured-entity rejection exist; upstream model-picker flow clearing and completion-index resets after undo/redo are absent."
 
 [[file]]
 upstream = "src/core/input/edit_history.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/edit_history.rs"]
+note = "Undo/redo deltas, 100-entry retention and 1 MiB budget exist; upstream fallible allocation reservation before preparing an edit or moving a stack entry is absent."
 
 [[file]]
 upstream = "src/core/input/editor_state.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/editor_state.rs"]
+note = "Text editing and keyboard selection exist; upstream pointer-selection begin, extend and finish transitions are absent."
 
 [[file]]
 upstream = "src/core/input/file_completion_state.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/file_completion_state.rs"]
+note = "Staged rows, presented receipts and index revisions exist; upstream workspace scope_epoch invalidation is absent."
 
 [[file]]
 upstream = "src/core/input/file_picker_path.zig"
@@ -91,7 +97,7 @@ modules = ["crates/ofx-tui/src/input/gesture_state.rs"]
 upstream = "src/core/input/horizontal_navigation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/composer/horizontal_navigation.rs"]
-note = "Native horizontal navigation exists; upstream complete frame and ownership integration is absent."
+note = "Character, word, line and paragraph movement handle text and paste/skill entities; upstream registered image entities cannot be represented for atomic movement."
 
 [[file]]
 upstream = "src/core/input/input_action.zig"
@@ -101,8 +107,9 @@ note = "Composer actions exist; question/approval terminal action payloads, focu
 
 [[file]]
 upstream = "src/core/input/input_limit_rejection.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/input_limit_rejection.rs"]
+note = "Composer rejection episodes coalesce and reset; upstream question-freeform and approval-amendment owners cannot be represented by TextOwner."
 
 [[file]]
 upstream = "src/core/input/input_reset.zig"
@@ -124,14 +131,15 @@ note = "Composer, decision, question and authorization paste capture exist; appr
 
 [[file]]
 upstream = "src/core/input/pasted_blocks.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/pasted_blocks.rs"]
+note = "Registered paste expansion, length admission and placeholders exist; upstream cursor-offset projection through expanded paste blocks is absent."
 
 [[file]]
 upstream = "src/core/input/picker_state.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/composer/file_completion_state.rs", "crates/ofx-tui/src/shell/skills_menu.rs"]
-note = "File and skill picker state exists; model/provider/login/resume/MCP query stages and picker ownership are absent."
+modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs", "crates/ofx-tui/src/shell/skills_menu_runtime.rs"]
+note = "File and skill picker routing exists in shell adapters; upstream shared inline suppression, model/effort/fast stages and provider/login stages are absent."
 
 [[file]]
 upstream = "src/core/input/registered_entities.zig"
@@ -147,8 +155,9 @@ note = "Composer text runtime exists; upstream image, complete picker and compos
 
 [[file]]
 upstream = "src/core/input/text_boundaries.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/text_boundaries.rs"]
+note = "Character, logical-line and paragraph boundaries exist; upstream previousWordStart, nextWordEnd, nextWordDeleteEnd and previousWhitespaceDelimitedTokenStart helpers are absent."
 
 [[file]]
 upstream = "src/core/input/text_scalar.zig"
@@ -158,5 +167,6 @@ note = "Composer text ownership exists; question-freeform and approval-amendment
 
 [[file]]
 upstream = "src/core/input/vertical_navigation.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/composer/vertical_navigation.rs"]
+note = "Sticky-column targets and selection extension reject paste/skill entity interiors; upstream registered image entity interiors cannot be represented."

@@ -2,94 +2,79 @@
 upstream = "src/core/terminal/action_executor.zig"
 status = "todo"
 modules = []
-note = "Missing action executor implementation: upstream surface Context, execute; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/client.zig"
 status = "todo"
 modules = []
-note = "Missing client implementation: upstream surface AdmissionError, CompletionKind, Completion, is_missing_capability, deinit; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/contracts.zig"
 status = "todo"
 modules = []
-note = "Missing contracts implementation: upstream surface max_authority_text_bytes, max_command_bytes, max_shell_path_bytes, max_write_bytes, max_write_items; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/engine.zig"
 status = "todo"
 modules = []
-note = "Missing engine implementation: upstream surface checkpoint_schema_revision, supportsCheckpointRevision, max_reply_effects, max_reply_effect_bytes, max_reply_effect_total_bytes; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/host.zig"
 status = "todo"
 modules = []
-note = "Missing host implementation: upstream surface internal_mode, endpoint_name, lock_name, isSupported, isInternalModeRaw; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/host_policy.zig"
 status = "todo"
 modules = []
-note = "Missing host policy implementation: upstream surface queue_capacity, outcome_capacity, IdleFacts, idleEligible, QueueAdmission; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/identity.zig"
 status = "todo"
 modules = []
-note = "Missing identity implementation: upstream surface profileUser; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/managed_observer.zig"
 status = "todo"
 modules = []
-note = "Missing managed observer implementation: upstream surface Context, Observation, deinit, InputReview, inspectInput; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/native_session.zig"
 status = "todo"
 modules = []
-note = "Missing native session implementation: upstream surface WorkTracker, isLauncherModeRaw, isControlModeRaw, runControlMarker, runLauncher; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/operation.zig"
 status = "todo"
 modules = []
-note = "Missing operation implementation: upstream surface AuthorityPreparation, PreparedAuthority, view, deinit, OwnedAuthorityClaim; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/protocol.zig"
 status = "todo"
 modules = []
-note = "Missing protocol implementation: upstream surface header_len, DecodeError, Header, decode, encode; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/recovery.zig"
 status = "todo"
 modules = []
-note = "Missing recovery implementation: upstream surface RecordEvidence, HostEvidence, ProcessEvidence, CheckpointEvidence, Input; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/shell_resolver.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/shell_resolver.rs"]
-note = "Captured invocation and shell fallback exist; interactive resolve, shell-profile environment and bootstrap/source command construction are missing."
+note = "Captured invocation, login-shell fallback and clean/user environment selection exist; interactive resolve and bootstrap/source command construction are missing."
 
 [[file]]
 upstream = "src/core/terminal/store.zig"
 status = "todo"
 modules = []
-note = "Missing store implementation: upstream surface per_session_payload_limit, profile_payload_limit, FailurePoint, PersistedTermination, DurableEvent; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/tmux_session.zig"
 status = "todo"
 modules = []
-note = "Missing tmux session implementation: upstream surface launcher_mode, capture_mode, marker_acknowledgement_timeout_ms, LifecycleKind, LifecycleFrame; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/terminal/ui_projection.zig"
 status = "todo"
 modules = []
-note = "Missing ui projection implementation: upstream surface Row, Snapshot, deinit, BackgroundStatus, backgroundStatus; no dedicated Rust counterpart."

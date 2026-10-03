@@ -2,76 +2,65 @@
 upstream = "src/acp/client_instructions.zig"
 status = "todo"
 modules = []
-note = "Missing client instructions implementation: upstream surface max_bytes, ParseError, parse, parseErrorMessage, persist; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/jsonrpc.zig"
 status = "partial"
-modules = ["crates/ofx-jsonrpc/src/jsonrpc.rs", "crates/ofx-jsonrpc/src/line_reader.rs", "crates/ofx-jsonrpc/src/correlator.rs"]
-note = "Frame encoding, buffered lines and correlation exist; upstream parseMessage envelope decoding and callback Writer response/error dispatch are missing."
+modules = ["crates/ofx-jsonrpc/src/jsonrpc.rs", "crates/ofx-jsonrpc/src/line_reader.rs"]
+note = "Request IDs, frame encoding and bounded line reading exist; parseMessage envelope decoding and callback Writer response/error dispatch are missing."
 
 [[file]]
 upstream = "src/acp/libfx_steering.zig"
 status = "todo"
 modules = []
-note = "Missing libfx steering implementation: upstream surface max_message_bytes, max_messages, max_queued_bytes, EnqueueError, Drained; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/mcp_carrier.zig"
 status = "todo"
 modules = []
-note = "Missing mcp carrier implementation: upstream surface carrier; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/mcp_servers.zig"
 status = "todo"
 modules = []
-note = "Missing mcp servers implementation: upstream surface ParseError, OwnedServerConfigs, deinit, Preparation, takeRuntime; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/prompt.zig"
 status = "todo"
 modules = []
-note = "Missing prompt implementation: upstream surface no_active_session_rpc_error, TerminalOutcome, handlePrompt, runSubagentChild, mapToolKind; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/prompt_test_controls.zig"
 status = "not-applicable"
 modules = []
-note = "Excluded upstream test fixture: deterministic ACP prompt failure/gating controls, not production protocol behavior."
+note = "Deterministic Zig ACP test harness: environment-selected terminal-write pause and reap-before-join markers; not shipped in the native Rust runtime."
 
 [[file]]
 upstream = "src/acp/server.zig"
 status = "todo"
 modules = []
-note = "Missing server implementation: upstream surface Config, OutboundKind, OutboundResponse, deinit, ActiveSessionState; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/sessions.zig"
 status = "todo"
 modules = []
-note = "Missing sessions implementation: upstream surface handleNewLibfxSession, handleNewWasmSession, commitWasmSessionLocked, commitWasmSession, handleNewSession; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/tool_call_identities.zig"
 status = "todo"
 modules = []
-note = "Missing tool call identities implementation: upstream surface Record, deinit, lookup, remember, load; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/tool_call_presentation.zig"
 status = "todo"
 modules = []
-note = "Missing tool call presentation implementation: upstream surface acpToolName, mapToolKind, describeToolTitle, ToolCallPresentation, describeToolCall; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/types.zig"
 status = "todo"
 modules = []
-note = "Missing types implementation: upstream surface MessageIdBuffer, generateMessageId, protocol_version, fxMetaField, fxMetaBool; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/acp/workspace_binding.zig"
 status = "todo"
 modules = []
-note = "Missing workspace binding implementation: upstream surface PrepareError, Binding, deinit, prepareErrorMessage, prepare; no dedicated Rust counterpart."

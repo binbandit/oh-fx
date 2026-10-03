@@ -20,7 +20,7 @@ note = "Structured request replacement/clearing and review display exist; full f
 upstream = "src/core/permissions/auto_classifier.zig"
 status = "partial"
 modules = ["crates/ofx-permissions/src/auto_classifier.rs"]
-note = "Automatic reviews, failure holds and prior-result context exist; browser/subagent-origin policies and terminal receiver evidence are absent."
+note = "Automatic reviews, failure holds and prior-result context exist; native subagent-origin authority policy and terminal receiver evidence are absent."
 
 [[file]]
 upstream = "src/core/permissions/auto_classifier_context.zig"
@@ -32,7 +32,7 @@ note = "Bounded canonical root-user context is built; child-origin root authorit
 upstream = "src/core/permissions/command_admission.zig"
 status = "partial"
 modules = ["crates/ofx-permissions/src/command_admission.rs"]
-note = "Shell scope/grants and reversible auto-command admission exist; direct-only execution plans and route fingerprints are absent."
+note = "Ask/Auto/Yolo and reversible-command admission exist; defaultForRunCommand, AdmissionFingerprint and typed command/tool execution authority with human approval provenance are absent."
 
 [[file]]
 upstream = "src/core/permissions/direct_command.zig"
@@ -55,8 +55,8 @@ note = "Approval request/response prompting exists; amendment feedback and compl
 [[file]]
 upstream = "src/core/permissions/permission_request.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/permission_gate.rs"]
-note = "Owned request fields and scoped grants exist; request-bound full-file review proofs and amendment capability are absent."
+modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-contract/src/ui.rs"]
+note = "Owned ApprovalRequest fields, argument previews, command/file intents and scoped grants exist; upstream request-origin identity/equality, bounded fileRequestFootprint and amendment capability are absent."
 
 [[file]]
 upstream = "src/core/permissions/permissions.zig"

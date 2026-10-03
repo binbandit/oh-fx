@@ -2,4 +2,3 @@
 upstream = "src/core/slack/install.zig"
 status = "todo"
 modules = []
-note = "Slack installation/preset behavior is deliberately omitted pending an owned Slack app, as recorded in docs/architecture.md; this remains todo, not a host exclusion."

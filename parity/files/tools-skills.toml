@@ -8,7 +8,7 @@ note = "Skill installation tool are unimplemented."
 upstream = "src/tools/skills/skill.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/skill.rs"]
-note = "Whole skill/resource reads and resolved identities exist; legacy named offset-based partial resource reads are absent, as architecture.md records."
+note = "Whole skill/resource and legacy named offset reads, notices and resolved identities exist; complete_skill model-content-kind publication and diagnostic trace delivery are absent."
 
 [[file]]
 upstream = "src/tools/skills/skill_search.zig"

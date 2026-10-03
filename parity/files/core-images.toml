@@ -2,22 +2,18 @@
 upstream = "src/core/images/image_attachments.zig"
 status = "todo"
 modules = []
-note = "Missing image attachments implementation: upstream surface max_image_bytes, image_too_large_notice, image_preparation_failed_notice, model_image_capability_unavailable_notice, findById; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/images/image_commands.zig"
 status = "todo"
 modules = []
-note = "Missing image commands implementation: upstream surface Commands, attachPath, managePending, attachClipboard, input_byte_limit; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/images/image_data.zig"
 status = "todo"
 modules = []
-note = "Missing image data implementation: upstream surface max_encoded_image_bytes, max_result_frame_bytes, max_tool_images, Error, ImageList; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/images/png_downscale.zig"
 status = "todo"
 modules = []
-note = "Missing png downscale implementation: upstream surface supportsMediaType, downscaleOversized, Downscaled, testPaddedPng, testSolidGrayPng; no dedicated Rust counterpart."

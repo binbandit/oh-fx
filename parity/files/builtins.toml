@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/builtins/browser_workspace_tools.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
-note = "Browser root-fixed tool-set projection are unimplemented."
+note = "Browser-host workspace/tool-set projection; the native product does not ship the browser workspace host."
 
 [[file]]
 upstream = "src/builtins/commands.zig"
@@ -56,7 +56,7 @@ note = "Sound/attention hook delivery pacing are unimplemented."
 upstream = "src/builtins/mcp.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/profile_store.rs"]
-note = "Durable profile configuration operations exist; runtime tool composition, workspace authority previews and connected tools are absent."
+note = "Durable profile server configuration operations exist; the /mcp live handler, connected-tool composition and workspace authority previews are absent."
 
 [[file]]
 upstream = "src/builtins/modes.zig"

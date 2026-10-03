@@ -7,17 +7,17 @@ note = "List/show/create/remove/path commands exist; add/install parse successfu
 [[file]]
 upstream = "src/core/skills/skill_contract.zig"
 status = "ported"
-modules = ["crates/ofx-skills/src/skill_contract.rs"]
+modules = ["crates/ofx-skills/src/skill_contract.rs", "crates/ofx-skills/src/skill_contract/locations.rs", "crates/ofx-skills/src/skill_contract/metadata.rs", "crates/ofx-skills/src/skill_contract/metadata_prefix.rs"]
 note = "Skill names, frontmatter metadata and exact location/resource contracts are implemented with metadata/location regression tests; strict byte/duplicate-key differences are documented."
 
 [[file]]
 upstream = "src/core/skills/skill_invocation.zig"
 status = "partial"
-modules = ["crates/ofx-skills/src/skill_invocation.rs"]
-note = "Explicit bindings and whole location/resource reads exist; legacy named/offset resource calls are intentionally not supported, and runtime result publication remains narrower."
+modules = ["crates/ofx-skills/src/skill_invocation.rs", "crates/ofx-skills/src/skill_invocation/resource.rs", "crates/ofx-skills/src/skill_invocation/explicit_section.rs", "crates/ofx-skills/src/skill_invocation/failures.rs"]
+note = "Explicit bindings, whole location/resource reads and legacy named offset chunks exist; displayNameFromOutput extraction from completed skill output is absent."
 
 [[file]]
 upstream = "src/core/skills/skill_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-skills/src/skill_runtime.rs"]
-note = "Discovery/catalog roots and validated candidates exist; upstream completion surfaces and traceDiagnostics are absent from the leaf runtime."
+modules = ["crates/ofx-skills/src/skill_runtime.rs", "crates/ofx-skills/src/skill_runtime/discovery.rs", "crates/ofx-skills/src/skill_runtime/catalog.rs", "crates/ofx-skills/src/skill_runtime/candidate.rs", "crates/ofx-skills/src/skill_runtime/resolution.rs", "crates/ofx-skills/src/skill_runtime/diagnostics.rs"]
+note = "Discovery/catalog roots, validated resource candidates, metadata and diagnostic summaries exist; native SkillMenu/index/completion projections and traceDiagnostics are absent."

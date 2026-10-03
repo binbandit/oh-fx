@@ -2,25 +2,21 @@
 upstream = "src/core/subagent/agent_adapter.zig"
 status = "todo"
 modules = []
-note = "Missing agent adapter implementation: upstream surface Config, run; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/approval_registry.zig"
 status = "todo"
 modules = []
-note = "Missing approval registry implementation: upstream surface Error, ResolveResult, WorkerRoute, PendingRequest, deinit; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/authority.zig"
 status = "todo"
 modules = []
-note = "Missing authority implementation: upstream surface PermissionAdmissionError, admitChildPermission, Error, HostAuthority, capture; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/child_state.zig"
 status = "todo"
 modules = []
-note = "Missing child state implementation: upstream surface max_children, Kind, Phase, Outcome, ActiveWork; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/domain.zig"
@@ -32,19 +28,16 @@ note = "Name/instruction/text validators exist; admission authority snapshots, i
 upstream = "src/core/subagent/execution.zig"
 status = "todo"
 modules = []
-note = "Missing execution implementation: upstream surface TurnPreferences, CaptureRequest, RunOutcome, ServiceError, Services; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/live_metrics.zig"
 status = "todo"
 modules = []
-note = "Missing live metrics implementation: upstream surface LiveMetrics, snapshot, Snapshot; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/managed_owner.zig"
 status = "todo"
 modules = []
-note = "Missing managed owner implementation: upstream surface StartResult, StartError, WaitError, CancelError, Observation; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/model_contract.zig"
@@ -56,13 +49,11 @@ note = "Request/result validation exists; matchCatalogModel catalog matching and
 upstream = "src/core/subagent/resume_admission.zig"
 status = "todo"
 modules = []
-note = "Missing resume admission implementation: upstream surface ActionableContinuation, deinit, view, listVisiblePage, latestVisibleWorkspaceSummary; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/tool_host.zig"
 status = "todo"
 modules = []
-note = "Missing tool host implementation: upstream surface Defaults, ChildRunner, ProgressSink, publish, ModelOverrideResolver; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/subagent/tool_provider.zig"

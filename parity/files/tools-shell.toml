@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/tools/shell/browser_shell.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
-note = "Browser workspace completion-only shell are unimplemented."
+note = "Browser-host completion-only shell adapter; the native product does not ship this browser workspace backend."
 
 [[file]]
 upstream = "src/tools/shell/process_provider.zig"
@@ -13,5 +13,5 @@ note = "Managed process handles exist; provider-bound process-instance token cap
 [[file]]
 upstream = "src/tools/shell/shell.zig"
 status = "partial"
-modules = ["crates/ofx-tools/src/shell.rs"]
-note = "Run/interact/stop/list and snapshots exist; direct read-only execution plans, command replay persistence and complete TTY presentation evidence are absent."
+modules = ["crates/ofx-tools/src/shell.rs", "crates/ofx-tools/src/shell/request.rs", "crates/ofx-tools/src/shell/snapshot_format.rs"]
+note = "Run/interact/stop/list request validation and captured snapshots exist; TTY execution, direct read-only routes and persisted command replay are absent."

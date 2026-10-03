@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/core/shell_command/command_classification.zig"
-status = "partial"
-modules = ["crates/ofx-shell/src/command_lex.rs", "crates/ofx-shell/src/command_effect.rs"]
-note = "Lexing and reversible command recognition exist; literal-pattern classification, terminal-exit segment extraction and delegated command-tail analysis are absent."
+status = "todo"
+modules = []
+note = "Literal-pattern classification, base-command token extraction, delegated analysis tails and terminal-exit segment selection are absent; lexing and reversible-effect recognition belong to separate source files."
 
 [[file]]
 upstream = "src/core/shell_command/command_effect.zig"

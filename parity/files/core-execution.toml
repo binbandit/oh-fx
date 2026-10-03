@@ -1,14 +1,14 @@
 [[file]]
 upstream = "src/core/execution/command_contract.zig"
 status = "partial"
-modules = ["crates/ofx-exec/src/command_contract.rs"]
-note = "Command statuses and projections exist; routed foreground comparison evidence and persisted command-result contracts are absent."
+modules = ["crates/ofx-exec/src/command_contract.rs", "crates/ofx-exec/src/managed_execution.rs"]
+note = "Exit/signal/indeterminate status projections and captured byte/duration fields exist; Finished status, the standard CommandResult JSON contract and stdout/stderr envelope formatter are absent."
 
 [[file]]
 upstream = "src/core/execution/command_environment.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/command_environment.rs"]
-note = "Clean/user environment and shell choices exist; typed direct-route authority and upstream serialized permission identity compatibility are incomplete."
+note = "Clean/User environment profiles and shell paths exist; requiresShellRoute and serialized ordinary/TTY permission-command identities with approval-command formatting are absent."
 
 [[file]]
 upstream = "src/core/execution/command_runner.zig"
@@ -32,7 +32,7 @@ note = "Captured running handles, output snapshots, waits and stop exist; persis
 upstream = "src/core/execution/managed_execution_contract.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/managed_execution.rs"]
-note = "Runtime handle/snapshot bounds exist; backend persistence/terminal-state contracts and resumable identity metadata are absent."
+note = "Captured execution handles, snapshots and output barriers exist; TTY backend contracts, persisted backend state and delivery reservation/result-commit identity are absent."
 
 [[file]]
 upstream = "src/core/execution/process_identity.zig"

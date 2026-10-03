@@ -2,34 +2,28 @@
 upstream = "src/core/hooks/common.zig"
 status = "todo"
 modules = []
-note = "Missing common implementation: upstream surface ScopeKind, Scope, Invocation, Limits, RegistrationError; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/hooks/definitions.zig"
 status = "todo"
 modules = []
-note = "Missing definitions implementation: upstream surface HookKind, definition, HookDefinition, pre_tool_use, stop; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/hooks/hooks.zig"
 status = "todo"
 modules = []
-note = "Missing hooks implementation: upstream surface common, definitions, prompt, runtime, tool; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/hooks/prompt.zig"
 status = "todo"
 modules = []
-note = "Missing prompt implementation: upstream surface StopInput, StopAction, StopOutcome, StopHandler, buildContinuationMessage; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/hooks/runtime.zig"
 status = "todo"
 modules = []
-note = "Missing runtime implementation: upstream surface Runtime, init, deinit, registerPreToolUse, registerStop; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/hooks/tool.zig"
 status = "todo"
 modules = []
-note = "Missing tool implementation: upstream surface PreToolUseInput, PreToolUseAction, PreToolUseOutcome, PreToolUseHandler; no dedicated Rust counterpart."

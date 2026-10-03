@@ -32,19 +32,19 @@ note = "Exit/stopped/error shell results are formatted; command result mapping l
 upstream = "src/core/tooling/file_mutation.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/file_mutation.rs"]
-note = "Canonical targets and transactional mutations exist; session read-tracker freshness authority and full persisted review/result evidence are absent."
+note = "Canonical targets, preimages, no-op verification, transactional mutations and committed undo-operation capture exist; session ReadTracker full-file freshness authority is absent."
 
 [[file]]
 upstream = "src/core/tooling/file_mutation_contract.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-tools/src/file_mutation_execution.rs"]
-note = "File mutation state/change contracts exist; serialized target proof charges and persisted canonical no-op proof validation are absent."
+modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-tools/src/file_mutation_execution.rs", "crates/ofx-permissions/src/permissions/file_mutation_targets.rs"]
+note = "Typed mutation inputs, preimages and filesystem identities exist; proofCharge/proofValid bounded target-proof validation, policy-evaluated authorization equality and resultIsNoop output recognition are absent."
 
 [[file]]
 upstream = "src/core/tooling/file_mutation_execution.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/file_mutation_execution.rs"]
-note = "Validated prepared mutations execute transactionally; retained full review/result publication authority is absent."
+note = "Prepared mutations revalidate approved filesystem identities, execute transactionally and publish committed operations to the session change tracker; upstream ReadTracker authority and result-commit publication tokens are absent."
 
 [[file]]
 upstream = "src/core/tooling/host_tool_runtime.zig"
@@ -132,9 +132,9 @@ note = "Local tools are advertised to requests; per-provider tool projection, pr
 
 [[file]]
 upstream = "src/core/tooling/tool_result_display.zig"
-status = "partial"
-modules = ["crates/oh-fx/src/cli_ask.rs"]
-note = "Ask consumes tool output content and command rows; generic path/content JSON unwrapping for all tool display payloads is absent."
+status = "todo"
+modules = []
+note = "contentForDisplay path/content envelope stripping and malformed-envelope preservation are absent; this source does not implement JSON unwrapping."
 
 [[file]]
 upstream = "src/core/tooling/tool_result_errors.zig"
@@ -174,9 +174,9 @@ note = "Content kinds and conversion cap are implemented; the upstream declared-
 
 [[file]]
 upstream = "src/core/tooling/web_fetch_runtime.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tools/src/web/web_fetch_runtime.rs"]
-note = "Fifteen-minute converted-page cache, count/weight eviction and owned snapshots are implemented and tested."
+note = "Fifteen-minute converted-page cache, LRU count/content/metadata weight eviction and owned snapshots exist; binary ArtifactRef store identity/handle validation and artifact-eviction refetch are absent."
 
 [[file]]
 upstream = "src/core/tooling/web_search_contract.zig"

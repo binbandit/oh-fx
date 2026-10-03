@@ -20,7 +20,7 @@ note = "Native provider/tool bootstrap exists; Vercel/Grok routes, extra workspa
 upstream = "src/core/app/app_callbacks.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_agent_runtime.rs"]
-note = "Turn event wiring exists; typed semantic presentation, MCP/web progress and subagent lifecycle rendering callbacks are absent."
+note = "Native event callbacks and authoritative tool rows exist; provisional lifecycle reconciliation, MCP progress/question callbacks and child-agent presentation callbacks remain absent."
 
 [[file]]
 upstream = "src/core/app/app_commands.zig"
@@ -56,19 +56,16 @@ note = "Native startup/shutdown/job control exist; full-transcript and catalog a
 upstream = "src/core/app/app_mcp_menu_runtime.zig"
 status = "todo"
 modules = []
-note = "Interactive MCP add/remove/trust/authentication menus and runtime lifecycle are not implemented."
 
 [[file]]
 upstream = "src/core/app/app_mcp_runtime.zig"
 status = "todo"
 modules = []
-note = "Interactive MCP add/remove/trust/authentication menus and runtime lifecycle are not implemented."
 
 [[file]]
 upstream = "src/core/app/app_notification_runtime.zig"
 status = "todo"
 modules = []
-note = "Sound cues, notification preference dispatch and presentation-finished notification scheduling are not implemented."
 
 [[file]]
 upstream = "src/core/app/app_permission_runtime.zig"
@@ -90,9 +87,9 @@ note = "Native render event-loop wiring exists; full transcript/catalog surfaces
 
 [[file]]
 upstream = "src/core/app/app_runtime_setup.zig"
-status = "partial"
-modules = ["crates/ofx-app/src/app_bootstrap_runtime.rs", "crates/ofx-app/src/skills.rs"]
-note = "Native skill setup and provider construction exist; upstream complete host dependency bundle and MCP/subagent integrations are absent."
+status = "ported"
+modules = ["crates/ofx-app/src/skills.rs"]
+note = "Native HOME resolution and visible-skill discovery are implemented by HostSkills, with the managed XDG skill directory difference documented in architecture.md."
 
 [[file]]
 upstream = "src/core/app/app_session_runtime.zig"
@@ -110,7 +107,7 @@ note = "Upgrade status and application exist; upstream process-relaunch handoff 
 upstream = "src/core/app/app_worker_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_worker_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs"]
-note = "Worker events and compaction persistence exist; typed table/code rendering, streaming tool lifecycle and upstream complete session/child event propagation are absent."
+note = "Worker event delivery, authoritative tool rows and compaction persistence exist; provisional lifecycle reconciliation, table/code semantic events and complete child-event propagation remain absent."
 
 [[file]]
 upstream = "src/core/app/app_workspace_runtime.zig"
@@ -134,13 +131,12 @@ note = "Slash/file completion and history routes exist; model/session/provider p
 upstream = "src/core/app/input_full_transcript_runtime.zig"
 status = "todo"
 modules = []
-note = "Interactive full-transcript alternate screen and native selection surface are not implemented."
 
 [[file]]
 upstream = "src/core/app/input_history_runtime.zig"
-status = "partial"
-modules = ["crates/ofx-tui/src/shell/input_history_runtime.rs"]
-note = "Native prompt history loading/navigation exists; full session-picker and transition history behavior is absent."
+status = "ported"
+modules = ["crates/ofx-app/src/prompt_history_runtime.rs", "crates/ofx-tui/src/shell/input_history_runtime.rs"]
+note = "The startup runtime loads 100 workspace-scoped recent entries and installs their text in composer history; persistent encoding differences are documented in architecture.md."
 
 [[file]]
 upstream = "src/core/app/input_interrupt_runtime.zig"
@@ -152,7 +148,7 @@ note = "Turn cancellation and compaction cancellation exist; upstream paused rou
 upstream = "src/core/app/input_limit_feedback.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
-note = "Input overflow is rejected; upstream named-limit feedback plumbing across session images, paste and provider/model pickers is absent."
+note = "Composer input rejection notices exist; question-freeform and approval-amendment owner-specific rejection transitions, modal invalidation and trace fields are absent."
 
 [[file]]
 upstream = "src/core/app/input_paste_runtime.zig"
@@ -164,7 +160,6 @@ note = "Bracketed text paste is decoded with documented safety differences; imag
 upstream = "src/core/app/input_question_runtime.zig"
 status = "todo"
 modules = []
-note = "Interactive ask_user_question batch selection and keyboard routing are not implemented."
 
 [[file]]
 upstream = "src/core/app/input_selection_runtime.zig"
@@ -194,7 +189,6 @@ note = "Durable text history is implemented; invalid-UTF8 base64 records, settin
 upstream = "src/core/app/provider_picker_runtime.zig"
 status = "todo"
 modules = []
-note = "Interactive provider-source/key picker navigation and saving are not implemented."
 
 [[file]]
 upstream = "src/core/app/provider_runtime.zig"
@@ -206,4 +200,3 @@ note = "Native custom/Codex selection exists; Vercel shared HTTP pool, Grok sele
 upstream = "src/core/app/usage_dashboard_runtime.zig"
 status = "todo"
 modules = []
-note = "Interactive provider usage dashboard refresh and snapshot aggregation are not implemented."

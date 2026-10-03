@@ -26,49 +26,49 @@ note = "Markers, limits and balanced style transitions are implemented through S
 upstream = "src/core/agent/presentation/block_parse.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/block_parse.rs"]
-note = "Markdown block parse behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "Fence/list/quote/table recognition, setext/thematic headings, footnote definitions and indented-code boundaries match the source predicates; styled spans are the documented rendering representation."
 
 [[file]]
 upstream = "src/core/agent/presentation/block_render.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/block_render.rs"]
-note = "Markdown block render behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "Paragraph/list/quote/table/code block rendering, width limits and blank-line transitions match the presentation regressions; styled spans replace raw ANSI as documented."
 
 [[file]]
 upstream = "src/core/agent/presentation/code_highlight.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/code_highlight.rs"]
-note = "Markdown code highlight behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "Code lexical scanning, syntax slots, string/comment/number recognition and code-block rendering match the language/profile regressions; styles use documented span tokens."
 
 [[file]]
 upstream = "src/core/agent/presentation/code_highlight_languages.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/code_highlight_languages.rs"]
-note = "Markdown code highlight languages behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "Registered language aliases, extension inference and keyword/builtin membership are implemented; generated Rust word tables replace Zig packed hashes, with table-equivalence regressions."
 
 [[file]]
 upstream = "src/core/agent/presentation/inline_render.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/inline_render.rs"]
-note = "Markdown inline render behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "Escapes, emphasis/code spans, links/autolinks, entities, footnotes and inline whitespace rendering are implemented; styled span tokens replace raw ANSI as documented."
 
 [[file]]
 upstream = "src/core/agent/presentation/payload.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/payload.rs"]
-note = "Markdown payload behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "Block/completion payload data and cloning are represented by Rust owned payloads and events; Clone/Drop replace allocator clone/deinit under the documented presentation representation."
 
 [[file]]
 upstream = "src/core/agent/presentation/text_util.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/text_util.rs"]
-note = "Markdown text util behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "Markdown byte predicates, line/prefix operations and UTF-8-safe text boundaries match the source helpers; styled span representation is documented."
 
 [[file]]
 upstream = "src/core/agent/presentation/unicode_classes.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/unicode_classes.rs"]
-note = "Markdown unicode classes behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+note = "CommonMark ASCII flanking predicates and Unicode 17 punctuation/symbol/space categories match; unicode-properties 0.1.4 supplies the same Unicode category version instead of generated Zig ranges."
 
 [[file]]
 upstream = "src/core/agent/question_answer.zig"
@@ -186,33 +186,33 @@ note = "Usage events and turn totals exist; gateway diagnostic metrics, step tra
 
 [[file]]
 upstream = "src/core/agent/runtime/tests/finalization_flow.zig"
-status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
-note = "Rust regression suite covers basic turns/tools; upstream cases for missing finish-proof recovery, retained candidates and steering finalization are not ported."
+status = "not-applicable"
+modules = []
+note = "Zig-only runtime test harness and fixtures; not shipped by the native product."
 
 [[file]]
 upstream = "src/core/agent/runtime/tests/gateway_flow.zig"
-status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
-note = "Rust regression suite covers basic turns/tools; upstream cases for vision projection, steering during streamed responses and malformed-call continuation are not ported."
+status = "not-applicable"
+modules = []
+note = "Zig-only runtime test harness and fixtures; not shipped by the native product."
 
 [[file]]
 upstream = "src/core/agent/runtime/tests/interruption_flow.zig"
-status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
-note = "Rust regression suite covers basic turns/tools; upstream cases for steering continuation, language mismatch suppression and provisional cancellation settlement are not ported."
+status = "not-applicable"
+modules = []
+note = "Zig-only runtime test harness and fixtures; not shipped by the native product."
 
 [[file]]
 upstream = "src/core/agent/runtime/tests/support.zig"
 status = "not-applicable"
 modules = []
-note = "Excluded test fixture: FakeGateway, execution delegates and synthetic vision runtime support upstream test cases; Rust uses independent scripted provider/tool fixtures."
+note = "Zig-only runtime test harness and fixtures; not shipped by the native product."
 
 [[file]]
 upstream = "src/core/agent/runtime/tests/tool_flow.zig"
-status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
-note = "Rust regression suite covers basic turns/tools; upstream cases for search usage propagation, parallel subagent groups and dynamic tool preparation are not ported."
+status = "not-applicable"
+modules = []
+note = "Zig-only runtime test harness and fixtures; not shipped by the native product."
 
 [[file]]
 upstream = "src/core/agent/runtime/text_completion.zig"

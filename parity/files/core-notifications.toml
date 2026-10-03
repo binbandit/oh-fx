@@ -2,10 +2,8 @@
 upstream = "src/core/notifications/notification_contract.zig"
 status = "todo"
 modules = []
-note = "Missing notification contract implementation: upstream surface ConfigureError, Preferences, Cue, Kind, Notification; no dedicated Rust counterpart."
 
 [[file]]
 upstream = "src/core/notifications/sound.zig"
 status = "todo"
 modules = []
-note = "Missing sound implementation: upstream surface default_enabled, Cue, Kind, BellSink, Player; no dedicated Rust counterpart."

@@ -2,7 +2,6 @@
 upstream = "src/core/gateway/gateway_provider.zig"
 status = "todo"
 modules = []
-note = "Authenticated/public Vercel model catalog fetching, refresh and ownership are not implemented."
 
 [[file]]
 upstream = "src/core/gateway/model_catalog.zig"
@@ -26,4 +25,4 @@ note = "Custom and Codex provider construction exists; Vercel/Grok selection and
 upstream = "src/core/gateway/provider_versions.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/provider_versions.rs"]
-note = "Codex version resolution exists; the upstream provider-version interface for all built-in routes is absent."
+note = "Codex version parsing, freshness and file cache exist; upstream Grok version cache/selection and injectable provider cache interface are absent."

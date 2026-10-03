@@ -20,7 +20,7 @@ note = "Opt-in trace file/ring lifecycle and contextual turn/step/subagent event
 upstream = "src/core/shared/display_width.zig"
 status = "ported"
 modules = ["crates/ofx-text/src/display_width.rs"]
-note = "Packed Unicode/emoji width, grapheme-safe prefixes/suffixes and wrapping are ported and tested against upstream width tables and RGI data."
+note = "Unicode/emoji width, grapheme-safe prefixes/suffixes and wrapping are implemented; lone-modifier/unassigned emoji width corrections are documented, and data equivalence is tested."
 
 [[file]]
 upstream = "src/core/shared/entity_spans.zig"
@@ -66,9 +66,9 @@ note = "Bounded query token preparation, corpus relevance scoring and strong-pri
 
 [[file]]
 upstream = "src/core/shared/list_window.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tui/src/list_window.rs"]
-note = "Centered/edge windows, selection advancement and reverse scrolling bounds are implemented with matching list-window regressions."
+note = "edgeFromStart, updateEdgeStart and selection advancement exist; centered and edgeFromSelection window policies are absent."
 
 [[file]]
 upstream = "src/core/shared/mem_utils.zig"
@@ -84,15 +84,15 @@ note = "Text roles, tool calls and replay messages exist; request images and com
 
 [[file]]
 upstream = "src/core/shared/model_context_encoding.zig"
-status = "ported"
-modules = ["crates/ofx-text/src/model_context_encoding.rs"]
-note = "Context scalar delimiter/control escaping is implemented with Unicode/C0/injection regression tests; serde JSON scalar handling differences are documented."
+status = "partial"
+modules = ["crates/ofx-text/src/model_context_encoding.rs", "crates/ofx-skills/src/encoded_scalar.rs"]
+note = "Scalar delimiter/control escaping and allocated scalar encoding exist; writeJsonScalar encoded-then-JSON serialization is absent."
 
 [[file]]
 upstream = "src/core/shared/profile_paths.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/paths.rs"]
-note = "XDG profile/config/data/cache paths are implemented; browser workspace profile paths and every deferred provider/session artifact accessor are absent."
+note = "Native XDG profile/config/data/cache paths exist; dedicated deferred-provider and session/artifact path accessors are incomplete. Browser profile projection is outside the native host."
 
 [[file]]
 upstream = "src/core/shared/self_exe.zig"
@@ -116,7 +116,7 @@ note = "Terminal encoding, masking, whitespace and bounded text helpers exist; s
 upstream = "src/core/shared/theme.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/theme.rs"]
-note = "Built-in dark/light palettes and activation exist; theme choice persistence and custom theme configuration support are absent."
+note = "Built-in dark/light palettes and terminal activation exist; custom native/VS Code theme parsing, named theme loading and source-name/pinned-variant state are absent."
 
 [[file]]
 upstream = "src/core/shared/token_estimate.zig"
@@ -134,4 +134,4 @@ note = "Core messages, permission/review/events and usage contracts exist; image
 upstream = "src/core/shared/unicode_display_data.zig"
 status = "ported"
 modules = ["crates/ofx-text/src/unicode_display_data.rs"]
-note = "Packed width/emoji ranges and RGI sequences are ported and cross-checked by upstream width table and RGI equivalence tests."
+note = "Width intervals, emoji properties and RGI sequences are translated with generated table/RGI equivalence checks; documented display-width corrections govern interpretation."

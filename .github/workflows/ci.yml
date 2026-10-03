@@ -185,8 +185,10 @@ jobs:
         run: |
           upstream_commit="$(cat parity/UPSTREAM)"
           upstream_path="$RUNNER_TEMP/fx-upstream"
-          git clone --filter=blob:none --no-checkout https://github.com/vercel-labs/fx "$upstream_path"
-          git -C "$upstream_path" checkout --detach "$upstream_commit"
+          git init --bare "$upstream_path"
+          git -C "$upstream_path" remote add origin https://github.com/vercel-labs/fx
+          git -C "$upstream_path" fetch --no-tags --depth=1 --filter=blob:none origin "$upstream_commit"
+          git -C "$upstream_path" update-ref HEAD "$upstream_commit"
           cargo xtask parity --upstream "$upstream_path"
 
   repository:

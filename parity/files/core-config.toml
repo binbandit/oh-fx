@@ -8,7 +8,7 @@ note = "Maximum-step settings and turn limits exist; the full upstream override 
 upstream = "src/core/config/config_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/config_runtime.rs"]
-note = "Layered settings and startup diagnostics exist; upstream interface, notification and settings-menu fields are not fully parsed or applied."
+note = "Layered settings, rejected-layer diagnostics and context-limit sources exist; upstream writeDiagnosticMetadata serialization and complete interface/notification/settings fields are absent."
 
 [[file]]
 upstream = "src/core/config/configured_provider.zig"
@@ -20,7 +20,7 @@ note = "Custom connection parsing is implemented with documented header/TLS/prox
 upstream = "src/core/config/context_limits.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/context_limits.rs"]
-note = "Context-limit values, overrides and safe clipping are implemented; upstream settings-menu editing and source metadata for every diagnostic are absent."
+note = "Named values, command-line/global/workspace sources and clipping exist; upstream Overrides.retag/merge preserve per-value sources, whereas Rust override collections store values and apply one source at a time."
 
 [[file]]
 upstream = "src/core/config/js_host_config_store.zig"
@@ -31,8 +31,8 @@ note = "Excluded JavaScript host configuration get/set FFI entrypoint."
 [[file]]
 upstream = "src/core/config/model_capabilities.zig"
 status = "partial"
-modules = ["crates/ofx-config/src/model_capabilities.rs"]
-note = "Custom/Codex capability and request-option resolution exists; Vercel/Grok catalogs and their provider-specific options are absent."
+modules = ["crates/ofx-config/src/model_capabilities.rs", "crates/ofx-contract/src/model_capabilities.rs"]
+note = "Request output bounds and exact reasoning-effort/fast-option resolution exist; Vercel/Grok catalog resolution and full vision/file/web-search/caching capability metadata are absent."
 
 [[file]]
 upstream = "src/core/config/model_preferences.zig"
@@ -56,7 +56,6 @@ note = "Native system prompt selection exists; embedded-host prompt variants and
 upstream = "src/core/config/settings_catalog.zig"
 status = "todo"
 modules = []
-note = "Interactive settings category/choice catalog and settings-menu navigation are not implemented."
 
 [[file]]
 upstream = "src/core/config/settings_store.zig"

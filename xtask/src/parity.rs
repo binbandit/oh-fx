@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -8,16 +9,57 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 struct Map {
     #[serde(default)]
-    file: Vec<Entry>,
+    file: Vec<toml::Value>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Status {
+    Todo,
+    Partial,
+    Ported,
+    NotApplicable,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Counts {
+    todo: usize,
+    partial: usize,
+    ported: usize,
+    not_applicable: usize,
+}
+
+impl Counts {
+    fn add(&mut self, status: Status) {
+        match status {
+            Status::Todo => self.todo += 1,
+            Status::Partial => self.partial += 1,
+            Status::Ported => self.ported += 1,
+            Status::NotApplicable => self.not_applicable += 1,
+        }
+    }
+
+    fn print(&self) {
+        println!("todo: {}", self.todo);
+        println!("partial: {}", self.partial);
+        println!("ported: {}", self.ported);
+        println!("not-applicable: {}", self.not_applicable);
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     upstream: String,
-    status: String,
+    status: Status,
     modules: Vec<String>,
     note: Option<String>,
+}
+
+struct Ledger {
+    counts: Counts,
+    sources: BTreeSet<String>,
+    errors: Vec<String>,
 }
 
 pub(crate) fn run(options: &[&str]) -> Result<(), String> {
@@ -29,95 +71,154 @@ pub(crate) fn run(options: &[&str]) -> Result<(), String> {
         .canonicalize()
         .map_err(|error| format!("upstream {}: {error}", upstream.display()))?;
     crate::workspace_files::enter_repository_root()?;
-    let counts = check(Path::new("."), &upstream)?;
-    let pin = crate::workspace_files::read(Path::new("parity/UPSTREAM"))?;
-    verify_checkout(&upstream, pin.trim())?;
-    for (status, count) in ["todo", "partial", "ported", "not-applicable"]
-        .iter()
-        .zip(counts)
-    {
-        println!("{status}: {count}");
-    }
+    check(Path::new("."), &upstream)?.print();
     Ok(())
 }
 
-fn check(root: &Path, upstream: &Path) -> Result<[usize; 4], String> {
+pub(crate) fn check_local(root: &Path) -> Result<Counts, String> {
+    let pin = match read_pin(root) {
+        Ok(pin) => pin,
+        Err(error) => return invalid_pin(root, error),
+    };
+    let ledger = local_ledger(root, Some(&pin))?;
+    crate::report("parity validation", &ledger.errors)?;
+    Ok(ledger.counts)
+}
+
+fn check(root: &Path, upstream: &Path) -> Result<Counts, String> {
+    let pin = match read_pin(root) {
+        Ok(pin) => pin,
+        Err(error) => return invalid_pin(root, error),
+    };
+    verify_checkout(upstream, &pin)?;
+    let sources = sources(upstream, &pin)?;
+    let mut ledger = local_ledger(root, Some(&pin))?;
+    for stale in ledger.sources.difference(&sources) {
+        ledger.errors.push(format!("stale upstream entry: {stale}"));
+    }
+    for missing in sources.difference(&ledger.sources) {
+        ledger
+            .errors
+            .push(format!("missing upstream entry: {missing}"));
+    }
+    crate::report("parity validation", &ledger.errors)?;
+    Ok(ledger.counts)
+}
+
+fn invalid_pin(root: &Path, error: String) -> Result<Counts, String> {
+    let mut ledger = local_ledger(root, None)?;
+    ledger.errors.insert(0, error);
+    crate::report("parity validation", &ledger.errors)?;
+    Ok(ledger.counts)
+}
+
+fn read_pin(root: &Path) -> Result<String, String> {
     let pin = crate::workspace_files::read(&root.join("parity/UPSTREAM"))?;
     let pin = pin.trim();
-    if pin.len() != 40
-        || !pin
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
+    if pin.len() != 40 || !lowercase_hex(pin) {
         return Err(
             "parity/UPSTREAM must contain one full 40-character hexadecimal commit".to_owned(),
         );
     }
-    let sources = sources(upstream)?;
+    Ok(pin.to_owned())
+}
+
+fn lowercase_hex(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn local_ledger(root: &Path, pin: Option<&str>) -> Result<Ledger, String> {
     let root = root.canonicalize().map_err(|error| error.to_string())?;
-    let entries = entries(&root)?;
-    let mut counts = [0; 4];
+    let mut errors = Vec::new();
+    if let Err(error) = verify_sync_point(&root, pin) {
+        errors.push(error);
+    }
+    let entries = entries(&root, &mut errors);
+    let mut counts = Counts::default();
     let mut seen = BTreeSet::new();
     for (origin, entry) in entries {
         if !seen.insert(entry.upstream.clone()) {
-            return Err(format!(
+            errors.push(format!(
                 "duplicate upstream entry: {} ({origin})",
                 entry.upstream
             ));
         }
-        if !sources.contains(&entry.upstream) {
-            return Err(format!(
-                "stale upstream entry: {} ({origin})",
+        if !relative_file(&entry.upstream, "zig") {
+            errors.push(format!(
+                "invalid upstream path: {} ({origin})",
                 entry.upstream
             ));
         }
-        let status = status_index(&entry.status)?;
-        if matches!(status, 1 | 2) && entry.modules.is_empty() {
-            return Err(format!("{} requires modules", entry.upstream));
+        if matches!(entry.status, Status::Partial | Status::Ported) && entry.modules.is_empty() {
+            errors.push(format!("{} requires modules ({origin})", entry.upstream));
         }
-        if matches!(status, 1 | 3)
+        if matches!(entry.status, Status::Partial | Status::NotApplicable)
             && entry
                 .note
                 .as_deref()
                 .is_none_or(|note| note.trim().is_empty())
         {
-            return Err(format!("{} requires a concrete note", entry.upstream));
+            errors.push(format!(
+                "{} requires a concrete note ({origin})",
+                entry.upstream
+            ));
         }
         for module in &entry.modules {
-            validate_module(&root, module)?;
+            if let Err(error) = validate_module(&root, module) {
+                errors.push(format!("{error} ({origin})"));
+            }
         }
-        counts[status] += 1;
+        counts.add(entry.status);
     }
-    let missing: Vec<_> = sources.difference(&seen).cloned().collect();
-    if !missing.is_empty() {
-        return Err(format!("missing upstream entries:\n{}", missing.join("\n")));
-    }
-    Ok(counts)
+    Ok(Ledger {
+        counts,
+        sources: seen,
+        errors,
+    })
 }
 
-fn status_index(status: &str) -> Result<usize, String> {
-    match status {
-        "todo" => Ok(0),
-        "partial" => Ok(1),
-        "ported" => Ok(2),
-        "not-applicable" => Ok(3),
-        _ => Err(format!("invalid parity status: {status}")),
+fn verify_sync_point(root: &Path, pin: Option<&str>) -> Result<(), String> {
+    let document = crate::workspace_files::read(&root.join("docs/upstream-parity.md"))?;
+    let mut points = document.lines().filter_map(|line| {
+        line.strip_prefix("- **Sync point:** `")?
+            .split_once('`')
+            .map(|(point, _)| point)
+    });
+    let point = points
+        .next()
+        .ok_or_else(|| "docs/upstream-parity.md requires one Sync point".to_owned())?;
+    if points.next().is_some()
+        || point.len() < 7
+        || point.len() > 40
+        || !lowercase_hex(point)
+        || pin.is_some_and(|pin| !pin.starts_with(point))
+    {
+        return Err(format!(
+            "docs/upstream-parity.md Sync point {point} does not match parity/UPSTREAM {}",
+            pin.unwrap_or("invalid pin")
+        ));
     }
+    Ok(())
+}
+
+fn relative_file(value: &str, extension: &str) -> bool {
+    let path = Path::new(value);
+    !value.is_empty()
+        && !value.contains('\\')
+        && path.extension().is_some_and(|actual| actual == extension)
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 fn validate_module(root: &Path, module: &str) -> Result<(), String> {
-    let path = Path::new(module);
-    if module.is_empty()
-        || module.contains('\\')
-        || path.extension().is_none_or(|extension| extension != "rs")
-        || !path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
-    {
+    if !relative_file(module, "rs") {
         return Err(format!("invalid module path: {module}"));
     }
     let resolved = root
-        .join(path)
+        .join(module)
         .canonicalize()
         .map_err(|error| format!("module {module}: {error}"))?;
     if !resolved.starts_with(root) || !resolved.is_file() {
@@ -126,96 +227,75 @@ fn validate_module(root: &Path, module: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn entries(root: &Path) -> Result<Vec<(String, Entry)>, String> {
+fn entries(root: &Path, errors: &mut Vec<String>) -> Vec<(String, Entry)> {
     let directory = root.join("parity/files");
+    let items = match fs::read_dir(&directory) {
+        Ok(items) => items,
+        Err(error) => {
+            errors.push(format!("{}: {error}", directory.display()));
+            return Vec::new();
+        }
+    };
     let mut maps = BTreeSet::new();
-    for item in
-        fs::read_dir(&directory).map_err(|error| format!("{}: {error}", directory.display()))?
-    {
-        let item = item.map_err(|error| error.to_string())?;
-        if item
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_file()
-            && item
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "toml")
-        {
-            maps.insert(item.path());
+    for item in items {
+        match item {
+            Ok(item) => match item.file_type() {
+                Ok(kind)
+                    if kind.is_file()
+                        && item
+                            .path()
+                            .extension()
+                            .is_some_and(|extension| extension == "toml") =>
+                {
+                    maps.insert(item.path());
+                }
+                Ok(_) => {}
+                Err(error) => errors.push(format!("{}: {error}", item.path().display())),
+            },
+            Err(error) => errors.push(format!("{}: {error}", directory.display())),
         }
     }
     let mut entries = Vec::new();
     for path in maps {
-        let text = crate::workspace_files::read(&path)?;
-        let map: Map =
-            toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
-        entries.extend(
-            map.file
-                .into_iter()
-                .map(|entry| (path.display().to_string(), entry)),
-        );
+        match crate::workspace_files::read(&path)
+            .and_then(|text| toml::from_str::<Map>(&text).map_err(|error| error.to_string()))
+        {
+            Ok(map) => {
+                for (index, row) in map.file.into_iter().enumerate() {
+                    let origin = format!("{} file {}", path.display(), index + 1);
+                    match row.try_into::<Entry>() {
+                        Ok(entry) => entries.push((origin, entry)),
+                        Err(error) => errors.push(format!("{origin}: {error}")),
+                    }
+                }
+            }
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
+        }
     }
-    Ok(entries)
+    entries
 }
 
-fn sources(upstream: &Path) -> Result<BTreeSet<String>, String> {
-    let mut pending = vec![upstream.join("src")];
-    let mut sources = BTreeSet::new();
-    while let Some(directory) = pending.pop() {
-        if fs::symlink_metadata(&directory)
-            .map_err(|error| format!("{}: {error}", directory.display()))?
-            .file_type()
-            .is_symlink()
-        {
-            return Err(format!(
-                "upstream source directory is a symlink: {}",
-                directory.display()
-            ));
-        }
-        for item in
-            fs::read_dir(&directory).map_err(|error| format!("{}: {error}", directory.display()))?
-        {
-            let item = item.map_err(|error| error.to_string())?;
-            let kind = item.file_type().map_err(|error| error.to_string())?;
-            if kind.is_dir() {
-                pending.push(item.path());
-            } else if kind.is_file()
-                && item
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension == "zig")
-            {
-                let path = item.path();
-                let relative = path
-                    .strip_prefix(upstream)
-                    .map_err(|error| error.to_string())?;
-                let relative = relative
-                    .to_str()
-                    .ok_or_else(|| format!("non-UTF-8 upstream source: {}", path.display()))?;
-                sources.insert(relative.replace('\\', "/"));
-            }
-        }
-    }
+fn sources(upstream: &Path, pin: &str) -> Result<BTreeSet<String>, String> {
+    let tree = git(upstream, &["ls-tree", "-r", "--name-only", "-z", pin])?;
+    let sources: BTreeSet<_> = tree
+        .split('\0')
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension == "zig")
+        })
+        .map(str::to_owned)
+        .collect();
     if sources.is_empty() {
-        return Err("upstream src contains no Zig files (empty source tree)".to_owned());
+        return Err(
+            "pinned upstream Git tree contains no Zig files (empty source tree)".to_owned(),
+        );
     }
     Ok(sources)
 }
 
 fn verify_checkout(upstream: &Path, pin: &str) -> Result<(), String> {
-    let output = std::process::Command::new("git")
-        .current_dir(upstream)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(|error| format!("upstream HEAD: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "cannot read upstream HEAD: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let head = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    let head = git(upstream, &["rev-parse", "--verify", "HEAD"])?;
     if head.trim() != pin {
         return Err(format!(
             "upstream HEAD {} does not match parity/UPSTREAM {pin}",
@@ -223,6 +303,27 @@ fn verify_checkout(upstream: &Path, pin: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn git(upstream: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command.current_dir(upstream).args(args);
+    for (variable, _) in std::env::vars_os() {
+        if variable.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(variable);
+        }
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("upstream git {}: {error}", args.join(" ")))?;
+    if !output.status.success() {
+        return Err(format!(
+            "upstream git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|error| error.to_string())
 }
 
 fn upstream_path(options: &[&str], fallback: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -234,211 +335,4 @@ fn upstream_path(options: &[&str], fallback: Option<PathBuf>) -> Result<PathBuf,
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    struct Fixture {
-        root: tempfile::TempDir,
-        upstream: tempfile::TempDir,
-    }
-
-    impl Fixture {
-        fn new() -> Self {
-            let fixture = Self {
-                root: tempfile::tempdir().unwrap(),
-                upstream: tempfile::tempdir().unwrap(),
-            };
-            fs::create_dir_all(fixture.root.path().join("parity/files")).unwrap();
-            fs::write(fixture.root.path().join("parity/UPSTREAM"), "a".repeat(40)).unwrap();
-            fs::create_dir_all(fixture.upstream.path().join("src")).unwrap();
-            fs::write(fixture.upstream.path().join("src/a.zig"), "").unwrap();
-            fs::create_dir_all(fixture.root.path().join("crates/example/src")).unwrap();
-            fs::write(fixture.root.path().join("crates/example/src/lib.rs"), "").unwrap();
-            fixture
-        }
-
-        fn map(&self, rows: &str) {
-            fs::write(self.root.path().join("parity/files/example.toml"), rows).unwrap();
-        }
-
-        fn check(&self) -> Result<[usize; 4], String> {
-            check(self.root.path(), self.upstream.path())
-        }
-    }
-
-    fn row(status: &str, modules: &str, note: &str) -> String {
-        format!(
-            "[[file]]\nupstream = 'src/a.zig'\nstatus = '{status}'\nmodules = [{modules}]\n{note}"
-        )
-    }
-
-    #[test]
-    fn complete_map_counts_each_status() {
-        let fixture = Fixture::new();
-        let mut rows = String::new();
-        for (index, status) in ["todo", "partial", "ported", "not-applicable"]
-            .iter()
-            .enumerate()
-        {
-            let source = format!("src/{index}.zig");
-            fs::write(fixture.upstream.path().join(&source), "").unwrap();
-            rows.push_str(
-                &row(
-                    status,
-                    "'crates/example/src/lib.rs'",
-                    "note = 'concrete reason'\n",
-                )
-                .replace("src/a.zig", &source),
-            );
-        }
-        rows.push_str(&row("todo", "", ""));
-        fixture.map(&rows);
-        assert_eq!(fixture.check().unwrap(), [2, 1, 1, 1]);
-    }
-
-    #[test]
-    fn rejects_missing_duplicate_and_stale_sources() {
-        let fixture = Fixture::new();
-        fixture.map("");
-        assert!(fixture.check().unwrap_err().contains("src/a.zig"));
-        let valid = row("todo", "", "");
-        fixture.map(&format!("{valid}\n{valid}"));
-        assert!(fixture.check().unwrap_err().contains("duplicate"));
-        fixture.map(&valid.replace("src/a.zig", "src/stale.zig"));
-        assert!(fixture.check().unwrap_err().contains("stale"));
-    }
-
-    #[test]
-    fn rejects_invalid_status_required_modules_notes_and_module_paths() {
-        let fixture = Fixture::new();
-        for (status, modules, note, message) in [
-            ("unknown", "", "", "status"),
-            ("partial", "", "note = 'reason'", "modules"),
-            ("ported", "", "", "modules"),
-            ("partial", "'crates/example/src/lib.rs'", "", "note"),
-            ("not-applicable", "", "note = '   '", "note"),
-            ("ported", "'crates/missing.rs'", "", "module"),
-            ("ported", "'../outside.rs'", "", "module"),
-            ("ported", "'/absolute.rs'", "", "module"),
-            ("ported", "'crates/example/src/lib.txt'", "", "module"),
-        ] {
-            fixture.map(&row(status, modules, note));
-            assert!(
-                fixture.check().unwrap_err().contains(message),
-                "{status} {modules}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_pin_and_missing_upstream_source_tree() {
-        let fixture = Fixture::new();
-        fixture.map(&row("todo", "", ""));
-        fs::write(fixture.root.path().join("parity/UPSTREAM"), "short").unwrap();
-        assert!(fixture.check().unwrap_err().contains("UPSTREAM"));
-        fs::write(fixture.root.path().join("parity/UPSTREAM"), "a".repeat(40)).unwrap();
-        fs::remove_dir_all(fixture.upstream.path().join("src")).unwrap();
-        assert!(fixture.check().is_err());
-    }
-
-    #[test]
-    fn rejects_uppercase_pin_empty_sources_and_duplicate_rows_across_files() {
-        let fixture = Fixture::new();
-        fixture.map(&row("todo", "", ""));
-        fs::write(fixture.root.path().join("parity/UPSTREAM"), "A".repeat(40)).unwrap();
-        assert!(fixture.check().is_err());
-        fs::write(fixture.root.path().join("parity/UPSTREAM"), "a".repeat(40)).unwrap();
-        fs::remove_file(fixture.upstream.path().join("src/a.zig")).unwrap();
-        assert!(fixture.check().unwrap_err().contains("empty"));
-        fs::write(fixture.upstream.path().join("src/a.zig"), "").unwrap();
-        fs::write(
-            fixture.root.path().join("parity/files/second.toml"),
-            row("todo", "", ""),
-        )
-        .unwrap();
-        assert!(fixture.check().unwrap_err().contains("duplicate"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_module_symlink_escape_and_does_not_follow_upstream_symlinks() {
-        let fixture = Fixture::new();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("outside.rs"), "").unwrap();
-        std::os::unix::fs::symlink(
-            outside.path().join("outside.rs"),
-            fixture.root.path().join("escape.rs"),
-        )
-        .unwrap();
-        fixture.map(&row("ported", "'escape.rs'", ""));
-        assert!(fixture.check().unwrap_err().contains("module"));
-        fixture.map(&row("todo", "", ""));
-        fs::write(outside.path().join("extra.zig"), "").unwrap();
-        std::os::unix::fs::symlink(outside.path(), fixture.upstream.path().join("src/link"))
-            .unwrap();
-        assert_eq!(fixture.check().unwrap(), [1, 0, 0, 0]);
-    }
-
-    #[test]
-    fn rejects_unknown_map_fields() {
-        let fixture = Fixture::new();
-        fixture.map(&(row("todo", "", "") + "\nmoduls = []"));
-        assert!(fixture.check().is_err());
-    }
-
-    #[test]
-    fn verifies_upstream_git_checkout_against_pin() {
-        let fixture = Fixture::new();
-        let command = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(fixture.upstream.path())
-                .args(args)
-                .output()
-                .unwrap()
-        };
-        assert!(command(&["init", "-q"]).status.success());
-        assert!(
-            command(&[
-                "-c",
-                "user.name=BinBandit",
-                "-c",
-                "user.email=crazywolf132@gmail.com",
-                "commit",
-                "--allow-empty",
-                "-qm",
-                "test(parity): fixture"
-            ])
-            .status
-            .success()
-        );
-        let head = String::from_utf8(command(&["rev-parse", "HEAD"]).stdout).unwrap();
-        assert!(verify_checkout(fixture.upstream.path(), head.trim()).is_ok());
-        assert!(
-            verify_checkout(fixture.upstream.path(), &"0".repeat(40))
-                .unwrap_err()
-                .contains("HEAD")
-        );
-    }
-
-    #[test]
-    fn upstream_option_overrides_environment_and_rejects_unknown_arguments() {
-        assert_eq!(
-            upstream_path(&["--upstream", "chosen"], Some("fallback".into())).unwrap(),
-            PathBuf::from("chosen")
-        );
-        assert_eq!(
-            upstream_path(&[], Some("fallback".into())).unwrap(),
-            PathBuf::from("fallback")
-        );
-        assert!(
-            upstream_path(&[], None)
-                .unwrap_err()
-                .contains("OH_FX_UPSTREAM")
-        );
-        assert!(upstream_path(&["--fetch"], None).is_err());
-        assert!(upstream_path(&["--upstream"], None).is_err());
-        assert!(upstream_path(&["--upstream", "a", "--upstream", "b"], None).is_err());
-        assert!(upstream_path(&["--upstream", ""], Some("fallback".into())).is_err());
-    }
-}
+mod tests;

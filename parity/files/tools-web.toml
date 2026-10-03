@@ -1,26 +1,26 @@
 [[file]]
 upstream = "src/tools/web/content.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tools/src/web/content.rs"]
-note = "Web content behavior is implemented and covered by content/argument/conversion/policy regressions; documented safety differences govern URL validation and output."
+note = "MIME/sniff classification, conversion dispatch and content caps exist; Classification.declared provenance distinguishing declared and sniffed kinds is absent."
 
 [[file]]
 upstream = "src/tools/web/fetch.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-tools/src/web/fetch.rs"]
-note = "URL-only fetch, conversion/cache progress and XML-like result fields are implemented and regression tested; binary/unsafe-text and URL-redaction safety differences are recorded in architecture.md."
+note = "URL fetch, converted-text cache/progress and result envelopes exist; binary artifact storage/reference publication, quota settlement and stale artifact refetch are absent. These are pending port gaps."
 
 [[file]]
 upstream = "src/tools/web/fetch_args.zig"
 status = "ported"
 modules = ["crates/ofx-tools/src/web/fetch_args.rs"]
-note = "Web fetch args behavior is implemented and covered by content/argument/conversion/policy regressions; documented safety differences govern URL validation and output."
+note = "URL-required object validation, nonempty URL handling and ordered argument errors match the source argument tests; URL safety policy is handled separately."
 
 [[file]]
 upstream = "src/tools/web/html_to_markdown.zig"
 status = "ported"
 modules = ["crates/ofx-tools/src/web/html_to_markdown.rs"]
-note = "Web html to markdown behavior is implemented and covered by content/argument/conversion/policy regressions; documented safety differences govern URL validation and output."
+note = "HTML tag/entity handling, links/images, lists/tables/code and bounded Markdown conversion are implemented with conversion regressions; documented unsafe-text handling applies."
 
 [[file]]
 upstream = "src/tools/web/http_fetch.zig"
@@ -44,4 +44,4 @@ note = "Web search argument/domain-filter validation are unimplemented."
 upstream = "src/tools/web/url_policy.zig"
 status = "ported"
 modules = ["crates/ofx-tools/src/web/url_policy.rs"]
-note = "Web url policy behavior is implemented and covered by content/argument/conversion/policy regressions; documented safety differences govern URL validation and output."
+note = "URL parsing, target validation and ordered error reasons are implemented; documented public-address/TLS/credential-redaction safety differences apply."
