@@ -925,6 +925,7 @@ impl Presenter {
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }
+            | UiEvent::SessionTitleChanged { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested

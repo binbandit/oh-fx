@@ -206,7 +206,7 @@ pub(crate) fn rename_session(
     raw: &str,
 ) {
     let renamed = match persistence {
-        Some(persistence) => persistence.rename(raw),
+        Some(persistence) => persistence.rename(raw, state.session_title()),
         None => validate_session_title(raw).and(Err(RenameError::NoActiveSession)),
     };
     state.emit(UiEvent::Notice {

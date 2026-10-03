@@ -1,12 +1,12 @@
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use ofx_contract::ModelProvider;
+use ofx_contract::{ModelProvider, UiEvent};
 use ofx_session::{MAX_TITLE_BYTES, SessionError, TitleRequest, WritableSession, generate_title};
 use tokio_util::sync::CancellationToken;
 
-const TITLE_TRIM: [char; 4] = [' ', '\t', '\r', '\n'];
+use crate::app_agent_runtime::Emit;
 
-pub(super) type CachedTitle = Arc<Mutex<Option<String>>>;
+const TITLE_TRIM: [char; 4] = [' ', '\t', '\r', '\n'];
 
 pub struct TitleGeneration {
     pub(super) provider: Arc<dyn ModelProvider>,
@@ -14,29 +14,56 @@ pub struct TitleGeneration {
     pub(super) session_id: String,
     pub(super) excerpt: String,
     pub(super) session: Weak<Mutex<WritableSession>>,
-    pub(super) cached: CachedTitle,
 }
 
 impl TitleGeneration {
-    pub async fn run(self, cancel: &CancellationToken) {
+    pub async fn run(self, cancel: &CancellationToken) -> Option<String> {
         let request = TitleRequest {
             model: self.model,
             session_id: &self.session_id,
             prompt_excerpt: &self.excerpt,
         };
-        let Some(title) = generate_title(&*self.provider, request, cancel).await else {
-            return;
-        };
-        let Some(session) = self.session.upgrade() else {
-            return;
-        };
+        let title = generate_title(&*self.provider, request, cancel).await?;
+        let session = self.session.upgrade()?;
         let installed = session
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .install_generated_title(&title);
-        if installed == Ok(true) {
-            *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = Some(title);
+        (installed == Ok(true)).then_some(title)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionTitle {
+    title: Arc<Mutex<Option<String>>>,
+    emit: Emit,
+}
+
+impl SessionTitle {
+    pub(crate) fn new(emit: Emit) -> Self {
+        Self {
+            title: Arc::default(),
+            emit,
         }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Option<String>> {
+        self.title.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn is_untitled(&self) -> bool {
+        self.lock().is_none()
+    }
+
+    pub(crate) fn set(&self, title: Option<&str>) {
+        let title = title.map(|title| {
+            title
+                .chars()
+                .filter(|character| !matches!(character, '\0'..='\x1f' | '\x7f'))
+                .collect::<String>()
+        });
+        self.lock().clone_from(&title);
+        (self.emit)(UiEvent::SessionTitleChanged { title });
     }
 }
 

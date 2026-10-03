@@ -15,12 +15,11 @@ use ofx_session::{
 };
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
-use session_titles::CachedTitle;
 
 pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
 pub use session_titles::TitleGeneration;
-pub(crate) use session_titles::{RenameError, validate_session_title};
+pub(crate) use session_titles::{RenameError, SessionTitle, validate_session_title};
 
 #[derive(Debug)]
 pub enum ResumeFailure {
@@ -38,6 +37,7 @@ pub struct ResumedSession {
     session: WritableSession,
     history: RestoredHistory,
     title: String,
+    title_present: bool,
 }
 
 impl ResumedSession {
@@ -61,10 +61,14 @@ impl ResumedSession {
     fn load(mut session: WritableSession) -> Result<Self, SessionError> {
         let title = session.display_title();
         let history = session.restored_history()?;
+        let title_present = session.title().is_some()
+            || history.checkpoint.is_some()
+            || !history.turn_starts.is_empty();
         Ok(Self {
             session,
             history,
             title,
+            title_present,
         })
     }
 
@@ -75,13 +79,16 @@ impl ResumedSession {
     pub(crate) fn transcript(&self) -> Result<Vec<HistoryEntry>, SessionError> {
         resume_transcript::transcript(&self.session, &self.title)
     }
+
+    pub(crate) fn display_title(&self) -> Option<&str> {
+        self.title_present.then_some(self.title.as_str())
+    }
 }
 
 pub struct LiveSession {
     session: Arc<Mutex<WritableSession>>,
     provider: SavedProvider,
     id: String,
-    title: CachedTitle,
 }
 
 impl LiveSession {
@@ -101,7 +108,6 @@ impl LiveSession {
     fn new(session: WritableSession, provider: SavedProvider) -> Self {
         Self {
             id: session.id().to_owned(),
-            title: Arc::new(Mutex::new(session.title().map(str::to_owned))),
             session: Arc::new(Mutex::new(session)),
             provider,
         }
@@ -125,22 +131,18 @@ impl LiveSession {
         self.session.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn cached_title(&self) -> MutexGuard<'_, Option<String>> {
-        self.title.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     pub fn title_generation(
         &self,
         setup: &AgentSetup,
         prompt: &str,
-        history_empty: bool,
+        untitled: bool,
         task_running: bool,
     ) -> Option<TitleGeneration> {
         let excerpt = prompt_excerpt(prompt)?;
         let gate = TitleGate {
             setting_enabled: setup.session_titles_enabled(),
             title_model: setup.title_model(),
-            session_untitled: history_empty && self.cached_title().is_none(),
+            session_untitled: untitled,
             task_running,
         };
         if !gate.should_generate() {
@@ -152,12 +154,10 @@ impl LiveSession {
             session_id: self.id.clone(),
             excerpt: excerpt.to_owned(),
             session: Arc::downgrade(&self.session),
-            cached: Arc::clone(&self.title),
         })
     }
 
     pub(crate) fn rename(&self, title: &str) -> Result<(), SessionError> {
-        *self.cached_title() = Some(title.to_owned());
         self.session().rename(title)
     }
 

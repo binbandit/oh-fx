@@ -75,6 +75,8 @@ const STARTUP_MIN_BODY_ROWS: u16 = 11;
 const MAX_PROMPT_HISTORY: usize = 100;
 const RESIZE_DEBOUNCE_MS: i64 = 100;
 const FILE_PICKER_POLL_MS: i64 = 8;
+const MAX_WINDOW_TITLE_BYTES: usize = 128;
+const TITLE_CUT: &str = "...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommandSpec {
@@ -168,6 +170,7 @@ pub(crate) struct Shell<'a> {
     approval: Option<ApprovalPrompt>,
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
+    session_title: Option<String>,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
     events: UiEventReceiver,
@@ -259,7 +262,7 @@ impl<'a> Shell<'a> {
             terminal.request_theme_color_scheme()?;
             input.start_theme_monitor();
         }
-        terminal.write_all(title_sequence(&options).as_bytes())?;
+        terminal.write_all(window_title(&options, None).as_bytes())?;
         let setup = Setup {
             terminal,
             signals,
@@ -335,6 +338,7 @@ impl<'a> Shell<'a> {
             approval: None,
             question: None,
             skills_menu: None,
+            session_title: None,
             yolo_warning,
             picker: None,
             events,
@@ -678,8 +682,7 @@ impl<'a> Shell<'a> {
         let layout = self
             .terminal
             .suspend_to_job_control(&cleanup, FOOTER_ROWS)?;
-        self.terminal
-            .write_all(title_sequence(&self.options).as_bytes())?;
+        self.terminal.write_all(self.window_title().as_bytes())?;
         self.repaint_after_stop(layout)
     }
 
@@ -689,6 +692,15 @@ impl<'a> Shell<'a> {
         }
         let layout = self.terminal.query_layout(FOOTER_ROWS).ok();
         self.repaint_after_stop(layout)
+    }
+
+    fn window_title(&self) -> String {
+        window_title(&self.options, self.session_title.as_deref())
+    }
+
+    fn session_title_changed(&mut self, title: Option<String>) {
+        self.session_title = title;
+        let _ = self.terminal.write_all(self.window_title().as_bytes());
     }
 
     fn apply_theme(&mut self, light: bool) {
@@ -757,25 +769,36 @@ fn claim_terminal() -> Result<(SignalPipe, Terminal), TerminalError> {
     Ok((signals, terminal))
 }
 
-fn title_sequence(options: &ShellOptions) -> String {
-    let label = format!(
-        "oh-fx v{} | {}",
-        options.version,
-        if options.workspace_label.is_empty() {
-            "workspace"
-        } else {
-            &options.workspace_label
-        }
+fn window_title(options: &ShellOptions, session_title: Option<&str>) -> String {
+    let label = session_title.map_or_else(
+        || {
+            format!(
+                "oh-fx v{} | {}",
+                options.version,
+                if options.workspace_label.is_empty() {
+                    "workspace"
+                } else {
+                    &options.workspace_label
+                }
+            )
+        },
+        str::to_owned,
     );
-    let safe: String = label
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
+    let mut safe = String::new();
+    for character in label.chars().filter(|character| !character.is_control()) {
+        if safe.len() + character.len_utf8() > MAX_WINDOW_TITLE_BYTES {
+            safe.truncate(safe.floor_char_boundary(MAX_WINDOW_TITLE_BYTES - TITLE_CUT.len()));
+            safe.push_str(TITLE_CUT);
+            break;
+        }
+        safe.push(character);
+    }
     format!("\x1b]2;{safe}\x07")
 }
 
 #[cfg(test)]
 mod tests {
+    use ofx_contract::UiEvent;
     use rustix::process::{Signal, getpid, kill_process};
     use rustix::termios::{self, LocalModes};
 
@@ -890,9 +913,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_window_title_names_the_version_and_workspace() {
-        let options = ShellOptions {
+    fn title_options() -> ShellOptions {
+        ShellOptions {
             version: "0.1.0".to_owned(),
             model: "m".to_owned(),
             permission_mode: PermissionMode::Auto,
@@ -904,7 +926,53 @@ mod tests {
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
             opening: Opening::Welcome,
-        };
-        assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
+        }
+    }
+
+    #[test]
+    fn the_window_title_names_the_version_and_workspace() {
+        assert_eq!(
+            window_title(&title_options(), None),
+            "\x1b]2;oh-fx v0.1.0 | proj\x07"
+        );
+    }
+
+    #[test]
+    fn a_session_title_replaces_the_window_title_without_controls_and_within_128_bytes() {
+        let options = title_options();
+        assert_eq!(
+            window_title(&options, Some("Fix\x1b]2;owned\x07 the \u{9b}renderer")),
+            "\x1b]2;Fix]2;owned the renderer\x07"
+        );
+        let wide = "é".repeat(80);
+        let title = window_title(&options, Some(&wide));
+        assert_eq!(title, format!("\x1b]2;{}...\x07", "é".repeat(62)));
+        let exact = "x".repeat(128);
+        assert_eq!(
+            window_title(&options, Some(&exact)),
+            format!("\x1b]2;{exact}\x07")
+        );
+        assert_eq!(
+            window_title(&options, Some(&format!("{exact}y"))),
+            format!("\x1b]2;{}...\x07", "x".repeat(125))
+        );
+    }
+
+    #[test]
+    fn the_window_title_follows_the_session_title() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        test.queue(UiEvent::SessionTitleChanged {
+            title: Some("Fix the renderer".to_owned()),
+        });
+        test.draining(Shell::drain_ui_events);
+        assert!(
+            test.written().contains("\x1b]2;Fix the renderer\x07"),
+            "the title is written"
+        );
+        test.queue(UiEvent::SessionTitleChanged { title: None });
+        test.draining(Shell::drain_ui_events);
+        let written = test.written();
+        assert!(written.contains("\x1b]2;oh-fx v"), "{written:?}");
     }
 }

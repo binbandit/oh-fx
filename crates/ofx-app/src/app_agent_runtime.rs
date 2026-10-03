@@ -8,7 +8,7 @@ use ofx_contract::{
     ResumeRefusal, SessionCursor, SessionScope, SkillBinding, TurnId, TurnOutcome, UiCommand,
     UiEvent,
 };
-use ofx_session::SessionError;
+use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -19,7 +19,7 @@ use crate::app_commands::{
     CommandEffect, Work, handle_command, refuse_resume_during_turn, rename_session, toggle_fast,
 };
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_session_runtime::{Persistence, RestoredPreferences};
+use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
 use crate::native::NativeClipboard;
 use crate::session_commands::SettingsAccess;
 use crate::skills::HostSkills;
@@ -47,6 +47,7 @@ pub(crate) struct ControllerState {
     last_reply: Option<Arc<str>>,
     history_turns: usize,
     context_to_compact: bool,
+    session_title: SessionTitle,
 }
 
 struct Prompt {
@@ -123,6 +124,10 @@ impl ControllerState {
 
     pub(crate) fn skills(&self) -> &HostSkills {
         self.setup.skills()
+    }
+
+    pub(crate) fn session_title(&self) -> &SessionTitle {
+        &self.session_title
     }
 
     pub(crate) fn claim_context_notice(&self, text: &str) -> bool {
@@ -228,6 +233,7 @@ impl Controller {
             claimed: HashSet::new(),
         };
         let state = ControllerState {
+            session_title: SessionTitle::new(Arc::clone(&emit)),
             model: setup.model().to_owned(),
             permissions: setup.permission_runtime(Arc::clone(&emit)),
             fast_mode: setup.fast_mode(),
@@ -261,10 +267,17 @@ impl Controller {
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
         self.show_startup_notices();
         if !self.pick_at_start {
+            let resumed_title = self
+                .persistence
+                .as_ref()
+                .and_then(Persistence::resumed_title);
             let opened = self
                 .persistence
                 .as_mut()
                 .and_then(|persistence| persistence.open(&mut self.agent));
+            if let Some(title) = resumed_title {
+                self.state.session_title.set(Some(&title));
+            }
             self.session_notice(opened);
         }
         self.remember_agent_facts();
@@ -507,6 +520,7 @@ impl Controller {
             .persistence
             .as_mut()
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
+        self.state.session_title.set(None);
         self.remember_agent_facts();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
@@ -625,6 +639,7 @@ impl Controller {
             self.announce_turn_end(turn_id, &report);
         }
         self.finish_turn(&report);
+        self.remember_session_title(&prompt.text);
         self.settle_deferred_commands();
         open
     }
@@ -647,9 +662,22 @@ impl Controller {
     }
 
     fn start_title_generation(&mut self, prompt: &str) {
-        let history_empty = self.agent.history_turns() == 0;
+        let untitled = self.agent.history_turns() == 0 && self.state.session_title.is_untitled();
         if let Some(persistence) = &mut self.persistence {
-            persistence.start_title_generation(&self.state.setup, prompt, history_empty);
+            persistence.start_title_generation(
+                &self.state.setup,
+                prompt,
+                untitled,
+                &self.state.session_title,
+            );
+        }
+    }
+
+    fn remember_session_title(&self, prompt: &str) {
+        if self.state.session_title.is_untitled() && self.agent.history_turns() > 0 {
+            self.state
+                .session_title
+                .set(Some(&prompt_display_title(prompt)));
         }
     }
 
@@ -1113,6 +1141,7 @@ mod tests {
         harness.submit("first");
         harness.submit("second");
         harness.until(finished(TurnOutcome::Completed)).await;
+        harness.until(titled(Some("first"))).await;
         let second = harness.until(finished(TurnOutcome::Completed)).await;
         assert!(matches!(second[0], UiEvent::TurnStarted { .. }));
         assert!(
@@ -1756,16 +1785,24 @@ mod tests {
             .collect()
     }
 
-    async fn saved_title(home: &tempfile::TempDir) -> Value {
-        for _ in 0..500 {
-            if let [session] = saved_sessions(home).as_slice()
-                && !session["title"].is_null()
-            {
-                return session["title"].clone();
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    fn titled(title: Option<&str>) -> impl Fn(&UiEvent) -> bool {
+        move |event| matches!(event, UiEvent::SessionTitleChanged { title: seen } if seen.as_deref() == title)
+    }
+
+    async fn until_titled(harness: &mut Harness, title: &str) {
+        if !harness.seen.iter().any(titled(Some(title))) {
+            harness.until(titled(Some(title))).await;
         }
-        Value::Null
+    }
+
+    fn title_changes(events: &[UiEvent]) -> Vec<Option<String>> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::SessionTitleChanged { title } => Some(title.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn title_requests(codex: &FakeServer) -> Vec<RecordedRequest> {
@@ -1786,8 +1823,15 @@ mod tests {
         let catalog = codex_catalog(false, 8);
         let mut harness = Harness::codex_saved(&codex, &catalog, &codex_settings()).await;
         chat(&mut harness, &["  please fix the renderer\n"]).await;
-        assert_eq!(saved_title(&harness.home).await, "Fix the renderer");
+        until_titled(&mut harness, "Fix the renderer").await;
+        assert_eq!(
+            saved_sessions(&harness.home)[0]["title"],
+            "Fix the renderer"
+        );
         chat(&mut harness, &["now the tests"]).await;
+        let changes = title_changes(&harness.seen);
+        assert_eq!(changes.last(), Some(&Some("Fix the renderer".to_owned())));
+        assert!(changes.len() <= 2, "{changes:?}");
         let titles = title_requests(&codex);
         assert_eq!(titles.len(), 1);
         let body = titles[0].json();
@@ -1850,6 +1894,7 @@ mod tests {
             rename_notice(&mut harness, "/rename bad\x07title").await,
             "session|title must be printable text"
         );
+        assert_eq!(title_changes(&harness.seen), []);
         assert_eq!(
             rename_notice(&mut harness, "/rename   deploy pipeline fix ").await,
             "session|renamed to \"deploy pipeline fix\""
@@ -1863,6 +1908,10 @@ mod tests {
         assert_eq!(
             saved_sessions(&harness.home)[0]["title"],
             "deploy pipeline fix"
+        );
+        assert_eq!(
+            title_changes(&harness.seen),
+            [Some("deploy pipeline fix".to_owned())]
         );
     }
 
@@ -1923,6 +1972,24 @@ mod tests {
         assert_eq!(
             rename_notice(&mut harness, "/rename  ").await,
             "|usage: /rename <title>"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_prompt_titles_the_session_until_a_fresh_one_starts() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["one"])),
+            Reply::sse(&chat_text_events(&["two"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        chat(&mut harness, &["  fix the flaky\x07 test\nmore", "again"]).await;
+        harness.command("/clear");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        assert_eq!(
+            title_changes(&harness.seen),
+            [Some("fix the flaky test".to_owned()), None]
         );
     }
 

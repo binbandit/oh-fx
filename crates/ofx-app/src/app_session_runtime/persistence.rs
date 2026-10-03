@@ -4,7 +4,9 @@ use ofx_session::{SavedProvider, SessionCatalog, SessionError, SessionPreference
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::{LaunchOverrides, LiveSession, RenameError, ResumedSession, validate_session_title};
+use super::{
+    LaunchOverrides, LiveSession, RenameError, ResumedSession, SessionTitle, validate_session_title,
+};
 use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(super) const SESSION_TOPIC: &str = "session";
@@ -47,6 +49,13 @@ impl Persistence {
             degraded: false,
             title_task: None,
         }
+    }
+
+    pub(crate) fn resumed_title(&self) -> Option<String> {
+        self.resumption
+            .as_ref()
+            .and_then(|resumption| resumption.session.display_title())
+            .map(str::to_owned)
     }
 
     pub(crate) fn open(&mut self, agent: &mut Agent) -> Option<Notice> {
@@ -134,7 +143,8 @@ impl Persistence {
         &mut self,
         setup: &AgentSetup,
         prompt: &str,
-        history_empty: bool,
+        untitled: bool,
+        title: &SessionTitle,
     ) {
         let running = self
             .title_task
@@ -143,17 +153,25 @@ impl Persistence {
         let generation = self
             .live
             .as_ref()
-            .and_then(|live| live.title_generation(setup, prompt, history_empty, running));
+            .and_then(|live| live.title_generation(setup, prompt, untitled, running));
         if let Some(generation) = generation {
+            let title = title.clone();
             self.title_task = Some(tokio::spawn(async move {
-                generation.run(&CancellationToken::new()).await;
+                if let Some(generated) = generation.run(&CancellationToken::new()).await {
+                    title.set(Some(&generated));
+                }
             }));
         }
     }
 
-    pub(crate) fn rename(&mut self, raw: &str) -> Result<String, RenameError> {
+    pub(crate) fn rename(
+        &mut self,
+        raw: &str,
+        cached: &SessionTitle,
+    ) -> Result<String, RenameError> {
         let title = validate_session_title(raw)?;
         let live = self.live.as_ref().ok_or(RenameError::NoActiveSession)?;
+        cached.set(Some(title));
         live.rename(title).map_err(RenameError::NotSaved)?;
         Ok(title.to_owned())
     }

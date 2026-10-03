@@ -206,6 +206,9 @@ pub enum UiEvent {
     ModelSelected {
         model: String,
     },
+    SessionTitleChanged {
+        title: Option<String>,
+    },
     PermissionModeChanged {
         mode: PermissionMode,
         full_access_warning: bool,
