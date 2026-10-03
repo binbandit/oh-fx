@@ -38,7 +38,7 @@ impl Column {
 
 impl Shell<'_> {
     pub(super) fn model_query(&self) -> Option<ModelQuery<'_>> {
-        if self.skills_menu_visible() || self.model_menu.is_some() {
+        if self.skills_menu_visible() || self.model_menu.is_some() || self.picker.is_some() {
             return None;
         }
         self.model_flow.query(self.composer.text())
@@ -86,7 +86,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn toggle_model_shortcut(&mut self) {
-        if self.exit_model_shortcut() || self.cancel_model_menu() || self.skills_menu_visible() {
+        if self.exit_model_shortcut()
+            || self.cancel_model_menu()
+            || self.skills_menu_visible()
+            || self.picker.is_some()
+        {
             return;
         }
         self.model_draft = Some(self.composer.stash());
@@ -109,11 +113,6 @@ impl Shell<'_> {
         self.composer.clear();
         self.restore_model_draft();
         true
-    }
-
-    pub(super) fn close_model_menu_for_skills(&mut self) {
-        self.model_menu = None;
-        self.restore_model_draft();
     }
 
     fn restore_model_draft(&mut self) {

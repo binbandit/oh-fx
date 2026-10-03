@@ -13,10 +13,12 @@ pub trait SkillCatalogSource {
 
 impl Shell<'_> {
     pub(super) fn open_skills_menu(&mut self, items: Vec<SkillMenuItem>, focus: &SkillMenuFocus) {
+        if self.model_menu.is_some() || self.model_draft.is_some() || self.picker.is_some() {
+            return;
+        }
         let Some(menu) = SkillsMenu::open(items, focus) else {
             return;
         };
-        self.close_model_menu_for_skills();
         if let SkillMenuFocus::Query(query) = focus {
             self.composer.clear();
             if self.composer.insert_text(query, COMPOSER_INPUT_LIMIT_BYTES)
@@ -140,6 +142,7 @@ impl Shell<'_> {
             .map_or(self.composer.cursor(), |selection| selection.start);
         let mentions = self.skill_catalog.is_some()
             && self.model_menu.is_none()
+            && self.model_draft.is_none()
             && !self.command_skills_menu_open()
             && !self.picker_active()
             && !contains_position(self.composer.text(), start);
@@ -165,7 +168,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn open_pasted_skill_mention(&mut self, start: usize, pasted: &str) {
-        if self.skills_menu.is_some() || self.model_menu.is_some() || self.skill_catalog.is_none() {
+        if self.skills_menu.is_some()
+            || self.model_menu.is_some()
+            || self.model_draft.is_some()
+            || self.skill_catalog.is_none()
+        {
             return;
         }
         let text = self.composer.text();
