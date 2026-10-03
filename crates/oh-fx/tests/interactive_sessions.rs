@@ -88,6 +88,7 @@ impl Home {
                     .into_string()
                     .expect("a UTF-8 session id")
             })
+            .filter(|id| ofx_session::is_valid_session_id(id))
             .collect();
         ids.sort();
         ids
@@ -774,6 +775,24 @@ fn a_manual_compaction_is_saved_and_a_resumed_session_continues_from_its_checkpo
         ]
         .concat()
     );
+}
+
+#[test]
+fn session_discovery_waits_for_publication_before_touching_tool_results() {
+    let home = Home::new("http://127.0.0.1:1");
+    let staging = home.sessions().join("creating+0011");
+    fs::create_dir_all(&staging).expect("prepare the unpublished session");
+    assert!(
+        home.session_ids().is_empty(),
+        "an unpublished session became visible"
+    );
+    let published = home.sessions().join("published-session");
+    fs::rename(&staging, &published).expect("publish the prepared session");
+    let id = home.only_session();
+    assert_eq!(id, "published-session");
+    let blocker = home.sessions().join(&id).join("tool-results");
+    fs::write(&blocker, "blocked").expect("block the published tool results");
+    fs::remove_file(&blocker).expect("unblock the published tool results");
 }
 
 #[test]
