@@ -1,7 +1,7 @@
 use ofx_contract::{ChatMessage, ReplaySource, ToolCall, ToolCallId, ToolResultStatus};
 
 use super::*;
-use crate::execution_memory::history_turns;
+use crate::execution_memory::{history_turns, steering_message};
 
 const MODEL: &str = "fixture/model";
 
@@ -106,7 +106,8 @@ fn retained_context_budgets_provider_replay_on_completed_exchanges() {
         select_recent_context(&turns, 5_990, Some(119_808), MODEL, MAX_KEPT_TURNS).cut,
         Cut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..Cut::default()
         }
     );
     let kept = select_recent_context(
@@ -173,13 +174,15 @@ fn retained_context_keeps_or_compacts_a_parallel_tool_exchange_whole_without_sho
         select_recent_context(&turns, 100_000, None, MODEL, MAX_KEPT_TURNS).cut,
         Cut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..Cut::default()
         }
     );
     let everything = Recent {
         cut: Cut {
             turns: 2,
             tool_steps: 0,
+            ..Cut::default()
         },
         tokens: 0,
     };
@@ -298,7 +301,8 @@ fn the_window_keeps_the_newest_turns_and_compacts_the_rest() {
         window.cut,
         Cut {
             turns: 2,
-            tool_steps: 0
+            tool_steps: 0,
+            ..Cut::default()
         }
     );
     let everything = split(&turns, false, 0, None, MODEL);
@@ -306,7 +310,8 @@ fn the_window_keeps_the_newest_turns_and_compacts_the_rest() {
         everything.cut,
         Cut {
             turns: 6,
-            tool_steps: 0
+            tool_steps: 0,
+            ..Cut::default()
         }
     );
 }
@@ -330,7 +335,8 @@ fn the_window_ends_an_unfinished_turn_at_its_completed_exchange() {
         active.cut,
         Cut {
             turns: 0,
-            tool_steps: 1
+            tool_steps: 1,
+            ..Cut::default()
         }
     );
     assert!(active.has_older() && active.splits_last_turn());
@@ -339,9 +345,67 @@ fn the_window_ends_an_unfinished_turn_at_its_completed_exchange() {
         saved.cut,
         Cut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..Cut::default()
         }
     );
+}
+
+#[test]
+fn steering_stays_with_the_step_after_it_and_a_whole_running_turn_covers_all_of_it() {
+    let output = "y".repeat(8_000);
+    let running = Conversation::new().turn(
+        "go",
+        vec![
+            assistant("", vec![call("a", "read_file", "{}")], None),
+            result("a", "read_file", &output),
+            ChatMessage::user(steering_message("after a")),
+            assistant("", vec![call("b", "read_file", "{}")], None),
+            result("b", "read_file", "short"),
+            ChatMessage::user(steering_message("after b")),
+        ],
+    );
+    let turns = running.turns();
+    let recent = select_recent_context(&turns, 1_000, None, MODEL, MAX_KEPT_TURNS);
+    assert_eq!(
+        recent.cut,
+        Cut {
+            turns: 0,
+            tool_steps: 1,
+            steering: 0,
+        }
+    );
+    let whole = split(&turns, true, 0, None, MODEL);
+    assert_eq!(
+        whole.cut,
+        Cut {
+            turns: 0,
+            tool_steps: 2,
+            steering: 2,
+        }
+    );
+    assert!(whole.splits_last_turn());
+}
+
+#[test]
+fn a_running_turn_with_only_steering_can_be_compacted_whole() {
+    let running = Conversation::new().turn(
+        "go",
+        vec![
+            assistant("partial", Vec::new(), None),
+            ChatMessage::user(steering_message("change course")),
+        ],
+    );
+    let whole = split(&running.turns(), true, 0, None, MODEL);
+    assert_eq!(
+        whole.cut,
+        Cut {
+            turns: 0,
+            tool_steps: 0,
+            steering: 1,
+        }
+    );
+    assert!(whole.has_older() && whole.splits_last_turn());
 }
 
 #[test]
@@ -369,7 +433,8 @@ fn nothing_is_compacted_unless_it_is_due_or_required() {
         forced.cut,
         Cut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..Cut::default()
         }
     );
     assert_eq!(forced.kept_used, 0);

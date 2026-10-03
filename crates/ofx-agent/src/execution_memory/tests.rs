@@ -45,7 +45,7 @@ fn contents(history: &[ChatMessage]) -> Vec<String> {
         .iter()
         .map(|message| match message {
             ChatMessage::User { content } | ChatMessage::System { content } => {
-                format!("user:{content}")
+                format!("user:{}", steering_text(content).unwrap_or(content))
             }
             ChatMessage::Assistant {
                 content,
@@ -100,7 +100,7 @@ fn turns_read_their_steps_and_final_reply_from_the_messages() {
     assert!(turns[1].steps[1].calls.is_empty());
     assert!(turns[1].steps[1].replay.is_some());
     assert!(turns[1].steps[1].notes.is_empty());
-    assert_eq!(turns[1].notes, ["Summarize what you just did."]);
+    assert_eq!(turns[1].notes, [Note::Fx("Summarize what you just did.")]);
     assert_eq!(turns[1].reply, "Summary.");
 
     assert_eq!(turns[2].steps.len(), 1);
@@ -116,6 +116,7 @@ fn a_cut_at_a_turn_keeps_that_turn_and_everything_after_it() {
         Cut {
             turns: 1,
             tool_steps: 0,
+            ..Cut::default()
         },
         ChatMessage::user("<checkpoint>"),
     );
@@ -137,6 +138,7 @@ fn a_cut_inside_a_turn_keeps_its_user_message_and_its_later_steps() {
         Cut {
             turns: 1,
             tool_steps: 1,
+            ..Cut::default()
         },
         ChatMessage::user("<checkpoint>"),
     );
@@ -165,6 +167,7 @@ fn a_cut_covering_every_step_keeps_the_messages_after_the_last_one() {
         Cut {
             turns: 1,
             tool_steps: 2,
+            ..Cut::default()
         },
         ChatMessage::user("<checkpoint>"),
     );
@@ -196,7 +199,10 @@ fn notes_between_steps_belong_to_the_step_after_them() {
     ];
     let turns = history_turns(&history, &[0]);
     assert!(turns[0].steps[0].notes.is_empty());
-    assert_eq!(turns[0].steps[1].notes, ["Summarize what you just did."]);
+    assert_eq!(
+        turns[0].steps[1].notes,
+        [Note::Fx("Summarize what you just did.")]
+    );
     assert!(turns[0].notes.is_empty());
     assert_eq!(turns[0].reply, "Done.");
 }
@@ -210,6 +216,7 @@ fn compacting_every_step_of_the_running_turn_keeps_only_its_user_message() {
         Cut {
             turns: 2,
             tool_steps: 1,
+            ..Cut::default()
         },
         ChatMessage::user("<checkpoint>"),
     );
@@ -223,6 +230,7 @@ fn compacting_every_step_of_the_running_turn_keeps_only_its_user_message() {
         Cut {
             turns: 3,
             tool_steps: 0,
+            ..Cut::default()
         },
         ChatMessage::user("<checkpoint>"),
     );
@@ -239,6 +247,7 @@ fn a_later_compaction_replaces_the_earlier_checkpoint() {
         Cut {
             turns: 1,
             tool_steps: 0,
+            ..Cut::default()
         },
         ChatMessage::user("<first>"),
     );
@@ -248,6 +257,7 @@ fn a_later_compaction_replaces_the_earlier_checkpoint() {
         Cut {
             turns: 1,
             tool_steps: 0,
+            ..Cut::default()
         },
         ChatMessage::user("<second>"),
     );
@@ -323,6 +333,193 @@ fn logged_results_carry_the_raw_length_their_tool_returned() {
             ("a".to_owned(), 11, 11),
             ("b".to_owned(), 11, 11),
             ("a".to_owned(), 11, 11),
+        ]
+    );
+}
+
+fn steering(text: &str) -> ChatMessage {
+    ChatMessage::user(steering_message(text))
+}
+
+fn steering_entries<'a>(turn: &HistoryTurn<'a>) -> Vec<(&'a str, &'a str, usize)> {
+    turn.steering()
+        .map(|entry| {
+            (
+                entry.text,
+                entry.assistant_prefix,
+                entry.after_tool_step_count,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn steering_messages_tell_the_model_to_apply_the_update_and_continue() {
+    let message = steering_message("focus on rendering");
+    assert!(message.contains("live user update"));
+    assert!(message.contains("Continue working"));
+    assert_eq!(
+        message,
+        "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\nfocus on rendering\n</user_steering>"
+    );
+    assert_eq!(steering_text(&message), Some("focus on rendering"));
+    assert_eq!(steering_text("focus on rendering"), None);
+    assert_eq!(steering_text("<user_steering>\n</user_steering>"), None);
+}
+
+#[test]
+fn consumed_steering_is_read_without_its_wrapper() {
+    let history = vec![
+        ChatMessage::user("ordinary user context"),
+        steering("focus on rendering"),
+        assistant("continuing", &[]),
+        steering("run the focused test"),
+    ];
+    let turn = history_turn(&history, 0, history.len());
+    assert!(turn.steps.is_empty());
+    assert_eq!(turn.reply, "");
+    assert_eq!(
+        steering_entries(&turn),
+        [
+            ("focus on rendering", "", 0),
+            ("run the focused test", "continuing", 0)
+        ]
+    );
+}
+
+#[test]
+fn each_steering_message_records_the_tool_step_it_followed() {
+    let history = vec![
+        ChatMessage::user("go"),
+        assistant("", &["first"]),
+        result("first", ToolResultStatus::Success),
+        steering("after first"),
+        assistant("", &["second"]),
+        result("second", ToolResultStatus::Success),
+        steering("after second"),
+    ];
+    let turn = history_turn(&history, 0, history.len());
+    assert_eq!(turn.steps.len(), 2);
+    assert_eq!(
+        steering_entries(&turn),
+        [("after first", "", 1), ("after second", "", 2)]
+    );
+
+    let (mut kept, mut starts) = (history, vec![0]);
+    retain(
+        &mut kept,
+        &mut starts,
+        Cut {
+            turns: 0,
+            tool_steps: 1,
+            steering: 1,
+        },
+        ChatMessage::user("<checkpoint>"),
+    );
+    assert_eq!(
+        contents(&kept),
+        [
+            "user:<checkpoint>",
+            "user:go",
+            "assistant::1",
+            "tool:second",
+            "user:after second"
+        ]
+    );
+    let remaining = history_turn(&kept, starts[0], kept.len());
+    assert_eq!(steering_entries(&remaining), [("after second", "", 1)]);
+}
+
+#[test]
+fn interrupted_execution_memory_keeps_steering_typed_right_after_a_tool_result() {
+    let history = vec![
+        ChatMessage::user("work"),
+        assistant("", &["call_done"]),
+        result("call_done", ToolResultStatus::Success),
+        steering("check the tests too"),
+        ChatMessage::user("custom hint"),
+        assistant("on it", &[]),
+    ];
+    let turn = history_turn(&history, 0, history.len());
+    assert_eq!(turn.steps.len(), 1);
+    assert_eq!(steering_entries(&turn), [("check the tests too", "", 1)]);
+    assert_eq!(
+        turn.notes,
+        [
+            Note::User(turn.steering().next().unwrap()),
+            Note::Fx("custom hint")
+        ]
+    );
+    assert_eq!(turn.reply, "on it");
+}
+
+#[test]
+fn a_reply_with_replay_ends_a_step_before_steering_and_plain_text_prefixes_it() {
+    let history = vec![
+        ChatMessage::user("go"),
+        replayed(),
+        steering("one"),
+        assistant("partial", &[]),
+        steering("two"),
+        assistant("Done.", &[]),
+    ];
+    let turn = history_turn(&history, 0, history.len());
+    assert_eq!(turn.steps.len(), 1);
+    assert!(turn.steps[0].replay.is_some());
+    assert_eq!(
+        steering_entries(&turn),
+        [("one", "", 1), ("two", "partial", 1)]
+    );
+    assert_eq!(turn.reply, "Done.");
+}
+
+#[test]
+fn a_continuation_turn_reads_its_prompt_without_the_wrapper() {
+    let history = vec![steering("run the next check"), assistant("Ran it.", &[])];
+    let turn = history_turn(&history, 0, history.len());
+    assert_eq!(turn.user, "run the next check");
+    assert_eq!(turn.steering().count(), 0);
+}
+
+#[test]
+fn compacting_a_whole_running_turn_covers_the_steering_after_its_last_step() {
+    let history = vec![
+        ChatMessage::user("go"),
+        assistant("", &["a"]),
+        result("a", ToolResultStatus::Success),
+        assistant("partial", &[]),
+        steering("also this"),
+    ];
+    let (mut kept, mut starts) = (history.clone(), vec![0]);
+    retain(
+        &mut kept,
+        &mut starts,
+        Cut {
+            turns: 0,
+            tool_steps: 1,
+            steering: 1,
+        },
+        ChatMessage::user("<checkpoint>"),
+    );
+    assert_eq!(contents(&kept), ["user:<checkpoint>", "user:go"]);
+    let (mut kept, mut starts) = (history, vec![0]);
+    retain(
+        &mut kept,
+        &mut starts,
+        Cut {
+            turns: 0,
+            tool_steps: 1,
+            steering: 0,
+        },
+        ChatMessage::user("<checkpoint>"),
+    );
+    assert_eq!(
+        contents(&kept),
+        [
+            "user:<checkpoint>",
+            "user:go",
+            "assistant:partial:0",
+            "user:also this"
         ]
     );
 }

@@ -7,7 +7,11 @@ fn ledger(records: &[TurnRecord]) -> TurnLedger {
 }
 
 fn cut(turns: usize, tool_steps: usize) -> Cut {
-    Cut { turns, tool_steps }
+    Cut {
+        turns,
+        tool_steps,
+        ..Cut::default()
+    }
 }
 
 #[test]

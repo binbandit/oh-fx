@@ -180,7 +180,7 @@ impl Agent {
             .map_err(|failure| Stop::failed(TurnFailure::Persistence(failure)))?;
         let active = self.turn_starts.len().saturating_sub(1);
         turn.compaction.compacted_steps |=
-            compacted.cut.turns == active && compacted.cut.tool_steps > 0;
+            compacted.cut.turns == active && compacted.cut.splits_turn();
         self.install_compaction(compacted);
         turn.start = self.turn_starts.last().copied().unwrap_or(turn.start);
         turn.compaction.compacted_len = Some(self.history.len());

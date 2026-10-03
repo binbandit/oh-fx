@@ -38,6 +38,7 @@ pub(crate) struct ToolResult<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Item<'a> {
+    User(&'a str),
     Assistant(&'a str),
     Note(&'a str),
     ToolCall(ToolCall<'a>),
@@ -121,13 +122,18 @@ fn user_messages<'a>(request: &Request<'a>) -> Vec<&'a str> {
         .flat_map(|earlier| &earlier.turns)
         .map(|turn| turn.user.as_str());
     let open = request.last_turn_open.then(|| request.turns.len() - 1);
-    let new = request
-        .turns
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| Some(*index) != open)
-        .map(|(_, turn)| turn.user);
+    let new = request.turns.iter().enumerate().flat_map(|(index, turn)| {
+        let first = (Some(index) != open).then_some(turn.user);
+        first.into_iter().chain(added_users(turn))
+    });
     earlier.chain(new).collect()
+}
+
+fn added_users<'a>(turn: &'a Turn<'a>) -> impl Iterator<Item = &'a str> + 'a {
+    turn.items.iter().filter_map(|item| match item {
+        Item::User(text) => Some(*text),
+        _ => None,
+    })
 }
 
 fn part_end(request: &Request<'_>, earlier: Option<&Payload>, start: usize) -> usize {
@@ -152,7 +158,9 @@ fn turn_tokens(turn: &Turn<'_>) -> usize {
     for item in &turn.items {
         estimator.consume(" ");
         match item {
-            Item::Assistant(text) | Item::Note(text) => estimator.consume(text),
+            Item::User(text) | Item::Assistant(text) | Item::Note(text) => {
+                estimator.consume(text);
+            }
             Item::ToolCall(call) => {
                 estimator.consume(call.name);
                 estimator.consume(" ");
@@ -601,7 +609,7 @@ fn prepare<'a>(
                     *next_tool += 1;
                 }
             }
-            Item::Assistant(_) | Item::Note(_) => {}
+            Item::User(_) | Item::Assistant(_) | Item::Note(_) => {}
         }
     }
 
@@ -610,6 +618,7 @@ fn prepare<'a>(
         continued.is_some_and(|earlier| !earlier.work.is_empty() || !earlier.text.is_empty());
     for (index, item) in turn.items.iter().enumerate() {
         has_work |= match item {
+            Item::User(_) => false,
             Item::Assistant(text) => !text.is_empty() && Some(index) != final_index,
             Item::Note(_) | Item::ToolCall(_) | Item::ToolResult(_) => true,
         };
@@ -617,33 +626,7 @@ fn prepare<'a>(
 
     let mut text = continued.map_or_else(String::new, |earlier| earlier.text.clone());
     for (index, (item, number)) in turn.items.iter().zip(&numbers).enumerate() {
-        match item {
-            Item::Assistant(message) if !message.is_empty() => {
-                let label = if Some(index) == final_index {
-                    "Assistant, final reply"
-                } else {
-                    "Assistant"
-                };
-                let _ = write!(text, "{label}:\n{message}\n\n");
-            }
-            Item::Assistant(_) => {}
-            Item::Note(message) => {
-                let _ = write!(text, "From oh-fx, not the user:\n{message}\n\n");
-            }
-            Item::ToolCall(call) => {
-                let index_line = index_line(call.arguments);
-                let separator = if index_line.is_empty() { "" } else { ": " };
-                let _ = write!(text, "[T{number} {}{separator}{index_line}]\n\n", call.name);
-            }
-            Item::ToolResult(result) => {
-                if !tools
-                    .iter()
-                    .any(|tool| tool.number == *number && tool.call.is_some())
-                {
-                    let _ = write!(text, "[T{number} {}, result only]\n\n", result.name);
-                }
-            }
-        }
+        write_item(&mut text, item, *number, Some(index) == final_index, &tools);
     }
 
     let first_own = tools.first().map_or(0, |tool| tool.number);
@@ -671,6 +654,48 @@ fn prepare<'a>(
     }
 }
 
+fn write_item(
+    text: &mut String,
+    item: &Item<'_>,
+    number: usize,
+    is_final: bool,
+    tools: &[PendingTool<'_>],
+) {
+    match item {
+        Item::User(message) => {
+            let _ = write!(
+                text,
+                "User, added while the assistant worked:\n{message}\n\n"
+            );
+        }
+        Item::Assistant(message) if !message.is_empty() => {
+            let label = if is_final {
+                "Assistant, final reply"
+            } else {
+                "Assistant"
+            };
+            let _ = write!(text, "{label}:\n{message}\n\n");
+        }
+        Item::Assistant(_) => {}
+        Item::Note(message) => {
+            let _ = write!(text, "From oh-fx, not the user:\n{message}\n\n");
+        }
+        Item::ToolCall(call) => {
+            let index_line = index_line(call.arguments);
+            let separator = if index_line.is_empty() { "" } else { ": " };
+            let _ = write!(text, "[T{number} {}{separator}{index_line}]\n\n", call.name);
+        }
+        Item::ToolResult(result) => {
+            if !tools
+                .iter()
+                .any(|tool| tool.number == number && tool.call.is_some())
+            {
+                let _ = write!(text, "[T{number} {}, result only]\n\n", result.name);
+            }
+        }
+    }
+}
+
 fn final_index(turn: &Turn<'_>) -> Option<usize> {
     let mut found = None;
     for (index, item) in turn.items.iter().enumerate() {
@@ -686,10 +711,14 @@ fn final_index(turn: &Turn<'_>) -> Option<usize> {
 fn user_messages_by_turn<'a>(turns: &[Prepared<'a>]) -> Vec<Message<'a>> {
     turns
         .iter()
-        .map(|turn| Message {
-            turn: turn.number,
-            text: turn.source.user,
-            in_progress: turn.number == 0,
+        .flat_map(|turn| {
+            std::iter::once(turn.source.user)
+                .chain(added_users(turn.source))
+                .map(|text| Message {
+                    turn: turn.number,
+                    text,
+                    in_progress: turn.number == 0,
+                })
         })
         .collect()
 }
@@ -949,7 +978,7 @@ fn longest_text(plan: &Plan<'_>) -> usize {
         .iter()
         .flat_map(|turn| {
             let items = turn.source.items.iter().map(|item| match item {
-                Item::Assistant(text) | Item::Note(text) => text.len(),
+                Item::User(text) | Item::Assistant(text) | Item::Note(text) => text.len(),
                 Item::ToolCall(call) => call.arguments.len(),
                 Item::ToolResult(result) => result.output.len(),
             });
@@ -1061,6 +1090,13 @@ fn render_transcript(plan: &Plan<'_>, clip: usize, earlier_clip: usize) -> (Stri
         }
         for (item, number) in turn.source.items.iter().zip(&turn.tool_numbers) {
             match item {
+                Item::User(added) => {
+                    let _ = write!(
+                        text,
+                        "[User, added while the assistant worked]\n{}\n\n",
+                        clipped(added, clip)
+                    );
+                }
                 Item::Assistant(assistant) if !assistant.is_empty() => {
                     let _ = write!(text, "[Assistant]\n{}\n\n", clipped(assistant, clip));
                 }
