@@ -18,9 +18,9 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ApprovalDecision, CallDescription, CapabilityResolver, LivePermissionMode, ModelProvider,
-    PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles,
-    Tool,
+    ActiveMode, ApprovalDecision, CallDescription, CapabilityResolver, LivePermissionMode,
+    ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport,
+    StatuslineToggles, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -134,6 +134,7 @@ pub struct Launch<'a> {
     pub executions: &'a ManagedExecutions,
     pub endpoints: SubscriptionEndpoints,
     pub web_fetch_progress: Option<WebFetchProgress>,
+    pub mode: Option<ActiveMode>,
 }
 
 pub struct AgentSetup {
@@ -163,6 +164,7 @@ pub struct AgentSetup {
     project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     skills: Arc<HostSkills>,
     context_notices: Vec<String>,
+    mode: Option<ActiveMode>,
     config: AgentConfig,
 }
 
@@ -324,6 +326,7 @@ impl Profile {
             workspace_root: self.workspace_root.clone(),
             permission_mode: permission_mode.clone(),
             parent: Mutex::new(config.clone()),
+            mode: launch.mode,
         };
         let mcp = self.mcp_runtime(&tools, &limits)?;
         Ok(AgentSetup {
@@ -357,6 +360,7 @@ impl Profile {
             project,
             skills,
             context_notices,
+            mode: launch.mode,
             config,
         })
     }
@@ -769,6 +773,9 @@ impl AgentSetup {
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.approvals().clone());
         }
+        if let Some(mode) = self.mode {
+            agent = agent.with_mode(mode);
+        }
         match &self.project {
             Some((provider, snapshot)) => {
                 agent.with_project_context(provider.clone(), snapshot.clone())
@@ -785,7 +792,9 @@ pub fn user_agent() -> String {
 #[cfg(test)]
 mod tests {
     use ofx_auth::ChatGptEndpoints;
-    use ofx_contract::{CapabilityLookup, ModelCapabilities};
+    use ofx_contract::{
+        ActiveMode, CapabilityLookup, ModeRegistry, ModeSpec, ModelCapabilities, ToolPolicy,
+    };
     use ofx_exec::SessionSupervisor;
     use ofx_gateway::CodexEndpoints;
     use ofx_testkit::{FakeServer, Reply};
@@ -834,6 +843,7 @@ mod tests {
                     command_timeout: None,
                     executions: &executions,
                     web_fetch_progress: None,
+                    mode: None,
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -886,6 +896,7 @@ mod tests {
                     executions: &executions,
                     endpoints: SubscriptionEndpoints::default(),
                     web_fetch_progress: None,
+                    mode: None,
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
@@ -920,6 +931,86 @@ mod tests {
             resolver.resolve("unlisted", &cancel).await,
             CapabilityLookup::Resolved(ModelCapabilities::default())
         );
+    }
+
+    static INSPECTING: [ModeSpec; 1] = [ModeSpec {
+        id: "inspect",
+        name: "Inspect",
+        description: "",
+        permission_mode: PermissionMode::Ask,
+        tool_policy: ToolPolicy::ReadOnly,
+        tool_policy_denial_message: None,
+    }];
+
+    static INSPECTION: ModeRegistry = ModeRegistry {
+        default_mode_id: "inspect",
+        modes: &INSPECTING,
+    };
+
+    fn offered(request: &ofx_testkit::RecordedRequest) -> Vec<String> {
+        request.json()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn children_work_under_the_launch_modes_tool_projection() {
+        let server = FakeServer::start([
+            Reply::sse(&ofx_testkit::chat_tool_call_events(
+                "call_1",
+                "subagent",
+                r#"{"request":{"action":"run","task":"look around"}}"#,
+            )),
+            Reply::sse(&ofx_testkit::chat_text_events(&["child report"])),
+            Reply::sse(&ofx_testkit::chat_text_events(&["parent done"])),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let profile = profile(
+            &root,
+            &format!(
+                r#"{{"provider":"local","providers":{{"local":{{"protocol":"openai-chat-completions","base_url":"{}","auth":{{"type":"none"}},"models":["model-a"]}}}}}}"#,
+                server.base_url()
+            ),
+        );
+        let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
+        let setup = profile
+            .connect(
+                Launch {
+                    model: None,
+                    permission_mode: PermissionMode::Ask,
+                    system_prompt: None,
+                    reasoning_effort: None,
+                    fast_mode: None,
+                    context_limits: &[],
+                    command_timeout: None,
+                    executions: &executions,
+                    web_fetch_progress: None,
+                    endpoints: SubscriptionEndpoints::default(),
+                    mode: Some(ActiveMode {
+                        registry: &INSPECTION,
+                        id: "inspect",
+                        read_only_tool_names: &["read_file", "glob_files", "subagent"],
+                    }),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut agent = setup.agent(true);
+        let report = agent
+            .run_turn("go", &mut |_| {}, &CancellationToken::new())
+            .await;
+        assert_eq!(report.final_text, "parent done");
+        let requests = server.requests();
+        assert_eq!(
+            offered(&requests[0]),
+            ["read_file", "glob_files", "subagent"]
+        );
+        assert_eq!(offered(&requests[1]), ["read_file", "glob_files"]);
     }
 
     #[test]

@@ -481,6 +481,7 @@ async fn prepare_agent(
         executions: request.executions,
         endpoints,
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
+        mode: Some(default_mode()),
     };
     let setup = profile.connect(launch, cancel).await?;
     let recovered = pending
@@ -504,9 +505,7 @@ async fn prepare_agent(
             }
         },
     };
-    let mut agent = setup
-        .agent(resumed.is_some() || store.is_some())
-        .with_mode(default_mode());
+    let mut agent = setup.agent(resumed.is_some() || store.is_some());
     let saved = match (resumed, store) {
         (Some((store, resumed)), _) => Some(SavedAsk::resume(store, resumed, &setup, &mut agent)?),
         (None, Some(store)) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
