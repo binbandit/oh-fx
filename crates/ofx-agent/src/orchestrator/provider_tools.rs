@@ -2,11 +2,15 @@ use std::mem;
 
 use ofx_contract::{
     ChatMessage, Completion, DEFAULT_MAX_TOOL_RESULT_BYTES, FinishReason, ProviderReplay,
-    ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance, ToolResultStatus,
-    is_tool_output_error, prepare_model_output,
+    ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance, ToolOutput, ToolResultStatus,
+    is_provider_search_alias, is_tool_output_error, prepare_model_output,
+    provider_search_description,
 };
 
-use super::{Agent, EventSink, Stop, Turn, TurnFailure, escalate_repeated_failure};
+use super::{
+    Agent, EventSink, Stop, Turn, TurnFailure, escalate_repeated_failure, tool_finished,
+    tool_started,
+};
 use crate::execution_memory::RawOutput;
 
 pub(super) fn provider_executed(call: &ToolCall) -> bool {
@@ -41,7 +45,20 @@ pub(super) fn ends_with_provider_results(completion: &Completion) -> bool {
 }
 
 impl Agent {
-    pub(super) fn publish_provider_result(&mut self, turn: &mut Turn, call: &ToolCall) {
+    pub(super) fn publish_provider_result(
+        &mut self,
+        turn: &mut Turn,
+        call: &ToolCall,
+        events: EventSink<'_>,
+    ) {
+        let shown = is_provider_search_alias(&call.name);
+        if shown {
+            events(tool_started(
+                turn.id,
+                call,
+                provider_search_description(&call.arguments),
+            ));
+        }
         let result = call.provider_result.clone().unwrap_or_default();
         let status = if is_tool_output_error(&result) {
             ToolResultStatus::Failure
@@ -51,6 +68,13 @@ impl Agent {
         turn.raw_outputs
             .push(RawOutput::partial_view(call.id.clone(), result.len()));
         let model_output = prepare_model_output(&call.name, result, DEFAULT_MAX_TOOL_RESULT_BYTES);
+        if shown {
+            let output = ToolOutput {
+                status,
+                ..ToolOutput::success(model_output.clone())
+            };
+            events(tool_finished(turn.id, call, Some(&output)));
+        }
         let content = if ToolArgumentIntegrity::classify_function_input(&call.arguments)
             == ToolArgumentIntegrity::Valid
         {
@@ -87,7 +111,7 @@ impl Agent {
             provider_replay: step_replay,
         });
         for call in &calls {
-            self.publish_provider_result(turn, call);
+            self.publish_provider_result(turn, call, events);
         }
         completion.provider_replay = final_replay;
         self.finish(turn, completion, more_steps, events)
