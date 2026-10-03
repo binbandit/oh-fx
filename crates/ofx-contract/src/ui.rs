@@ -92,6 +92,60 @@ pub enum CompactionActivity {
     Ended(CompactionEnd),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatuslineItem {
+    Context,
+    Session,
+    Workspace,
+}
+
+impl StatuslineItem {
+    pub const ALL: [Self; 3] = [Self::Context, Self::Session, Self::Workspace];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Context => "context",
+            Self::Session => "session",
+            Self::Workspace => "workspace",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatuslineToggles {
+    context: bool,
+    session: bool,
+    workspace: bool,
+}
+
+impl StatuslineToggles {
+    pub const fn enabled(self, item: StatuslineItem) -> bool {
+        match item {
+            StatuslineItem::Context => self.context,
+            StatuslineItem::Session => self.session,
+            StatuslineItem::Workspace => self.workspace,
+        }
+    }
+
+    pub fn set(&mut self, item: StatuslineItem, enabled: bool) {
+        match item {
+            StatuslineItem::Context => self.context = enabled,
+            StatuslineItem::Session => self.session = enabled,
+            StatuslineItem::Workspace => self.workspace = enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceIdentity {
+    pub label: String,
+    pub branch: Option<String>,
+}
+
+pub trait WorkspaceIdentitySource: Send {
+    fn refresh(&mut self) -> WorkspaceIdentity;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
     User(String),
@@ -204,6 +258,7 @@ pub enum UiEvent {
     UsageReported {
         turn_id: TurnId,
         usage: Usage,
+        context_window: Option<u32>,
     },
     TurnFinished {
         turn_id: TurnId,
@@ -225,6 +280,10 @@ pub enum UiEvent {
     PermissionModeChanged {
         mode: PermissionMode,
         full_access_warning: bool,
+    },
+    StatuslineChanged {
+        item: StatuslineItem,
+        enabled: bool,
     },
     HelpRequested,
     StatsRequested,

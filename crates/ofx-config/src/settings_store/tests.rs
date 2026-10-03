@@ -863,3 +863,50 @@ fn startup_scrollback_is_saved_at_top_level_and_workspace_copies_are_migrated() 
         Ok(CommitOutcome::Unchanged)
     );
 }
+
+#[test]
+fn statusline_items_are_saved_under_status_line_and_workspace_copies_are_migrated() {
+    let fixture = Fixture::with_settings(
+        "{\"statusLine\":{\"sandbox\":true},\"workspaces\":{\"/work\":{\"statusLine\":{\"context\":true},\"model\":\"kept\"},\"/other\":{\"statusLine\":{\"context\":false,\"session\":true}}}}\n",
+    );
+    let recovery = fixture
+        .paths
+        .config
+        .join("backups/settings.json.preference-migration.statusline_context.json");
+    assert_eq!(
+        save_statusline_item(&fixture.paths, StatuslineItem::Context, false),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 0,
+            cleanup: LegacyCleanup {
+                fields_removed: 2,
+                workspaces_changed: 2,
+                recovery_paths: vec![recovery.clone()],
+            },
+        })
+    );
+    assert!(recovery.exists());
+    assert_eq!(
+        fixture.read(),
+        "{\"statusLine\":{\"sandbox\":true,\"context\":false},\"workspaces\":{\"/work\":{\"model\":\"kept\"},\"/other\":{\"statusLine\":{\"session\":true}}}}\n"
+    );
+    assert_eq!(
+        save_statusline_item(&fixture.paths, StatuslineItem::Context, false),
+        Ok(CommitOutcome::Unchanged)
+    );
+    assert!(matches!(
+        save_statusline_item(&fixture.paths, StatuslineItem::Workspace, true),
+        Ok(CommitOutcome::Committed { .. })
+    ));
+    assert_eq!(
+        fixture.read(),
+        "{\"statusLine\":{\"sandbox\":true,\"context\":false,\"workspace\":true},\"workspaces\":{\"/work\":{\"model\":\"kept\"},\"/other\":{\"statusLine\":{\"session\":true}}}}\n"
+    );
+}
+
+#[test]
+fn a_statusline_that_is_not_an_object_is_refused_unchanged() {
+    let text = "{\"statusLine\":7}\n";
+    let fixture = Fixture::with_settings(text);
+    assert!(save_statusline_item(&fixture.paths, StatuslineItem::Session, true).is_err());
+    assert_eq!(fixture.read(), text);
+}

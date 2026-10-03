@@ -964,6 +964,7 @@ impl Presenter {
             | UiEvent::ModelSelected { .. }
             | UiEvent::SessionTitleChanged { .. }
             | UiEvent::PermissionModeChanged { .. }
+            | UiEvent::StatuslineChanged { .. }
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested
             | UiEvent::CompactionActivity { .. }

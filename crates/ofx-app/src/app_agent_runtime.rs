@@ -5,8 +5,8 @@ use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailur
 use ofx_config::save_model_preference;
 use ofx_contract::{
     CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, QuestionRequest,
-    ResumeRefusal, SessionCursor, SessionScope, SkillBinding, TurnId, TurnOutcome, UiCommand,
-    UiEvent,
+    ResumeRefusal, SessionCursor, SessionScope, SkillBinding, StatuslineToggles, TurnId,
+    TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -22,7 +22,7 @@ use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
 use crate::approval_queue::ApprovalQueue;
 use crate::native::NativeClipboard;
-use crate::session_commands::{SessionFacts, SettingsAccess};
+use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline};
 use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
 
@@ -49,6 +49,7 @@ pub(crate) struct ControllerState {
     history_turns: usize,
     context_to_compact: bool,
     session_title: SessionTitle,
+    statusline: StatuslineToggles,
 }
 
 struct Prompt {
@@ -125,6 +126,17 @@ impl ControllerState {
 
     pub(crate) fn change_tracker(&self) -> Option<&ChangeTracker> {
         self.setup.change_tracker()
+    }
+
+    pub(crate) fn toggle_statusline(&mut self, payload: &str) {
+        let access = SettingsAccess {
+            paths: self.setup.preferences(),
+            workspace_root: self.setup.workspace_root(),
+            tool_names: Vec::new(),
+        };
+        for event in handle_statusline(&access, &mut self.statusline, payload) {
+            self.emit(event);
+        }
     }
 
     pub(crate) fn clipboard(&self) -> &dyn Clipboard {
@@ -246,6 +258,7 @@ impl Controller {
             model: setup.model().to_owned(),
             permissions: setup.permission_runtime(Arc::clone(&emit)),
             fast_mode: setup.fast_mode(),
+            statusline: setup.statusline(),
             setup,
             config_pending: false,
             pending_clear: None,
@@ -346,7 +359,7 @@ impl Controller {
         text: &str,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
-        match handle_command(&self.state, text, Work::Idle) {
+        match handle_command(&mut self.state, text, Work::Idle) {
             CommandEffect::None => {}
             CommandEffect::SwitchModel(model) => {
                 self.state.select_model(model);
@@ -877,7 +890,7 @@ mod tests {
     use ofx_config::{ProfilePaths, Settings};
     use ofx_contract::{
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, PermissionMode, ProviderErrorKind,
-        SkillMenuFocus, ToolResultStatus, TurnId, TurnOutcome,
+        SkillMenuFocus, StatuslineItem, ToolResultStatus, TurnId, TurnOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -2366,6 +2379,70 @@ mod tests {
         assert_eq!(
             notice_body(shown),
             [r#"allowlist|added tool subagent: "*" (scope=local)"#]
+        );
+    }
+
+    #[tokio::test]
+    async fn statusline_starts_from_user_settings_and_toggles_the_saved_items() {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let settings = json!({
+            "provider": "local",
+            "providers": {
+                "local": {
+                    "protocol": "openai-chat-completions",
+                    "base_url": server.base_url(),
+                    "auth": {"type": "none"},
+                    "models": ["model-a"]
+                }
+            },
+            "statusLine": {"context": true}
+        });
+        let setup = agent_setup_with(&home, &settings, SubscriptionEndpoints::default()).await;
+        assert!(setup.statusline().enabled(StatuslineItem::Context));
+        let mut harness = Harness::with_setup(home, setup);
+        harness.command("/statusline");
+        assert_eq!(
+            notices_until(&mut harness, "statusline").await,
+            ["statusline|context: on\nsession: off\nworkspace: off"]
+        );
+        harness.command("/statusline context");
+        let shown = harness
+            .until(|event| {
+                matches!(event, UiEvent::Notice { notice } if notice.body == "context: off")
+            })
+            .await;
+        assert_eq!(
+            shown[0],
+            UiEvent::StatuslineChanged {
+                item: StatuslineItem::Context,
+                enabled: false,
+            }
+        );
+        assert_eq!(
+            notice_body(shown),
+            [
+                "statusline|saved to user settings (scope=user)",
+                "statusline|context: off",
+            ]
+        );
+        assert_eq!(
+            saved_settings(&harness)["statusLine"],
+            json!({"context": false})
+        );
+        harness.command("/statusline workspace");
+        notices_until(&mut harness, "statusline").await;
+        harness.command("/statusline sandbox");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic.is_empty()))
+            .await;
+        assert_eq!(
+            notice_body(shown).last().unwrap(),
+            "|usage: /statusline [context|session|workspace]"
+        );
+        assert_eq!(
+            saved_settings(&harness)["statusLine"],
+            json!({"context": false, "workspace": true})
         );
     }
 
