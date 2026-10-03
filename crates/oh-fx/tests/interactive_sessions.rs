@@ -895,3 +895,58 @@ fn the_skills_discovery_warning_shows_again_in_a_new_and_in_a_resumed_conversati
     assert!(after(&screen, "┃ question 5").contains(WARNING), "{screen}");
     exit(session);
 }
+
+#[test]
+fn file_mentions_complete_in_new_and_resumed_sessions_and_are_saved_as_typed() {
+    let server = FakeServer::start(
+        (1..=3).map(|turn| Reply::sse(&chat_text_events(&[&format!("answer {turn}")]))),
+    );
+    let home = Home::new(&server.base_url());
+    fs::create_dir_all(home.workspace.join("docs")).expect("create docs");
+    fs::create_dir_all(home.workspace.join("src")).expect("create src");
+    fs::write(home.workspace.join("docs/my notes.md"), "").expect("write the notes");
+    fs::write(home.workspace.join("src/old.rs"), "").expect("write the source");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"read @notes");
+    wait(&session, "docs/my notes.md");
+    session.send(b"\r");
+    wait(&session, "┃ read @\"docs/my notes.md\"");
+    session.send(b"\r");
+    wait(&session, "answer 1");
+    session.send(b"/new\r");
+    session
+        .wait_for(WAIT, |screen| !screen.contains("answer 1"))
+        .unwrap_or_else(|screen| panic!("the old conversation stayed on screen:\n{screen}"));
+    session.send(b"next @old");
+    wait(&session, "src/old.rs");
+    session.send(b"\r");
+    wait(&session, "┃ next @src/old.rs");
+    session.send(b"\r");
+    wait(&session, "answer 2");
+    exit(session);
+    let remembered = home.remembered().expect("a remembered session");
+    assert_eq!(
+        home.frames(&remembered)[0]["event"]["user"]["text"],
+        "next @src/old.rs"
+    );
+
+    let session = home.shell(&["-c"], "session resumed");
+    let screen = wait(&session, "answer 2");
+    assert!(screen.contains("┃ next @src/old.rs"), "{screen}");
+    assert!(!screen.contains("my notes"), "{screen}");
+    session.send(b"last @notes");
+    wait(&session, "docs/my notes.md");
+    session.send(b"\r");
+    wait(&session, "┃ last @\"docs/my notes.md\"");
+    session.send(b"\r");
+    wait(&session, "answer 3");
+    exit(session);
+    assert_eq!(
+        chat(&server.requests()[2]),
+        [
+            turn("next @src/old.rs", "answer 2"),
+            vec![("user".to_owned(), "last @\"docs/my notes.md\"".to_owned())]
+        ]
+        .concat()
+    );
+}
