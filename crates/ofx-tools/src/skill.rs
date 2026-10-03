@@ -76,8 +76,8 @@ impl Tool for SkillTool {
             activity: ToolActivity::Read,
             action_label: ACTION_LABEL,
             completed_label: "Loaded skill",
-            label_argument: "location",
-            label_default: "skill",
+            label_argument: "",
+            label_default: "",
         })
     }
 
