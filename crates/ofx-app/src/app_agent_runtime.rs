@@ -619,8 +619,8 @@ impl Controller {
     fn reconfigure(&mut self) {
         let mut config = self.state.setup.config(&self.state.model);
         config.fast_mode = self.state.fast_mode;
-        self.state.setup.delegate_as(&config);
         config.reasoning_effort = self.state.effort.clone().into_named();
+        self.state.setup.delegate_as(&config);
         self.agent.set_config(config);
     }
 
@@ -2482,6 +2482,48 @@ mod tests {
         assert_eq!(session["model"], OTHER_CODEX_MODEL);
         assert_eq!(session["effort"], "low");
         assert_eq!(session["fast_mode"], true);
+    }
+
+    fn codex_delegate(task: &str) -> Reply {
+        let arguments = json!({"request": {"action": "run", "task": task}}).to_string();
+        let events = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"subagent","arguments":""}}),
+            json!({"type":"response.function_call_arguments.done","output_index":0,"arguments":arguments}),
+            json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+        ]
+        .map(|event| event.to_string());
+        Reply::sse(&events)
+    }
+
+    #[tokio::test]
+    async fn a_child_started_after_a_pick_takes_the_picked_model_effort_and_fast_mode() {
+        let codex = FakeServer::start([
+            codex_delegate("summarise the notes"),
+            codex_text("child done"),
+            codex_text("parent done"),
+        ]);
+        let catalog = codex_catalog(true, 1);
+        let settings = json!({
+            "provider": "codex",
+            "models": {"codex": CODEX_MODEL},
+            "session_titles": false
+        });
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        listed_catalog(&mut harness).await;
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        harness.submit("delegate the summary");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            let body = request.json();
+            assert_eq!(body["model"], OTHER_CODEX_MODEL, "{body}");
+            assert_eq!(body["reasoning"]["effort"], "low", "{body}");
+            assert_eq!(body["service_tier"], "priority", "{body}");
+        }
     }
 
     #[tokio::test]
