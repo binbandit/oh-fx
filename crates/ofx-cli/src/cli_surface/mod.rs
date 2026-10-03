@@ -22,14 +22,15 @@ pub use launch_modifiers::LaunchModifiers;
 pub(crate) use model_overrides::{ModelOverride, ModelOverrides};
 
 use launch_modifiers::parse_launch_modifiers;
+pub use resume::RequestedResume;
 use resume::{
-    InvalidResumeArgs, RESUME_ID_ALIAS_PREFIX, validate_resume_alias, validate_resume_subcommand,
+    InvalidResumeArgs, RESUME_ID_ALIAS_PREFIX, resume_alias_target, resume_subcommand_target,
 };
 
 #[derive(Debug)]
 pub enum Invocation {
     Interactive(LaunchModifiers),
-    Resume(LaunchModifiers),
+    Resume(LaunchModifiers, RequestedResume),
     TopLevelHelp(HelpLayout),
     CommandHelp(TopLevelKind),
     Version,
@@ -192,11 +193,11 @@ fn launches_session(kind: TopLevelKind, rest: &[OsString]) -> bool {
 }
 
 fn launch_session(
-    request: Result<(), InvalidResumeArgs>,
+    request: Result<RequestedResume, InvalidResumeArgs>,
     modifiers: LaunchModifiers,
 ) -> Result<Invocation, CliError> {
-    request.map_err(|InvalidResumeArgs| CliError::Usage(TopLevelKind::Resume))?;
-    Ok(Invocation::Resume(modifiers))
+    let target = request.map_err(|InvalidResumeArgs| CliError::Usage(TopLevelKind::Resume))?;
+    Ok(Invocation::Resume(modifiers, target))
 }
 
 fn parse_unclassified(
@@ -208,7 +209,7 @@ fn parse_unclassified(
         .as_bytes()
         .starts_with(RESUME_ID_ALIAS_PREFIX.as_bytes())
     {
-        return launch_session(validate_resume_alias(&first, rest), modifiers);
+        return launch_session(resume_alias_target(&first, rest), modifiers);
     }
     check_noninteractive(&modifiers, false)?;
     if first != "--version" && first != "-v" {
@@ -234,13 +235,13 @@ fn parse_command(
     let command = match kind {
         TopLevelKind::Help => return Ok(Invocation::TopLevelHelp(HelpLayout::Plain)),
         TopLevelKind::Resume if first.as_bytes().starts_with(b"-") => {
-            return launch_session(validate_resume_alias(first, &rest), modifiers);
+            return launch_session(resume_alias_target(first, &rest), modifiers);
         }
         TopLevelKind::Resume => {
-            return launch_session(validate_resume_subcommand(&rest), modifiers);
+            return launch_session(resume_subcommand_target(&rest), modifiers);
         }
         TopLevelKind::Session if session => {
-            return launch_session(validate_resume_subcommand(&rest[1..]), modifiers);
+            return launch_session(resume_subcommand_target(&rest[1..]), modifiers);
         }
         TopLevelKind::Mcp if rest.is_empty() => {
             return Ok(Invocation::CommandHelp(kind));

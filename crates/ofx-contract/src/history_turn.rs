@@ -71,12 +71,14 @@ impl fmt::Display for LogFailure {
 impl std::error::Error for LogFailure {}
 
 pub trait ConversationLog: Send + Sync {
+    fn require_writable(&self) -> Result<(), LogFailure>;
+
     fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure>;
 
     fn record_compaction(
         &mut self,
         checkpoint: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure>;
 }

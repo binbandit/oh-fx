@@ -12,7 +12,7 @@ pub(super) enum Logged {
     Compaction {
         checkpoint: String,
         cut: HistoryCut,
-        user: String,
+        user: Option<String>,
         steps: Vec<String>,
     },
 }
@@ -21,6 +21,9 @@ pub(super) enum Logged {
 pub(super) struct MemoryLog {
     pub(super) entries: Arc<Mutex<Vec<Logged>>>,
     pub(super) failing: Option<&'static str>,
+    pub(super) blocked: Option<&'static str>,
+    pub(super) refused_checkpoint: Option<&'static str>,
+    pub(super) refused_turn: Option<&'static str>,
 }
 
 impl MemoryLog {
@@ -91,8 +94,22 @@ fn described_end(end: TurnEnd<'_>) -> String {
 }
 
 impl ConversationLog for MemoryLog {
+    fn require_writable(&self) -> Result<(), LogFailure> {
+        match self.blocked {
+            Some(code) => Err(LogFailure {
+                code: code.to_owned(),
+            }),
+            None => Ok(()),
+        }
+    }
+
     fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure> {
         self.outcome()?;
+        if let Some(code) = self.refused_turn.take() {
+            return Err(LogFailure {
+                code: code.to_owned(),
+            });
+        }
         self.entries.lock().unwrap().push(Logged::Turn {
             user: turn.user.to_owned(),
             steps: described_steps(turn),
@@ -105,21 +122,28 @@ impl ConversationLog for MemoryLog {
         &mut self,
         checkpoint: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure> {
         self.outcome()?;
-        assert_eq!(
-            active.end,
-            TurnEnd::Replied {
-                text: "",
-                provider_replay: None
-            }
-        );
+        if let Some(code) = self.refused_checkpoint {
+            return Err(LogFailure {
+                code: code.to_owned(),
+            });
+        }
+        if let Some(active) = active {
+            assert_eq!(
+                active.end,
+                TurnEnd::Replied {
+                    text: "",
+                    provider_replay: None
+                }
+            );
+        }
         self.entries.lock().unwrap().push(Logged::Compaction {
             checkpoint: checkpoint.to_owned(),
             cut,
-            user: active.user.to_owned(),
-            steps: described_steps(active),
+            user: active.map(|active| active.user.to_owned()),
+            steps: active.map(described_steps).unwrap_or_default(),
         });
         Ok(())
     }
@@ -133,11 +157,15 @@ fn logged_turn(user: &str, steps: &[&str], end: &str) -> Logged {
     }
 }
 
+pub(super) fn logged(mut agent: Agent, log: Box<dyn ConversationLog>) -> Agent {
+    agent.attach_session("abcdefghijkl".to_owned(), log);
+    agent
+}
+
 fn logging_agent(provider: &Arc<FakeProvider>) -> (Agent, Arc<Mutex<Vec<Logged>>>) {
     let (log, entries) = MemoryLog::shared();
     let shared: Arc<FakeProvider> = Arc::clone(provider);
-    let agent = new_agent(shared, vec![echo_tool()]).with_conversation_log(log);
-    (agent, entries)
+    (logged(new_agent(shared, vec![echo_tool()]), log), entries)
 }
 
 #[tokio::test]
@@ -149,8 +177,7 @@ async fn finished_turns_are_logged_with_their_tool_steps_and_reply() {
         ),
         with_replay(text_reply("done"), "p2"),
     ]);
-    let (agent, entries) = logging_agent(&provider);
-    let mut agent = agent.with_session_id("abcdefghijkl");
+    let (mut agent, entries) = logging_agent(&provider);
     let (report, _) = run(&mut agent, "read").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(
@@ -232,7 +259,7 @@ async fn interrupted_and_failed_turns_are_logged_as_upstream_saves_them() {
 async fn step_limits_are_logged_as_the_notice_reply() {
     let provider = FakeProvider::new(vec![tool_reply(&[("call-1", "{}")])]);
     let (log, entries) = MemoryLog::shared();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         provider,
         vec![echo_tool()],
         Arc::new(FixedContext),
@@ -241,8 +268,8 @@ async fn step_limits_are_logged_as_the_notice_reply() {
             step_limit: 1,
             ..config()
         },
-    )
-    .with_conversation_log(log);
+    );
+    let mut agent = logged(agent, log);
     let (report, _) = run(&mut agent, "loop").await;
     assert_eq!(report.failure, Some(TurnFailure::StepLimitReached));
     assert_eq!(
@@ -256,12 +283,14 @@ async fn step_limits_are_logged_as_the_notice_reply() {
 }
 
 #[tokio::test]
-async fn a_turn_that_cannot_be_saved_fails_with_the_log_error() {
+async fn a_turn_that_cannot_be_saved_keeps_its_outcome_and_reports_the_log_error() {
     let provider = FakeProvider::new(vec![text_reply("hello")]);
-    let mut agent = new_agent(provider, Vec::new())
-        .with_conversation_log(Box::new(MemoryLog::failing("SessionPersistenceUncertain")));
+    let mut agent = logged(
+        new_agent(provider, Vec::new()),
+        Box::new(MemoryLog::failing("SessionPersistenceUncertain")),
+    );
     let (report, events) = run(&mut agent, "hi").await;
-    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(
         report.failure.map(|failure| failure.code().to_owned()),
         Some("SessionPersistenceUncertain".to_owned())
@@ -269,18 +298,56 @@ async fn a_turn_that_cannot_be_saved_fails_with_the_log_error() {
     assert!(matches!(
         events.last(),
         Some(UiEvent::TurnFinished {
-            outcome: TurnOutcome::Failed,
+            outcome: TurnOutcome::Completed,
             ..
         })
     ));
+    assert_eq!(agent.history.len(), 2);
     let provider = FakeProvider::new(vec![Script::Fail(
         Vec::new(),
         failure(ProviderErrorKind::Unauthorized, "unauthorized"),
     )]);
-    let mut agent = new_agent(provider, Vec::new())
-        .with_conversation_log(Box::new(MemoryLog::failing("SessionPersistenceUncertain")));
+    let mut agent = logged(
+        new_agent(provider, Vec::new()),
+        Box::new(MemoryLog::failing("SessionPersistenceUncertain")),
+    );
     let (report, _) = run(&mut agent, "hi").await;
     assert_eq!(report.failure.unwrap().code(), "unauthorized");
+}
+
+#[tokio::test]
+async fn a_log_that_refuses_writes_fails_the_turn_before_the_model_runs() {
+    let provider = FakeProvider::new(vec![text_reply("never")]);
+    let (mut log, entries) = MemoryLog::shared();
+    log.blocked = Some("SessionCommitFailed");
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let (report, events) = run(&mut agent, "hi").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(report.failure.unwrap().code(), "SessionCommitFailed");
+    assert!(matches!(events[0], UiEvent::TurnStarted { .. }));
+    assert!(matches!(
+        events.last(),
+        Some(UiEvent::TurnFinished {
+            outcome: TurnOutcome::Failed,
+            ..
+        })
+    ));
+    assert!(provider.requests().is_empty());
+    assert!(entries.lock().unwrap().is_empty());
+    assert!(agent.history.is_empty());
+}
+
+#[tokio::test]
+async fn a_session_attached_later_names_requests_and_records_turns() {
+    let provider = FakeProvider::new(vec![text_reply("one"), text_reply("two")]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (log, entries) = MemoryLog::shared();
+    agent.attach_session("session-1".to_owned(), log);
+    run(&mut agent, "first").await;
+    agent.detach_session();
+    run(&mut agent, "second").await;
+    assert_eq!(entries.lock().unwrap().len(), 1);
+    assert_eq!(provider.sessions(), [Some("session-1".to_owned()), None]);
 }
 
 #[tokio::test]

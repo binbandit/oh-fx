@@ -4,6 +4,7 @@ use super::matches_command_token;
 pub enum SlashKind {
     Help,
     ClearScreen,
+    NewSession,
     ResetSession,
     Stats,
     Status,
@@ -199,6 +200,7 @@ mod tests {
             [
                 "/help",
                 "/clear",
+                "/new",
                 "/reset",
                 "/stats",
                 "/status",
@@ -263,6 +265,7 @@ mod tests {
             [
                 ("/help", "General"),
                 ("/clear", "General"),
+                ("/new", "Session"),
                 ("/reset", "Session"),
                 ("/stats", "Account"),
                 ("/status", "General"),

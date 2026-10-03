@@ -58,6 +58,97 @@ async fn manual_compaction_keeps_the_newest_turns_and_replaces_the_rest_with_a_c
 }
 
 #[tokio::test]
+async fn manual_compaction_logs_its_checkpoint_without_an_active_turn() {
+    let provider = FakeProvider::new(chat_replies(6));
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = turn_log::logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    chat(&mut agent, 6).await;
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 7);
+    let turn_log::Logged::Compaction {
+        checkpoint,
+        cut,
+        user,
+        steps,
+    } = &entries[6]
+    else {
+        panic!("{entries:?}");
+    };
+    assert_eq!(
+        *cut,
+        HistoryCut {
+            turns: 2,
+            tool_steps: 0
+        }
+    );
+    assert_eq!(*user, None);
+    assert!(steps.is_empty());
+    let (text, payload) = crate::compactor::restore_checkpoint(checkpoint);
+    assert!(payload.is_some());
+    assert_eq!(text, user_text(&agent.history[0]));
+}
+
+#[tokio::test]
+async fn a_checkpoint_counts_only_the_turns_the_log_saved() {
+    let mut scripts = chat_replies(6);
+    scripts.push(text_reply("answer 7"));
+    let provider = FakeProvider::new(scripts);
+    let entries = Arc::new(Mutex::new(Vec::new()));
+    let log = Box::new(turn_log::MemoryLog {
+        entries: Arc::clone(&entries),
+        refused_turn: Some("Io(Other)"),
+        ..turn_log::MemoryLog::default()
+    });
+    let mut agent = turn_log::logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    chat(&mut agent, 6).await;
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 6);
+    let turn_log::Logged::Compaction { cut, .. } = &entries[5] else {
+        panic!("{entries:?}");
+    };
+    assert_eq!(
+        *cut,
+        HistoryCut {
+            turns: 1,
+            tool_steps: 0
+        }
+    );
+    run(&mut agent, "question 7").await;
+    let requests = provider.requests();
+    assert_eq!(user_text(&requests[6].messages[1]), "question 3");
+}
+
+#[tokio::test]
+async fn a_manual_compaction_that_cannot_be_saved_keeps_the_whole_history() {
+    let mut scripts = chat_replies(6);
+    scripts.push(text_reply("answer 7"));
+    let provider = FakeProvider::new(scripts);
+    let log = Box::new(turn_log::MemoryLog {
+        refused_checkpoint: Some("SessionCommitFailed"),
+        ..turn_log::MemoryLog::default()
+    });
+    let mut agent = turn_log::logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    chat(&mut agent, 6).await;
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Err(CompactionError::NotSaved)
+    );
+    assert!(agent.compacted.is_none());
+    run(&mut agent, "question 7").await;
+    let requests = provider.requests();
+    assert_eq!(user_text(&requests[6].messages[0]), "question 1");
+    assert_eq!(requests[6].messages.len(), 6 * 2 + 1);
+}
+
+#[tokio::test]
 async fn manual_compaction_asks_the_conversations_model_for_notes_on_tool_work() {
     let mut scripts = vec![
         tool_reply(&[("call-1", r#"{"value":"notes.md"}"#)]),
@@ -683,7 +774,7 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
     ]);
     let (agent, _) = windowed(&provider, 45_000, 64);
     let (log, entries) = turn_log::MemoryLog::shared();
-    let mut agent = agent.with_conversation_log(log);
+    let mut agent = turn_log::logged(agent, log);
     let (report, _) = run(&mut agent, "read the notes").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     let entries = entries.lock().unwrap().clone();
@@ -704,7 +795,7 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
             tool_steps: 1
         }
     );
-    assert_eq!(user, "read the notes");
+    assert_eq!(user.as_deref(), Some("read the notes"));
     assert_eq!(steps.len(), 1);
     assert!(steps[0].starts_with("\"STEP_SENTINEL"));
     let (text, payload) = crate::compactor::restore_checkpoint(checkpoint);
@@ -721,6 +812,45 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
 }
 
 #[tokio::test]
+async fn a_turn_dropped_after_its_checkpoint_stays_counted_as_a_logged_turn() {
+    let big_reply = format!("HISTORY_SENTINEL {}", "h".repeat(150_000));
+    let provider = FakeProvider::new(vec![
+        spoken_tool_reply("Reading first.", "call-1", r#"{"value":"first.txt"}"#),
+        unmetered(text_reply(&big_reply)),
+        unmetered(text_reply(
+            "Turn 1\nIn between: Read the file.\nT1: echoed first.txt",
+        )),
+        Script::Fail(
+            Vec::new(),
+            failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
+        ),
+    ]);
+    let (agent, _) = windowed(&provider, 45_000, 64);
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = turn_log::logged(agent, log);
+    run(&mut agent, "first").await;
+    let (second, _) = run(&mut agent, "second").await;
+    assert_eq!(second.outcome, TurnOutcome::Failed);
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 3, "{entries:?}");
+    assert!(matches!(
+        &entries[1],
+        turn_log::Logged::Compaction { user: Some(user), .. } if user == "second"
+    ));
+    assert!(agent.turn_starts.is_empty());
+    assert_eq!(agent.ledger.records, [turn_ledger::TurnRecord::LogOnly]);
+    assert_eq!(
+        agent
+            .ledger
+            .logged_cut(crate::execution_memory::Cut::default()),
+        HistoryCut {
+            turns: 1,
+            tool_steps: 0
+        }
+    );
+}
+
+#[tokio::test]
 async fn a_checkpoint_that_cannot_be_saved_fails_the_turn_and_is_not_installed() {
     let big_step = format!("STEP_SENTINEL {}", "h".repeat(150_000));
     let provider = FakeProvider::new(vec![
@@ -730,8 +860,7 @@ async fn a_checkpoint_that_cannot_be_saved_fails_the_turn_and_is_not_installed()
         )),
     ]);
     let (agent, _) = windowed(&provider, 45_000, 64);
-    let mut agent =
-        agent.with_conversation_log(Box::new(turn_log::MemoryLog::failing("SessionBusy")));
+    let mut agent = turn_log::logged(agent, Box::new(turn_log::MemoryLog::failing("SessionBusy")));
     let (report, _) = run(&mut agent, "read the notes").await;
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(report.failure.unwrap().code(), "SessionBusy");

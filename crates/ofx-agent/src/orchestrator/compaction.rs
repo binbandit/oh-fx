@@ -42,6 +42,12 @@ pub(super) struct TurnCompaction {
     pub(super) compacted_steps: bool,
 }
 
+impl TurnCompaction {
+    pub(super) fn checkpointed(&self) -> bool {
+        self.compacted_len.is_some()
+    }
+}
+
 pub(super) struct Measured {
     cost: RequestCost,
     fixed_tokens: Option<usize>,
@@ -73,13 +79,13 @@ impl Agent {
         let compacted = self
             .compacted_history(size, false, options, None, summarizing, cancel)
             .await?;
-        Ok(match compacted {
-            Some(compacted) => {
-                self.install_compaction(compacted);
-                Compaction::Compacted
-            }
-            None => Compaction::Unchanged,
-        })
+        let Some(compacted) = compacted else {
+            return Ok(Compaction::Unchanged);
+        };
+        self.record_compaction(None, &compacted)
+            .map_err(|_| CompactionError::NotSaved)?;
+        self.install_compaction(compacted);
+        Ok(Compaction::Compacted)
     }
 
     pub(super) fn has_compactable_context(&self, turn: &Turn) -> bool {
@@ -170,7 +176,7 @@ impl Agent {
         turn: &mut Turn,
         compacted: Compacted,
     ) -> Result<(), Stop> {
-        self.record_compaction(turn, &compacted)
+        self.record_compaction(Some(turn), &compacted)
             .map_err(|failure| Stop::failed(TurnFailure::Persistence(failure)))?;
         let active = self.turn_starts.len().saturating_sub(1);
         turn.compaction.compacted_steps |=
@@ -285,6 +291,7 @@ impl Agent {
                 .checked_sub(compacted.cut.turns)
                 .map(|turn| LastReply { turn, ..reply })
         });
+        self.ledger.compact(compacted.cut);
         retain(
             &mut self.history,
             &mut self.turn_starts,

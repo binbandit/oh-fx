@@ -469,6 +469,52 @@ fn a_compaction_during_ask_saves_a_checkpoint_that_resumed_sessions_start_from()
 }
 
 #[test]
+fn a_turn_whose_tool_result_cannot_be_saved_after_a_checkpoint_resumes_closed() {
+    let big = format!("FIRST_SENTINEL {}", "word ".repeat(30_000));
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&[&big])),
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"small.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Read it."])),
+        Reply::sse(&chat_text_events(&["three"])),
+    ]);
+    let metadata = json!({"@openai/gpt-4o": {"context_window": 40000, "max_output_tokens": 1000}});
+    let home = Home::with_settings(&settings(&server.base_url(), Some(metadata)));
+    fs::write(home.root.join("workspace/small.txt"), "alpha\n").expect("write small.txt");
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    let blocker = home.sessions().join(&id).join("tool-results");
+    fs::write(&blocker, "blocked").expect("block the tool results");
+    let second = home.ask_json(&["--resume", "last", "second"], &[]);
+    assert_eq!(second["error"], "SessionPathUnsafe", "{second}");
+    assert_eq!(
+        kinds(&home.frames(&id)),
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "context_checkpoint"
+        ]
+    );
+    fs::remove_file(&blocker).expect("unblock the tool results");
+    let third = home.ask_json(&["--resume", "last", "third"], &[]);
+    assert_eq!(third["final_output"], "three", "{third}");
+    assert_eq!(
+        kinds(&home.frames(&id))[5..],
+        ["interrupted", "user", "assistant", "turn_completed"]
+    );
+    let resumed = texts(&conversation(&server.requests()[3]));
+    assert_eq!(resumed.last().map(String::as_str), Some("user: third"));
+    assert!(
+        resumed.iter().all(|text| text != "assistant: three"),
+        "{resumed:?}"
+    );
+}
+
+#[test]
 fn no_save_runs_neither_create_nor_resume_sessions() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
     let home = Home::new(&server.base_url());

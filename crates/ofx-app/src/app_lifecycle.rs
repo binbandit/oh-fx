@@ -8,8 +8,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-use ofx_cli::LaunchModifiers;
-use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
+use ofx_cli::{LaunchModifiers, RequestedResume};
+use ofx_contract::{HistoryEntry, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_tui::{ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel};
 use tokio::runtime::Runtime;
@@ -20,11 +20,17 @@ use crate::app_agent_runtime::Controller;
 use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError};
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_panic_runtime::PanicCapture;
+use crate::app_session_runtime::{
+    Persistence, configured_preferences, open_store, running_provider,
+};
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
+use startup_resume::open_requested;
+
+mod startup_resume;
 
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const WORKER_THREAD: &str = "oh-fx-agent";
@@ -36,9 +42,11 @@ struct Session {
     setup: AgentSetup,
     executions: ManagedExecutions,
     permission_mode: PermissionMode,
+    persistence: Option<Persistence>,
+    history: Option<Vec<HistoryEntry>>,
 }
 
-pub fn run_interactive(modifiers: &LaunchModifiers) -> ExitCode {
+pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedResume>) -> ExitCode {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         eprintln!("{}", TerminalError::NotATerminal);
         return ExitCode::FAILURE;
@@ -53,7 +61,7 @@ pub fn run_interactive(modifiers: &LaunchModifiers) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let session = match runtime.block_on(bootstrap(modifiers)) {
+    let session = match runtime.block_on(bootstrap(modifiers, resume)) {
         Ok(session) => session,
         Err(lines) => {
             for line in lines {
@@ -79,11 +87,24 @@ pub fn run_interactive(modifiers: &LaunchModifiers) -> ExitCode {
     }
 }
 
-async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> {
-    let profile = Profile::load().map_err(|error| profile_failure_lines(&error))?;
+async fn bootstrap(
+    modifiers: &LaunchModifiers,
+    resume: Option<&RequestedResume>,
+) -> Result<Session, Vec<String>> {
+    let mut profile = Profile::load().map_err(|error| profile_failure_lines(&error))?;
     let supervisor = SessionSupervisor::current_executable()
         .map_err(|_| vec![failure_line(&SELF_EXE_NOT_FOUND)])?;
     let executions = ManagedExecutions::new(supervisor);
+    let store = open_store(&profile);
+    let resumed = match resume {
+        Some(requested) => {
+            open_requested(store.as_ref(), &mut profile, requested).map_err(|line| vec![line])?
+        }
+        None => None,
+    };
+    let saved = resumed
+        .as_ref()
+        .map(|resumed| resumed.session.preferences());
     let settings = profile.settings();
     let permission_mode = settings.permission_mode(&|name| env::var(name).ok());
     let setup = profile
@@ -95,9 +116,12 @@ async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> 
                 reasoning_effort: modifiers
                     .reasoning_effort()
                     .cloned()
+                    .or_else(|| saved.map(|preferences| preferences.effort.clone()))
                     .unwrap_or_else(|| settings.reasoning_effort())
                     .into_named(),
-                fast_mode: modifiers.fast_mode(),
+                fast_mode: modifiers
+                    .fast_mode()
+                    .or_else(|| saved.map(|preferences| preferences.fast_mode)),
                 context_limits: modifiers.context_limit_overrides(),
                 command_timeout: None,
                 executions: &executions,
@@ -108,11 +132,26 @@ async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> 
         )
         .await
         .map_err(|error| vec![failure_line(&error)])?;
+    let history = resumed
+        .as_ref()
+        .map(|resumed| resumed.session.transcript())
+        .transpose()
+        .map_err(|error| vec![failure_line(&error)])?;
+    let persistence = match (store, running_provider(&setup)) {
+        (Ok(store), Ok(provider)) => {
+            let preferences = configured_preferences(&profile, &setup, provider.clone());
+            Some(Persistence::new(store, provider, preferences, resumed))
+        }
+        (_, Err(error)) if resumed.is_some() => return Err(vec![failure_line(&error)]),
+        _ => None,
+    };
     Ok(Session {
         profile,
         setup,
         executions,
         permission_mode,
+        persistence,
+        history,
     })
 }
 
@@ -203,20 +242,31 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.workspace_root(),
             session.profile.cache_dir(),
         ))),
+        history: session.history,
     };
     let refreshes = session.setup.refreshes();
-    let agent = agent_work(session.setup, session.executions, runtime);
+    let agent = agent_work(
+        session.setup,
+        session.persistence,
+        session.executions,
+        runtime,
+    );
     host(options, sender, receiver, refreshes.as_deref(), agent)
 }
 
 fn agent_work(
     setup: AgentSetup,
+    persistence: Option<Persistence>,
     executions: ManagedExecutions,
     runtime: Runtime,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
     let refreshes = setup.refreshes();
     move |events, commands| {
-        let controller = Controller::new(setup, Arc::new(move |event| events.send(event)));
+        let controller = Controller::new(
+            setup,
+            Arc::new(move |event| events.send(event)),
+            persistence,
+        );
         runtime.block_on(async {
             controller.run(commands).await;
             executions.shutdown().await;
