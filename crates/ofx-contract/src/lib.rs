@@ -56,8 +56,8 @@ pub use tool_dispatch::{
     ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
 };
 pub use tool_presentation::{
-    SubagentActionState, format_plain_action, format_subagent_plain_action, format_unknown_action,
-    plain_description,
+    SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
+    format_unknown_action, plain_description, subagent_action, subagent_failure_label,
 };
 pub use tool_result_errors::{
     DetailValue, ExecutionFailure, ReviewHold, ToolPermissionDenialReason,
