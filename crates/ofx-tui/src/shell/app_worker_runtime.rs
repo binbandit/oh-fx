@@ -300,6 +300,7 @@ impl Shell<'_> {
             UiEvent::ToolFinished {
                 turn_id,
                 call_id,
+                arguments,
                 status,
                 content,
                 process,
@@ -311,6 +312,7 @@ impl Shell<'_> {
                     && let Some(row) = self.transcript.tool_row_mut(&call_id)
                 {
                     row.finish(&Finished {
+                        arguments: &arguments,
                         status,
                         content: &content,
                         process,

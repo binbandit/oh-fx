@@ -12,6 +12,12 @@ const SUBAGENT_NAME_BYTES: usize = 64;
 const SUBAGENT_PREVIEW_BUFFER_BYTES: usize = 124;
 const SUBAGENT_PREVIEW_BYTES: usize = 120;
 const SUBAGENT_PREVIEW_SCAN_BYTES: usize = 16 * 1024;
+const NOT_SENT_CODES: [&str; 3] = [
+    "feedback_capacity",
+    "operation_conflict",
+    "override_after_create",
+];
+const INTERRUPTED_CODES: [&str; 3] = ["child_cancelled", "child_interrupted", "child_lost"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentActionState<'a> {
@@ -24,9 +30,9 @@ pub enum SubagentActionState<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SubagentActionText {
-    label: String,
-    detail: String,
+pub struct SubagentActionText {
+    pub label: String,
+    pub detail: String,
 }
 
 pub fn plain_description(
@@ -61,7 +67,7 @@ pub fn format_unknown_action(tool_name: &str) -> String {
     format!("Working: {tool_name}")
 }
 
-fn subagent_action(
+pub fn subagent_action(
     tool_name: &str,
     arguments: &str,
     state: SubagentActionState<'_>,
@@ -134,6 +140,24 @@ pub fn format_subagent_plain_action(
     } else {
         format!("{} {}", action.label, action.detail)
     })
+}
+
+pub fn subagent_failure_label(tool_name: &str, output: &str) -> &'static str {
+    if tool_name != SUBAGENT_TOOL_NAME {
+        return "Failed";
+    }
+    let Some(result) = json_object(output) else {
+        return "Failed";
+    };
+    if result.get("ok").and_then(Value::as_bool) != Some(false) {
+        return "Failed";
+    }
+    match result.get("error_code").and_then(Value::as_str) {
+        Some("child_busy") => "Busy",
+        Some(code) if NOT_SENT_CODES.contains(&code) => "Message not sent to",
+        Some(code) if INTERRUPTED_CODES.contains(&code) => "Interrupted",
+        _ => "Failed",
+    }
 }
 
 fn json_object(text: &str) -> Option<Map<String, Value>> {
@@ -320,6 +344,42 @@ mod tests {
             .as_deref(),
             Some("Subagent still running · work")
         );
+    }
+
+    #[test]
+    fn subagent_failure_labels_trust_structured_terminal_codes_only() {
+        for code in ["child_interrupted", "child_cancelled", "child_lost"] {
+            let output = format!(r#"{{"ok":false,"error_code":"{code}"}}"#);
+            assert_eq!(subagent_failure_label("subagent", &output), "Interrupted");
+        }
+        for output in [
+            "child_interrupted",
+            "{",
+            "<tool_result_preview>child_interrupted</tool_result_preview>",
+            r#"{"ok":true,"error_code":"child_interrupted"}"#,
+            r#"{"ok":false,"error_code":"child_failed"}"#,
+        ] {
+            assert_eq!(
+                subagent_failure_label("subagent", output),
+                "Failed",
+                "{output}"
+            );
+        }
+        assert_eq!(
+            subagent_failure_label("shell", r#"{"ok":false,"error_code":"child_busy"}"#),
+            "Failed"
+        );
+        assert_eq!(
+            subagent_failure_label("subagent", r#"{"ok":false,"error_code":"child_busy"}"#),
+            "Busy"
+        );
+        for code in NOT_SENT_CODES {
+            let output = format!(r#"{{"ok":false,"error_code":"{code}"}}"#);
+            assert_eq!(
+                subagent_failure_label("subagent", &output),
+                "Message not sent to"
+            );
+        }
     }
 
     #[test]
