@@ -130,6 +130,7 @@ impl ChatCompletionsProvider {
         if let Some(token) = &self.bearer_token {
             builder = builder.bearer_auth(token);
         }
+        sink.emit(StreamEvent::Admitted);
         let mut response = match send(builder, cancel).await {
             Ok(response) => response,
             Err(SendFailure::Cancelled) => return Err(ProviderError::cancelled()),

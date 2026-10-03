@@ -20,6 +20,7 @@ const PANICKED: &str = r#"{"error":{"type":"tool_execution_failed","tool_name":"
 enum Script {
     Reply(Vec<StreamEvent>, Completion),
     Fail(Vec<StreamEvent>, ProviderError),
+    Refuse(ProviderError),
     WaitForCancel,
     StreamThenWait(Vec<StreamEvent>),
 }
@@ -97,6 +98,9 @@ impl ModelProvider for FakeProvider {
             .push(request.session_id.map(str::to_owned));
         let script = self.scripts.lock().unwrap().pop_front();
         Box::pin(async move {
+            if !matches!(script, Some(Script::Refuse(_))) {
+                sink.emit(StreamEvent::Admitted);
+            }
             match script {
                 Some(Script::Reply(stream, completion)) => {
                     for event in stream {
@@ -110,6 +114,7 @@ impl ModelProvider for FakeProvider {
                     }
                     Err(error)
                 }
+                Some(Script::Refuse(error)) => Err(error),
                 Some(Script::WaitForCancel) => {
                     cancel.cancelled().await;
                     Err(ProviderError::cancelled())
@@ -2256,6 +2261,56 @@ async fn a_retried_request_that_fails_without_a_status_stops_the_recovery() {
             .iter()
             .all(|status| !status.is_terminal())
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retried_request_refused_before_admission_publishes_no_in_flight_status() {
+    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    unavailable.diagnostic = Some("HTTP 503 · overloaded".to_owned());
+    let provider = FakeProvider::new(vec![
+        Script::Fail(Vec::new(), unavailable),
+        Script::Refuse(failure(
+            ProviderErrorKind::ProviderError,
+            "InvalidChatGptSubscriptionAccount",
+        )),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    let labels: Vec<String> = recoveries(&events)
+        .iter()
+        .map(RouteRecoveryStatus::label)
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "⚠ Provider unavailable · HTTP 503 · overloaded · retrying request",
+            "⚠ Provider unavailable · InvalidChatGptSubscriptionAccount · stopped after 1 attempt",
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retried_request_shows_its_status_once_it_is_admitted() {
+    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    unavailable.diagnostic = Some("HTTP 503 · overloaded".to_owned());
+    let provider = FakeProvider::new(vec![
+        Script::Fail(Vec::new(), unavailable),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (_, events) = run(&mut agent, "go").await;
+    let in_flight = events
+        .iter()
+        .position(
+            |event| matches!(event, UiEvent::Recovery { status, .. } if status.failed_attempt == 2),
+        )
+        .unwrap();
+    let reply = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::AssistantText { .. }))
+        .unwrap();
+    assert!(in_flight < reply);
 }
 
 #[tokio::test(start_paused = true)]

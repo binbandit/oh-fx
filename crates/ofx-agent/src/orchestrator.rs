@@ -29,7 +29,7 @@ use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::steering_text;
 use crate::model_response_recovery::{
-    DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide, recovery_cause,
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, RetryPacing, decide, recovery_cause,
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
@@ -701,9 +701,17 @@ impl Agent {
         let mut attempt = 1;
         let mut pacing = RetryPacing::Idle;
         let mut recovering_from = None;
+        let mut pending = None;
         loop {
             let mut partial = String::new();
+            let mut admitted = false;
             let mut sink = |event: StreamEvent| match event {
+                StreamEvent::Admitted => {
+                    admitted = true;
+                    if let Some(status) = pending.take() {
+                        events(UiEvent::Recovery { turn_id, status });
+                    }
+                }
                 StreamEvent::TextDelta { text } => {
                     partial.push_str(&text);
                     events(UiEvent::AssistantText { turn_id, text });
@@ -720,6 +728,7 @@ impl Agent {
                 }
                 None => self.provider.stream(&request, &mut sink, cancel).await,
             };
+            let consumed = attempt - usize::from(!admitted);
             let error = match streamed {
                 Ok(completion) => {
                     if recovering_from.is_some() {
@@ -734,15 +743,19 @@ impl Agent {
             };
             if error.kind == ProviderErrorKind::Cancelled || cancel.is_cancelled() {
                 if let Some(cause) = recovering_from.filter(|_| self.recovery_pause.requested()) {
-                    return Err(Self::pause(turn_id, cause, attempt, &error, events));
+                    return Err(Self::pause(turn_id, cause, consumed, &error, events));
                 }
                 return Err(Stop::Interrupted { partial });
             }
             let cause = recovery_cause(error.kind).filter(|_| partial.is_empty());
             let Some(cause) = cause.filter(|_| attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS) else {
-                if let Some(status) =
-                    stopped_status(cause.or(recovering_from), attempt, &error, &partial)
-                {
+                if let Some(status) = stopped_status(
+                    cause.or(recovering_from),
+                    attempt,
+                    consumed,
+                    &error,
+                    &partial,
+                ) {
                     events(UiEvent::Recovery { turn_id, status });
                 }
                 return Err(Stop::Failed {
@@ -756,17 +769,7 @@ impl Agent {
             }
             let retry_after = error.retry_after.map(|delay| delay.as_secs());
             let decision = decide(cause, retry_after, pacing);
-            let mut status = RouteRecoveryStatus {
-                kind: RouteRecoveryKind::AutoRetry,
-                failed_attempt: attempt,
-                succeeded_attempt: 0,
-                attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
-                cause: Some(cause),
-                action: Some(decision.action),
-                delay_seconds: decision.delay.as_secs(),
-                diagnostic: Some(failure_diagnostic(&error)),
-                retry_wait: Some(decision.delay),
-            };
+            let mut status = retry_status(attempt, cause, &decision, &error);
             events(UiEvent::Recovery {
                 turn_id,
                 status: status.clone(),
@@ -775,7 +778,7 @@ impl Agent {
                 biased;
                 () = cancel.cancelled() => {
                     if self.recovery_pause.requested() {
-                        return Err(Self::pause(turn_id, cause, attempt, &error, events));
+                        return Err(Self::pause(turn_id, cause, consumed, &error, events));
                     }
                     return Err(Stop::interrupted());
                 }
@@ -784,7 +787,7 @@ impl Agent {
             attempt += 1;
             status.failed_attempt = attempt;
             status.retry_wait = None;
-            events(UiEvent::Recovery { turn_id, status });
+            pending = Some(status);
             pacing = decision.next_pacing;
             recovering_from = Some(cause);
         }
@@ -1213,9 +1216,29 @@ fn argument_rejection(call: &ToolCall) -> Option<ToolOutput> {
     Some(ToolOutput::failure(content))
 }
 
+fn retry_status(
+    attempt: usize,
+    cause: ModelRecoveryCause,
+    decision: &Decision,
+    error: &ProviderError,
+) -> RouteRecoveryStatus {
+    RouteRecoveryStatus {
+        kind: RouteRecoveryKind::AutoRetry,
+        failed_attempt: attempt,
+        succeeded_attempt: 0,
+        attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
+        cause: Some(cause),
+        action: Some(decision.action),
+        delay_seconds: decision.delay.as_secs(),
+        diagnostic: Some(failure_diagnostic(error)),
+        retry_wait: Some(decision.delay),
+    }
+}
+
 fn stopped_status(
     cause: Option<ModelRecoveryCause>,
     attempt: usize,
+    consumed: usize,
     error: &ProviderError,
     partial: &str,
 ) -> Option<RouteRecoveryStatus> {
@@ -1224,7 +1247,7 @@ fn stopped_status(
     let unanswered = attempt > 1 && error.status.is_none();
     (partial.is_empty() && (exhausted || unanswered)).then(|| RouteRecoveryStatus {
         kind: RouteRecoveryKind::TerminalProviderError,
-        failed_attempt: attempt,
+        failed_attempt: consumed,
         succeeded_attempt: 0,
         attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
         cause,
