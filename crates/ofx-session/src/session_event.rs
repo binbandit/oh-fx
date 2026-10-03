@@ -1,10 +1,12 @@
 mod frame_decode;
 
 use ofx_config::EMERGENCY_CEILING_BYTES;
-use ofx_contract::{ProviderReplay, ReplaySource, ToolArgumentIntegrity, ToolResultStatus};
+use ofx_contract::{
+    ProviderReplay, ReplaySource, ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus,
+};
 use serde::Serialize;
 
-use crate::fixed_field::{False, LocalProvenance, NoItems, Null, TurnOrigin, ValidIdentity};
+use crate::fixed_field::{False, NoItems, Null, TurnOrigin, ValidIdentity};
 use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
@@ -105,11 +107,11 @@ pub struct ToolCallEvent {
     #[serde(default)]
     provisional_id: Null,
     #[serde(default)]
-    provider_result: Null,
+    pub provider_result: Option<String>,
     #[serde(default)]
     final_identity: ValidIdentity,
-    #[serde(default)]
-    provenance: LocalProvenance,
+    #[serde(default, with = "wire_tag")]
+    pub provenance: ToolExecutionProvenance,
 }
 
 impl ToolCallEvent {
@@ -125,9 +127,9 @@ impl ToolCallEvent {
             arguments_json: arguments_json.into(),
             argument_integrity,
             provisional_id: Null,
-            provider_result: Null,
+            provider_result: None,
             final_identity: ValidIdentity,
-            provenance: LocalProvenance,
+            provenance: ToolExecutionProvenance::FxLocal,
         }
     }
 }
@@ -159,7 +161,7 @@ pub struct ToolResultEvent {
     #[serde(default)]
     pub preview: Option<String>,
     #[serde(default)]
-    provider_native: False,
+    provider_native: bool,
     #[serde(default, skip_serializing)]
     review_feedback: False,
     #[serde(default)]
@@ -197,7 +199,7 @@ impl ToolResultEvent {
             stored_bytes,
             completeness,
             preview: None,
-            provider_native: False,
+            provider_native: false,
             review_feedback: False,
             created_at_ms: 0,
             permission_feedback: NoItems,
@@ -601,6 +603,10 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
             is_valid_identity(&call.call_id)
                 && is_valid_identity(&call.tool_name)
                 && (1..=MAX_TEXT_BYTES).contains(&call.arguments_json.len())
+                && call
+                    .provider_result
+                    .as_ref()
+                    .is_none_or(|result| result.len() <= MAX_TEXT_BYTES)
         }
         ConversationEvent::ToolResult(result) => {
             is_valid_identity(&result.call_id)
@@ -678,6 +684,17 @@ impl WireTag for ToolArgumentIntegrity {
             Self::Valid => "valid",
             Self::MalformedJson => "malformed_json",
             Self::NonObjectJson => "non_object_json",
+        }
+    }
+}
+
+impl WireTag for ToolExecutionProvenance {
+    const ALL: &'static [Self] = &[Self::FxLocal, Self::ProviderExecuted];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::FxLocal => "fx_local",
+            Self::ProviderExecuted => "provider_executed",
         }
     }
 }

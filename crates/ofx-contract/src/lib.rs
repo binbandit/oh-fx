@@ -74,7 +74,7 @@ pub use types::{
     ModelRecoveryCause, PermissionAction, PermissionMode, PermissionRule, ProviderReplay,
     QuestionBatchEntry, QuestionOption, ReasoningEffort, ReplaySource, RouteRecoveryKind,
     RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice,
-    ToolResultStatus, ToolStatusDetail, Usage, is_valid_reasoning_effort,
+    ToolExecutionProvenance, ToolResultStatus, ToolStatusDetail, Usage, is_valid_reasoning_effort,
     valid_credential_account_id,
 };
 pub use ui::{

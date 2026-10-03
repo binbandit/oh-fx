@@ -278,12 +278,70 @@ fn review_feedback_defaults_old_records_and_is_never_written() {
 }
 
 #[test]
+fn provider_executed_calls_and_native_results_round_trip_byte_for_byte() {
+    let provider_call = "{\"tool_call\":{\"call_id\":\"call_exa\",\"tool_name\":\"exa_search\",\"arguments_json\":\"[]\",\"argument_integrity\":\"non_object_json\",\"provisional_id\":null,\"provider_result\":\"{\\\"results\\\":[]}\",\"final_identity\":\"valid\",\"provenance\":\"provider_executed\"}}";
+    let local_with_result = "{\"tool_call\":{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"arguments_json\":\"{}\",\"argument_integrity\":\"valid\",\"provisional_id\":null,\"provider_result\":\"\",\"final_identity\":\"valid\",\"provenance\":\"fx_local\"}}";
+    let native_result = "{\"tool_result\":{\"call_id\":\"call_exa\",\"tool_name\":\"exa_search\",\"status\":\"success\",\"artifact_ref\":\"result.txt\",\"tool_image_handle\":null,\"output_bytes\":14,\"stored_bytes\":14,\"completeness\":\"complete\",\"preview\":\"{\\\"results\\\":[]}\",\"provider_native\":true,\"created_at_ms\":3,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}";
+    let frame = |event: &str| {
+        format!("{{\"schema_version\":3,\"seq\":2,\"timestamp_ms\":3,\"event\":{event}}}\n")
+    };
+    for event in [provider_call, local_with_result, native_result] {
+        let frame = frame(event);
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(2, 3, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+    }
+    let ConversationEvent::ToolCall(call) = decode(&frame(provider_call)).unwrap() else {
+        panic!("a tool call");
+    };
+    assert_eq!(call.provider_result.as_deref(), Some("{\"results\":[]}"));
+    assert_eq!(call.provenance, ToolExecutionProvenance::ProviderExecuted);
+    let ConversationEvent::ToolCall(old) = decode(&frame(
+        "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\"}}",
+    ))
+    .unwrap() else {
+        panic!("a tool call");
+    };
+    assert_eq!(old.provider_result, None);
+    assert_eq!(old.provenance, ToolExecutionProvenance::FxLocal);
+}
+
+#[test]
+fn provider_fields_reject_what_upstream_rejects() {
+    let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":";
+    let call = "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",";
+    let result = "{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",";
+    for (event, field) in [
+        (call, "\"provenance\":\"remote\""),
+        (call, "\"provenance\":null"),
+        (call, "\"provenance\":1"),
+        (call, "\"provider_result\":1"),
+        (call, "\"provider_result\":{}"),
+        (result, "\"provider_native\":null"),
+        (result, "\"provider_native\":\"true\""),
+        (result, "\"provider_native\":1"),
+    ] {
+        let frame = format!("{base}{event}{field}}}}}}}\n");
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame}"
+        );
+    }
+    let mut oversized = ToolCallEvent::new("c", "t", "{}", ToolArgumentIntegrity::Valid);
+    oversized.provider_result = Some("r".repeat(MAX_TEXT_BYTES + 1));
+    assert_eq!(
+        encode_conversation_frame(1, 1, &ConversationEvent::ToolCall(oversized)),
+        Err(SessionError::InvalidConversationEvent)
+    );
+}
+
+#[test]
 fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
     let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":";
     for event in [
         "{\"user\":{\"text\":\"x\",\"images\":[{\"path\":\"/a.png\",\"media_type\":\"image/png\"}]}}",
         "{\"user\":{\"text\":\"x\",\"work_id\":\"w\"}}",
-        "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"provenance\":\"provider_executed\"}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"final_identity\":\"empty\"}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"provisional_id\":\"p\"}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"argument_integrity\":\"bogus\"}}",
@@ -292,7 +350,6 @@ fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
         "{\"interrupted\":{\"reason\":\"stopped\"}}",
         "{\"turn_completed\":{\"files\":[{\"path\":\"a\",\"tool_call_id\":\"c\"}]}}",
         "{\"turn_completed\":{\"turn_summary\":{\"started_at_ms\":1}}}",
-        "{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",\"provider_native\":true}}",
         "{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",\"permission_feedback\":[\"no\"]}}",
     ] {
         let frame = format!("{base}{event}}}\n");

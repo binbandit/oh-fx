@@ -15,11 +15,20 @@ pub use tool_argument_integrity::{ToolArgumentDiagnostic, ToolArgumentIntegrity}
 
 const MAX_REASONING_EFFORT_NAME_BYTES: usize = 64;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolExecutionProvenance {
+    #[default]
+    FxLocal,
+    ProviderExecuted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
     pub id: ToolCallId,
     pub name: String,
     pub arguments: String,
+    pub provider_result: Option<String>,
+    pub provenance: ToolExecutionProvenance,
 }
 
 impl ToolCall {
@@ -32,6 +41,8 @@ impl ToolCall {
             id: ToolCallId::new(id),
             name: name.into(),
             arguments: arguments.into(),
+            provider_result: None,
+            provenance: ToolExecutionProvenance::FxLocal,
         }
     }
 }
