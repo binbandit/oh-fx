@@ -1,5 +1,5 @@
 use ofx_agent::{Agent, TurnFailure, TurnReport};
-use ofx_contract::{Notice, NoticeTone, TurnOutcome};
+use ofx_contract::{Notice, NoticeTone, ReasoningEffort, TurnOutcome};
 use ofx_session::{SavedProvider, SessionError, SessionPreferences, SessionStore};
 
 use super::{LiveSession, ResumedSession};
@@ -94,14 +94,22 @@ impl Persistence {
         self.remember(live.id())
     }
 
-    pub(crate) fn select_model(&mut self, model: &str, fast_mode: bool) -> Option<Notice> {
+    pub(crate) fn select_model(
+        &mut self,
+        model: &str,
+        effort: Option<&ReasoningEffort>,
+        fast_mode: bool,
+    ) -> Option<Notice> {
         model.clone_into(&mut self.preferences.model);
+        if let Some(effort) = effort {
+            effort.clone_into(&mut self.preferences.effort);
+        }
         self.preferences.fast_mode = fast_mode;
         let error = self
             .live
             .as_ref()?
             .session()
-            .select_model(model, None, fast_mode)
+            .select_model(model, effort, fast_mode)
             .err()?;
         if std::mem::replace(&mut self.degraded, true) {
             return None;

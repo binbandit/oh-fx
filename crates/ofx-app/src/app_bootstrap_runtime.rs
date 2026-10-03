@@ -17,8 +17,8 @@ use ofx_config::{
     ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
-    BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode, ModelCapabilities,
-    ModelProvider, PermissionMode, QuestionAsker, ReviewTransport, Tool,
+    CapabilityResolver, LivePermissionMode, ModelCapabilities, ModelProvider, PermissionMode,
+    QuestionAsker, ReasoningEffort, ReviewTransport, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{ChatCompletionsProvider, ChatCompletionsReviewTransport, CodexReviewTransport};
@@ -37,6 +37,7 @@ use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
     ProfileLocation, gather_project_context,
 };
+use crate::model_cache_runtime::ModelSource;
 use crate::output_contracts::StatusSnapshot;
 use crate::skills::HostSkills;
 use crate::tool_set::{self, ToolHooks};
@@ -124,7 +125,7 @@ pub struct Launch<'a> {
 pub struct AgentSetup {
     provider: Arc<dyn ModelProvider>,
     configured_model: Option<String>,
-    capabilities: Option<Arc<dyn CapabilityResolver>>,
+    models: ModelSource,
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     tools: Vec<Arc<dyn Tool>>,
@@ -148,7 +149,7 @@ pub struct AgentSetup {
 struct Route {
     provider: Arc<dyn ModelProvider>,
     reviewer: Arc<dyn ReviewTransport>,
-    capabilities: Option<Arc<dyn CapabilityResolver>>,
+    models: ModelSource,
     connection: Option<ProviderDefinition>,
     model: String,
     configured_model: Option<String>,
@@ -284,7 +285,7 @@ impl Profile {
         Ok(AgentSetup {
             provider: route.provider,
             configured_model: route.configured_model,
-            capabilities: route.capabilities,
+            models: route.models,
             connection: route.connection,
             source: route.source,
             tools: tool_set::ask_tools(
@@ -360,7 +361,7 @@ impl Profile {
         Ok(Route {
             provider,
             reviewer: Arc::new(reviewer),
-            capabilities: Some(Arc::new(ConnectionCapabilities(definition))),
+            models: ModelSource::Connection(definition),
             connection: Some(connection.clone()),
             model: model.map_err(ConnectError::InvalidModel)?,
             configured_model,
@@ -395,7 +396,7 @@ impl Profile {
         Ok(Route {
             reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
             provider,
-            capabilities: Some(Arc::new(subscription.capabilities)),
+            models: ModelSource::Codex(Arc::new(subscription.capabilities)),
             connection: None,
             model,
             configured_model,
@@ -424,24 +425,6 @@ impl Profile {
             Arc::new(HostProjectContext::new(self.workspace_root.clone(), limits)),
             snapshot,
         ))
-    }
-}
-
-struct ConnectionCapabilities(Arc<ProviderDefinition>);
-
-impl CapabilityResolver for ConnectionCapabilities {
-    fn resolve<'a>(
-        &'a self,
-        model: &'a str,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, CapabilityLookup> {
-        let context_window = self.0.capabilities(model).context_window;
-        Box::pin(async move {
-            CapabilityLookup::Resolved(ModelCapabilities {
-                context_window,
-                ..ModelCapabilities::default()
-            })
-        })
     }
 }
 
@@ -499,14 +482,16 @@ impl AgentSetup {
         &self.context_notices
     }
 
-    pub(crate) fn models(&self) -> &[String] {
-        self.connection
-            .as_ref()
-            .map_or(&[], |connection| connection.models())
-    }
-
     pub(crate) fn fast_mode(&self) -> bool {
         self.config.fast_mode
+    }
+
+    pub(crate) fn reasoning_effort(&self) -> ReasoningEffort {
+        self.config
+            .reasoning_effort
+            .as_deref()
+            .and_then(ReasoningEffort::parse)
+            .unwrap_or(ReasoningEffort::Auto)
     }
 
     pub(crate) fn status<'a>(&'a self, model: &'a str, history_turns: usize) -> StatusSnapshot<'a> {
@@ -522,14 +507,12 @@ impl AgentSetup {
         }
     }
 
-    pub(crate) async fn supports_fast_mode(&self, model: &str) -> bool {
-        let Some(resolver) = &self.capabilities else {
-            return false;
-        };
-        matches!(
-            resolver.resolve(model, &CancellationToken::new()).await,
-            CapabilityLookup::Resolved(capabilities) if capabilities.supports_fast_mode
-        )
+    pub(crate) async fn capabilities(&self, model: &str) -> ModelCapabilities {
+        self.models.capabilities(model).await
+    }
+
+    pub(crate) fn models_source(&self) -> ModelSource {
+        self.models.clone()
     }
 
     pub(crate) fn approvals(&self) -> Option<&Approvals> {
@@ -597,10 +580,8 @@ impl AgentSetup {
             self.permissions.clone(),
             self.config.clone(),
         )
-        .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>);
-        if let Some(capabilities) = &self.capabilities {
-            agent = agent.with_capability_resolver(Arc::clone(capabilities));
-        }
+        .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>)
+        .with_capability_resolver(Arc::new(self.models.clone()) as Arc<dyn CapabilityResolver>);
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.clone());
         }
@@ -620,6 +601,7 @@ pub fn user_agent() -> String {
 #[cfg(test)]
 mod tests {
     use ofx_auth::ChatGptEndpoints;
+    use ofx_contract::CapabilityLookup;
     use ofx_exec::SessionSupervisor;
     use ofx_gateway::CodexEndpoints;
     use ofx_testkit::{FakeServer, Reply};
@@ -741,7 +723,7 @@ mod tests {
             r#"{"provider":"local","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:9/v1","auth":{"type":"none"},"model_metadata":{"sized":{"context_window":128000,"max_output_tokens":16000}}}}}"#,
         );
         let connection = profile.settings().selected_connection(&|_| None).unwrap();
-        let resolver = ConnectionCapabilities(Arc::new(connection.clone()));
+        let resolver = ModelSource::Connection(Arc::new(connection.clone()));
         let cancel = CancellationToken::new();
         assert_eq!(
             resolver.resolve("sized", &cancel).await,
