@@ -135,6 +135,7 @@ async fn bootstrap(
                 executions: &executions,
                 endpoints: SubscriptionEndpoints::default(),
                 web_fetch_progress: None,
+                permission_prompts: false,
             },
             &CancellationToken::new(),
         )

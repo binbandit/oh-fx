@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
+    Agent, Approvals, BlockedCall, TurnFailure, TurnReport, normalize_assistant_text_for_display,
     text_for_completed_presentation,
 };
 use ofx_app::{
@@ -22,9 +22,9 @@ use ofx_config::{
     save_yolo_acknowledged,
 };
 use ofx_contract::{
-    CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
-    RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus,
-    TurnOutcome, UiEvent, Usage, format_unknown_action,
+    ApprovalRequest, CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause,
+    PermissionMode, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect, ToolRejection,
+    ToolResultStatus, TurnOutcome, UiEvent, Usage, format_unknown_action,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
@@ -41,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ask_session::SavedAsk;
 use crate::command_echo::CommandEcho;
+use crate::permission_prompt;
 use crate::question_call_record::question_text;
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
@@ -231,6 +232,7 @@ struct PreparedAsk {
     permission_mode: PermissionMode,
     source: CredentialSource,
     context_notices: Vec<String>,
+    approvals: Option<Approvals>,
     saved: Option<SavedAsk>,
 }
 
@@ -279,7 +281,6 @@ pub(crate) fn unsupported_launch_modifier(modifiers: &LaunchModifiers) -> Option
 fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
     let ask = [
         (args.images, "--image"),
-        (args.permissions.prompt, "--prompt-permissions"),
         (args.session.continue_recovery, "--continue-recovery"),
     ];
     if let Some(flag) = unsupported_launch_modifier(modifiers) {
@@ -374,12 +375,15 @@ async fn answer(
         permission_mode,
         source,
         context_notices,
+        approvals,
         saved,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => return Ok(failure.report(args.output.json)),
     };
-    let mut presenter = Presenter::new(args.output, permission_mode, source).echoing(echo);
+    let mut presenter = Presenter::new(args.output, permission_mode, source)
+        .echoing(echo)
+        .prompting(approvals);
     for notice in &context_notices {
         if !presenter.context_notice(notice) {
             cancel.cancel();
@@ -444,6 +448,7 @@ async fn prepare_agent(
         executions: request.executions,
         endpoints,
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
+        permission_prompts: permission_prompts_allowed(args),
     };
     let setup = profile.connect(launch, cancel).await?;
     let mut agent = setup.agent();
@@ -467,8 +472,15 @@ async fn prepare_agent(
         permission_mode,
         source: setup.source(),
         context_notices: setup.context_notices().to_vec(),
+        approvals: setup.permission_prompts().cloned(),
         saved,
     })
+}
+
+fn permission_prompts_allowed(args: &AskArgs) -> bool {
+    let mode = output_mode(args.output);
+    io::stdin().is_terminal()
+        && (matches!(mode, OutputMode::Raw | OutputMode::Terminal) || args.permissions.prompt)
 }
 
 fn announce_settings(
@@ -820,6 +832,8 @@ struct Presenter {
     write_error: Option<&'static str>,
     command_echo: Option<Arc<CommandEcho>>,
     command_calls: Vec<ToolCallId>,
+    approvals: Option<Approvals>,
+    started_before_approval: Vec<ToolCallId>,
 }
 
 struct FailureSummary {
@@ -848,11 +862,18 @@ impl Presenter {
             write_error: None,
             command_echo: None,
             command_calls: Vec::new(),
+            approvals: None,
+            started_before_approval: Vec::new(),
         }
     }
 
     fn echoing(mut self, echo: Option<Arc<CommandEcho>>) -> Self {
         self.command_echo = echo;
+        self
+    }
+
+    fn prompting(mut self, approvals: Option<Approvals>) -> Self {
+        self.approvals = approvals;
         self
     }
 
@@ -871,7 +892,18 @@ impl Presenter {
                 tool_name,
                 description,
                 ..
-            } => self.tool_started(call_id, &tool_name, &description),
+            } => match self
+                .started_before_approval
+                .iter()
+                .position(|started| *started == call_id)
+            {
+                Some(index) => {
+                    self.started_before_approval.swap_remove(index);
+                    Ok(())
+                }
+                None => self.tool_started(call_id, &tool_name, &description),
+            },
+            UiEvent::ApprovalRequested { request, .. } => self.ask_permission(&request),
             UiEvent::ToolFinished {
                 call_id,
                 tool_name,
@@ -910,7 +942,6 @@ impl Presenter {
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
             | UiEvent::TurnFinished { .. }
-            | UiEvent::ApprovalRequested { .. }
             | UiEvent::QuestionRequested { .. }
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }
@@ -957,6 +988,21 @@ impl Presenter {
         } else {
             self.write_status(StatusBlock::Progress, &line)
         }
+    }
+
+    fn ask_permission(&mut self, request: &ApprovalRequest) -> io::Result<()> {
+        let Some(approvals) = self.approvals.clone() else {
+            return Ok(());
+        };
+        if request.file.is_none() && request.tool_name != WEB_FETCH_TOOL {
+            self.tool_started(
+                request.call_id.clone(),
+                &request.tool_name,
+                &request.description,
+            )?;
+            self.started_before_approval.push(request.call_id.clone());
+        }
+        permission_prompt::ask(&approvals, request)
     }
 
     fn tool_rejected(

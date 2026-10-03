@@ -864,6 +864,7 @@ mod tests {
                     executions: &executions,
                     endpoints,
                     web_fetch_progress: None,
+                    permission_prompts: false,
                 },
                 &CancellationToken::new(),
             )

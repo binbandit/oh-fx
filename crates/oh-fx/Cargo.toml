@@ -17,6 +17,7 @@ ofx-exec.workspace = true
 ofx-gateway.workspace = true
 ofx-http.workspace = true
 ofx-session.workspace = true
+ofx-shell.workspace = true
 ofx-text.workspace = true
 ofx-upgrade.workspace = true
 rustix = { workspace = true, features = ["stdio", "termios"] }

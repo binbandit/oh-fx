@@ -120,6 +120,7 @@ pub struct Launch<'a> {
     pub executions: &'a ManagedExecutions,
     pub endpoints: SubscriptionEndpoints,
     pub web_fetch_progress: Option<WebFetchProgress>,
+    pub permission_prompts: bool,
 }
 
 pub struct AgentSetup {
@@ -136,6 +137,7 @@ pub struct AgentSetup {
     preferences: Option<ProfilePaths>,
     yolo_acknowledged: bool,
     approvals: Option<Approvals>,
+    permission_prompts: Option<Approvals>,
     change_tracker: Option<ChangeTracker>,
     questions: Option<Questions>,
     question_requests: Option<QuestionRequests>,
@@ -342,6 +344,8 @@ impl Profile {
             yolo_acknowledged: self.settings.yolo_acknowledged(),
             workspace_root: self.workspace_root.clone(),
             approvals: interactive.then(Approvals::default),
+            permission_prompts: (!interactive && launch.permission_prompts)
+                .then(Approvals::default),
             change_tracker,
             questions,
             question_requests,
@@ -563,6 +567,10 @@ impl AgentSetup {
         self.approvals.as_ref()
     }
 
+    pub fn permission_prompts(&self) -> Option<&Approvals> {
+        self.permission_prompts.as_ref()
+    }
+
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
@@ -636,6 +644,9 @@ impl AgentSetup {
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.clone());
         }
+        if let Some(approvals) = &self.permission_prompts {
+            agent = agent.with_permission_prompts(approvals.clone());
+        }
         match &self.project {
             Some((provider, snapshot)) => {
                 agent.with_project_context(provider.clone(), snapshot.clone())
@@ -700,6 +711,7 @@ mod tests {
                     command_timeout: None,
                     executions: &executions,
                     web_fetch_progress: None,
+                    permission_prompts: false,
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -752,6 +764,7 @@ mod tests {
                     executions: &executions,
                     endpoints: SubscriptionEndpoints::default(),
                     web_fetch_progress: None,
+                    permission_prompts: false,
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {

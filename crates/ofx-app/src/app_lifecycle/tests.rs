@@ -230,6 +230,7 @@ fn run_a_codex_session(home: &Path) -> ! {
                 executions: &executions,
                 endpoints,
                 web_fetch_progress: None,
+                permission_prompts: false,
             },
             &CancellationToken::new(),
         ))
