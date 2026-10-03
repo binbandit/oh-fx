@@ -1,4 +1,6 @@
-use ofx_contract::{ApprovalDecision, ApprovalRequest, PermissionMode, TurnId, UiCommand};
+use ofx_contract::{
+    ApprovalDecision, ApprovalOrigin, ApprovalRequest, PermissionMode, TurnId, UiCommand,
+};
 
 use super::Shell;
 use crate::footer::approval_content::ApprovalContent;
@@ -150,7 +152,9 @@ impl Shell<'_> {
             });
             return;
         }
-        if starts_before_permission(&request, self.options.permission_mode) {
+        if request.origin == ApprovalOrigin::ActiveSession
+            && starts_before_permission(&request, self.options.permission_mode)
+        {
             self.transcript.add_tool_row(ToolActivityRow::started(
                 request.call_id.clone(),
                 &request.tool_name,
@@ -202,6 +206,14 @@ impl Shell<'_> {
     }
 
     pub(super) fn approval_escape(&mut self) {
+        let subagent = self
+            .approval
+            .as_ref()
+            .is_some_and(|prompt| matches!(prompt.request.origin, ApprovalOrigin::Subagent(_)));
+        if subagent {
+            self.decide(ApprovalDecision::Deny);
+            return;
+        }
         self.cancel_visible_turn();
         self.dismiss_approval();
     }
@@ -211,7 +223,9 @@ impl Shell<'_> {
             return;
         };
         let request = &prompt.request;
-        if self.transcript.tool_row_mut(&request.call_id).is_none() {
+        if request.origin == ApprovalOrigin::ActiveSession
+            && self.transcript.tool_row_mut(&request.call_id).is_none()
+        {
             let mut description = request.description.clone();
             if let (Some(_), Some(label)) = (&request.file, &mut description.label) {
                 FILE_MUTATION_TARGET.clone_into(&mut label.target);
@@ -338,10 +352,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use ofx_contract::{
-        ApprovalDecision, ApprovalRequest, ApprovalScope, CallDescription, CommandProfile,
-        CommandRequest, Concurrency, FileMutation, FileMutationState, PathAccess, RequestId,
-        SessionGrant, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome, UiCommand,
-        UiEvent,
+        ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription,
+        CommandProfile, CommandRequest, Concurrency, FileMutation, FileMutationState, PathAccess,
+        RequestId, SessionGrant, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome,
+        UiCommand, UiEvent,
     };
 
     use super::super::Shell;
@@ -381,6 +395,7 @@ mod tests {
                 },
                 command: None,
                 file: None,
+                origin: ApprovalOrigin::ActiveSession,
             }),
         }
     }
@@ -447,6 +462,7 @@ mod tests {
                     terminal: false,
                 }),
                 file: None,
+                origin: ApprovalOrigin::ActiveSession,
             }),
         }
     }
@@ -522,6 +538,7 @@ mod tests {
                 },
                 command: None,
                 file: None,
+                origin: ApprovalOrigin::ActiveSession,
             }),
         });
         let screen = test.screen();
@@ -570,6 +587,7 @@ mod tests {
                     target: PathBuf::from("/workspace/docs/notes.md"),
                     state: FileMutationState::Changes,
                 }),
+                origin: ApprovalOrigin::ActiveSession,
             }),
         });
         let screen = test.screen();
@@ -972,6 +990,7 @@ mod tests {
                 },
                 command: None,
                 file: None,
+                origin: ApprovalOrigin::ActiveSession,
             }),
         });
         let screen = test.screen();
@@ -1161,6 +1180,42 @@ mod tests {
         let screen = test.screen();
         assert!(!screen.contains(PANEL), "{screen}");
         assert!(screen.contains("■ Cancelled"), "{screen}");
+    }
+
+    #[test]
+    fn a_subagents_request_names_the_child_and_escape_denies_only_that_request() {
+        let mut test = TestShell::start();
+        test.submit("delegate the build");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        let UiEvent::ApprovalRequested {
+            turn_id,
+            mut request,
+        } = command_request(1, 4, "touch child-marker")
+        else {
+            panic!("a command request");
+        };
+        request.origin = ApprovalOrigin::Subagent("1".to_owned());
+        test.deliver(UiEvent::ApprovalRequested { turn_id, request });
+        let screen = test.screen();
+        assert!(screen.contains("Subagent 1 needs permission"), "{screen}");
+        assert!(screen.contains("$ touch child-marker"), "{screen}");
+        assert!(!screen.contains(PANEL), "{screen}");
+        test.shell.approval_escape();
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Deny))
+        );
+        assert!(
+            !test
+                .sent()
+                .iter()
+                .any(|command| matches!(command, UiCommand::Cancel { .. }))
+        );
+        let screen = test.screen();
+        assert!(!screen.contains("needs permission"), "{screen}");
+        assert!(!screen.contains("■ Cancelled"), "{screen}");
     }
 
     #[test]

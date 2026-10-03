@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApplicableTarget, ApprovalDecision, AutoCompactPercent, CallDescription,
-    ChatMessage, Completion, Concurrency, FinishReason, ModelProvider, ModelRequest, PathAccess,
-    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ReviewRequest, ReviewVerdict,
-    Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool, ToolActivity, ToolCall,
-    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, UiEvent, Usage,
+    Admission, ApplicableTarget, ApprovalDecision, ApprovalOrigin, AutoCompactPercent,
+    CallDescription, ChatMessage, Completion, Concurrency, FinishReason, ModelProvider,
+    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
+    ReviewRequest, ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool,
+    ToolActivity, ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent,
+    Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -22,6 +23,7 @@ use crate::scripted_provider::{ScriptedProvider, calling, text};
 use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
 const BASE_PROMPT: &str = "base prompt";
+const PARENT_TURN: TurnId = TurnId::new(7);
 
 enum Script {
     Reply(&'static str),
@@ -179,6 +181,7 @@ struct Agents {
     asks: bool,
     approvals: Approvals,
     requested: Mutex<Vec<ApprovalRequest>>,
+    turns: Mutex<Vec<Option<TurnId>>>,
     decisions: Mutex<VecDeque<ApprovalDecision>>,
     asked: Notify,
     issued: AtomicUsize,
@@ -250,10 +253,11 @@ impl ChildAgents for Agents {
         }
     }
 
-    fn approval_requested(&self, request: ApprovalRequest) {
+    fn approval_requested(&self, turn_id: Option<TurnId>, request: ApprovalRequest) {
         if let Some(decision) = self.decisions.lock().unwrap().pop_front() {
             self.approvals.resolve(request.id, decision);
         }
+        self.turns.lock().unwrap().push(turn_id);
         self.requested.lock().unwrap().push(request);
         self.asked.notify_one();
     }
@@ -282,6 +286,7 @@ impl Harness {
             asks,
             approvals: Approvals::default(),
             requested: Mutex::new(Vec::new()),
+            turns: Mutex::new(Vec::new()),
             decisions: Mutex::new(VecDeque::new()),
             asked: Notify::new(),
             issued: AtomicUsize::new(0),
@@ -306,7 +311,8 @@ impl Harness {
                 ToolCallId::new(call_id),
                 cancel.clone(),
                 PathAccess::WorkspaceOnly,
-            ),
+            )
+            .with_turn(PARENT_TURN),
         )
     }
 
@@ -616,6 +622,28 @@ async fn abandoning_the_wait_cancels_the_child() {
     assert_eq!(harness.provider.seen().len(), 2);
 }
 
+#[tokio::test]
+async fn clearing_the_host_forgets_every_child_and_its_conversation() {
+    let harness = Harness::new(vec![Script::Reply("first"), Script::Reply("fresh")]);
+    assert_eq!(
+        harness
+            .run("call-1", message("reviewer", Some("Be terse."), "review a"))
+            .await,
+        succeeded("first")
+    );
+    harness.host.clear();
+    assert_eq!(
+        harness
+            .run("call-2", message("reviewer", None, "review b"))
+            .await,
+        succeeded("fresh")
+    );
+    let seen = harness.provider.seen();
+    assert_eq!(seen[1].system_prompt, BASE_PROMPT);
+    assert_eq!(seen[1].messages, vec![ChatMessage::user("review b")]);
+    assert_eq!(harness.agents.created.lock().unwrap().len(), 2);
+}
+
 fn tool_results(seen: &Seen) -> Vec<String> {
     seen.messages
         .iter()
@@ -627,7 +655,7 @@ fn tool_results(seen: &Seen) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_childs_approval_request_reaches_the_owner_and_its_answer_applies() {
+async fn a_childs_approval_is_raised_as_the_subagents_request_and_its_answer_applies() {
     let harness = Harness::new(vec![
         Script::Probe,
         Script::Reply("probed it"),
@@ -654,11 +682,18 @@ async fn a_childs_approval_request_reaches_the_owner_and_its_answer_applies() {
     assert_eq!(
         requested
             .iter()
-            .map(|request| request.tool_name.as_str())
+            .map(|request| (request.tool_name.as_str(), request.origin.clone()))
             .collect::<Vec<_>>(),
-        ["probe", "probe"]
+        [
+            ("probe", ApprovalOrigin::Subagent("1".to_owned())),
+            ("probe", ApprovalOrigin::Subagent("2".to_owned())),
+        ]
     );
     assert_ne!(requested[0].id, requested[1].id);
+    assert_eq!(
+        *harness.agents.turns.lock().unwrap(),
+        [Some(PARENT_TURN), Some(PARENT_TURN)]
+    );
     let seen = harness.provider.seen();
     assert_eq!(tool_results(&seen[1]), ["probed"]);
     assert_ne!(tool_results(&seen[3]), ["probed"]);
@@ -986,7 +1021,7 @@ impl ChildAgents for IntentChildren {
         }
     }
 
-    fn approval_requested(&self, _request: ApprovalRequest) {}
+    fn approval_requested(&self, _turn_id: Option<TurnId>, _request: ApprovalRequest) {}
 }
 
 fn intent_host(provider: &Arc<ScriptedProvider>, gate: &Arc<IntentGate>) -> Arc<SubagentHost> {

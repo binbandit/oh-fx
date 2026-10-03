@@ -6,16 +6,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent, BoxFuture,
-    CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion,
-    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange,
-    FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
-    ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
-    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    Admission, ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope,
+    AutoCompactPercent, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver,
+    ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
+    DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange, FileMutation, FinishReason,
+    GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
+    ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError,
+    ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold, ReviewRequest,
+    ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus,
+    SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
+    ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection,
+    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
     malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
     tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
@@ -1473,12 +1474,14 @@ impl<'a> Reviewing<'a> {
 
     fn tool_context(
         &self,
+        turn_id: TurnId,
         call: &ToolCall,
         delegates: bool,
         path_access: PathAccess,
         cancel: &CancellationToken,
     ) -> ToolContext {
-        let context = ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
+        let context =
+            ToolContext::new(call.id.clone(), cancel.child_token(), path_access).with_turn(turn_id);
         if delegates {
             context.with_root_user_requests(self.delegated_requests())
         } else {
@@ -1561,6 +1564,7 @@ fn approval_request(
         scope: scope.clone(),
         command,
         file,
+        origin: ApprovalOrigin::ActiveSession,
     }
 }
 
@@ -1635,7 +1639,8 @@ async fn run_group<'c>(
                 }
                 let (held, review_hold) = match verdict {
                     Verdict::Run(path_access) => {
-                        let context = reviewing.tool_context(call, delegates, path_access, cancel);
+                        let context =
+                            reviewing.tool_context(turn_id, call, delegates, path_access, cancel);
                         let task = tokio::spawn(async move { prepared.execute(context).await });
                         dispatched.push((call, Dispatched::Running(task)));
                         continue;
