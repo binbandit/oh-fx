@@ -1,12 +1,54 @@
 use std::borrow::Cow;
 
 use ofx_text::{
-    display_unit_at, encode_terminal_safe, escape_ambiguous_width, trim_break_whitespace,
-    visible_width, wrap_cut_ignoring_ansi,
+    display_unit_at, encode_terminal_safe, escape_ambiguous_width, is_terminal_safe_char,
+    starts_display_unit, trim_break_whitespace, visible_width, wrap_cut_ignoring_ansi,
 };
+
+const ESCAPE_LEAD: char = '\\';
 
 pub(crate) fn approval_text(raw: &[u8]) -> String {
     unambiguous(encode_terminal_safe(raw, usize::MAX).text)
+}
+
+pub(crate) fn approval_text_boundary(raw: &[u8], index: usize) -> bool {
+    let Some(&byte) = raw.get(index) else {
+        return index == raw.len();
+    };
+    if index == 0 || byte.is_ascii() {
+        return true;
+    }
+    if (0x80..0xc0).contains(&byte) {
+        return false;
+    }
+    let Some(next) = leading_char(&raw[index..]) else {
+        return true;
+    };
+    !is_terminal_safe_char(next) || starts_display_unit(shown_before(&raw[..index]), next)
+}
+
+fn shown_before(raw: &[u8]) -> char {
+    trailing_char(raw)
+        .filter(|previous| is_terminal_safe_char(*previous))
+        .unwrap_or(ESCAPE_LEAD)
+}
+
+fn leading_char(raw: &[u8]) -> Option<char> {
+    raw[..raw.len().min(4)]
+        .utf8_chunks()
+        .next()?
+        .valid()
+        .chars()
+        .next()
+}
+
+fn trailing_char(raw: &[u8]) -> Option<char> {
+    let start = raw.len().saturating_sub(4);
+    raw[start..]
+        .utf8_chunks()
+        .last()
+        .filter(|chunk| chunk.invalid().is_empty())
+        .and_then(|chunk| chunk.valid().chars().next_back())
 }
 
 pub(crate) fn unambiguous(text: String) -> String {
@@ -107,20 +149,22 @@ pub(crate) fn prefix_terminal_safe_by_width(encoded: &str, max_width: usize) -> 
     let mut width = 0;
     let mut end = 0;
     while end < encoded.len() {
-        let (token_end, token_width) =
-            if let Some(len) = ascii_token_len(&encoded.as_bytes()[end..]) {
-                (end + len, len)
-            } else {
-                let token_end = end + encoded_token_len(&encoded[end..]);
-                (token_end, visible_width(&encoded[end..token_end]))
-            };
+        let (token_len, token_width) = encoded_token(&encoded[end..]);
         if width + token_width > max_width {
             break;
         }
         width += token_width;
-        end = token_end;
+        end += token_len;
     }
     &encoded[..end]
+}
+
+pub(crate) fn encoded_token(encoded: &str) -> (usize, usize) {
+    if let Some(len) = ascii_token_len(encoded.as_bytes()) {
+        return (len, len);
+    }
+    let len = encoded_token_len(encoded);
+    (len, visible_width(&encoded[..len]))
 }
 
 pub(crate) fn suffix_terminal_safe_by_width(encoded: &str, max_width: usize) -> &str {
@@ -277,6 +321,64 @@ mod tests {
             end = token_end;
         }
         &encoded[..end]
+    }
+
+    fn raw_samples(seed: u64, count: usize) -> impl Iterator<Item = Vec<u8>> {
+        const BYTES: [&[u8]; 6] = [b"\t", b"\x1b[2J", b"\xff", b"\xe4\xb8", b"\r\n", b"\\x41"];
+        let mut rng = Xorshift(seed ^ 0x5bd1_e995);
+        random_clusters(seed, count).map(move |text| {
+            let mut raw = Vec::new();
+            for character in text.chars() {
+                if rng.below(4) == 0 {
+                    raw.extend_from_slice(BYTES[rng.below(BYTES.len())]);
+                }
+                raw.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
+            }
+            raw
+        })
+    }
+
+    #[test]
+    fn approval_text_splits_at_every_boundary_into_the_text_of_the_whole() {
+        for raw in raw_samples(0x0d1f_f00d, 6000) {
+            let whole = approval_text(&raw);
+            let boundaries: Vec<usize> = (0..=raw.len())
+                .filter(|index| approval_text_boundary(&raw, *index))
+                .collect();
+            assert_eq!(boundaries.first(), Some(&0), "{raw:?}");
+            assert_eq!(boundaries.last(), Some(&raw.len()), "{raw:?}");
+            let pieces: String = boundaries
+                .windows(2)
+                .map(|pair| approval_text(&raw[pair[0]..pair[1]]))
+                .collect();
+            assert_eq!(pieces, whole, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn plain_and_wide_text_has_a_boundary_before_every_character() {
+        let text = "a\tb \u{4e2d}\u{6587} \u{1f600}\u{301}x";
+        for (index, _) in text.char_indices() {
+            assert!(approval_text_boundary(text.as_bytes(), index), "{index}");
+        }
+        let joined = [
+            "\u{1f469}\u{200d}\u{1f4bb}1\u{fe0f}\u{20e3}".as_bytes(),
+            b"\xff",
+            "\u{fe0f}".as_bytes(),
+        ]
+        .concat();
+        for (index, boundary) in [
+            (4, true),
+            (7, true),
+            (11, true),
+            (12, false),
+            (15, false),
+            (18, true),
+            (19, false),
+        ] {
+            assert_eq!(approval_text_boundary(&joined, index), boundary, "{index}");
+        }
+        assert!(!approval_text_boundary("\u{4e2d}".as_bytes(), 1));
     }
 
     #[test]

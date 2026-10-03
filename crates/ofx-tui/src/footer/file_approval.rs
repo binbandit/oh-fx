@@ -1,5 +1,4 @@
-use std::borrow::Cow;
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 use std::os::unix::ffi::OsStrExt;
 
 use ofx_contract::{
@@ -14,15 +13,15 @@ use super::approval_panel::{
     Choice, HINTS, PanelFrame, PanelView, RESIZE_TO_REVIEW, Review, SCREEN_HINTS, SCROLL_TO_REVIEW,
     hint_for,
 };
-use super::command_text::{
-    approval_text, prefix_terminal_safe_by_width, suffix_terminal_safe_by_width,
-};
+use super::command_text::{prefix_terminal_safe_by_width, suffix_terminal_safe_by_width};
 use super::phrase::{PathText, Phrase};
 use crate::row_text::{Paint, Row};
 use crate::theme::Theme;
 use review_document::{DocumentLine, ReviewDocument};
+use wrapped_line::{CHUNK_BYTES, Resume, Source, Walked, Widths, resume_for, walk};
 
 mod review_document;
+mod wrapped_line;
 
 const INSET: usize = 2;
 const RIGHT_MARGIN: usize = 2;
@@ -152,30 +151,65 @@ impl FileApproval {
 pub(crate) struct ReviewLayout {
     cols: usize,
     checkpoints: Vec<usize>,
+    long_lines: Vec<LongLine>,
     rows: usize,
     drawable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LongLine {
+    line: usize,
+    rows: usize,
+    resumes: Vec<Resume>,
 }
 
 impl ReviewLayout {
     pub(crate) fn measure(file: &FileApproval, cols: usize) -> Self {
         let count = file.review.len();
-        let mut checkpoints = Vec::with_capacity(count.div_ceil(CHECKPOINT_LINES));
-        let mut rows = 0;
-        let mut drawable = true;
-        for chunk in (0..count).step_by(CHECKPOINT_LINES) {
-            checkpoints.push(rows);
-            for line in file.lines(chunk, CHECKPOINT_LINES) {
-                let (line_rows, fits) = line_rows(&line, cols);
-                rows += line_rows;
-                drawable &= fits;
-            }
-        }
-        Self {
+        let mut layout = Self {
             cols,
-            checkpoints,
-            rows,
-            drawable,
+            checkpoints: Vec::with_capacity(count.div_ceil(CHECKPOINT_LINES)),
+            long_lines: Vec::new(),
+            rows: 0,
+            drawable: true,
+        };
+        for (index, line) in file.lines(0, count).enumerate() {
+            if index.is_multiple_of(CHECKPOINT_LINES) {
+                layout.checkpoints.push(layout.rows);
+            }
+            let walked = if is_long(&line) {
+                let mut resumes = Vec::new();
+                let walked = walk_line(
+                    &line,
+                    cols,
+                    Resume::START,
+                    |resume| resumes.push(resume),
+                    |_, _| ControlFlow::Continue(()),
+                );
+                layout.long_lines.push(LongLine {
+                    line: index,
+                    rows: walked.rows,
+                    resumes,
+                });
+                walked
+            } else if let Some(rows) = plain_row_count(&line, cols) {
+                Walked {
+                    rows,
+                    drawable: true,
+                }
+            } else {
+                walk_line(
+                    &line,
+                    cols,
+                    Resume::START,
+                    |_| {},
+                    |_, _| ControlFlow::Continue(()),
+                )
+            };
+            layout.rows += walked.rows;
+            layout.drawable &= walked.drawable;
         }
+        layout
     }
 
     pub(crate) fn cols(&self) -> usize {
@@ -185,15 +219,41 @@ impl ReviewLayout {
     fn rows(&self) -> usize {
         self.rows
     }
+
+    fn long_line(&self, index: usize) -> Option<&LongLine> {
+        self.long_lines
+            .binary_search_by_key(&index, |long| long.line)
+            .ok()
+            .map(|found| &self.long_lines[found])
+    }
 }
 
-fn line_rows(line: &DocumentLine<'_>, cols: usize) -> (usize, bool) {
-    if let Some(rows) = plain_row_count(line, cols) {
-        return (rows, true);
+fn is_long(line: &DocumentLine<'_>) -> bool {
+    line.text.len() > CHUNK_BYTES
+}
+
+fn walk_line(
+    line: &DocumentLine<'_>,
+    cols: usize,
+    from: Resume,
+    resumed: impl FnMut(Resume),
+    visit: impl FnMut(usize, &str) -> ControlFlow<()>,
+) -> Walked {
+    let widths = Widths {
+        first: cols.saturating_sub(prefix_width(line, true)),
+        rest: cols.saturating_sub(prefix_width(line, false)),
+    };
+    if line.op == ReviewOp::Elision {
+        let text = format!("{} unchanged lines ⋯", line.label);
+        return walk(Source::Text(&text), widths, from, resumed, visit);
     }
-    let mut rows = 0;
-    let fits = for_each_segment(line, &line_text(line), cols, |_, _| rows += 1);
-    (rows, fits)
+    if is_long(line) {
+        return walk(Source::Raw(line.text), widths, from, resumed, visit);
+    }
+    match printable(line) {
+        Some(text) => walk(Source::Text(text), widths, from, resumed, visit),
+        None => walk(Source::Raw(line.text), widths, from, resumed, visit),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,27 +392,43 @@ fn review_window(
     let mut visual = layout.checkpoints[checkpoint];
     let mut rows = Vec::with_capacity(window.len());
     let mut change_shown = false;
-    for line in file.lines(
-        checkpoint * CHECKPOINT_LINES,
-        CHECKPOINT_LINES + window.len(),
-    ) {
+    let first_line = checkpoint * CHECKPOINT_LINES;
+    let lines = file.lines(first_line, CHECKPOINT_LINES + window.len());
+    for (index, line) in (first_line..).zip(lines) {
         if visual >= window.end {
             break;
         }
-        let skipped = plain_row_count(&line, layout.cols)
-            .filter(|line_rows| visual + line_rows <= window.start);
-        if let Some(line_rows) = skipped {
+        let long = layout.long_line(index);
+        let known = long.map_or_else(
+            || plain_row_count(&line, layout.cols),
+            |long| Some(long.rows),
+        );
+        if let Some(line_rows) = known.filter(|line_rows| visual + line_rows <= window.start) {
             visual += line_rows;
             continue;
         }
-        let text = line_text(&line);
-        for_each_segment(&line, &text, layout.cols, |segment, first_segment| {
-            if window.contains(&visual) {
-                rows.push(review_row(theme, &line, segment, first_segment));
-                change_shown |= shows_change(line.op);
-            }
-            visual += 1;
+        let from = long.map_or(Resume::START, |long| {
+            resume_for(&long.resumes, window.start.saturating_sub(visual))
         });
+        let start = visual;
+        let walked = walk_line(
+            &line,
+            layout.cols,
+            from,
+            |_| {},
+            |row, text| {
+                let shown = start + row;
+                if shown >= window.end {
+                    return ControlFlow::Break(());
+                }
+                if shown >= window.start {
+                    rows.push(review_row(theme, &line, text, row == 0));
+                    change_shown |= shows_change(line.op);
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        visual = start + walked.rows;
     }
     (rows, change_shown)
 }
@@ -380,41 +456,12 @@ fn plain_row_count(line: &DocumentLine<'_>, cols: usize) -> Option<usize> {
     Some(1 + (width - first).div_ceil(continuation))
 }
 
-fn line_text<'a>(line: &DocumentLine<'a>) -> Cow<'a, str> {
-    if line.op == ReviewOp::Elision {
-        Cow::Owned(format!("{} unchanged lines ⋯", line.label))
-    } else {
-        printable(line).map_or_else(|| Cow::Owned(approval_text(line.text)), Cow::Borrowed)
-    }
-}
-
 fn printable<'a>(line: &DocumentLine<'a>) -> Option<&'a str> {
     line.text
         .iter()
         .all(|byte| (b' '..=b'~').contains(byte))
         .then(|| std::str::from_utf8(line.text).ok())
         .flatten()
-}
-
-fn for_each_segment<'a>(
-    line: &DocumentLine<'_>,
-    text: &'a str,
-    cols: usize,
-    mut visit: impl FnMut(&'a str, bool),
-) -> bool {
-    let mut offset = 0;
-    let mut first = true;
-    while first || offset < text.len() {
-        let available = cols.saturating_sub(prefix_width(line, first));
-        let segment = prefix_terminal_safe_by_width(&text[offset..], available);
-        if offset < text.len() && segment.is_empty() {
-            return false;
-        }
-        visit(segment, first);
-        offset += segment.len();
-        first = false;
-    }
-    true
 }
 
 fn prefix_width(line: &DocumentLine<'_>, first: bool) -> usize {
