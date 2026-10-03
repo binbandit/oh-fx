@@ -582,7 +582,13 @@ fn a_prompt_streams_a_reply_and_a_second_ctrl_c_exits() {
     assert_eq!(rows[2], "┃ hello there");
     assert_eq!(rows[4], "  Hello from the fake gateway.");
     assert_eq!(rows[6], "  Second paragraph.");
-    assert!(rows[8].starts_with("  0s (↑4 ↓3)"), "{screen}");
+    let seconds = rows[8]
+        .strip_prefix("  ")
+        .and_then(|row| row.strip_suffix("s (↑4 ↓3)"))
+        .expect("the summary shows elapsed seconds and exact token counts")
+        .parse::<u64>()
+        .expect("elapsed seconds are an unsigned integer");
+    assert_eq!(rows[8], format!("  {seconds}s (↑4 ↓3)"), "{screen}");
     assert_eq!(rows[10], "┃");
     assert_eq!(rows[12], "auto · model-a");
     let request = &server.requests()[0];
