@@ -6,6 +6,7 @@ use semver::Version;
 
 use crate::archive;
 use crate::build_identity;
+use crate::control::UpgradeControl;
 use crate::error::UpgradeError;
 use crate::lock::UpgradeLock;
 use crate::release_source::{self, ReleaseSource};
@@ -51,6 +52,7 @@ struct Installation {
 pub async fn upgrade(
     client: &reqwest::Client,
     _held: &UpgradeLock,
+    control: &UpgradeControl,
     progress: impl FnMut(UpgradeProgress<'_>),
 ) -> Result<UpgradeOutcome, UpgradeError> {
     let installation = Installation {
@@ -62,6 +64,7 @@ pub async fn upgrade(
         client,
         &ReleaseSource::from_environment(),
         &installation,
+        control,
         progress,
     )
     .await
@@ -71,12 +74,15 @@ async fn upgrade_installation(
     client: &reqwest::Client,
     source: &ReleaseSource,
     installation: &Installation,
+    control: &UpgradeControl,
     mut progress: impl FnMut(UpgradeProgress<'_>),
 ) -> Result<UpgradeOutcome, UpgradeError> {
+    control.check()?;
     archive::ensure_replaceable(&installation.executable)?;
     let current = installation.version.clone();
-    let latest = fetch_text(client, &source.latest_pointer_url(), POINTER_LIMIT)
+    let latest = fetch_text(client, control, &source.latest_pointer_url(), POINTER_LIMIT)
         .await
+        .map_err(|failure| failure.or(UpgradeError::FetchFailed))?
         .and_then(|pointer| release_source::parse_latest_pointer(&pointer))
         .ok_or(UpgradeError::FetchFailed)?;
     if latest <= current {
@@ -87,23 +93,32 @@ async fn upgrade_installation(
         latest: &latest,
     });
     let archive_url = source.archive_url(&latest, &installation.platform);
-    let checksum_file = fetch_text(client, &format!("{archive_url}.sha256"), CHECKSUM_LIMIT)
-        .await
-        .ok_or(UpgradeError::ChecksumFetchFailed)?;
+    let checksum_file = fetch_text(
+        client,
+        control,
+        &format!("{archive_url}.sha256"),
+        CHECKSUM_LIMIT,
+    )
+    .await
+    .map_err(|failure| failure.or(UpgradeError::ChecksumFetchFailed))?
+    .ok_or(UpgradeError::ChecksumFetchFailed)?;
     let download = Download {
         url: &archive_url,
         limit: usize::MAX,
         timeout: ARCHIVE_TIMEOUT,
     };
-    let archive = fetch(client, &download, |received, total| {
+    let archive = fetch(client, control, &download, |received, total| {
         progress(UpgradeProgress::Downloading { received, total });
     })
     .await
-    .ok_or(UpgradeError::DownloadFailed)?;
+    .map_err(|failure| failure.or(UpgradeError::DownloadFailed))?;
+    control.check()?;
     archive::verify_checksum(&archive, &checksum_file)?;
     progress(UpgradeProgress::Installing);
     let binary = archive::extract_binary(&archive)?;
-    archive::install_executable(&installation.executable, &binary, &latest.to_string())?;
+    control.install_unless_stopped(|| {
+        archive::install_executable(&installation.executable, &binary, &latest.to_string())
+    })?;
     Ok(UpgradeOutcome::Upgraded {
         notes_url: release_source::release_notes_url(&latest.to_string()),
         current,
@@ -117,39 +132,68 @@ struct Download<'a> {
     timeout: Duration,
 }
 
-async fn fetch_text(client: &reqwest::Client, url: &str, limit: usize) -> Option<String> {
+enum Failure {
+    Unavailable,
+    Cancelled,
+}
+
+impl Failure {
+    fn or(self, unavailable: UpgradeError) -> UpgradeError {
+        match self {
+            Self::Unavailable => unavailable,
+            Self::Cancelled => UpgradeError::Cancelled,
+        }
+    }
+}
+
+impl From<UpgradeError> for Failure {
+    fn from(_: UpgradeError) -> Self {
+        Self::Cancelled
+    }
+}
+
+async fn fetch_text(
+    client: &reqwest::Client,
+    control: &UpgradeControl,
+    url: &str,
+    limit: usize,
+) -> Result<Option<String>, Failure> {
     let download = Download {
         url,
         limit,
         timeout: SMALL_FILE_TIMEOUT,
     };
-    let body = fetch(client, &download, |_, _| {}).await?;
-    String::from_utf8(body).ok()
+    let body = fetch(client, control, &download, |_, _| {}).await?;
+    Ok(String::from_utf8(body).ok())
 }
 
 async fn fetch(
     client: &reqwest::Client,
+    control: &UpgradeControl,
     download: &Download<'_>,
     mut on_chunk: impl FnMut(u64, Option<u64>),
-) -> Option<Vec<u8>> {
-    let mut response = client
-        .get(download.url)
-        .timeout(download.timeout)
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
+) -> Result<Vec<u8>, Failure> {
+    control.check()?;
+    let sent = control
+        .unless_stopped(client.get(download.url).timeout(download.timeout).send())
+        .await?;
+    let mut response = sent
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|_| Failure::Unavailable)?;
     let total = response.content_length();
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.ok()? {
+    while let Some(chunk) = control
+        .unless_stopped(response.chunk())
+        .await?
+        .map_err(|_| Failure::Unavailable)?
+    {
         body.extend_from_slice(&chunk);
         if body.len() > download.limit {
-            return None;
+            return Err(Failure::Unavailable);
         }
         on_chunk(body.len() as u64, total);
     }
-    Some(body)
+    Ok(body)
 }
 
 fn running_executable() -> Result<PathBuf, UpgradeError> {
@@ -171,7 +215,9 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, mpsc};
     use std::thread;
+    use std::time::Instant;
 
     use super::*;
 
@@ -233,18 +279,116 @@ mod tests {
         }
     }
 
-    async fn run(
-        routes: Vec<(String, Vec<u8>)>,
-        installation: &Installation,
-    ) -> Result<UpgradeOutcome, UpgradeError> {
-        let client = ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
+    fn client() -> reqwest::Client {
+        ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
             user_agent: "oh-fx/test".to_owned(),
             follow_redirects: true,
             ..ofx_http::ConnectionOptions::default()
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    async fn run(
+        routes: Vec<(String, Vec<u8>)>,
+        installation: &Installation,
+    ) -> Result<UpgradeOutcome, UpgradeError> {
+        run_with(routes, installation, &UpgradeControl::new()).await
+    }
+
+    async fn run_with(
+        routes: Vec<(String, Vec<u8>)>,
+        installation: &Installation,
+        control: &UpgradeControl,
+    ) -> Result<UpgradeOutcome, UpgradeError> {
         let source = ReleaseSource::at(serve(routes));
-        upgrade_installation(&client, &source, installation, |_| {}).await
+        upgrade_installation(&client(), &source, installation, control, |_| {}).await
+    }
+
+    fn serve_stalled_archive(routes: Vec<(String, Vec<u8>)>) -> (String, mpsc::Receiver<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stalled, stalls) = mpsc::channel();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut request = [0; 4096];
+                let length = stream.read(&mut request).unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..length]);
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                if path == ARCHIVE_PATH {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\npartial",
+                    );
+                    let _ = stalled.send(());
+                    thread::sleep(Duration::from_secs(30));
+                    continue;
+                }
+                let body = routes
+                    .iter()
+                    .find(|(route, _)| *route == path)
+                    .map(|(_, body)| body.clone())
+                    .unwrap_or_default();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        (format!("http://{address}"), stalls)
+    }
+
+    #[tokio::test]
+    async fn a_stop_wakes_a_stalled_download_and_installs_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let installation = installed("0.1.0-dev.8", &directory);
+        let (base_url, stalls) = serve_stalled_archive(release_routes(&release_archive()));
+        let control = Arc::new(UpgradeControl::new());
+        let stopper = Arc::clone(&control);
+        thread::spawn(move || {
+            if stalls.recv_timeout(Duration::from_secs(10)).is_ok() {
+                stopper.request_stop();
+            }
+        });
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            upgrade_installation(
+                &client(),
+                &ReleaseSource::at(base_url),
+                &installation,
+                &control,
+                |_| {},
+            ),
+        )
+        .await
+        .expect("the stop wakes the transfer");
+        assert!(
+            matches!(outcome, Err(UpgradeError::Cancelled)),
+            "{outcome:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            fs::read(&installation.executable).unwrap(),
+            archive::version_script("0.1.0-dev.8")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_before_the_check_fetches_and_installs_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let installation = installed("0.1.0-dev.8", &directory);
+        let control = UpgradeControl::new();
+        control.request_stop();
+        let outcome = run_with(release_routes(&release_archive()), &installation, &control).await;
+        assert!(
+            matches!(outcome, Err(UpgradeError::Cancelled)),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            fs::read(&installation.executable).unwrap(),
+            archive::version_script("0.1.0-dev.8")
+        );
     }
 
     #[tokio::test]

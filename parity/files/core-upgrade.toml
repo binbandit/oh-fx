@@ -18,9 +18,9 @@ note = "Version/revision validators exist; bounded development manifest parsing,
 
 [[file]]
 upstream = "src/core/upgrade/upgrade_helpers.zig"
-status = "partial"
-modules = ["crates/ofx-upgrade/src/archive.rs", "crates/ofx-upgrade/src/upgrade.rs"]
-note = "Archive validation, replacement and streamed downloads exist; upstream cooperative download/install cancellation control is missing."
+status = "ported"
+modules = ["crates/ofx-upgrade/src/archive.rs", "crates/ofx-upgrade/src/control.rs", "crates/ofx-upgrade/src/upgrade.rs"]
+note = "Downloads stay in memory and stage next to the executable, so the stale sweep removes staged copies there instead of temporary download directories; a stop drops the transfer future instead of shutting down its socket."
 
 [[file]]
 upstream = "src/core/upgrade/upgrade_runtime.zig"
