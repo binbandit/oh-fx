@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailure, TurnReport};
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, Notice, NoticeTone,
-    ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor, SessionScope,
-    SkillBinding, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
+    BoxFuture, CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, Notice,
+    NoticeTone, ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor,
+    SessionScope, SkillBinding, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -22,6 +22,7 @@ use crate::app_commands::{
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
 use crate::approval_queue::ApprovalQueue;
+use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline};
 use crate::skills::HostSkills;
@@ -106,15 +107,6 @@ impl ControllerState {
             }
             ModelCatalog::Failed { .. } => Vec::new(),
         }
-    }
-
-    fn list_models(&self) {
-        let source = self.setup.models_source();
-        let emit = Arc::clone(&self.emit);
-        tokio::spawn(async move {
-            let catalog = source.catalog().await;
-            emit(UiEvent::ModelCatalog { catalog });
-        });
     }
 
     pub(crate) fn status_body(&self) -> String {
@@ -276,6 +268,40 @@ pub(crate) struct Controller {
     persistence: Option<Persistence>,
     questions: Option<QuestionRequests>,
     pick_at_start: bool,
+    catalog: CatalogFetch,
+}
+
+struct CatalogFetch {
+    source: ModelSource,
+    emit: Emit,
+    pending: Option<BoxFuture<'static, ModelCatalog>>,
+}
+
+impl CatalogFetch {
+    fn request(&mut self) {
+        if self.pending.is_none() {
+            let source = self.source.clone();
+            self.pending = Some(Box::pin(async move { source.catalog().await }));
+        }
+    }
+
+    async fn next_command(
+        &mut self,
+        commands: &mut UnboundedReceiver<UiCommand>,
+    ) -> Option<UiCommand> {
+        loop {
+            let Some(fetch) = &mut self.pending else {
+                return commands.recv().await;
+            };
+            tokio::select! {
+                command = commands.recv() => return command,
+                catalog = fetch => {
+                    self.pending = None;
+                    (self.emit)(UiEvent::ModelCatalog { catalog });
+                }
+            }
+        }
+    }
 }
 
 impl Controller {
@@ -314,6 +340,11 @@ impl Controller {
         }
         Self {
             agent: state.setup.agent(persistence.is_some()),
+            catalog: CatalogFetch {
+                source: state.setup.models_source(),
+                emit: Arc::clone(&state.emit),
+                pending: None,
+            },
             state,
             persistence,
             questions,
@@ -358,7 +389,7 @@ impl Controller {
                 }
                 continue;
             }
-            let Some(command) = commands.recv().await else {
+            let Some(command) = self.catalog.next_command(commands).await else {
                 return;
             };
             match command {
@@ -371,7 +402,7 @@ impl Controller {
                         return;
                     }
                 }
-                UiCommand::ListModels => self.state.list_models(),
+                UiCommand::ListModels => self.catalog.request(),
                 UiCommand::SelectModel {
                     model,
                     effort,
@@ -442,6 +473,7 @@ impl Controller {
         let emit = Arc::clone(&self.state.emit);
         let state = &mut self.state;
         let persistence = &mut self.persistence;
+        let catalog = &mut self.catalog;
         let mut open = true;
         let result = {
             let mut summarizing = move || {
@@ -454,7 +486,7 @@ impl Controller {
             loop {
                 tokio::select! {
                     result = &mut compaction => break result,
-                    command = commands.recv(), if open => match command {
+                    command = catalog.next_command(commands), if open => match command {
                         None => {
                             open = false;
                             cancel.cancel();
@@ -464,36 +496,9 @@ impl Controller {
                             state.receive_prompt(prompt, skills);
                         }
                         Some(UiCommand::CancelCompaction) => cancel.cancel(),
-                        Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
-                        Some(UiCommand::FullAccessWarningShown) => {
-                            state.permissions.full_access_warning_shown();
-                        }
-                        Some(
-                            UiCommand::Cancel { .. }
-                            | UiCommand::PauseRecovery { .. }
-                            | UiCommand::Approval { .. }
-                            | UiCommand::QuestionAnswered { .. },
-                        ) => {}
-                        Some(
-                            command @ (UiCommand::OpenSessions { .. }
-                            | UiCommand::ListSessions { .. }
-                            | UiCommand::ResumeSession { .. }
-                            | UiCommand::CloseSessionPicker),
-                        ) => refuse_session_command(state, command),
-                        Some(UiCommand::RunCommand { text }) => {
-                            run_deferred_command(
-                                state,
-                                persistence,
-                                &text,
-                                Work::Compaction,
-                                &cancel,
-                            )
-                            .await;
-                        }
-                        Some(UiCommand::ListModels) => state.list_models(),
-                        Some(UiCommand::SelectModel { model, effort, fast_mode }) => {
-                            let pick = ModelPick { model, effort, fast_mode };
-                            run_deferred_pick(state, persistence, pick, Work::Compaction).await;
+                        Some(command) => {
+                            let work = Work::Compaction;
+                            run_deferred(state, persistence, catalog, command, work, &cancel).await;
                         }
                     },
                 }
@@ -668,6 +673,7 @@ impl Controller {
         let state = &mut self.state;
         let persistence = &mut self.persistence;
         let questions = &mut self.questions;
+        let catalog = &mut self.catalog;
         let mut open = true;
         let report = {
             let turn =
@@ -678,7 +684,7 @@ impl Controller {
                 tokio::select! {
                     biased;
                     report = &mut turn => break report,
-                    command = commands.recv(), if open => match command {
+                    command = catalog.next_command(commands), if open => match command {
                         None => {
                             open = false;
                             cancel.cancel();
@@ -706,26 +712,10 @@ impl Controller {
                                 questions.resolve(request_id, answers);
                             }
                         }
-                        Some(UiCommand::TogglePermissionMode) => state.permissions.toggle_mode(),
-                        Some(UiCommand::FullAccessWarningShown) => {
-                            state.permissions.full_access_warning_shown();
+                        Some(command) => {
+                            let work = Work::Turn;
+                            run_deferred(state, persistence, catalog, command, work, &cancel).await;
                         }
-                        Some(UiCommand::RunCommand { text }) => {
-                            run_deferred_command(state, persistence, &text, Work::Turn, &cancel)
-                                .await;
-                        }
-                        Some(
-                            command @ (UiCommand::OpenSessions { .. }
-                            | UiCommand::ListSessions { .. }
-                            | UiCommand::ResumeSession { .. }
-                            | UiCommand::CloseSessionPicker),
-                        ) => refuse_session_command(state, command),
-                        Some(UiCommand::ListModels) => state.list_models(),
-                        Some(UiCommand::SelectModel { model, effort, fast_mode }) => {
-                            let pick = ModelPick { model, effort, fast_mode };
-                            run_deferred_pick(state, persistence, pick, Work::Turn).await;
-                        }
-                        Some(UiCommand::CancelCompaction) => {}
                     },
                     request = next_question(questions) => relay_question(state, running_turn(), request),
                 }
@@ -842,12 +832,43 @@ async fn run_deferred_command(
     }
 }
 
-async fn run_deferred_pick(
+async fn run_deferred(
     state: &mut ControllerState,
     persistence: &mut Option<Persistence>,
-    pick: ModelPick,
+    catalog: &mut CatalogFetch,
+    command: UiCommand,
     work: Work,
+    cancel: &CancellationToken,
 ) {
+    let pick = match command {
+        UiCommand::RunCommand { text } => {
+            return run_deferred_command(state, persistence, &text, work, cancel).await;
+        }
+        UiCommand::SelectModel {
+            model,
+            effort,
+            fast_mode,
+        } => ModelPick {
+            model,
+            effort,
+            fast_mode,
+        },
+        UiCommand::ListModels => return catalog.request(),
+        UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
+        UiCommand::FullAccessWarningShown => {
+            return state.permissions.full_access_warning_shown();
+        }
+        UiCommand::OpenSessions { .. }
+        | UiCommand::ListSessions { .. }
+        | UiCommand::ResumeSession { .. }
+        | UiCommand::CloseSessionPicker => return refuse_session_command(state, command),
+        UiCommand::Submit { .. }
+        | UiCommand::Cancel { .. }
+        | UiCommand::PauseRecovery { .. }
+        | UiCommand::Approval { .. }
+        | UiCommand::QuestionAnswered { .. }
+        | UiCommand::CancelCompaction => return,
+    };
     let Some(effort) = pick_model(state, pick, work).await else {
         return;
     };
@@ -2479,6 +2500,28 @@ mod tests {
         let requests = server.requests();
         assert_eq!(requests[0].json()["model"], "model-a");
         assert_eq!(requests[1].json()["model"], "vendor/model-b");
+    }
+
+    #[tokio::test]
+    async fn the_catalog_reaches_the_shell_while_a_turn_streams() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        let listed = listed_catalog(&mut harness).await;
+        assert!(matches!(listed, ModelCatalog::Listed { .. }), "{listed:?}");
+        assert!(
+            !harness
+                .seen
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnFinished { .. }))
+        );
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
     }
 
     #[tokio::test]
