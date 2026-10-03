@@ -27,6 +27,12 @@ The full checkout commit is read from `parity/UPSTREAM`. With that checkout avai
 
 The file map measures structural coverage. Re-audit entries and missing-behavior notes when main gains an implementation. The question tool and answer codec remain partial because ignored out-of-range JSON numbers and duplicate result keys differ from upstream. Byte-exact schema, help and prompt goldens remain a separate follow-up.
 
+## Baseline behavior at 34f1ed1
+
+| Behavior | Status | oh-fx | Note |
+|---|---|---|---|
+| Streamed tool progress in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Responses tool identities publish provisional progress before arguments finish, without preparing or executing the call. Read, rejected read, parallel starts, and failed partial streams are covered. Rejected provisional calls count no executed step. The existing plain terminal transcript difference is recorded in [architecture.md](architecture.md); interactive provisional rows remain deferred. |
+
 ## d9f7766..34f1ed1
 
 | PR | Merge | Title | Status | oh-fx | Note |

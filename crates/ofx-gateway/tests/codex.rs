@@ -275,6 +275,10 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
             StreamEvent::TextDelta {
                 text: "I will read it.".to_owned()
             },
+            StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call_1"),
+                tool_name: "read_file".to_owned(),
+            },
         ]
     );
 

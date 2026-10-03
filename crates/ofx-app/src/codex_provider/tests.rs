@@ -282,7 +282,7 @@ async fn ask_refreshes_an_expired_login_and_streams_a_tool_step_through_response
 
     assert_eq!(report.outcome, TurnOutcome::Completed, "{report:?}");
     assert_eq!(report.final_text, "Done.");
-    assert_eq!(assistant_text(&seen), "I will read it.Done.");
+    assert_eq!(assistant_text(&seen), "I will read it.\nDone.");
     assert!(seen.iter().any(|event| matches!(
         event,
         UiEvent::ToolFinished { tool_name, status: ToolResultStatus::Success, .. }

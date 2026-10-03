@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::ids::ToolCallId;
 use crate::tool_dispatch::ToolSpec;
 use crate::types::{ChatMessage, FinishReason, ProviderReplay, ToolCall, ToolChoice, Usage};
 
@@ -29,8 +30,16 @@ pub struct ProviderOptions<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
-    TextDelta { text: String },
-    ReasoningDelta { text: String },
+    ToolCallStarted {
+        call_id: ToolCallId,
+        tool_name: String,
+    },
+    TextDelta {
+        text: String,
+    },
+    ReasoningDelta {
+        text: String,
+    },
 }
 
 pub trait StreamSink: Send {

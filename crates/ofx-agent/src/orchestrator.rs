@@ -693,9 +693,26 @@ impl Agent {
         let mut recovering = false;
         loop {
             let mut partial = String::new();
+            let mut visible_text = false;
+            let mut ends_in_newline = false;
             let mut sink = |event: StreamEvent| match event {
+                StreamEvent::ToolCallStarted { call_id, tool_name } => {
+                    if self.streamed_tool_start(
+                        turn_id,
+                        call_id,
+                        tool_name,
+                        visible_text && !ends_in_newline,
+                        events,
+                    ) {
+                        ends_in_newline = true;
+                    }
+                }
                 StreamEvent::TextDelta { text } => {
                     partial.push_str(&text);
+                    if !text.is_empty() {
+                        visible_text = true;
+                        ends_in_newline = text.ends_with('\n');
+                    }
                     events(UiEvent::AssistantText { turn_id, text });
                 }
                 StreamEvent::ReasoningDelta { text } => {
@@ -765,6 +782,51 @@ impl Agent {
             pacing = decision.next_pacing;
             recovering = true;
         }
+    }
+
+    fn streamed_tool_start(
+        &self,
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        tool_name: String,
+        needs_newline: bool,
+        events: EventSink<'_>,
+    ) -> bool {
+        let Some(index) = self
+            .tool_specs
+            .iter()
+            .position(|spec| spec.name == tool_name)
+        else {
+            return false;
+        };
+        if needs_newline {
+            events(UiEvent::AssistantText {
+                turn_id,
+                text: "\n".to_owned(),
+            });
+        }
+        let presentation = panic::catch_unwind(AssertUnwindSafe(|| {
+            self.tools[index].provisional_presentation()
+        }))
+        .ok()
+        .flatten();
+        if let Some(presentation) = presentation
+            .filter(|presentation| {
+                !matches!(
+                    presentation.activity,
+                    ToolActivity::Write | ToolActivity::Edit | ToolActivity::Ask
+                )
+            })
+            .filter(|_| !call_id.as_str().is_empty())
+        {
+            events(UiEvent::ToolProvisional {
+                turn_id,
+                call_id,
+                tool_name,
+                action_label: presentation.action_label.to_owned(),
+            });
+        }
+        needs_newline
     }
 
     async fn run_batch(

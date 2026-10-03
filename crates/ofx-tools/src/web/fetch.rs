@@ -86,6 +86,10 @@ impl Tool for WebFetch {
         &self.spec
     }
 
+    fn provisional_presentation(&self) -> Option<CallPresentation> {
+        Some(PRESENTATION)
+    }
+
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let url = validate(&decode(arguments)?)?;
         let label = PRESENTATION.label(redact_url_for_display(&url.retrieval_url));

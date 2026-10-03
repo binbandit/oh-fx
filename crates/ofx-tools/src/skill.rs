@@ -4,9 +4,9 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use ofx_config::ContextLimits;
 use ofx_contract::{
-    ActionLabel, BoxFuture, CallDescription, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES,
-    PreparedCall, Tool, ToolActivity, ToolArgValue, ToolArgs, ToolContext, ToolEffect, ToolOutput,
-    ToolSpec, format_plain_action, parse_tool_args_object,
+    ActionLabel, BoxFuture, CallDescription, CallPresentation, Concurrency,
+    DEFAULT_MAX_TOOL_RESULT_BYTES, PreparedCall, Tool, ToolActivity, ToolArgValue, ToolArgs,
+    ToolContext, ToolEffect, ToolOutput, ToolSpec, format_plain_action, parse_tool_args_object,
 };
 use ofx_skills::{
     CallPreparation, ExecuteOutput, ExecuteResult, Locations, PreparedSkill, RootPolicy,
@@ -68,6 +68,16 @@ impl SkillTool {
 impl Tool for SkillTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
+    }
+
+    fn provisional_presentation(&self) -> Option<CallPresentation> {
+        Some(CallPresentation {
+            activity: ToolActivity::Read,
+            action_label: "Loading skill",
+            completed_label: "Loaded skill",
+            label_argument: "location",
+            label_default: "skill",
+        })
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {

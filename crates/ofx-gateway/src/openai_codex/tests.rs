@@ -9,6 +9,33 @@ use super::*;
 
 struct Chunks(VecDeque<Vec<u8>>);
 
+#[tokio::test]
+async fn an_incomplete_stream_keeps_its_emitted_tool_start() {
+    let sse = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\"}}\n\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\"}\n\n",
+    );
+    let mut chunks = Chunks(VecDeque::from([sse.as_bytes().to_vec()]));
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let result = consume_stream(
+        &mut chunks,
+        &mut sink,
+        &CancellationToken::new(),
+        STREAM_LIMITS,
+        &[],
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(
+        events,
+        vec![StreamEvent::ToolCallStarted {
+            call_id: ToolCallId::new("call_1"),
+            tool_name: "read_file".to_owned(),
+        }]
+    );
+}
+
 impl ChunkSource for Chunks {
     async fn next_chunk(&mut self) -> Result<Option<impl AsRef<[u8]> + Send>, String> {
         Ok(self.0.pop_front())
@@ -256,6 +283,10 @@ async fn openai_codex_sse_maps_text_reasoning_tools_and_usage() {
             },
             StreamEvent::TextDelta {
                 text: "hello".to_owned()
+            },
+            StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call_1"),
+                tool_name: "read_file".to_owned(),
             },
         ]
     );
