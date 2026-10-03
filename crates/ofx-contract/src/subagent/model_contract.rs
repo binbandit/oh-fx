@@ -10,8 +10,6 @@ use crate::types::ReasoningEffort;
 const MAX_ERROR_CODE_BYTES: usize = 64;
 const FINGERPRINT_DOMAIN: &[u8] = b"fx.subagent.request.v1\0";
 
-pub const STEERING_PENDING_RESULT: &str = "The subagent is still running. Handle the user's steering now. Its result will arrive automatically; do not delegate again to poll for it.";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubagentAction {
     Run,
@@ -326,12 +324,6 @@ impl SteeringDelivery {
             Self::NotApplied => "not_applied",
         }
     }
-
-    pub fn parse(label: &str) -> Option<Self> {
-        [Self::Queued, Self::Applied, Self::NotApplied]
-            .into_iter()
-            .find(|delivery| delivery.label() == label)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -366,24 +358,6 @@ impl<'a> SubagentResult<'a> {
         }
         encoded.push('}');
         encoded
-    }
-}
-
-pub fn feedback_result(delivery: SteeringDelivery) -> SubagentResult<'static> {
-    SubagentResult {
-        ok: delivery != SteeringDelivery::NotApplied,
-        pending: false,
-        result: Some(match delivery {
-            SteeringDelivery::Queued => {
-                "Feedback queued for the running child. Its result will arrive automatically."
-            }
-            SteeringDelivery::Applied => {
-                "Feedback consumed at the child's safe boundary. This is not a task-completion result."
-            }
-            SteeringDelivery::NotApplied => "Feedback was not applied before the child stopped.",
-        }),
-        error_code: (delivery == SteeringDelivery::NotApplied).then_some("feedback_not_applied"),
-        delivery: Some(delivery),
     }
 }
 
