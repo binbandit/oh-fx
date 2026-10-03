@@ -166,6 +166,16 @@ fn the_command_reply_seeds_the_composer_and_refreshes_the_providers() {
     });
     assert_eq!(test.shell.composer.text(), "/login ");
     assert_eq!(column_rows(&test.screen()), ["codex", "fresh"]);
+    press(&mut test, b"\x15kept draft\x10");
+    test.deliver(UiEvent::ProviderPicker {
+        prefix: "/provider ".to_owned(),
+        providers: vec!["codex".to_owned()],
+    });
+    assert!(test.shell.model_menu.is_some());
+    press(&mut test, ESC);
+    test.advance(40);
+    test.draining(|shell| shell.flush_pending_input().unwrap());
+    assert_eq!(test.shell.composer.text(), "kept draft");
 }
 
 #[test]

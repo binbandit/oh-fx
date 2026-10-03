@@ -72,9 +72,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn open_provider_column(&mut self, prefix: &str, providers: Vec<String>) {
-        self.close_model_menu_quietly();
-        self.skills_menu = None;
         self.options.providers = providers;
+        if self.model_menu.is_some() || self.model_draft.is_some() {
+            return;
+        }
+        self.skills_menu = None;
         self.composer.replace_text(prefix);
         self.provider_column = ProviderColumn::default();
     }
