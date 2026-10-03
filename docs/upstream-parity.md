@@ -42,6 +42,7 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 | #1101 | `7330832` | Add one-command Slack MCP setup | `omitted` | none | `mcp add slack`, `/mcp add slack`, `slack_preset.zig`, the MCP menu's `s` key and hint rows, and the README section. The preset depends on fx's Slack app (its public Client ID and Vercel's fx.sh OAuth bridge), so it waits until oh-fx has its own Slack app. `oh-fx mcp add slack` keeps the usage error upstream printed before the preset. |
 | #1101 | `7330832` | (same) | `defer:mcp-oauth` | future MCP OAuth | `authentication_error_message` gains `McpAuthorizationDenied` ("Authorization was declined. Run the connection command again to retry") and `McpAuthorizationCallbackTimedOut`. Both apply to every MCP server. |
 | #1111 | `3c89455` | Share sessions v2 history replay | `defer:sessions-v2` | future session replay | `session_adapter.zig` shares one history replay between resume, ACP load, and `fx session`. |
+| pinned | `34f1ed1` | Activate Grok after sign-in | `defer:grok` | future OH-9 request route | Native login stores the authenticated session without changing the active provider, saved models, or `settings.json` bytes. Activation follows the Grok request route in the next OH-9 PR. |
 | #1110 | `dcf9287` | Load all Grok subscription models | `defer:grok` | future Grok model catalog | `xai_grok_models.zig`: modality metadata only adds image support; it no longer filters the list or fails it. A failed fetch, a non-200 answer, or invalid JSON is traced and ignored, and models without metadata stay with vision off. |
 | #1062 | `34f1ed1` | Replace context compaction with a turn-by-turn ledger | `ported` | `ofx-agent`, `ofx-app`, `ofx-config`, `ofx-contract`, `ofx-gateway`, `ofx-text`, `ofx-tui` | The compactor, `text_completion.zig`, the `auto_compact_percent` setting, each model's context window, and automatic and provider-overflow compaction in the turn loop. `/compact` runs manual compaction through `Agent::compact`, and the footer shows its activity and feedback. See [Compactor](#compactor). |
 | #1062 | `34f1ed1` | (same) | `ported` | `ofx-agent`, `ofx-session` | `ask` saves each checkpoint behind the `fx-compactor-v1` marker and a resumed session renders it again. |
@@ -105,7 +106,7 @@ Port `src/core/mcp/mcp_auth.zig` with the #1101 messages above. Slack's fx-app b
 
 ### Grok model catalog
 
-Port `src/gateway/xai_grok_models.zig` as of #1110 or later.
+Port `src/gateway/xai_grok_models.zig` as of #1110 or later with the next OH-9 request route. Native Grok sign-in currently stores the authenticated session without loading the model catalog or changing settings. Activation, model listing, credential refresh, and missing-subscription request guidance remain deferred until a real Grok request consumer is available. Optional modality metadata must add image capabilities without filtering models; #1110 remains deferred. The successful sign-in output is unchanged.
 
 ## How to run a parity pass
 

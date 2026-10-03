@@ -2,9 +2,10 @@ use ofx_config::ProviderId;
 use ofx_contract::valid_credential_account_id;
 use tokio_util::sync::CancellationToken;
 
-use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode, now_ms};
+use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode};
 use crate::provider_catalog;
 use crate::session_presence::Presence;
+use crate::subscription_access::now_ms;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CredentialFailureReason {
@@ -65,6 +66,27 @@ fn classify_credential_failure(error: ChatGptError) -> CredentialFailureReason {
             CredentialFailureReason::PersistenceUncertain
         }
         ChatGptError::ChatGptAccountChanged => CredentialFailureReason::AuthorityChanged,
+        _ => CredentialFailureReason::TemporaryUnavailable,
+    }
+}
+
+fn classify_grok_credential_failure(
+    error: crate::grok_oauth::GrokError,
+) -> CredentialFailureReason {
+    use crate::grok_oauth::GrokError;
+    match error {
+        GrokError::AccessDenied => CredentialFailureReason::InvalidCredential,
+        GrokError::CredentialStorageUnavailable
+        | GrokError::DurablePathUnsafe
+        | GrokError::InsecureAuthFile
+        | GrokError::InvalidGrokAuthSession
+        | GrokError::PrivateStatePermissionsUnsupported => CredentialFailureReason::InvalidStorage,
+        GrokError::CredentialRefreshPersistenceUncertain
+        | GrokError::CredentialPersistenceFailed
+        | GrokError::DurableReplacePreRenameFailed
+        | GrokError::DurableReplacePostRenameFailed => {
+            CredentialFailureReason::PersistenceUncertain
+        }
         _ => CredentialFailureReason::TemporaryUnavailable,
     }
 }
@@ -158,6 +180,29 @@ async fn load_chatgpt_credential(
     oauth.load_access(mode, cancel).await
 }
 
+pub fn grok_login_failure_detail(error: crate::grok_oauth::GrokError) -> String {
+    use crate::grok_oauth::GrokError;
+    let reason = classify_grok_credential_failure(error);
+    match reason {
+        CredentialFailureReason::InvalidStorage | CredentialFailureReason::PersistenceUncertain => {
+            let normalized =
+                preparation_error(reason).expect("storage failures have preparation guidance");
+            format!(
+                "{}: {}",
+                crate::credentials::GROK_SOURCE_LABEL,
+                normalized.notice()
+            )
+        }
+        _ => match error {
+            GrokError::AccessDenied | GrokError::GrokAuthorizationFailed => {
+                "authorization denied".to_owned()
+            }
+            GrokError::LoginTimedOut => "authorization expired; run oh-fx login again".to_owned(),
+            _ => "failed to sign in".to_owned(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +239,36 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(
                 preparation_error(classify_credential_failure(error)),
+                expected,
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn grok_login_failures_preserve_storage_and_transport_categories() {
+        use crate::grok_oauth::GrokError;
+        for (error, expected) in [
+            (
+                GrokError::InvalidGrokAuthSession,
+                Some(PreparationError::CredentialStorageUnavailable),
+            ),
+            (
+                GrokError::CredentialRefreshPersistenceUncertain,
+                Some(PreparationError::CredentialRefreshPersistenceUncertain),
+            ),
+            (
+                GrokError::ConnectionFailed,
+                Some(PreparationError::CredentialTemporarilyUnavailable),
+            ),
+            (
+                GrokError::LockBusy,
+                Some(PreparationError::CredentialTemporarilyUnavailable),
+            ),
+            (GrokError::AccessDenied, None),
+        ] {
+            assert_eq!(
+                preparation_error(classify_grok_credential_failure(error)),
                 expected,
                 "{error}"
             );

@@ -53,6 +53,7 @@ impl Fixture {
                 },
             },
             lookup: |_| None,
+            grok: ofx_auth::GrokEndpoints::default(),
         }
     }
 
@@ -313,4 +314,32 @@ fn the_saved_model_wins_only_when_the_catalog_lists_it() {
     );
     assert_eq!(select_catalog_model(&models, None), Some("gpt-6.1-sol"));
     assert_eq!(select_catalog_model(&[], Some("gpt-6.1-sol")), None);
+}
+
+impl Fixture {
+    pub(crate) fn grok_profile(&self, auth: &FakeServer, catalog: &FakeServer) -> Profile {
+        let mut profile = self.profile(auth, catalog);
+        profile.grok = ofx_auth::GrokEndpoints {
+            issuer: auth.base_url(),
+            token_url: format!("{}/oauth/token", auth.base_url()),
+            userinfo_url: format!("{}/userinfo", auth.base_url()),
+            revoke_url: format!("{}/revoke", auth.base_url()),
+        };
+        profile
+    }
+
+    pub(crate) fn grok_credential_file(&self) -> PathBuf {
+        self.paths.data.join("grok-auth.json")
+    }
+
+    pub(crate) fn grok_signed_in(&self) {
+        fs::create_dir_all(&self.paths.data).unwrap();
+        fs::set_permissions(&self.paths.data, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(self.grok_credential_file(),json!({"version":1,"access_token":"grok-access-secret","refresh_token":"grok-refresh-secret","expires_at_ms":FAR_FUTURE_MS,"account_id":"grok-account"}).to_string()).unwrap();
+        fs::set_permissions(
+            self.grok_credential_file(),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
 }

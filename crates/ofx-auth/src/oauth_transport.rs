@@ -67,6 +67,22 @@ impl Transport {
             .post(url)
             .header(CONTENT_TYPE, method.content_type())
             .body(payload.to_owned());
+        self.execute_request(request).await
+    }
+
+    pub(crate) async fn execute_authorized_get(
+        &self,
+        url: &str,
+        token: &str,
+    ) -> Result<Response, TransportError> {
+        self.execute_request(self.client.get(url).bearer_auth(token))
+            .await
+    }
+
+    async fn execute_request(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<Response, TransportError> {
         let exchange = async {
             let mut response = request.send().await.map_err(|error| {
                 if error.is_timeout() {
