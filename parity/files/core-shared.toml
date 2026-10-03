@@ -32,13 +32,13 @@ note = "Half-open entity relationships and insert/delete span transformations ar
 upstream = "src/core/shared/gateway_error_format.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/gateway_error_format.rs"]
-note = "HTTP diagnostic/error formatting and secret masking exist; schema-specific guidance and all terminal marked-line wrapping helpers are absent."
+note = "HTTP diagnostic and error formatting and secret masking exist; formatSchemaDiagnostic serves the Vercel failure diagnostics (OH-8), and formatMarkedLine has no caller outside upstream's tests."
 
 [[file]]
 upstream = "src/core/shared/http_pool.zig"
 status = "partial"
 modules = ["crates/ofx-http/src/client.rs"]
-note = "Reqwest owns reusable HTTP connections; explicit warmAsync, never-active/TTL drain and pool health lifecycle are absent."
+note = "Reqwest owns connection reuse, idle expiry and pool health; upstream's warmAsync pre-connect to the gateway during startup is a latency measure tracked with performance parity (OH-47)."
 
 [[file]]
 upstream = "src/core/shared/io.zig"
@@ -86,7 +86,7 @@ note = "Text roles, tool calls and replay messages exist; request images and com
 upstream = "src/core/shared/model_context_encoding.zig"
 status = "partial"
 modules = ["crates/ofx-text/src/model_context_encoding.rs", "crates/ofx-skills/src/encoded_scalar.rs"]
-note = "Scalar delimiter/control escaping and allocated scalar encoding exist; writeJsonScalar encoded-then-JSON serialization is absent."
+note = "Scalar delimiter and control escaping and allocated scalar encoding exist; writeJsonScalar serves the MCP selected-schema rejection (OH-29)."
 
 [[file]]
 upstream = "src/core/shared/profile_paths.zig"
@@ -109,8 +109,8 @@ note = "Zig type-erased allocation-free sort implementation is replaced by Rust 
 [[file]]
 upstream = "src/core/shared/text_utils.zig"
 status = "partial"
-modules = ["crates/ofx-text/src/text_utils.rs"]
-note = "Terminal encoding, masking, whitespace and bounded text helpers exist; suffixTerminalSafeByWidth, prefixTerminalSafeByWidth and terminalSafeVisibleWidth are absent as dedicated equivalent helpers."
+modules = ["crates/ofx-text/src/text_utils.rs", "crates/ofx-tui/src/footer/command_text.rs"]
+note = "The terminal-safe prefix and suffix width cuts live beside their approval consumers in ofx-tui's command_text, with upstream's tests. terminalSafeVisibleWidth is not ported: row_text's escaped_width is the narrower generic-row width, where a zero-width space measures 0 cells, not the 8-cell \\u{200b} escape upstream measures, so the full terminal-safe width stays with its deferred callers, the compact command menu and the steering rows of the footer input."
 
 [[file]]
 upstream = "src/core/shared/theme.zig"

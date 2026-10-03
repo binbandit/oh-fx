@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/tools/web/content.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tools/src/web/content.rs"]
-note = "MIME/sniff classification, conversion dispatch and content caps exist; Classification.declared provenance distinguishing declared and sniffed kinds is absent."
+note = "MIME and sniff classification, conversion dispatch and content caps match upstream; its Classification.declared flag is read only by its tests and is not kept."
 
 [[file]]
 upstream = "src/tools/web/fetch.zig"

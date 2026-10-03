@@ -54,9 +54,9 @@ note = "Fixed-string git-grep/fallback search, path filtering, deterministic ord
 
 [[file]]
 upstream = "src/core/workspace/ignored_dirs.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-workspace/src/ignored_dirs.rs", "crates/ofx-workspace/src/workspace_files.rs"]
-note = "Ignored-directory names are used by workspace discovery; the whole-path pathContainsIgnoredDirectory component predicate is absent."
+note = "pathContainsIgnoredDirectory has no caller outside upstream's own tests; discovery skips the same names component by component."
 
 [[file]]
 upstream = "src/core/workspace/model_catalog_metrics.zig"

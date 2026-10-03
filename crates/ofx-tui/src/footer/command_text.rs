@@ -568,6 +568,38 @@ mod tests {
     }
 
     #[test]
+    fn suffix_terminal_safe_by_width_preserves_escape_and_utf8_token_boundaries() {
+        assert_eq!(
+            suffix_terminal_safe_by_width("prefix/\\x1b/name.txt", "/name.txt".len()),
+            "/name.txt"
+        );
+        assert_eq!(
+            suffix_terminal_safe_by_width("prefix/\\u{0080}/name", "\\u{0080}/name".len()),
+            "\\u{0080}/name"
+        );
+        assert_eq!(
+            suffix_terminal_safe_by_width("prefix/\u{1f600}/x", 4),
+            "\u{1f600}/x"
+        );
+    }
+
+    #[test]
+    fn prefix_terminal_safe_by_width_preserves_escape_and_utf8_token_boundaries() {
+        assert_eq!(
+            prefix_terminal_safe_by_width("prefix/\\x1b/name.txt", 11),
+            "prefix/\\x1b"
+        );
+        assert_eq!(
+            prefix_terminal_safe_by_width("\\u{0080}/name", 8),
+            "\\u{0080}"
+        );
+        assert_eq!(
+            prefix_terminal_safe_by_width("\u{1f600}/xyz", 4),
+            "\u{1f600}/x"
+        );
+    }
+
+    #[test]
     fn emoji_presentation_sequences_wrap_at_the_width_the_renderer_draws() {
         for glyph in [
             "\u{2764}\u{fe0f}",
