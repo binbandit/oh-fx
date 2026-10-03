@@ -9,6 +9,7 @@ use crate::features::tools::{ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
 use crate::server_transport::{ConnectOptions, startup_failure_message};
+use crate::timing::spawn;
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
 
@@ -132,7 +133,7 @@ impl Server {
             previous.client.shutdown(ShutdownMode::Immediate).await;
         }
         self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-        tokio::spawn(watch(Arc::downgrade(self), connection));
+        spawn(watch(Arc::downgrade(self), connection));
         Ok(())
     }
 
@@ -203,15 +204,21 @@ impl Server {
 
 async fn watch(server: Weak<Server>, connection: Connection) {
     loop {
-        let notification = tokio::select! {
-            () = connection.stop.cancelled() => return,
-            notification = connection.client.next_notification() => notification,
+        let Some(notification) = connection
+            .stop
+            .run_until_cancelled(connection.client.next_notification())
+            .await
+        else {
+            return;
         };
         match notification {
             Some(ServerNotification::ToolsListChanged) => {
-                let refreshed = tokio::select! {
-                    () = connection.stop.cancelled() => return,
-                    refreshed = connection.client.list_tools() => refreshed,
+                let Some(refreshed) = connection
+                    .stop
+                    .run_until_cancelled(connection.client.list_tools())
+                    .await
+                else {
+                    return;
                 };
                 let Some(server) = server.upgrade() else {
                     return;

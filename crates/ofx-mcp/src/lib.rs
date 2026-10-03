@@ -23,6 +23,7 @@ mod stdio_dispatcher;
 mod streamable_http;
 #[cfg(test)]
 mod test_support;
+mod timing;
 mod tool_mcp_registry;
 mod tool_names;
 mod tool_operations;
@@ -39,7 +40,7 @@ pub use mcp_contract::{
     McpAuthConfig, McpServerConfig, ProfileConfigWarning, ProfileConfigWarningCause, TransportType,
     WorkspaceAdmission,
 };
-pub use mcp_runtime::{McpRuntime, ServerView};
+pub use mcp_runtime::{McpRuntime, ServerView, Settling};
 pub use native_config::{NativeConfigLoad, load_native_configs};
 pub use profile_store::{
     PROFILE_CONFIG_FILE_NAME, ProfileRemoveOutcome, ProfileStoreError, add_profile_server,

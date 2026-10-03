@@ -1,7 +1,10 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::{Context, Poll};
 
-use ofx_contract::{BoxFuture, DynamicTools, Tool};
+use ofx_contract::{DynamicTools, Tool};
 use tokio::task::JoinSet;
 
 use crate::mcp_contract::{ConfigSource, ProfileConfigWarning, WorkspaceAdmission};
@@ -76,17 +79,13 @@ impl McpRuntime {
         self.servers.is_empty()
     }
 
-    pub fn connect(&self, phase: StartupPhase) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            let mut starts = JoinSet::new();
-            for server in &self.servers {
-                if decide_startup(&server.config, phase) == StartupDecision::Connect {
-                    let server = Arc::clone(server);
-                    starts.spawn(async move { server.start().await });
-                }
-            }
-            while starts.join_next().await.is_some() {}
-        })
+    pub fn connect(&self, phase: StartupPhase) -> Settling {
+        Settling::all(
+            self.servers
+                .iter()
+                .filter(|server| decide_startup(&server.config, phase) == StartupDecision::Connect)
+                .map(|server| (Arc::clone(server), Step::Start)),
+        )
     }
 
     pub fn servers(&self) -> Vec<ServerView> {
@@ -142,15 +141,51 @@ impl McpRuntime {
         std::mem::take(&mut lock(&self.published).notices)
     }
 
-    pub fn shutdown(&self, mode: ShutdownMode) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            let mut stops = JoinSet::new();
-            for server in &self.servers {
-                let server = Arc::clone(server);
-                stops.spawn(async move { server.stop(mode).await });
+    pub fn shutdown(&self, mode: ShutdownMode) -> Settling {
+        Settling::all(
+            self.servers
+                .iter()
+                .map(|server| (Arc::clone(server), Step::Stop(mode))),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    Start,
+    Stop(ShutdownMode),
+}
+
+pub struct Settling(JoinSet<()>);
+
+impl Settling {
+    fn all(steps: impl Iterator<Item = (Arc<Server>, Step)>) -> Self {
+        let mut tasks = JoinSet::new();
+        for (server, step) in steps {
+            tasks.spawn(settle(server, step));
+        }
+        Self(tasks)
+    }
+}
+
+impl Future for Settling {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        loop {
+            match self.0.poll_join_next(context) {
+                Poll::Ready(Some(_)) => {}
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Pending => return Poll::Pending,
             }
-            while stops.join_next().await.is_some() {}
-        })
+        }
+    }
+}
+
+async fn settle(server: Arc<Server>, step: Step) {
+    match step {
+        Step::Start => server.start().await,
+        Step::Stop(mode) => server.stop(mode).await,
     }
 }
 

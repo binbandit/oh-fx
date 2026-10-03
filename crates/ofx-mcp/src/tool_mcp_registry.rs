@@ -74,7 +74,8 @@ fn project(
     let instruction_limit = limits.server_instructions;
     let observed = instructions.map_or(0, str::len);
     let kept = instructions.map(|text| {
-        &text[..line_safe_prefix_length(text.as_bytes(), instruction_limit.effective_bytes())]
+        text.get(..line_safe_prefix_length(text.as_bytes(), instruction_limit.effective_bytes()))
+            .unwrap_or_default()
     });
     let truncated = kept.is_some_and(|text| text.len() < observed);
     let mut description = String::new();
@@ -212,11 +213,11 @@ impl PreparedCall for McpCall {
                     progress: None,
                 },
             );
-            let outcome = tokio::select! {
-                () = context.cancellation.cancelled() => {
-                    return ToolOutput::failure(format_tool_execution_error_json(&self.spec.name, "Cancelled"));
-                }
-                outcome = call => outcome,
+            let Some(outcome) = context.cancellation.run_until_cancelled(call).await else {
+                return ToolOutput::failure(format_tool_execution_error_json(
+                    &self.spec.name,
+                    "Cancelled",
+                ));
             };
             let server_name = &self.server.config.name;
             match outcome {
