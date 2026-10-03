@@ -18,6 +18,8 @@ const GROUP_MARKER: &str = "●";
 const CANCELLATION_MARKER: &str = "■";
 const MIDDLE_CONNECTOR: &str = "├";
 const LAST_CONNECTOR: &str = "└";
+const MIDDLE_CONTINUATION: &str = "│ ";
+const LAST_CONTINUATION: &str = "  ";
 const SHELL_PROFILE: &str = "sh";
 const CATEGORY_LABELS: [&str; 7] = [
     "read", "list", "write", "edit", "open", "command", "subagent",
@@ -41,7 +43,7 @@ pub(crate) struct ToolGroup {
 #[derive(Debug, Default)]
 struct DrawnRows {
     key: Option<(usize, Theme)>,
-    children: Vec<Option<Row>>,
+    children: Vec<Option<Vec<Row>>>,
 }
 
 impl DrawnRows {
@@ -114,10 +116,11 @@ impl ToolGroup {
             } else {
                 MIDDLE_CONNECTOR
             };
-            rows.push(
+            rows.extend(
                 child
-                    .get_or_insert_with(|| child_row(row, connector, cols, theme))
-                    .clone(),
+                    .get_or_insert_with(|| child_rows(row, connector, cols, theme))
+                    .iter()
+                    .cloned(),
             );
         }
         for row in &self.rows {
@@ -246,6 +249,21 @@ fn clip_plain(text: &str, cols: usize) -> String {
         1 => "…".to_owned(),
         _ => format!("{}…", prefix_by_width(text, cols - 1)),
     }
+}
+
+fn child_rows(row: &ToolActivityRow, connector: &str, cols: usize, theme: &Theme) -> Vec<Row> {
+    let mut rows = vec![child_row(row, connector, cols, theme)];
+    if let Some(status) = row.child_status() {
+        let prefix = if connector == LAST_CONNECTOR {
+            LAST_CONTINUATION
+        } else {
+            MIDDLE_CONTINUATION
+        };
+        let mut continuation = Row::styled(prefix, theme.statusline);
+        continuation.push(status, theme.statusline);
+        rows.push(continuation.summary_clipped(cols, theme.statusline));
+    }
+    rows
 }
 
 fn child_row(row: &ToolActivityRow, connector: &str, cols: usize, theme: &Theme) -> Row {

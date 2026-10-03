@@ -953,6 +953,7 @@ impl Presenter {
             }
             UiEvent::TurnStarted { .. }
             | UiEvent::ToolDeferred { .. }
+            | UiEvent::SubagentStatus { .. }
             | UiEvent::SteeringApplied { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
