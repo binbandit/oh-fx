@@ -6,7 +6,7 @@ mod command_specs;
 mod commands;
 mod registry;
 
-pub use cli_ask::{AskArgs, AskError, AskOutput, read_stdin_prompt};
+pub use cli_ask::{AskArgs, AskError, AskLayout, AskOutput, read_stdin_prompt};
 pub use cli_replay::ReplayArgs;
 pub use cli_surface::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,

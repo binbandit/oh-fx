@@ -4,6 +4,7 @@ mod cli_ask;
 mod cli_replay;
 mod command_echo;
 mod doctor_command;
+mod github_workflow;
 mod help;
 mod login_command;
 mod models_command;
@@ -30,6 +31,7 @@ use ofx_cli::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,
     RequestedResume, TopLevelKind,
 };
+use ofx_github::Workflow;
 use rustix::io::Errno;
 use signal_hook::consts::SIGPIPE;
 
@@ -105,6 +107,8 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Usage(format) => usage_command::run(format),
             Command::Workspace(args) => workspace_command::run(&args),
             Command::Replay(args) => cli_replay::run(&args),
+            Command::Pr(args) => github_workflow::run(Workflow::PullRequest, &args, &modifiers),
+            Command::Issue(args) => github_workflow::run(Workflow::Issue, &args, &modifiers),
             other => unavailable_command(&other),
         },
     }
@@ -153,7 +157,7 @@ pub(crate) fn not_available(command: &Command) -> ExitCode {
     )
 }
 
-fn unavailable(feature: &str) -> ExitCode {
+pub(crate) fn unavailable(feature: &str) -> ExitCode {
     auto_upgrade::announce_and_schedule();
     write_unavailable(feature);
     ExitCode::FAILURE
