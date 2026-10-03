@@ -24,19 +24,19 @@ severity = "fail"
 reason = "Upstream fx runs 121,800 instructions for --version."
 
 [limits.help_instructions]
-max = 550000
+max = 275000
 severity = "fail"
-reason = "Upstream fx runs 539,233 instructions for --help."
+reason = "oh-fx runs about 228,000 instructions for --help, measured on main at 83ecbfc, where upstream fx runs 539,233, because the help renders into one buffer and is written once. The limit keeps about 20% headroom, so a change that gives those savings back fails instead of passing under upstream's figure."
 
 [limits.ask_instructions]
-max = 1500000
+max = 1100000
 severity = "fail"
-reason = "Upstream fx runs 7.86 million instructions for a one-shot ask over http, and oh-fx runs about 1 million once it stops loading every CA root for an http provider."
+reason = "oh-fx runs about 901,000 instructions for a one-shot ask over http, measured on main at 83ecbfc, where upstream fx runs 7.86 million. The limit keeps about 20% headroom over that."
 
 [limits.stream_delta_instructions]
-max = 42700
+max = 18000
 severity = "fail"
-reason = "Upstream fx spends 42,700 instructions on each streamed delta."
+reason = "oh-fx spends about 14,650 instructions on each streamed delta, measured on main at 83ecbfc, where upstream fx spends 42,700. The limit keeps about 20% headroom over that."
 
 [limits.ca_store_syscalls]
 max = 0
@@ -49,14 +49,14 @@ severity = "fail"
 reason = "Upstream fx spawns 9 git processes for the same three greps."
 
 [limits.version_syscalls]
-max = 40
+max = 26
 severity = "warn"
-reason = "Upstream fx makes 8 syscalls for --version."
+reason = "Upstream fx makes 8 syscalls for --version, and oh-fx makes 24 on main at 83ecbfc, most of them Rust runtime start-up. The warning sits just above that, so a new syscall on the fast path is visible."
 
 [limits.help_syscalls]
-max = 40
+max = 37
 severity = "warn"
-reason = "Upstream fx makes 9 syscalls for --help."
+reason = "Upstream fx makes 9 syscalls for --help, and oh-fx makes 35 on main at 83ecbfc, most of them Rust runtime start-up. The warning sits just above that, so a new syscall on the fast path is visible."
 
 [limits.ask_peak_rss_kib]
 max = 4096
