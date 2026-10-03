@@ -10,7 +10,7 @@ use ofx_contract::{
 use ofx_text::write_scalar;
 use serde_json::{Map, Value};
 
-use crate::features::tools::Tool as CatalogTool;
+use crate::features::tools::{Tool as CatalogTool, ToolCatalog};
 use crate::server_lifecycle::{Advertised, CallFailure, Server};
 use crate::tool_names::ToolNames;
 use crate::tool_operations::CallOptions;
@@ -39,24 +39,51 @@ pub(crate) fn publish_tools(
         let Some((catalog, instructions)) = server.catalog() else {
             continue;
         };
-        for tool in &catalog.tools {
-            let Ok(name) = names.name(reserved, &server.config.name, &tool.name) else {
-                continue;
-            };
-            match project(&name, tool, instructions.as_deref(), limits) {
-                Projection::Selected { spec, notice } => {
-                    notices.extend(notice);
-                    tools.push(Arc::new(McpTool {
-                        spec: Arc::new(spec),
-                        server: Arc::clone(server),
-                        advertised: Arc::new(Advertised {
-                            tool: tool.clone(),
-                            instructions: instructions.clone(),
-                        }),
-                    }));
-                }
-                Projection::Rejected(notice) => notices.push(notice),
+        let (published, rejected) = publish_server(
+            server,
+            &catalog,
+            instructions.as_ref(),
+            names,
+            reserved,
+            limits,
+        );
+        tools.extend(
+            published
+                .into_iter()
+                .map(|tool| Arc::new(tool) as Arc<dyn Tool>),
+        );
+        notices.extend(rejected);
+    }
+    (tools, notices)
+}
+
+fn publish_server(
+    server: &Arc<Server>,
+    catalog: &ToolCatalog,
+    instructions: Option<&Arc<str>>,
+    names: &mut ToolNames,
+    reserved: &[String],
+    limits: SchemaLimits,
+) -> (Vec<McpTool>, Vec<String>) {
+    let mut tools = Vec::new();
+    let mut notices = Vec::new();
+    for tool in &catalog.tools {
+        let Ok(name) = names.name(reserved, &server.config.name, &tool.name) else {
+            continue;
+        };
+        match project(&name, tool, instructions.map(AsRef::as_ref), limits) {
+            Projection::Selected { spec, notice } => {
+                notices.extend(notice);
+                tools.push(McpTool {
+                    spec: Arc::new(spec),
+                    server: Arc::clone(server),
+                    advertised: Arc::new(Advertised {
+                        tool: tool.clone(),
+                        instructions: instructions.cloned(),
+                    }),
+                });
             }
+            Projection::Rejected(notice) => notices.push(notice),
         }
     }
     (tools, notices)
@@ -248,5 +275,63 @@ impl PreparedCall for McpCall {
                 ),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use ofx_config::{ContextLimitName, ContextLimits};
+    use serde_json::json;
+
+    use super::*;
+    use crate::features::tools::ToolCatalog;
+    use crate::mcp_contract::McpServerConfig;
+    use crate::server_transport::ConnectOptions;
+
+    fn tool(name: &str) -> CatalogTool {
+        CatalogTool {
+            name: name.to_owned(),
+            title: None,
+            description: format!("{name} tool"),
+            input_schema: json!({"type": "object"}),
+            output_schema: None,
+            icons: None,
+            annotations: None,
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn every_tool_of_a_server_shares_one_copy_of_its_instructions() {
+        let limits = ContextLimits::default();
+        let limits = SchemaLimits {
+            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
+            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
+        };
+        let server = Arc::new(Server::new(
+            McpServerConfig::stdio("fixture", "/bin/true", Vec::new()),
+            ConnectOptions::default(),
+            Arc::new(AtomicU64::new(0)),
+        ));
+        let catalog = ToolCatalog {
+            tools: (0..64).map(|index| tool(&format!("t{index}"))).collect(),
+        };
+        let instructions: Arc<str> = Arc::from("x".repeat(512 * 1024));
+        let (tools, _) = publish_server(
+            &server,
+            &catalog,
+            Some(&instructions),
+            &mut ToolNames::default(),
+            &[],
+            limits,
+        );
+        assert_eq!(tools.len(), 64);
+        for published in &tools {
+            let shared = published.advertised.instructions.as_ref().unwrap();
+            assert!(Arc::ptr_eq(shared, &instructions));
+        }
+        assert_eq!(Arc::strong_count(&instructions), 65);
     }
 }

@@ -45,7 +45,7 @@ pub(crate) enum CallFailure {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Advertised {
     pub(crate) tool: Tool,
-    pub(crate) instructions: Option<String>,
+    pub(crate) instructions: Option<Arc<str>>,
 }
 
 impl From<McpError> for CallFailure {
@@ -89,11 +89,16 @@ impl Server {
         }
     }
 
-    pub(crate) fn catalog(&self) -> Option<(Arc<ToolCatalog>, Option<String>)> {
+    pub(crate) fn catalog(&self) -> Option<(Arc<ToolCatalog>, Option<Arc<str>>)> {
         match &*lock(&self.state) {
             State::Ready(connection) => Some((
                 connection.client.tool_catalog(),
-                connection.client.server_info().instructions.clone(),
+                connection
+                    .client
+                    .server_info()
+                    .instructions
+                    .as_deref()
+                    .map(Arc::from),
             )),
             _ => None,
         }
@@ -167,8 +172,8 @@ impl Server {
         }
         let name = &advertised.tool.name;
         let current = catalog.get(name);
-        let instructions = &client.server_info().instructions;
-        if current != Some(&advertised.tool) || *instructions != advertised.instructions {
+        let instructions = client.server_info().instructions.as_deref();
+        if current != Some(&advertised.tool) || instructions != advertised.instructions.as_deref() {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
             return Err(CallFailure::DefinitionChanged {
                 still_advertised: current.is_some(),
