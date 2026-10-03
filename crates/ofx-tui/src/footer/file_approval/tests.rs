@@ -9,6 +9,7 @@ use ofx_contract::{
 };
 use ofx_text::encode_terminal_safe_path_tail;
 
+use super::super::command_text::approval_text;
 use super::*;
 
 fn request(
@@ -482,18 +483,30 @@ fn measured_plain_lines_wrap_exactly_as_they_are_drawn() {
                 label: number,
                 text: &text,
             };
+            assert_eq!(
+                printable(&line).map(str::to_owned),
+                Some(approval_text(&text))
+            );
             for cols in [0, 5, 9, 10, 11, 12, 17, 40, 80] {
-                assert_eq!(line_text(&line), approval_text(&text));
                 let mut drawn = 0;
-                let drawable = for_each_segment(&line, &line_text(&line), cols, |_, _| drawn += 1);
+                let walked = walk_line(
+                    &line,
+                    cols,
+                    Resume::START,
+                    |_| {},
+                    |_, _| {
+                        drawn += 1;
+                        ControlFlow::Continue(())
+                    },
+                );
+                assert_eq!(walked.rows, drawn);
                 let escapes = text.contains(&b'\\');
                 assert_eq!(
                     plain_row_count(&line, cols),
-                    drawable.then_some(drawn).filter(|_| !escapes),
+                    walked.drawable.then_some(drawn).filter(|_| !escapes),
                     "{op:?} {cols} {:?}",
                     String::from_utf8_lossy(&text)
                 );
-                assert_eq!(line_rows(&line, cols), (drawn, drawable));
             }
         }
     }
@@ -524,5 +537,39 @@ fn every_window_of_a_long_review_matches_the_whole_review() {
             assert_eq!(texts(&window), whole[start..end], "{cols} {start}");
             assert!(change_shown);
         }
+    }
+}
+
+#[test]
+fn a_large_single_line_draws_any_window_from_a_nearby_resume_point() {
+    let line = "\tx\u{4e2d}\u{1b}[2J\\x41 caf\u{e9}\u{301} \u{1f469}\u{200d}\u{1f4bb}".repeat(6000);
+    let file = approval("write_file", "one.txt", "", &format!("{line}\nshort\n"));
+    let layout = ReviewLayout::measure(&file, 80);
+    assert_eq!(layout.long_lines.len(), 1);
+    let long = &layout.long_lines[0];
+    assert!(
+        long.resumes.len() > line.len() / CHUNK_BYTES / 2,
+        "{}",
+        long.resumes.len()
+    );
+    let (whole, _) = review_window(&theme(), &file, &layout, &(0..layout.rows()));
+    let whole = texts(&whole);
+    assert_eq!(whole.len(), layout.rows());
+    assert_eq!(whole[layout.rows() - 1], "      2 + short");
+    for start in [
+        0,
+        1,
+        long.rows / 3,
+        long.rows / 2,
+        long.rows - 10,
+        long.rows - 1,
+    ] {
+        let window = start..(start + 12).min(layout.rows());
+        let from = resume_for(&long.resumes, start);
+        let ahead = line.len() * start / long.rows;
+        assert!(from.raw + 2 * CHUNK_BYTES >= ahead, "{start} {from:?}");
+        let (rows, change_shown) = review_window(&theme(), &file, &layout, &window);
+        assert_eq!(texts(&rows), whole[window.clone()], "{start}");
+        assert!(change_shown);
     }
 }
