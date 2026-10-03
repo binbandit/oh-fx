@@ -28,7 +28,7 @@ Never credit an AI agent, model, or tool anywhere in the history or on a pull re
 - Rust build, lint, and test jobs feed the required `Repository checks` job. Keep it that way when adding jobs.
 - Pullfrog reviews new PRs and new commits, including agent-authored PRs. Fix valid findings and rerun relevant tests; don't approve or merge around a failing review check.
 - Mergify automatically queues reviewed PRs, runs CI against the current base, and squash-merges passing changes. No manual merge or human approval is needed.
-- Mergify holds PRs labelled `codex` until the maintainer adds `codex-approved`. The `Guard maintainer approval` workflow removes that label when a push to a `codex` PR changes any commit's patch, and keeps it for a rebase that leaves every patch as it was.
+- Mergify holds PRs labelled `codex` until the maintainer adds `codex-approved`. After a push to a `codex` PR, the `Guard maintainer approval` workflow keeps that label only when replaying the approved change onto the new fork point from the base branch reproduces the pushed tree exactly, as a clean rebase does, and removes it otherwise.
 - Keep drafts as drafts while work is incomplete. Pullfrog waits until they are marked ready.
 - Leave `mergify/merge-queue/` branches and temporary PRs alone. They run CI without a duplicate Pullfrog review.
 - Preserve the Pullfrog approval checks in Mergify's `queue_conditions`. Adding them to GitHub required checks or `merge_conditions` blocks the temporary queue PRs.
