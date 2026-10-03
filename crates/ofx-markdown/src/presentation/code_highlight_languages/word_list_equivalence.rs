@@ -1,4 +1,4 @@
-use super::{KeywordCase, PROFILES, Words};
+use super::{KeywordCase, PROFILES};
 
 struct Xorshift(u64);
 
@@ -12,7 +12,7 @@ impl Xorshift {
 }
 
 struct Listed {
-    words: &'static Words,
+    words: super::packed_registry::WordView,
     case: KeywordCase,
     written: Vec<&'static [u8]>,
 }
@@ -30,10 +30,10 @@ fn word_lists() -> Vec<Listed> {
     let mut lists: Vec<Listed> = Vec::new();
     for profile in &PROFILES {
         for (words, case) in [
-            (profile.aliases, KeywordCase::AsciiInsensitive),
-            (profile.literals, profile.keyword_case),
-            (profile.keywords, KeywordCase::Sensitive),
-            (profile.keywords, KeywordCase::AsciiInsensitive),
+            (profile.aliases(), KeywordCase::AsciiInsensitive),
+            (profile.literals(), profile.keyword_case()),
+            (profile.keywords(), KeywordCase::Sensitive),
+            (profile.keywords(), KeywordCase::AsciiInsensitive),
         ] {
             if !lists
                 .iter()
