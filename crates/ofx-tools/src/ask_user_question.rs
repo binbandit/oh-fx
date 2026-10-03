@@ -302,5 +302,28 @@ fn encode_answers(entries: &[QuestionBatchEntry], answers: &[String]) -> Option<
     Some(encoded)
 }
 
+pub fn answered_questions(
+    tool_name: &str,
+    output: impl FnOnce() -> Option<String>,
+) -> Option<Vec<(String, String)>> {
+    if tool_name != TOOL_NAME {
+        return None;
+    }
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&output()?) else {
+        return None;
+    };
+    if items.is_empty() || items.len() > MAX_QUESTIONS {
+        return None;
+    }
+    items
+        .iter()
+        .map(|item| {
+            let question = item.get("question")?.as_str()?;
+            let answer = item.get("answer")?.as_str()?;
+            Some((question.to_owned(), answer.to_owned()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;

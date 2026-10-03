@@ -401,3 +401,40 @@ fn noninteractive_runs_return_the_not_available_sentinel_before_parsing() {
         );
     }
 }
+
+#[test]
+fn saved_answers_decode_only_from_answered_question_results() {
+    let encoded = r#"[{"question":"Which depth?","answer":"Thorough"},{"question":"Ship it?","answer":"Yes\nnow"}]"#;
+    let saved = |output: &str| {
+        let output = output.to_owned();
+        move || Some(output)
+    };
+    assert_eq!(
+        answered_questions("ask_user_question", saved(encoded)),
+        Some(vec![
+            ("Which depth?".to_owned(), "Thorough".to_owned()),
+            ("Ship it?".to_owned(), "Yes\nnow".to_owned()),
+        ])
+    );
+    assert_eq!(
+        answered_questions("shell", || unreachable!("only question results are read")),
+        None
+    );
+    assert_eq!(answered_questions("ask_user_question", || None), None);
+    let five = format!("[{}]", [r#"{"question":"Q","answer":"A"}"#; 5].join(","));
+    for output in [
+        "(user cancelled the question)",
+        "[]",
+        r#"[{"question":"Q"}]"#,
+        r#"[{"question":"Q","answer":1}]"#,
+        r#"[{"question":"Q","answer":"A"}] trailing"#,
+        r#"{"question":"Q","answer":"A"}"#,
+        five.as_str(),
+    ] {
+        assert_eq!(
+            answered_questions("ask_user_question", saved(output)),
+            None,
+            "{output}"
+        );
+    }
+}

@@ -10,7 +10,7 @@ mod tool_args;
 mod tool_runtime;
 mod web;
 
-pub use ask_user_question::AskUserQuestion;
+pub use ask_user_question::{AskUserQuestion, answered_questions};
 pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
 pub use skill::SkillTool;

@@ -93,6 +93,7 @@ pub enum CompactionActivity {
 pub enum HistoryEntry {
     User(String),
     Assistant(String),
+    QuestionsAnswered(Vec<(String, String)>),
     Cancelled,
     Notice(Notice),
 }

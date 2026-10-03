@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, SkillMenuFocus, SkillMenuGroup,
-    SkillMenuItem, SkillMenuSource, TurnId, TurnOutcome, UiCommand, UiEvent,
+    HistoryEntry, QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, SkillMenuFocus,
+    SkillMenuGroup, SkillMenuItem, SkillMenuSource, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
 use super::super::test_shell::TestShell;
@@ -554,4 +554,25 @@ fn escaped_controls_in_an_answer_stay_visible_in_the_editor_and_the_transcript()
         screen.contains("  1) Should we proceed?\n     \\u{202e}!\\u{202e}\n     \\u{202e}END"),
         "{screen}"
     );
+}
+
+#[test]
+fn a_resumed_session_replays_answered_questions_as_their_resolution_rows() {
+    let history = vec![
+        HistoryEntry::User("pick for me".to_owned()),
+        HistoryEntry::QuestionsAnswered(vec![
+            ("Which depth?".to_owned(), "Fast".to_owned()),
+            ("Ship it?".to_owned(), "after\nreview".to_owned()),
+        ]),
+        HistoryEntry::Assistant("Shipping fast.".to_owned()),
+    ];
+    let mut test = TestShell::start_with(|options| options.history = Some(history));
+    let screen = test.screen();
+    assert!(
+        screen.contains("  1) Which depth?\n     Fast\n  2) Ship it?\n     after\n     review"),
+        "{screen}"
+    );
+    let resolution = screen.find("  1) Which depth?").unwrap();
+    assert!(screen[..resolution].contains("┃ pick for me"), "{screen}");
+    assert!(screen[resolution..].contains("Shipping fast."), "{screen}");
 }

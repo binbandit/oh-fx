@@ -1,5 +1,6 @@
-use ofx_contract::{HistoryEntry, Notice, NoticeTone};
+use ofx_contract::{HistoryEntry, Notice, NoticeTone, ToolResultStatus};
 use ofx_session::{ConversationEvent, InterruptReason, SavedTurn, SessionError, WritableSession};
+use ofx_tools::answered_questions;
 
 const RESUMED_TOPIC: &str = "session resumed";
 const SYSTEM_TOPIC: &str = "system";
@@ -14,13 +15,20 @@ pub(super) fn transcript(
         RESUMED_TOPIC,
         title,
     ))];
-    session.visit_transcript(|turn| replay_turn(turn, &mut entries))?;
+    session.visit_transcript(|turn| replay_turn(session, turn, &mut entries))?;
     Ok(entries)
 }
 
-fn replay_turn(turn: SavedTurn, entries: &mut Vec<HistoryEntry>) {
+fn replay_turn(session: &WritableSession, turn: SavedTurn, entries: &mut Vec<HistoryEntry>) {
     for event in turn.events {
         match event {
+            ConversationEvent::ToolResult(result) if result.status == ToolResultStatus::Success => {
+                if let Some(answers) =
+                    answered_questions(&result.tool_name, || session.tool_result_output(&result))
+                {
+                    entries.push(HistoryEntry::QuestionsAnswered(answers));
+                }
+            }
             ConversationEvent::User(user) => entries.push(HistoryEntry::User(user.text)),
             ConversationEvent::Steering(steering) if !steering.text.is_empty() => {
                 entries.push(HistoryEntry::User(steering.text));

@@ -897,3 +897,50 @@ fn a_failed_save_of_a_closed_log_leaves_later_saves_allowed() {
         .unwrap();
     assert_eq!(session.last_seq(), 3);
 }
+
+#[test]
+fn saved_tool_results_read_back_whole_from_their_preview_or_their_artifact() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let calls = [
+        call("call-1", "ask_user_question"),
+        call("call-2", "ask_user_question"),
+    ];
+    let large = "z".repeat(10 * 1024);
+    let turn = HistoryTurn {
+        user: "ask",
+        steps: vec![step(
+            "",
+            &calls,
+            vec![
+                result(&calls[0], "short", ToolResultStatus::Success),
+                result(&calls[1], &large, ToolResultStatus::Success),
+            ],
+        )],
+        end: replied("done"),
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
+    let outputs = |session: &WritableSession| {
+        let mut outputs = Vec::new();
+        session
+            .visit_transcript(|turn| {
+                for event in turn.events {
+                    if let ConversationEvent::ToolResult(result) = event {
+                        outputs.push(session.tool_result_output(&result));
+                    }
+                }
+            })
+            .unwrap();
+        outputs
+    };
+    let resumed = resume_session(&fixture.sessions, "restored", LOCK_DEADLINE).unwrap();
+    assert_eq!(
+        outputs(&resumed),
+        [Some("short".to_owned()), Some(large.clone())]
+    );
+    for entry in fs::read_dir(fixture.dir().join("tool-results")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    assert_eq!(outputs(&resumed), [Some("short".to_owned()), None]);
+}
