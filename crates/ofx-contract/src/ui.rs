@@ -337,6 +337,9 @@ pub enum UiEvent {
     ProviderSelected {
         provider: String,
     },
+    UpgradeStatus {
+        label: String,
+    },
     PermissionModeChanged {
         mode: PermissionMode,
         full_access_warning: bool,

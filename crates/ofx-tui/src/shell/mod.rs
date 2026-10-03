@@ -252,6 +252,7 @@ pub(crate) struct Shell<'a> {
     model_draft: Option<ComposerStash>,
     catalog: CatalogLoad,
     provider_column: ProviderColumn,
+    upgrade_status: String,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
     events: UiEventReceiver,
@@ -456,6 +457,7 @@ impl<'a> Shell<'a> {
             model_draft: None,
             catalog: CatalogLoad::default(),
             provider_column: ProviderColumn::default(),
+            upgrade_status: String::new(),
             yolo_warning,
             picker: None,
             events,
@@ -788,6 +790,11 @@ impl<'a> Shell<'a> {
             } else {
                 DangerStatus::None
             },
+            upgrade_status: if self.question.is_none() {
+                &self.upgrade_status
+            } else {
+                ""
+            },
         };
         if let Some(menu_hint) = menu_hint {
             let ctrl_c_pending = hint_state.ctrl_c_pending;
@@ -934,6 +941,13 @@ impl<'a> Shell<'a> {
 
     fn window_title(&self) -> String {
         window_title(&self.options, self.session_title.as_deref())
+    }
+
+    fn upgrade_status_changed(&mut self, label: String) {
+        if label != self.upgrade_status {
+            self.upgrade_status = label;
+            self.invalidate();
+        }
     }
 
     fn session_title_changed(&mut self, title: Option<String>) {
@@ -1390,5 +1404,27 @@ mod tests {
         test.draining(Shell::drain_ui_events);
         let written = test.written();
         assert!(written.contains("\x1b]2;oh-fx v"), "{written:?}");
+    }
+
+    #[test]
+    fn the_hint_row_shows_the_upgrade_status_until_it_clears() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        test.queue(UiEvent::UpgradeStatus {
+            label: "update ready: ctrl+g to reload".to_owned(),
+        });
+        test.draining(Shell::drain_ui_events);
+        let screen = test.screen();
+        let row = screen
+            .lines()
+            .find(|line| line.contains("auto · model-a"))
+            .unwrap_or_default();
+        assert!(row.ends_with("update ready: ctrl+g to reload"), "{screen}");
+        test.queue(UiEvent::UpgradeStatus {
+            label: String::new(),
+        });
+        test.draining(Shell::drain_ui_events);
+        let screen = test.screen();
+        assert!(!screen.contains("update ready"), "{screen}");
     }
 }

@@ -693,6 +693,7 @@ dependencies = [
  "ofx-tui",
  "ofx-upgrade",
  "ofx-workspace",
+ "reqwest",
  "rustix",
  "serde_json",
  "sha2",

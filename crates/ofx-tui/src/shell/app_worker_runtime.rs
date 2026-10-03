@@ -184,6 +184,7 @@ impl Shell<'_> {
             UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
             UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),
+            UiEvent::UpgradeStatus { label } => self.upgrade_status_changed(label),
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,

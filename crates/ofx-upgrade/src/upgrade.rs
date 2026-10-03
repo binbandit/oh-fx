@@ -58,7 +58,7 @@ pub async fn upgrade(
     let installation = Installation {
         version: build_identity::release_version().ok_or(UpgradeError::LocalBuild)?,
         platform: build_identity::platform(),
-        executable: running_executable()?,
+        executable: installed_executable()?,
     };
     upgrade_installation(
         client,
@@ -196,7 +196,7 @@ async fn fetch(
     Ok(body)
 }
 
-fn running_executable() -> Result<PathBuf, UpgradeError> {
+pub fn installed_executable() -> Result<PathBuf, UpgradeError> {
     let path = env::current_exe().map_err(|_| UpgradeError::SelfExeNotFound)?;
     let path = match path
         .to_str()

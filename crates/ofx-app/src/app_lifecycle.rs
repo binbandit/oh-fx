@@ -83,7 +83,7 @@ pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedRes
             return ExitCode::FAILURE;
         }
     };
-    let update = app_upgrade_runtime::announce_and_schedule();
+    let update = app_upgrade_runtime::announce_update();
     match run(session, update, runtime) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -305,14 +305,19 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         runtime,
         lifecycle,
     );
-    host(
+    let mut upgrader = app_upgrade_runtime::start_session_upgrader(sender.clone());
+    let hosted = host(
         options,
         sender,
         receiver,
         refreshes.as_deref(),
         Some(&installations),
         agent,
-    )
+    );
+    if let Some(upgrader) = &mut upgrader {
+        upgrader.stop_for_process_exit();
+    }
+    hosted
 }
 
 fn agent_work(

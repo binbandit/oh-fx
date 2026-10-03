@@ -1047,6 +1047,7 @@ impl Presenter {
             | UiEvent::ModelCatalog { .. }
             | UiEvent::ProviderPicker { .. }
             | UiEvent::ProviderSelected { .. }
+            | UiEvent::UpgradeStatus { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
             | UiEvent::StatuslineMenuOpened
