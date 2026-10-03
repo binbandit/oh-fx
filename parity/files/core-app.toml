@@ -44,7 +44,7 @@ note = "Native model and permission preferences persist; host-owned configuratio
 upstream = "src/core/app/app_input_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
-note = "Terminal input routing and the `$` skill mention trigger exist; image ingress, deferred session-transition input, inline skill and slash completion and the remaining interactive picker routes are absent."
+note = "Terminal input routing, the `$` skill mention trigger and the session picker, model menu, model column and Ctrl+P routes exist; image ingress, deferred session-transition input, inline skill and slash completion and the provider/login picker routes are absent."
 
 [[file]]
 upstream = "src/core/app/app_lifecycle.zig"
@@ -124,8 +124,8 @@ note = "Approval keyboard actions exist with documented safety gating; upstream 
 [[file]]
 upstream = "src/core/app/input_completion_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs"]
-note = "Slash/file completion and history routes exist; model/session/provider picker routing is absent."
+modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs", "crates/ofx-tui/src/shell/input_submit_runtime.rs"]
+note = "Slash/file completion, history routes and the model column routing exist; session and provider picker routing is absent."
 
 [[file]]
 upstream = "src/core/app/input_full_transcript_runtime.zig"
@@ -177,8 +177,8 @@ note = "Prompt submission and compaction requests exist; steering, image ownersh
 [[file]]
 upstream = "src/core/app/model_cache_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/openai_codex_models.rs"]
-note = "Codex catalog caching exists; interactive multi-provider model-picker cache/navigation and Vercel/Grok catalogs are absent."
+modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-app/src/model_cache_runtime.rs", "crates/ofx-tui/src/shell/model_menu.rs"]
+note = "Codex catalog caching, the model menu catalog with its filtering and vendor navigation, and retryable load failures exist; Vercel and Grok catalogs and the launch warm-up and timed retry are absent as architecture.md describes."
 
 [[file]]
 upstream = "src/core/app/prompt_history_runtime.zig"

@@ -55,8 +55,8 @@ note = "No Rust implementation of upstream max_visible_items, max_inline_rows, m
 [[file]]
 upstream = "src/ui/footer/input_presentation.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/input_presentation.rs"]
-note = "Composer rows, selection and warning hints are implemented; image badges and complete model/provider/login picker footer projections are absent."
+modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/picker_presentation.rs"]
+note = "Composer rows, selection and warning hints, and the model, effort and Fast column projections are implemented; image badges and provider/login picker footer projections are absent."
 
 [[file]]
 upstream = "src/ui/footer/interaction_state.zig"
@@ -72,9 +72,9 @@ note = "No Rust implementation of upstream max_inline_rows, menuRowCount, visibl
 
 [[file]]
 upstream = "src/ui/footer/model_menu_presentation.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream max_visible_items, max_inline_rows, menuRowCount behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/model_menu_presentation.rs"]
+note = "Model menu layout, row budget, vendor tabs, model rows with their facts, load states and catalog notes are implemented; the Vercel and Grok catalog status lines are absent with those providers."
 
 [[file]]
 upstream = "src/ui/footer/paint_plan.zig"
