@@ -253,7 +253,7 @@ impl Controller {
             approvals.attach(Arc::clone(&state.emit));
         }
         Self {
-            agent: state.setup.agent(true),
+            agent: state.setup.agent(persistence.is_some()),
             state,
             persistence,
             questions,
@@ -890,8 +890,8 @@ mod tests {
         }
     }
 
-    async fn agent_setup(home: &tempfile::TempDir, server: &FakeServer) -> AgentSetup {
-        let settings = json!({
+    fn local_settings(server: &FakeServer) -> Value {
+        json!({
             "provider": "local",
             "providers": {
                 "local": {
@@ -901,8 +901,16 @@ mod tests {
                     "models": ["model-a", "vendor/model-b"]
                 }
             }
-        });
-        agent_setup_with(home, &settings, SubscriptionEndpoints::default()).await
+        })
+    }
+
+    async fn agent_setup(home: &tempfile::TempDir, server: &FakeServer) -> AgentSetup {
+        agent_setup_with(
+            home,
+            &local_settings(server),
+            SubscriptionEndpoints::default(),
+        )
+        .await
     }
 
     async fn agent_setup_with(
@@ -910,6 +918,14 @@ mod tests {
         settings: &Value,
         endpoints: SubscriptionEndpoints,
     ) -> AgentSetup {
+        profile_setup(home, settings, endpoints).await.1
+    }
+
+    async fn profile_setup(
+        home: &tempfile::TempDir,
+        settings: &Value,
+        endpoints: SubscriptionEndpoints,
+    ) -> (Profile, AgentSetup) {
         let config = home.path().join("config");
         let workspace = home.path().join("workspace");
         fs::create_dir_all(&config).unwrap();
@@ -924,8 +940,9 @@ mod tests {
         };
         let settings = Settings::load(&paths, &workspace).unwrap();
         let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
-        Profile::new(workspace, Some(home.path().into()), Some(paths), settings)
-            .unwrap()
+        let profile =
+            Profile::new(workspace, Some(home.path().into()), Some(paths), settings).unwrap();
+        let setup = profile
             .connect_interactive(
                 Launch {
                     model: None,
@@ -942,7 +959,8 @@ mod tests {
                 &CancellationToken::new(),
             )
             .await
-            .unwrap()
+            .unwrap();
+        (profile, setup)
     }
 
     const CODEX_MODEL: &str = "gpt-6.1-sol";
@@ -3058,6 +3076,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_a_session_that_is_saved_offers_subagent() {
+        for saved in [false, true] {
+            let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+            let mut harness = if saved {
+                Harness::start_saved(&server).await
+            } else {
+                Harness::start(&server).await
+            };
+            harness.submit("hi");
+            harness.until(finished(TurnOutcome::Completed)).await;
+            let offered = server.requests()[0].json()["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "subagent");
+            assert_eq!(offered, saved);
+        }
+    }
+
+    #[tokio::test]
     async fn a_childs_approval_is_asked_under_the_parents_turn_and_its_grant_stays_with_the_child()
     {
         let server = FakeServer::start([
@@ -3066,7 +3104,7 @@ mod tests {
             Reply::sse(&chat_text_events(&["the notes say hi"])),
             Reply::sse(&chat_text_events(&["parent done"])),
         ]);
-        let mut harness = Harness::start(&server).await;
+        let mut harness = Harness::start_saved(&server).await;
         fs::write(harness.home.path().join("outside.txt"), "hi\n").unwrap();
         harness.submit("delegate the reading");
         let requested = harness
@@ -3106,7 +3144,7 @@ mod tests {
             Reply::sse(&chat_text_events(&["read again"])),
             Reply::sse(&chat_text_events(&["parent done"])),
         ]);
-        let mut harness = Harness::start(&server).await;
+        let mut harness = Harness::start_saved(&server).await;
         fs::write(harness.home.path().join("outside.txt"), "hi\n").unwrap();
         harness.command("/model model-b");
         harness
