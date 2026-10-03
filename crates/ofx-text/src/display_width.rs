@@ -145,10 +145,15 @@ pub fn display_unit_at(text: &str, index: usize) -> DisplayUnit {
 }
 
 pub fn escape_ambiguous_width(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
     let mut escaped = String::new();
     let mut copied = 0;
     let mut index = 0;
     while index < text.len() {
+        if (b' '..=b'~').contains(&bytes[index]) && bytes.get(index + 1).is_none_or(u8::is_ascii) {
+            index += 1;
+            continue;
+        }
         let unit = display_unit_at(text, index);
         let end = index + unit.byte_len.max(1);
         let rgi = unit.byte_len > 1 && match_rgi_sequence(&text[index..]) == unit.byte_len;
@@ -501,6 +506,10 @@ mod tests {
             ("\u{17a4}", "\\u{17a4}"),
             ("\u{1f1e6}", "\\u{1f1e6}"),
             ("1\u{20e3}", "1\\u{20e3}"),
+            ("say 1\u{fe0f}\u{20e3} ok", "say 1\u{fe0f}\u{20e3} ok"),
+            ("cafe\u{301} au lait", "cafe\\u{0301} au lait"),
+            ("tag #\u{fe0f}", "tag #\\u{fe0f}"),
+            ("x\u{1f44d}\u{1f3fd}y", "x\u{1f44d}\u{1f3fd}y"),
         ] {
             assert_eq!(escape_ambiguous_width(text), escaped, "{text:?}");
         }
@@ -508,6 +517,60 @@ mod tests {
             escape_ambiguous_width("ok \u{1f600}"),
             Cow::Borrowed(_)
         ));
+    }
+
+    fn escape_every_unit(text: &str) -> String {
+        let mut escaped = String::new();
+        let mut index = 0;
+        while index < text.len() {
+            let unit = display_unit_at(text, index);
+            let end = index + unit.byte_len.max(1);
+            let rgi = unit.byte_len > 1 && match_rgi_sequence(&text[index..]) == unit.byte_len;
+            for codepoint in text[index..end].chars() {
+                if !rgi && has_ambiguous_width(codepoint) {
+                    let _ = write!(escaped, "\\u{{{:04x}}}", u32::from(codepoint));
+                } else {
+                    escaped.push(codepoint);
+                }
+            }
+            index = end;
+        }
+        escaped
+    }
+
+    #[test]
+    fn skipping_printable_ascii_escapes_exactly_what_every_display_unit_escapes() {
+        const PIECES: [&str; 14] = [
+            "a",
+            "#",
+            "1",
+            " ",
+            "~",
+            "\u{fe0f}",
+            "\u{20e3}",
+            "\u{301}",
+            "\u{200d}",
+            "\u{1f44d}",
+            "\u{1f3fd}",
+            "\u{2764}",
+            "\u{4e2d}",
+            "\u{1f1e6}",
+        ];
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..4000 {
+            let mut text = String::new();
+            for _ in 0..12 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                text.push_str(PIECES[usize::try_from(state % 14).unwrap()]);
+            }
+            assert_eq!(
+                escape_ambiguous_width(&text),
+                escape_every_unit(&text),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]
