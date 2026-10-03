@@ -1,5 +1,6 @@
 use ofx_contract::{RecoveredTurn, RecoveryStrategy};
 
+use super::compaction::{spoken_tool_reply, unmetered, windowed};
 use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 
@@ -134,5 +135,37 @@ async fn a_retried_request_resends_the_saved_steps_alone() {
         let mut expected = conversation("fix it");
         expected.extend(note.map(ChatMessage::user));
         assert_eq!(provider.requests()[0].messages, expected, "{strategy:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_reconciling_turn_keeps_its_note_and_withheld_tools_across_a_preflight_compaction() {
+    let big_reply = format!("OLDER_SENTINEL {}", "h".repeat(150_000));
+    let provider = FakeProvider::new(vec![
+        spoken_tool_reply("Reading first.", "call-9", r#"{"value":"first.txt"}"#),
+        unmetered(text_reply(&big_reply)),
+        unmetered(text_reply("Turn 1\nT1: echoed first.txt")),
+        unmetered(text_reply("reconciled")),
+    ]);
+    let (mut agent, _) = windowed(&provider, 45_000, 64);
+    let (older, _) = run(&mut agent, "older").await;
+    assert_eq!(older.outcome, TurnOutcome::Completed);
+    let (report, _) = continue_turn(&mut agent, recovered(RecoveryStrategy::ReconcileTool)).await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 4);
+    let continued = &requests[3];
+    assert!(user_note(continued).starts_with("<compacted_conversation>"));
+    assert_eq!(continued.tool_choice, ToolChoice::None);
+    assert!(matches!(
+        continued.messages.last(),
+        Some(ChatMessage::User { content, .. }) if content.starts_with("Reconcile the available tool evidence")
+    ));
+}
+
+fn user_note(request: &SeenRequest) -> &str {
+    match &request.messages[0] {
+        ChatMessage::User { content, .. } => content,
+        other => panic!("expected a user message, got {other:?}"),
     }
 }

@@ -563,7 +563,7 @@ impl Agent {
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
             let messages = self.request_messages(turn);
-            let recovery = turn.recovery.take();
+            let recovery = turn.recovery;
             let request = ModelRequest {
                 model: &self.config.model,
                 instructions: &instructions,
@@ -595,6 +595,7 @@ impl Agent {
             let completion = match outcome {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
+                    turn.recovery = None;
                     completion
                 }
                 Err(Stop::Failed {

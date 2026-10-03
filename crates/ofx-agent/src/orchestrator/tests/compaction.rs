@@ -285,7 +285,7 @@ async fn clearing_the_history_forgets_the_checkpoint() {
     assert_eq!(requests[6].messages, [ChatMessage::user("start over")]);
 }
 
-struct Window {
+pub(super) struct Window {
     tokens: u32,
     lookups: AtomicUsize,
 }
@@ -305,7 +305,7 @@ impl CapabilityResolver for Window {
     }
 }
 
-fn windowed(
+pub(super) fn windowed(
     provider: &Arc<FakeProvider>,
     tokens: u32,
     max_output_tokens: u32,
@@ -329,7 +329,7 @@ fn windowed(
     (agent, window)
 }
 
-fn unmetered(script: Script) -> Script {
+pub(super) fn unmetered(script: Script) -> Script {
     metered(script, None)
 }
 
@@ -343,7 +343,7 @@ fn metered(script: Script, input_tokens: Option<u64>) -> Script {
     }
 }
 
-fn spoken_tool_reply(content: &str, id: &str, arguments: &str) -> Script {
+pub(super) fn spoken_tool_reply(content: &str, id: &str, arguments: &str) -> Script {
     unmetered(Script::Reply(
         Vec::new(),
         completion(
