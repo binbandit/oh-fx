@@ -15,6 +15,7 @@ mod regular_file;
 mod staging;
 mod statusline_identity;
 mod unicode_simple_fold;
+mod workspace_access;
 mod workspace_files;
 
 pub use change_tracker::{ChangeTracker, FileOperation, UndoResult};
@@ -52,6 +53,9 @@ pub use regular_file::{
 };
 pub use staging::stage_name;
 pub use statusline_identity::StatuslineIdentity;
+pub use workspace_access::{
+    AdditionalDirectory, DirectorySource, WorkspaceAccess, WorkspaceAccessError,
+};
 pub use workspace_files::{
     CandidatePaths, CandidateStats, DEFAULT_CANDIDATE_CAP, Discovery, DiscoveryOptions,
     GIT_REPOSITORY_VARIABLES, MAX_RELATIVE_PATH_BYTES, Source, UntrackedFiles, discover,
