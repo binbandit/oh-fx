@@ -55,8 +55,8 @@ note = "Sound/attention hook delivery pacing are unimplemented."
 [[file]]
 upstream = "src/builtins/mcp.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/profile_store.rs", "crates/ofx-mcp/src/native_config.rs"]
-note = "Durable profile server configuration and connected-tool composition exist; the /mcp live handler and workspace authority previews are absent."
+modules = ["crates/ofx-mcp/src/profile_store.rs", "crates/ofx-mcp/src/native_config.rs", "crates/ofx-app/src/mcp_commands.rs"]
+note = "Profile configuration, connected-tool composition, workspace authority previews and the /mcp summary, list, path, add, remove, reload and trust handlers exist; /mcp resource, prompt, auth and logout and the Slack preset are missing."
 
 [[file]]
 upstream = "src/builtins/modes.zig"
