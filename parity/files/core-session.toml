@@ -104,7 +104,7 @@ modules = []
 upstream = "src/core/session/session_codec.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_codec.rs"]
-note = "Modern metadata/preferences codecs exist; legacy schema preference decoding and recovery checkpoint codecs are missing."
+note = "Modern metadata/preferences codecs exist, and the recovery checkpoint form upstream writes today is read; legacy schema preference decoding, older checkpoint versions and the checkpoint encoder are missing."
 
 [[file]]
 upstream = "src/core/session/session_commands.zig"
@@ -150,7 +150,7 @@ note = "Session-ID validation/generation exists; terminal-specific IDs and v2 di
 upstream = "src/core/session/session_log.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_log.rs"]
-note = "Modern append/replay exists; recovery checkpoint prefix validation/copy and legacy history imports are missing."
+note = "Modern append/replay exists, and a writable open closes a turn from its matching recovery checkpoint; keeping the checkpoint for continuation, writing checkpoints, recovery checkpoint prefix validation/copy and legacy history imports are missing."
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
