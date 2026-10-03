@@ -6,7 +6,9 @@ use crate::session_codec::{SessionMetadata, SessionPreferences};
 use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
 use crate::session_log::managed_file::{lock_with_deadline, remove_created_dir};
-use crate::session_log::{WritableSession, now_ms, start_session};
+use crate::session_log::{
+    LOCK_DEADLINE, WritableSession, now_ms, resume_session, start_session, work_reply,
+};
 
 pub(crate) const CONTROL_DIR: &str = "subagent";
 const OWNER_FILE: &str = "owner.json";
@@ -85,6 +87,19 @@ impl ChildSessions {
         .map_err(|_| SessionError::SessionStartFailed)?;
         session.control_dir()?.replace(OWNER_FILE, &marker)?;
         Ok(())
+    }
+
+    pub fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
+        let session = resume_session(&self.sessions, id, LOCK_DEADLINE)?;
+        if session.metadata().subagent_child {
+            Ok(session)
+        } else {
+            Err(SessionError::SessionNotFound)
+        }
+    }
+
+    pub fn reply_for_work(&self, id: &str, work_id: &str) -> Result<Option<String>, SessionError> {
+        work_reply(&self.sessions, id, work_id)
     }
 
     pub fn load_registry(&self) -> Result<Option<Vec<u8>>, SessionError> {

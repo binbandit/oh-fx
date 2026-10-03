@@ -31,7 +31,7 @@ pub use history_turn::{
     RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy, RestoredHistory, StepResult,
     TurnEnd, TurnStop,
 };
-pub use ids::{RequestId, ToolCallId, TurnId};
+pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use modes::{ActiveMode, ModeRegistry, ModeSpec, ToolPolicy};
 pub use permission_gate::{

@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use ofx_config::ProviderId;
-use ofx_contract::{HistoryTurn, ReasoningEffort, TurnEnd};
+use ofx_contract::{HistoryTurn, ReasoningEffort, TurnEnd, TurnStop};
 
 use crate::session_codec::{SavedProvider, SessionPreferences, decode_session_metadata};
 use crate::session_error::SessionError;
@@ -203,4 +203,69 @@ fn a_session_marked_only_by_its_owner_file_is_still_a_child() {
         store.resume(&other_id).err(),
         Some(SessionError::OneOffSessionNotResumable)
     );
+}
+
+#[test]
+fn a_child_session_reopens_with_its_conversation_and_settings() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let parent = store.start(preferences()).unwrap();
+    let children = store.children(parent.id()).unwrap();
+    let mut chosen = preferences();
+    chosen.model = "openai/gpt-5-mini".to_owned();
+    chosen.effort = ReasoningEffort::Named("high".to_owned());
+    let mut child = children.start("child-1", chosen.clone(), "en").unwrap();
+    let provider = SavedProvider::new(ProviderId::Gateway, None).unwrap();
+    child.begin_work("call_1");
+    child
+        .record_turn(&replied("read the notes"), &provider)
+        .unwrap();
+    drop(child);
+    let mut reopened = children.resume("child-1").unwrap();
+    assert_eq!(reopened.metadata().preferences, chosen);
+    let history = reopened.restored_history().unwrap();
+    assert_eq!(history.turn_starts, [0]);
+    assert_eq!(history.messages.len(), 2);
+    let parent_id = parent.id().to_owned();
+    drop(parent);
+    assert_eq!(
+        children.resume(&parent_id).err(),
+        Some(SessionError::SessionNotFound)
+    );
+}
+
+#[test]
+fn a_childs_reply_is_found_by_the_work_it_answered() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let parent = store.start(preferences()).unwrap();
+    let children = store.children(parent.id()).unwrap();
+    let mut child = children.start("child-1", preferences(), "en").unwrap();
+    let provider = SavedProvider::new(ProviderId::Gateway, None).unwrap();
+    child.begin_work("call_1");
+    child.record_turn(&replied("first"), &provider).unwrap();
+    child.begin_work("call_2");
+    child
+        .record_turn(
+            &HistoryTurn {
+                user: "second",
+                steps: Vec::new(),
+                steering: Vec::new(),
+                end: TurnEnd::Stopped {
+                    reason: TurnStop::Failed,
+                    partial: "half an answer",
+                },
+            },
+            &provider,
+        )
+        .unwrap();
+    assert_eq!(
+        children.reply_for_work("child-1", "call_1"),
+        Ok(Some("done".to_owned()))
+    );
+    assert_eq!(
+        children.reply_for_work("child-1", "call_2"),
+        Ok(Some("half an answer".to_owned()))
+    );
+    assert_eq!(children.reply_for_work("child-1", "call_3"), Ok(None));
 }
