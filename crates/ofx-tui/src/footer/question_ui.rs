@@ -1,9 +1,9 @@
-use ofx_text::{display_unit_at, visible_width, wrap_cut_ignoring_ansi};
+use ofx_text::{display_unit_at, visible_width};
 
 use super::question_freeform_layout::{
     OPTION_ROW_INDENT, content_width, next_line, normalized_cursor, option_prefix_width, ordinal,
 };
-use crate::row_text::{Paint, Row};
+use crate::row_text::{Paint, Row, escaped_prefix_by_width, escaped_width};
 use crate::shell::question_prompt::{EntryView, PromptOption, PromptView};
 use crate::theme::Theme;
 
@@ -157,7 +157,7 @@ fn option_rows(
             };
             row.push(piece, style.paint);
             if description_available {
-                let visible = prefix_width + visible_width(piece);
+                let visible = prefix_width + escaped_width(piece);
                 row.push_spaces(if visible < description_indent {
                     description_indent - visible
                 } else {
@@ -223,7 +223,7 @@ fn selected_freeform_rows(
     while start < buffer.len() {
         let line = next_line(buffer, start, width);
         let end = line.content_end;
-        last_width = visible_width(&buffer[start..end]);
+        last_width = escaped_width(&buffer[start..end]);
         trailing_hard_break = line.hard_break && line.next_start == buffer.len();
         let mut row = style.start_row(first);
         if cursor >= start && cursor < end {
@@ -372,7 +372,7 @@ fn next_wrapped_line(text: &str, start: usize, width: usize) -> Wrapped {
         .find('\n')
         .map_or(text.len(), |relative| start + relative);
     let segment = &text[start..segment_end];
-    let prefix = wrap_cut_ignoring_ansi(segment, width);
+    let prefix = wrap_cut(segment, width);
     if prefix.len() < segment.len() {
         if prefix.is_empty() {
             let end = (start + display_unit_at(text, start).byte_len.max(1)).min(segment_end);
@@ -398,6 +398,17 @@ fn next_wrapped_line(text: &str, start: usize, width: usize) -> Wrapped {
         } else {
             segment_end
         },
+    }
+}
+
+fn wrap_cut(segment: &str, width: usize) -> &str {
+    let prefix = escaped_prefix_by_width(segment, width);
+    if prefix.len() == segment.len() {
+        return prefix;
+    }
+    match prefix.rfind([' ', '\t']) {
+        Some(space) if space > 0 => &segment[..space],
+        _ => prefix,
     }
 }
 

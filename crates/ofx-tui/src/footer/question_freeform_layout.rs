@@ -1,4 +1,6 @@
-use ofx_text::{display_unit_at, prefix_by_width, visible_width};
+use ofx_text::{display_unit_at, visible_width};
+
+use crate::row_text::{escaped_prefix_by_width, escaped_unit_at, escaped_width};
 
 pub(crate) const OPTION_ROW_INDENT: &str = "    ";
 
@@ -57,7 +59,7 @@ pub(crate) fn next_line(buffer: &str, start: usize, content_width: usize) -> Lin
         .find('\n')
         .map_or(buffer.len(), |relative| start + relative);
     let segment = &buffer[start..segment_end];
-    let prefix = prefix_by_width(segment, content_width);
+    let prefix = escaped_prefix_by_width(segment, content_width);
     if prefix.len() < segment.len() {
         let end = if prefix.is_empty() {
             (start + display_unit_at(buffer, start).byte_len).min(segment_end)
@@ -142,7 +144,7 @@ fn advance_line(buffer: &str, line: Line, content_width: usize) -> Option<Line> 
     }
     if !line.hard_break
         && line.content_end == buffer.len()
-        && visible_width(&buffer[line.start..line.content_end]) == content_width
+        && escaped_width(&buffer[line.start..line.content_end]) == content_width
     {
         return Some(next_line(buffer, buffer.len(), content_width));
     }
@@ -165,7 +167,7 @@ fn cursor_column(buffer: &str, line: Line, cursor: usize) -> usize {
     if line.synthetic {
         return 0;
     }
-    visible_width(&buffer[line.start..cursor])
+    escaped_width(&buffer[line.start..cursor])
 }
 
 fn cursor_at_column(buffer: &str, line: Line, target_column: usize, content_width: usize) -> usize {
@@ -176,7 +178,7 @@ fn cursor_at_column(buffer: &str, line: Line, target_column: usize, content_widt
     let mut column = 0;
     let mut last_owned = line.start;
     while cursor < line.content_end {
-        let unit = display_unit_at(buffer, cursor);
+        let unit = escaped_unit_at(buffer, cursor);
         if column + unit.cell_width > target_column {
             break;
         }
@@ -255,6 +257,21 @@ mod tests {
         let down = move_cursor(buffer, buffer.len(), 20, Direction::Down, None);
         assert_eq!(down.cursor, buffer.len());
         assert!(!down.moved);
+    }
+
+    #[test]
+    fn escaped_controls_take_their_escaped_width_in_rows_and_vertical_moves() {
+        let buffer = "\u{202e}\u{202e}\u{202e}END";
+        let first = next_line(buffer, 0, 17);
+        assert_eq!(first.content_end, 6);
+        let second = next_line(buffer, first.next_start, 17);
+        assert_eq!(&buffer[second.start..second.content_end], "\u{202e}END");
+        let up = move_cursor(buffer, buffer.len(), 17, Direction::Up, None);
+        assert!(up.moved);
+        assert_eq!(up.cursor, 3);
+        assert_eq!(up.preferred_column, 11);
+        let down = move_cursor(buffer, up.cursor, 17, Direction::Down, Some(11));
+        assert_eq!(down.cursor, buffer.len());
     }
 
     #[test]

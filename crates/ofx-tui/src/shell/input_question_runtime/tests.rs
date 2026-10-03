@@ -527,3 +527,31 @@ fn a_question_hides_an_open_skills_menu_until_it_is_answered() {
     assert!(screen.contains("Skills 1"), "{screen}");
     assert!(screen.contains("enter use"), "{screen}");
 }
+
+#[test]
+fn escaped_controls_in_an_answer_stay_visible_in_the_editor_and_the_transcript() {
+    let mut test = asking(proceed());
+    test.resize(24, 24);
+    press(&mut test, b"4");
+    press(
+        &mut test,
+        "\x1b[200~\u{202e}\u{202e}\u{202e}END\x1b[201~".as_bytes(),
+    );
+    let screen = test.screen();
+    assert!(
+        screen.contains("    4) \\u{202e}\\u{202e}\n       \\u{202e}END"),
+        "{screen}"
+    );
+    press(&mut test, b"\x1b[A");
+    press(&mut test, b"!");
+    press(&mut test, b"\r");
+    assert_eq!(
+        answers(&test),
+        [answered(4, Some(&["\u{202e}!\u{202e}\u{202e}END"]))]
+    );
+    let screen = test.screen();
+    assert!(
+        screen.contains("  1) Should we proceed?\n     \\u{202e}!\\u{202e}\n     \\u{202e}END"),
+        "{screen}"
+    );
+}

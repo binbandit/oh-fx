@@ -2,7 +2,7 @@ use ofx_contract::{QuestionBatchEntry, QuestionOption, QuestionRequest, RequestI
 
 use super::*;
 use crate::row_text::Attribute;
-use crate::shell::question_prompt::QuestionPrompt;
+use crate::shell::question_prompt::{FreeformEdit, QuestionPrompt};
 
 fn theme() -> Theme {
     Theme::builtin(false, false, true)
@@ -369,4 +369,65 @@ fn long_resolutions_wrap_into_hanging_rows_at_every_width() {
     for cols in [12, 5, 1] {
         assert_fits(&resolution_rows(&theme(), &answers, cols), cols);
     }
+}
+
+#[test]
+fn escaped_controls_in_a_typed_answer_wrap_by_their_escaped_width() {
+    let mut prompt = proceed();
+    prompt.move_choice(-1);
+    prompt.insert("\u{202e}\u{202e}\u{202e}END", usize::MAX);
+    let rows = panel(&prompt, 24);
+    let lines = texts(&rows);
+    assert_eq!(
+        lines[lines.len() - 2..],
+        ["    4) \\u{202e}\\u{202e}", "       \\u{202e}END "]
+    );
+    assert!(
+        rows.last()
+            .unwrap()
+            .segments()
+            .last()
+            .unwrap()
+            .paint
+            .has(Attribute::Reverse)
+    );
+    assert_fits(&rows, 24);
+    for _ in 0..4 {
+        prompt.edit(FreeformEdit::CursorLeft);
+    }
+    let rows = panel(&prompt, 24);
+    let cursor: Vec<&str> = rows
+        .iter()
+        .flat_map(Row::segments)
+        .filter(|segment| segment.paint.has(Attribute::Reverse))
+        .map(|segment| segment.text.as_str())
+        .collect();
+    assert_eq!(cursor, ["\\u{202e}"]);
+    assert_eq!(
+        texts(&rows)[rows.len() - 2..],
+        ["    4) \\u{202e}\\u{202e}", "       \\u{202e}END"]
+    );
+    prompt.move_choice(1);
+    let rows = panel(&prompt, 24);
+    let lines = texts(&rows);
+    assert!(
+        lines.iter().any(|line| line == "    4) \\u{202e}\\u{202e}"),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "       \\u{202e}END"),
+        "{lines:?}"
+    );
+    assert_fits(&rows, 24);
+}
+
+#[test]
+fn escaped_controls_in_an_answer_wrap_by_their_escaped_width_in_the_transcript() {
+    let answers = [("Q?".to_owned(), "\u{202e}\u{202e}\u{202e}END".to_owned())];
+    let rows = resolution_rows(&theme(), &answers, 24);
+    assert_eq!(
+        texts(&rows),
+        ["  1) Q?", "     \\u{202e}\\u{202e}", "     \\u{202e}END",]
+    );
+    assert_fits(&rows, 24);
 }
