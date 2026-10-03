@@ -15,7 +15,9 @@ use crate::json_fields::{Fields, Json, parse_json};
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
-use crate::session_event::{FileEvidence, SavedReplay, WireTag, are_valid_files, saved_replay};
+use crate::session_event::{
+    FileEvidence, KeptReplay, SavedReplay, WireTag, are_valid_files, saved_replay,
+};
 
 pub use continuation::CredentialAuthority;
 
@@ -153,11 +155,21 @@ impl RecoveryCheckpoint {
         }
     }
 
-    pub(crate) fn saved_replays(&self) -> Vec<Option<SavedReplay>> {
+    pub(crate) fn saved_replays(&self) -> Vec<KeptReplay> {
         self.execution
             .tool_steps
             .iter()
-            .map(|step| step.durable_replay.clone())
+            .filter_map(|step| {
+                Some(KeptReplay {
+                    call_ids: step
+                        .tool_calls
+                        .iter()
+                        .map(|call| call.id.as_str().to_owned())
+                        .collect(),
+                    assistant: step.assistant.clone().unwrap_or_default(),
+                    replay: step.durable_replay.clone()?,
+                })
+            })
             .collect()
     }
 

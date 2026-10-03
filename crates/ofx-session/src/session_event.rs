@@ -73,6 +73,23 @@ pub struct SavedReplay {
     pub parts_json: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeptReplay {
+    pub(crate) call_ids: Vec<String>,
+    pub(crate) assistant: String,
+    pub(crate) replay: SavedReplay,
+}
+
+impl KeptReplay {
+    pub(crate) fn belongs_to(&self, assistant: &str, call_ids: &[&str]) -> bool {
+        self.call_ids
+            .iter()
+            .map(String::as_str)
+            .eq(call_ids.iter().copied())
+            && (!self.call_ids.is_empty() || self.assistant == assistant)
+    }
+}
+
 impl SavedReplay {
     pub(crate) fn into_provider_replay(self) -> ProviderReplay {
         ProviderReplay {

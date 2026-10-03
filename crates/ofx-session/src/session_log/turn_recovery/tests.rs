@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use ofx_config::ProviderId;
 use ofx_contract::{
-    ChatMessage, HistoryStep, HistoryTurn, ReasoningEffort, RecoveryStrategy, StepResult,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolResultStatus, TurnEnd,
+    ChatMessage, HistoryCut, HistoryStep, HistoryTurn, ProviderReplay, ReasoningEffort,
+    RecoveryStrategy, ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall, ToolCallId,
+    ToolResultStatus, TurnEnd,
 };
 
 use super::*;
@@ -472,4 +473,157 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
     let log = fixture.log();
     assert_eq!(log.len(), 8, "{log:#?}");
     assert!(log[6].contains("\"text\":\"fixed\""), "{}", log[6]);
+}
+
+fn portkey(binding: u8) -> SavedProvider {
+    SavedProvider::new(
+        ProviderId::Configured("portkey".to_owned()),
+        Some([binding; 32]),
+    )
+    .unwrap()
+}
+
+fn continued_turn<'a>(
+    calls: &'a [Vec<ToolCall>],
+    replay: &'a ProviderReplay,
+    end: TurnEnd<'a>,
+) -> HistoryTurn<'a> {
+    HistoryTurn {
+        user: "fix the build",
+        steps: calls
+            .iter()
+            .map(|calls| HistoryStep {
+                assistant: "",
+                provider_replay: Some(replay),
+                tool_calls: calls,
+                tool_results: vec![StepResult {
+                    call_id: calls[0].id.as_str(),
+                    tool_name: "shell",
+                    output: "out",
+                    output_bytes: 3,
+                    status: ToolResultStatus::Success,
+                }],
+            })
+            .collect(),
+        steering: Vec::new(),
+        end,
+    }
+}
+
+fn shell_calls(ids: &[&str]) -> Vec<Vec<ToolCall>> {
+    ids.iter()
+        .map(|id| {
+            vec![ToolCall {
+                id: ToolCallId::new(*id),
+                name: "shell".to_owned(),
+                arguments: "{\"command\":\"ls\"}".to_owned(),
+            }]
+        })
+        .collect()
+}
+
+fn projected_replay() -> ProviderReplay {
+    ProviderReplay {
+        source: ReplaySource {
+            provider: "portkey".to_owned(),
+            model: "claude".to_owned(),
+        },
+        parts_json: "[1]".to_owned(),
+    }
+}
+
+#[test]
+fn a_continued_turn_saves_each_recovered_step_with_its_own_replay_binding() {
+    for running in [
+        SavedProvider::new(ProviderId::Gateway, None).unwrap(),
+        portkey(0x33),
+    ] {
+        let fixture = Fixture::new();
+        fixture.start_under(running.clone(), &finished_turn());
+        fixture.save_checkpoint(
+            3,
+            &checkpoint(
+                "fix the build",
+                &[replayed_step("c1", "11"), replayed_step("c2", "22")],
+                "",
+                "",
+            ),
+        );
+        let mut resumed = fixture.resume().unwrap();
+        assert!(resumed.take_recovery().is_some());
+        let calls = shell_calls(&["c1", "c2", "c3"]);
+        let replay = projected_replay();
+        let finished = continued_turn(
+            &calls,
+            &replay,
+            TurnEnd::Replied {
+                text: "fixed",
+                provider_replay: None,
+            },
+        );
+        resumed.record_turn(&finished, &running).unwrap();
+        let running_replay = format!(
+            "{{\"source\":{{\"provider\":{},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
+            serde_json::to_string(&running).unwrap()
+        );
+        let expected: Vec<String> = [bound_replay("11"), bound_replay("22")]
+            .into_iter()
+            .chain((running == portkey(0x33)).then_some(running_replay))
+            .collect();
+        assert_eq!(replays_in(&fixture.log()), expected, "{running:?}");
+    }
+}
+
+#[test]
+fn a_compaction_during_a_continued_turn_keeps_the_recovered_replay_bindings() {
+    let fixture = Fixture::new();
+    let running = portkey(0x33);
+    fixture.start_under(running.clone(), &finished_turn());
+    fixture.save_checkpoint(
+        3,
+        &checkpoint(
+            "fix the build",
+            &[replayed_step("c1", "11"), replayed_step("c2", "22")],
+            "",
+            "",
+        ),
+    );
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.take_recovery().is_some());
+    let replay = projected_replay();
+    let prefix_calls = shell_calls(&["c1"]);
+    let prefix = continued_turn(
+        &prefix_calls,
+        &replay,
+        TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        },
+    );
+    resumed
+        .record_compaction(
+            "<summary>first step</summary>",
+            HistoryCut {
+                turns: 1,
+                tool_steps: 1,
+                steering: 0,
+            },
+            Some(&prefix),
+            &running,
+        )
+        .unwrap();
+    let rest_calls = shell_calls(&["c2"]);
+    let rest = continued_turn(
+        &rest_calls,
+        &replay,
+        TurnEnd::Replied {
+            text: "fixed",
+            provider_replay: None,
+        },
+    );
+    resumed.record_turn(&rest, &running).unwrap();
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22")]
+    );
 }

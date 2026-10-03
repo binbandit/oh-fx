@@ -260,7 +260,7 @@ impl WritableSession {
     pub fn take_recovery(&mut self) -> Option<PendingRecovery> {
         match mem::take(&mut self.recovery) {
             Recovery::Pending(checkpoint) => {
-                self.recovery = Recovery::Continuing;
+                self.recovery = Recovery::Continuing(checkpoint.saved_replays());
                 Some(PendingRecovery::new(checkpoint, &self.owned.dir))
             }
             other => {
@@ -363,7 +363,10 @@ impl WritableSession {
             dir: &self.owned.dir,
             provider,
             timestamp_ms,
-            saved_replays: &[],
+            saved_replays: match &self.recovery {
+                Recovery::Continuing(kept) => kept,
+                Recovery::Absent | Recovery::Pending(_) => &[],
+            },
         }
     }
 

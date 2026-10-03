@@ -6,7 +6,7 @@ use crate::session_codec::recovery_checkpoint::{
     CredentialAuthority, MAX_RECOVERY_FILE_BYTES, RecoveryCheckpoint, decode_recovery_file,
 };
 use crate::session_error::SessionError;
-use crate::session_event::{ConversationEvent, InterruptReason, InterruptedEvent};
+use crate::session_event::{ConversationEvent, InterruptReason, InterruptedEvent, KeptReplay};
 use crate::session_log::conversation_progress::ProgressPoint;
 use crate::session_log::conversation_writer::ConversationWriter;
 use crate::session_log::managed_file::read_managed_file;
@@ -21,7 +21,7 @@ pub(crate) enum Recovery {
     #[default]
     Absent,
     Pending(Box<RecoveryCheckpoint>),
-    Continuing,
+    Continuing(Vec<KeptReplay>),
 }
 
 #[derive(Debug)]

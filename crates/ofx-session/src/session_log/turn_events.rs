@@ -9,7 +9,7 @@ use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{
     ArtifactCompleteness, AssistantEvent, ConversationEvent, InterruptReason, InterruptedEvent,
-    SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
+    KeptReplay, SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
     TurnCompletedEvent, UserEvent,
 };
 use crate::session_log::conversation_progress::ProgressPoint;
@@ -18,7 +18,7 @@ pub(crate) struct TurnArtifacts<'a> {
     pub(crate) dir: &'a PrivateDir,
     pub(crate) provider: &'a SavedProvider,
     pub(crate) timestamp_ms: i64,
-    pub(crate) saved_replays: &'a [Option<SavedReplay>],
+    pub(crate) saved_replays: &'a [KeptReplay],
 }
 
 pub(crate) fn turn_events(
@@ -48,7 +48,7 @@ pub(crate) fn turn_events(
             steering_events(entry, &mut events);
         }
         let follows_standalone = index > 0 && steps[index - 1].tool_calls.is_empty();
-        step_events(artifacts, step, position, follows_standalone, &mut events)?;
+        step_events(artifacts, step, follows_standalone, &mut events)?;
     }
     for entry in steering {
         steering_events(entry, &mut events);
@@ -103,15 +103,14 @@ fn steering_events(steering: &HistorySteering<'_>, events: &mut Vec<Conversation
 fn step_events(
     artifacts: &TurnArtifacts<'_>,
     step: &HistoryStep<'_>,
-    position: usize,
     follows_standalone: bool,
     events: &mut Vec<ConversationEvent>,
 ) -> Result<(), SessionError> {
     if !step.assistant.is_empty() || step.provider_replay.is_some() || follows_standalone {
         events.push(ConversationEvent::Assistant(AssistantEvent {
             text: step.assistant.to_owned(),
-            provider_replay: match artifacts.saved_replays.get(position) {
-                Some(saved) => saved.clone(),
+            provider_replay: match kept_replay(artifacts.saved_replays, step) {
+                Some(kept) => Some(kept.replay.clone()),
                 None => step
                     .provider_replay
                     .and_then(|replay| saved_replay(replay, artifacts.provider)),
@@ -148,6 +147,16 @@ fn step_events(
         events.push(ConversationEvent::ToolResult(event));
     }
     Ok(())
+}
+
+fn kept_replay<'a>(kept: &'a [KeptReplay], step: &HistoryStep<'_>) -> Option<&'a KeptReplay> {
+    let call_ids: Vec<&str> = step
+        .tool_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .collect();
+    kept.iter()
+        .find(|kept| kept.belongs_to(step.assistant, &call_ids))
 }
 
 fn saved_replay(replay: &ProviderReplay, running: &SavedProvider) -> Option<SavedReplay> {
