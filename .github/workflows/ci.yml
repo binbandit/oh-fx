@@ -29,8 +29,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-      - name: Test review cleanup
-        run: node --test .github/tests/tidy-pullfrog-reviews.test.cjs
+      - name: Test automation scripts
+        run: node --test .github/tests/*.test.cjs
       - name: Validate GitHub Actions workflows
         uses: docker://rhysd/actionlint:1.7.12
 
