@@ -563,17 +563,7 @@ impl Agent {
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
             let messages = self.request_messages(turn);
-            let recovery = turn.recovery;
-            let request = ModelRequest {
-                model: &self.config.model,
-                instructions: &instructions,
-                messages: &messages,
-                tools: &self.offered_specs,
-                tool_choice: recovery_tool_choice(recovery),
-                max_output_tokens: self.config.max_output_tokens,
-                provider_options: self.provider_options(turn, events),
-                session_id: self.session_id.as_deref(),
-            };
+            let request = self.turn_request(turn, &instructions, &messages, events);
             let (measured, body) = self.measure(turn, &request).unzip();
             match self
                 .preflight(&mut turn.compaction, request, measured.as_ref(), cancel)
@@ -732,6 +722,25 @@ impl Agent {
             CapabilityLookup::Cancelled => return Err(Stop::interrupted()),
         });
         Ok(())
+    }
+
+    fn turn_request<'a>(
+        &'a self,
+        turn: &mut Turn,
+        instructions: &'a [&'a str],
+        messages: &'a [ChatMessage],
+        events: EventSink<'_>,
+    ) -> ModelRequest<'a> {
+        ModelRequest {
+            model: &self.config.model,
+            instructions,
+            messages,
+            tools: &self.offered_specs,
+            tool_choice: recovery_tool_choice(turn.recovery),
+            max_output_tokens: self.config.max_output_tokens,
+            provider_options: self.provider_options(turn, events),
+            session_id: self.session_id.as_deref(),
+        }
     }
 
     fn provider_options(&self, turn: &mut Turn, events: EventSink<'_>) -> ProviderOptions<'_> {
