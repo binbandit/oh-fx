@@ -6,18 +6,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent, BoxFuture,
-    CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion,
-    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange,
-    FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
-    ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
-    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
-    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
+    ActiveMode, Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent,
+    BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest,
+    Completion, Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure,
+    FileChange, FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities,
+    ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId,
+    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
+    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity,
+    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext,
+    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    TurnStop, UiEvent, Usage, malformed_tool_arguments_json, non_object_tool_arguments_json,
+    prepare_model_output, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -37,6 +38,7 @@ use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
+mod mode_policy;
 mod project_gate;
 mod steering;
 mod turn_ledger;
@@ -44,6 +46,7 @@ mod turn_log;
 
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
+use mode_policy::ModePolicy;
 use project_gate::GatedGroup;
 #[cfg(test)]
 use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
@@ -205,6 +208,7 @@ pub struct Agent {
     tool_specs: Vec<ToolSpec>,
     offered_specs: Vec<ToolSpec>,
     tool_guidance: String,
+    mode: Option<ModePolicy>,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
@@ -242,6 +246,7 @@ impl Agent {
             tool_specs,
             offered_specs,
             tool_guidance,
+            mode: None,
             context,
             permissions,
             approvals: None,
@@ -263,6 +268,12 @@ impl Agent {
             last_reply: None,
             steering: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_mode(mut self, mode: ActiveMode) -> Self {
+        self.mode = Some(ModePolicy::new(mode, &self.tools));
+        self
     }
 
     #[must_use]
@@ -498,7 +509,7 @@ impl Agent {
                 model: &self.config.model,
                 instructions: &instructions,
                 messages: &self.history,
-                tools: &self.offered_specs,
+                tools: self.advertised_tools(),
                 tool_choice: ToolChoice::Auto,
                 max_output_tokens: self.config.max_output_tokens,
                 provider_options: self.provider_options(turn, events),
@@ -944,6 +955,12 @@ impl Agent {
         Stop::failed(failure)
     }
 
+    fn advertised_tools(&self) -> &[ToolSpec] {
+        self.mode
+            .as_ref()
+            .map_or(&self.offered_specs, ModePolicy::advertised)
+    }
+
     fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools
             .iter()
@@ -1010,6 +1027,17 @@ impl Agent {
         if let Some(output) = malformed {
             return Err(Rejection {
                 reason: ToolRejection::MalformedArguments,
+                description: None,
+                output,
+            });
+        }
+        if let Some(output) = self
+            .mode
+            .as_ref()
+            .and_then(|mode| mode.denial(&self.tools, &call.name))
+        {
+            return Err(Rejection {
+                reason: ToolRejection::Invalid,
                 description: None,
                 output,
             });
