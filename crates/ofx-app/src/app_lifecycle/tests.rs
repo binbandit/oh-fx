@@ -229,6 +229,7 @@ fn run_a_codex_session(home: &Path) -> ! {
                 command_timeout: None,
                 executions: &executions,
                 endpoints,
+                web_fetch_progress: None,
             },
             &CancellationToken::new(),
         ))

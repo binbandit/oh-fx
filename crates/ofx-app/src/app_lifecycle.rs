@@ -102,6 +102,7 @@ async fn bootstrap(modifiers: &LaunchModifiers) -> Result<Session, Vec<String>> 
                 command_timeout: None,
                 executions: &executions,
                 endpoints: SubscriptionEndpoints::default(),
+                web_fetch_progress: None,
             },
             &CancellationToken::new(),
         )

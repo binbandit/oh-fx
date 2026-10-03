@@ -6,10 +6,12 @@ mod skill;
 mod tool_admission;
 mod tool_args;
 mod tool_runtime;
+mod web;
 
 pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
 pub use skill::SkillTool;
+pub use web::{WebFetch, WebFetchProgress};
 
 #[cfg(test)]
 mod tests {

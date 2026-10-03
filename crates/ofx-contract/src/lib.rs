@@ -43,9 +43,10 @@ pub use tool_dispatch::{
 };
 pub use tool_presentation::{format_plain_action, format_unknown_action};
 pub use tool_result_errors::{
-    ExecutionFailure, ReviewHold, filesystem_access_denied_json, format_tool_execution_error_json,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
-    tool_permission_denied_json, tool_review_held_json,
+    DetailValue, ExecutionFailure, ReviewHold, filesystem_access_denied_json,
+    format_tool_execution_error_json, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json, valued_execution_failure_json,
 };
 pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 pub use types::{
