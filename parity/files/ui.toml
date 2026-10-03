@@ -108,9 +108,9 @@ note = "Composer input rows exist; upstream prepared model, help, resume, MCP an
 
 [[file]]
 upstream = "src/ui/footer/resume_menu_presentation.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream max_visible_items, max_inline_rows, menuRowCount behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/resume_menu_presentation.rs"]
+note = "Session rows with the right metadata cluster, header scope tabs, loading, empty, failure and refusal rows, load more and the row budgets exist; upstream's tests for long and shared-prefix titles when narrow, metadata width across windows and the three-row compact item are not ported."
 
 [[file]]
 upstream = "src/ui/footer/row_text.zig"
