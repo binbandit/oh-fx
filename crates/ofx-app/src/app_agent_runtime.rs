@@ -464,6 +464,7 @@ impl Controller {
         match persistence.resume_selected(id, &mut self.agent) {
             Ok(switched) => {
                 self.forget_tracked_changes();
+                self.state.setup.forget_children();
                 self.restore_preferences(switched.preferences);
                 self.remember_agent_facts();
                 self.state.session_title.set(switched.title.as_deref());
@@ -3101,6 +3102,70 @@ mod tests {
                 .any(|tool| tool["function"]["name"] == "subagent");
             assert_eq!(offered, saved);
         }
+    }
+
+    fn message_reader(call_id: &str, message: &str) -> Reply {
+        Reply::sse(&chat_tool_call_events(
+            call_id,
+            "subagent",
+            &json!({"request": {"action": "message", "agent": "reader", "message": message}})
+                .to_string(),
+        ))
+    }
+
+    async fn approve_next(harness: &mut Harness, decision: ApprovalDecision) -> ApprovalRequest {
+        let requested = harness
+            .until(|event| matches!(event, UiEvent::ApprovalRequested { .. }))
+            .await
+            .to_vec();
+        let [(_, request)] = approval_requests(&requested).try_into().unwrap();
+        harness.send(UiCommand::Approval {
+            request_id: request.id,
+            decision,
+        });
+        request
+    }
+
+    #[tokio::test]
+    async fn a_resumed_session_never_reaches_the_children_of_the_session_it_left() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["one"])),
+            message_reader("call-first", "read the notes"),
+            read_outside(),
+            Reply::sse(&chat_text_events(&["the notes say hi"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+            message_reader("call-again", "read them again"),
+            read_outside(),
+            Reply::sse(&chat_text_events(&["still hi"])),
+            Reply::sse(&chat_text_events(&["parent done again"])),
+        ]);
+        let mut harness = Harness::start_saved(&server).await;
+        fs::write(harness.home.path().join("outside.txt"), "hi\n").unwrap();
+        chat(&mut harness, &["first question"]).await;
+        let earlier = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        harness.submit("ask the reader");
+        approve_next(&mut harness, ApprovalDecision::Always).await;
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.send(UiCommand::ResumeSession { id: earlier });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+        harness.submit("ask the reader again");
+        let request = approve_next(&mut harness, ApprovalDecision::Once).await;
+        assert_eq!(request.tool_name, "read_file");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = server.requests();
+        assert_eq!(requests.len(), 9);
+        assert_eq!(user_messages(&requests[6].json()), 1);
+        assert!(requests[6].body_text().contains("read them again"));
+        assert!(!requests[6].body_text().contains("read the notes"));
     }
 
     #[tokio::test]
