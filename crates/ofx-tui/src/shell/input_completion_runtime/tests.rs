@@ -328,7 +328,7 @@ fn a_loading_index_shows_its_status_and_rows_arrive_once_it_is_ready() {
     assert_eq!(index.borrow().refreshes, 0);
     assert!(test.shell.file_picker_busy());
     index.borrow_mut().loading = false;
-    let screen = press(&mut test, b"");
+    let screen = test.screen();
     assert!(screen.contains("src/main.rs"), "{screen}");
     let screen = press(&mut test, b"zzz");
     assert!(screen.contains("no matching files"), "{screen}");
