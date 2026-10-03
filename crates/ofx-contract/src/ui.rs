@@ -263,6 +263,9 @@ pub enum UiCommand {
     Cancel {
         turn_id: TurnId,
     },
+    PauseRecovery {
+        turn_id: TurnId,
+    },
     Approval {
         request_id: RequestId,
         decision: ApprovalDecision,

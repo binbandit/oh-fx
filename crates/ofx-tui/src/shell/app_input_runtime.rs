@@ -233,6 +233,11 @@ impl Shell<'_> {
             self.gestures.disarm_escape_interrupt();
             return;
         }
+        if cancel_pending && self.pause_connectivity_wait() {
+            self.gestures.disarm_escape_clear();
+            self.gestures.disarm_escape_interrupt();
+            return;
+        }
         if cancel_pending && self.working() {
             if self.gestures.press_escape_interrupt(now_ms) == PressResult::Activated {
                 self.interrupt();

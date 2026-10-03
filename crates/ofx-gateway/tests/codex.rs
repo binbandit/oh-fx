@@ -269,6 +269,7 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
     assert_eq!(
         events,
         [
+            StreamEvent::Admitted,
             StreamEvent::ReasoningDelta {
                 text: "Thinking".to_owned()
             },
