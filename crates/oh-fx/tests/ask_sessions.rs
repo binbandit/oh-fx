@@ -54,13 +54,9 @@ impl Home {
             return Vec::new();
         };
         let mut ids: Vec<String> = entries
-            .map(|entry| {
-                entry
-                    .expect("a session entry")
-                    .file_name()
-                    .into_string()
-                    .expect("a UTF-8 session id")
-            })
+            .map(|entry| entry.expect("a session entry"))
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|entry| entry.file_name().into_string().expect("a UTF-8 session id"))
             .collect();
         ids.sort();
         ids
@@ -214,8 +210,10 @@ fn ask_saves_its_turn_and_resuming_sends_it_ahead_of_the_next_prompt() {
     assert_eq!(kinds, ["user", "assistant", "turn_completed"]);
     assert!(!directory.join("owner.live").exists());
 
+    assert!(!home.sessions().join(".resume-catalog").exists());
     let second = home.ask_json(&["--resume", "last", "second"], &[]);
     assert_eq!(second["final_output"], "two");
+    assert!(home.sessions().join(".resume-catalog").is_file());
     assert_eq!(session_id(&second), id);
     let third = home.ask_json(&["--resume-id", &id, "third"], &[]);
     assert_eq!(session_id(&third), id);

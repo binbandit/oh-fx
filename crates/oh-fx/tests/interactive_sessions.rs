@@ -105,13 +105,9 @@ impl Home {
             return Vec::new();
         };
         let mut ids: Vec<String> = entries
-            .map(|entry| {
-                entry
-                    .expect("a session entry")
-                    .file_name()
-                    .into_string()
-                    .expect("a UTF-8 session id")
-            })
+            .map(|entry| entry.expect("a session entry"))
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|entry| entry.file_name().into_string().expect("a UTF-8 session id"))
             .filter(|id| ofx_session::is_valid_session_id(id))
             .collect();
         ids.sort();
