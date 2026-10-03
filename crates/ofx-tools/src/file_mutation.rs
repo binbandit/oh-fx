@@ -5,6 +5,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use memchr::memmem;
 use ofx_contract::{FileChange, FileChangeStats, ToolOutput, ToolStatusDetail};
@@ -169,6 +170,7 @@ pub(crate) struct PreparedMutation {
     preimage: Preimage,
     after: Vec<u8>,
     display_path: String,
+    line_counts: OnceLock<FileChangeStats>,
 }
 
 impl PreparedMutation {
@@ -196,6 +198,7 @@ impl PreparedMutation {
             preimage,
             after,
             display_path,
+            line_counts: OnceLock::new(),
         })
     }
 
@@ -212,6 +215,7 @@ impl PreparedMutation {
             },
             after: &self.after,
             parents: self.targets.review_parents(),
+            line_counts: Some(&self.line_counts),
         }
     }
 
@@ -253,12 +257,10 @@ impl PreparedMutation {
             Preimage::Absent => &[][..],
             Preimage::Present { content, .. } => content.as_slice(),
         };
-        let review = FileReview::new(before, &self.after);
-        let count = |lines: usize| u32::try_from(lines).unwrap_or(u32::MAX);
-        FileChangeStats {
-            additions: count(review.additions()),
-            deletions: count(review.deletions()),
-        }
+        *self.line_counts.get_or_init(|| {
+            let review = FileReview::new(before, &self.after);
+            FileChangeStats::from_lines(review.additions(), review.deletions())
+        })
     }
 
     pub(crate) fn noop_message(&self) -> String {

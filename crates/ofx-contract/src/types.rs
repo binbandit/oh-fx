@@ -38,6 +38,16 @@ pub struct FileChangeStats {
     pub deletions: u32,
 }
 
+impl FileChangeStats {
+    pub fn from_lines(additions: usize, deletions: usize) -> Self {
+        let count = |lines: usize| u32::try_from(lines).unwrap_or(u32::MAX);
+        Self {
+            additions: count(additions),
+            deletions: count(deletions),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolStatusDetail {
     PreflightFailed,

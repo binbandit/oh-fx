@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use tokio_util::sync::CancellationToken;
 
@@ -6,7 +7,7 @@ use crate::applicable_target::ApplicableTarget;
 use crate::auto_classifier::ReviewFailure;
 use crate::ids::ToolCallId;
 use crate::stream_provider::BoxFuture;
-use crate::types::{ChatMessage, ToolCall, Usage};
+use crate::types::{ChatMessage, FileChangeStats, ToolCall, Usage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PathAccess {
@@ -104,6 +105,7 @@ pub struct FileChange<'a> {
     pub before: Option<&'a [u8]>,
     pub after: &'a [u8],
     pub parents: Vec<PathBuf>,
+    pub line_counts: Option<&'a OnceLock<FileChangeStats>>,
 }
 
 #[derive(Debug, Clone)]

@@ -233,6 +233,7 @@ impl Plan {
             before: None,
             after: content.as_bytes(),
             parents: targets.review_parents(),
+            line_counts: None,
         })
     }
 

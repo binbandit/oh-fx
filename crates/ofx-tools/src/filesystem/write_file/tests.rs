@@ -1,6 +1,7 @@
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use ofx_contract::{
     ActionLabel, Admission, ApplicableTarget, CallDescription, Concurrency, FileChange,
@@ -725,6 +726,7 @@ fn prepared_changes_show_the_reviewer_their_exact_content_unless_they_would_read
             before: Some(b"[core]\n"),
             after: b"[core]\n\thooksPath = /tmp/x\n",
             parents: vec![workspace.workspace.join(".git")],
+            line_counts: Some(&OnceLock::new()),
         })
     );
     let mut created = workspace
@@ -742,6 +744,7 @@ fn prepared_changes_show_the_reviewer_their_exact_content_unless_they_would_read
                 workspace.workspace.join("a/b"),
                 workspace.workspace.join("a")
             ],
+            line_counts: Some(&OnceLock::new()),
         })
     );
     let external = workspace.root.join("outside.txt");
@@ -775,5 +778,48 @@ fn prepared_changes_show_the_reviewer_their_exact_content_unless_they_would_read
     assert!(
         change.display_path.ends_with("/fresh/new.txt"),
         "{change:?}"
+    );
+}
+
+#[test]
+fn a_reviewed_change_reports_the_line_counts_its_review_recorded() {
+    let workspace = Fixture::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let write = |reviewed: Option<FileChangeStats>| {
+        fs::write(workspace.workspace.join("note.txt"), "old\n").unwrap();
+        let mut prepared = workspace
+            .tool()
+            .prepare(&arguments("note.txt", "new\n"))
+            .unwrap();
+        prepared.complete();
+        if let Some(counts) = reviewed {
+            let change = prepared.file_change().unwrap();
+            change.line_counts.unwrap().set(counts).unwrap();
+        }
+        runtime
+            .block_on(prepared.execute(ToolContext::new(
+                ToolCallId::new("call-1"),
+                CancellationToken::new(),
+                PathAccess::WorkspaceOnly,
+            )))
+            .file_change
+    };
+    let recorded = FileChangeStats {
+        additions: 7,
+        deletions: 3,
+    };
+    assert_eq!(write(Some(recorded)), Some(recorded));
+    assert_eq!(
+        write(None),
+        Some(FileChangeStats {
+            additions: 1,
+            deletions: 1,
+        })
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.workspace.join("note.txt")).unwrap(),
+        "new\n"
     );
 }
