@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_contract::{DynamicTools, Tool};
+use ofx_contract::{BoxFuture, DynamicTools, Tool};
 use tokio::task::JoinSet;
 
 use crate::mcp_contract::{ConfigSource, ProfileConfigWarning, WorkspaceAdmission};
@@ -76,15 +76,17 @@ impl McpRuntime {
         self.servers.is_empty()
     }
 
-    pub async fn connect(&self, phase: StartupPhase) {
-        let mut starts = JoinSet::new();
-        for server in &self.servers {
-            if decide_startup(&server.config, phase) == StartupDecision::Connect {
-                let server = Arc::clone(server);
-                starts.spawn(async move { server.start().await });
+    pub fn connect(&self, phase: StartupPhase) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let mut starts = JoinSet::new();
+            for server in &self.servers {
+                if decide_startup(&server.config, phase) == StartupDecision::Connect {
+                    let server = Arc::clone(server);
+                    starts.spawn(async move { server.start().await });
+                }
             }
-        }
-        while starts.join_next().await.is_some() {}
+            while starts.join_next().await.is_some() {}
+        })
     }
 
     pub fn servers(&self) -> Vec<ServerView> {
@@ -140,13 +142,15 @@ impl McpRuntime {
         std::mem::take(&mut lock(&self.published).notices)
     }
 
-    pub async fn shutdown(&self, mode: ShutdownMode) {
-        let mut stops = JoinSet::new();
-        for server in &self.servers {
-            let server = Arc::clone(server);
-            stops.spawn(async move { server.stop(mode).await });
-        }
-        while stops.join_next().await.is_some() {}
+    pub fn shutdown(&self, mode: ShutdownMode) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let mut stops = JoinSet::new();
+            for server in &self.servers {
+                let server = Arc::clone(server);
+                stops.spawn(async move { server.stop(mode).await });
+            }
+            while stops.join_next().await.is_some() {}
+        })
     }
 }
 
