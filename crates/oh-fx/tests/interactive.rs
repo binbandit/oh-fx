@@ -782,6 +782,73 @@ fn a_skill_chosen_in_the_skills_menu_is_loaded_for_the_prompt() {
     assert!(session.wait_exit(WAIT).expect("oh-fx exits").success());
 }
 
+fn write_review_skill(home: &Home, root: &str, body: &str) {
+    let skill = home.workspace.join(root).join("review");
+    fs::create_dir_all(&skill).expect("create the skill");
+    fs::write(
+        skill.join("SKILL.md"),
+        format!("---\nname: review\ndescription: Review a diff\n---\n{body}\n"),
+    )
+    .expect("write the skill");
+}
+
+fn request_messages(server: &FakeServer, index: usize) -> (String, Value) {
+    let request = server.requests()[index].json();
+    let messages = request["messages"].as_array().expect("messages").clone();
+    let system = messages
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .filter_map(|message| message["content"].as_str())
+        .collect();
+    let user = messages
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .expect("the prompt")["content"]
+        .clone();
+    (system, user)
+}
+
+#[test]
+fn a_dollar_mention_binds_the_skill_chosen_by_its_location() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Reviewed."])),
+        Reply::sse(&chat_text_events(&["Echoed."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    write_review_skill(&home, ".oh-fx/skills", "Check every hunk.");
+    write_review_skill(&home, ".claude/skills", "Read the tests first.");
+    let mut session = home.shell(30, 100);
+    session.send(b"explain $rev");
+    let screen = wait(&session, "Skills 2  [All]  oh-fx");
+    assert!(screen.contains("  review    oh-fx · Workspace"), "{screen}");
+    assert!(
+        screen.contains("  review    Claude · Workspace"),
+        "{screen}"
+    );
+    assert!(screen.contains("↑↓ navigate     tab source     enter use     esc close"));
+    session.send(b"\x1b[B\r");
+    let screen = wait(&session, "┃ explain review ");
+    assert!(!screen.contains("$review"), "{screen}");
+    session.send(b"the change\r");
+    wait(&session, "Reviewed.");
+    let (system, user) = request_messages(&server, 0);
+    assert_eq!(user, "explain $review the change");
+    assert!(system.contains("Read the tests first."), "{system}");
+    assert!(!system.contains("Check every hunk."), "{system}");
+    session.send(b"echo $HOME");
+    let screen = wait(&session, "┃ echo $HOME");
+    assert!(!screen.contains("Skills"), "{screen}");
+    assert!(screen.contains("auto · model-a"), "{screen}");
+    session.send(b"\r");
+    wait(&session, "Echoed.");
+    let (system, user) = request_messages(&server, 1);
+    assert_eq!(user, "echo $HOME");
+    assert!(!system.contains("<skill_content"), "{system}");
+    session.send(b"/exit\r");
+    assert!(session.wait_exit(WAIT).expect("oh-fx exits").success());
+}
+
 #[test]
 fn ctrl_c_cancels_a_streaming_turn_and_clear_starts_over() {
     let held =

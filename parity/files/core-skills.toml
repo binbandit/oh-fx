@@ -19,5 +19,5 @@ note = "Explicit bindings, whole location/resource reads and legacy named offset
 [[file]]
 upstream = "src/core/skills/skill_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-skills/src/skill_runtime.rs", "crates/ofx-skills/src/skill_runtime/discovery.rs", "crates/ofx-skills/src/skill_runtime/catalog.rs", "crates/ofx-skills/src/skill_runtime/candidate.rs", "crates/ofx-skills/src/skill_runtime/resolution.rs", "crates/ofx-skills/src/skill_runtime/diagnostics.rs"]
-note = "Discovery/catalog roots, validated resource candidates, metadata and diagnostic summaries exist; native SkillMenu/index/completion projections and traceDiagnostics are absent."
+modules = ["crates/ofx-skills/src/skill_runtime.rs", "crates/ofx-skills/src/skill_runtime/discovery.rs", "crates/ofx-skills/src/skill_runtime/catalog.rs", "crates/ofx-skills/src/skill_runtime/candidate.rs", "crates/ofx-skills/src/skill_runtime/resolution.rs", "crates/ofx-skills/src/skill_runtime/diagnostics.rs", "crates/ofx-tui/src/shell/skills_menu.rs", "crates/ofx-tui/src/shell/skills_menu_runtime.rs"]
+note = "Discovery/catalog roots, validated resource candidates, metadata and diagnostic summaries exist, and the TUI ports the command and `$` mention skills menu; the inline skill completion, slash-completion skills and traceDiagnostics are absent."
