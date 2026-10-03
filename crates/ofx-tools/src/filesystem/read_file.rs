@@ -58,6 +58,10 @@ impl Tool for ReadFile {
         &self.spec
     }
 
+    fn provisional_presentation(&self) -> Option<CallPresentation> {
+        Some(PRESENTATION)
+    }
+
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         let decoded = ReadFileArgs::decode(arguments);
         let description = plain_description(

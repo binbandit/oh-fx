@@ -202,6 +202,10 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    fn provisional_presentation(&self) -> Option<CallPresentation> {
+        None
+    }
+
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput>;
 
     fn history_arguments(&self, _arguments: &str) -> Option<String> {

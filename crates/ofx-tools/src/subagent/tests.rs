@@ -63,6 +63,17 @@ fn expect_failure(arguments: &str, code: &str) {
 }
 
 #[test]
+fn streamed_start_presents_management_without_running_a_child() {
+    let (tool, recorder) = tool();
+    let presentation = tool
+        .provisional_presentation()
+        .expect("management progress");
+    assert_eq!(presentation.activity, ToolActivity::Subagent);
+    assert_eq!(presentation.action_label, "Managing");
+    assert!(recorder.calls.lock().unwrap().is_empty());
+}
+
+#[test]
 fn call_executes_a_validated_managed_request_through_the_provider() {
     let (tool, recorder) = tool();
     let prepared = tool
