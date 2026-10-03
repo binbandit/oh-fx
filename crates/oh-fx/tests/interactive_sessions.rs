@@ -1,5 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,6 +64,28 @@ impl Home {
 
     fn spawn_in(&self, workspace: &Path, args: &[&str]) -> PtySession {
         PtySession::spawn(self.command_in(workspace, args), 30, 100).expect("spawn oh-fx in a pty")
+    }
+
+    fn spawn_sized(&self, args: &[&str], rows: u16) -> PtySession {
+        PtySession::spawn(self.command_in(&self.workspace, args), rows, 100)
+            .expect("spawn oh-fx in a pty")
+    }
+
+    fn copy_session(&self, template: &str, id: &str, title: &str) {
+        let source = self.sessions().join(template);
+        let target = self.sessions().join(id);
+        fs::create_dir(&target).expect("create the copied session");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700))
+            .expect("make the copied session private");
+        for entry in fs::read_dir(&source).expect("list the template session") {
+            let name = entry.expect("a template entry").file_name();
+            fs::copy(source.join(&name), target.join(&name)).expect("copy a session file");
+        }
+        let mut metadata = self.metadata(template);
+        metadata["id"] = json!(id);
+        metadata["title"] = json!(title);
+        fs::write(target.join("session.json"), metadata.to_string())
+            .expect("rewrite the copied session.json");
     }
 
     fn shell(&self, args: &[&str], ready: &str) -> PtySession {
@@ -478,7 +501,7 @@ fn torn_and_unfinished_turns_left_by_a_crash_reopen_cleanly() {
         ]
         .concat(),
     );
-    let session = home.shell(&["resume", &id], "session resumed: unfinished turn");
+    let session = home.shell(&["resume", &id], "session resumed: saved turn");
     let screen = wait(&session, "system: failed");
     assert!(
         screen.contains("  Saved.\n\n┃ unfinished turn\n\n"),
@@ -1034,4 +1057,232 @@ fn a_resumed_shell_replays_answered_questions_and_asks_new_ones() {
             r#"[{"question":"Which depth?","answer":"Thorough"}]"#,
         ]
     );
+}
+
+const PICKER_HEADER: &str = "Sessions 1  [Current workspace]  All workspaces";
+const BUSY_IN_PICKER: &str =
+    "This session is open in another oh-fx. Close it there, then press enter to retry.";
+
+fn session_with_prompt(home: &Home, ids: &[String], prompt: &str) -> String {
+    ids.iter()
+        .find(|id| home.frames(id)[0]["event"]["user"]["text"] == prompt)
+        .unwrap_or_else(|| panic!("a session that starts with {prompt:?}"))
+        .clone()
+}
+
+#[test]
+fn resume_lists_this_workspace_and_switches_the_shell_to_the_chosen_session() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Answer one."])),
+        Reply::sse(&chat_text_events(&["Answer two."])),
+        Reply::sse(&chat_text_events(&["Back in one."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"topic one\r");
+    wait(&session, "Answer one.");
+    session.send(b"/new\r");
+    session.send(b"topic two\r");
+    wait(&session, "Answer two.");
+    session.send(b"/resume\r");
+    let screen = wait(&session, PICKER_HEADER);
+    assert!(
+        screen.contains("  topic one    workspace · now · 1 turn"),
+        "{screen}"
+    );
+    session.send(b"\r");
+    let screen = wait(&session, "session resumed: topic one");
+    assert!(!screen.contains("Answer two."), "{screen}");
+    assert!(!screen.contains(PICKER_HEADER), "{screen}");
+    assert!(
+        screen.contains("* session resumed: topic one\n\n┃ topic one\n\n  Answer one."),
+        "{screen}"
+    );
+    session.send(b"more one\r");
+    wait(&session, "Back in one.");
+    exit(session);
+    let ids = home.session_ids();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    let first = session_with_prompt(&home, &ids, "topic one");
+    let second = session_with_prompt(&home, &ids, "topic two");
+    assert_eq!(home.remembered(), Some(first.clone()));
+    assert_eq!(home.metadata(&first)["title"], "topic one");
+    assert_eq!(home.frames(&first).len(), 6);
+    assert_eq!(home.frames(&second).len(), 3);
+    assert_eq!(
+        chat(&server.requests()[2]),
+        [
+            turn("topic one", "Answer one."),
+            vec![("user".to_owned(), "more one".to_owned())]
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn a_session_open_in_another_shell_shows_busy_in_the_picker_until_it_closes() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Held."])),
+        Reply::sse(&chat_text_events(&["Taken over."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let holder = home.shell(&[], WELCOME);
+    holder.send(b"held topic\r");
+    wait(&holder, "Held.");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"/resume\r");
+    wait(&session, "  held topic    workspace · now · 1 turn");
+    session.send(b"\r");
+    let screen = wait(&session, BUSY_IN_PICKER);
+    assert!(screen.contains(PICKER_HEADER), "{screen}");
+    exit(holder);
+    session.send(b"\r");
+    wait(&session, "session resumed: held topic");
+    session.send(b"after the holder\r");
+    wait(&session, "Taken over.");
+    exit(session);
+    let id = home.only_session();
+    assert_eq!(home.frames(&id).len(), 6);
+}
+
+#[test]
+fn the_picker_filters_by_typed_text_and_reaches_sessions_of_other_workspaces() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Alpha."])),
+        Reply::sse(&chat_text_events(&["Beta."])),
+        Reply::sse(&chat_text_events(&["Moved."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"alpha work\r");
+    wait(&session, "Alpha.");
+    exit(session);
+    let alpha = home.only_session();
+    let other = home.root.join("other");
+    fs::create_dir_all(&other).expect("create another workspace");
+    let session = home.spawn_in(&other, &[]);
+    wait(&session, WELCOME);
+    session.send(b"beta work\r");
+    wait(&session, "Beta.");
+    session.send(b"/resume\r");
+    let screen = wait(&session, "No sessions found.");
+    assert!(
+        screen.contains("Sessions 0  [Current workspace]  All workspaces"),
+        "{screen}"
+    );
+    session.send(b"\x1b[Z");
+    let screen = wait(&session, "  alpha work    workspace · now · 1 turn");
+    assert!(
+        screen.contains("Sessions 1  Current workspace  [All workspaces]"),
+        "{screen}"
+    );
+    session.send(b"zzz");
+    wait(&session, "Sessions 0  Current workspace  [All workspaces]");
+    session.send(b"\x7f\x7f\x7fALP");
+    wait(&session, "Sessions 1  Current workspace  [All workspaces]");
+    session.send(b"\r");
+    wait(&session, "session resumed: alpha work");
+    session.send(b"here now\r");
+    wait(&session, "Moved.");
+    exit(session);
+    let other = fs::canonicalize(&other).expect("canonicalize the other workspace");
+    assert_eq!(
+        home.metadata(&alpha)["workspace_root"],
+        other.to_str().expect("a UTF-8 path")
+    );
+}
+
+#[test]
+fn picking_at_launch_resumes_the_choice_or_starts_fresh_when_closed() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["One."])),
+        Reply::sse(&chat_text_events(&["Two."])),
+        Reply::sse(&chat_text_events(&["Fresh."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "One.");
+    exit(session);
+    let first = home.only_session();
+    let session = home.spawn(&["-r"]);
+    let screen = wait(&session, PICKER_HEADER);
+    assert!(!screen.contains(WELCOME), "{screen}");
+    session.send(b"\r");
+    wait(&session, "session resumed: first");
+    session.send(b"second\r");
+    wait(&session, "Two.");
+    exit(session);
+    assert_eq!(home.session_ids(), std::slice::from_ref(&first));
+    let session = home.spawn(&["-r"]);
+    wait(&session, PICKER_HEADER);
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| !screen.contains(PICKER_HEADER))
+        .unwrap_or_else(|screen| panic!("the picker stays open:\n{screen}"));
+    session.send(b"third\r");
+    wait(&session, "Fresh.");
+    exit(session);
+    assert_eq!(home.session_ids().len(), 2);
+    assert_eq!(
+        chat(&server.requests()[2]),
+        [("user".to_owned(), "third".to_owned())]
+    );
+    let session = home.spawn(&["-r"]);
+    wait(&session, "Sessions 2  [Current workspace]  All workspaces");
+    exit(session);
+    assert_eq!(home.session_ids().len(), 2);
+}
+
+#[test]
+fn resume_waits_for_a_running_response() {
+    let server = FakeServer::start([Reply::held_sse(
+        &chat_text_events(&["Still going.\nMore.\n", "never"])[..2],
+    )]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"long task\r");
+    wait(&session, "Still going.");
+    session.send(b"/resume\r");
+    let screen = wait(
+        &session,
+        "session: resume is unavailable until the response finishes",
+    );
+    assert!(!screen.contains("[Current workspace]"), "{screen}");
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
+    exit(session);
+}
+
+#[test]
+fn more_sessions_load_as_the_selection_reaches_the_end_of_a_page() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Seeded."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"seed\r");
+    wait(&session, "Seeded.");
+    exit(session);
+    let seed = home.only_session();
+    for index in 0..12 {
+        home.copy_session(
+            &seed,
+            &format!("copy-{index:02}"),
+            &format!("copy {index:02}"),
+        );
+    }
+    let session = home.spawn_sized(&["-r"], 14);
+    let screen = wait(&session, "Sessions 10  [Current workspace]  All workspaces");
+    assert!(screen.contains("  ↓ Load more"), "{screen}");
+    assert!(screen.contains("  copy 11 "), "{screen}");
+    for _ in 0..9 {
+        session.send(b"\x1b[B");
+    }
+    let screen = wait(&session, "Sessions 13  [Current workspace]  All workspaces");
+    assert!(!screen.contains("Load more"), "{screen}");
+    session.send(b"\x1b[B\x1b[B\x1b[B\x1b[B");
+    let screen = wait(&session, "  seed ");
+    assert!(!screen.contains("  copy 11 "), "{screen}");
+    session.send(b"\r");
+    wait(&session, "session resumed: seed");
+    exit(session);
 }
