@@ -190,7 +190,10 @@ fn json_output_prompts_only_with_prompt_permissions() {
     wait(&session, &prompt(&format!("read_file {}", home.secret)));
     session.send(b"Y\r");
     let screen = wait(&session, "\"final_output\":\"It is a secret.\"");
-    assert!(screen.contains("\"error\":null"), "{screen}");
+    assert!(
+        screen.contains("\"tool_calls\":[{\"name\":\"read_file\",\"status\":\"success\"}]"),
+        "{screen}"
+    );
     assert_eq!(finishes(&mut session), 0);
 
     let mut blocked = home.spawn(&["ask", "--json", "read it"]);
@@ -233,7 +236,7 @@ fn commands_show_their_risk_and_file_changes_show_the_mutation_label() {
     session.send(b"n\r");
     let screen = wait(&session, "Left alone.");
     assert!(
-        screen.contains(&format!("{}\nWriting file", prompt("file_mutation"))),
+        screen.contains(&format!("{} n\nWriting file", prompt("file_mutation"))),
         "{screen}"
     );
     assert_eq!(finishes(&mut session), 0);
