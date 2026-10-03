@@ -749,6 +749,7 @@ impl Agent {
                 diagnostic: Some(ModelFailureDiagnostic::new(
                     error.diagnostic.as_deref().unwrap_or(&error.code),
                 )),
+                retry_wait: Some(decision.delay),
             };
             events(UiEvent::Recovery {
                 turn_id,
@@ -761,6 +762,7 @@ impl Agent {
             }
             attempt += 1;
             status.failed_attempt = attempt;
+            status.retry_wait = None;
             events(UiEvent::Recovery { turn_id, status });
             pacing = decision.next_pacing;
             recovering = true;
@@ -1172,6 +1174,7 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
         action: None,
         delay_seconds: 0,
         diagnostic: None,
+        retry_wait: None,
     }
 }
 
