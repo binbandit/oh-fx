@@ -242,6 +242,38 @@ fn turn(prompt: &str, reply: &str) -> Vec<(String, String)> {
     ]
 }
 
+fn wait_for_window_title(session: &PtySession, title: &str) {
+    let sequence = format!("\x1b]2;{title}\x07");
+    let deadline = std::time::Instant::now() + WAIT;
+    while !String::from_utf8_lossy(&session.output()).contains(&sequence) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected the window title {title:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_renamed_session_resumes_under_its_new_title() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Noted."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "Noted.");
+    wait_for_window_title(&session, "first question");
+    session.send(b"/rename   Release prep \r");
+    wait(&session, "* session: renamed to \"Release prep\"");
+    wait_for_window_title(&session, "Release prep");
+    exit(session);
+    let id = home.only_session();
+    assert_eq!(home.metadata(&id)["title"], "Release prep");
+    let session = home.shell(&["-c"], "session resumed: Release prep");
+    wait_for_window_title(&session, "Release prep");
+    exit(session);
+    assert_eq!(home.session_ids(), [id]);
+}
+
 #[test]
 fn a_shell_saves_its_turns_and_continue_reopens_them_in_the_scrollback() {
     let server = FakeServer::start([

@@ -1,6 +1,7 @@
 use ofx_agent::Agent;
 use ofx_app::{
-    AgentSetup, LiveSession, Profile, ResumedSession, configured_preferences, running_provider,
+    AgentSetup, LiveSession, Profile, ResumedSession, TitleGeneration, configured_preferences,
+    running_provider,
 };
 use ofx_session::{SessionDisposal, SessionError, SessionStore};
 
@@ -41,6 +42,19 @@ impl SavedAsk {
             live,
             resumed: false,
         })
+    }
+
+    pub(crate) fn title_generation(
+        &self,
+        setup: &AgentSetup,
+        prompt: &str,
+        agent: &Agent,
+    ) -> Option<TitleGeneration> {
+        if self.resumed {
+            return None;
+        }
+        self.live
+            .title_generation(setup, prompt, agent.history_turns() == 0, false)
     }
 
     pub(crate) fn close(self, discard_untouched: bool) -> String {

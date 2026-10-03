@@ -210,6 +210,8 @@ pub enum LayerError {
     InvalidPermissionAction,
     #[error("InvalidPermissionRuleTool")]
     InvalidPermissionRuleTool,
+    #[error("InvalidSessionTitlesType")]
+    InvalidSessionTitlesType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -261,6 +263,7 @@ struct Layer {
     skill_symlink_authorities: Option<Vec<PathBuf>>,
     prompt_history: Option<bool>,
     permission_rules: Option<Vec<PermissionRule>>,
+    session_titles: Option<bool>,
 }
 
 impl Layer {
@@ -435,6 +438,13 @@ impl Settings {
         self.workspace
             .prompt_history
             .or(self.global.prompt_history)
+            .unwrap_or(true)
+    }
+
+    pub fn session_titles_enabled(&self) -> bool {
+        self.workspace
+            .session_titles
+            .or(self.global.session_titles)
             .unwrap_or(true)
     }
 
@@ -780,6 +790,11 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         .get("permission")
         .map(parse_permission_config)
         .transpose()?;
+    layer.session_titles = parse_switch(
+        object,
+        "session_titles",
+        LayerError::InvalidSessionTitlesType,
+    )?;
     if object.contains_key("skill_match_fuzzy") {
         rejected.push(LayerError::RetiredSkillMatchFuzzy);
     }
@@ -1319,6 +1334,10 @@ mod tests {
                 r#"{"fast_mode_model_bound":1}"#,
                 DiagnosticCause::MalformedSettings,
             ),
+            (
+                r#"{"session_titles":"off"}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
             (r#"{"model":" bad"}"#, DiagnosticCause::InvalidModelId),
         ] {
             let settings = load(&fixture(Some(json), None)).unwrap();
@@ -1521,6 +1540,27 @@ mod tests {
         assert_eq!(
             project.diagnostics()[0].to_string(),
             "config project: ignored_project_user_only_setting; key=prompt_history"
+        );
+    }
+
+    #[test]
+    fn session_titles_follow_workspace_overrides_and_default_on() {
+        assert!(fixture_settings("{}").session_titles_enabled());
+        let off = fixture_settings(r#"{"session_titles":false}"#);
+        assert!(off.diagnostics().is_empty());
+        assert!(!off.session_titles_enabled());
+        let overridden = fixture(None, None);
+        let workspace = serde_json::to_string(&overridden.workspace.to_string_lossy()).unwrap();
+        let json = format!(
+            r#"{{"session_titles":false,"workspaces":{{{workspace}:{{"session_titles":true}}}}}}"#
+        );
+        fs::write(overridden.paths.config.join(SETTINGS_FILE), json).unwrap();
+        assert!(load(&overridden).unwrap().session_titles_enabled());
+        let project = load(&fixture(None, Some(r#"{"session_titles":false}"#))).unwrap();
+        assert!(project.session_titles_enabled());
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=session_titles"
         );
     }
 

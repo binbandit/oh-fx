@@ -522,6 +522,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::RenameSession,
+        "/rename",
+        "rename the current session",
+        SlashPresentationCategory::Session,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Stats,
         "/stats",
         "show token and turn statistics",

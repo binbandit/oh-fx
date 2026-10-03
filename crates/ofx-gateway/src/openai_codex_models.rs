@@ -24,6 +24,7 @@ const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REASONING_EFFORTS: usize = 16;
 const MAX_LISTED_VALUES: usize = 32;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+pub const CODEX_TITLE_MODEL: &str = "gpt-5.6-luna";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexModelsEndpoints {

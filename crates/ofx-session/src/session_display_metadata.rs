@@ -1,8 +1,8 @@
-use crate::session_event::ConversationEvent;
-use crate::session_log::SavedHistory;
+use crate::session_event::{ConversationEvent, UserEvent};
+use crate::session_log::{SavedHistory, SavedTurn};
 
 const MAX_TITLE_WORDS: usize = 8;
-const MAX_TITLE_BYTES: usize = 240;
+pub const MAX_TITLE_BYTES: usize = 240;
 const FALLBACK_TITLE: &str = "Untitled session";
 const PROMPT_TRIM: &[char] = &[' ', '\t', '\r', '\n'];
 const LINE_TRIM: &[char] = &[' ', '\t', '\r'];
@@ -61,6 +61,15 @@ fn capped_title(line: &str) -> String {
         return FALLBACK_TITLE.to_owned();
     }
     title
+}
+
+pub fn prompt_display_title(prompt: &str) -> String {
+    derive_display_title(&SavedHistory {
+        compacted: None,
+        turns: vec![SavedTurn {
+            events: vec![ConversationEvent::User(UserEvent::new(prompt))],
+        }],
+    })
 }
 
 #[cfg(test)]
@@ -134,5 +143,15 @@ mod tests {
         assert!(capped.ends_with(&format!(" {}", "é".repeat(19))));
         let ascii = "a".repeat(300);
         assert_eq!(title(&[&ascii]).len(), 240);
+    }
+
+    #[test]
+    fn a_single_prompt_titles_a_session_as_its_history_would() {
+        assert_eq!(
+            prompt_display_title("  \n  fix the flaky test\nmore"),
+            "fix the flaky test"
+        );
+        assert_eq!(prompt_display_title("/help"), FALLBACK_TITLE);
+        assert_eq!(prompt_display_title("/model x"), FALLBACK_TITLE);
     }
 }

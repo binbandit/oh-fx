@@ -21,7 +21,10 @@ use ofx_contract::{
     ModelProvider, PermissionMode, QuestionAsker, ReviewTransport, Tool,
 };
 use ofx_exec::ManagedExecutions;
-use ofx_gateway::{ChatCompletionsProvider, ChatCompletionsReviewTransport, CodexReviewTransport};
+use ofx_gateway::{
+    CODEX_TITLE_MODEL, ChatCompletionsProvider, ChatCompletionsReviewTransport,
+    CodexReviewTransport,
+};
 use ofx_http::ClientError;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_tools::WebFetchProgress;
@@ -123,6 +126,8 @@ pub struct Launch<'a> {
 
 pub struct AgentSetup {
     provider: Arc<dyn ModelProvider>,
+    title_model: Option<&'static str>,
+    session_titles: bool,
     configured_model: Option<String>,
     capabilities: Option<Arc<dyn CapabilityResolver>>,
     connection: Option<ProviderDefinition>,
@@ -148,6 +153,7 @@ pub struct AgentSetup {
 struct Route {
     provider: Arc<dyn ModelProvider>,
     reviewer: Arc<dyn ReviewTransport>,
+    title_model: Option<&'static str>,
     capabilities: Option<Arc<dyn CapabilityResolver>>,
     connection: Option<ProviderDefinition>,
     model: String,
@@ -283,6 +289,8 @@ impl Profile {
         let (questions, question_requests) = interactive.then(Questions::new).unzip();
         Ok(AgentSetup {
             provider: route.provider,
+            title_model: route.title_model,
+            session_titles: self.settings.session_titles_enabled(),
             configured_model: route.configured_model,
             capabilities: route.capabilities,
             connection: route.connection,
@@ -360,6 +368,7 @@ impl Profile {
         Ok(Route {
             provider,
             reviewer: Arc::new(reviewer),
+            title_model: None,
             capabilities: Some(Arc::new(ConnectionCapabilities(definition))),
             connection: Some(connection.clone()),
             model: model.map_err(ConnectError::InvalidModel)?,
@@ -394,6 +403,7 @@ impl Profile {
         let provider: Arc<dyn ModelProvider> = Arc::new(subscription.provider);
         Ok(Route {
             reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
+            title_model: Some(CODEX_TITLE_MODEL),
             provider,
             capabilities: Some(Arc::new(subscription.capabilities)),
             connection: None,
@@ -507,6 +517,18 @@ impl AgentSetup {
 
     pub(crate) fn fast_mode(&self) -> bool {
         self.config.fast_mode
+    }
+
+    pub(crate) fn session_titles_enabled(&self) -> bool {
+        self.session_titles
+    }
+
+    pub(crate) fn title_model(&self) -> Option<&'static str> {
+        self.title_model
+    }
+
+    pub(crate) fn model_provider(&self) -> Arc<dyn ModelProvider> {
+        Arc::clone(&self.provider)
     }
 
     pub(crate) fn status<'a>(&'a self, model: &'a str, history_turns: usize) -> StatusSnapshot<'a> {

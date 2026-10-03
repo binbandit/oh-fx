@@ -10,6 +10,7 @@ use super::{LiveSession, RestoredPreferences, ResumedSession};
 
 pub(crate) struct Switched {
     pub(crate) history: Vec<HistoryEntry>,
+    pub(crate) title: Option<String>,
     pub(crate) preferences: RestoredPreferences,
     pub(crate) notice: Option<Notice>,
 }
@@ -73,6 +74,7 @@ impl Persistence {
         self.store.move_here(&mut session).map_err(refused)?;
         let resumed = ResumedSession::load(session).map_err(refused)?;
         let history = resumed.transcript().map_err(refused)?;
+        let title = resumed.display_title().map(str::to_owned);
         let preferences = self.overrides.restore(resumed.preferences());
         self.adopt_preferences(resumed.preferences());
         self.close(agent);
@@ -83,6 +85,7 @@ impl Persistence {
         self.live = Some(live);
         Ok(Switched {
             history,
+            title,
             preferences,
             notice,
         })

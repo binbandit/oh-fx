@@ -1,8 +1,13 @@
 use ofx_agent::{Agent, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, TurnOutcome};
 use ofx_session::{SavedProvider, SessionCatalog, SessionError, SessionPreferences, SessionStore};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
-use super::{LaunchOverrides, LiveSession, ResumedSession};
+use super::{
+    LaunchOverrides, LiveSession, RenameError, ResumedSession, SessionTitle, validate_session_title,
+};
+use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(super) const SESSION_TOPIC: &str = "session";
 
@@ -21,6 +26,7 @@ pub(crate) struct Persistence {
     resumption: Option<Resumption>,
     remember_fresh: bool,
     degraded: bool,
+    title_task: Option<JoinHandle<()>>,
 }
 
 impl Persistence {
@@ -41,7 +47,15 @@ impl Persistence {
             resumption,
             remember_fresh: false,
             degraded: false,
+            title_task: None,
         }
+    }
+
+    pub(crate) fn resumed_title(&self) -> Option<String> {
+        self.resumption
+            .as_ref()
+            .and_then(|resumption| resumption.session.display_title())
+            .map(str::to_owned)
     }
 
     pub(crate) fn open(&mut self, agent: &mut Agent) -> Option<Notice> {
@@ -125,9 +139,51 @@ impl Persistence {
         saved.clone_into(&mut self.preferences);
     }
 
+    pub(crate) fn start_title_generation(
+        &mut self,
+        setup: &AgentSetup,
+        prompt: &str,
+        untitled: bool,
+        title: &SessionTitle,
+    ) {
+        let running = self
+            .title_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished());
+        let generation = self
+            .live
+            .as_ref()
+            .and_then(|live| live.title_generation(setup, prompt, untitled, running));
+        if let Some(generation) = generation {
+            let title = title.clone();
+            self.title_task = Some(tokio::spawn(async move {
+                if let Some(generated) = generation.run(&CancellationToken::new()).await {
+                    title.set(Some(&generated));
+                }
+            }));
+        }
+    }
+
+    pub(crate) fn rename(
+        &mut self,
+        raw: &str,
+        cached: &SessionTitle,
+    ) -> Result<String, RenameError> {
+        let title = validate_session_title(raw)?;
+        let live = self.live.as_ref().ok_or(RenameError::NoActiveSession)?;
+        cached.set(Some(title));
+        live.rename(title).map_err(RenameError::NotSaved)?;
+        Ok(title.to_owned())
+    }
+
     pub(crate) fn close(&mut self, agent: &mut Agent) {
+        if let Some(task) = self.title_task.take() {
+            task.abort();
+        }
         agent.detach_session();
-        if let Some(live) = self.live.take() {
+        if let Some(live) = self.live.take()
+            && !live.titled()
+        {
             live.discard_if_pristine(&self.store);
         }
         self.remember_fresh = false;

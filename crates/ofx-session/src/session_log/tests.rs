@@ -662,6 +662,79 @@ fn the_display_title_prefers_the_saved_title_over_the_first_prompt() {
     assert_eq!(named.display_title(), "Release prep");
 }
 
+fn saved_metadata(fixture: &Fixture, id: &str) -> SessionMetadata {
+    decode_session_metadata(&fs::read(fixture.dir(id).join(MANIFEST_FILE)).unwrap()).unwrap()
+}
+
+#[test]
+fn a_rename_saves_only_the_title_and_later_metadata_writes_keep_it() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("renamed");
+    assert_eq!(session.title(), None);
+    session.rename("deploy pipeline fix").unwrap();
+    assert_eq!(session.title(), Some("deploy pipeline fix"));
+    let mut expected = metadata("renamed");
+    expected.title = Some("deploy pipeline fix".to_owned());
+    assert_eq!(saved_metadata(&fixture, "renamed"), expected);
+    let mut preferences = expected.preferences.clone();
+    preferences.fast_mode = true;
+    session.set_preferences(preferences, 5).unwrap();
+    assert_eq!(
+        saved_metadata(&fixture, "renamed").title.as_deref(),
+        Some("deploy pipeline fix")
+    );
+    session.append(6, &turn("ship it")).unwrap();
+    drop(session);
+    let resumed = fixture.resume("renamed").unwrap();
+    assert_eq!(resumed.title(), Some("deploy pipeline fix"));
+    assert_eq!(resumed.display_title(), "deploy pipeline fix");
+}
+
+#[test]
+fn a_generated_title_never_replaces_one_the_user_chose() {
+    let fixture = Fixture::new();
+    let mut untitled = fixture.start("untitled");
+    assert_eq!(
+        untitled.install_generated_title("Fix the renderer"),
+        Ok(true)
+    );
+    assert_eq!(
+        saved_metadata(&fixture, "untitled").title.as_deref(),
+        Some("Fix the renderer")
+    );
+
+    let mut derived = fixture.start("derived");
+    derived.append(1, &turn("/help")).unwrap();
+    derived
+        .append(2, &turn("fix the flaky renderer test please now"))
+        .unwrap();
+    derived
+        .rename("fix the flaky renderer test please now")
+        .unwrap();
+    assert_eq!(
+        derived.install_generated_title("Flaky renderer test"),
+        Ok(true)
+    );
+    assert_eq!(derived.title(), Some("Flaky renderer test"));
+
+    let mut chosen = fixture.start("chosen");
+    chosen.append(1, &turn("fix the renderer")).unwrap();
+    chosen.rename("Release prep").unwrap();
+    assert_eq!(
+        chosen.install_generated_title("Fix the renderer"),
+        Ok(false)
+    );
+    assert_eq!(
+        saved_metadata(&fixture, "chosen").title.as_deref(),
+        Some("Release prep")
+    );
+
+    let mut named_early = fixture.start("named-early");
+    named_early.rename("Untitled session").unwrap();
+    assert_eq!(named_early.install_generated_title("Generated"), Ok(false));
+    assert_eq!(named_early.title(), Some("Untitled session"));
+}
+
 #[test]
 fn checkpoint_only_sessions_replay_their_summary() {
     let fixture = Fixture::new();
