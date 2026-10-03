@@ -4,6 +4,19 @@ use ofx_contract::{
     ChatMessage, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolCallId, ToolResultStatus,
 };
 
+const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
+const STEERING_CLOSE: &str = "\n</user_steering>";
+
+pub(crate) fn steering_message(text: &str) -> String {
+    format!("{STEERING_OPEN}{text}{STEERING_CLOSE}")
+}
+
+pub(crate) fn steering_text(content: &str) -> Option<&str> {
+    content
+        .strip_prefix(STEERING_OPEN)?
+        .strip_suffix(STEERING_CLOSE)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolResult<'a> {
     pub(crate) call_id: &'a str,
@@ -12,9 +25,23 @@ pub(crate) struct ToolResult<'a> {
     pub(crate) failed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Steering<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) assistant_prefix: &'a str,
+    pub(crate) after_tool_step_count: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Note<'a> {
+    Fx(&'a str),
+    User(Steering<'a>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolStep<'a> {
-    pub(crate) notes: Vec<&'a str>,
+    pub(crate) notes: Vec<Note<'a>>,
     pub(crate) assistant: &'a str,
     pub(crate) replay: Option<&'a ProviderReplay>,
     pub(crate) calls: &'a [ToolCall],
@@ -26,16 +53,36 @@ pub(crate) struct ToolStep<'a> {
 pub(crate) struct HistoryTurn<'a> {
     pub(crate) user: &'a str,
     pub(crate) steps: Vec<ToolStep<'a>>,
-    pub(crate) notes: Vec<&'a str>,
+    pub(crate) notes: Vec<Note<'a>>,
     pub(crate) reply: &'a str,
     pub(crate) reply_replay: Option<&'a ProviderReplay>,
     start: usize,
+}
+
+impl<'a> HistoryTurn<'a> {
+    pub(crate) fn steering(&self) -> impl Iterator<Item = Steering<'a>> + '_ {
+        self.steps
+            .iter()
+            .flat_map(|step| &step.notes)
+            .chain(&self.notes)
+            .filter_map(|note| match note {
+                Note::User(steering) => Some(*steering),
+                Note::Fx(_) => None,
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Cut {
     pub(crate) turns: usize,
     pub(crate) tool_steps: usize,
+    pub(crate) steering: usize,
+}
+
+impl Cut {
+    pub(crate) fn splits_turn(self) -> bool {
+        self.tool_steps > 0 || self.steering > 0
+    }
 }
 
 pub(crate) fn history_turns<'a>(
@@ -54,12 +101,12 @@ pub(crate) fn history_turns<'a>(
 
 pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTurn<'_> {
     let user = match &history[start] {
-        ChatMessage::User { content } => content.as_str(),
+        ChatMessage::User { content } => steering_text(content).unwrap_or(content),
         _ => "",
     };
     let mut steps: Vec<ToolStep<'_>> = Vec::new();
     let mut pending: Option<ToolStep<'_>> = None;
-    let mut notes: Vec<&str> = Vec::new();
+    let mut notes: Vec<Note<'_>> = Vec::new();
     for (index, message) in history.iter().enumerate().take(end).skip(start + 1) {
         match message {
             ChatMessage::Assistant {
@@ -111,8 +158,19 @@ pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) ->
                 }
             }
             ChatMessage::User { content } => {
-                steps.extend(pending.take());
-                notes.push(content);
+                let note = if let Some(text) = steering_text(content) {
+                    Note::User(steering_after(
+                        text,
+                        index + 1,
+                        pending.take(),
+                        &mut steps,
+                        &mut notes,
+                    ))
+                } else {
+                    steps.extend(pending.take());
+                    Note::Fx(content)
+                };
+                notes.push(note);
             }
             ChatMessage::System { .. } => {
                 steps.extend(pending.take());
@@ -133,6 +191,31 @@ pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) ->
         reply,
         reply_replay,
         start,
+    }
+}
+
+fn steering_after<'a>(
+    text: &'a str,
+    end: usize,
+    pending: Option<ToolStep<'a>>,
+    steps: &mut Vec<ToolStep<'a>>,
+    notes: &mut Vec<Note<'a>>,
+) -> Steering<'a> {
+    let assistant_prefix = match pending {
+        Some(step) if step.replay.is_none() => {
+            notes.splice(0..0, step.notes);
+            step.assistant
+        }
+        standalone => {
+            steps.extend(standalone);
+            ""
+        }
+    };
+    Steering {
+        text,
+        assistant_prefix,
+        after_tool_step_count: steps.len(),
+        end,
     }
 }
 
@@ -189,18 +272,13 @@ pub(crate) fn retain(
         return;
     };
     let end = starts.get(cut.turns + 1).copied().unwrap_or(history.len());
-    let tail_from = if cut.tool_steps == 0 {
-        start
+    let tail_from = if cut.splits_turn() {
+        covered_end(&history_turn(history, start, end), cut).unwrap_or(end)
     } else {
-        let steps = history_turn(history, start, end).steps;
-        let covered = cut.tool_steps.min(steps.len());
-        covered
-            .checked_sub(1)
-            .and_then(|last| steps.get(last))
-            .map_or(end, |step| step.end)
+        start
     };
     let tail = history.split_off(tail_from);
-    let kept_user = (cut.tool_steps > 0).then(|| history.swap_remove(start));
+    let kept_user = cut.splits_turn().then(|| history.swap_remove(start));
     history.clear();
     history.push(checkpoint);
     history.extend(kept_user);
@@ -215,6 +293,21 @@ pub(crate) fn retain(
             turn_start - tail_from + shift
         }
     }));
+}
+
+fn covered_end(turn: &HistoryTurn<'_>, cut: Cut) -> Option<usize> {
+    let steps = cut
+        .tool_steps
+        .min(turn.steps.len())
+        .checked_sub(1)
+        .and_then(|last| turn.steps.get(last))
+        .map(|step| step.end);
+    let steering = cut
+        .steering
+        .checked_sub(1)
+        .and_then(|last| turn.steering().nth(last))
+        .map(|steering| steering.end);
+    steps.max(steering)
 }
 
 #[cfg(test)]

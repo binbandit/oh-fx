@@ -162,7 +162,7 @@ fn user_messages_and_final_replies_stay_exact_beside_notes_and_a_line_per_tool_c
 
     let shown = &summary.compacted.turns;
     assert_eq!(shown.len(), 2);
-    assert_eq!(shown[0].user, "Fix the build.\nIt fails on main.");
+    assert_eq!(shown[0].users[0], "Fix the build.\nIt fails on main.");
     assert_eq!(
         shown[0].final_reply,
         "Found it: a missing semicolon at src/a.zig:4."
@@ -577,7 +577,7 @@ fn turns_with_nothing_to_summarize_need_no_model_call() {
     let summary = run(request(&turns), &mut model).unwrap();
     assert_eq!(model.calls, 0);
     assert_eq!(summary.compacted.turns.len(), 3);
-    assert_eq!(summary.compacted.turns[2].user, "yes");
+    assert_eq!(summary.compacted.turns[2].users[0], "yes");
     assert_eq!(summary.compacted.turns[2].final_reply, "ok");
 }
 
@@ -699,7 +699,7 @@ fn every_turn_stays_each_long_user_message_and_final_reply_whole() {
     assert_eq!(shown.len(), turns.len());
     for (turn, number) in shown.iter().zip(1..) {
         assert_eq!(turn.number, number);
-        assert_eq!(turn.user, pasted);
+        assert_eq!(turn.users[0], pasted);
         assert_eq!(turn.final_reply, plan);
     }
     assert!(model.seen_user.contains(" bytes left out here]"));
@@ -740,7 +740,7 @@ fn only_a_text_over_its_room_clips_its_longest_messages() {
     assert!(final_reply.starts_with("REPLY_START "));
     assert!(final_reply.ends_with(" REPLY_END"));
     assert!(final_reply.contains(" bytes left out here]"));
-    assert_eq!(summary.compacted.turns[0].user, "write the plan");
+    assert_eq!(summary.compacted.turns[0].users[0], "write the plan");
     assert_eq!(summary.compacted.turns[1].final_reply, "Sure.");
 
     let roomy = run(request(&turns), &mut model).unwrap();
@@ -765,6 +765,7 @@ fn the_request_overhead_estimate_covers_the_longest_request() {
     };
     let prepared = |number| Prepared {
         source: &source,
+        users: Vec::new(),
         number,
         tool_numbers: Vec::new(),
         tools: vec![
@@ -1065,7 +1066,7 @@ fn turns_too_large_for_one_request_go_oldest_first_each_part_adding_to_the_one_b
     assert_eq!(shown.len(), 3);
     for ((turn, user), number) in shown.iter().zip(["first", "second", "third"]).zip(1..) {
         assert_eq!(turn.number, number);
-        assert_eq!(turn.user, user);
+        assert_eq!(turn.users[0], user);
         assert_eq!(turn.final_reply, "Done.");
         assert_eq!(turn.first_tool, number);
         assert_eq!(turn.work, "Ran make.");
@@ -1163,4 +1164,65 @@ fn the_earlier_entries_are_clipped_only_when_the_turns_alone_cannot_make_the_req
     assert!(seen.contains("EARLIER_END\n"));
     assert!(seen.contains("[Tool result T2: shell]\nok\n"));
     assert_eq!(summary.compacted.entries[0].text, long_fact);
+}
+
+#[test]
+fn user_messages_added_to_a_turn_in_progress_carry_over_until_it_ends() {
+    let running = [Turn {
+        user: "migrate the db",
+        items: vec![
+            call("c1", "shell", "{\"command\":\"migrate --dry-run\"}"),
+            result("c1", "shell", "3 tables to change"),
+            Item::User("use staging, not production"),
+        ],
+    }];
+    let mut first_model = FakeModel::replying(
+        "Turn in progress\nIn between: Ran a dry run.\nT1: dry run\n\nStatus:\nS1: dry run done (T1)",
+    );
+    let first = run(
+        Request {
+            last_turn_open: true,
+            ..request(&running)
+        },
+        &mut first_model,
+    )
+    .unwrap();
+    assert_eq!(
+        first.compacted.open.as_ref().unwrap().users,
+        ["use staging, not production"]
+    );
+    assert!(
+        first_model
+            .seen_user
+            .contains("[User, added while the assistant worked]\nuse staging, not production\n\n")
+    );
+    assert!(first.text.contains(
+        "Turn in progress, whose first user message follows this:\nUser, added while the assistant worked:\nuse staging, not production\n\n"
+    ));
+
+    let finished = [Turn {
+        user: "migrate the db",
+        items: vec![
+            Item::User("and back it up first"),
+            call("c2", "shell", "{\"command\":\"migrate --target staging\"}"),
+            result("c2", "shell", "migrated"),
+            Item::Assistant("Migrated staging."),
+        ],
+    }];
+    let mut second_model = FakeModel::replying(
+        "Turn 1\nIn between: Backed up and migrated staging.\nT2: migrated staging",
+    );
+    let second = run(after(&first.compacted, &finished), &mut second_model).unwrap();
+    assert!(second_model.seen_user.contains(
+        "[Earlier part of this turn, summarized]\nRan a dry run.\n\n[User, added while the assistant worked]\nuse staging, not production\n\n"
+    ));
+    assert_eq!(
+        second.compacted.turns[0].users,
+        [
+            "migrate the db",
+            "use staging, not production",
+            "and back it up first"
+        ]
+    );
+    assert!(second.compacted.open.is_none());
 }

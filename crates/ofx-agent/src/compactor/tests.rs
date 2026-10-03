@@ -2,7 +2,7 @@ use ofx_contract::{BoxFuture, ChatMessage, ToolCall, ToolCallId, ToolResultStatu
 
 use super::summarize::Prompt;
 use super::*;
-use crate::execution_memory::history_turns;
+use crate::execution_memory::{history_turns, steering_message};
 
 #[derive(Default)]
 struct Notes {
@@ -98,11 +98,12 @@ async fn a_running_turn_keeps_its_user_message_and_compacts_its_finished_steps()
         compacted.cut,
         Cut {
             turns: 1,
-            tool_steps: 1
+            tool_steps: 1,
+            ..Cut::default()
         }
     );
     assert_eq!(compacted.payload.turns.len(), 1);
-    assert_eq!(compacted.payload.turns[0].user, "read the notes");
+    assert_eq!(compacted.payload.turns[0].users, ["read the notes"]);
     assert_eq!(compacted.payload.turns[0].final_reply, "Read them.");
     assert_eq!(compacted.payload.turns[0].work, "Read the notes.");
     let open = compacted.payload.open.as_ref().unwrap();
@@ -250,10 +251,57 @@ async fn messages_oh_fx_added_to_a_turn_reach_the_notes_request_as_notes() {
         compacted.cut,
         Cut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..Cut::default()
         }
     );
     assert!(model.prompts[0].0.contains(
         "[From oh-fx, not the user]\nSummarize what you just did.\n\n[Assistant]\nRead them.\n"
+    ));
+}
+
+#[tokio::test]
+async fn steering_reaches_the_notes_request_as_a_user_message_added_while_the_turn_ran() {
+    let notes = "recorded notes ".repeat(400);
+    let history = vec![
+        ChatMessage::user("read the notes"),
+        assistant("", Some("notes")),
+        result("notes", &notes),
+        assistant("Reading", None),
+        ChatMessage::user(steering_message("only the first section")),
+        assistant("", Some("plan")),
+        result("plan", &notes),
+        assistant("Read them.", None),
+        ChatMessage::user("now rewrite them"),
+    ];
+    let starts = [0, 8];
+    let turns = history_turns(&history, &starts);
+    let mut model = Notes::default();
+    let compacted = compact(
+        Request {
+            turns: &turns,
+            active: true,
+            earlier: None,
+            size: size(),
+            model: "m",
+            sends_after_conversation: false,
+        },
+        &mut model,
+        &mut || {},
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(model.prompts[0].0.contains(
+        "[Assistant]\nReading\n\n[User, added while the assistant worked]\nonly the first section\n\n"
+    ));
+    assert!(!model.prompts[0].0.contains("<user_steering>"));
+    assert_eq!(
+        compacted.payload.turns[0].users,
+        ["read the notes", "only the first section"]
+    );
+    assert!(compacted.text.contains(
+        "User 1:\nread the notes\n\nUser 1, added while the assistant worked:\nonly the first section\n\n"
     ));
 }

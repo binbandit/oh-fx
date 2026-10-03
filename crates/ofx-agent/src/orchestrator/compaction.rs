@@ -144,6 +144,7 @@ impl Agent {
             size.overflow = pending;
             if !rebuilt && (pending || size.due()) {
                 let conversation = (!pending).then_some(request);
+                self.set_compacting(true);
                 let compacted = self
                     .compacted_history(
                         size,
@@ -153,7 +154,9 @@ impl Agent {
                         &mut || {},
                         cancel,
                     )
-                    .await?;
+                    .await;
+                self.set_compacting(false);
+                let compacted = compacted?;
                 if compacted.is_some() {
                     return Ok(compacted);
                 }
@@ -180,7 +183,7 @@ impl Agent {
             .map_err(|failure| Stop::failed(TurnFailure::Persistence(failure)))?;
         let active = self.turn_starts.len().saturating_sub(1);
         turn.compaction.compacted_steps |=
-            compacted.cut.turns == active && compacted.cut.tool_steps > 0;
+            compacted.cut.turns == active && compacted.cut.splits_turn();
         self.install_compaction(compacted);
         turn.start = self.turn_starts.last().copied().unwrap_or(turn.start);
         turn.compaction.compacted_len = Some(self.history.len());

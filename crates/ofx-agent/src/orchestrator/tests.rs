@@ -21,6 +21,7 @@ enum Script {
     Reply(Vec<StreamEvent>, Completion),
     Fail(Vec<StreamEvent>, ProviderError),
     WaitForCancel,
+    StreamThenWait(Vec<StreamEvent>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +111,13 @@ impl ModelProvider for FakeProvider {
                     Err(error)
                 }
                 Some(Script::WaitForCancel) => {
+                    cancel.cancelled().await;
+                    Err(ProviderError::cancelled())
+                }
+                Some(Script::StreamThenWait(stream)) => {
+                    for event in stream {
+                        sink.emit(event);
+                    }
                     cancel.cancelled().await;
                     Err(ProviderError::cancelled())
                 }
@@ -2398,6 +2406,7 @@ mod malformed_arguments;
 mod project_context;
 mod reviews;
 mod skills;
+mod steering;
 mod turn_log;
 
 fn unconfigured_hold(tool_name: &str) -> String {

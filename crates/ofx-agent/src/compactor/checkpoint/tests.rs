@@ -18,7 +18,7 @@ fn entry(id: &str, text: &str) -> Entry {
 fn turn(number: usize, user: &str, final_reply: &str) -> Turn {
     Turn {
         number,
-        user: user.to_owned(),
+        users: vec![user.to_owned()],
         work: String::new(),
         final_reply: final_reply.to_owned(),
         first_tool: 0,
@@ -112,6 +112,7 @@ O1: nothing open
 fn the_turn_in_progress_shows_its_summary_and_tools() {
     let text = render(&Payload {
         open: Some(OpenTurn {
+            users: Vec::new(),
             work: "Ran the migration dry run (T1).".to_owned(),
             text: "exact text".to_owned(),
             first_tool: 1,
@@ -194,7 +195,7 @@ fn the_shape_check_passes_what_compaction_builds_and_names_what_breaks_it() {
     assert_eq!(shape_problem(&earlier, &good), None);
 
     let mut bad = good.clone();
-    bad.turns[0].user = "build it again".to_owned();
+    bad.turns[0].users = vec!["build it again".to_owned()];
     assert_eq!(
         shape_problem(&earlier, &bad),
         Some("an earlier turn changed")

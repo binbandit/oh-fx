@@ -10,7 +10,7 @@ use std::fmt;
 use ofx_text::StreamingEstimator;
 use tokio_util::sync::CancellationToken;
 
-use crate::execution_memory::{Cut, HistoryTurn, ToolStep};
+use crate::execution_memory::{Cut, HistoryTurn, Note, ToolStep};
 
 pub(crate) use checkpoint::{Payload, encode_checkpoint, restore_checkpoint};
 pub(crate) use model::Summarizer;
@@ -110,7 +110,7 @@ fn turns_from<'a>(history: &[HistoryTurn<'a>], cut: Cut) -> Vec<summarize::Turn<
         .iter()
         .map(|turn| {
             let mut items = step_items(&turn.steps);
-            items.extend(turn.notes.iter().copied().map(summarize::Item::Note));
+            note_items(&turn.notes, &mut items);
             if !turn.reply.is_empty() {
                 items.push(summarize::Item::Assistant(turn.reply));
             }
@@ -120,21 +120,58 @@ fn turns_from<'a>(history: &[HistoryTurn<'a>], cut: Cut) -> Vec<summarize::Turn<
             }
         })
         .collect();
-    if cut.tool_steps > 0
+    if cut.splits_turn()
         && let Some(split) = history.get(cut.turns)
     {
+        let steps = &split.steps[..cut.tool_steps.min(split.steps.len())];
+        let mut items = step_items(steps);
+        let mut remaining = cut
+            .steering
+            .saturating_sub(steps.iter().map(|step| steering_count(&step.notes)).sum());
+        let mut trailing = Vec::new();
+        for note in &split.notes {
+            if remaining == 0 {
+                break;
+            }
+            if matches!(note, Note::User(_)) {
+                remaining -= 1;
+            }
+            trailing.push(*note);
+        }
+        note_items(&trailing, &mut items);
         turns.push(summarize::Turn {
             user: split.user,
-            items: step_items(&split.steps[..cut.tool_steps.min(split.steps.len())]),
+            items,
         });
     }
     turns
 }
 
+fn steering_count(notes: &[Note<'_>]) -> usize {
+    notes
+        .iter()
+        .filter(|note| matches!(note, Note::User(_)))
+        .count()
+}
+
+fn note_items<'a>(notes: &[Note<'a>], items: &mut Vec<summarize::Item<'a>>) {
+    for note in notes {
+        match note {
+            Note::Fx(text) => items.push(summarize::Item::Note(text)),
+            Note::User(steering) => {
+                if !steering.assistant_prefix.is_empty() {
+                    items.push(summarize::Item::Assistant(steering.assistant_prefix));
+                }
+                items.push(summarize::Item::User(steering.text));
+            }
+        }
+    }
+}
+
 fn step_items<'a>(steps: &[ToolStep<'a>]) -> Vec<summarize::Item<'a>> {
     let mut items = Vec::new();
     for step in steps {
-        items.extend(step.notes.iter().copied().map(summarize::Item::Note));
+        note_items(&step.notes, &mut items);
         if !step.assistant.is_empty() {
             items.push(summarize::Item::Assistant(step.assistant));
         }
