@@ -29,6 +29,7 @@ pub enum Reply {
     Stream {
         chunks: Vec<Vec<u8>>,
         hold_open: bool,
+        flushed: Option<Gate>,
     },
     Status {
         status: u16,
@@ -54,6 +55,10 @@ pub enum Reply {
 pub struct Gate(Arc<watch::Sender<bool>>);
 
 impl Gate {
+    pub fn is_open(&self) -> bool {
+        *self.0.borrow()
+    }
+
     pub fn open(&self) {
         self.0.send_replace(true);
     }
@@ -88,6 +93,7 @@ impl Reply {
         Self::Stream {
             chunks: sse_chunks(events),
             hold_open: false,
+            flushed: None,
         }
     }
 
@@ -95,6 +101,15 @@ impl Reply {
         Self::Stream {
             chunks: sse_chunks(events),
             hold_open: true,
+            flushed: None,
+        }
+    }
+
+    pub fn held_sse_with_flush<S: AsRef<str>>(events: &[S], flushed: &Gate) -> Self {
+        Self::Stream {
+            chunks: sse_chunks(events),
+            hold_open: true,
+            flushed: Some(flushed.clone()),
         }
     }
 
@@ -428,15 +443,17 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
         Reply::Raw(bytes) => {
             let _ = stream.write_all(&bytes).await;
         }
-        Reply::Stream { chunks, hold_open } => {
+        Reply::Stream {
+            chunks,
+            hold_open,
+            flushed,
+        } => {
             let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
             if stream.write_all(head.as_bytes()).await.is_err() {
                 return;
             }
-            for chunk in chunks {
-                if stream.write_all(&chunk).await.is_err() || stream.flush().await.is_err() {
-                    return;
-                }
+            if !write_stream_chunks(&mut stream, &chunks, flushed.as_ref()).await {
+                return;
             }
             if hold_open {
                 hold(&mut stream, &mut signal).await;
@@ -444,6 +461,24 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
         }
     }
     let _ = stream.shutdown().await;
+}
+
+async fn write_stream_chunks<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    chunks: &[Vec<u8>],
+    flushed: Option<&Gate>,
+) -> bool {
+    for chunk in chunks {
+        if stream.write_all(chunk).await.is_err() || stream.flush().await.is_err() {
+            return false;
+        }
+        if !chunk.is_empty()
+            && let Some(flushed) = flushed
+        {
+            flushed.open();
+        }
+    }
+    true
 }
 
 async fn hold<S: AsyncRead + Unpin>(stream: &mut S, signal: &mut watch::Receiver<bool>) {
@@ -523,6 +558,78 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn streamed_payload_notifications_belong_to_their_reply_and_follow_flush() {
+        let first = Gate::default();
+        let second = Gate::default();
+        let (mut stream, mut reader) = tokio::io::duplex(16);
+        assert!(write_stream_chunks(&mut stream, &[b"one".to_vec()], Some(&first)).await);
+        assert!(first.is_open());
+        assert!(!second.is_open());
+        let mut bytes = [0; 3];
+        reader.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"one");
+        assert!(write_stream_chunks(&mut stream, &[b"two".to_vec()], Some(&second)).await);
+        assert!(second.is_open());
+        reader.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"two");
+    }
+
+    struct FailedFlush;
+
+    impl AsyncWrite for FailedFlush {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn notifications_require_a_nonempty_payload_and_successful_flush() {
+        let flushed = Gate::default();
+        assert!(write_stream_chunks(&mut tokio::io::sink(), &[Vec::new()], Some(&flushed)).await);
+        assert!(!flushed.is_open());
+        assert!(
+            !write_stream_chunks(&mut FailedFlush, &[b"payload".to_vec()], Some(&flushed)).await
+        );
+        assert!(!flushed.is_open());
+    }
+
+    #[tokio::test]
+    async fn partial_payload_writes_never_publish_a_flush_notification() {
+        let flushed = Gate::default();
+        let (mut stream, mut reader) = tokio::io::duplex(1);
+        let chunks = [b"payload".to_vec()];
+        let (written, ()) = tokio::join!(
+            write_stream_chunks(&mut stream, &chunks, Some(&flushed)),
+            async move {
+                let mut byte = [0];
+                reader.read_exact(&mut byte).await.unwrap();
+                assert_eq!(byte, [b'p']);
+                drop(reader);
+            }
+        );
+        assert!(!written);
+        assert!(!flushed.is_open());
     }
 
     #[test]

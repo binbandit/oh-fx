@@ -673,7 +673,8 @@ fn closed_stderr_still_reports_the_json_envelope() {
 
 #[test]
 fn a_closed_stdout_while_streaming_stops_the_request_and_reports_the_write_error() {
-    let server = FakeServer::start([Reply::held_sse(&[text_chunk("Hello")])]);
+    let flushed = ofx_testkit::Gate::default();
+    let server = FakeServer::start([Reply::held_sse_with_flush(&[text_chunk("Hello")], &flushed)]);
     let home = Home::with_settings(&portkey_settings(&server.base_url()));
     let mut child = home
         .command(&["ask", "hi"])
@@ -682,6 +683,15 @@ fn a_closed_stdout_while_streaming_stops_the_request_and_reports_the_write_error
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let ready_deadline = Instant::now() + Duration::from_mins(1);
+    while !flushed.is_open() {
+        if Instant::now() > ready_deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("the fixture never streamed its payload");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -689,6 +699,7 @@ fn a_closed_stdout_while_streaming_stops_the_request_and_reports_the_write_error
         }
         if Instant::now() > deadline {
             child.kill().unwrap();
+            child.wait().unwrap();
             panic!("ask kept waiting after stdout closed");
         }
         thread::sleep(Duration::from_millis(20));
