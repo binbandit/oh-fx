@@ -474,3 +474,22 @@ fn skill_tool_refuses_an_unadvertised_catalog_location_without_rediscovery() {
     );
     assert!(!refused.content.contains("LATE BODY"));
 }
+
+#[test]
+fn provisional_skill_metadata_preserves_activity_without_argument_labels() {
+    let tool = tool(
+        Fixture::new().discovery("managed"),
+        MANAGED_POLICY,
+        Locations::default(),
+    );
+    let presentation = tool.provisional_presentation().unwrap();
+    assert_eq!(presentation.activity, ToolActivity::Read);
+    assert_eq!(presentation.action_label, "Loading skill");
+    assert_eq!(presentation.completed_label, "Loaded skill");
+    assert_eq!(presentation.label_argument, "");
+    assert_eq!(presentation.label_default, "");
+    let call = tool.prepare(r#"{"location":"missing"}"#).unwrap();
+    let active = call.describe();
+    assert_eq!(active.title, "Loading skill skill");
+    assert_eq!(active.label.unwrap().target, "skill");
+}

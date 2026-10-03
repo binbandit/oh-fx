@@ -1075,6 +1075,7 @@ impl Agent {
         }
         let presentation = contained(|| tool.provisional_presentation()).flatten();
         if let Some(presentation) = presentation.filter(|_| !call_id.as_str().is_empty()) {
+            self.enter_tool_phase();
             events(UiEvent::ToolProvisional {
                 turn_id,
                 call_id,

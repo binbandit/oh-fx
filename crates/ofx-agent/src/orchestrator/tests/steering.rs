@@ -528,3 +528,108 @@ async fn steering_after_a_cut_reply_is_taken_when_another_step_is_left() {
         ]
     );
 }
+
+struct HandoffProvider {
+    replies: Arc<FakeProvider>,
+    first: AtomicBool,
+    admitted: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    completed: AtomicBool,
+}
+
+impl ModelProvider for HandoffProvider {
+    fn stream<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        Box::pin(async move {
+            if self.first.swap(false, Ordering::SeqCst) {
+                sink.emit(streamed_start("call-1", "echo"));
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err(ProviderError::cancelled()),
+                    () = self.release.notified() => {}
+                }
+                self.completed.store(true, Ordering::SeqCst);
+            }
+            self.replies.stream(request, sink, cancel).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn steering_after_a_provisional_start_waits_for_model_step_completion() {
+    let provider = Arc::new(HandoffProvider {
+        replies: FakeProvider::new(vec![
+            tool_reply(&[("call-1", r#"{"text":"one"}"#)]),
+            text_reply("Done."),
+        ]),
+        first: AtomicBool::new(true),
+        admitted: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        completed: AtomicBool::new(false),
+    });
+    let worker = Arc::new(WorkerRuntime::default());
+    let mut agent = Agent::new(
+        provider.clone(),
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+        Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
+        config(),
+    )
+    .with_steering(worker.clone());
+    worker.admit(plain(0, "go"));
+    let gate = provider.clone();
+    let release = tokio::spawn(async move {
+        gate.admitted.notified().await;
+        tokio::task::yield_now().await;
+        gate.release.notify_one();
+    });
+    let (report, events) = run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, _| {
+            if matches!(event, UiEvent::ToolProvisional { .. }) {
+                worker.admit(plain(1, "also check the tests"));
+                provider.admitted.notify_one();
+            }
+        },
+    )
+    .await;
+    release.await.unwrap();
+    assert!(
+        provider.completed.load(Ordering::SeqCst),
+        "steering cut the streaming model step"
+    );
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
+    assert_eq!(applied(&events), [(1, "also check the tests")]);
+    let finished = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::ToolFinished { .. }))
+        .unwrap();
+    let steered = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::SteeringApplied { .. }))
+        .unwrap();
+    assert!(finished < steered);
+    assert_eq!(
+        provider.replies.requests()[1].messages,
+        [
+            ChatMessage::user("go"),
+            calling("call-1", r#"{"text":"one"}"#),
+            tool_message(
+                "call-1",
+                r#"echo {"text":"one"}"#,
+                ToolResultStatus::Success
+            ),
+            ChatMessage::user(steering_message("also check the tests")),
+        ]
+    );
+}
