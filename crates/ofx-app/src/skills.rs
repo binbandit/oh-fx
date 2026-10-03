@@ -104,6 +104,7 @@ impl HostSkills {
         paths: Option<&ProfilePaths>,
         settings: &Settings,
         limits: &ContextLimits,
+        interactive: bool,
     ) -> Self {
         let home = home.map(|home| canonical(Path::new(home)));
         let managed_root = paths.map(|paths| canonical(&paths.config).join(MANAGED_DIRECTORY));
@@ -121,12 +122,15 @@ impl HostSkills {
         };
         let found = discovery.load_visible_skills(&policy);
         let tool = Arc::new(SkillTool::new(discovery.clone(), policy, *limits));
-        let search = Arc::new(CapabilitySearch::new(
-            discovery.clone(),
-            policy,
-            *limits,
-            DEFAULT_MAX_TOOL_RESULT_BYTES,
-        ));
+        let search = Arc::new(
+            CapabilitySearch::new(
+                discovery.clone(),
+                policy,
+                *limits,
+                DEFAULT_MAX_TOOL_RESULT_BYTES,
+            )
+            .with_interactive_host(interactive),
+        );
         Self {
             shared: Arc::new(Shared {
                 discovery,

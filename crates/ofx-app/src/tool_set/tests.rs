@@ -894,6 +894,7 @@ fn delegation_places_subagent_after_shell_as_upstream_orders_its_tools() {
         None,
         &PermissionMode::Ask.into(),
         crate::skills::rootless_skill_tool(),
+        crate::skills::rootless_capability_search(),
         ToolHooks::default(),
     );
     let subagent: Arc<dyn Tool> = Arc::new(SubagentTool::new(Arc::new(NoChildren)));
@@ -910,6 +911,7 @@ fn delegation_places_subagent_after_shell_as_upstream_orders_its_tools() {
             "write_file",
             "shell",
             "subagent",
+            "capability_search",
             "skill",
             "ask_user_question",
             "web_fetch",

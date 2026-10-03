@@ -2818,7 +2818,7 @@ mod tests {
             serde_json::from_str(search_output["content"].as_str().unwrap()).unwrap();
         assert_eq!(result["skills"][0]["location"], location);
         assert_eq!(result["counts"], json!({"skills": 1, "mcp_tools": 0}));
-        assert_eq!(result["mcp_state"], "unavailable");
+        assert!(result.get("mcp_state").is_none());
         assert!(result.get("state").is_none());
         let loaded_body = requests[2].json();
         let loaded = loaded_body["messages"]
@@ -2867,7 +2867,47 @@ mod tests {
                 "skills": [], "mcp_tools": [],
                 "counts": {"skills": 0, "mcp_tools": 0},
                 "total_matches": {"skills": 0, "mcp_tools": 0},
-                "mcp_state": "unavailable"
+                "state": "no_match"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_search_non_matching_query_reports_no_match() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_tool_call_events(
+                "search-1",
+                "capability_search",
+                r#"{"query":"absent"}"#,
+            )),
+            Reply::sse(&chat_text_events(&["done"])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        write_skill(&harness.home, "skills/review", "review");
+        harness.submit("search the absent server");
+        timeout(
+            Duration::from_secs(10),
+            harness.until(|event| matches!(event, UiEvent::TurnFinished { .. })),
+        )
+        .await
+        .unwrap();
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let body = requests[1].json();
+        let output = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["tool_call_id"] == "search-1")
+            .unwrap();
+        let result: Value = serde_json::from_str(output["content"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "skills": [], "mcp_tools": [],
+                "counts": {"skills": 0, "mcp_tools": 0},
+                "total_matches": {"skills": 0, "mcp_tools": 0},
+                "state": "no_match"
             })
         );
     }
