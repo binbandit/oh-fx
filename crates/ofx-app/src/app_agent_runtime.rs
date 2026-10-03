@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailure, TurnReport};
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    BoxFuture, CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, Notice,
-    NoticeTone, ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor,
-    SessionScope, SkillBinding, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
+    BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelOption, Notice, NoticeTone,
+    ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor, SessionScope,
+    SkillBinding, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -16,8 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{
-    CommandEffect, ModelPick, Work, handle_command, pick_model, refuse_resume_during_turn,
-    rename_session, switch_model, toggle_fast,
+    CommandEffect, ModelChange, ModelPick, Outcome, Work, change_model, handle_command, listed,
+    refuse_resume_during_turn, rename_session,
 };
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
@@ -93,19 +93,6 @@ impl ControllerState {
             self.emit(UiEvent::Notice {
                 notice: unsaved_notice(topic, &unsaved),
             });
-        }
-    }
-
-    pub(crate) async fn capabilities(&self, model: &str) -> ModelCapabilities {
-        self.setup.capabilities(model).await
-    }
-
-    pub(crate) async fn catalog_ids(&self) -> Vec<String> {
-        match self.setup.models_source().catalog().await {
-            ModelCatalog::Listed { models, .. } => {
-                models.into_iter().map(|option| option.id).collect()
-            }
-            ModelCatalog::Failed { .. } => Vec::new(),
         }
     }
 
@@ -273,8 +260,8 @@ pub(crate) struct Controller {
 
 struct CatalogFetch {
     source: ModelSource,
-    emit: Emit,
     pending: Option<BoxFuture<'static, ModelCatalog>>,
+    waiting: Vec<ModelChange>,
 }
 
 impl CatalogFetch {
@@ -285,9 +272,35 @@ impl CatalogFetch {
         }
     }
 
+    fn change(
+        &mut self,
+        state: &mut ControllerState,
+        persistence: &mut Option<Persistence>,
+        change: ModelChange,
+        work: Work,
+    ) {
+        let catalog = if change.needs_catalog(state) {
+            self.source.cached()
+        } else {
+            Some(ModelCatalog::Failed { retry: None })
+        };
+        match catalog {
+            Some(catalog) if self.waiting.is_empty() => {
+                apply_change(state, persistence, change, listed(&catalog), work);
+            }
+            _ => {
+                self.waiting.push(change);
+                self.request();
+            }
+        }
+    }
+
     async fn next_command(
         &mut self,
         commands: &mut UnboundedReceiver<UiCommand>,
+        state: &mut ControllerState,
+        persistence: &mut Option<Persistence>,
+        work: Work,
     ) -> Option<UiCommand> {
         loop {
             let Some(fetch) = &mut self.pending else {
@@ -295,12 +308,33 @@ impl CatalogFetch {
             };
             tokio::select! {
                 command = commands.recv() => return command,
-                catalog = fetch => {
-                    self.pending = None;
-                    (self.emit)(UiEvent::ModelCatalog { catalog });
-                }
+                catalog = fetch => self.arrived(state, persistence, catalog, work),
             }
         }
+    }
+
+    async fn settle(&mut self, state: &mut ControllerState, persistence: &mut Option<Persistence>) {
+        if self.waiting.is_empty() {
+            return;
+        }
+        if let Some(fetch) = self.pending.take() {
+            let catalog = fetch.await;
+            self.arrived(state, persistence, catalog, Work::Idle);
+        }
+    }
+
+    fn arrived(
+        &mut self,
+        state: &mut ControllerState,
+        persistence: &mut Option<Persistence>,
+        catalog: ModelCatalog,
+        work: Work,
+    ) {
+        self.pending = None;
+        for change in std::mem::take(&mut self.waiting) {
+            apply_change(state, persistence, change, listed(&catalog), work);
+        }
+        state.emit(UiEvent::ModelCatalog { catalog });
     }
 }
 
@@ -342,8 +376,8 @@ impl Controller {
             agent: state.setup.agent(persistence.is_some()),
             catalog: CatalogFetch {
                 source: state.setup.models_source(),
-                emit: Arc::clone(&state.emit),
                 pending: None,
+                waiting: Vec::new(),
             },
             state,
             persistence,
@@ -389,7 +423,13 @@ impl Controller {
                 }
                 continue;
             }
-            let Some(command) = self.catalog.next_command(commands).await else {
+            let next = self.catalog.next_command(
+                commands,
+                &mut self.state,
+                &mut self.persistence,
+                Work::Idle,
+            );
+            let Some(command) = next.await else {
                 return;
             };
             match command {
@@ -413,10 +453,7 @@ impl Controller {
                         effort,
                         fast_mode,
                     };
-                    if let Some(effort) = pick_model(&mut self.state, pick, Work::Idle).await {
-                        self.save_preferences(effort.as_ref());
-                        self.reconfigure();
-                    }
+                    self.change_model(ModelChange::Pick(pick)).await;
                 }
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
                 UiCommand::FullAccessWarningShown => {
@@ -447,17 +484,10 @@ impl Controller {
         match handle_command(&mut self.state, text, Work::Idle) {
             CommandEffect::None => {}
             CommandEffect::SwitchModel(query) => {
-                switch_model(&mut self.state, &query, Work::Idle).await;
-                self.save_preferences(None);
-                self.reconfigure();
+                self.change_model(ModelChange::Query(query)).await;
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
-            CommandEffect::ToggleFast => {
-                if toggle_fast(&mut self.state).await {
-                    self.save_preferences(None);
-                }
-                self.reconfigure();
-            }
+            CommandEffect::ToggleFast => self.change_model(ModelChange::ToggleFast).await,
             CommandEffect::Compact => return self.compact(commands).await,
             CommandEffect::OpenSessions => self.open_picker(SessionScope::CurrentWorkspace),
             CommandEffect::Rename(title) => {
@@ -474,6 +504,7 @@ impl Controller {
         let state = &mut self.state;
         let persistence = &mut self.persistence;
         let catalog = &mut self.catalog;
+        let work = Work::Compaction;
         let mut open = true;
         let result = {
             let mut summarizing = move || {
@@ -486,7 +517,7 @@ impl Controller {
             loop {
                 tokio::select! {
                     result = &mut compaction => break result,
-                    command = catalog.next_command(commands), if open => match command {
+                    command = catalog.next_command(commands, state, persistence, work), if open => match command {
                         None => {
                             open = false;
                             cancel.cancel();
@@ -496,16 +527,13 @@ impl Controller {
                             state.receive_prompt(prompt, skills);
                         }
                         Some(UiCommand::CancelCompaction) => cancel.cancel(),
-                        Some(command) => {
-                            let work = Work::Compaction;
-                            run_deferred(state, persistence, catalog, command, work, &cancel).await;
-                        }
+                        Some(command) => run_deferred(state, persistence, catalog, command, work, &cancel),
                     },
                 }
             }
         };
         self.state.compaction(compaction_activity(result));
-        self.settle_deferred_commands();
+        self.settle_deferred_commands(open).await;
         open
     }
 
@@ -608,9 +636,21 @@ impl Controller {
         }
     }
 
-    fn save_preferences(&mut self, effort: Option<&ReasoningEffort>) {
-        let saved = save_session_preferences(&self.state, &mut self.persistence, effort);
-        self.session_notice(saved);
+    async fn change_model(&mut self, change: ModelChange) {
+        let catalog = if change.needs_catalog(&self.state) {
+            self.catalog.source.catalog().await
+        } else {
+            ModelCatalog::Failed { retry: None }
+        };
+        let models = listed(&catalog);
+        apply_change(
+            &mut self.state,
+            &mut self.persistence,
+            change,
+            models,
+            Work::Idle,
+        );
+        self.reconfigure();
     }
 
     fn clear(&mut self, first_kept_prompt: u64) {
@@ -674,6 +714,7 @@ impl Controller {
         let persistence = &mut self.persistence;
         let questions = &mut self.questions;
         let catalog = &mut self.catalog;
+        let work = Work::Turn;
         let mut open = true;
         let report = {
             let turn =
@@ -684,7 +725,7 @@ impl Controller {
                 tokio::select! {
                     biased;
                     report = &mut turn => break report,
-                    command = catalog.next_command(commands), if open => match command {
+                    command = catalog.next_command(commands, state, persistence, work), if open => match command {
                         None => {
                             open = false;
                             cancel.cancel();
@@ -712,10 +753,7 @@ impl Controller {
                                 questions.resolve(request_id, answers);
                             }
                         }
-                        Some(command) => {
-                            let work = Work::Turn;
-                            run_deferred(state, persistence, catalog, command, work, &cancel).await;
-                        }
+                        Some(command) => run_deferred(state, persistence, catalog, command, work, &cancel),
                     },
                     request = next_question(questions) => relay_question(state, running_turn(), request),
                 }
@@ -727,7 +765,7 @@ impl Controller {
         }
         self.finish_turn(&report);
         self.remember_session_title(&prompt.text);
-        self.settle_deferred_commands();
+        self.settle_deferred_commands(open).await;
         open
     }
 
@@ -768,7 +806,12 @@ impl Controller {
         }
     }
 
-    fn settle_deferred_commands(&mut self) {
+    async fn settle_deferred_commands(&mut self, open: bool) {
+        if open {
+            self.catalog
+                .settle(&mut self.state, &mut self.persistence)
+                .await;
+        }
         self.remember_agent_facts();
         if std::mem::take(&mut self.state.config_pending) {
             self.reconfigure();
@@ -797,42 +840,7 @@ fn relay_question(state: &ControllerState, turn: Option<TurnId>, request: Questi
     }
 }
 
-async fn run_deferred_command(
-    state: &mut ControllerState,
-    persistence: &mut Option<Persistence>,
-    text: &str,
-    work: Work,
-    cancel: &CancellationToken,
-) {
-    match handle_command(state, text, work) {
-        CommandEffect::None | CommandEffect::Compact | CommandEffect::OpenSessions => return,
-        CommandEffect::SwitchModel(query) => {
-            state.config_pending = true;
-            switch_model(state, &query, work).await;
-        }
-        CommandEffect::Clear => {
-            state.pending_clear = Some(state.received_prompts);
-            state.queue.clear();
-            cancel.cancel();
-            return;
-        }
-        CommandEffect::Rename(title) => {
-            rename_session(state, persistence.as_mut(), &title);
-            return;
-        }
-        CommandEffect::ToggleFast => {
-            state.config_pending = true;
-            if !toggle_fast(state).await {
-                return;
-            }
-        }
-    }
-    if let Some(notice) = save_session_preferences(state, persistence, None) {
-        state.emit(UiEvent::Notice { notice });
-    }
-}
-
-async fn run_deferred(
+fn run_deferred(
     state: &mut ControllerState,
     persistence: &mut Option<Persistence>,
     catalog: &mut CatalogFetch,
@@ -840,19 +848,30 @@ async fn run_deferred(
     work: Work,
     cancel: &CancellationToken,
 ) {
-    let pick = match command {
-        UiCommand::RunCommand { text } => {
-            return run_deferred_command(state, persistence, &text, work, cancel).await;
-        }
+    let change = match command {
+        UiCommand::RunCommand { text } => match handle_command(state, &text, work) {
+            CommandEffect::None | CommandEffect::Compact | CommandEffect::OpenSessions => return,
+            CommandEffect::SwitchModel(query) => ModelChange::Query(query),
+            CommandEffect::ToggleFast => ModelChange::ToggleFast,
+            CommandEffect::Rename(title) => {
+                return rename_session(state, persistence.as_mut(), &title);
+            }
+            CommandEffect::Clear => {
+                state.pending_clear = Some(state.received_prompts);
+                state.queue.clear();
+                cancel.cancel();
+                return;
+            }
+        },
         UiCommand::SelectModel {
             model,
             effort,
             fast_mode,
-        } => ModelPick {
+        } => ModelChange::Pick(ModelPick {
             model,
             effort,
             fast_mode,
-        },
+        }),
         UiCommand::ListModels => return catalog.request(),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::FullAccessWarningShown => {
@@ -869,7 +888,17 @@ async fn run_deferred(
         | UiCommand::QuestionAnswered { .. }
         | UiCommand::CancelCompaction => return,
     };
-    let Some(effort) = pick_model(state, pick, work).await else {
+    catalog.change(state, persistence, change, work);
+}
+
+fn apply_change(
+    state: &mut ControllerState,
+    persistence: &mut Option<Persistence>,
+    change: ModelChange,
+    models: &[ModelOption],
+    work: Work,
+) {
+    let Outcome::Changed { effort } = change_model(state, change, models, work) else {
         return;
     };
     state.config_pending = true;
@@ -1181,6 +1210,15 @@ mod tests {
         ]
         .map(|event| event.to_string());
         Reply::sse(&events)
+    }
+
+    fn codex_partial() -> Reply {
+        let events = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
+            json!({"type":"response.output_text.delta","output_index":0,"delta":"partial\n"}),
+        ]
+        .map(|event| event.to_string());
+        Reply::held_sse(&events)
     }
 
     impl Harness {
@@ -2283,8 +2321,7 @@ mod tests {
 
     #[tokio::test]
     async fn fast_mode_switched_during_a_turn_applies_to_the_next_one() {
-        let held = Reply::held_sse(&[json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}).to_string(), json!({"type":"response.output_text.delta","output_index":0,"delta":"partial\n"}).to_string()]);
-        let codex = FakeServer::start([held, codex_text("next")]);
+        let codex = FakeServer::start([codex_partial(), codex_text("next")]);
         let catalog = codex_catalog(true, 8);
         let mut harness = Harness::codex(&codex, &catalog).await;
         harness.submit("slow");
@@ -2500,6 +2537,94 @@ mod tests {
         let requests = server.requests();
         assert_eq!(requests[0].json()["model"], "model-a");
         assert_eq!(requests[1].json()["model"], "vendor/model-b");
+    }
+
+    async fn within<T>(work: impl Future<Output = T>) -> T {
+        timeout(Duration::from_secs(10), work)
+            .await
+            .expect("the controller keeps serving the turn")
+    }
+
+    #[tokio::test]
+    async fn model_changes_wait_for_a_cold_catalog_without_holding_up_the_turn() {
+        let changes = [
+            UiCommand::RunCommand {
+                text: "/model luna".to_owned(),
+            },
+            select(OTHER_CODEX_MODEL, low(), None),
+        ];
+        for change in changes {
+            let streamed = Gate::default();
+            let listed = Gate::default();
+            let codex = FakeServer::start([codex_partial().after(&streamed), codex_text("next")]);
+            let catalog =
+                FakeServer::start([catalog_version(), catalog_listing(false).after(&listed)]);
+            let mut harness = Harness::codex(&codex, &catalog).await;
+            harness.submit("slow");
+            within(async {
+                while codex.requests().is_empty() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await;
+            harness.send(change);
+            streamed.open();
+            within(harness.until(|event| matches!(event, UiEvent::AssistantText { .. }))).await;
+            let turn_id = harness.running_turn();
+            harness.send(UiCommand::Cancel { turn_id });
+            within(harness.until(finished(TurnOutcome::Interrupted))).await;
+            assert!(
+                !harness
+                    .seen
+                    .iter()
+                    .any(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            );
+            listed.open();
+            let picked =
+                within(harness.until(|event| matches!(event, UiEvent::ModelSelected { .. }))).await;
+            assert_eq!(
+                notice_body(picked),
+                [format!("|Switched to {OTHER_CODEX_MODEL}")]
+            );
+            harness.submit("next");
+            within(harness.until(finished(TurnOutcome::Completed))).await;
+            assert_eq!(codex.requests()[1].json()["model"], OTHER_CODEX_MODEL);
+        }
+    }
+
+    #[tokio::test]
+    async fn model_changes_waiting_for_the_catalog_apply_in_order_once_it_arrives_mid_turn() {
+        let listed = Gate::default();
+        let codex = FakeServer::start([codex_partial(), codex_text("next")]);
+        let catalog = FakeServer::start([catalog_version(), catalog_listing(false).after(&listed)]);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.submit("slow");
+        within(harness.until(|event| matches!(event, UiEvent::AssistantText { .. }))).await;
+        harness.command("/model luna");
+        harness.send(select(CODEX_MODEL, low(), None));
+        listed.open();
+        let applied = within(harness.until(catalog_event)).await;
+        assert_eq!(
+            notice_body(applied),
+            [
+                format!("|Next turn will use {OTHER_CODEX_MODEL}"),
+                format!("|Next turn will use {CODEX_MODEL}"),
+            ]
+        );
+        assert!(
+            !harness
+                .seen
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnFinished { .. }))
+        );
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        harness.submit("next");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let request = codex.requests()[1].json();
+        assert_eq!(request["model"], CODEX_MODEL);
+        assert_eq!(request["reasoning"]["effort"], "low");
     }
 
     #[tokio::test]

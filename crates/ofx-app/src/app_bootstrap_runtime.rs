@@ -18,9 +18,9 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ApprovalDecision, CallDescription, CapabilityResolver, LivePermissionMode, ModelCapabilities,
-    ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport,
-    StatuslineToggles, Tool,
+    ApprovalDecision, CallDescription, CapabilityResolver, LivePermissionMode, ModelProvider,
+    PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles,
+    Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -622,10 +622,6 @@ impl AgentSetup {
         }
     }
 
-    pub(crate) async fn capabilities(&self, model: &str) -> ModelCapabilities {
-        self.models.capabilities(model).await
-    }
-
     pub(crate) fn models_source(&self) -> ModelSource {
         self.models.clone()
     }
@@ -774,7 +770,7 @@ pub fn user_agent() -> String {
 #[cfg(test)]
 mod tests {
     use ofx_auth::ChatGptEndpoints;
-    use ofx_contract::CapabilityLookup;
+    use ofx_contract::{CapabilityLookup, ModelCapabilities};
     use ofx_exec::SessionSupervisor;
     use ofx_gateway::CodexEndpoints;
     use ofx_testkit::{FakeServer, Reply};

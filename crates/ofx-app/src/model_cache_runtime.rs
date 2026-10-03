@@ -5,7 +5,7 @@ use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, CatalogRetry, ModelCapabilities, ModelCatalog,
     ModelCatalogSource, ModelOption,
 };
-use ofx_gateway::CatalogFailure;
+use ofx_gateway::{CatalogFailure, CodexModel};
 use tokio_util::sync::CancellationToken;
 
 use crate::codex_provider::CatalogCapabilities;
@@ -17,46 +17,52 @@ pub(crate) enum ModelSource {
 }
 
 impl ModelSource {
-    pub(crate) async fn capabilities(&self, model: &str) -> ModelCapabilities {
-        match self.resolve(model, &CancellationToken::new()).await {
-            CapabilityLookup::Resolved(capabilities) => capabilities,
-            CapabilityLookup::CatalogUnavailable | CapabilityLookup::Cancelled => {
-                ModelCapabilities::default()
-            }
+    pub(crate) fn cached(&self) -> Option<ModelCatalog> {
+        match self {
+            Self::Connection(connection) => Some(connection_catalog(connection)),
+            Self::Codex(catalog) => catalog.cached().map(codex_catalog),
         }
     }
 
     pub(crate) async fn catalog(&self) -> ModelCatalog {
         match self {
-            Self::Connection(connection) => ModelCatalog::Listed {
-                models: connection
-                    .models()
-                    .iter()
-                    .map(|id| ModelOption {
-                        id: id.clone(),
-                        capabilities: connection_capabilities(connection, id),
-                        max_output_tokens: connection.capabilities(id).max_output_tokens,
-                    })
-                    .collect(),
-                source: ModelCatalogSource::ProfileSettings,
-            },
+            Self::Connection(connection) => connection_catalog(connection),
             Self::Codex(catalog) => match catalog.listed(&CancellationToken::new()).await {
-                Ok(listed) => ModelCatalog::Listed {
-                    models: listed
-                        .iter()
-                        .map(|model| ModelOption {
-                            id: model.id.clone(),
-                            capabilities: model.capabilities.clone(),
-                            max_output_tokens: None,
-                        })
-                        .collect(),
-                    source: ModelCatalogSource::Subscription,
-                },
+                Ok(listed) => codex_catalog(listed),
                 Err(failure) => ModelCatalog::Failed {
                     retry: catalog_retry(failure),
                 },
             },
         }
+    }
+}
+
+fn connection_catalog(connection: &ProviderDefinition) -> ModelCatalog {
+    ModelCatalog::Listed {
+        models: connection
+            .models()
+            .iter()
+            .map(|id| ModelOption {
+                id: id.clone(),
+                capabilities: connection_capabilities(connection, id),
+                max_output_tokens: connection.capabilities(id).max_output_tokens,
+            })
+            .collect(),
+        source: ModelCatalogSource::ProfileSettings,
+    }
+}
+
+fn codex_catalog(listed: &[CodexModel]) -> ModelCatalog {
+    ModelCatalog::Listed {
+        models: listed
+            .iter()
+            .map(|model| ModelOption {
+                id: model.id.clone(),
+                capabilities: model.capabilities.clone(),
+                max_output_tokens: None,
+            })
+            .collect(),
+        source: ModelCatalogSource::Subscription,
     }
 }
 

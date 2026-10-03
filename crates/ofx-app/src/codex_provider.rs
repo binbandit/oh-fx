@@ -48,6 +48,10 @@ pub(crate) struct CatalogCapabilities {
 }
 
 impl CatalogCapabilities {
+    pub(crate) fn cached(&self) -> Option<&[CodexModel]> {
+        self.listed.get().map(Vec::as_slice)
+    }
+
     pub(crate) async fn listed(
         &self,
         cancel: &CancellationToken,
