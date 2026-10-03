@@ -30,15 +30,15 @@ note = "Bounded HTTP fetch, status/encoding settlement and redirect policy are i
 
 [[file]]
 upstream = "src/tools/web/search.zig"
-status = "todo"
-modules = []
-note = "Web search backend execution tool are unimplemented."
+status = "partial"
+modules = ["crates/ofx-tools/src/web/search.rs"]
+note = "The provider-run tool's schema, description and argument checks exist, and a local call reports upstream's unavailable message; the function-tool backend call and the bounded Markdown result formatting are missing."
 
 [[file]]
 upstream = "src/tools/web/search_args.zig"
-status = "todo"
-modules = []
-note = "Web search argument/domain-filter validation are unimplemented."
+status = "ported"
+modules = ["crates/ofx-tools/src/web/search_args.rs"]
+note = "Argument decoding, empty-filter normalization and the one-filter rule match upstream's tests; the read-only classification has no local consumer because web_search runs only as a provider tool."
 
 [[file]]
 upstream = "src/tools/web/url_policy.zig"

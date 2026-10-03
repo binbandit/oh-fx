@@ -46,13 +46,15 @@ note = "Auth mode and Codex guidance exist; catalog access authority, Vercel tea
 
 [[file]]
 upstream = "src/core/auth/grok_oauth.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-auth/src/grok_oauth.rs", "crates/ofx-auth/src/grok_oauth/run_login.rs", "crates/ofx-auth/src/grok_oauth/sign_in.rs"]
+note = "Browser and manual-code sign-in, callback classification, token exchange, account lookup, logout and revocation exist; credential refresh (loadAccess) and activation after sign-in are deferred with the Grok request route, as architecture.md records, and tests pass loopback endpoints to the constructor in place of upstream's FX_E2E overrides."
 
 [[file]]
 upstream = "src/core/auth/grok_session.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-auth/src/grok_session.rs", "crates/ofx-auth/src/subscription_session.rs"]
+note = "Session encoding, the refresh deadline and private locked storage through the shared subscription session store exist; the Grok credential refresh that consumes them is deferred with the Grok request route."
 
 [[file]]
 upstream = "src/core/auth/js_host_auth.zig"
