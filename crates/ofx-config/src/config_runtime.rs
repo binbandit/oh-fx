@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     AutoCompactPercent, PermissionAction, PermissionMode, PermissionRule, ReasoningEffort,
-    parse_strict_json_value,
+    StatuslineItem, StatuslineToggles, parse_strict_json_value,
 };
 use serde_json::{Map, Value};
 
@@ -210,6 +210,14 @@ pub enum LayerError {
     InvalidPromptHistoryEnabledType,
     #[error("InvalidStartupScrollbackType")]
     InvalidStartupScrollbackType,
+    #[error("InvalidStatusLineType")]
+    InvalidStatusLineType,
+    #[error("InvalidStatusLineContextType")]
+    InvalidStatusLineContextType,
+    #[error("InvalidStatusLineSessionType")]
+    InvalidStatusLineSessionType,
+    #[error("InvalidStatusLineWorkspaceType")]
+    InvalidStatusLineWorkspaceType,
     #[error("InvalidPermissionRulesType")]
     InvalidPermissionRulesType,
     #[error("InvalidPermissionAction")]
@@ -270,8 +278,21 @@ struct Layer {
     skill_symlink_authorities: Option<Vec<PathBuf>>,
     prompt_history: Option<bool>,
     startup_scrollback: Option<bool>,
+    statusline_context: Option<bool>,
+    statusline_session: Option<bool>,
+    statusline_workspace: Option<bool>,
     permission_rules: Option<Vec<PermissionRule>>,
     session_titles: Option<bool>,
+}
+
+impl Layer {
+    const fn statusline(&self, item: StatuslineItem) -> Option<bool> {
+        match item {
+            StatuslineItem::Context => self.statusline_context,
+            StatuslineItem::Session => self.statusline_session,
+            StatuslineItem::Workspace => self.statusline_workspace,
+        }
+    }
 }
 
 impl Layer {
@@ -404,6 +425,24 @@ impl Settings {
 
     pub fn startup_scrollback_source(&self) -> ConfigSource {
         self.layer_source(|layer| layer.startup_scrollback.is_some())
+    }
+
+    pub fn statusline(&self) -> StatuslineToggles {
+        let mut toggles = StatuslineToggles::default();
+        for item in StatuslineItem::ALL {
+            let enabled = self
+                .workspace
+                .statusline(item)
+                .or(self.global.statusline(item))
+                .unwrap_or(false);
+            toggles.set(item, enabled);
+        }
+        toggles
+    }
+
+    pub fn statusline_source(&self, item: StatuslineItem) -> Option<ConfigSource> {
+        (item != StatuslineItem::Workspace)
+            .then(|| self.layer_source(|layer| layer.statusline(item).is_some()))
     }
 
     pub fn gateway_model_source(&self, lookup: EnvironmentLookup<'_>) -> ConfigSource {
@@ -680,7 +719,7 @@ impl Settings {
             self.providers =
                 ProviderRegistry::parse(providers).map_err(SettingsError::Providers)?;
         }
-        self.global = self.parse_profile_layer(profile)?;
+        self.global = self.parse_profile_layer(profile, LayerScope::Global)?;
         let workspace_key = workspace_root.to_string_lossy();
         let workspace = match profile.get("workspaces") {
             None => None,
@@ -698,13 +737,17 @@ impl Settings {
             }
         };
         if let Some(entry) = workspace {
-            self.workspace = self.parse_profile_layer(entry)?;
+            self.workspace = self.parse_profile_layer(entry, LayerScope::Workspace)?;
         }
         Ok(())
     }
 
-    fn parse_profile_layer(&mut self, object: &Map<String, Value>) -> Result<Layer, SettingsError> {
-        match parse_layer(object) {
+    fn parse_profile_layer(
+        &mut self,
+        object: &Map<String, Value>,
+        scope: LayerScope,
+    ) -> Result<Layer, SettingsError> {
+        match parse_layer(object, scope) {
             Ok(ParsedLayer { layer, rejected }) => {
                 for error in rejected {
                     self.diagnose(ConfigLayer::User, error.into(), None);
@@ -790,8 +833,14 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, DiagnosticCause> {
     Ok(Some(bytes))
 }
 
-pub(crate) fn is_valid_profile_layer(object: &Map<String, Value>) -> bool {
-    parse_layer(object).is_ok_and(|parsed| parsed.rejected.is_empty())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerScope {
+    Global,
+    Workspace,
+}
+
+pub(crate) fn is_valid_profile_layer(object: &Map<String, Value>, scope: LayerScope) -> bool {
+    parse_layer(object, scope).is_ok_and(|parsed| parsed.rejected.is_empty())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -800,7 +849,38 @@ struct ParsedLayer {
     rejected: Vec<LayerError>,
 }
 
-fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
+fn parse_statusline(
+    layer: &mut Layer,
+    object: &Map<String, Value>,
+    scope: LayerScope,
+) -> Result<(), LayerError> {
+    let statusline = match object.get("statusLine") {
+        None => return Ok(()),
+        Some(Value::Object(statusline)) => statusline,
+        Some(_) if scope == LayerScope::Workspace => return Ok(()),
+        Some(_) => return Err(LayerError::InvalidStatusLineType),
+    };
+    layer.statusline_context = parse_switch(
+        statusline,
+        "context",
+        LayerError::InvalidStatusLineContextType,
+    )?;
+    layer.statusline_session = parse_switch(
+        statusline,
+        "session",
+        LayerError::InvalidStatusLineSessionType,
+    )?;
+    if scope == LayerScope::Global {
+        layer.statusline_workspace = parse_switch(
+            statusline,
+            "workspace",
+            LayerError::InvalidStatusLineWorkspaceType,
+        )?;
+    }
+    Ok(())
+}
+
+fn parse_layer(object: &Map<String, Value>, scope: LayerScope) -> Result<ParsedLayer, LayerError> {
     let mut rejected = Vec::new();
     let model = object.get("model").map(parse_model).transpose()?;
     let mut layer = parse_routing(object)?;
@@ -854,6 +934,7 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         "startup_scrollback",
         LayerError::InvalidStartupScrollbackType,
     )?;
+    parse_statusline(&mut layer, object, scope)?;
     layer.permission_rules = object
         .get("permission")
         .map(parse_permission_config)
@@ -1288,7 +1369,11 @@ mod tests {
             ),
         ] {
             let object: Map<String, Value> = serde_json::from_str(json).unwrap();
-            assert_eq!(parse_layer(&object), Err(error), "{json}");
+            assert_eq!(
+                parse_layer(&object, LayerScope::Global),
+                Err(error),
+                "{json}"
+            );
             let settings = fixture_settings(json);
             assert_eq!(
                 settings.diagnostics()[0].cause,
@@ -2189,7 +2274,11 @@ mod tests {
             let Ok(Value::Object(object)) = parse_strict_json_value(text.as_bytes()) else {
                 unreachable!()
             };
-            assert_eq!(parse_layer(&object).map(|_| ()), Err(error), "{text}");
+            assert_eq!(
+                parse_layer(&object, LayerScope::Global).map(|_| ()),
+                Err(error),
+                "{text}"
+            );
             let settings = load(&fixture(Some(text), None)).unwrap();
             assert!(settings.profile_is_unusable(), "{text}");
             assert_eq!(settings.user_layer_failure(), Some("InvalidSettingsFormat"));
@@ -2255,6 +2344,94 @@ mod tests {
         ))
         .unwrap();
         assert!(project.startup_scrollback());
+    }
+
+    fn statusline_states(settings: &Settings) -> [bool; 3] {
+        StatuslineItem::ALL.map(|item| settings.statusline().enabled(item))
+    }
+
+    #[test]
+    fn statusline_fields_default_off_and_merge_by_field() {
+        let fixture = fixture(None, None);
+        let missing = load(&fixture).unwrap();
+        assert_eq!(statusline_states(&missing), [false; 3]);
+        assert_eq!(
+            missing.statusline_source(StatuslineItem::Context),
+            Some(ConfigSource::CompiledDefault)
+        );
+        assert_eq!(missing.statusline_source(StatuslineItem::Workspace), None);
+        let merged = workspace_settings(
+            &fixture,
+            r#""statusLine":{"sandbox":false,"context":true,"session":false,"workspace":true},"#,
+            r#"{"statusLine":{"session":true,"workspace":false}}"#,
+        );
+        assert!(merged.diagnostics().is_empty());
+        assert_eq!(statusline_states(&merged), [true, true, true]);
+        assert_eq!(
+            merged.statusline_source(StatuslineItem::Context),
+            Some(ConfigSource::UserGlobal)
+        );
+        assert_eq!(
+            merged.statusline_source(StatuslineItem::Session),
+            Some(ConfigSource::UserWorkspace)
+        );
+        let legacy = load(&self::fixture(
+            Some(r#"{"sandbox":{"legacy":true},"statusLine":{"sandbox":"legacy","context":true}}"#),
+            None,
+        ))
+        .unwrap();
+        assert!(!legacy.profile_is_unusable());
+        assert_eq!(statusline_states(&legacy), [true, false, false]);
+    }
+
+    #[test]
+    fn the_workspace_statusline_item_is_global_only() {
+        let fixture = fixture(None, None);
+        let settings = workspace_settings(
+            &fixture,
+            r#""statusLine":{"workspace":true},"#,
+            r#"{"statusLine":{"workspace":"ignored"}}"#,
+        );
+        assert!(settings.diagnostics().is_empty());
+        assert_eq!(statusline_states(&settings), [false, false, true]);
+        let container = workspace_settings(
+            &fixture,
+            r#""startup_scrollback":true,"#,
+            r#"{"statusLine":7,"startup_scrollback":false}"#,
+        );
+        assert!(!container.profile_is_unusable());
+        assert!(!container.startup_scrollback());
+    }
+
+    #[test]
+    fn malformed_global_statusline_settings_make_the_profile_unusable() {
+        for (json, error) in [
+            (r#"{"statusLine":7}"#, LayerError::InvalidStatusLineType),
+            (
+                r#"{"statusLine":{"context":1}}"#,
+                LayerError::InvalidStatusLineContextType,
+            ),
+            (
+                r#"{"statusLine":{"session":1}}"#,
+                LayerError::InvalidStatusLineSessionType,
+            ),
+            (
+                r#"{"statusLine":{"workspace":1}}"#,
+                LayerError::InvalidStatusLineWorkspaceType,
+            ),
+        ] {
+            let object: Map<String, Value> = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                parse_layer(&object, LayerScope::Global).map(|_| ()),
+                Err(error),
+                "{json}"
+            );
+            assert!(
+                load(&fixture(Some(json), None))
+                    .unwrap()
+                    .profile_is_unusable()
+            );
+        }
     }
 
     #[test]

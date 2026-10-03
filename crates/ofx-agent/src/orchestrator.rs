@@ -480,6 +480,12 @@ impl Agent {
             .map(|reply| Arc::clone(&reply.text))
     }
 
+    fn known_context_window(&self) -> Option<u32> {
+        self.capabilities
+            .as_ref()
+            .and_then(|known| known.model.context_window)
+    }
+
     async fn drive(
         &mut self,
         turn: &mut Turn,
@@ -631,10 +637,7 @@ impl Agent {
         if skills.uses_context_window() {
             self.resolve_capabilities(cancel).await?;
         }
-        let context_window = self
-            .capabilities
-            .as_ref()
-            .and_then(|known| known.model.context_window);
+        let context_window = self.known_context_window();
         let mut report = |notices: Vec<String>| {
             for text in notices {
                 events(UiEvent::ContextNotice { turn_id, text });

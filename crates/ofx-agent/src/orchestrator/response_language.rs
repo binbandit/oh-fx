@@ -128,6 +128,7 @@ impl Agent {
         events(UiEvent::UsageReported {
             turn_id: turn.id,
             usage,
+            context_window: self.known_context_window(),
         });
         let Some(completion) = judged else {
             return Ok(Reply::Rejected);

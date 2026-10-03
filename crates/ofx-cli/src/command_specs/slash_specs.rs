@@ -21,6 +21,7 @@ pub enum SlashKind {
     Settings,
     Alias,
     Fast,
+    Statusline,
     Workspace,
     Version,
     Quit,
@@ -225,6 +226,7 @@ mod tests {
                 "/settings",
                 "/alias",
                 "/fast",
+                "/statusline",
                 "/workspace",
                 "/version",
                 "/quit",
@@ -233,70 +235,40 @@ mod tests {
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
         assert_eq!(spec(SlashKind::Usage).aliases, ["/cost"]);
         assert!(spec(SlashKind::Alias).aliases.is_empty());
-        assert_eq!(
-            spec(SlashKind::Settings).completion_description,
-            "browse and update settings"
-        );
-        assert_eq!(
-            spec(SlashKind::Alias).completion_description,
-            "show alias availability"
-        );
-        assert_eq!(
-            spec(SlashKind::Workspace).completion_description,
-            "manage additional workspace directories"
-        );
-        assert_eq!(
-            spec(SlashKind::Usage).completion_description,
-            "show local oh-fx tokens, models, and spend"
-        );
-        assert_eq!(
-            spec(SlashKind::Permissions).completion_description,
-            "choose what oh-fx is allowed to do"
-        );
-        assert_eq!(
-            spec(SlashKind::ClearScreen).completion_description,
-            "start a fresh conversation while keeping managed processes"
-        );
-        assert_eq!(
-            spec(SlashKind::ResetSession).completion_description,
-            "reset the current session context"
-        );
-        assert_eq!(
-            spec(SlashKind::RenameSession).completion_description,
-            "rename the current session"
-        );
-        assert_eq!(
-            spec(SlashKind::Version).completion_description,
-            "show the oh-fx version"
-        );
-        assert_eq!(
-            spec(SlashKind::Stats).completion_description,
-            "show token and turn statistics"
-        );
-        assert_eq!(
-            spec(SlashKind::Copy).completion_description,
-            "copy the last assistant response"
-        );
-        assert_eq!(
-            spec(SlashKind::Fast).completion_description,
-            "toggle Fast mode when supported"
-        );
-        assert_eq!(
-            spec(SlashKind::Status).completion_description,
-            "show runtime configuration"
-        );
-        assert_eq!(
-            spec(SlashKind::Compact).completion_description,
-            "summarize context into a fresh window"
-        );
-        assert_eq!(
-            spec(SlashKind::Allowlist).completion_description,
-            "manage trusted commands, tools, and URLs"
-        );
-        assert_eq!(
-            spec(SlashKind::Undo).completion_description,
-            "undo the latest tracked file operation"
-        );
+        for (kind, description) in [
+            (SlashKind::Settings, "browse and update settings"),
+            (SlashKind::Alias, "show alias availability"),
+            (
+                SlashKind::Workspace,
+                "manage additional workspace directories",
+            ),
+            (
+                SlashKind::Usage,
+                "show local oh-fx tokens, models, and spend",
+            ),
+            (SlashKind::Permissions, "choose what oh-fx is allowed to do"),
+            (
+                SlashKind::ClearScreen,
+                "start a fresh conversation while keeping managed processes",
+            ),
+            (SlashKind::ResetSession, "reset the current session context"),
+            (SlashKind::RenameSession, "rename the current session"),
+            (SlashKind::Version, "show the oh-fx version"),
+            (SlashKind::Stats, "show token and turn statistics"),
+            (SlashKind::Copy, "copy the last assistant response"),
+            (SlashKind::Fast, "toggle Fast mode when supported"),
+            (SlashKind::Status, "show runtime configuration"),
+            (SlashKind::Compact, "summarize context into a fresh window"),
+            (
+                SlashKind::Allowlist,
+                "manage trusted commands, tools, and URLs",
+            ),
+            (SlashKind::Undo, "undo the latest tracked file operation"),
+            (SlashKind::Statusline, "toggle status line segments"),
+        ] {
+            assert_eq!(spec(kind).completion_description, description, "{kind:?}");
+        }
+        assert!(spec(SlashKind::Statusline).accepts_payload());
     }
 
     #[test]
@@ -328,6 +300,7 @@ mod tests {
                 ("/settings", "Appearance"),
                 ("/alias", "Extensions"),
                 ("/fast", "Model"),
+                ("/statusline", "Appearance"),
                 ("/workspace", "Workspace"),
                 ("/version", "General"),
                 ("/quit", "General"),
