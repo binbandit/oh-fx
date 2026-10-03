@@ -155,7 +155,6 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
             &["--context-limit", "mcp_description_bytes=1"][..],
             "--context-limit",
         ),
-        (&["--add-dir", "/tmp/shared", "-c"], "--add-dir"),
         (&["--provider", "local"], "--provider"),
         (&["--sessions-v2"], "--sessions-v2"),
         (&["--sessions-v2", "resume", "last"], "--sessions-v2"),
@@ -548,7 +547,6 @@ fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
             &["--context-limit", "mcp_description_bytes=1", "ask", "hi"][..],
             "--context-limit",
         ),
-        (&["--add-dir", "/tmp", "ask", "hi"], "--add-dir"),
         (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
     ] {
         let output = oh_fx(args, &[]);
@@ -560,9 +558,20 @@ fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
             "{args:?}"
         );
     }
-    let output = oh_fx(&["--add-dir=/tmp", "ask", "--json", "hi"], &[]);
+    let output = oh_fx(
+        &[
+            "--context-limit=mcp_description_bytes=1",
+            "ask",
+            "--json",
+            "hi",
+        ],
+        &[],
+    );
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stderr(&output), "oh-fx: --add-dir is not available yet\n");
+    assert_eq!(
+        stderr(&output),
+        "oh-fx: --context-limit is not available yet\n"
+    );
     assert_eq!(
         stdout(&output),
         "{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":\"\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{\"input_tokens\":null,\"output_tokens\":null},\"error\":\"NotAvailableYet\"}\n"

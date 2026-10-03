@@ -64,6 +64,8 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
 const CONTEXT_LIMITS_REPAIR: &str = "; context_limits keys must be documented limit names with a non-negative integer or \"off\" value";
 const MAX_SKILL_SYMLINK_AUTHORITIES: usize = 32;
+const MAX_ADDITIONAL_DIRECTORIES: usize = 16;
+const ADDITIONAL_DIRECTORIES_KEY: &str = "additional_directories";
 const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL";
 
 type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -83,6 +85,7 @@ enum DiagnosticCause {
     IgnoredProjectUserOnlySetting,
     RetiredSkillMatchFuzzy,
     InvalidContextLimits,
+    InvalidAdditionalDirectories,
     InvalidSkillSymlinkAuthorities,
 }
 
@@ -92,6 +95,7 @@ impl DiagnosticCause {
             Self::MalformedSettings
             | Self::RetiredSkillMatchFuzzy
             | Self::InvalidContextLimits
+            | Self::InvalidAdditionalDirectories
             | Self::InvalidSkillSymlinkAuthorities => Some("InvalidSettingsFormat"),
             Self::SettingsTooLarge => Some("SettingsPrimaryTooLarge"),
             Self::DurablePathUnsafe => Some("DurablePathUnsafe"),
@@ -109,6 +113,7 @@ impl DiagnosticCause {
             Self::IgnoredProjectUserOnlySetting => "ignored_project_user_only_setting",
             Self::RetiredSkillMatchFuzzy => "retired_skill_match_fuzzy",
             Self::InvalidContextLimits => "invalid_context_limits",
+            Self::InvalidAdditionalDirectories => "invalid_additional_directories",
             Self::InvalidSkillSymlinkAuthorities => "invalid_skill_symlink_authorities",
         }
     }
@@ -119,6 +124,16 @@ pub struct ConfigDiagnostic {
     layer: ConfigLayer,
     cause: DiagnosticCause,
     key: Option<String>,
+}
+
+impl ConfigDiagnostic {
+    fn invalid_additional_directories() -> Self {
+        Self {
+            layer: ConfigLayer::User,
+            cause: DiagnosticCause::InvalidAdditionalDirectories,
+            key: Some(ADDITIONAL_DIRECTORIES_KEY.to_owned()),
+        }
+    }
 }
 
 impl fmt::Display for ConfigDiagnostic {
@@ -136,6 +151,10 @@ impl fmt::Display for ConfigDiagnostic {
                 "; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool",
             )?,
             DiagnosticCause::InvalidContextLimits => formatter.write_str(CONTEXT_LIMITS_REPAIR)?,
+            DiagnosticCause::InvalidAdditionalDirectories => write!(
+                formatter,
+                "; additional_directories must be an array of at most {MAX_ADDITIONAL_DIRECTORIES} unique absolute directory paths for the current primary workspace"
+            )?,
             DiagnosticCause::InvalidSkillSymlinkAuthorities => write!(
                 formatter,
                 "; skill_symlink_authorities must be an array of at most {MAX_SKILL_SYMLINK_AUTHORITIES} absolute directory paths without .. components"
@@ -299,6 +318,8 @@ pub struct Settings {
     resumed: Layer,
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
+    additional_directories: Vec<String>,
+    additional_directories_read_at: usize,
     diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -335,6 +356,18 @@ impl Settings {
 
     pub fn diagnostics(&self) -> &[ConfigDiagnostic] {
         &self.diagnostics
+    }
+
+    pub fn additional_directories(&self) -> &[String] {
+        &self.additional_directories
+    }
+
+    pub fn reject_additional_directories(&mut self) {
+        self.additional_directories.clear();
+        self.diagnostics.insert(
+            self.additional_directories_read_at,
+            ConfigDiagnostic::invalid_additional_directories(),
+        );
     }
 
     pub fn profile_is_unusable(&self) -> bool {
@@ -607,6 +640,10 @@ impl Settings {
             self.providers =
                 ProviderRegistry::parse(providers).map_err(SettingsError::Providers)?;
         }
+        if profile.contains_key(ADDITIONAL_DIRECTORIES_KEY) {
+            self.diagnostics
+                .push(ConfigDiagnostic::invalid_additional_directories());
+        }
         self.global = self.parse_profile_layer(profile)?;
         let workspace_key = workspace_root.to_string_lossy();
         let workspace = match profile.get("workspaces") {
@@ -625,9 +662,23 @@ impl Settings {
             }
         };
         if let Some(entry) = workspace {
+            self.read_additional_directories(entry);
             self.workspace = self.parse_profile_layer(entry)?;
         }
         Ok(())
+    }
+
+    fn read_additional_directories(&mut self, entry: &Map<String, Value>) {
+        let Some(value) = entry.get(ADDITIONAL_DIRECTORIES_KEY) else {
+            return;
+        };
+        self.additional_directories_read_at = self.diagnostics.len();
+        match parse_additional_directories(value) {
+            Some(directories) => self.additional_directories = directories,
+            None => self
+                .diagnostics
+                .push(ConfigDiagnostic::invalid_additional_directories()),
+        }
     }
 
     fn parse_profile_layer(&mut self, object: &Map<String, Value>) -> Result<Layer, SettingsError> {
@@ -828,6 +879,26 @@ fn parse_permission_config(value: &Value) -> Result<Vec<PermissionRule>, LayerEr
         }
     }
     Ok(rules)
+}
+
+fn parse_additional_directories(value: &Value) -> Option<Vec<String>> {
+    let Value::Array(items) = value else {
+        return None;
+    };
+    if items.len() > MAX_ADDITIONAL_DIRECTORIES {
+        return None;
+    }
+    let mut directories: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::String(path) = item else {
+            return None;
+        };
+        if !path.starts_with('/') || path.contains('\0') || directories.contains(path) {
+            return None;
+        }
+        directories.push(path.clone());
+    }
+    Some(directories)
 }
 
 fn parse_skill_symlink_authorities(value: &Value) -> Result<Vec<PathBuf>, LayerError> {
@@ -2090,5 +2161,103 @@ mod tests {
         assert_eq!(settings.user_layer_failure(), Some("DurablePathUnsafe"));
         let large = load(&fixture(Some(&" ".repeat(MAX_SETTINGS_BYTES + 1)), None)).unwrap();
         assert_eq!(large.user_layer_failure(), Some("SettingsPrimaryTooLarge"));
+    }
+
+    const ADDITIONAL_DIRECTORIES_DIAGNOSTIC: &str = "config user: invalid_additional_directories; key=additional_directories; additional_directories must be an array of at most 16 unique absolute directory paths for the current primary workspace";
+
+    fn with_workspace_entry(fixture: &Fixture, global: &str, entry: &str) -> Settings {
+        let workspace = serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap();
+        fs::write(
+            fixture.paths.config.join(SETTINGS_FILE),
+            format!(r#"{{{global}"workspaces":{{{workspace}:{entry}}}}}"#),
+        )
+        .unwrap();
+        load(fixture).unwrap()
+    }
+
+    fn rendered(settings: &Settings) -> Vec<String> {
+        settings
+            .diagnostics()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn saved_additional_directories_come_from_the_workspace_entry_in_order() {
+        let fixture = fixture(Some("{}"), None);
+        let settings = with_workspace_entry(
+            &fixture,
+            "",
+            r#"{"additional_directories":["/srv/shared","/srv/docs"],"max_agent_steps":17}"#,
+        );
+        assert!(settings.diagnostics().is_empty());
+        assert_eq!(
+            settings.additional_directories(),
+            ["/srv/shared", "/srv/docs"]
+        );
+        assert_eq!(settings.max_agent_steps(&no_environment), 17);
+        assert!(fixture_settings("{}").additional_directories().is_empty());
+    }
+
+    #[test]
+    fn invalid_saved_additional_directories_are_dropped_with_upstreams_diagnostic() {
+        let too_many = (0..=16)
+            .map(|index| format!(r#""/srv/{index}""#))
+            .collect::<Vec<_>>()
+            .join(",");
+        for value in [
+            r#""/srv/shared""#.to_owned(),
+            "[1]".to_owned(),
+            r#"["relative"]"#.to_owned(),
+            r#"[""]"#.to_owned(),
+            r#"["/srv/a","/srv/a"]"#.to_owned(),
+            r#"["/srv/\u0000"]"#.to_owned(),
+            format!("[{too_many}]"),
+        ] {
+            let fixture = fixture(Some("{}"), None);
+            let settings = with_workspace_entry(
+                &fixture,
+                "",
+                &format!(r#"{{"additional_directories":{value},"max_agent_steps":17}}"#),
+            );
+            assert!(settings.additional_directories().is_empty(), "{value}");
+            assert_eq!(
+                rendered(&settings),
+                [ADDITIONAL_DIRECTORIES_DIAGNOSTIC],
+                "{value}"
+            );
+            assert_eq!(settings.max_agent_steps(&no_environment), 17, "{value}");
+            assert!(!settings.profile_is_unusable(), "{value}");
+            assert_eq!(settings.user_layer_failure(), Some("InvalidSettingsFormat"));
+        }
+    }
+
+    #[test]
+    fn a_top_level_additional_directories_key_is_always_diagnosed() {
+        let settings = fixture_settings(r#"{"additional_directories":["/srv/shared"]}"#);
+        assert!(settings.additional_directories().is_empty());
+        assert_eq!(rendered(&settings), [ADDITIONAL_DIRECTORIES_DIAGNOSTIC]);
+    }
+
+    #[test]
+    fn rejected_saved_directories_are_diagnosed_where_upstream_reads_them() {
+        let fixture = fixture(Some("{}"), None);
+        let mut settings = with_workspace_entry(
+            &fixture,
+            r#""skill_match_fuzzy":true,"#,
+            r#"{"additional_directories":["/srv/shared"],"context_limits":[]}"#,
+        );
+        assert_eq!(settings.additional_directories(), ["/srv/shared"]);
+        settings.reject_additional_directories();
+        assert!(settings.additional_directories().is_empty());
+        assert_eq!(
+            rendered(&settings),
+            [
+                "config user: retired_skill_match_fuzzy; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool",
+                ADDITIONAL_DIRECTORIES_DIAGNOSTIC,
+                "config user: invalid_context_limits; context_limits keys must be documented limit names with a non-negative integer or \"off\" value",
+            ]
+        );
     }
 }

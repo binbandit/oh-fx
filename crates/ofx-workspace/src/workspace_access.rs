@@ -1,0 +1,242 @@
+use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+
+use crate::path_error::PathError;
+use crate::pathing::{MAX_PATH_BYTES, path_inside, resolve_lexically};
+
+const MAX_ADDITIONAL_DIRECTORIES: usize = 16;
+const SAVED: DirectorySource = DirectorySource {
+    saved: true,
+    command_line: false,
+};
+const COMMAND_LINE: DirectorySource = DirectorySource {
+    saved: false,
+    command_line: true,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WorkspaceAccessError {
+    #[error("InvalidPath")]
+    InvalidPath,
+    #[error("PathNotFound")]
+    PathNotFound,
+    #[error("NotDirectory")]
+    NotDirectory,
+    #[error("PrimaryDirectory")]
+    PrimaryDirectory,
+    #[error("TooManyDirectories")]
+    TooManyDirectories,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectorySource {
+    pub saved: bool,
+    pub command_line: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditionalDirectory {
+    pub path: PathBuf,
+    pub source: DirectorySource,
+    pub available: bool,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceAccess {
+    primary: PathBuf,
+    entries: Vec<AdditionalDirectory>,
+    saved_suppressed: bool,
+}
+
+impl WorkspaceAccess {
+    pub fn new(primary: &Path, saved: &[String]) -> Result<Self, WorkspaceAccessError> {
+        let mut access = Self::primary_only(primary);
+        for path in saved {
+            let (identity, available) = resolve_saved_directory(primary, path)?;
+            access.merge(identity, SAVED, available)?;
+        }
+        access.recompute_active();
+        Ok(access)
+    }
+
+    pub fn primary_only(primary: &Path) -> Self {
+        Self {
+            primary: primary.to_path_buf(),
+            entries: Vec::new(),
+            saved_suppressed: false,
+        }
+    }
+
+    pub fn apply_launch(
+        &self,
+        command_line: &[OsString],
+        saved_suppressed: bool,
+    ) -> Result<Self, WorkspaceAccessError> {
+        let mut replacement = Self {
+            primary: self.primary.clone(),
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| entry.source.saved)
+                .map(|entry| AdditionalDirectory {
+                    source: SAVED,
+                    ..entry.clone()
+                })
+                .collect(),
+            saved_suppressed,
+        };
+        for path in command_line {
+            let path = path.to_str().ok_or(WorkspaceAccessError::InvalidPath)?;
+            let canonical = canonical_existing_directory(&replacement.primary, path)?;
+            replacement.merge(canonical, COMMAND_LINE, true)?;
+        }
+        replacement.recompute_active();
+        Ok(replacement)
+    }
+
+    pub fn entries(&self) -> &[AdditionalDirectory] {
+        &self.entries
+    }
+
+    pub fn active_roots(&self) -> impl Iterator<Item = &Path> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.active)
+            .map(|entry| entry.path.as_path())
+    }
+
+    pub fn additional_root_for(&self, path: &Path) -> Option<&Path> {
+        self.active_roots().find(|root| path_inside(root, path))
+    }
+
+    fn merge(
+        &mut self,
+        path: PathBuf,
+        source: DirectorySource,
+        available: bool,
+    ) -> Result<(), WorkspaceAccessError> {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
+            entry.source.saved |= source.saved;
+            entry.source.command_line |= source.command_line;
+            entry.available |= available;
+            return Ok(());
+        }
+        if self.entries.len() >= MAX_ADDITIONAL_DIRECTORIES {
+            return Err(WorkspaceAccessError::TooManyDirectories);
+        }
+        self.entries.push(AdditionalDirectory {
+            path,
+            source,
+            available,
+            active: false,
+        });
+        Ok(())
+    }
+
+    fn recompute_active(&mut self) {
+        for entry in &mut self.entries {
+            let source_active =
+                entry.source.command_line || (entry.source.saved && !self.saved_suppressed);
+            entry.active = entry.available && source_active;
+        }
+    }
+}
+
+fn resolve_saved_directory(
+    primary: &Path,
+    input: &str,
+) -> Result<(PathBuf, bool), WorkspaceAccessError> {
+    if !input.starts_with('/') {
+        return Err(WorkspaceAccessError::InvalidPath);
+    }
+    match canonical_existing_directory(primary, input) {
+        Ok(canonical) => Ok((canonical, true)),
+        Err(WorkspaceAccessError::PathNotFound | WorkspaceAccessError::NotDirectory) => {
+            let normalized = bytes_path(&resolve_lexically(&[input.as_bytes()])).to_path_buf();
+            if normalized == primary {
+                return Err(WorkspaceAccessError::PrimaryDirectory);
+            }
+            let identity = resolve_from_nearest_existing(&normalized)
+                .ok_or(WorkspaceAccessError::InvalidPath)?;
+            Ok((identity, false))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn canonical_existing_directory(
+    primary: &Path,
+    input: &str,
+) -> Result<PathBuf, WorkspaceAccessError> {
+    if input.is_empty() || input.len() > MAX_PATH_BYTES || input.contains('\0') {
+        return Err(WorkspaceAccessError::InvalidPath);
+    }
+    let absolute = if input.starts_with('/') {
+        input.as_bytes().to_vec()
+    } else {
+        resolve_lexically(&[primary.as_os_str().as_bytes(), input.as_bytes()])
+    };
+    let canonical =
+        fs::canonicalize(bytes_path(&absolute)).map_err(|error| match PathError::from_realpath(
+            &error,
+        ) {
+            PathError::FileNotFound
+            | PathError::AccessDenied
+            | PathError::PermissionDenied
+            | PathError::SymLinkLoop
+            | PathError::NameTooLong
+            | PathError::InputOutput => WorkspaceAccessError::PathNotFound,
+            PathError::NotDir => WorkspaceAccessError::NotDirectory,
+            _ => WorkspaceAccessError::InvalidPath,
+        })?;
+    let metadata =
+        fs::symlink_metadata(&canonical).map_err(|error| {
+            match PathError::from_realpath(&error) {
+                PathError::FileNotFound => WorkspaceAccessError::PathNotFound,
+                PathError::NotDir => WorkspaceAccessError::NotDirectory,
+                _ => WorkspaceAccessError::InvalidPath,
+            }
+        })?;
+    if !metadata.is_dir() {
+        return Err(WorkspaceAccessError::NotDirectory);
+    }
+    if canonical == primary {
+        return Err(WorkspaceAccessError::PrimaryDirectory);
+    }
+    Ok(canonical)
+}
+
+fn resolve_from_nearest_existing(absolute: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = absolute;
+    loop {
+        match fs::canonicalize(current) {
+            Ok(existing) => {
+                if !missing.is_empty() && !existing.is_dir() {
+                    return None;
+                }
+                return Some(
+                    missing
+                        .iter()
+                        .rev()
+                        .fold(existing, |path, name| path.join(name)),
+                );
+            }
+            Err(error) if PathError::from_realpath(&error) == PathError::FileNotFound => {
+                missing.push(current.file_name()?.to_owned());
+                current = current.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn bytes_path(bytes: &[u8]) -> &Path {
+    Path::new(OsStr::from_bytes(bytes))
+}
+
+#[cfg(test)]
+mod tests;

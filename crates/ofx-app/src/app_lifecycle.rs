@@ -94,6 +94,12 @@ async fn bootstrap(
     resume: Option<&RequestedResume>,
 ) -> Result<Session, Vec<String>> {
     let mut profile = Profile::load().map_err(|error| profile_failure_lines(&error))?;
+    profile
+        .apply_launch(
+            modifiers.additional_directories(),
+            modifiers.saved_directories_suppressed(),
+        )
+        .map_err(|error| vec![failure_line(&error)])?;
     let supervisor = SessionSupervisor::current_executable()
         .map_err(|_| vec![failure_line(&SELF_EXE_NOT_FOUND)])?;
     let executions = ManagedExecutions::new(supervisor);

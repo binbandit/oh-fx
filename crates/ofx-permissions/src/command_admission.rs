@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ofx_contract::{Admission, CommandRequest, PathAccess, PermissionMode, ToolCall};
 use ofx_shell::known_reversible_auto_command;
@@ -9,16 +9,40 @@ const SHELL_TOOL: &str = "shell";
 pub(crate) fn command_admission(
     mode: PermissionMode,
     workspace_root: &Path,
+    additional_roots: &[PathBuf],
     request: &CommandRequest,
 ) -> Admission {
     match mode {
         PermissionMode::Yolo => Admission::Allowed(PathAccess::WorkspaceOrExternal),
         PermissionMode::Ask => Admission::ApprovalRequired,
-        PermissionMode::Auto if runs_without_review(workspace_root, request) => {
-            Admission::Allowed(PathAccess::WorkspaceOnly)
-        }
-        PermissionMode::Auto => Admission::ReviewRequired,
+        PermissionMode::Auto => match request {
+            CommandRequest::Observe => Admission::Allowed(PathAccess::WorkspaceOnly),
+            CommandRequest::Run {
+                command,
+                cwd,
+                terminal: false,
+                ..
+            } if known_reversible_auto_command(command) => {
+                reversible_command_access(workspace_root, additional_roots, cwd)
+                    .map_or(Admission::ReviewRequired, Admission::Allowed)
+            }
+            _ => Admission::ReviewRequired,
+        },
     }
+}
+
+fn reversible_command_access(
+    workspace_root: &Path,
+    additional_roots: &[PathBuf],
+    cwd: &Path,
+) -> Option<PathAccess> {
+    if path_inside(workspace_root, cwd) {
+        return Some(PathAccess::WorkspaceOnly);
+    }
+    additional_roots
+        .iter()
+        .find(|root| path_inside(root, cwd))
+        .map(|root| PathAccess::Within(root.clone()))
 }
 
 pub(crate) fn undescribed_shell_call_admission(
@@ -30,21 +54,6 @@ pub(crate) fn undescribed_shell_call_admission(
         PermissionMode::Ask => Admission::ApprovalRequired,
         PermissionMode::Auto => Admission::ReviewRequired,
     })
-}
-
-fn runs_without_review(workspace_root: &Path, request: &CommandRequest) -> bool {
-    match request {
-        CommandRequest::Run {
-            command,
-            cwd,
-            terminal,
-            ..
-        } => {
-            !terminal && path_inside(workspace_root, cwd) && known_reversible_auto_command(command)
-        }
-        CommandRequest::Observe => true,
-        CommandRequest::SendInput { .. } | CommandRequest::Stop => false,
-    }
 }
 
 #[cfg(test)]
@@ -69,7 +78,7 @@ mod tests {
     }
 
     fn admit(mode: PermissionMode, request: &CommandRequest) -> Admission {
-        command_admission(mode, Path::new(WORKSPACE), request)
+        command_admission(mode, Path::new(WORKSPACE), &[], request)
     }
 
     fn requests() -> Vec<CommandRequest> {

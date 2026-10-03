@@ -399,6 +399,31 @@ fn postimages_over_the_limit_fail_before_approval() {
 }
 
 #[test]
+fn edits_in_an_additional_directory_are_read_before_admission() {
+    let fixture = Fixture::new();
+    let shared = fixture.root.join("shared");
+    fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    fs::write(&notes, "secret value\n").unwrap();
+    let tool = EditFile::new(&fixture.workspace).with_additional_roots(vec![shared]);
+    let missing = run(&tool, &arguments(&notes, "missing", "new"));
+    assert_eq!(missing.mutation, None);
+    assert_eq!(
+        missing.output.status,
+        ofx_contract::ToolResultStatus::Failure
+    );
+    let edited = run(&tool, &arguments(&notes, "secret", "public"));
+    assert_eq!(
+        edited.mutation,
+        Some(FileMutation {
+            target: notes.clone(),
+            state: FileMutationState::Changes,
+        })
+    );
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "public value\n");
+}
+
+#[test]
 fn external_edits_are_deferred_until_admission() {
     let fixture = Fixture::new();
     let outside = fixture.root.join("outside.txt");

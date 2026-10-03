@@ -10,7 +10,7 @@ use ofx_contract::{
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
-use ofx_workspace::{ChangeTracker, TargetMode, resolve_file_mutation_target};
+use ofx_workspace::{ChangeTracker, TargetMode, path_inside, resolve_file_mutation_target};
 
 use crate::file_mutation::{
     MAX_ENCODED_PATH_BYTES, MutationInput, PrepareFailure, PreparedMutation,
@@ -25,6 +25,7 @@ pub(crate) struct MutationRequest {
     pub(crate) tool_name: &'static str,
     pub(crate) presentation: CallPresentation,
     pub(crate) workspace_root: PathBuf,
+    pub(crate) additional_roots: Vec<PathBuf>,
     pub(crate) permission_mode: Option<LivePermissionMode>,
     pub(crate) change_tracker: Option<ChangeTracker>,
 }
@@ -66,6 +67,7 @@ impl MutationRequest {
         Ok(Plan {
             tool_name: self.tool_name,
             workspace_root: self.workspace_root.clone(),
+            additional_roots: self.additional_roots.clone(),
             requested_path,
             full_access: false,
             permission_mode: self.permission_mode.clone(),
@@ -167,6 +169,7 @@ enum Stage {
 struct Plan {
     tool_name: &'static str,
     workspace_root: PathBuf,
+    additional_roots: Vec<PathBuf>,
     requested_path: String,
     full_access: bool,
     permission_mode: Option<LivePermissionMode>,
@@ -191,7 +194,12 @@ impl Plan {
             .permission_mode
             .as_ref()
             .is_some_and(|mode| mode.get() == PermissionMode::Yolo);
-        let stage = if targets.target.anchor_is_external || full_access {
+        let unread = targets.target.anchor_is_external
+            && !self
+                .additional_roots
+                .iter()
+                .any(|root| path_inside(root, &targets.target.path()));
+        let stage = if unread || full_access {
             Ok(Stage::Deferred(targets))
         } else {
             PreparedMutation::prepare(targets, &self.requested_path, &self.input)
