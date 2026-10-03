@@ -1139,7 +1139,6 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
             &["ask", "--prompt-permissions", "hi"],
             "ask --prompt-permissions",
         ),
-        (&["--add-dir", "/tmp", "ask", "--fast", "hi"], "--add-dir"),
         (&["ask", "--sessions-v2", "hi"], "ask --sessions-v2"),
         (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
         (
@@ -1785,6 +1784,125 @@ fn full_access_reads_an_external_path() {
             "tool_call_id": "call_1",
         })]
     );
+}
+
+const ADDITIONAL_DIRECTORIES_CONTEXT: &str = "Runtime context: the following additional directories are access-authorized for this run. Relative paths still resolve from the primary workspace. These directories do not contribute AGENTS.md or other project instructions.\n";
+
+#[test]
+fn ask_reads_an_added_directory_without_approval_and_tells_the_model_it_may() {
+    let outside = OutsideFile::new();
+    let shared = Path::new(&outside.path).parent().unwrap().to_owned();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            &outside.read_call(),
+        )),
+        Reply::sse(&chat_text_events(&["It is a secret."])),
+    ]);
+    let home = Home::with_settings(&settings_in_mode(&server.base_url(), "ask"));
+    let output = home.ask(
+        &[
+            OsStr::new("--add-dir"),
+            shared.as_os_str(),
+            OsStr::new("ask"),
+            OsStr::new("read it"),
+        ],
+        &KEY,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "It is a secret.");
+    assert_eq!(stderr(&output), format!("Reading {}\n", outside.path));
+    let requests = server.requests();
+    let system = system_texts(&messages(&requests[0]));
+    let access = system
+        .iter()
+        .position(|text| text.starts_with(ADDITIONAL_DIRECTORIES_CONTEXT))
+        .expect("the run names its additional directories");
+    assert!(system[access - 1].contains("Runtime context: this is a noninteractive run"));
+    assert_eq!(
+        system[access],
+        format!("{ADDITIONAL_DIRECTORIES_CONTEXT}- {}\n", shared.display())
+    );
+    assert!(system[access + 1].starts_with("Runtime context: permission mode is ask."));
+    assert_eq!(
+        tool_messages(&requests[1]),
+        [json!({
+            "role": "tool",
+            "content": format!("<path>{}</path>\n<content>\n1\toutside secret\n</content>", outside.path),
+            "tool_call_id": "call_1",
+        })]
+    );
+}
+
+#[test]
+fn saved_additional_directories_apply_until_no_additional_dirs_suppresses_them() {
+    let outside = OutsideFile::new();
+    let shared = canonical(Path::new(&outside.path).parent().unwrap());
+    let read = chat_tool_call_events("call_1", "read_file", &outside.read_call());
+    let server = FakeServer::start([
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["It is a secret."])),
+        Reply::sse(&read),
+    ]);
+    let mut settings = settings_in_mode(&server.base_url(), "ask");
+    let home = Home::with_settings(&settings);
+    settings["workspaces"] = json!({
+        canonical(&home.workspace): {"additional_directories": [shared]}
+    });
+    fs::write(
+        home.root.join("config/oh-fx/settings.json"),
+        settings.to_string(),
+    )
+    .unwrap();
+    let saved = home.ask(&["ask", "read it"], &KEY);
+    assert!(saved.status.success(), "{}", stderr(&saved));
+    assert_eq!(stdout(&saved), "It is a secret.");
+    let suppressed = home.ask(&["--no-additional-dirs", "ask", "read it"], &KEY);
+    assert_eq!(suppressed.status.code(), Some(1));
+    assert_eq!(
+        stderr(&suppressed),
+        blocked_read_stderr(&outside.path, ASK_MODE_HINT)
+    );
+    let requests = server.requests();
+    assert!(
+        system_texts(&messages(&requests[0]))
+            .iter()
+            .any(|text| text.starts_with(ADDITIONAL_DIRECTORIES_CONTEXT))
+    );
+    assert!(
+        !system_texts(&messages(&requests[2]))
+            .iter()
+            .any(|text| text.starts_with(ADDITIONAL_DIRECTORIES_CONTEXT))
+    );
+}
+
+#[test]
+fn added_directories_that_cannot_be_used_fail_before_any_request() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.root.join("file"), "").unwrap();
+    for (directory, code) in [
+        ("../missing", "PathNotFound"),
+        ("../file", "NotDirectory"),
+        (".", "PrimaryDirectory"),
+    ] {
+        let output = home.ask(&["--add-dir", directory, "ask", "hi"], &KEY);
+        assert_eq!(output.status.code(), Some(1), "{directory}");
+        assert_eq!(stdout(&output), "", "{directory}");
+        assert_eq!(stderr(&output), format!("oh-fx: {code}\n"), "{directory}");
+        let json = home.ask(&["--add-dir", directory, "ask", "--json", "hi"], &KEY);
+        assert_eq!(json.status.code(), Some(1), "{directory}");
+        assert_eq!(stderr(&json), "", "{directory}");
+        assert_eq!(
+            stdout(&json),
+            format!(
+                "{{\"output\":\"\",\"final_output\":\"\",\"exit_code\":1,\"model\":\"\",\"resolved_provider\":null,\"session_id\":\"\",\"steps\":0,\"tool_calls\":[],\"usage\":{{\"input_tokens\":null,\"output_tokens\":null}},\"error\":\"{code}\"}}\n"
+            ),
+            "{directory}"
+        );
+    }
+    assert!(server.requests().is_empty());
 }
 
 #[test]

@@ -19,8 +19,8 @@ use ofx_app::{
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{
-    ConnectionError, ContextLimitName, ContextLimitOverride, ProfilePaths, SelectionError,
-    Settings, save_yolo_acknowledged,
+    ConnectionError, ContextLimitName, ProfilePaths, SelectionError, Settings,
+    save_yolo_acknowledged,
 };
 use ofx_contract::{
     CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause, PermissionMode,
@@ -232,7 +232,7 @@ struct Signalled(i32);
 struct AskRequest<'a> {
     args: &'a AskArgs,
     prompt: &'a str,
-    context_limits: &'a [ContextLimitOverride],
+    modifiers: &'a LaunchModifiers,
     executions: &'a ManagedExecutions,
 }
 
@@ -266,7 +266,7 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
         Ok(runtime) => runtime.block_on(ask(
             args,
             &prompt,
-            modifiers.context_limit_overrides(),
+            modifiers,
             SubscriptionEndpoints::default(),
         )),
         Err(_) => Failure::code("RuntimeUnavailable").report(args.output.json),
@@ -286,10 +286,7 @@ pub(crate) fn unsupported_launch_modifier(modifiers: &LaunchModifiers) -> Option
         .context_limit_overrides()
         .iter()
         .any(|limit| !APPLIED_LIMITS.contains(&limit.name));
-    first_requested([
-        (unsupported_limit, "--context-limit"),
-        (!modifiers.additional_directories().is_empty(), "--add-dir"),
-    ])
+    unsupported_limit.then_some("--context-limit")
 }
 
 fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
@@ -340,7 +337,7 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
 async fn ask(
     args: &AskArgs,
     prompt: &str,
-    context_limits: &[ContextLimitOverride],
+    modifiers: &LaunchModifiers,
     endpoints: SubscriptionEndpoints,
 ) -> ExitCode {
     let Ok(supervisor) = SessionSupervisor::current_executable() else {
@@ -356,7 +353,7 @@ async fn ask(
     let request = AskRequest {
         args,
         prompt,
-        context_limits,
+        modifiers,
         executions: &executions,
     };
     let answered = answer(&request, endpoints, echo, &cancel, &received).await;
@@ -457,6 +454,12 @@ async fn prepare_agent(
     });
     announce_settings(args, &profile, permission_mode)?;
     let mut pending = None;
+    profile
+        .apply_launch(
+            request.modifiers.additional_directories(),
+            request.modifiers.saved_directories_suppressed(),
+        )
+        .map_err(|error| Failure::code(error.to_string()))?;
     let resumed = match &args.session.resume {
         Some(target) => {
             let store = open_store(&profile)?;
@@ -482,7 +485,7 @@ async fn prepare_agent(
         system_prompt: args.system_prompt.clone(),
         reasoning_effort,
         fast_mode,
-        context_limits: request.context_limits,
+        context_limits: request.modifiers.context_limit_overrides(),
         command_timeout: args.timeout_ms.map(Duration::from_millis),
         executions: request.executions,
         endpoints,
@@ -1665,7 +1668,7 @@ mod tests {
         let request = AskRequest {
             args: &args,
             prompt: "Hello",
-            context_limits: &[],
+            modifiers: &LaunchModifiers::default(),
             executions: &executions,
         };
         let answered =
@@ -1754,7 +1757,7 @@ mod tests {
         let request = AskRequest {
             args: &args,
             prompt: &prompt,
-            context_limits: &[],
+            modifiers: &LaunchModifiers::default(),
             executions: &executions,
         };
         let answered = runtime.block_on(answer(

@@ -31,6 +31,7 @@ const DIRTY_MARKERS: [&str; 5] = [
 ];
 const NONINTERACTIVE_CONTEXT: &str = "Runtime context: this is a noninteractive run without live question UI; when a user-owned decision remains after inspection, stop and surface a concrete blocker in freeform text with the available options. Do not recommend or label one option as preferred.";
 const VERIFICATION_CONTEXT: &str = "Runtime context: if this turn changes files, choose focused verification from the touched areas first. Use changed paths in tool calls and results to select checks; avoid generic or expensive verification unless those paths justify it or the user requested it. Tests under tests/evals can be deterministic; do not assume they require live models. Preserve exact verification evidence in the final summary.";
+const ADDITIONAL_DIRECTORIES_CONTEXT: &str = "Runtime context: the following additional directories are access-authorized for this run. Relative paths still resolve from the primary workspace. These directories do not contribute AGENTS.md or other project instructions.\n";
 const ASK_MODE_CONTEXT: &str = "Runtime context: permission mode is ask. Sensitive tool calls may require user approval unless configured rules or session grants already decide them. Tool admission remains authoritative.";
 const AUTO_MODE_CONTEXT: &str = "Runtime context: permission mode is auto. After configured rules, session grants, and deterministic safe-tool authority, oh-fx sends each unresolved action to a narrow safety reviewer. A clear result authorizes only that exact action. A caution or unavailable result holds only that action and returns advice without opening a permission screen, disabling tools, or ending the turn. Exact cautions are reused for this turn; choose a materially different safe action or explain why no safe path remains. Tool admission and exact live revalidation remain authoritative.";
 const YOLO_MODE_CONTEXT: &str = "Runtime context: permission mode is full access. oh-fx permission policy is disabled. Tool lookup, argument validation, execution authority, cancellation, limits, operating-system permissions, and remote authentication remain authoritative.";
@@ -38,6 +39,7 @@ const YOLO_MODE_CONTEXT: &str = "Runtime context: permission mode is full access
 #[derive(Debug, Clone)]
 pub(crate) struct HostRuntimeContext {
     workspace_root: PathBuf,
+    additional_roots: Vec<PathBuf>,
     permission_mode: LivePermissionMode,
     interactive: bool,
 }
@@ -50,20 +52,33 @@ impl HostRuntimeContext {
     ) -> Self {
         Self {
             workspace_root,
+            additional_roots: Vec::new(),
             permission_mode: permission_mode.into(),
             interactive,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_additional_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.additional_roots = roots;
+        self
     }
 }
 
 impl RuntimeContext for HostRuntimeContext {
     fn runtime_context(&self) -> BoxFuture<'_, Vec<String>> {
         let workspace_root = self.workspace_root.clone();
+        let additional_roots = self.additional_roots.clone();
         let permission_mode = self.permission_mode.get();
         let interactive = self.interactive;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                runtime_context(&workspace_root, permission_mode, interactive)
+                runtime_context(
+                    &workspace_root,
+                    &additional_roots,
+                    permission_mode,
+                    interactive,
+                )
             })
             .await
             .unwrap_or_default()
@@ -93,21 +108,35 @@ impl ProjectContextProvider for HostProjectContext {
 
 fn runtime_context(
     workspace_root: &Path,
+    additional_roots: &[PathBuf],
     permission_mode: PermissionMode,
     interactive: bool,
 ) -> Vec<String> {
     let fragment = build_turn_context_fragment(workspace_root, GIT_READ_BUDGET);
-    if !interactive {
-        return vec![
-            format!("{fragment}\n{NONINTERACTIVE_CONTEXT}"),
-            permission_mode_context(permission_mode).to_owned(),
-        ];
+    let mut messages = vec![if interactive {
+        fragment
+    } else {
+        format!("{fragment}\n{NONINTERACTIVE_CONTEXT}")
+    }];
+    messages.extend(additional_directories_context(additional_roots));
+    messages.push(permission_mode_context(permission_mode).to_owned());
+    if interactive {
+        messages.push(VERIFICATION_CONTEXT.to_owned());
     }
-    vec![
-        fragment,
-        permission_mode_context(permission_mode).to_owned(),
-        VERIFICATION_CONTEXT.to_owned(),
-    ]
+    messages
+}
+
+fn additional_directories_context(roots: &[PathBuf]) -> Option<String> {
+    if roots.is_empty() {
+        return None;
+    }
+    let mut note = ADDITIONAL_DIRECTORIES_CONTEXT.to_owned();
+    for root in roots {
+        note.push_str("- ");
+        write_scalar(&mut note, &root.to_string_lossy());
+        note.push('\n');
+    }
+    Some(note)
 }
 
 fn permission_mode_context(mode: PermissionMode) -> &'static str {

@@ -32,7 +32,7 @@ use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError, SchemaLimits};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_session::RouteCredential;
 use ofx_tools::WebFetchProgress;
-use ofx_workspace::ChangeTracker;
+use ofx_workspace::{ChangeTracker, WorkspaceAccess, WorkspaceAccessError};
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
@@ -60,6 +60,7 @@ pub struct Profile {
     home: Option<OsString>,
     paths: Option<ProfilePaths>,
     settings: Settings,
+    access: WorkspaceAccess,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -197,8 +198,13 @@ impl Profile {
         workspace_root: PathBuf,
         home: Option<OsString>,
         paths: Option<ProfilePaths>,
-        settings: Settings,
+        mut settings: Settings,
     ) -> Result<Self, ProfileError> {
+        let access = WorkspaceAccess::new(&workspace_root, settings.additional_directories())
+            .unwrap_or_else(|_| {
+                settings.reject_additional_directories();
+                WorkspaceAccess::primary_only(&workspace_root)
+            });
         if settings.profile_is_unusable() {
             return Err(ProfileError::Unusable(settings.diagnostics().to_vec()));
         }
@@ -207,7 +213,23 @@ impl Profile {
             home,
             paths,
             settings,
+            access,
         })
+    }
+
+    pub fn apply_launch(
+        &mut self,
+        additional_directories: &[OsString],
+        saved_directories_suppressed: bool,
+    ) -> Result<(), WorkspaceAccessError> {
+        self.access = self
+            .access
+            .apply_launch(additional_directories, saved_directories_suppressed)?;
+        Ok(())
+    }
+
+    fn additional_roots(&self) -> Vec<PathBuf> {
+        self.access.active_roots().map(Path::to_path_buf).collect()
     }
 
     pub fn settings(&self) -> &Settings {
@@ -335,11 +357,14 @@ impl Profile {
             tools,
             delegation: Delegation::new(children),
             mcp,
-            context: Arc::new(HostRuntimeContext::new(
-                self.workspace_root.clone(),
-                permission_mode.clone(),
-                interactive,
-            )),
+            context: Arc::new(
+                HostRuntimeContext::new(
+                    self.workspace_root.clone(),
+                    permission_mode.clone(),
+                    interactive,
+                )
+                .with_additional_roots(self.additional_roots()),
+            ),
             permissions,
             permission_mode,
             preferences: self.paths.clone(),
@@ -401,6 +426,7 @@ impl Profile {
     ) -> Arc<PermissionPolicy> {
         Arc::new(
             PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
+                .with_additional_roots(self.additional_roots())
                 .with_reviewer(Reviewer::new(Arc::clone(reviewer), DEFAULT_REVIEW_TIMEOUT)),
         )
     }
@@ -1033,6 +1059,69 @@ mod tests {
             ["read_file", "glob_files", "subagent"]
         );
         assert_eq!(offered(&requests[1]), ["read_file", "glob_files"]);
+    }
+
+    fn workspace_entry(root: &Path, entry: &str) -> String {
+        let workspace = serde_json::to_string(&root.join("workspace")).unwrap();
+        format!(r#"{{"workspaces":{{{workspace}:{entry}}}}}"#)
+    }
+
+    #[test]
+    fn saved_directories_that_cannot_be_resolved_are_dropped_with_upstreams_diagnostic() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let primary = serde_json::to_string(&root.join("workspace")).unwrap();
+        let profile = profile(
+            &root,
+            &workspace_entry(
+                &root,
+                &format!(r#"{{"additional_directories":[{primary}]}}"#),
+            ),
+        );
+        assert!(profile.settings().additional_directories().is_empty());
+        assert_eq!(
+            profile
+                .settings()
+                .diagnostics()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                "config user: invalid_additional_directories; key=additional_directories; additional_directories must be an array of at most 16 unique absolute directory paths for the current primary workspace"
+            ]
+        );
+        assert!(profile.additional_roots().is_empty());
+    }
+
+    #[test]
+    fn launch_directories_join_the_saved_ones_or_fail_with_upstream_error_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let saved = root.join("saved");
+        let shared = root.join("shared");
+        fs::create_dir_all(&saved).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        let saved_json = serde_json::to_string(&saved).unwrap();
+        let mut profile = profile(
+            &root,
+            &workspace_entry(
+                &root,
+                &format!(r#"{{"additional_directories":[{saved_json}]}}"#),
+            ),
+        );
+        assert_eq!(profile.additional_roots(), std::slice::from_ref(&saved));
+        profile
+            .apply_launch(&[OsString::from("../shared")], false)
+            .unwrap();
+        assert_eq!(profile.additional_roots(), [saved, shared.clone()]);
+        profile
+            .apply_launch(&[OsString::from("../shared")], true)
+            .unwrap();
+        assert_eq!(profile.additional_roots(), [shared]);
+        assert_eq!(
+            profile.apply_launch(&[OsString::from("../missing")], false),
+            Err(WorkspaceAccessError::PathNotFound)
+        );
     }
 
     #[test]
