@@ -562,3 +562,126 @@ async fn mcp_tool_calls_ask_through_their_own_gate_and_always_covers_the_tool() 
     );
     assert_eq!(started_titles(&events).len(), 2);
 }
+
+struct Flagging {
+    spec: ToolSpec,
+    ran: Arc<AtomicBool>,
+}
+
+struct FlagCall {
+    arguments: String,
+    ran: Arc<AtomicBool>,
+}
+
+impl Tool for Flagging {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        Ok(Box::new(FlagCall {
+            arguments: arguments.to_owned(),
+            ran: Arc::clone(&self.ran),
+        }))
+    }
+}
+
+impl PreparedCall for FlagCall {
+    fn describe(&self) -> CallDescription {
+        CallDescription {
+            title: format!("Flagging {}", self.arguments),
+            label: None,
+            activity: ToolActivity::Read,
+            effect: ToolEffect::ReadOnly,
+            concurrency: Concurrency::Parallel,
+        }
+    }
+
+    fn execute(self: Box<Self>, _context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+        self.ran.store(true, Ordering::SeqCst);
+        Box::pin(async move { ToolOutput::success(format!("flag {}", self.arguments)) })
+    }
+}
+
+#[tokio::test]
+async fn a_parallel_group_is_admitted_whole_before_any_of_its_calls_runs() {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            Vec::new(),
+            completion(
+                None,
+                vec![
+                    ToolCall {
+                        id: ToolCallId::new("call-1"),
+                        name: "flag".to_owned(),
+                        arguments: r#"{"first":1}"#.to_owned(),
+                    },
+                    ToolCall {
+                        id: ToolCallId::new("call-2"),
+                        name: "flag".to_owned(),
+                        arguments: r#"{"outside":2}"#.to_owned(),
+                    },
+                ],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply("done"),
+    ]);
+    let ran = Arc::new(AtomicBool::new(false));
+    let tool: Arc<dyn Tool> = Arc::new(Flagging {
+        spec: ToolSpec {
+            name: "flag".to_owned(),
+            description: "Flag.".to_owned(),
+            input_schema: r#"{"type":"object"}"#,
+        },
+        ran: Arc::clone(&ran),
+    });
+    let approvals = Approvals::default();
+    let mut agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn ModelProvider>,
+        vec![tool],
+        Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
+        config(),
+    )
+    .with_permission_prompts(approvals.clone());
+    let ran_while_asking = Arc::new(Mutex::new(None));
+    let cancel = CancellationToken::new();
+    let report = agent
+        .run_turn(
+            "go",
+            &mut |event| {
+                if let UiEvent::ApprovalRequested { request, .. } = &event {
+                    let approvals = approvals.clone();
+                    let ran = Arc::clone(&ran);
+                    let seen = Arc::clone(&ran_while_asking);
+                    let id = request.id;
+                    tokio::spawn(async move {
+                        for _ in 0..50 {
+                            tokio::task::yield_now().await;
+                        }
+                        *seen.lock().unwrap() = Some(ran.load(Ordering::SeqCst));
+                        approvals.resolve(id, ApprovalDecision::Once);
+                    });
+                }
+            },
+            &cancel,
+        )
+        .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(*ran_while_asking.lock().unwrap(), Some(false));
+    assert!(ran.load(Ordering::SeqCst));
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [r#"flag {"first":1}"#, r#"flag {"outside":2}"#]
+            .into_iter()
+            .zip(["call-1", "call-2"])
+            .map(|(content, call_id)| ChatMessage::Tool {
+                call_id: ToolCallId::new(call_id),
+                tool_name: "flag".to_owned(),
+                content: content.to_owned(),
+                status: ToolResultStatus::Success,
+            })
+            .collect::<Vec<_>>()
+    );
+}
