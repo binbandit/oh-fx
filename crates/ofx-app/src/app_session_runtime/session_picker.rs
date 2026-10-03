@@ -74,6 +74,7 @@ impl Persistence {
         let resumed = ResumedSession::load(session).map_err(refused)?;
         let history = resumed.transcript().map_err(refused)?;
         let preferences = self.overrides.restore(resumed.preferences());
+        self.adopt_preferences(resumed.preferences());
         self.close(agent);
         agent.clear_history();
         let live = LiveSession::resume(resumed, self.provider.clone(), agent);

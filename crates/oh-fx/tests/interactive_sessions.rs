@@ -1413,6 +1413,52 @@ fn a_picked_session_brings_back_its_model_and_one_from_another_provider_is_refus
 }
 
 #[test]
+fn a_fresh_session_after_a_pick_saves_the_preferences_it_runs_with() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["On b."])),
+        Reply::sse(&chat_text_events(&["Fresh on b."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"/model vendor/model-b\r");
+    wait(&session, "auto · model-b");
+    session.send(b"use b\r");
+    wait(&session, "On b.");
+    exit(session);
+    let on_b = home.only_session();
+    fs::write(
+        home.root.join("config/oh-fx/settings.json"),
+        settings(&server.base_url()).to_string(),
+    )
+    .expect("configure model-a again");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"/resume\r");
+    wait(&session, PICKER_HEADER);
+    session.send(b"\r");
+    wait(&session, "session resumed: use b");
+    wait(&session, "auto · model-b");
+    session.send(b"/new\r");
+    session.send(b"fresh start\r");
+    wait(&session, "Fresh on b.");
+    exit(session);
+    let models: Vec<Value> = server
+        .requests()
+        .iter()
+        .map(|request| request.json()["model"].clone())
+        .collect();
+    assert_eq!(models, ["vendor/model-b", "vendor/model-b"]);
+    let fresh = session_with_prompt(&home, &home.session_ids(), "fresh start");
+    assert_ne!(fresh, on_b);
+    for field in ["model", "effort", "fast_mode"] {
+        assert_eq!(
+            home.metadata(&fresh)[field],
+            home.metadata(&on_b)[field],
+            "{field}"
+        );
+    }
+}
+
+#[test]
 fn a_launch_model_flag_outlasts_the_model_of_a_picked_session() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["On b."])),

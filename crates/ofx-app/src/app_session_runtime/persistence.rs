@@ -121,6 +121,10 @@ impl Persistence {
         Some(non_durable("session persistence degraded", error))
     }
 
+    pub(super) fn adopt_preferences(&mut self, saved: &SessionPreferences) {
+        saved.clone_into(&mut self.preferences);
+    }
+
     pub(crate) fn close(&mut self, agent: &mut Agent) {
         agent.detach_session();
         if let Some(live) = self.live.take() {
