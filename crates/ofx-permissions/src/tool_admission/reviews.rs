@@ -26,7 +26,7 @@ impl ReviewTransport for Recording {
 
     fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
         let user = request.messages.iter().find_map(|message| match message {
-            ChatMessage::User { content } => Some(content.clone()),
+            ChatMessage::User { content, .. } => Some(content.clone()),
             _ => None,
         });
         Some(serde_json::json!({"user": user, "instructions": request.instructions}).to_string())

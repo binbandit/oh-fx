@@ -364,7 +364,7 @@ impl Selection {
 fn encode_message<'a>(message: &'a ChatMessage, projection: &'a Projection) -> WireMessage<'a> {
     match message {
         ChatMessage::System { content } => WireMessage::System { content },
-        ChatMessage::User { content } => WireMessage::User { content },
+        ChatMessage::User { content, .. } => WireMessage::User { content },
         ChatMessage::Assistant {
             content,
             tool_calls,

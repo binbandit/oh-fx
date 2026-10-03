@@ -18,7 +18,7 @@ fn chat_replies(turns: usize) -> Vec<Script> {
 
 fn user_text(message: &ChatMessage) -> &str {
     match message {
-        ChatMessage::User { content } => content,
+        ChatMessage::User { content, .. } => content,
         _ => "",
     }
 }
@@ -82,7 +82,8 @@ async fn manual_compaction_logs_its_checkpoint_without_an_active_turn() {
         *cut,
         HistoryCut {
             turns: 2,
-            tool_steps: 0
+            tool_steps: 0,
+            ..HistoryCut::default()
         }
     );
     assert_eq!(*user, None);
@@ -118,7 +119,8 @@ async fn a_checkpoint_counts_only_the_turns_the_log_saved() {
         *cut,
         HistoryCut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..HistoryCut::default()
         }
     );
     run(&mut agent, "question 7").await;
@@ -360,7 +362,7 @@ fn overflow(kind: ProviderErrorKind, detail: Option<&str>) -> Script {
 
 fn mentions(message: &ChatMessage, text: &str) -> bool {
     match message {
-        ChatMessage::User { content }
+        ChatMessage::User { content, .. }
         | ChatMessage::System { content }
         | ChatMessage::Tool { content, .. } => content.contains(text),
         ChatMessage::Assistant { content, .. } => content
@@ -792,7 +794,8 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
         *cut,
         HistoryCut {
             turns: 0,
-            tool_steps: 1
+            tool_steps: 1,
+            ..HistoryCut::default()
         }
     );
     assert_eq!(user.as_deref(), Some("read the notes"));
@@ -806,6 +809,7 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
         turn_log::Logged::Turn {
             user: "read the notes".to_owned(),
             steps: Vec::new(),
+            steering: Vec::new(),
             end: r#"replied "done" replay=false"#.to_owned(),
         }
     );
@@ -845,7 +849,8 @@ async fn a_turn_dropped_after_its_checkpoint_stays_counted_as_a_logged_turn() {
             .logged_cut(crate::execution_memory::Cut::default()),
         HistoryCut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..HistoryCut::default()
         }
     );
 }

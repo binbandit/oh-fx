@@ -152,6 +152,7 @@ impl WritableSession {
         let open = self.writer.turn_open();
         let fresh = self.started;
         let nothing_done = turn.steps.is_empty()
+            && turn.steering.is_empty()
             && turn.end
                 == TurnEnd::Stopped {
                     reason: TurnStop::Failed,
@@ -175,7 +176,7 @@ impl WritableSession {
         open: bool,
     ) -> Result<(), SessionError> {
         let timestamp_ms = now_ms();
-        let written = self.written_steps()?;
+        let written = self.written()?;
         let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
         self.append(timestamp_ms, &events[usize::from(open)..])
     }
@@ -234,7 +235,7 @@ impl WritableSession {
         if active.end != replied_nothing {
             return Err(SessionError::InvalidConversationEvent);
         }
-        let written = self.written_steps()?;
+        let written = self.written()?;
         let mut events = turn_events(&self.artifacts(provider, timestamp_ms), active, written)?;
         events.pop();
         events.drain(..usize::from(self.writer.turn_open()));
@@ -245,11 +246,11 @@ impl WritableSession {
         self.started && self.writer.last_seq() == 0 && !self.writer.turn_open()
     }
 
-    fn written_steps(&self) -> Result<usize, SessionError> {
+    fn written(&self) -> Result<ProgressPoint, SessionError> {
         if !self.writer.turn_open() {
-            return Ok(0);
+            return Ok(ProgressPoint::default());
         }
-        Ok(self.writer.context_progress(None)?.point.tool_steps)
+        Ok(self.writer.context_progress(None)?.point)
     }
 
     fn artifacts<'a>(

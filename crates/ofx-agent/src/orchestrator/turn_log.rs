@@ -78,6 +78,7 @@ impl Agent {
             (Some(parsed), Ending::Replied) => HistoryTurn {
                 user: parsed.user,
                 steps: logged_steps(&parsed.steps, &turn.raw_outputs),
+                steering: parsed.logged_steering(),
                 end: TurnEnd::Replied {
                     text: parsed.reply,
                     provider_replay: parsed.reply_replay,
@@ -86,6 +87,7 @@ impl Agent {
             (Some(parsed), Ending::Stopped(reason)) => HistoryTurn {
                 user: parsed.user,
                 steps: logged_steps(&parsed.steps, &turn.raw_outputs),
+                steering: parsed.logged_steering(),
                 end: TurnEnd::Stopped {
                     reason,
                     partial: parsed.reply,
@@ -94,6 +96,7 @@ impl Agent {
             _ => HistoryTurn {
                 user: prompt,
                 steps: Vec::new(),
+                steering: Vec::new(),
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "",
@@ -116,6 +119,7 @@ impl Agent {
             HistoryTurn {
                 user: parsed.user,
                 steps: logged_steps(&parsed.steps, &turn.raw_outputs),
+                steering: parsed.logged_steering(),
                 end: TurnEnd::Replied {
                     text: "",
                     provider_replay: None,

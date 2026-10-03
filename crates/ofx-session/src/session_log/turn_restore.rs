@@ -252,7 +252,7 @@ fn push_steering(messages: &mut Vec<ChatMessage>, entry: Steering) {
             provider_replay: None,
         });
     }
-    messages.push(ChatMessage::user(entry.text));
+    messages.push(ChatMessage::restored_steering(entry.text));
 }
 
 fn push_ending(messages: &mut Vec<ChatMessage>, ending: Ending) {

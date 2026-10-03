@@ -21,8 +21,8 @@ pub use applicable_target::{ApplicableTarget, TargetKind};
 pub use auto_classifier::{ReviewFailure, ReviewTransport, ReviewTransportOutcome};
 pub use compactor_settings::AutoCompactPercent;
 pub use history_turn::{
-    ConversationLog, HistoryCut, HistoryStep, HistoryTurn, LogFailure, RestoredHistory, StepResult,
-    TurnEnd, TurnStop,
+    ConversationLog, HistoryCut, HistorySteering, HistoryStep, HistoryTurn, LogFailure,
+    RestoredHistory, StepResult, TurnEnd, TurnStop,
 };
 pub use ids::{RequestId, ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};

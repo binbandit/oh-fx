@@ -1,7 +1,8 @@
 use std::mem;
 
 use ofx_contract::{
-    ChatMessage, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolCallId, ToolResultStatus,
+    ChatMessage, HistorySteering, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolCallId,
+    ToolResultStatus,
 };
 
 const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
@@ -60,6 +61,16 @@ pub(crate) struct HistoryTurn<'a> {
 }
 
 impl<'a> HistoryTurn<'a> {
+    pub(crate) fn logged_steering(&self) -> Vec<HistorySteering<'a>> {
+        self.steering()
+            .map(|steering| HistorySteering {
+                text: steering.text,
+                assistant_prefix: steering.assistant_prefix,
+                after_tool_step_count: steering.after_tool_step_count,
+            })
+            .collect()
+    }
+
     pub(crate) fn steering(&self) -> impl Iterator<Item = Steering<'a>> + '_ {
         self.steps
             .iter()
@@ -101,7 +112,7 @@ pub(crate) fn history_turns<'a>(
 
 pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTurn<'_> {
     let user = match &history[start] {
-        ChatMessage::User { content } => steering_text(content).unwrap_or(content),
+        ChatMessage::User { content, .. } => steering_text(content).unwrap_or(content),
         _ => "",
     };
     let mut steps: Vec<ToolStep<'_>> = Vec::new();
@@ -157,8 +168,16 @@ pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) ->
                     }),
                 }
             }
-            ChatMessage::User { content } => {
-                let note = if let Some(text) = steering_text(content) {
+            ChatMessage::User {
+                content,
+                restored_steering,
+            } => {
+                let steering = if *restored_steering {
+                    Some(content.as_str())
+                } else {
+                    steering_text(content)
+                };
+                let note = if let Some(text) = steering {
                     Note::User(steering_after(
                         text,
                         index + 1,

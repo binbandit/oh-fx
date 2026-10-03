@@ -21,14 +21,16 @@ fn a_cut_counts_only_the_turns_the_log_holds() {
         turns.logged_cut(cut(2, 0)),
         HistoryCut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..HistoryCut::default()
         }
     );
     assert_eq!(
         turns.logged_cut(cut(3, 2)),
         HistoryCut {
             turns: 2,
-            tool_steps: 2
+            tool_steps: 2,
+            ..HistoryCut::default()
         }
     );
 }
@@ -40,7 +42,8 @@ fn steps_of_an_unsaved_turn_are_never_counted_in_the_log() {
         turns.logged_cut(cut(1, 3)),
         HistoryCut {
             turns: 1,
-            tool_steps: 0
+            tool_steps: 0,
+            ..HistoryCut::default()
         }
     );
 }
@@ -57,21 +60,24 @@ fn a_turn_only_the_log_holds_is_covered_with_the_turns_before_the_cut() {
         turns.logged_cut(cut(1, 0)),
         HistoryCut {
             turns: 2,
-            tool_steps: 0
+            tool_steps: 0,
+            ..HistoryCut::default()
         }
     );
     assert_eq!(
         turns.logged_cut(cut(1, 1)),
         HistoryCut {
             turns: 2,
-            tool_steps: 1
+            tool_steps: 1,
+            ..HistoryCut::default()
         }
     );
     assert_eq!(
         turns.logged_cut(cut(2, 0)),
         HistoryCut {
             turns: 4,
-            tool_steps: 0
+            tool_steps: 0,
+            ..HistoryCut::default()
         }
     );
 }
@@ -90,4 +96,28 @@ fn compacting_drops_the_covered_records_and_keeps_the_rest_in_order() {
     assert_eq!(turns.records, [TurnRecord::Unsaved]);
     turns.reset(2);
     assert_eq!(turns.records, [TurnRecord::Saved, TurnRecord::Saved]);
+}
+
+#[test]
+fn the_steering_a_cut_covers_is_counted_only_for_a_saved_split_turn() {
+    let steered = Cut {
+        turns: 1,
+        tool_steps: 2,
+        steering: 1,
+    };
+    assert_eq!(
+        ledger(&[TurnRecord::Saved, TurnRecord::Saved]).logged_cut(steered),
+        HistoryCut {
+            turns: 1,
+            tool_steps: 2,
+            steering: 1,
+        }
+    );
+    assert_eq!(
+        ledger(&[TurnRecord::Saved, TurnRecord::Unsaved]).logged_cut(steered),
+        HistoryCut {
+            turns: 1,
+            ..HistoryCut::default()
+        }
+    );
 }

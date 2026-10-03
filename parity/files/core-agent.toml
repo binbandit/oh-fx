@@ -116,7 +116,7 @@ note = "Narrow traits replace runtime dependencies; image executor, durable reco
 upstream = "src/core/agent/runtime/execution_memory.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/execution_memory.rs"]
-note = "Interrupted execution memory retains finished exchanges; steering-message preservation and provider-executed tool history are absent."
+note = "Interrupted execution memory retains finished exchanges and steering typed after a tool result; provider-executed tool history is absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/finalization.zig"
@@ -140,7 +140,7 @@ note = "Shared image inspection requests and bounded streamed image-provider cap
 upstream = "src/core/agent/runtime/interruption.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
-note = "Cancelled partial turns and completed tool outputs are logged; interrupted command replay, steering and image evidence are absent."
+note = "Cancelled partial turns, completed tool outputs and steering at its tool-step boundary are logged; interrupted command replay and image evidence are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/lifecycle.zig"
@@ -158,7 +158,7 @@ note = "Backoff and retry causes are implemented; partial-output restart, uncert
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests and compaction exist; steering, vision, dynamic tool advertisement and durable recovery remain absent."
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction and steering exist; vision, dynamic tool advertisement and durable recovery remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"

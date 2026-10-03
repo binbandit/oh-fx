@@ -30,11 +30,15 @@ impl TurnLedger {
             .iter()
             .filter(|record| **record != TurnRecord::Unsaved)
             .count();
-        let tool_steps = match self.records.get(covered) {
-            Some(TurnRecord::Unsaved) => 0,
-            _ => cut.tool_steps,
+        let (tool_steps, steering) = match self.records.get(covered) {
+            Some(TurnRecord::Unsaved) => (0, 0),
+            _ => (cut.tool_steps, cut.steering),
         };
-        HistoryCut { turns, tool_steps }
+        HistoryCut {
+            turns,
+            tool_steps,
+            steering,
+        }
     }
 
     pub(super) fn compact(&mut self, cut: Cut) {
