@@ -59,7 +59,8 @@ async fn execute_managed(
     context: &ToolContext,
 ) -> ToolOutput {
     let operation_id = operation_id(context.call_id.as_str());
-    match owner.admit(request, &operation_id) {
+    let root_user_requests = context.root_user_requests.clone().unwrap_or_default();
+    match owner.admit(request, &operation_id, root_user_requests) {
         Admitted::Rejected(code) => output(SubagentResult::failure(code)),
         Admitted::Completed(finished) => complete(&finished),
         Admitted::Ready(waiter) => match Owner::observe(waiter, &context.cancellation).await {

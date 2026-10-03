@@ -28,7 +28,7 @@ pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabili
 pub use permission_gate::{
     Admission, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest, FileChange,
     FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ReviewRequest,
-    ReviewVerdict, Reviewed, SessionGrant,
+    ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
 };
 pub use skill_menu::{
     SkillBinding, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,

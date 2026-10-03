@@ -5,6 +5,7 @@ fn work(id: &str, fingerprint: u8) -> ActiveWork {
         id: id.to_owned(),
         request_fingerprint: [fingerprint; 32],
         message: "do the work".to_owned(),
+        root_user_requests: Arc::default(),
         permission_mode: PermissionMode::Auto,
     }
 }

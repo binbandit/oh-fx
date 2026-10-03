@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use ofx_contract::{
     ActionLabel, ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile,
     CommandRequest, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
-    PreparedCall, ProviderReplay, ReplaySource, StreamSink, ToolActivity, ToolCallId, ToolEffect,
+    PreparedCall, ProviderReplay, ReplaySource, RootUserRequests, StreamSink, ToolActivity,
+    ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -406,6 +407,9 @@ impl PreparedCall for EchoCall {
             }
             if self.arguments.contains("access") {
                 return ToolOutput::success(format!("{:?}", context.path_access));
+            }
+            if self.arguments.contains("intent") {
+                return ToolOutput::success(format!("{:?}", context.root_user_requests));
             }
             if self.arguments.contains("noticed") {
                 return ToolOutput::success(format!("echo {}", self.arguments))
@@ -1342,6 +1346,38 @@ async fn delegations_run_in_their_own_parallel_group_apart_from_reads() {
             "finish call-3",
             "start call-4",
             "finish call-4",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn delegations_carry_the_root_users_requests_and_other_calls_do_not() {
+    let provider = FakeProvider::new(vec![
+        text_reply("noted"),
+        tool_reply(&[
+            ("call-1", r#"{"intent":1,"delegate":1}"#),
+            ("call-2", r#"{"intent":2}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    run(&mut agent, "first request").await;
+    let (report, _) = run(&mut agent, "second request").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let delegated = RootUserRequests {
+        current: "second request".to_owned(),
+        earlier: vec!["first request".to_owned()],
+        compacted_turns: None,
+    };
+    assert_eq!(
+        provider.requests()[2].messages[4..],
+        [
+            tool_message(
+                "call-1",
+                &format!("{:?}", Some(delegated)),
+                ToolResultStatus::Success
+            ),
+            tool_message("call-2", "None", ToolResultStatus::Success),
         ]
     );
 }

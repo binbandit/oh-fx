@@ -1,10 +1,10 @@
-use ofx_contract::{
-    LivePermissionMode, ModelFailureDiagnostic, PermissionMode, TurnOutcome, UiEvent,
-};
+use std::sync::Arc;
+
+use ofx_contract::{LivePermissionMode, ModelFailureDiagnostic, TurnOutcome, UiEvent};
 use ofx_text::is_terminal_safe;
 use tokio_util::sync::CancellationToken;
 
-use super::child_state::Outcome;
+use super::child_state::{ActiveWork, Outcome};
 use crate::orchestrator::{Agent, TurnFailure, TurnReport};
 
 const MAX_DIAGNOSTIC_BYTES: usize = 256;
@@ -43,20 +43,21 @@ impl ChildRuntime {
 
     pub(crate) async fn run(
         &mut self,
-        message: &str,
+        work: &ActiveWork,
         instructions: &str,
-        permission_mode: PermissionMode,
         cancel: &CancellationToken,
     ) -> WorkOutcome {
         let mut config = self.agent.config().clone();
         config.system_prompt = system_prompt(&self.base_prompt, instructions);
         self.agent.set_config(config);
-        self.permission_mode.set(permission_mode);
+        self.agent
+            .inherit_root_user_requests(Arc::clone(&work.root_user_requests));
+        self.permission_mode.set(work.permission_mode);
         let mut partial = String::new();
         let report = self
             .agent
             .run_turn(
-                message,
+                &work.message,
                 &mut |event| match event {
                     UiEvent::AssistantText { text, .. } => partial.push_str(&text),
                     UiEvent::ToolStarted { .. } | UiEvent::ToolRejected { .. } => partial.clear(),

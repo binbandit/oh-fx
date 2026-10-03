@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use ofx_contract::{
-    ChildPhase, ModelFailureDiagnostic, PermissionMode, valid_agent_name, valid_instructions,
+    ChildPhase, ModelFailureDiagnostic, PermissionMode, RootUserRequests, valid_agent_name,
+    valid_instructions,
 };
 
 const MAX_CHILDREN: usize = 256;
@@ -34,6 +37,7 @@ pub(crate) struct ActiveWork {
     pub(crate) id: String,
     pub(crate) request_fingerprint: [u8; 32],
     pub(crate) message: String,
+    pub(crate) root_user_requests: Arc<RootUserRequests>,
     pub(crate) permission_mode: PermissionMode,
 }
 

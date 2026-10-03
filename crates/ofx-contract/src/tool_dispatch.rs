@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 use tokio_util::sync::CancellationToken;
 
 use crate::applicable_target::ApplicableTarget;
 use crate::ids::ToolCallId;
-use crate::permission_gate::{CommandRequest, FileChange, FileMutation, PathAccess};
+use crate::permission_gate::{
+    CommandRequest, FileChange, FileMutation, PathAccess, RootUserRequests,
+};
 use crate::stream_provider::BoxFuture;
 use crate::types::{
     CommandProcessPresentation, FileChangeStats, ToolResultStatus, ToolStatusDetail,
@@ -162,6 +166,7 @@ pub struct ToolContext {
     pub call_id: ToolCallId,
     pub cancellation: CancellationToken,
     pub path_access: PathAccess,
+    pub root_user_requests: Option<Arc<RootUserRequests>>,
 }
 
 impl ToolContext {
@@ -174,7 +179,14 @@ impl ToolContext {
             call_id,
             cancellation,
             path_access,
+            root_user_requests: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_root_user_requests(mut self, requests: Arc<RootUserRequests>) -> Self {
+        self.root_user_requests = Some(requests);
+        self
     }
 }
 
