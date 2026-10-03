@@ -90,6 +90,10 @@ fn invalid_result() -> WorkspaceParseResult {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;
+    use std::process::Command;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use super::*;
 
@@ -172,6 +176,32 @@ mod tests {
         fs::hard_link(&outside, root.path().join(WORKSPACE_CONFIG_FILE_NAME)).unwrap();
         assert_eq!(
             load_workspace_config(root.path(), &ProjectMcpChoices::default()).unwrap(),
+            invalid_result()
+        );
+    }
+
+    #[test]
+    fn a_fifo_or_directory_named_mcp_json_is_one_invalid_entry_without_blocking() {
+        let fifo = tempfile::tempdir().unwrap();
+        let status = Command::new("mkfifo")
+            .arg(fifo.path().join(WORKSPACE_CONFIG_FILE_NAME))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let root = fifo.path().to_owned();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(load_workspace_config(&root, &ProjectMcpChoices::default()));
+        });
+        let loaded = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a FIFO .mcp.json is read without waiting for a writer");
+        assert_eq!(loaded.unwrap(), invalid_result());
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join(WORKSPACE_CONFIG_FILE_NAME)).unwrap();
+        assert_eq!(
+            load_workspace_config(directory.path(), &ProjectMcpChoices::default()).unwrap(),
             invalid_result()
         );
     }
