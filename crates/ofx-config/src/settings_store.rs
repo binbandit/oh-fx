@@ -883,26 +883,24 @@ fn prune_copies(backups: &PrivateDir, copy: SettingsCopy, written: &str) {
     let Ok(names) = backups.names() else {
         return;
     };
-    let mut names: Vec<String> = names
-        .into_iter()
-        .filter(|name| {
-            name != written && name.starts_with(&prefix) && parse_backup_timestamp(name).is_some()
-        })
-        .collect();
-    names.sort_by(|left, right| {
-        if backup_name_newer_than(left, right) {
-            std::cmp::Ordering::Less
-        } else if backup_name_newer_than(right, left) {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Equal
-        }
-    });
-    for name in names.iter().skip(copy.keep().saturating_sub(1)) {
+    let copies = newest_first(
+        names
+            .into_iter()
+            .filter(|name| name != written && name.starts_with(&prefix)),
+    );
+    for name in copies.iter().skip(copy.keep().saturating_sub(1)) {
         if backups.is_single_link_file(name) {
             let _ = backups.remove(name);
         }
     }
+}
+
+fn newest_first(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut copies: Vec<(Option<u64>, i64, String)> = names
+        .filter_map(|name| Some((parse_sequence(&name), parse_backup_timestamp(&name)?, name)))
+        .collect();
+    copies.sort_unstable();
+    copies.into_iter().rev().map(|(_, _, name)| name).collect()
 }
 
 fn copy_suffix(name: &str) -> Option<&str> {
@@ -928,19 +926,6 @@ fn parse_backup_timestamp(name: &str) -> Option<i64> {
         return None;
     }
     suffix[..end].parse().ok()
-}
-
-fn backup_name_newer_than(left: &str, right: &str) -> bool {
-    match (parse_sequence(left), parse_sequence(right)) {
-        (Some(left), Some(right)) if left != right => return left > right,
-        (Some(_), None) => return true,
-        (None, Some(_)) => return false,
-        _ => {}
-    }
-    match (parse_backup_timestamp(left), parse_backup_timestamp(right)) {
-        (Some(left), Some(right)) if left != right => left > right,
-        _ => left > right,
-    }
 }
 
 pub(crate) fn validate_provider_slug(slug: &str) -> bool {
