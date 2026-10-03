@@ -631,7 +631,7 @@ fn command_usage_errors_use_the_spec_usage() {
 fn ask_and_replay_parse_errors_keep_their_own_reports() {
     assert_eq!(
         stderr(&["ask", "--bogus"]),
-        format!("usage: oh-fx {}\n", TopLevelKind::Ask.spec().usage)
+        format!("usage: oh-fx {}\n", TopLevelKind::Ask.spec().usage())
     );
     match parse(&["ask", "--bogus", "--json"]) {
         Err(CliError::Ask(error)) => {
