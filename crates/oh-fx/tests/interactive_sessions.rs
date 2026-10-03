@@ -275,6 +275,24 @@ fn a_renamed_session_resumes_under_its_new_title() {
 }
 
 #[test]
+fn the_shell_saves_the_conversation_language_of_its_prompts() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Lu."])),
+        Reply::sse(&chat_text_events(&["Gelesen."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send("Открой страницу\r".as_bytes());
+    wait(&session, "Lu.");
+    let id = home.only_session();
+    assert_eq!(home.metadata(&id)["conversation_language"], "und-Cyrl");
+    session.send(b"42\r");
+    wait(&session, "Gelesen.");
+    exit(session);
+    assert_eq!(home.metadata(&id)["conversation_language"], "und-Cyrl");
+}
+
+#[test]
 fn a_shell_saves_its_turns_and_continue_reopens_them_in_the_scrollback() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["First **answer**."])),
