@@ -649,6 +649,107 @@ fn whitespace_between_silent_steps_keeps_their_calls_in_one_group() {
     );
 }
 
+fn screen_after_steps(steps: &[&[&str]]) -> String {
+    let mut test = running("go");
+    for (index, chunks) in steps.iter().enumerate() {
+        for chunk in *chunks {
+            test.deliver(text(chunk));
+        }
+        let call = index.to_string();
+        test.deliver(read(&call, &format!("{index}.txt")));
+        test.deliver(finished(&call, "read_file", success()));
+    }
+    test.deliver(text("Done.\n"));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    test.screen()
+}
+
+#[test]
+fn partial_indented_whitespace_between_silent_steps_keeps_their_calls_in_one_group() {
+    for whitespace in ["\t", "    "] {
+        let screen = screen_after_steps(&[&[], &[whitespace]]);
+        assert_eq!(
+            screen.matches("tool call").count(),
+            1,
+            "{whitespace:?}\n{screen}"
+        );
+        assert!(
+            screen.contains("● 2 tool calls · 2 read\n├ Read 0.txt\n└ Read 1.txt\n\n  Done."),
+            "{whitespace:?}\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn each_step_holds_its_own_leading_whitespace() {
+    let screen = screen_after_steps(&[&["Reading."], &["\t"], &["    "]]);
+    assert!(
+        screen.contains(
+            "  Reading.\n\n● 3 tool calls · 3 read\n├ Read 0.txt\n├ Read 1.txt\n└ Read 2.txt\n\n  Done."
+        ),
+        "{screen}"
+    );
+}
+
+#[test]
+fn whitespace_only_steps_of_any_shape_keep_their_calls_in_one_group() {
+    let shapes: [&[&str]; 10] = [
+        &["\t\t"],
+        &["        "],
+        &["\t\n"],
+        &["    \n"],
+        &[" \t \r\n"],
+        &["\r\n\r\n"],
+        &["  ", "  "],
+        &["\n", "\t"],
+        &["\t", "\n", "    "],
+        &["    \n\n\t\n"],
+    ];
+    for shape in shapes {
+        let screen = screen_after_steps(&[&[], shape, shape]);
+        assert!(
+            screen.contains(
+                "● 3 tool calls · 3 read\n├ Read 0.txt\n├ Read 1.txt\n└ Read 2.txt\n\n  Done."
+            ),
+            "{shape:?}\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn whitespace_before_the_first_call_draws_nothing_ahead_of_its_group() {
+    let silent = screen_after_steps(&[&[]]);
+    let group = silent.find("● 1 tool call · 1 read").unwrap();
+    for shape in [&["\t"][..], &["    "], &[" \n\t"], &["  ", "  "]] {
+        let screen = screen_after_steps(&[shape]);
+        assert_eq!(
+            screen.find("● 1 tool call · 1 read"),
+            Some(group),
+            "{shape:?}\n{screen}"
+        );
+        assert_eq!(screen[..group], silent[..group], "{shape:?}\n{screen}");
+    }
+}
+
+#[test]
+fn indentation_held_across_chunks_still_opens_a_code_block() {
+    let panel = "└ Read 0.txt\n\n  ───────\n  echo hi\n  ───────\n\n● 1 tool call";
+    for shape in [
+        &["    echo hi\n"][..],
+        &["  ", "  echo hi\n"],
+        &["\n\t", "echo hi\n"],
+        &[" \n  ", "\r  ", "echo hi\n"],
+    ] {
+        let screen = screen_after_steps(&[&[], shape]);
+        assert!(screen.contains(panel), "{shape:?}\n{screen}");
+    }
+    let screen = screen_after_steps(&[&[], &["  ", "echo hi\n"]]);
+    assert!(
+        screen.contains("└ Read 0.txt\n\n  echo hi\n\n● 1 tool call"),
+        "{screen}"
+    );
+}
+
 #[test]
 fn a_reused_call_id_settles_the_newest_row_with_that_id() {
     let mut test = running("go");

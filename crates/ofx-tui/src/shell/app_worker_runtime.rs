@@ -9,6 +9,7 @@ use ofx_contract::{
     CompactionActivity, Notice, NoticeTone, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
+use super::leading_whitespace::LeadingWhitespace;
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
@@ -348,6 +349,9 @@ impl Shell<'_> {
         };
         turn.phase = TurnPhase::Generating;
         turn.tokens.consume_content(text);
+        let Some(text) = turn.leading_whitespace.release(text) else {
+            return;
+        };
         let trailing = text.len() - text.trim_end_matches('\n').len();
         turn.step_break = if trailing == text.len() {
             turn.step_break
@@ -356,7 +360,7 @@ impl Shell<'_> {
             Some(PARAGRAPH_BREAK.len().saturating_sub(trailing))
         };
         let mut events = Vec::new();
-        turn.markdown.push(text, &mut events);
+        turn.markdown.push(&text, &mut events);
         self.transcript.append_assistant(events, &self.theme);
     }
 
@@ -368,6 +372,7 @@ impl Shell<'_> {
         else {
             return;
         };
+        turn.leading_whitespace = LeadingWhitespace::default();
         let Some(missing) = turn.step_break.take() else {
             return;
         };
