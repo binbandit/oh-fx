@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
@@ -59,9 +59,13 @@ impl Home {
     }
 
     fn status(&self, args: &[&str], environment: &[(&str, &str)]) -> Output {
+        self.status_in(&self.workspace(), args, environment)
+    }
+
+    fn status_in(&self, directory: &Path, args: &[&str], environment: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_oh-fx"))
             .args(args)
-            .current_dir(self.workspace())
+            .current_dir(directory)
             .env_clear()
             .env("HOME", &self.root)
             .env("XDG_CONFIG_HOME", self.root.join("config"))
@@ -438,4 +442,33 @@ fn a_saved_grok_login_is_listed_after_codex() {
         stdout.contains(r#","connected_providers":["codex","grok"],"#),
         "{stdout}"
     );
+}
+
+#[test]
+fn a_hostile_workspace_name_is_encoded_in_text_and_kept_raw_in_json() {
+    let home = Home::new(Some(&codex_settings()));
+    let hostile = home.root.join("work\u{1b}[2J\n[status] auth=forged");
+    fs::create_dir_all(&hostile).expect("create the hostile workspace");
+    let output = home.status_in(&hostile, &["status"], &[]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    assert!(!stdout.contains('\u{1b}'), "{stdout:?}");
+    assert!(
+        stdout.contains(&format!(
+            "\n[status] workspace={}/work\\x1b[2J\\x0a[status] auth=forged\n",
+            home.root.display()
+        )),
+        "{stdout}"
+    );
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("[status] auth="))
+            .count(),
+        1,
+        "{stdout}"
+    );
+    let output = home.status_in(&hostile, &["status", "--json"], &[]);
+    let json: Value = serde_json::from_slice(&output.stdout).expect("status JSON");
+    assert_eq!(json["workspace"], hostile.display().to_string().as_str());
 }

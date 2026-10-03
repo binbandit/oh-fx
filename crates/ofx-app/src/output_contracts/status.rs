@@ -100,7 +100,7 @@ impl StatusReport {
         let mut line = |text: std::fmt::Arguments<'_>| {
             let _ = writeln!(out, "[status] {text}");
         };
-        line(format_args!("model={}", self.model));
+        line(format_args!("model={}", safe(&self.model)));
         line(format_args!("model_origin={}", self.model_origin));
         line(format_args!("model_source={}", self.model_source));
         if let Some(endpoint) = &self.provider_endpoint {
@@ -143,7 +143,10 @@ impl StatusReport {
             "permission_mode={}",
             self.permission_mode.display_label()
         ));
-        line(format_args!("workspace={}", self.workspace_root.display()));
+        line(format_args!(
+            "workspace={}",
+            safe(&self.workspace_root.to_string_lossy())
+        ));
         line(format_args!("history_turns=0"));
         line(format_args!("session_permission_grants=0"));
         line(format_args!("agent_step_limit={}", self.agent_step_limit));
@@ -208,6 +211,10 @@ impl StatusReport {
         object.insert("mcp".to_owned(), mcp_json(&self.mcp));
         object
     }
+}
+
+fn safe(raw: &str) -> String {
+    encode_terminal_safe(raw.as_bytes(), usize::MAX).text
 }
 
 pub(crate) fn write_mcp_text(out: &mut String, prefix: &str, mcp: &LocalConfigInspection) {
