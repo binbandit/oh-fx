@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use ofx_contract::parse_strict_json_value;
 use ofx_contract::{
     ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolSpec,
     Usage,
 };
-use serde_json::{Map, Value};
+use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::chat_completions_protocol::capped_description;
@@ -117,10 +117,10 @@ impl AssistantMessagePhase {
     }
 }
 
-fn assistant_message_phase(fields: &Map<String, Value>) -> Result<Option<AssistantMessagePhase>> {
+fn assistant_message_phase(fields: &Object<'_>) -> Result<Option<AssistantMessagePhase>> {
     match fields.get("phase") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(phase)) => Ok(match phase.as_str() {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::String(phase)) => Ok(match phase.as_ref() {
             "commentary" => Some(AssistantMessagePhase::Commentary),
             "final_answer" => Some(AssistantMessagePhase::FinalAnswer),
             _ => None,
@@ -144,7 +144,8 @@ pub(crate) fn select_replay_parts(
     if parts.len() > max_bytes {
         return Err(ResponsesError::ProviderStateTooLarge);
     }
-    let Ok(Value::Array(items)) = parse_strict_json_value(parts.as_bytes()) else {
+    let Ok(Json::Array(items)) = parse_strict_json(parts.as_bytes(), DuplicateKeys::AfterValue)
+    else {
         return Err(ResponsesError::InvalidProviderState);
     };
     let total = items.len();
@@ -153,7 +154,7 @@ pub(crate) fn select_replay_parts(
         let kind = item
             .as_object()
             .and_then(|fields| fields.get("type"))
-            .and_then(Value::as_str);
+            .and_then(Json::as_str);
         let keep = match kind {
             Some("reasoning") => reasoning,
             Some("message") => text,
@@ -169,7 +170,9 @@ pub(crate) fn select_replay_parts(
     if kept.len() == total {
         return Ok(Some(parts.to_owned()));
     }
-    Ok(Some(Value::Array(kept).to_string()))
+    serde_json::to_string(&kept)
+        .map(Some)
+        .map_err(|_| ResponsesError::InvalidProviderState)
 }
 
 pub(crate) fn push_json_string(out: &mut String, text: &str) {
@@ -260,14 +263,15 @@ fn write_assistant(
     let mut legacy_phase = None;
     let mut span_end: Option<usize> = None;
     if let Some(parts) = replay {
-        let Ok(Value::Array(items)) = parse_strict_json_value(parts.as_bytes()) else {
+        let Ok(Json::Array(items)) = parse_strict_json(parts.as_bytes(), DuplicateKeys::AfterValue)
+        else {
             return Err(ResponsesError::InvalidProviderState);
         };
         for item in &items {
-            let Value::Object(fields) = item else {
+            let Json::Object(fields) = item else {
                 return Err(ResponsesError::InvalidProviderState);
             };
-            match fields.get("type").and_then(Value::as_str) {
+            match fields.get("type").and_then(Json::as_str) {
                 Some("message") => {
                     let phase = assistant_message_phase(fields)
                         .map_err(|_| ResponsesError::InvalidProviderState)?;
@@ -290,7 +294,9 @@ fn write_assistant(
                 }
                 Some("reasoning") => {
                     push_comma(out, first);
-                    out.push_str(&item.to_string());
+                    let item = serde_json::to_string(item)
+                        .map_err(|_| ResponsesError::InvalidProviderState)?;
+                    out.push_str(&item);
                 }
                 _ => return Err(ResponsesError::InvalidProviderState),
             }
@@ -311,15 +317,15 @@ fn write_assistant(
 
 fn replay_span(
     content: &str,
-    fields: &Map<String, Value>,
+    fields: &Object<'_>,
     span_end: Option<usize>,
 ) -> Result<(usize, usize)> {
     let invalid = ResponsesError::InvalidProviderState;
     let index = |name: &str| {
         fields
             .get(name)
-            .and_then(Value::as_u64)
-            .filter(|_| fields.get(name).is_some_and(Value::is_u64))
+            .and_then(Json::as_u64)
+            .filter(|_| fields.get(name).is_some_and(Json::is_u64))
             .and_then(|value| usize::try_from(value).ok())
     };
     let (Some(offset), Some(length)) = (index("offset"), index("length")) else {
@@ -492,7 +498,7 @@ struct ToolAccumulator {
 impl ToolAccumulator {
     fn reconcile_identity(
         &mut self,
-        fields: &Map<String, Value>,
+        fields: &Object<'_>,
         item_id_key: &str,
         limits: StreamLimits,
     ) -> Result<()> {
@@ -534,15 +540,15 @@ impl ToolAccumulator {
     }
 }
 
-fn string_member<'a>(fields: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
-    fields.get(key).and_then(Value::as_str)
+fn string_member<'a>(fields: &'a Object<'_>, key: &str) -> Option<&'a str> {
+    fields.get(key).and_then(Json::as_str)
 }
 
-fn error_event_failure(event: &Map<String, Value>) -> (Option<&str>, Option<&str>) {
+fn error_event_failure<'a>(event: &'a Object<'_>) -> (Option<&'a str>, Option<&'a str>) {
     let code = string_member(event, "code");
     let message = string_member(event, "message");
     match event.get("error") {
-        Some(Value::Object(error)) if code.is_none() && message.is_none() => (
+        Some(Json::Object(error)) if code.is_none() && message.is_none() => (
             string_member(error, "code").or_else(|| string_member(error, "type")),
             string_member(error, "message"),
         ),
@@ -550,11 +556,11 @@ fn error_event_failure(event: &Map<String, Value>) -> (Option<&str>, Option<&str
     }
 }
 
-fn check_optional_identity(fields: &Map<String, Value>, key: &str, expected: &str) -> Result<()> {
+fn check_optional_identity(fields: &Object<'_>, key: &str, expected: &str) -> Result<()> {
     match fields.get(key) {
         None => Ok(()),
-        Some(Value::String(value)) if value == expected => Ok(()),
-        Some(Value::String(_)) => Err(ResponsesError::ToolCallConflict),
+        Some(Json::String(value)) if value == expected => Ok(()),
+        Some(Json::String(_)) => Err(ResponsesError::ToolCallConflict),
         Some(_) => Err(ResponsesError::InvalidEvent),
     }
 }
@@ -572,21 +578,19 @@ fn serialized_equal(left: &str, right: &str) -> bool {
     }
 }
 
-fn reasoning_digest(fields: &Map<String, Value>) -> IdentityHash {
+fn reasoning_digest(fields: &Object<'_>) -> IdentityHash {
     let mut canonical = String::new();
     write_canonical_object(
         &mut canonical,
-        fields
-            .iter()
-            .filter(|(key, _)| key.as_str() != "encrypted_content"),
+        fields.iter().filter(|(key, _)| *key != "encrypted_content"),
     );
     Sha256::digest(canonical.as_bytes()).into()
 }
 
-fn write_canonical(out: &mut String, value: &Value) {
+fn write_canonical(out: &mut String, value: &Json<'_>) {
     match value {
-        Value::Object(fields) => write_canonical_object(out, fields.iter()),
-        Value::Array(items) => {
+        Json::Object(fields) => write_canonical_object(out, fields.iter()),
+        Json::Array(items) => {
             out.push('[');
             for (index, item) in items.iter().enumerate() {
                 if index > 0 {
@@ -596,13 +600,16 @@ fn write_canonical(out: &mut String, value: &Value) {
             }
             out.push(']');
         }
-        scalar => out.push_str(&scalar.to_string()),
+        Json::Null => out.push_str("null"),
+        Json::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+        Json::Number(number) => out.push_str(&number.to_string()),
+        Json::String(text) => push_json_string(out, text),
     }
 }
 
-fn write_canonical_object<'a>(
+fn write_canonical_object<'a, 'b: 'a>(
     out: &mut String,
-    fields: impl Iterator<Item = (&'a String, &'a Value)>,
+    fields: impl Iterator<Item = (&'a str, &'a Json<'b>)>,
 ) {
     let mut sorted: Vec<_> = fields.collect();
     sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
@@ -618,7 +625,7 @@ fn write_canonical_object<'a>(
     out.push('}');
 }
 
-fn optional_index(fields: &Map<String, Value>, name: &str) -> Result<Option<i64>> {
+fn optional_index(fields: &Object<'_>, name: &str) -> Result<Option<i64>> {
     match fields.get(name) {
         None => Ok(None),
         Some(value) => value
@@ -641,17 +648,17 @@ impl TextKey {
     }
 }
 
-fn text_key(fields: &Map<String, Value>) -> Result<TextKey> {
+fn text_key(fields: &Object<'_>) -> Result<TextKey> {
     Ok(TextKey {
         output_index: optional_index(fields, "output_index")?.unwrap_or(0),
         content_index: optional_index(fields, "content_index")?.unwrap_or(0),
     })
 }
 
-fn text_identity(fields: &Map<String, Value>, name: &str) -> Result<Option<IdentityHash>> {
+fn text_identity(fields: &Object<'_>, name: &str) -> Result<Option<IdentityHash>> {
     match fields.get(name) {
         None => Ok(None),
-        Some(Value::String(value)) if !value.is_empty() => {
+        Some(Json::String(value)) if !value.is_empty() => {
             Ok(Some(Sha256::digest(value.as_bytes()).into()))
         }
         Some(_) => Err(ResponsesError::InvalidEvent),
@@ -808,11 +815,12 @@ impl Reducer {
             json.len(),
             self.limits.aggregate_bytes,
         )?;
-        let parsed = parse_strict_json_value(json).map_err(|_| ResponsesError::InvalidEvent)?;
-        let Value::Object(event) = parsed else {
+        let parsed = parse_strict_json(json, DuplicateKeys::AfterValue)
+            .map_err(|_| ResponsesError::InvalidEvent)?;
+        let Json::Object(event) = parsed else {
             return Ok(false);
         };
-        let Some(event_type) = event.get("type").and_then(Value::as_str) else {
+        let Some(event_type) = event.get("type").and_then(Json::as_str) else {
             return Ok(false);
         };
         self.dispatch(event_type, &event)
@@ -822,13 +830,13 @@ impl Reducer {
             })
     }
 
-    fn dispatch(&mut self, event_type: &str, event: &Map<String, Value>) -> Result<bool> {
+    fn dispatch(&mut self, event_type: &str, event: &Object<'_>) -> Result<bool> {
         match event_type {
             "response.output_item.added" => self.item_added(event)?,
             "response.output_text.delta" | "response.refusal.delta" => {
                 let text = event
                     .get("delta")
-                    .and_then(Value::as_str)
+                    .and_then(Json::as_str)
                     .ok_or(ResponsesError::InvalidEvent)?;
                 self.accept_text(&TextUpdate {
                     key: text_key(event)?,
@@ -842,7 +850,7 @@ impl Reducer {
                 let refusal = event_type == "response.refusal.done";
                 let text = event
                     .get(if refusal { "refusal" } else { "text" })
-                    .and_then(Value::as_str)
+                    .and_then(Json::as_str)
                     .ok_or(ResponsesError::InvalidEvent)?;
                 self.accept_text(&TextUpdate {
                     key: text_key(event)?,
@@ -853,7 +861,7 @@ impl Reducer {
                 })?;
             }
             "response.content_part.done" => {
-                let Some(Value::Object(part)) = event.get("part") else {
+                let Some(Json::Object(part)) = event.get("part") else {
                     return Err(ResponsesError::InvalidEvent);
                 };
                 self.finalize_text_part(text_key(event)?, text_identity(event, "item_id")?, part)?;
@@ -862,7 +870,7 @@ impl Reducer {
                 if let Some(index) = optional_index(event, "output_index")? {
                     self.check_output_kind(index, OutputKind::Reasoning)?;
                 }
-                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                if let Some(delta) = event.get("delta").and_then(Json::as_str) {
                     self.deltas.push(Delta::Reasoning(delta.to_owned()));
                 }
             }
@@ -891,19 +899,19 @@ impl Reducer {
         Ok(false)
     }
 
-    fn item_added(&mut self, event: &Map<String, Value>) -> Result<()> {
+    fn item_added(&mut self, event: &Object<'_>) -> Result<()> {
         let Some(output_index) = optional_index(event, "output_index")? else {
             return Ok(());
         };
-        let Some(Value::Object(item)) = event.get("item") else {
+        let Some(Json::Object(item)) = event.get("item") else {
             return Ok(());
         };
-        match item.get("type").and_then(Value::as_str) {
+        match item.get("type").and_then(Json::as_str) {
             Some("function_call") => {
                 self.check_output_kind(output_index, OutputKind::FunctionCall)?;
                 let (Some(call_id), Some(name)) = (
-                    item.get("call_id").and_then(Value::as_str),
-                    item.get("name").and_then(Value::as_str),
+                    item.get("call_id").and_then(Json::as_str),
+                    item.get("name").and_then(Json::as_str),
                 ) else {
                     return Ok(());
                 };
@@ -940,12 +948,12 @@ impl Reducer {
         }
     }
 
-    fn arguments_delta(&mut self, event: &Map<String, Value>) -> Result<()> {
+    fn arguments_delta(&mut self, event: &Object<'_>) -> Result<()> {
         let Some(output_index) = optional_index(event, "output_index")? else {
             return Ok(());
         };
         self.check_output_kind(output_index, OutputKind::FunctionCall)?;
-        let Some(delta) = event.get("delta").and_then(Value::as_str) else {
+        let Some(delta) = event.get("delta").and_then(Json::as_str) else {
             return Ok(());
         };
         let Some(index) = self.find_tool(output_index) else {
@@ -960,14 +968,14 @@ impl Reducer {
         append_tool_arguments(&mut tool.arguments, delta, limits.tool_arguments_bytes)
     }
 
-    fn arguments_done(&mut self, event: &Map<String, Value>) -> Result<()> {
+    fn arguments_done(&mut self, event: &Object<'_>) -> Result<()> {
         let Some(output_index) = optional_index(event, "output_index")? else {
             return Ok(());
         };
         self.check_output_kind(output_index, OutputKind::FunctionCall)?;
         let arguments = event
             .get("arguments")
-            .and_then(Value::as_str)
+            .and_then(Json::as_str)
             .ok_or(ResponsesError::InvalidEvent)?;
         let index = self
             .find_tool(output_index)
@@ -978,22 +986,18 @@ impl Reducer {
         tool.finalize_arguments(arguments, limits)
     }
 
-    fn item_done(&mut self, event: &Map<String, Value>) -> Result<()> {
+    fn item_done(&mut self, event: &Object<'_>) -> Result<()> {
         let Some(output_index) = optional_index(event, "output_index")? else {
             return Ok(());
         };
-        let Some(Value::Object(item)) = event.get("item") else {
+        let Some(Json::Object(item)) = event.get("item") else {
             return Ok(());
         };
         self.reconcile_output_item(output_index, item)
     }
 
-    fn reconcile_output_item(
-        &mut self,
-        output_index: i64,
-        item: &Map<String, Value>,
-    ) -> Result<()> {
-        match item.get("type").and_then(Value::as_str) {
+    fn reconcile_output_item(&mut self, output_index: i64, item: &Object<'_>) -> Result<()> {
+        match item.get("type").and_then(Json::as_str) {
             Some("function_call") => self.reconcile_tool_item(output_index, item),
             Some("reasoning") => self.reconcile_reasoning(output_index, item, Evidence::Completed),
             Some("message") => self.finalize_text_message(output_index, item),
@@ -1002,15 +1006,15 @@ impl Reducer {
         }
     }
 
-    fn terminal(&mut self, event_type: &str, event: &Map<String, Value>) -> Result<()> {
-        let Some(Value::Object(response)) = event.get("response") else {
+    fn terminal(&mut self, event_type: &str, event: &Object<'_>) -> Result<()> {
+        let Some(Json::Object(response)) = event.get("response") else {
             return Err(ResponsesError::InvalidEvent);
         };
         let status = terminal_status(event_type, response)?;
-        let output = response.get("output").unwrap_or(&Value::Null);
+        let output = response.get("output").unwrap_or(&Json::Null);
         if status == TerminalStatus::Failed {
             let (code, message) = match response.get("error") {
-                Some(Value::Object(failure)) => (
+                Some(Json::Object(failure)) => (
                     string_member(failure, "code"),
                     string_member(failure, "message"),
                 ),
@@ -1018,14 +1022,14 @@ impl Reducer {
             };
             self.accept_failure(code, message);
         } else if !output.is_null() {
-            let Value::Array(items) = output else {
+            let Json::Array(items) = output else {
                 return Err(ResponsesError::InvalidEvent);
             };
             for (position, item) in items.iter().enumerate() {
-                let Value::Object(item) = item else {
+                let Json::Object(item) = item else {
                     continue;
                 };
-                if item.get("type").and_then(Value::as_str).is_none() {
+                if item.get("type").and_then(Json::as_str).is_none() {
                     continue;
                 }
                 let index =
@@ -1061,7 +1065,7 @@ impl Reducer {
     fn reconcile_reasoning(
         &mut self,
         output_index: i64,
-        fields: &Map<String, Value>,
+        fields: &Object<'_>,
         evidence: Evidence,
     ) -> Result<()> {
         self.check_output_kind(output_index, OutputKind::Reasoning)?;
@@ -1084,7 +1088,7 @@ impl Reducer {
                 }
             }
         }
-        let encrypted = fields.get("encrypted_content").unwrap_or(&Value::Null);
+        let encrypted = fields.get("encrypted_content").unwrap_or(&Json::Null);
         if !encrypted.is_null() && !encrypted.is_string() {
             return Err(ResponsesError::InvalidEvent);
         }
@@ -1105,7 +1109,9 @@ impl Reducer {
         }
         let has_ciphertext = encrypted.as_str().is_some_and(|text| !text.is_empty());
         let json = (evidence == Evidence::Completed && has_ciphertext)
-            .then(|| Value::Object(fields.clone()).to_string());
+            .then(|| serde_json::to_string(fields))
+            .transpose()
+            .map_err(|_| ResponsesError::InvalidEvent)?;
         let mut total = self.reasoning_bytes;
         if let Some(json) = &json {
             let overhead = if total == 0 { 2 } else { 1 };
@@ -1273,11 +1279,11 @@ impl Reducer {
         &mut self,
         key: TextKey,
         item_id_hash: Option<IdentityHash>,
-        fields: &Map<String, Value>,
+        fields: &Object<'_>,
     ) -> Result<()> {
         let kind = fields
             .get("type")
-            .and_then(Value::as_str)
+            .and_then(Json::as_str)
             .ok_or(ResponsesError::InvalidEvent)?;
         let refusal = kind == "refusal";
         if !refusal && kind != "output_text" {
@@ -1285,7 +1291,7 @@ impl Reducer {
         }
         let text = fields
             .get(if refusal { "refusal" } else { "text" })
-            .and_then(Value::as_str)
+            .and_then(Json::as_str)
             .ok_or(ResponsesError::InvalidEvent)?;
         self.accept_text(&TextUpdate {
             key,
@@ -1296,18 +1302,14 @@ impl Reducer {
         })
     }
 
-    fn finalize_text_message(
-        &mut self,
-        output_index: i64,
-        fields: &Map<String, Value>,
-    ) -> Result<()> {
+    fn finalize_text_message(&mut self, output_index: i64, fields: &Object<'_>) -> Result<()> {
         let identity = text_identity(fields, "id")?;
         self.reconcile_message(output_index, identity, assistant_message_phase(fields)?)?;
-        let Some(Value::Array(parts)) = fields.get("content") else {
+        let Some(Json::Array(parts)) = fields.get("content") else {
             return Err(ResponsesError::InvalidEvent);
         };
         for (position, part) in parts.iter().enumerate() {
-            let Value::Object(part) = part else {
+            let Json::Object(part) = part else {
                 return Err(ResponsesError::InvalidEvent);
             };
             let key = TextKey {
@@ -1320,11 +1322,7 @@ impl Reducer {
         Ok(())
     }
 
-    fn reconcile_tool_item(
-        &mut self,
-        output_index: i64,
-        fields: &Map<String, Value>,
-    ) -> Result<()> {
+    fn reconcile_tool_item(&mut self, output_index: i64, fields: &Object<'_>) -> Result<()> {
         self.check_output_kind(output_index, OutputKind::FunctionCall)?;
         let index = self
             .find_tool(output_index)
@@ -1478,7 +1476,7 @@ pub(crate) fn checked_accumulated_size(
         .ok_or(ResponsesError::ResourceLimitExceeded)
 }
 
-fn terminal_status(event_type: &str, response: &Map<String, Value>) -> Result<TerminalStatus> {
+fn terminal_status(event_type: &str, response: &Object<'_>) -> Result<TerminalStatus> {
     let expected = match event_type {
         "response.completed" => Some(TerminalStatus::Completed),
         "response.incomplete" => Some(TerminalStatus::Incomplete),
@@ -1515,7 +1513,7 @@ fn terminal_status(event_type: &str, response: &Map<String, Value>) -> Result<Te
 
 fn finish_reason(
     status: TerminalStatus,
-    response: &Map<String, Value>,
+    response: &Object<'_>,
     has_tools: bool,
 ) -> ResponsesFinish {
     match status {
@@ -1524,7 +1522,7 @@ fn finish_reason(
         TerminalStatus::Incomplete => match response
             .get("incomplete_details")
             .and_then(|details| details.get("reason"))
-            .and_then(Value::as_str)
+            .and_then(Json::as_str)
         {
             Some("max_output_tokens") => ResponsesFinish::Length,
             Some("content_filter") => ResponsesFinish::ContentFilter,
@@ -1534,11 +1532,11 @@ fn finish_reason(
     }
 }
 
-fn parse_usage(response: &Map<String, Value>) -> Usage {
-    let Some(Value::Object(usage)) = response.get("usage") else {
+fn parse_usage(response: &Object<'_>) -> Usage {
+    let Some(Json::Object(usage)) = response.get("usage") else {
         return Usage::default();
     };
-    let counter = |key: &str| usage.get(key).and_then(Value::as_u64);
+    let counter = |key: &str| usage.get(key).and_then(Json::as_u64);
     Usage {
         input_tokens: counter("input_tokens"),
         output_tokens: counter("output_tokens"),

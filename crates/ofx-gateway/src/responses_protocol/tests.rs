@@ -1474,13 +1474,20 @@ fn responses_tools_serialize_typed_static_and_dynamic_functions_once() {
 
 #[test]
 fn responses_usage_projection_retains_optional_cached_and_reasoning_detail() {
-    let response = json!({"usage": {"input_tokens": 17, "output_tokens": 7, "input_tokens_details": {"cached_tokens": 5}}});
-    let usage = parse_usage(response.as_object().unwrap());
+    let object = |text: &'static str| {
+        parse_strict_json(text.as_bytes(), DuplicateKeys::AfterValue)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone()
+    };
+    let usage = parse_usage(&object(
+        r#"{"usage": {"input_tokens": 17, "output_tokens": 7, "input_tokens_details": {"cached_tokens": 5}}}"#,
+    ));
     assert_eq!(usage.input_tokens, Some(17));
     assert_eq!(usage.output_tokens, Some(7));
-    let negative = json!({"usage": {"input_tokens": -1}});
     assert_eq!(
-        parse_usage(negative.as_object().unwrap()).input_tokens,
+        parse_usage(&object(r#"{"usage": {"input_tokens": -1}}"#)).input_tokens,
         None
     );
 }
@@ -1492,4 +1499,57 @@ fn openai_codex_checked_stream_sizes_accept_the_bound_and_reject_overflow() {
         checked_accumulated_size(usize::MAX, 1, usize::MAX),
         Err(ResponsesError::ResourceLimitExceeded)
     );
+}
+
+fn value_canonical(out: &mut String, value: &Value) {
+    match value {
+        Value::Object(fields) => {
+            let mut sorted: Vec<_> = fields.iter().collect();
+            sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            out.push('{');
+            for (index, (key, value)) in sorted.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                push_json_string(out, key);
+                out.push(':');
+                value_canonical(out, value);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                value_canonical(out, item);
+            }
+            out.push(']');
+        }
+        scalar => out.push_str(&scalar.to_string()),
+    }
+}
+
+#[test]
+fn canonical_reasoning_text_matches_the_value_writer_byte_for_byte() {
+    for document in [
+        r#"{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"a\"b\\c\n\u0001é😀"}],"encrypted_content":"x"}"#,
+        r#"{"z":1,"a":-2,"m":[1.5,-0.0,1e300,123456789012345678901234567890,18446744073709551615,-9223372036854775808],"b":{"y":null,"x":true,"w":false}}"#,
+        r#"{"nested":[[{"k":"v","a":[{}]}],[]],"":"empty key","\u00e9":"escaped key"}"#,
+        r#"{"number":0.1,"tiny":5e-324,"big":1.7976931348623157e308,"int":0}"#,
+    ] {
+        let json = parse_strict_json(document.as_bytes(), DuplicateKeys::AfterValue).unwrap();
+        let value: Value = serde_json::from_str(document).unwrap();
+        let mut borrowed = String::new();
+        write_canonical(&mut borrowed, &json);
+        let mut expected = String::new();
+        value_canonical(&mut expected, &value);
+        assert_eq!(borrowed, expected, "{document}");
+        assert_eq!(
+            serde_json::to_string(&json).unwrap(),
+            value.to_string(),
+            "{document}"
+        );
+    }
 }
