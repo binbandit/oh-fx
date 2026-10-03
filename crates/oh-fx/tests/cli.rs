@@ -160,7 +160,6 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
         (&["--sessions-v2"], "--sessions-v2"),
         (&["--sessions-v2", "resume", "last"], "--sessions-v2"),
         (&["login", "vercel"], "login"),
-        (&["replay", "tape"], "replay"),
         (&["status"], "status"),
         (&["balance"], "credits"),
         (&["sessions"], "sessions"),
@@ -329,7 +328,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
         (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),
         (&["workspace", "--json"], "workspace"),
-        (&["replay", "tape", "--json"], "replay"),
     ] {
         let output = oh_fx(args, &[]);
         assert_eq!(output.status.code(), Some(1), "{args:?}");

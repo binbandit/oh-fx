@@ -1021,6 +1021,8 @@ dependencies = [
  "ofx-testkit",
  "ofx-text",
  "ofx-upgrade",
+ "ofx-vt",
+ "ofx-workspace",
  "rustix",
  "serde",
  "serde_json",

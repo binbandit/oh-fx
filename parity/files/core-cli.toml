@@ -11,9 +11,9 @@ note = "Argument parsing and ask runtime exist; styled terminal ask presentation
 
 [[file]]
 upstream = "src/core/cli/cli_replay.zig"
-status = "partial"
-modules = ["crates/ofx-cli/src/cli_replay.rs"]
-note = "Replay/session command arguments are parsed; replay execution and full transcript rendering command are not implemented."
+status = "ported"
+modules = ["crates/ofx-cli/src/cli_replay.rs", "crates/oh-fx/src/cli_replay.rs", "crates/oh-fx/src/cli_replay/frames_dir.rs"]
+note = "Replay writes no debug_trace lines, because oh-fx has no trace log yet."
 
 [[file]]
 upstream = "src/core/cli/cli_surface.zig"
