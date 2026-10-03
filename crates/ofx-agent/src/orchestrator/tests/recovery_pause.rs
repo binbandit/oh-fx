@@ -112,6 +112,53 @@ async fn pausing_a_retried_request_in_flight_counts_it() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_paused_turn_keeps_the_text_its_retried_request_streamed() {
+    for saved in [true, false] {
+        let provider = FakeProvider::new(vec![
+            lost(),
+            Script::StreamThenWait(vec![StreamEvent::TextDelta {
+                text: "Half an answer".to_owned(),
+            }]),
+            text_reply("next"),
+        ]);
+        let (log, entries) = MemoryLog::shared();
+        let shared: Arc<FakeProvider> = Arc::clone(&provider);
+        let mut agent = new_agent(shared, Vec::new());
+        if saved {
+            agent = logged(agent, log);
+        }
+        let streamed = |event: &UiEvent| matches!(event, UiEvent::AssistantText { .. });
+        let (report, _) = pause_on(&mut agent, "go", streamed).await;
+        assert_eq!(report.failure.unwrap().code(), "RecoveryPaused", "{saved}");
+        if saved {
+            assert_eq!(
+                *entries.lock().unwrap(),
+                [Logged::Turn {
+                    user: "go".to_owned(),
+                    steps: Vec::new(),
+                    steering: Vec::new(),
+                    end: r#"Failed "Half an answer""#.to_owned(),
+                }]
+            );
+        }
+        run(&mut agent, "again").await;
+        assert_eq!(
+            provider.requests()[2].messages,
+            vec![
+                ChatMessage::user("go"),
+                ChatMessage::Assistant {
+                    content: Some("Half an answer".to_owned()),
+                    tool_calls: Vec::new(),
+                    provider_replay: None,
+                },
+                ChatMessage::user("again"),
+            ],
+            "{saved}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_pause_outside_a_recovery_interrupts_the_turn() {
     let provider = FakeProvider::new(vec![Script::WaitForCancel]);
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());

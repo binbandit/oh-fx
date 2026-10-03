@@ -742,10 +742,8 @@ impl Agent {
                 Err(error) => error,
             };
             if error.kind == ProviderErrorKind::Cancelled || cancel.is_cancelled() {
-                if let Some(cause) = recovering_from.filter(|_| self.recovery_pause.requested()) {
-                    return Err(Self::pause(turn_id, cause, consumed, &error, events));
-                }
-                return Err(Stop::Interrupted { partial });
+                let recovery = recovering_from.map(|cause| (cause, consumed));
+                return Err(self.interruption(turn_id, recovery, &error, partial, events));
             }
             let cause = recovery_cause(error.kind).filter(|_| partial.is_empty());
             let Some(cause) = cause.filter(|_| attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS) else {
@@ -777,10 +775,8 @@ impl Agent {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
-                    if self.recovery_pause.requested() {
-                        return Err(Self::pause(turn_id, cause, consumed, &error, events));
-                    }
-                    return Err(Stop::interrupted());
+                    let recovery = Some((cause, consumed));
+                    return Err(self.interruption(turn_id, recovery, &error, String::new(), events));
                 }
                 () = tokio::time::sleep(decision.delay) => {}
             }
@@ -797,13 +793,17 @@ impl Agent {
         self.recovery_pause.clone()
     }
 
-    fn pause(
+    fn interruption(
+        &self,
         turn_id: TurnId,
-        cause: ModelRecoveryCause,
-        attempt: usize,
+        recovery: Option<(ModelRecoveryCause, usize)>,
         error: &ProviderError,
+        partial: String,
         events: EventSink<'_>,
     ) -> Stop {
+        let Some((cause, attempt)) = recovery.filter(|_| self.recovery_pause.requested()) else {
+            return Stop::Interrupted { partial };
+        };
         events(UiEvent::Recovery {
             turn_id,
             status: RouteRecoveryStatus {
@@ -818,7 +818,10 @@ impl Agent {
                 retry_wait: None,
             },
         });
-        Stop::failed(TurnFailure::RecoveryPaused)
+        Stop::Failed {
+            failure: TurnFailure::RecoveryPaused,
+            partial,
+        }
     }
 
     async fn run_batch(
