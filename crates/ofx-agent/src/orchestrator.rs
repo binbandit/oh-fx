@@ -1257,7 +1257,24 @@ impl Prepared {
 enum Dispatched {
     Rejected(ToolOutput, ToolRejection),
     Held(ToolOutput, bool),
+    Admitted(Box<dyn PreparedCall>, ToolContext),
     Running(JoinHandle<ToolOutput>),
+    Unstarted,
+}
+
+impl Dispatched {
+    fn start(self, cancel: &CancellationToken) -> Self {
+        match self {
+            Self::Admitted(prepared, _) if cancel.is_cancelled() => {
+                discard(prepared);
+                Self::Unstarted
+            }
+            Self::Admitted(prepared, context) => {
+                Self::Running(tokio::spawn(async move { prepared.execute(context).await }))
+            }
+            other => other,
+        }
+    }
 }
 
 struct Settled<'c> {
@@ -1621,8 +1638,7 @@ async fn run_group<'c>(
                 let (held, review_hold) = match verdict {
                     Verdict::Run(path_access) => {
                         let context = reviewing.tool_context(call, delegates, path_access, cancel);
-                        let task = tokio::spawn(async move { prepared.execute(context).await });
-                        dispatched.push((call, Dispatched::Running(task)));
+                        dispatched.push((call, Dispatched::Admitted(prepared, context)));
                         continue;
                     }
                     Verdict::Held(output) => (output, true),
@@ -1644,6 +1660,10 @@ async fn run_group<'c>(
         }
     }
     group.for_each(discard);
+    let dispatched = dispatched
+        .into_iter()
+        .map(|(call, dispatched)| (call, dispatched.start(cancel)))
+        .collect();
     SettledGroup {
         outcomes: settle_group(turn_id, dispatched, events, cancel).await,
         blocked,
@@ -1679,6 +1699,15 @@ async fn settle_group<'c>(
                 }
                 events(tool_finished(turn_id, call, output.as_ref()));
                 (output, true, false)
+            }
+            Dispatched::Admitted(prepared, _) => {
+                discard(prepared);
+                events(tool_finished(turn_id, call, None));
+                (None, true, false)
+            }
+            Dispatched::Unstarted => {
+                events(tool_finished(turn_id, call, None));
+                (None, true, false)
             }
         };
         outcomes.push(Settled {

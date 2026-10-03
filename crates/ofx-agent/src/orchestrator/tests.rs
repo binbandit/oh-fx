@@ -1192,6 +1192,20 @@ async fn the_last_completed_reply_outlives_failed_and_interrupted_turns_until_a_
 }
 
 async fn run_cancelled_at(agent: &mut Agent, cancel_at: &str) -> (TurnReport, Vec<UiEvent>) {
+    run_cancelled(agent, cancel_at, CancelTiming::OnceRunning).await
+}
+
+#[derive(Clone, Copy)]
+enum CancelTiming {
+    WhileAdmitting,
+    OnceRunning,
+}
+
+async fn run_cancelled(
+    agent: &mut Agent,
+    cancel_at: &str,
+    timing: CancelTiming,
+) -> (TurnReport, Vec<UiEvent>) {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
     let cancel_at = cancel_at.to_owned();
@@ -1202,7 +1216,18 @@ async fn run_cancelled_at(agent: &mut Agent, cancel_at: &str) -> (TurnReport, Ve
             &mut |event| {
                 if matches!(&event, UiEvent::ToolStarted { call_id, .. } if call_id.as_str() == cancel_at)
                 {
-                    trigger.cancel();
+                    let trigger = trigger.clone();
+                    match timing {
+                        CancelTiming::WhileAdmitting => trigger.cancel(),
+                        CancelTiming::OnceRunning => {
+                            tokio::spawn(async move {
+                                for _ in 0..8 {
+                                    tokio::task::yield_now().await;
+                                }
+                                trigger.cancel();
+                            });
+                        }
+                    }
                 }
                 events.push(event);
             },
@@ -1346,14 +1371,14 @@ async fn cancelled_tools_that_outlive_the_grace_period_are_aborted_and_dropped_f
 }
 
 #[tokio::test]
-async fn cancelling_while_a_parallel_group_starts_never_starts_the_rest() {
+async fn cancelling_while_a_parallel_group_is_admitted_runs_none_of_it() {
     let provider = FakeProvider::new(vec![tool_reply(&[
         ("call-1", r#"{"wait":true}"#),
         ("call-2", r#"{"text":"later"}"#),
         ("call-3", r#"{"invalid":true}"#),
     ])]);
     let mut agent = new_agent(provider, vec![echo_tool()]);
-    let (report, events) = run_cancelled_at(&mut agent, "call-1").await;
+    let (report, events) = run_cancelled(&mut agent, "call-1", CancelTiming::WhileAdmitting).await;
     assert_eq!(report.outcome, TurnOutcome::Interrupted);
     assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
     assert!(
@@ -1361,18 +1386,7 @@ async fn cancelling_while_a_parallel_group_starts_never_starts_the_rest() {
             .iter()
             .any(|event| matches!(event, UiEvent::ToolRejected { .. }))
     );
-    assert_eq!(
-        agent.history,
-        [
-            ChatMessage::user("go"),
-            ChatMessage::Assistant {
-                content: None,
-                tool_calls: vec![echo_call("call-1", r#"{"wait":true}"#)],
-                provider_replay: None,
-            },
-            tool_message("call-1", "stopped after cleanup", ToolResultStatus::Failure),
-        ]
-    );
+    assert_eq!(agent.history, [ChatMessage::user("go")]);
 }
 
 #[tokio::test]
@@ -2111,21 +2125,15 @@ async fn calls_skipped_by_cancellation_are_dropped_without_letting_a_panic_escap
             ("call-4", carried),
         ])]);
         let mut agent = new_agent(provider, vec![echo_tool()]);
-        let (report, events) = run_cancelled_at(&mut agent, "call-1").await;
+        let (report, events) =
+            run_cancelled(&mut agent, "call-1", CancelTiming::WhileAdmitting).await;
         assert_eq!(
             report.outcome,
             TurnOutcome::Interrupted,
             "{next} {later} {carried}"
         );
         assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
-        assert_eq!(
-            agent.history.last(),
-            Some(&tool_message(
-                "call-1",
-                "stopped after cleanup",
-                ToolResultStatus::Failure
-            ))
-        );
+        assert_eq!(agent.history, [ChatMessage::user("go")]);
     }
 }
 
