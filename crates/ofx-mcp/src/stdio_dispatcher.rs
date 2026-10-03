@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -11,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::Instant;
 
 use crate::docker_run::{self, Cleanup};
 use crate::error::McpError;
@@ -20,9 +21,10 @@ use crate::legacy_elicitation_runtime::{
 };
 use crate::mcp_contract::validate_json_rpc_response_envelope;
 use crate::protocol_messages::build_cancellation_notification;
+use crate::timing::{spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
-    BoxFuture, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy, ShutdownMode,
-    TransportRequest,
+    Cancellation, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy,
+    ShutdownMode, TransportRequest,
 };
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
@@ -170,7 +172,7 @@ enum Inbound {
     Request,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     pid: u32,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     responses: Correlator<String, McpError>,
@@ -235,9 +237,8 @@ impl StdioDispatcher {
             notifications,
             diagnostics: Mutex::new(ChildDiagnostics::default()),
         });
-        let stderr_task =
-            stderr.map(|stderr| tokio::spawn(drain_stderr(Arc::clone(&shared), stderr)));
-        let reader = tokio::spawn(reader_main(Arc::clone(&shared), stdout, child));
+        let stderr_task = stderr.map(|stderr| spawn(drain_stderr(Arc::clone(&shared), stderr)));
+        let reader = spawn(reader_main(Arc::clone(&shared), stdout, child));
         Ok(Self {
             shared,
             reader: Mutex::new(Some(reader)),
@@ -367,7 +368,7 @@ impl Drop for StdioDispatcher {
         kill_process_group(self.shared.pid);
         let cleanup = lock(&self.docker_cleanup).take();
         if let (Some(cleanup), Ok(runtime)) = (cleanup, tokio::runtime::Handle::try_current()) {
-            runtime.spawn(cleanup.run());
+            spawn_on(&runtime, cleanup.run());
         }
     }
 }
@@ -382,23 +383,24 @@ impl McpTransport for StdioDispatcher {
         Ok(id)
     }
 
-    fn request(&self, request: TransportRequest) -> BoxFuture<'_, Result<String, McpError>> {
-        Box::pin(self.run_request(request))
+    fn request(
+        &self,
+        request: TransportRequest,
+    ) -> impl Future<Output = Result<String, McpError>> + Send {
+        self.run_request(request)
     }
 
-    fn notify(&self, body: String, deadline: Instant) -> BoxFuture<'_, Result<(), McpError>> {
-        Box::pin(async move {
-            let phase = AtomicU8::new(WritePhase::Waiting as u8);
-            self.shared.write_bounded(&body, deadline, &phase).await
-        })
+    async fn notify(&self, body: String, deadline: Instant) -> Result<(), McpError> {
+        let phase = AtomicU8::new(WritePhase::Waiting as u8);
+        self.shared.write_bounded(&body, deadline, &phase).await
     }
 
     fn is_running(&self) -> bool {
         *lock(&self.shared.state) == ConnectionState::Running
     }
 
-    fn shutdown(&self, mode: ShutdownMode) -> BoxFuture<'_, ()> {
-        Box::pin(self.stop(mode.into()))
+    fn shutdown(&self, mode: ShutdownMode) -> impl Future<Output = ()> + Send {
+        self.stop(mode.into())
     }
 }
 
@@ -499,7 +501,7 @@ impl Shared {
         written.map_err(write_error)
     }
 
-    async fn send_cancellation(&self, request_id: u64, reason: &str) {
+    pub(crate) async fn send_cancellation(&self, request_id: u64, reason: &str) {
         let body = build_cancellation_notification(request_id, reason);
         let phase = AtomicU8::new(WritePhase::Waiting as u8);
         let _ = self
@@ -575,7 +577,7 @@ impl Shared {
             }
         };
         let shared = Arc::clone(self);
-        tokio::spawn(async move {
+        spawn(async move {
             let response = match owner {
                 Some(context) => context
                     .respond(&frame)
@@ -631,11 +633,7 @@ impl Drop for CancelOnDrop<'_> {
         if !self.armed || load_phase(self.phase) != WritePhase::Committed {
             return;
         }
-        let shared = Arc::clone(&self.shared);
-        let id = self.id;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move { shared.send_cancellation(id, "Cancelled").await });
-        }
+        Cancellation::Stdio(Arc::clone(&self.shared)).send_in_background(self.id);
     }
 }
 
@@ -679,7 +677,9 @@ async fn drain_stderr(shared: Arc<Shared>, mut stderr: ChildStderr) {
         if count == 0 {
             break;
         }
-        lock(&shared.diagnostics).stderr.append(&buffer[..count]);
+        lock(&shared.diagnostics)
+            .stderr
+            .append(buffer.get(..count).unwrap_or_default());
     }
     shared.stderr_done.send_replace(true);
 }

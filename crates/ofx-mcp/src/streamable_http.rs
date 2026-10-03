@@ -63,8 +63,9 @@ pub fn validate_static_headers(headers: &[HttpHeader]) -> Result<(), HeaderError
         if is_reserved_header(&header.name) {
             return Err(HeaderError::ReservedHeader);
         }
-        if headers[..index]
+        if headers
             .iter()
+            .take(index)
             .any(|previous| previous.name.eq_ignore_ascii_case(&header.name))
         {
             return Err(HeaderError::DuplicateHeader);

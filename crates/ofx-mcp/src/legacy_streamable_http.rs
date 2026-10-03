@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -7,7 +8,7 @@ use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep, timeout, timeout_at};
+use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::legacy_elicitation_runtime::ElicitationContext;
@@ -16,9 +17,10 @@ use crate::mcp_contract::HttpHeader;
 use crate::protocol_messages::build_cancellation_notification;
 use crate::protocol_negotiation::ElicitationWire;
 use crate::streamable_http::{MediaType, parse_media_type, validate_header_value};
+use crate::timing::{sleep, spawn, timeout, timeout_at};
 use crate::transport::{
-    BoxFuture, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy, ShutdownMode,
-    TransportRequest,
+    Cancellation, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy,
+    ShutdownMode, TransportRequest,
 };
 
 pub(crate) const HTTP_INITIALIZED_NOTIFICATION: &str =
@@ -87,7 +89,7 @@ pub(crate) fn validate_session_id(value: &str) -> Result<(), McpError> {
     }
 }
 
-struct HttpShared {
+pub(crate) struct HttpShared {
     http: reqwest::Client,
     url: String,
     headers: Vec<HttpHeader>,
@@ -209,7 +211,7 @@ impl LegacyHttpClient {
 
     pub(crate) fn start_notification_listener(&self) {
         let shared = Arc::clone(&self.shared);
-        *lock(&self.listener) = Some(tokio::spawn(listener_main(shared)));
+        *lock(&self.listener) = Some(spawn(listener_main(shared)));
     }
 
     async fn run_request(&self, request: TransportRequest) -> Result<String, McpError> {
@@ -279,25 +281,26 @@ impl McpTransport for LegacyHttpClient {
         Ok(id)
     }
 
-    fn request(&self, request: TransportRequest) -> BoxFuture<'_, Result<String, McpError>> {
-        Box::pin(self.run_request(request))
+    fn request(
+        &self,
+        request: TransportRequest,
+    ) -> impl Future<Output = Result<String, McpError>> + Send {
+        self.run_request(request)
     }
 
-    fn notify(&self, body: String, deadline: Instant) -> BoxFuture<'_, Result<(), McpError>> {
-        Box::pin(async move {
-            if self.shared.stopping.load(Ordering::Acquire) {
-                return Err(McpError::McpConnectionClosed);
-            }
-            self.shared.send_notification(&body, deadline).await
-        })
+    async fn notify(&self, body: String, deadline: Instant) -> Result<(), McpError> {
+        if self.shared.stopping.load(Ordering::Acquire) {
+            return Err(McpError::McpConnectionClosed);
+        }
+        self.shared.send_notification(&body, deadline).await
     }
 
     fn is_running(&self) -> bool {
         !self.shared.stopping.load(Ordering::Acquire)
     }
 
-    fn shutdown(&self, mode: ShutdownMode) -> BoxFuture<'_, ()> {
-        Box::pin(self.stop(mode))
+    fn shutdown(&self, mode: ShutdownMode) -> impl Future<Output = ()> + Send {
+        self.stop(mode)
     }
 }
 
@@ -313,11 +316,7 @@ impl Drop for CancelOnDrop<'_> {
         if !self.armed || !self.committed.load(Ordering::Acquire) {
             return;
         }
-        let shared = Arc::clone(&self.shared);
-        let id = self.id;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move { shared.send_cancellation(id, "Cancelled").await });
-        }
+        Cancellation::Http(Arc::clone(&self.shared)).send_in_background(self.id);
     }
 }
 
@@ -417,7 +416,7 @@ impl HttpShared {
         }
     }
 
-    async fn send_cancellation(&self, request_id: u64, reason: &str) {
+    pub(crate) async fn send_cancellation(&self, request_id: u64, reason: &str) {
         let body = build_cancellation_notification(request_id, reason);
         let _ = self
             .send_notification(&body, Instant::now() + CANCELLATION_TIMEOUT)
