@@ -59,7 +59,7 @@ pub enum CliError {
     ModelModifiersUnsupported,
     #[error("usage: oh-fx --version")]
     VersionUsage,
-    #[error("usage: oh-fx {}", .0.spec().usage)]
+    #[error("usage: oh-fx {}", .0.spec().usage())]
     Usage(TopLevelKind),
     #[error("invalid arguments")]
     InvalidArguments {

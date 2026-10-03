@@ -1,4 +1,6 @@
+pub(crate) mod packed_top_level;
 mod slash_specs;
+use packed_top_level::TopLevelSpec;
 mod top_level_help;
 
 pub use slash_specs::{SlashKind, SlashPresentationCategory, SlashSpec};
@@ -71,7 +73,7 @@ impl TopLevelKind {
     }
 
     pub fn token(self) -> &'static str {
-        self.spec().token
+        self.spec().token()
     }
 
     pub(crate) fn from_token(token: &str) -> Option<Self> {
@@ -83,30 +85,30 @@ impl TopLevelKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OptionDoc {
+pub(crate) struct SourceOptionDoc {
     pub(crate) flag: &'static str,
     pub(crate) description: &'static str,
 }
 
-impl OptionDoc {
+impl SourceOptionDoc {
     pub(crate) const fn new(flag: &'static str, description: &'static str) -> Self {
         Self { flag, description }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TopLevelSpec {
+pub(crate) struct SourceTopLevelSpec {
     pub(crate) kind: TopLevelKind,
     pub(crate) token: &'static str,
     pub(crate) aliases: &'static [&'static str],
     pub(crate) usage: &'static str,
     pub(crate) summary: &'static str,
-    pub(crate) options: &'static [OptionDoc],
+    pub(crate) options: &'static [SourceOptionDoc],
     pub(crate) details: &'static [&'static str],
     pub(crate) hidden_from_top_level_help: bool,
 }
 
-impl TopLevelSpec {
+impl SourceTopLevelSpec {
     pub(crate) const fn new(
         kind: TopLevelKind,
         token: &'static str,
@@ -129,7 +131,7 @@ impl TopLevelSpec {
         Self { aliases, ..self }
     }
 
-    pub(crate) const fn with_options(self, options: &'static [OptionDoc]) -> Self {
+    pub(crate) const fn with_options(self, options: &'static [SourceOptionDoc]) -> Self {
         Self { options, ..self }
     }
 
@@ -142,15 +144,6 @@ impl TopLevelSpec {
             hidden_from_top_level_help: true,
             ..self
         }
-    }
-
-    pub(crate) fn tokens(&self) -> impl Iterator<Item = &'static str> {
-        std::iter::once(self.token).chain(self.aliases.iter().copied())
-    }
-
-    pub(crate) fn matches(&self, input: &str) -> bool {
-        self.tokens()
-            .any(|token| matches_command_token(input, token))
     }
 }
 
@@ -207,14 +200,14 @@ impl TopLevelHelpEntry {
 
     fn summary(&self) -> &'static str {
         match self {
-            Self::Command { kind, summary, .. } => summary.unwrap_or(kind.spec().summary),
+            Self::Command { kind, summary, .. } => summary.unwrap_or(kind.spec().summary()),
             Self::Extra { summary, .. } => summary,
         }
     }
 
     fn is_hidden(&self) -> bool {
         self.kind()
-            .is_some_and(|kind| kind.spec().hidden_from_top_level_help)
+            .is_some_and(|kind| kind.spec().hidden_from_top_level_help())
     }
 }
 
@@ -258,6 +251,42 @@ mod tests {
     use crate::commands::TOP_LEVEL_HELP;
 
     #[test]
+    fn command_and_option_records_store_no_native_pointers() {
+        assert!(size_of::<TopLevelSpec>() <= size_of::<u16>());
+        assert!(size_of::<packed_top_level::OptionDoc>() <= 8);
+    }
+
+    #[test]
+    fn packed_commands_match_every_original_field() {
+        for (source, packed) in crate::commands::TOP_LEVEL_SOURCES
+            .iter()
+            .zip(&TOP_LEVEL_SPECS)
+        {
+            assert_eq!(packed.kind, source.kind);
+            assert_eq!(packed.token(), source.token);
+            assert_eq!(packed.usage(), source.usage);
+            assert_eq!(packed.summary(), source.summary);
+            assert_eq!(
+                packed.hidden_from_top_level_help(),
+                source.hidden_from_top_level_help
+            );
+            assert_eq!(packed.aliases().collect::<Vec<_>>(), source.aliases);
+            assert_eq!(packed.details().collect::<Vec<_>>(), source.details);
+            assert_eq!(packed.options().len(), source.options.len());
+            for (original, option) in source.options.iter().zip(packed.options()) {
+                assert_eq!(option.flag(), original.flag);
+                assert_eq!(option.description(), original.description);
+            }
+            for token in std::iter::once(source.token).chain(source.aliases.iter().copied()) {
+                assert!(packed.matches(token));
+                assert!(packed.matches(&format!("{token} \t")));
+                assert!(!packed.matches(&format!(" {token}")));
+                assert!(!packed.matches(&format!("{token}\n")));
+            }
+        }
+    }
+
+    #[test]
     fn top_level_matcher_recognizes_help_aliases() {
         let help = TopLevelKind::Help.spec();
         assert!(help.matches("help"));
@@ -283,7 +312,7 @@ mod tests {
         for (index, kind) in TopLevelKind::ALL.into_iter().enumerate() {
             assert_eq!(kind as usize, index);
             assert_eq!(kind.spec().kind, kind);
-            assert!(!kind.spec().usage.is_empty());
+            assert!(!kind.spec().usage().is_empty());
         }
         assert_eq!(TOP_LEVEL_SPECS.len(), TopLevelKind::ALL.len());
     }
@@ -298,8 +327,8 @@ mod tests {
 
     #[test]
     fn top_level_help_index_covers_visible_commands_once() {
-        for spec in TOP_LEVEL_SPECS {
-            let expected = usize::from(!spec.hidden_from_top_level_help);
+        for spec in &TOP_LEVEL_SPECS {
+            let expected = usize::from(!spec.hidden_from_top_level_help());
             let count = TOP_LEVEL_HELP
                 .help_groups
                 .iter()
@@ -319,7 +348,7 @@ mod tests {
             let path = format!(
                 "{}/tests/golden/command_{}.txt",
                 env!("CARGO_MANIFEST_DIR"),
-                kind.spec().token
+                kind.spec().token()
             );
             let golden =
                 std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
