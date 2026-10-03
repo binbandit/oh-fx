@@ -90,9 +90,9 @@ note = "Session read snapshots with content hash and separate model/snapshot ful
 
 [[file]]
 upstream = "src/core/workspace/record_tape.zig"
-status = "todo"
-modules = []
-note = "Input/render event recording tape are unimplemented."
+status = "partial"
+modules = ["crates/ofx-workspace/src/record_tape.rs"]
+note = "The tape format, parser, recorder, startup policy, and automatic tape path are ported; the interactive shell does not record tapes yet, and sigint and marker frames have no writer because nothing records them."
 
 [[file]]
 upstream = "src/core/workspace/render_metrics.zig"
