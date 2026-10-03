@@ -74,7 +74,7 @@ note = "Result commit/cancel identity tokens are unimplemented."
 upstream = "src/core/tooling/tool_admission.zig"
 status = "partial"
 modules = ["crates/ofx-permissions/src/tool_admission.rs", "crates/ofx-tools/src/tool_admission.rs"]
-note = "File target preflight, reviews and permission decisions exist; direct execution branch proofs and dynamic MCP authority revalidation are absent."
+note = "File target preflight, reviews and permission decisions exist; direct execution branch proofs and dynamic MCP authority revalidation are absent. #1137's review of commands that use a captured alias or function is not yet synced."
 
 [[file]]
 upstream = "src/core/tooling/tool_args.zig"
@@ -140,7 +140,7 @@ note = "contentForDisplay serves the full transcript screen (OH-22) and the tool
 upstream = "src/core/tooling/tool_result_errors.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/tool_result_errors.rs"]
-note = "Permission/review/malformed arguments and execution failures are encoded; terminal field-correction inspection and unavailable host-tool results are absent."
+note = "Permission/review/malformed arguments and execution failures are encoded; terminal field-correction inspection and unavailable host-tool results are absent. #1137's TerminalEnded code arrives with in-process TTY terminals."
 
 [[file]]
 upstream = "src/core/tooling/tool_result_limits.zig"

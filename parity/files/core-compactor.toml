@@ -2,25 +2,25 @@
 upstream = "src/core/compactor/checkpoint.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/checkpoint.rs"]
-note = "Checkpoint encoding and restoration exist; importing the fx-compaction-state-v1 state files fx's earlier compactor saved is not needed, since no fx session reaches oh-fx, and saved record-ledger reconstruction comes with saved compaction records (OH-18)."
+note = "Checkpoint encoding and restoration exist; importing the fx-compaction-state-v1 state files fx's earlier compactor saved is not needed, since no fx session reaches oh-fx, and saved record-ledger reconstruction comes with saved compaction records (OH-18). #1120 reads a checkpoint whose counts pass 2^30 as damaged; not yet synced."
 
 [[file]]
 upstream = "src/core/compactor/compactor.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor.rs"]
-note = "Turn compaction exists; persistent file/tool/read records and record search are absent, and saved-ledger folding is deferred."
+note = "Turn compaction exists; persistent file/tool/read records and record search are absent, and saved-ledger folding is deferred. #1120 and #1135 changes to the notes follow-up and the searched sources are not yet synced."
 
 [[file]]
 upstream = "src/core/compactor/ledger.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/ledger.rs"]
-note = "Summary request and index generation exists; persisted M/T/L records, saved ledger handles and earlier-ledger folding are absent."
+note = "Summary request and index generation exists; persisted M/T/L records, saved ledger handles and earlier-ledger folding are absent. #1135's notes-request sentence on closing open entries is not yet synced."
 
 [[file]]
 upstream = "src/core/compactor/lint.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/lint.rs"]
-note = "Citation existence, exact-value grounding, replacement IDs, verbatim user-rule quotes and failed-tool-success checks exist; upstream diagnostic Counts and Record.first_tool/last_tool source metadata are absent."
+note = "Citation existence, exact-value grounding, replacement IDs, verbatim user-rule quotes and failed-tool-success checks exist; upstream diagnostic Counts and Record.first_tool/last_tool source metadata are absent. #1120's source-required and failed-tool checks and #1135's question-answer and kept-call sources are not yet synced."
 
 [[file]]
 upstream = "src/core/compactor/model.zig"
@@ -43,7 +43,7 @@ note = "Auto-compaction percentage validation, resolution and settings parsing a
 upstream = "src/core/compactor/summarize.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/summarize.rs"]
-note = "Summary generation and checkpoint validation exist; saved-record references and earlier saved-ledger folding are deferred."
+note = "Summary generation and checkpoint validation exist; saved-record references and earlier saved-ledger folding are deferred. #1120's follow-up for replies with entries but no turn notes is not yet synced."
 
 [[file]]
 upstream = "src/core/compactor/trace.zig"
@@ -54,4 +54,4 @@ modules = []
 upstream = "src/core/compactor/window.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/window.rs"]
-note = "Window sizing, reserve thresholds, steering costs and turn, tool-step and steering cuts exist; replay tokens match model name without provider credential-authority matching."
+note = "Window sizing, reserve thresholds, steering costs and turn, tool-step and steering cuts exist; replay tokens match model name without provider credential-authority matching. #1135's search of the calls kept after the cut is not yet synced."

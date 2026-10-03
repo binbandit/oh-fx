@@ -8,13 +8,13 @@ note = "Browser-host workspace/tool-set projection; the native product does not 
 upstream = "src/builtins/commands.zig"
 status = "partial"
 modules = ["crates/ofx-cli/src/commands.rs", "crates/ofx-app/src/app_commands.rs"]
-note = "Top-level commands/help and active subset of slash commands exist; full slash-command registry and reserved menus/commands are absent."
+note = "Top-level commands/help and active subset of slash commands exist; full slash-command registry and reserved menus/commands are absent. #1112's Ultrafast flags and /ultrafast and #1137's /shell are not yet registered."
 
 [[file]]
 upstream = "src/builtins/context.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/context.rs", "crates/ofx-agent/src/project_context.rs"]
-note = "Project/global instructions and delivery budgets exist; model prompt overlays and reconstruction of file-evidence context are absent."
+note = "Project/global instructions and delivery budgets exist; model prompt overlays and reconstruction of file-evidence context are absent. #1137 reports the user profile's login shell as shell_path; not yet synced."
 
 [[file]]
 upstream = "src/builtins/gateway.zig"
@@ -80,4 +80,4 @@ note = "Visible skill roots, loading, create/remove/path commands exist; remote 
 upstream = "src/builtins/tools.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/tool_set.rs", "crates/ofx-contract/src/tool_dispatch.rs"]
-note = "Implemented local tool schemas are composed; complete built-in registry order/schemas, provider search and remaining tools are absent."
+note = "Implemented local tool schemas are composed; complete built-in registry order/schemas, provider search and remaining tools are absent. #1137's shell description change is not yet synced."
