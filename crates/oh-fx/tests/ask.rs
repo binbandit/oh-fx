@@ -525,6 +525,36 @@ fn a_second_reply_in_another_language_fails_with_the_upstream_notice() {
 }
 
 #[test]
+fn identical_shell_failures_in_consecutive_steps_stop_the_turn_with_the_upstream_notice() {
+    let failing = r#"{"request":{"action":"run","command":"exit 3"}}"#;
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events("call_1", "shell", failing)),
+        Reply::sse(&chat_tool_call_events("call_2", "shell", failing)),
+        Reply::sse(&chat_text_events(&["must not be requested"])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(&["ask", "--yolo", "--json", "go"], &KEY);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "Full access enabled: oh-fx permission checks disabled\nRunning exit 3\nRunning exit 3\nRepeated identical shell failures stopped the tool loop. The failed action was not retried again; inspect the environment or change the action before continuing.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 1);
+    assert_eq!(result["output"], "");
+    assert_eq!(result["steps"], 2);
+    assert!(result.get("error").is_none(), "{result}");
+    let failures: Vec<&Value> = result["tool_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|call| &call["error"]["code"])
+        .collect();
+    assert_eq!(failures, [&json!("nonzero_exit"), &json!("nonzero_exit")]);
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[test]
 fn transient_failures_retry_with_upstream_notices_and_recovery_json() {
     let failure = r#"{"error":{"message":"boom"}}"#;
     let server = FakeServer::start([
