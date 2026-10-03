@@ -1019,7 +1019,7 @@ fn a_retried_request_counts_down_in_the_footer_until_its_reply_arrives() {
     let server = FakeServer::start([
         Reply::status_with_headers(
             503,
-            &[("Retry-After", "2")],
+            &[("Retry-After", "3")],
             r#"{"error":{"message":"overloaded"}}"#,
         ),
         Reply::sse(&chat_text_events(&["Recovered."])).after(&reply),
@@ -1028,15 +1028,23 @@ fn a_retried_request_counts_down_in_the_footer_until_its_reply_arrives() {
     let mut session = home.shell(24, 100);
     session.send(b"hi\r");
     let label = "⚠ Provider unavailable · HTTP 503 · overloaded · retrying request";
-    let screen = wait(&session, &format!("{label} in 2s"));
+    let screen = wait(&session, &format!("{label} in "));
     assert!(!screen.contains("Thinking"), "{screen}");
-    wait(&session, &format!("{label} in 1s"));
+    session
+        .wait_for(WAIT, |screen| {
+            screen.contains(&format!("{label} in 2s")) || screen.contains(&format!("{label} in 1s"))
+        })
+        .unwrap_or_else(|screen| panic!("the retry wait did not count down:\n{screen}"));
     let deadline = Instant::now() + WAIT;
     while server.requests().len() < 2 {
         assert!(Instant::now() < deadline, "the request was not retried");
         thread::sleep(Duration::from_millis(20));
     }
-    wait(&session, &format!("{label} in 2s"));
+    let screen = wait(&session, &format!("{label} in 3s"));
+    assert!(!screen.contains("Thinking"), "{screen}");
+    thread::sleep(Duration::from_millis(1_500));
+    let screen = session.screen();
+    assert!(screen.contains(&format!("{label} in 3s")), "{screen}");
     reply.open();
     wait(&session, "Recovered.");
     session
