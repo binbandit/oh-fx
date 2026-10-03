@@ -2,10 +2,10 @@
 upstream = "src/core/slash_commands/command_router.zig"
 status = "partial"
 modules = ["crates/ofx-cli/src/command_router.rs", "crates/ofx-app/src/app_commands.rs"]
-note = "Slash parsing and application dispatch implement 15 of the 34 upstream command kinds; remaining command handlers and deferred picker flows are missing."
+note = "Slash parsing and application dispatch implement 16 of the 34 upstream command kinds; remaining command handlers and deferred picker flows are missing."
 
 [[file]]
 upstream = "src/core/slash_commands/command_specs.zig"
 status = "partial"
 modules = ["crates/ofx-cli/src/command_specs/mod.rs", "crates/ofx-cli/src/command_specs/slash_specs.rs", "crates/ofx-cli/src/command_specs/top_level_help.rs", "crates/ofx-app/src/app_commands.rs"]
-note = "Top-level help, slash tables and application dispatch cover 15 of the 34 upstream command kinds; the child-chat registry and remaining command entries are missing."
+note = "Top-level help, slash tables and application dispatch cover 16 of the 34 upstream command kinds; the child-chat registry and remaining command entries are missing."

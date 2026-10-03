@@ -109,8 +109,8 @@ note = "Modern metadata/preferences codecs exist; legacy schema preference decod
 [[file]]
 upstream = "src/core/session/session_commands.zig"
 status = "partial"
-modules = ["crates/ofx-session/src/session_commands.rs", "crates/ofx-app/src/app_commands.rs"]
-note = "Model query resolution and application permissions/fast-mode commands exist; settings, allowlist and workspace-history command controllers remain missing."
+modules = ["crates/ofx-session/src/session_commands.rs", "crates/ofx-app/src/app_commands.rs", "crates/ofx-app/src/session_commands.rs"]
+note = "Model query resolution, permissions/fast-mode commands and saved allowlist view/add/remove/reset controllers exist; live permission-rule replacement, settings menus and workspace-history controllers remain absent."
 
 [[file]]
 upstream = "src/core/session/session_compaction.zig"

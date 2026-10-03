@@ -8,7 +8,7 @@ note = "Maximum-step settings and turn limits exist; the full upstream override 
 upstream = "src/core/config/config_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/config_runtime.rs"]
-note = "Layered settings, rejected-layer diagnostics and context-limit sources exist; upstream writeDiagnosticMetadata serialization and complete interface/notification/settings fields are absent."
+note = "Layered settings, rejected-layer diagnostics, context-limit sources and ordered user/workspace permission-rule views exist; upstream writeDiagnosticMetadata serialization and complete interface/notification/settings fields are absent."
 
 [[file]]
 upstream = "src/core/config/configured_provider.zig"
@@ -61,4 +61,4 @@ modules = []
 upstream = "src/core/config/settings_store.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/settings_store.rs"]
-note = "Permission/model preference writes and recovery backups exist; upstream full settings catalog, workspace-directory mutation and project MCP mutation API are incomplete."
+note = "Permission/model preference writes, scoped permission-rule add/remove/reset patches and recovery backups exist; full settings catalog, workspace-directory mutation and project MCP mutation API remain incomplete."

@@ -44,7 +44,7 @@ note = "Direct read-only argv/pipeline executor and its output budget are unimpl
 upstream = "src/core/permissions/permission_gate.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-permissions/src/tool_admission.rs"]
-note = "Permission traits and ordinary tool admission exist; configured permission-engine rules and dynamic tool invocation policy are absent."
+note = "Permission traits and ordinary tool admission exist; saved configured rules are parsed but not applied by the gate, and dynamic tool invocation policy remains absent."
 
 [[file]]
 upstream = "src/core/permissions/permission_prompter.zig"
@@ -61,8 +61,8 @@ note = "Owned ApprovalRequest fields, argument previews, command/file intents an
 [[file]]
 upstream = "src/core/permissions/permissions.zig"
 status = "partial"
-modules = ["crates/ofx-permissions/src/permissions.rs", "crates/ofx-permissions/src/tool_admission.rs"]
-note = "External targets and in-memory grants exist; configured rules, extra workspace roots and complete tool-mode policy are absent."
+modules = ["crates/ofx-permissions/src/permissions.rs", "crates/ofx-permissions/src/permissions/permission_rules.rs", "crates/ofx-permissions/src/tool_admission.rs"]
+note = "External targets, in-memory grants, permission-category names and canonical web-fetch domain helpers exist; configured-rule evaluation, extra workspace roots and complete tool-mode policy are absent."
 
 [[file]]
 upstream = "src/core/permissions/session_permission_state.zig"
