@@ -1,6 +1,6 @@
 use ofx_contract::CompactionEnd;
 
-use super::activity_status::{TokenProgress, activity_row, static_status_rows};
+use super::activity_status::{ActivityClock, TokenProgress, activity_row, static_status_rows};
 use crate::row_text::{Paint, Row};
 use crate::theme::Theme;
 
@@ -100,8 +100,7 @@ impl CompactionStatus {
         vec![activity_row(
             theme,
             label,
-            self.started_ms,
-            now_ms,
+            ActivityClock::running(self.started_ms, now_ms),
             TokenProgress::default(),
             cols,
         )]
