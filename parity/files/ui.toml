@@ -432,7 +432,7 @@ note = "No Rust implementation of upstream RetentionIdentity, TextExtent, clone 
 upstream = "src/ui/transcript/store.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/transcript/store.rs"]
-note = "Append and width-replay transcript storage is implemented; upstream retention rebasing, rewrite publication and stable lifecycle receipts are absent."
+note = "Append and width-replay transcript storage is implemented, and a replay keeps the 256 KiB tail cap; upstream's 1 MiB structured retention, retention rebasing, rewrite publication and stable lifecycle receipts are absent."
 
 [[file]]
 upstream = "src/ui/transcript/tool_group_projection.zig"
