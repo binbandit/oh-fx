@@ -14,6 +14,7 @@ pub(crate) mod question_prompt;
 mod session_picker_runtime;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
+mod steering_runtime;
 #[cfg(test)]
 mod test_shell;
 
@@ -48,7 +49,7 @@ use crate::footer::input_presentation::{
 };
 use crate::footer::question_ui::question_hint_row;
 use crate::footer::skills_menu_presentation::{skills_menu_band, skills_menu_hint_row};
-use crate::host::Clipboard;
+use crate::host::{Clipboard, SteeringQueue};
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
 use crate::output::activity_status::{
@@ -98,6 +99,7 @@ pub struct ShellOptions {
     pub command_categories: Vec<String>,
     pub prompt_history: PromptHistory,
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
+    pub steering: Option<Box<dyn SteeringQueue>>,
     pub opening: Opening,
 }
 
@@ -925,6 +927,7 @@ mod tests {
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
+            steering: None,
             opening: Opening::Welcome,
         }
     }

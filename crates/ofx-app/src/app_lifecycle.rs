@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
+use ofx_agent::WorkerRuntime;
 use ofx_cli::{LaunchModifiers, RequestedResume};
 use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
@@ -25,6 +26,7 @@ use crate::app_panic_runtime::PanicCapture;
 use crate::app_session_runtime::{
     LaunchOverrides, Persistence, configured_preferences, open_store, running_provider,
 };
+use crate::app_steering_runtime::WaitingSteering;
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
@@ -224,6 +226,7 @@ impl From<io::Error> for SessionError {
 
 fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(), SessionError> {
     let (sender, receiver) = ui_channel()?;
+    let steering = Arc::new(WorkerRuntime::default());
     for diagnostic in session.profile.settings().diagnostics() {
         sender.send(UiEvent::Notice {
             notice: Notice::new(NoticeTone::Warning, "", diagnostic.to_string()),
@@ -260,6 +263,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.workspace_root(),
             session.profile.cache_dir(),
         ))),
+        steering: Some(Box::new(WaitingSteering(Arc::clone(&steering)))),
         opening: session.opening,
     };
     let picking = matches!(options.opening, Opening::SessionPicker);
@@ -268,6 +272,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         session.setup,
         (session.persistence, picking),
         session.executions,
+        steering,
         runtime,
     );
     host(options, sender, receiver, refreshes.as_deref(), agent)
@@ -277,6 +282,7 @@ fn agent_work(
     setup: AgentSetup,
     (persistence, pick_at_start): (Option<Persistence>, bool),
     executions: ManagedExecutions,
+    steering: Arc<WorkerRuntime>,
     runtime: Runtime,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
     let refreshes = setup.refreshes();
@@ -286,6 +292,7 @@ fn agent_work(
             Arc::new(move |event| events.send(event)),
             persistence,
             pick_at_start,
+            steering,
         );
         runtime.block_on(async {
             controller.run(commands).await;

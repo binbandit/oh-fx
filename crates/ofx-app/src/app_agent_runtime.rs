@@ -1,7 +1,10 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailure, TurnReport};
+use ofx_agent::{
+    Agent, Compaction, CompactionError, QuestionRequests, QueuedPrompt, TurnFailure, TurnReport,
+    WorkerRuntime,
+};
 use ofx_config::save_model_preference;
 use ofx_contract::{
     CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, QuestionRequest,
@@ -39,7 +42,7 @@ pub(crate) struct ControllerState {
     config_pending: bool,
     pending_clear: Option<u64>,
     received_prompts: u64,
-    queue: VecDeque<Prompt>,
+    worker: Arc<WorkerRuntime>,
     permissions: PermissionRuntime,
     context_notices: Arc<Mutex<ContextNotices>>,
     emit: Emit,
@@ -48,11 +51,6 @@ pub(crate) struct ControllerState {
     history_turns: usize,
     context_to_compact: bool,
     session_title: SessionTitle,
-}
-
-struct Prompt {
-    text: String,
-    skills: Vec<SkillBinding>,
 }
 
 impl ControllerState {
@@ -170,8 +168,9 @@ impl ControllerState {
     }
 
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>) {
+        self.worker
+            .admit(QueuedPrompt::new(self.received_prompts, text, skills));
         self.received_prompts += 1;
-        self.queue.push_back(Prompt { text, skills });
     }
 }
 
@@ -226,6 +225,7 @@ impl Controller {
         emit: Emit,
         persistence: Option<Persistence>,
         pick_at_start: bool,
+        worker: Arc<WorkerRuntime>,
     ) -> Self {
         let questions = setup.take_question_requests();
         let notices = ContextNotices {
@@ -241,7 +241,7 @@ impl Controller {
             config_pending: false,
             pending_clear: None,
             received_prompts: 0,
-            queue: VecDeque::new(),
+            worker,
             context_notices: Arc::new(Mutex::new(notices)),
             emit,
             clipboard: Arc::new(NativeClipboard),
@@ -250,7 +250,10 @@ impl Controller {
             context_to_compact: false,
         };
         Self {
-            agent: state.setup.agent(false),
+            agent: state
+                .setup
+                .agent(false)
+                .with_steering(Arc::clone(&state.worker)),
             state,
             persistence,
             questions,
@@ -289,7 +292,7 @@ impl Controller {
 
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
-            if let Some(prompt) = self.state.queue.pop_front() {
+            if let Some(prompt) = self.state.worker.take_next() {
                 if !self.run_turn(&prompt, commands).await {
                     return;
                 }
@@ -357,6 +360,7 @@ impl Controller {
     }
 
     async fn compact(&mut self, commands: &mut UnboundedReceiver<UiCommand>) -> bool {
+        self.state.worker.begin_compaction();
         self.state.compaction(CompactionActivity::Preparing);
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
@@ -413,6 +417,7 @@ impl Controller {
                 }
             }
         };
+        self.state.worker.finish_processing();
         self.state.compaction(compaction_activity(result));
         self.settle_deferred_commands();
         open
@@ -526,8 +531,8 @@ impl Controller {
             .as_mut()
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
         self.state.session_title.set(None);
-        for prompt in &self.state.queue {
-            observe_prompt(self.persistence.as_ref(), &prompt.text);
+        for prompt in self.state.worker.waiting_texts() {
+            observe_prompt(self.persistence.as_ref(), &prompt);
         }
         self.remember_agent_facts();
         self.state
@@ -559,7 +564,7 @@ impl Controller {
 
     async fn run_turn(
         &mut self,
-        prompt: &Prompt,
+        prompt: &QueuedPrompt,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
         self.state.skills().refresh();
@@ -611,6 +616,7 @@ impl Controller {
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {
+                                state.worker.request_cancel();
                                 cancel.cancel();
                             }
                         }
@@ -644,6 +650,7 @@ impl Controller {
                 }
             }
         };
+        self.state.worker.finish_processing();
         if let Some(turn_id) = running_turn() {
             self.announce_turn_end(turn_id, &report);
         }
@@ -734,7 +741,8 @@ async fn run_deferred_command(
         }
         CommandEffect::Clear => {
             state.pending_clear = Some(state.received_prompts);
-            state.queue.clear();
+            state.worker.clear();
+            state.worker.request_cancel();
             cancel.cancel();
             return;
         }
@@ -851,12 +859,15 @@ mod tests {
     use crate::app_session_runtime::{LaunchOverrides, running_provider};
     use crate::codex_provider::SubscriptionEndpoints;
 
+    mod steering;
+
     struct Harness {
         home: tempfile::TempDir,
         commands: UnboundedSender<UiCommand>,
         events: UnboundedReceiver<UiEvent>,
         seen: Vec<UiEvent>,
         clipboard: Arc<TestClipboard>,
+        worker: Arc<WorkerRuntime>,
     }
 
     #[derive(Default)]
@@ -1068,8 +1079,9 @@ mod tests {
             let (commands, receiver) = unbounded_channel();
             let clipboard = Arc::new(TestClipboard::default());
             let shared: Arc<dyn Clipboard> = clipboard.clone();
+            let worker = Arc::new(WorkerRuntime::default());
             tokio::spawn(
-                Controller::new(setup, emit, persistence, false)
+                Controller::new(setup, emit, persistence, false, Arc::clone(&worker))
                     .with_clipboard(shared)
                     .run(receiver),
             );
@@ -1079,6 +1091,7 @@ mod tests {
                 events,
                 seen: Vec::new(),
                 clipboard,
+                worker,
             }
         }
 
@@ -1144,28 +1157,6 @@ mod tests {
             .iter()
             .filter(|message| message["role"] == "user")
             .count()
-    }
-
-    #[tokio::test]
-    async fn prompts_submitted_during_a_turn_run_next_in_order() {
-        let server = FakeServer::start([
-            Reply::sse(&chat_text_events(&["one"])),
-            Reply::sse(&chat_text_events(&["two"])),
-        ]);
-        let mut harness = Harness::start(&server).await;
-        harness.submit("first");
-        harness.submit("second");
-        harness.until(finished(TurnOutcome::Completed)).await;
-        harness.until(titled(Some("first"))).await;
-        let second = harness.until(finished(TurnOutcome::Completed)).await;
-        assert!(matches!(second[0], UiEvent::TurnStarted { .. }));
-        assert!(
-            second
-                .iter()
-                .any(|event| matches!(event, UiEvent::AssistantText { text, .. } if text == "two"))
-        );
-        let requests = server.requests();
-        assert_eq!(user_messages(&requests[1].json()), 2);
     }
 
     #[tokio::test]
@@ -1260,38 +1251,6 @@ mod tests {
         harness.submit("second");
         harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(user_messages(&server.requests()[1].json()), 1);
-    }
-
-    #[tokio::test]
-    async fn reset_during_a_turn_cancels_it_and_drops_the_prompts_queued_before_it() {
-        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
-        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["after"]))]);
-        let mut harness = Harness::start(&server).await;
-        harness.submit("slow");
-        harness
-            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
-            .await;
-        harness.submit("dropped");
-        harness.command("/reset");
-        harness.submit("kept");
-        harness.until(finished(TurnOutcome::Interrupted)).await;
-        harness
-            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
-            .await;
-        let next = timeout(
-            Duration::from_secs(10),
-            harness.until(finished(TurnOutcome::Completed)),
-        )
-        .await
-        .expect("the prompt sent after reset runs");
-        assert!(
-            next.iter().any(
-                |event| matches!(event, UiEvent::AssistantText { text, .. } if text == "after")
-            )
-        );
-        let requests = server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(user_messages(&requests[1].json()), 1);
     }
 
     #[tokio::test]
@@ -1668,6 +1627,19 @@ mod tests {
         let body = requests[7].json();
         assert_eq!(user_messages(&body), 6);
         assert_eq!(first_user_message(&body), "read the notes");
+        let sent_meanwhile = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap();
+        assert!(
+            sent_meanwhile.starts_with("<user_steering>\n")
+                && sent_meanwhile.ends_with("\n\nqueued\n</user_steering>"),
+            "{sent_meanwhile}"
+        );
     }
 
     #[tokio::test]
@@ -2346,43 +2318,6 @@ mod tests {
             .await;
         assert_eq!(undo_notice(&mut harness).await, "undo|Nothing to undo.");
         assert_eq!(fs::read_to_string(&notes).unwrap(), "again\n");
-    }
-
-    #[tokio::test]
-    async fn prompts_submitted_after_a_mid_turn_clear_run_in_the_fresh_conversation() {
-        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
-        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["after"]))]);
-        let mut harness = Harness::start(&server).await;
-        harness.submit("slow");
-        harness
-            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
-            .await;
-        harness.submit("dropped");
-        harness.command("/clear");
-        harness.submit("kept");
-        let cleared = harness
-            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
-            .await;
-        assert_eq!(
-            cleared.last(),
-            Some(&UiEvent::ConversationCleared {
-                first_kept_prompt: 2
-            })
-        );
-        let next = timeout(
-            Duration::from_secs(10),
-            harness.until(finished(TurnOutcome::Completed)),
-        )
-        .await
-        .expect("the prompt sent after clear runs");
-        assert!(
-            next.iter().any(
-                |event| matches!(event, UiEvent::AssistantText { text, .. } if text == "after")
-            )
-        );
-        let requests = server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(user_messages(&requests[1].json()), 1);
     }
 
     #[tokio::test]

@@ -31,7 +31,8 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 
 | PR | Merge | Title | Status | oh-fx | Note |
 |---|---|---|---|---|---|
-| #1092 | `7087733` | Keep steering typed after a tool result when a turn is cancelled | `defer:steering` | `ofx-agent` | `buildInterruptedExecutionMemory` keeps steering messages typed right after a tool result when a turn is cancelled. oh-fx has no steering yet; see [Steering](#steering). |
+| #1092 | `7087733` | Keep steering typed after a tool result when a turn is cancelled | `ported` | `ofx-agent`, `ofx-session` | A cancelled turn keeps the steering it took right after a tool result, with its tool-step boundary, and saves and restores it, as `buildInterruptedExecutionMemory` with `isSteering` does. The test "interrupted execution memory keeps steering typed right after a tool result" is ported, and the shell's end-to-end check saves the steering once. |
+| #1092 | `7087733` | (same) | `defer:subagents` | future subagent runtime | The end-to-end check in `gateway-stream-lifecycle.test.ts` steers a parent turn while a running child holds it (`STEERING_FIRST`); see [Steering](#steering). |
 | #1099 | `07f4e4d` | Keep the FIFO test's reader open until its writer joins | `n/a` | none | This fixes a race in a Zig test's blocked-writer thread. The Rust port of "linked metadata FIFO is rejected before descriptor open" starts no writer thread. |
 | #1072 | `d44cd84` | Add an experimental v2 session store to fx ask | `ported` | `ofx-cli`, `ofx-session`, `oh-fx` | `--sessions-v2`, before any command or inside `ask`, and `OH_FX_SESSIONS_V2` (`1`, or `true` in any letter case) are parsed. `ask` fails as not available yet unless `--no-save` is given. The ask usage and options show the flag. `v2`, in any letter case, is not a valid session id, so session listing skips the `v2` folder. |
 | #1072 | `d44cd84` | (same) | `defer:sessions-v2` | future session store | Append-only v2 log (`session_manager/*`, `session_adapter.zig`), saving and resuming `ask` on v2, the per-request `append_turn_piece` hook, usage recovery, and side files under `session-files/<id>`. |
@@ -61,11 +62,10 @@ Port each area from the latest upstream. These notes list what changed in the ra
 
 ### Steering
 
-Upstream lets a prompt typed while a turn runs steer that turn. oh-fx's interactive shell queues such a prompt and sends it as the next turn instead. Steering, and with it #1092, is ported as its own change, including:
+Steering is ported in `ofx-agent` (`worker_runtime`, the turn loop's boundaries, steering in execution memory and compaction), `ofx-session`, `ofx-app`, and `ofx-tui`. What remains belongs to subagents:
 
-- `src/core/agent/runtime/execution_memory.zig` `buildInterruptedExecutionMemory` with `isSteering`;
-- the test "interrupted execution memory keeps steering typed right after a tool result";
-- the end-to-end check in `gateway-stream-lifecycle.test.ts`, where `STEERING_FIRST` appears once in the saved turn.
+- feedback to a running persistent child (`SteerPersistent`): parent-agent steering of the child's turn (`parentSteeringMessage`), direct admission into it (`admitActiveSteering`, `direct_steering_closed`), and the steering receipt behind `feedback_result`, which the subagent runtime answers with `child_busy` until then;
+- a parent turn waiting on a running child (`wait_for_subagent`) yielding to steering with `STEERING_PENDING_RESULT`, and the end-to-end check where `STEERING_FIRST` appears once in the saved turn.
 
 ### Tool-result store
 
