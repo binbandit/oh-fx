@@ -1,6 +1,8 @@
+use std::path::PathBuf;
+
 use ofx_contract::{
-    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, TurnId, TurnOutcome, UiCommand,
-    UiEvent,
+    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, SkillMenuFocus, SkillMenuGroup,
+    SkillMenuItem, SkillMenuSource, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
 use super::super::test_shell::TestShell;
@@ -491,4 +493,37 @@ fn kitty_escapes_and_a_remapped_ctrl_c_cancel_the_question() {
             turn_id: TurnId::new(1)
         }));
     }
+}
+
+#[test]
+fn a_question_hides_an_open_skills_menu_until_it_is_answered() {
+    let mut test = TestShell::start();
+    test.submit("pick for me");
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(1),
+    });
+    test.deliver(UiEvent::SkillsMenu {
+        items: vec![SkillMenuItem {
+            name: "review".to_owned(),
+            description: "review workflow".to_owned(),
+            path: PathBuf::from("/skills/review"),
+            source: SkillMenuSource::OhFx,
+            group: SkillMenuGroup::Workspace,
+            scope: "oh-fx · Workspace".to_owned(),
+            source_label: String::new(),
+        }],
+        focus: SkillMenuFocus::Start,
+    });
+    let screen = test.screen();
+    assert!(screen.contains("Skills 1"), "{screen}");
+    test.deliver(requested(1, 4, proceed()));
+    let screen = test.screen();
+    assert!(screen.contains(HINT), "{screen}");
+    assert!(!screen.contains("Skills 1"), "{screen}");
+    assert!(!screen.contains("enter use"), "{screen}");
+    press(&mut test, b"2");
+    assert_eq!(answers(&test), [answered(4, Some(&["No"]))]);
+    let screen = test.screen();
+    assert!(screen.contains("Skills 1"), "{screen}");
+    assert!(screen.contains("enter use"), "{screen}");
 }
