@@ -1677,10 +1677,13 @@ mod tests {
             r#"{"provider":"codex","models":{"codex":"gpt-5.4"},"session_titles":false}"#,
         )
         .unwrap();
-        let disabled = titled_ask(&login, &codex, &["ask", "fix the renderer"]);
+        let disabled = titled_ask(&login, &codex, &["ask", "please fix the renderer"]);
         assert!(disabled.status.success(), "{disabled:?}");
         assert_eq!(codex.requests().len(), 2);
-        assert_eq!(saved_sessions(&login)[0]["title"], Value::Null);
+        assert_eq!(
+            saved_sessions(&login)[0]["title"],
+            "please fix the renderer"
+        );
     }
 
     fn ask_args(args: &[&str]) -> AskArgs {
