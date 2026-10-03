@@ -28,8 +28,8 @@ pub use ids::{RequestId, ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use permission_gate::{
     Admission, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest, FileChange,
-    FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ReviewRequest,
-    ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
+    FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ProposedFileChange,
+    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
 };
 pub use session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope};
 pub use skill_menu::{

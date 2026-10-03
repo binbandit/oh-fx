@@ -346,6 +346,7 @@ fn approval(
             },
             command: None,
             file,
+            change: None,
         }),
     }
 }

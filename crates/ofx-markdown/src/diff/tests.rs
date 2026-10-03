@@ -224,3 +224,93 @@ fn line_counts_match_upstream_file_change_stats() {
     assert_eq!(counts(&forward, &reversed), (9000, 9000));
     assert_eq!(counts(&forward, forward.trim_end_matches('\n')), (0, 1));
 }
+
+fn numbered_rows(review: &FileReview<'_>) -> Vec<(ReviewOp, Option<u32>, Option<u32>, usize)> {
+    review
+        .rows()
+        .map(|line| (line.op, line.old_line, line.new_line, line.elision_count))
+        .collect()
+}
+
+#[test]
+fn computed_rows_carry_upstreams_line_numbers_and_elision_counts() {
+    use ReviewOp::{Addition, Context, Deletion, Elision};
+    let lead = numbered("lead-", 1..9);
+    let tail = numbered("tail-", 1..9);
+    let before = format!("{lead}old\n{tail}");
+    let after = format!("{lead}new one\nnew two\n{tail}");
+    let review = FileReview::new(before.as_bytes(), after.as_bytes());
+    assert!(matches!(review.mode, Mode::Computed(_)));
+    let rows = numbered_rows(&review);
+    assert_eq!(rows[0], (Elision, None, None, 3));
+    assert_eq!(rows[1], (Context, Some(4), Some(4), 0));
+    assert_eq!(rows[5], (Context, Some(8), Some(8), 0));
+    assert_eq!(rows[6], (Deletion, Some(9), None, 0));
+    assert_eq!(rows[7], (Addition, None, Some(9), 0));
+    assert_eq!(rows[8], (Addition, None, Some(10), 0));
+    assert_eq!(rows[9], (Context, Some(10), Some(11), 0));
+    assert_eq!(rows[13], (Context, Some(14), Some(15), 0));
+    assert_eq!(rows[14], (Elision, None, None, 3));
+    assert_eq!(rows.len(), 15);
+    let marker = FileReview::new(b"a\nb\n", b"a\nb");
+    assert_eq!(
+        numbered_rows(&marker),
+        [
+            (Context, Some(1), Some(1), 0),
+            (Context, Some(2), Some(2), 0),
+            (Deletion, Some(3), None, 0)
+        ]
+    );
+}
+
+#[test]
+fn fallback_rows_carry_upstreams_line_numbers_and_elision_counts() {
+    use ReviewOp::{Addition, Context, Deletion, Elision};
+    let before = format!(
+        "{}old\n{}",
+        numbered("line-", 1..1001),
+        numbered("tail-", 1..1001)
+    );
+    let after = format!(
+        "{}new\nnewer\n{}",
+        numbered("line-", 1..1001),
+        numbered("tail-", 1..1001)
+    );
+    let review = FileReview::new(before.as_bytes(), after.as_bytes());
+    assert!(matches!(review.mode, Mode::Fallback(_)));
+    let rows = numbered_rows(&review);
+    assert_eq!(
+        rows,
+        [
+            (Elision, None, None, 995),
+            (Context, Some(996), Some(996), 0),
+            (Context, Some(997), Some(997), 0),
+            (Context, Some(998), Some(998), 0),
+            (Context, Some(999), Some(999), 0),
+            (Context, Some(1000), Some(1000), 0),
+            (Deletion, Some(1001), None, 0),
+            (Addition, None, Some(1001), 0),
+            (Addition, None, Some(1002), 0),
+            (Context, Some(1002), Some(1003), 0),
+            (Context, Some(1003), Some(1004), 0),
+            (Context, Some(1004), Some(1005), 0),
+            (Context, Some(1005), Some(1006), 0),
+            (Context, Some(1006), Some(1007), 0),
+            (Elision, None, None, 995),
+        ]
+    );
+    let old = numbered("old-", 1..20_000);
+    let new = numbered("new-", 1..20_000);
+    let markers = FileReview::new(old.as_bytes(), new.trim_end().as_bytes());
+    let rows: Vec<_> = markers.rows().collect();
+    let added = rows[rows.len() - 2];
+    let removed = rows[rows.len() - 1];
+    assert_eq!(
+        (removed.op, removed.old_line, removed.text),
+        (Deletion, Some(20_000), &b"(trailing newline removed)"[..])
+    );
+    assert_eq!(
+        (added.op, added.new_line, added.text),
+        (Addition, Some(19_999), &b"new-19999"[..])
+    );
+}

@@ -143,6 +143,31 @@ fn invalid_arguments_fail_with_upstream_messages() {
 }
 
 #[test]
+fn the_change_an_approval_shows_holds_the_exact_bytes_the_edit_writes() {
+    let fixture = Fixture::new();
+    let before = b"one\r\n\xff\xfe two\r\n\x1b[2Jthree".to_vec();
+    fs::write(fixture.workspace.join("raw.bin"), &before).unwrap();
+    let mut prepared = EditFile::new(&fixture.workspace)
+        .prepare(&arguments("raw.bin", "two\r\n", "2\n"))
+        .unwrap();
+    prepared.complete();
+    let shown = prepared.file_change().unwrap().to_proposed();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    runtime.block_on(prepared.execute(ToolContext::new(
+        ToolCallId::new("call-1"),
+        CancellationToken::new(),
+        PathAccess::WorkspaceOnly,
+    )));
+    let written = fs::read(fixture.workspace.join("raw.bin")).unwrap();
+    assert_eq!(shown.display_path, "raw.bin");
+    assert_eq!(shown.before.as_deref(), Some(&before[..]));
+    assert_eq!(*shown.after, written[..]);
+    assert_eq!(written, b"one\r\n\xff\xfe 2\n\x1b[2Jthree");
+}
+
+#[test]
 fn one_exact_occurrence_is_replaced() {
     let fixture = Fixture::new();
     fixture.write("note.txt", "alpha\nbeta\ngamma\n");
