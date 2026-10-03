@@ -5,8 +5,8 @@ use std::time::Duration;
 use ofx_contract::{LivePermissionMode, QuestionAsker, Tool};
 use ofx_exec::ManagedExecutions;
 use ofx_tools::{
-    AskUserQuestion, EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool, WebFetch,
-    WebFetchProgress, WebSearch, WriteFile,
+    AskUserQuestion, CapabilitySearch, EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool,
+    WebFetch, WebFetchProgress, WebSearch, WriteFile,
 };
 use ofx_workspace::ChangeTracker;
 
@@ -23,6 +23,7 @@ pub(crate) fn ask_tools(
     command_timeout: Option<Duration>,
     permission_mode: &LivePermissionMode,
     skill: Arc<SkillTool>,
+    search: Arc<CapabilitySearch>,
     hooks: ToolHooks<'_>,
 ) -> Vec<Arc<dyn Tool>> {
     let mut edit_file = EditFile::new(workspace_root).with_permission_mode(permission_mode.clone());
@@ -43,6 +44,7 @@ pub(crate) fn ask_tools(
             executions.clone(),
             command_timeout,
         )),
+        search,
         skill,
         Arc::new(AskUserQuestion::new(hooks.questions)),
         Arc::new(

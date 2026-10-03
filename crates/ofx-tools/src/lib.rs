@@ -1,4 +1,5 @@
 mod ask_user_question;
+mod capability_search;
 mod file_mutation;
 mod file_mutation_execution;
 mod filesystem;
@@ -11,6 +12,7 @@ mod tool_runtime;
 mod web;
 
 pub use ask_user_question::{AskUserQuestion, answered_questions};
+pub use capability_search::CapabilitySearch;
 pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
 pub use skill::SkillTool;

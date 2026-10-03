@@ -135,6 +135,7 @@ impl ChildAgents for ChildFactory {
             self.command_timeout,
             &self.permission_mode,
             self.skills.tool(),
+            self.skills.search(),
             ToolHooks::default(),
         );
         WorkTools {
