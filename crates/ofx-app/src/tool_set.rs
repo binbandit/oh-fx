@@ -6,7 +6,7 @@ use ofx_contract::{LivePermissionMode, QuestionAsker, Tool};
 use ofx_exec::ManagedExecutions;
 use ofx_tools::{
     AskUserQuestion, EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool, WebFetch,
-    WebFetchProgress, WriteFile,
+    WebFetchProgress, WebSearch, WriteFile,
 };
 use ofx_workspace::ChangeTracker;
 
@@ -50,6 +50,7 @@ pub(crate) fn ask_tools(
                 .web_fetch_progress
                 .map_or_else(WebFetch::default, WebFetch::reporting_progress),
         ),
+        Arc::new(WebSearch::default()),
     ]
 }
 
