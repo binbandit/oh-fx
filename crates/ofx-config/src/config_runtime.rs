@@ -2053,9 +2053,8 @@ mod tests {
                 LayerError::InvalidPermissionRuleTool,
             ),
         ] {
-            let object = match strict_json::parse(text.as_bytes()) {
-                Ok(Value::Object(object)) => object,
-                _ => unreachable!(),
+            let Ok(Value::Object(object)) = strict_json::parse(text.as_bytes()) else {
+                unreachable!()
             };
             assert_eq!(parse_layer(&object).map(|_| ()), Err(error), "{text}");
             let settings = load(&fixture(Some(text), None)).unwrap();
