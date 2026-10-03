@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_contract::{
     ApprovalOrigin, ApprovalRequest, ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode,
-    ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest,
+    ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest, TurnId,
 };
 use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -91,6 +91,7 @@ impl Owner {
         request: &SubagentRequest,
         operation_id: &str,
         root_user_requests: Arc<RootUserRequests>,
+        turn_id: Option<TurnId>,
     ) -> Admitted {
         let defaults = self.agents.defaults();
         let fingerprint = request.fingerprint();
@@ -134,7 +135,7 @@ impl Owner {
             },
         };
         match start {
-            Ok(start) => Admitted::Ready(self.start(state, start)),
+            Ok(start) => Admitted::Ready(self.start(state, start, turn_id)),
             Err(code) => Admitted::Rejected(code),
         }
     }
@@ -206,7 +207,7 @@ impl Owner {
         })
     }
 
-    fn start(self: &Arc<Self>, state: &mut State, start: Start) -> Waiter {
+    fn start(self: &Arc<Self>, state: &mut State, start: Start, turn_id: Option<TurnId>) -> Waiter {
         let (sender, receiver) = watch::channel(None);
         let cancel = CancellationToken::new();
         let slot = Slot {
@@ -228,10 +229,13 @@ impl Owner {
             let origin = child_id.clone();
             let run = tokio::spawn(async move {
                 let forward = |request: ApprovalRequest| {
-                    agents.approval_requested(ApprovalRequest {
-                        origin: ApprovalOrigin::Subagent(origin.clone()),
-                        ..request
-                    });
+                    agents.approval_requested(
+                        turn_id,
+                        ApprovalRequest {
+                            origin: ApprovalOrigin::Subagent(origin.clone()),
+                            ..request
+                        },
+                    );
                 };
                 let mut runtime = runtime.lock_owned().await;
                 let tools = agents.work_tools();

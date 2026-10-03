@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::applicable_target::ApplicableTarget;
-use crate::ids::ToolCallId;
+use crate::ids::{ToolCallId, TurnId};
 use crate::permission_gate::{
     CommandRequest, FileChange, FileMutation, PathAccess, RootUserRequests,
 };
@@ -168,6 +168,7 @@ pub struct ToolContext {
     pub cancellation: CancellationToken,
     pub path_access: PathAccess,
     pub root_user_requests: Option<Arc<RootUserRequests>>,
+    pub turn_id: Option<TurnId>,
 }
 
 impl ToolContext {
@@ -181,12 +182,19 @@ impl ToolContext {
             cancellation,
             path_access,
             root_user_requests: None,
+            turn_id: None,
         }
     }
 
     #[must_use]
     pub fn with_root_user_requests(mut self, requests: Arc<RootUserRequests>) -> Self {
         self.root_user_requests = Some(requests);
+        self
+    }
+
+    #[must_use]
+    pub fn with_turn(mut self, turn_id: TurnId) -> Self {
+        self.turn_id = Some(turn_id);
         self
     }
 }

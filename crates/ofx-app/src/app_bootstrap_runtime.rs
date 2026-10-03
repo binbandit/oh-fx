@@ -294,7 +294,7 @@ impl Profile {
             },
         );
         let permissions = self.reviewed_policy(&permission_mode, &route.reviewer);
-        let approvals = interactive.then(Arc::<ApprovalQueue>::default);
+        let approvals = interactive.then(ApprovalQueue::shared);
         let children = ChildFactory {
             provider: Arc::clone(&route.provider),
             executions: launch.executions.clone(),

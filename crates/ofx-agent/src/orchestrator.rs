@@ -1474,12 +1474,14 @@ impl<'a> Reviewing<'a> {
 
     fn tool_context(
         &self,
+        turn_id: TurnId,
         call: &ToolCall,
         delegates: bool,
         path_access: PathAccess,
         cancel: &CancellationToken,
     ) -> ToolContext {
-        let context = ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
+        let context =
+            ToolContext::new(call.id.clone(), cancel.child_token(), path_access).with_turn(turn_id);
         if delegates {
             context.with_root_user_requests(self.delegated_requests())
         } else {
@@ -1637,7 +1639,8 @@ async fn run_group<'c>(
                 }
                 let (held, review_hold) = match verdict {
                     Verdict::Run(path_access) => {
-                        let context = reviewing.tool_context(call, delegates, path_access, cancel);
+                        let context =
+                            reviewing.tool_context(turn_id, call, delegates, path_access, cancel);
                         let task = tokio::spawn(async move { prepared.execute(context).await });
                         dispatched.push((call, Dispatched::Running(task)));
                         continue;

@@ -4,15 +4,18 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use ofx_contract::{ApprovalDecision, RequestId};
 use tokio::sync::oneshot;
 
-#[derive(Debug, Clone, Default)]
+type WithdrawnListener = Arc<dyn Fn(RequestId) + Send + Sync>;
+
+#[derive(Clone, Default)]
 pub struct Approvals {
     state: Arc<Mutex<State>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct State {
     issued: u64,
     pending: HashMap<RequestId, oneshot::Sender<ApprovalDecision>>,
+    withdrawn: Option<WithdrawnListener>,
 }
 
 pub(crate) struct PendingApproval {
@@ -25,6 +28,10 @@ impl Approvals {
     pub fn resolve(&self, id: RequestId, decision: ApprovalDecision) -> bool {
         let sender = self.lock().pending.remove(&id);
         sender.is_some_and(|sender| sender.send(decision).is_ok())
+    }
+
+    pub fn on_withdrawn(&self, listener: impl Fn(RequestId) + Send + Sync + 'static) {
+        self.lock().withdrawn = Some(Arc::new(listener));
     }
 
     pub(crate) fn open(&self) -> PendingApproval {
@@ -63,7 +70,13 @@ impl PendingApproval {
 
 impl Drop for PendingApproval {
     fn drop(&mut self) {
-        self.approvals.lock().pending.remove(&self.id);
+        let mut state = self.approvals.lock();
+        let unanswered = state.pending.remove(&self.id).is_some();
+        let listener = state.withdrawn.clone();
+        drop(state);
+        if let (true, Some(listener)) = (unanswered, listener) {
+            listener(self.id);
+        }
     }
 }
 
@@ -92,6 +105,24 @@ mod tests {
         assert!(approvals.resolve(answered.id(), ApprovalDecision::Always));
         assert_eq!(answered.withdraw(), Some(ApprovalDecision::Always));
         assert!(!approvals.resolve(answered.id(), ApprovalDecision::Once));
+    }
+
+    #[test]
+    fn requests_left_unanswered_are_reported_withdrawn_and_answered_ones_are_not() {
+        let approvals = Approvals::default();
+        let withdrawn = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&withdrawn);
+        approvals.on_withdrawn(move |id| seen.lock().unwrap().push(id));
+        let answered = approvals.open();
+        let mut cancelled = approvals.open();
+        let abandoned = approvals.open();
+        assert!(approvals.resolve(answered.id(), ApprovalDecision::Once));
+        drop(answered);
+        assert_eq!(cancelled.withdraw(), None);
+        let (cancelled_id, abandoned_id) = (cancelled.id(), abandoned.id());
+        drop(cancelled);
+        drop(abandoned);
+        assert_eq!(*withdrawn.lock().unwrap(), [cancelled_id, abandoned_id]);
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::Approvals;
 use ofx_contract::{ApprovalDecision, ApprovalRequest, RequestId, TurnId, UiEvent};
@@ -26,6 +26,17 @@ struct Shown {
 }
 
 impl ApprovalQueue {
+    pub(crate) fn shared() -> Arc<Self> {
+        let queue = Arc::new(Self::default());
+        let watched = Arc::downgrade(&queue);
+        queue.approvals.on_withdrawn(move |id| {
+            if let Some(queue) = watched.upgrade() {
+                queue.withdrawn(id);
+            }
+        });
+        queue
+    }
+
     pub(crate) fn approvals(&self) -> &Approvals {
         &self.approvals
     }
@@ -62,9 +73,9 @@ impl ApprovalQueue {
         shown.emit();
     }
 
-    pub(crate) fn child(&self, request: ApprovalRequest) {
+    pub(crate) fn child(&self, origin: Option<TurnId>, request: ApprovalRequest) {
         let mut state = self.lock();
-        let Some(turn_id) = state.turn else {
+        let Some(turn_id) = state.turn.filter(|turn| origin == Some(*turn)) else {
             drop(state);
             self.approvals.resolve(request.id, ApprovalDecision::Deny);
             return;
@@ -80,6 +91,14 @@ impl ApprovalQueue {
 
     pub(crate) fn resolve(&self, id: RequestId, decision: ApprovalDecision) {
         self.approvals.resolve(id, decision);
+        self.retire(id);
+    }
+
+    pub(crate) fn withdrawn(&self, id: RequestId) {
+        self.retire(id);
+    }
+
+    fn retire(&self, id: RequestId) {
         let mut state = self.lock();
         if state.shown != Some(id) {
             state.waiting.retain(|(_, request)| request.id != id);

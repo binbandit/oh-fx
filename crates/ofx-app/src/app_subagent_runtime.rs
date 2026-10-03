@@ -9,7 +9,7 @@ use ofx_agent::{
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
     ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider, ReasoningEffort,
-    ReviewTransport, SubagentProvider, Tool,
+    ReviewTransport, SubagentProvider, Tool, TurnId,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
@@ -143,9 +143,9 @@ impl ChildAgents for ChildFactory {
         }
     }
 
-    fn approval_requested(&self, request: ApprovalRequest) {
+    fn approval_requested(&self, turn_id: Option<TurnId>, request: ApprovalRequest) {
         if let Some(approvals) = &self.approvals {
-            approvals.child(request);
+            approvals.child(turn_id, request);
         }
     }
 }

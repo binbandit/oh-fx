@@ -8,7 +8,8 @@ use ofx_contract::{
     CallDescription, ChatMessage, Completion, Concurrency, FinishReason, ModelProvider,
     ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
     ReviewRequest, ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool,
-    ToolActivity, ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, UiEvent, Usage,
+    ToolActivity, ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent,
+    Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -22,6 +23,7 @@ use crate::scripted_provider::{ScriptedProvider, calling, text};
 use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
 const BASE_PROMPT: &str = "base prompt";
+const PARENT_TURN: TurnId = TurnId::new(7);
 
 enum Script {
     Reply(&'static str),
@@ -179,6 +181,7 @@ struct Agents {
     asks: bool,
     approvals: Approvals,
     requested: Mutex<Vec<ApprovalRequest>>,
+    turns: Mutex<Vec<Option<TurnId>>>,
     decisions: Mutex<VecDeque<ApprovalDecision>>,
     asked: Notify,
     issued: AtomicUsize,
@@ -250,10 +253,11 @@ impl ChildAgents for Agents {
         }
     }
 
-    fn approval_requested(&self, request: ApprovalRequest) {
+    fn approval_requested(&self, turn_id: Option<TurnId>, request: ApprovalRequest) {
         if let Some(decision) = self.decisions.lock().unwrap().pop_front() {
             self.approvals.resolve(request.id, decision);
         }
+        self.turns.lock().unwrap().push(turn_id);
         self.requested.lock().unwrap().push(request);
         self.asked.notify_one();
     }
@@ -282,6 +286,7 @@ impl Harness {
             asks,
             approvals: Approvals::default(),
             requested: Mutex::new(Vec::new()),
+            turns: Mutex::new(Vec::new()),
             decisions: Mutex::new(VecDeque::new()),
             asked: Notify::new(),
             issued: AtomicUsize::new(0),
@@ -306,7 +311,8 @@ impl Harness {
                 ToolCallId::new(call_id),
                 cancel.clone(),
                 PathAccess::WorkspaceOnly,
-            ),
+            )
+            .with_turn(PARENT_TURN),
         )
     }
 
@@ -684,6 +690,10 @@ async fn a_childs_approval_is_raised_as_the_subagents_request_and_its_answer_app
         ]
     );
     assert_ne!(requested[0].id, requested[1].id);
+    assert_eq!(
+        *harness.agents.turns.lock().unwrap(),
+        [Some(PARENT_TURN), Some(PARENT_TURN)]
+    );
     let seen = harness.provider.seen();
     assert_eq!(tool_results(&seen[1]), ["probed"]);
     assert_ne!(tool_results(&seen[3]), ["probed"]);
@@ -1011,7 +1021,7 @@ impl ChildAgents for IntentChildren {
         }
     }
 
-    fn approval_requested(&self, _request: ApprovalRequest) {}
+    fn approval_requested(&self, _turn_id: Option<TurnId>, _request: ApprovalRequest) {}
 }
 
 fn intent_host(provider: &Arc<ScriptedProvider>, gate: &Arc<IntentGate>) -> Arc<SubagentHost> {
