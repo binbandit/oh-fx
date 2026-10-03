@@ -27,13 +27,46 @@ fn skills_commands_parse_as_upstream_parses_them() {
         ("unknown", Command::Usage),
         (
             "add vercel-labs/agent-skills --skill review",
-            Command::Install("vercel-labs/agent-skills"),
+            Command::Install {
+                source: "vercel-labs/agent-skills",
+                filter: Some("review"),
+            },
         ),
         (
             "install vercel-labs/agent-skills --skill=workflow",
-            Command::Install("vercel-labs/agent-skills"),
+            Command::Install {
+                source: "vercel-labs/agent-skills",
+                filter: Some("workflow"),
+            },
         ),
-        ("install ./pack", Command::Install("./pack")),
+        (
+            "install ./pack",
+            Command::Install {
+                source: "./pack",
+                filter: None,
+            },
+        ),
+        (
+            "install pack --skill=",
+            Command::Install {
+                source: "pack",
+                filter: Some(""),
+            },
+        ),
+        (
+            "add pack --skill=first --skill second",
+            Command::Install {
+                source: "pack --skill=first",
+                filter: Some("second"),
+            },
+        ),
+        (
+            "add pack --skill  review\t",
+            Command::Install {
+                source: "pack",
+                filter: Some("review"),
+            },
+        ),
     ] {
         assert_eq!(parse(rest), expected, "{rest:?}");
     }
