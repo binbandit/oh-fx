@@ -49,6 +49,7 @@ mod tests {
         HistoryEntry::Tool(SavedToolCall {
             call_id: ToolCallId::new(id),
             tool_name: "read_file".to_owned(),
+            arguments: "{}".to_owned(),
             description: None,
             status: ToolResultStatus::Success,
             output: String::new(),

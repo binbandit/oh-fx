@@ -39,6 +39,7 @@ pub(super) fn transcript(
 struct RunningCall {
     slot: usize,
     tool_name: String,
+    arguments: String,
     description: Option<CallDescription>,
 }
 
@@ -58,6 +59,7 @@ impl TurnReplay<'_, '_> {
                     let running = RunningCall {
                         slot: self.shown.len(),
                         tool_name: call.tool_name,
+                        arguments: call.arguments_json,
                         description,
                     };
                     self.running.insert(call.call_id, running);
@@ -111,6 +113,7 @@ impl TurnReplay<'_, '_> {
             None => HistoryEntry::Tool(SavedToolCall {
                 call_id: ToolCallId::new(result.call_id),
                 tool_name: call.tool_name,
+                arguments: call.arguments,
                 description: call.description,
                 status: result.status,
                 output: result.preview.unwrap_or_default(),

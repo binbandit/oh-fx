@@ -59,6 +59,7 @@ pub use tool_dispatch::{
 pub use tool_presentation::{
     SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
     format_unknown_action, plain_description, subagent_action, subagent_failure_label,
+    subagent_result_state,
 };
 pub use tool_result_errors::{
     CONTEXT_DEFERRED_TOOL_OUTPUT, DEFERRED_TOOL_OUTPUT, DetailValue, ExecutionFailure, ReviewHold,

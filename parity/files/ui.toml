@@ -402,8 +402,8 @@ note = "No Rust implementation of upstream MeasuredHistoryEndpoint, MeasuredHist
 [[file]]
 upstream = "src/ui/transcript/resume_projection.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/transcript/history_replay.rs"]
-note = "History replay restores user, assistant, cancellation and notice entries; upstream tool status, command output, diffs, turn summaries and retained-tail publication are absent."
+modules = ["crates/ofx-tui/src/transcript/history_replay.rs", "crates/ofx-app/src/app_session_runtime/resume_transcript.rs"]
+note = "History replay restores user, assistant, question, cancellation, notice and tool status entries with upstream's resume labels; command output, diffs, turn summaries and retained-tail publication are absent."
 
 [[file]]
 upstream = "src/ui/transcript/runtime.zig"

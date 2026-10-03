@@ -161,6 +161,7 @@ pub enum HistoryEntry {
 pub struct SavedToolCall {
     pub call_id: ToolCallId,
     pub tool_name: String,
+    pub arguments: String,
     pub description: Option<CallDescription>,
     pub status: ToolResultStatus,
     pub output: String,
