@@ -1,13 +1,17 @@
 use std::fs;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_testkit::{
-    FakeServer, Gate, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+    FakeServer, Gate, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
 };
 use serde_json::{Value, json};
+
+const WAIT: Duration = Duration::from_secs(15);
+const APPROVAL_ARMING: Duration = Duration::from_millis(700);
 
 const UPSTREAM_SUBAGENT_TOOL: &str = r#"{"type":"function","function":{"name":"subagent","description":"Delegate work and receive one terminal child result. Use run for one temporary child and one task. Use message with a stable name to create or continue a persistent conversation in this parent session. A plain message to a working child queues feedback for its next safe boundary without cancelling its current tool. A delivery receipt is not the child's final result; that result arrives separately. Optional instructions replace only that child's system overlay between turns; fx preserves its trusted base prompt. Optional model and effort apply only when a child is created and are rejected for an existing child. fx owns timing, worker identities, cancellation, permissions, persistence, and cleanup.","parameters":{"type":"object","properties":{"request":{"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"task":{"type":"string","minLength":1,"maxLength":65536,"description":"One complete task for a temporary child. The child accepts no follow-up."},"model":{"type":"string","minLength":1,"maxLength":256,"description":"Optional model for this child, as a catalog model ID such as openai/gpt-5.6-terra. Unambiguous partial names resolve to catalog IDs; unknown or ambiguous names are rejected with candidate IDs. Inherits the parent's model when omitted."},"effort":{"type":"string","minLength":1,"maxLength":64,"description":"Optional reasoning effort for this child. Inherits the parent's effort when omitted."}},"additionalProperties":false,"required":["action","task"]},{"type":"object","properties":{"action":{"type":"string","enum":["message"]},"agent":{"type":"string","minLength":1,"maxLength":64,"description":"Stable lowercase name for one persistent conversation in this parent session. A new valid name creates it; later calls continue it."},"instructions":{"type":"string","minLength":1,"maxLength":65536,"description":"Optional persistent instructions for this child. Replaces its child-specific system overlay before this message when idle; rejected while the child is working. Omit to preserve the overlay or send live feedback. Cannot replace fx's trusted base prompt or widen authority."},"message":{"type":"string","minLength":1,"maxLength":65536,"description":"Message for that named agent: creates it on first use, continues an idle conversation, or queues feedback for a working child. Do not resend merely to poll for completion."},"model":{"type":"string","minLength":1,"maxLength":256,"description":"Optional model applied when this message creates the child, as a catalog model ID such as openai/gpt-5.6-terra. Unambiguous partial names resolve to catalog IDs; unknown or ambiguous names are rejected with candidate IDs. Inherits the parent's model when omitted. Rejected when the named child already exists."},"effort":{"type":"string","minLength":1,"maxLength":64,"description":"Optional reasoning effort applied when this message creates the child. Inherits the parent's effort when omitted. Rejected when the named child already exists."}},"additionalProperties":false,"required":["action","agent","message"]}]}},"additionalProperties":false,"required":["request"]}}}"#;
 
@@ -56,14 +60,31 @@ impl Home {
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("SHELL", "/bin/sh")
             .env("PATH", "/usr/bin:/bin")
-            .env("OH_FX_AUTO_UPGRADE", "0")
-            .stdin(Stdio::null());
+            .env("OH_FX_AUTO_UPGRADE", "0");
         command
     }
 
     fn ask(&self, args: &[&str]) -> Output {
-        self.command().args(args).output().expect("run oh-fx")
+        self.command()
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx")
     }
+
+    fn shell(&self) -> PtySession {
+        let mut command = self.command();
+        command.env("TERM", "xterm-256color").process_group(0);
+        let session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+        wait(&session, "Run /help for commands");
+        session
+    }
+}
+
+fn wait(session: &PtySession, needle: &str) -> String {
+    session
+        .wait_for(WAIT, |screen| screen.contains(needle))
+        .unwrap_or_else(|screen| panic!("expected {needle:?} on screen:\n{screen}"))
 }
 
 fn stdout(output: &Output) -> String {
@@ -363,6 +384,48 @@ fn a_childs_command_review_weighs_the_users_request_not_the_parents_task() {
     assert_eq!(conversation(&requests[1]), [turn("user", task)]);
 }
 
+#[test]
+fn the_shell_asks_a_childs_approval_on_the_parents_prompt() {
+    let server = FakeServer::start([
+        delegate(
+            "call_1",
+            &json!({"action": "run", "task": "read the notes"}),
+        ),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "read_file",
+            r#"{"path":"../notes.txt"}"#,
+        )),
+        text("the notes say hi"),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    fs::write(home.root.join("notes.txt"), "hi from outside\n").expect("write the notes");
+    let mut session = home.shell();
+    session.send(b"delegate the reading\r");
+    let screen = wait(&session, "Subagent 1 needs permission");
+    for line in ["read_file ", "notes.txt", "❯ 1. Yes", "3. No"] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    assert!(!screen.contains("Permission needed"), "{screen}");
+    thread::sleep(APPROVAL_ARMING);
+    session.send(b"1");
+    wait(&session, "parent done");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        tool_result(&requests[2]).contains("hi from outside"),
+        "{}",
+        tool_result(&requests[2])
+    );
+    assert_eq!(
+        tool_result(&requests[3]),
+        r#"{"ok":true,"result":"the notes say hi","error_code":null}"#
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
 fn shell(call_id: &str, request: &Value) -> Reply {
     Reply::sse(&chat_tool_call_events(
         call_id,
@@ -408,6 +471,7 @@ fn a_childs_commands_stop_with_its_work_and_stay_out_of_the_parents_output() {
     let ask = home
         .command()
         .args(["ask", "--full-access", "--json", "start the server"])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
