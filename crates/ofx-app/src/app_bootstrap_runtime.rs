@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use ofx_agent::{
     Agent, AgentConfig, Approvals, ProjectContext, QuestionRequests, Questions, RuntimeContext,
-    SkillContextProvider,
+    SkillContextProvider, SubagentHost,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
@@ -27,12 +27,13 @@ use ofx_gateway::{
 };
 use ofx_http::ClientError;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
-use ofx_tools::WebFetchProgress;
+use ofx_tools::{SubagentTool, WebFetchProgress};
 use ofx_workspace::ChangeTracker;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
 use crate::app_permission_runtime::PermissionRuntime;
+use crate::app_subagent_runtime::ChildFactory;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
 };
@@ -133,6 +134,7 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     tools: Vec<Arc<dyn Tool>>,
+    subagent: Arc<dyn Tool>,
     context: Arc<dyn RuntimeContext>,
     permission_mode: LivePermissionMode,
     workspace_root: PathBuf,
@@ -266,27 +268,44 @@ impl Profile {
             .as_mut()
             .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
             .unwrap_or_default();
-        let lookup = |name: &str| env::var(name).ok();
-        let fast_mode = launch.fast_mode.unwrap_or_else(|| {
-            self.settings.fast_mode_for(
-                &connection_provider(route.connection.as_ref()),
-                &route.model,
-            )
-        });
-        let config = AgentConfig {
-            system_prompt: launch
-                .system_prompt
-                .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
-            max_output_tokens: output_tokens(route.connection.as_ref(), &route.model),
-            step_limit: self.settings.max_agent_steps(&lookup),
-            model: route.model,
-            reasoning_effort: launch.reasoning_effort,
-            fast_mode,
-            auto_compact_percent: self.settings.auto_compact_percent(&lookup),
-        };
+        let config = self.agent_config(
+            &route,
+            launch.system_prompt,
+            launch.reasoning_effort,
+            launch.fast_mode,
+        );
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
         let change_tracker = interactive.then(ChangeTracker::default);
         let (questions, question_requests) = interactive.then(Questions::new).unzip();
+        let tools_with = |hooks| {
+            tool_set::ask_tools(
+                &self.workspace_root,
+                launch.executions,
+                launch.command_timeout,
+                &permission_mode,
+                skills.tool(),
+                hooks,
+            )
+        };
+        let tools = tools_with(ToolHooks {
+            questions: questions
+                .clone()
+                .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
+            web_fetch_progress: launch.web_fetch_progress,
+            change_tracker: change_tracker.as_ref(),
+        });
+        let children = ChildFactory {
+            provider: Arc::clone(&route.provider),
+            tools: tools_with(ToolHooks::default()),
+            capabilities: route.capabilities.clone(),
+            connection: route.connection.clone(),
+            reviewer: Arc::clone(&route.reviewer),
+            project: project.clone(),
+            skills: Arc::clone(&skills),
+            workspace_root: self.workspace_root.clone(),
+            permission_mode: permission_mode.clone(),
+            config: config.clone(),
+        };
         Ok(AgentSetup {
             provider: route.provider,
             title_model: route.title_model,
@@ -295,20 +314,10 @@ impl Profile {
             capabilities: route.capabilities,
             connection: route.connection,
             source: route.source,
-            tools: tool_set::ask_tools(
-                &self.workspace_root,
-                launch.executions,
-                launch.command_timeout,
-                &permission_mode,
-                skills.tool(),
-                ToolHooks {
-                    questions: questions
-                        .clone()
-                        .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
-                    web_fetch_progress: launch.web_fetch_progress,
-                    change_tracker: change_tracker.as_ref(),
-                },
-            ),
+            tools,
+            subagent: Arc::new(SubagentTool::new(Arc::new(SubagentHost::new(Arc::new(
+                children,
+            ))))),
             context: Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
                 permission_mode.clone(),
@@ -332,6 +341,30 @@ impl Profile {
             context_notices,
             config,
         })
+    }
+
+    fn agent_config(
+        &self,
+        route: &Route,
+        system_prompt: Option<String>,
+        reasoning_effort: Option<String>,
+        fast_mode: Option<bool>,
+    ) -> AgentConfig {
+        let lookup = |name: &str| env::var(name).ok();
+        AgentConfig {
+            system_prompt: system_prompt.unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
+            max_output_tokens: output_tokens(route.connection.as_ref(), &route.model),
+            step_limit: self.settings.max_agent_steps(&lookup),
+            model: route.model.clone(),
+            reasoning_effort,
+            fast_mode: fast_mode.unwrap_or_else(|| {
+                self.settings.fast_mode_for(
+                    &connection_provider(route.connection.as_ref()),
+                    &route.model,
+                )
+            }),
+            auto_compact_percent: self.settings.auto_compact_percent(&lookup),
+        }
     }
 
     async fn route(
@@ -471,7 +504,7 @@ fn connection_provider(connection: Option<&ProviderDefinition>) -> ProviderId {
     })
 }
 
-fn output_tokens(connection: Option<&ProviderDefinition>, model: &str) -> Option<u32> {
+pub(crate) fn output_tokens(connection: Option<&ProviderDefinition>, model: &str) -> Option<u32> {
     connection.and_then(|connection| request_output_tokens(connection.capabilities(model)))
 }
 
@@ -617,9 +650,17 @@ impl AgentSetup {
     }
 
     pub fn agent(&self) -> Agent {
+        self.agent_with(self.tools.clone())
+    }
+
+    pub fn delegating_agent(&self) -> Agent {
+        self.agent_with(tool_set::with_subagent(&self.tools, &self.subagent))
+    }
+
+    fn agent_with(&self, tools: Vec<Arc<dyn Tool>>) -> Agent {
         let mut agent = Agent::new(
             Arc::clone(&self.provider),
-            self.tools.clone(),
+            tools,
             Arc::clone(&self.context),
             self.permissions.clone(),
             self.config.clone(),

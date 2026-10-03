@@ -1,0 +1,303 @@
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+
+use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events};
+use serde_json::{Value, json};
+
+const UPSTREAM_SUBAGENT_TOOL: &str = r#"{"type":"function","function":{"name":"subagent","description":"Delegate work and receive one terminal child result. Use run for one temporary child and one task. Use message with a stable name to create or continue a persistent conversation in this parent session. A plain message to a working child queues feedback for its next safe boundary without cancelling its current tool. A delivery receipt is not the child's final result; that result arrives separately. Optional instructions replace only that child's system overlay between turns; fx preserves its trusted base prompt. Optional model and effort apply only when a child is created and are rejected for an existing child. fx owns timing, worker identities, cancellation, permissions, persistence, and cleanup.","parameters":{"type":"object","properties":{"request":{"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"task":{"type":"string","minLength":1,"maxLength":65536,"description":"One complete task for a temporary child. The child accepts no follow-up."},"model":{"type":"string","minLength":1,"maxLength":256,"description":"Optional model for this child, as a catalog model ID such as openai/gpt-5.6-terra. Unambiguous partial names resolve to catalog IDs; unknown or ambiguous names are rejected with candidate IDs. Inherits the parent's model when omitted."},"effort":{"type":"string","minLength":1,"maxLength":64,"description":"Optional reasoning effort for this child. Inherits the parent's effort when omitted."}},"additionalProperties":false,"required":["action","task"]},{"type":"object","properties":{"action":{"type":"string","enum":["message"]},"agent":{"type":"string","minLength":1,"maxLength":64,"description":"Stable lowercase name for one persistent conversation in this parent session. A new valid name creates it; later calls continue it."},"instructions":{"type":"string","minLength":1,"maxLength":65536,"description":"Optional persistent instructions for this child. Replaces its child-specific system overlay before this message when idle; rejected while the child is working. Omit to preserve the overlay or send live feedback. Cannot replace fx's trusted base prompt or widen authority."},"message":{"type":"string","minLength":1,"maxLength":65536,"description":"Message for that named agent: creates it on first use, continues an idle conversation, or queues feedback for a working child. Do not resend merely to poll for completion."},"model":{"type":"string","minLength":1,"maxLength":256,"description":"Optional model applied when this message creates the child, as a catalog model ID such as openai/gpt-5.6-terra. Unambiguous partial names resolve to catalog IDs; unknown or ambiguous names are rejected with candidate IDs. Inherits the parent's model when omitted. Rejected when the named child already exists."},"effort":{"type":"string","minLength":1,"maxLength":64,"description":"Optional reasoning effort applied when this message creates the child. Inherits the parent's effort when omitted. Rejected when the named child already exists."}},"additionalProperties":false,"required":["action","agent","message"]}]}},"additionalProperties":false,"required":["request"]}}}"#;
+
+struct Home {
+    _directory: tempfile::TempDir,
+    root: PathBuf,
+    workspace: PathBuf,
+}
+
+impl Home {
+    fn connected(server: &FakeServer) -> Self {
+        let directory = tempfile::tempdir().expect("create a temporary home");
+        let root = fs::canonicalize(directory.path()).expect("canonicalize the home");
+        let workspace = root.join("workspace");
+        let config = root.join("config/oh-fx");
+        fs::create_dir_all(&workspace).expect("create the workspace");
+        fs::create_dir_all(&config).expect("create the config directory");
+        let settings = json!({
+            "provider": "local",
+            "providers": {
+                "local": {
+                    "protocol": "openai-chat-completions",
+                    "base_url": server.base_url(),
+                    "auth": {"type": "none"},
+                    "models": ["model-a"]
+                }
+            }
+        });
+        fs::write(config.join("settings.json"), settings.to_string()).expect("write settings");
+        Self {
+            _directory: directory,
+            root,
+            workspace,
+        }
+    }
+
+    fn ask(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(args)
+            .current_dir(&self.workspace)
+            .env_clear()
+            .env("HOME", &self.root)
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_STATE_HOME", self.root.join("state"))
+            .env("XDG_DATA_HOME", self.root.join("data"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("SHELL", "/bin/sh")
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx")
+    }
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn delegate(call_id: &str, request: &Value) -> Reply {
+    Reply::sse(&chat_tool_call_events(
+        call_id,
+        "subagent",
+        &json!({ "request": request }).to_string(),
+    ))
+}
+
+fn text(reply: &str) -> Reply {
+    Reply::sse(&chat_text_events(&[reply]))
+}
+
+fn tool_names(request: &RecordedRequest) -> Vec<String> {
+    request.json()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|tool| {
+            tool["function"]["name"]
+                .as_str()
+                .expect("a name")
+                .to_owned()
+        })
+        .collect()
+}
+
+fn messages(request: &RecordedRequest) -> Vec<Value> {
+    request.json()["messages"]
+        .as_array()
+        .expect("messages")
+        .clone()
+}
+
+fn conversation(request: &RecordedRequest) -> Vec<(String, String)> {
+    messages(request)
+        .iter()
+        .filter(|message| message["role"] != "system")
+        .map(|message| {
+            (
+                message["role"].as_str().expect("a role").to_owned(),
+                message["content"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn system_prompt(request: &RecordedRequest) -> String {
+    messages(request)[0]["content"]
+        .as_str()
+        .expect("a system prompt")
+        .to_owned()
+}
+
+fn tool_result(request: &RecordedRequest) -> String {
+    let messages = messages(request);
+    let last = messages.last().expect("a message");
+    assert_eq!(last["role"], "tool", "{last}");
+    last["content"].as_str().expect("content").to_owned()
+}
+
+fn turn(role: &str, content: &str) -> (String, String) {
+    (role.to_owned(), content.to_owned())
+}
+
+#[test]
+fn ask_delegates_a_task_to_a_temporary_child_and_returns_its_reply() {
+    let server = FakeServer::start([
+        delegate("call_1", &json!({"action": "run", "task": "inspect auth"})),
+        text("child report"),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let output = home.ask(&["ask", "check the auth module"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "parent done");
+    assert_eq!(stderr(&output), "Subagent working · inspect auth\n");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let parent_tools = [
+        "read_file",
+        "glob_files",
+        "grep_files",
+        "edit_file",
+        "write_file",
+        "shell",
+        "subagent",
+        "skill",
+        "ask_user_question",
+        "web_fetch",
+    ];
+    assert_eq!(tool_names(&requests[0]), parent_tools);
+    assert!(
+        requests[0]
+            .body_text()
+            .contains(&format!(",{UPSTREAM_SUBAGENT_TOOL},")),
+        "{}",
+        requests[0].body_text()
+    );
+    let child = &requests[1];
+    assert_eq!(
+        tool_names(child),
+        parent_tools
+            .iter()
+            .copied()
+            .filter(|name| *name != "subagent")
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(system_prompt(child), system_prompt(&requests[0]));
+    assert_eq!(conversation(child), [turn("user", "inspect auth")]);
+    assert_eq!(
+        tool_result(&requests[2]),
+        r#"{"ok":true,"result":"child report","error_code":null}"#
+    );
+}
+
+#[test]
+fn a_named_agent_keeps_its_instructions_and_conversation_across_messages() {
+    let server = FakeServer::start([
+        delegate(
+            "call_1",
+            &json!({"action": "message", "agent": "reviewer", "instructions": "Be terse.", "message": "review a"}),
+        ),
+        text("a looks fine"),
+        delegate(
+            "call_2",
+            &json!({"action": "message", "agent": "reviewer", "message": "review b"}),
+        ),
+        text("b has a bug"),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let output = home.ask(&["ask", "review a and b"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "parent done");
+    assert_eq!(
+        stderr(&output),
+        "reviewer working · review a\nreviewer working · review b\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 5);
+    let overlay = format!(
+        "{}\n\n<subagent_instructions>\nBe terse.\n</subagent_instructions>",
+        system_prompt(&requests[0])
+    );
+    assert_eq!(system_prompt(&requests[1]), overlay);
+    assert_eq!(system_prompt(&requests[3]), overlay);
+    assert_eq!(conversation(&requests[1]), [turn("user", "review a")]);
+    assert_eq!(
+        conversation(&requests[3]),
+        [
+            turn("user", "review a"),
+            turn("assistant", "a looks fine"),
+            turn("user", "review b"),
+        ]
+    );
+    assert_eq!(
+        tool_result(&requests[2]),
+        r#"{"ok":true,"result":"a looks fine","error_code":null}"#
+    );
+    assert_eq!(
+        tool_result(&requests[4]),
+        r#"{"ok":true,"result":"b has a bug","error_code":null}"#
+    );
+}
+
+#[test]
+fn a_child_that_fails_reports_the_cause_to_its_parent() {
+    let server = FakeServer::start([
+        delegate("call_1", &json!({"action": "run", "task": "inspect auth"})),
+        Reply::status(400, r#"{"error":{"message":"bad request"}}"#),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let output = home.ask(&["ask", "--json", "check the auth module"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let result: Value = serde_json::from_str(&stdout(&output)).expect("a JSON result");
+    assert_eq!(
+        result["tool_calls"],
+        json!([{"name": "subagent", "status": "error"}])
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let failure: Value = serde_json::from_str(&tool_result(&requests[2])).expect("a result");
+    assert_eq!(failure["ok"], false);
+    assert_eq!(failure["error_code"], "child_failed");
+    assert_eq!(
+        failure["result"],
+        "Subagent failed: provider_http_error: API request failed · HTTP 400 · bad request. Earlier tool calls may have completed; their effects are not rolled back."
+    );
+}
+
+#[test]
+fn requests_the_tool_rejects_never_reach_a_child() {
+    let server = FakeServer::start([
+        delegate(
+            "call_1",
+            &json!({"action": "message", "agent": "Reviewer", "message": "hi"}),
+        ),
+        delegate("call_2", &json!({"action": "inspect"})),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let output = home.ask(&["ask", "say hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "parent done");
+    assert_eq!(
+        stderr(&output),
+        "Reviewer working · hi\nManaging subagent\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        tool_result(&requests[1]),
+        r#"{"ok":false,"result":null,"error_code":"invalid_agent"}"#
+    );
+    assert_eq!(
+        tool_result(&requests[2]),
+        r#"{"ok":false,"result":null,"error_code":"invalid_enum"}"#
+    );
+}
+
+#[test]
+fn ask_without_a_saved_session_offers_no_subagent() {
+    let server = FakeServer::start([text("hello")]);
+    let home = Home::connected(&server);
+    let output = home.ask(&["ask", "--no-save", "hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        !tool_names(&requests[0])
+            .iter()
+            .any(|name| name == "subagent")
+    );
+}
