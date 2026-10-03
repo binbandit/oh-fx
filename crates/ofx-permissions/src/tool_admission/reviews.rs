@@ -100,6 +100,7 @@ fn request<'a>(
         call: &batch[0],
         action,
         file: None,
+        schema: None,
         attempt_available: true,
     }
 }
@@ -181,6 +182,38 @@ async fn contextual_reviews_carry_only_the_users_bounded_requests() {
     let instruction = bodies[0]["instructions"][0].as_str().unwrap();
     assert!(
         instruction.contains("target[target]: /workspace::@fx-terminal-env:user:7:/bin/sh::touch marker\naction: command\ncommand: touch marker\ncwd: /workspace\nbackground: false\n"),
+        "{instruction}"
+    );
+}
+
+#[tokio::test]
+async fn an_mcp_tool_review_sends_its_exact_arguments_and_advertised_schema() {
+    let (policy, transport) = reviewed_policy();
+    let batch = [ToolCall::new(
+        "call-1",
+        "mcp_example_write",
+        r#"{"path":"outside.txt","value":"exact"}"#,
+    )];
+    let schema = r#"{"type":"function","name":"mcp_example_write","description":"Write.","inputSchema":{"type":"object"}}"#;
+    let mut reviewed = request(&batch, GatedAction::McpTool(&batch[0]), &[], None);
+    reviewed.schema = Some(schema);
+    assert_eq!(verdict(&policy, reviewed).await, ReviewVerdict::Clear);
+    let unschematized = request(&batch, GatedAction::McpTool(&batch[0]), &[], None);
+    assert_eq!(
+        verdict(&policy, unschematized).await,
+        ReviewVerdict::EvidenceIncomplete
+    );
+    let bodies = transport.bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(
+        bodies[0]["user"],
+        "review_context_kind: contextual\ntrusted_root_context:\ncurrent_request: now\n"
+    );
+    let instruction = bodies[0]["instructions"][0].as_str().unwrap();
+    assert!(
+        instruction.contains(&format!(
+            "target[target]: mcp_example_write\naction: tool\ntool: mcp_example_write\narguments_json: {{\"path\":\"outside.txt\",\"value\":\"exact\"}}\nschema_json: {schema}\naction_evidence_incomplete: false\n"
+        )),
         "{instruction}"
     );
 }

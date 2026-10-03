@@ -302,6 +302,15 @@ done
             "First\n\nServer instructions: Prefer alpha."
         );
         assert_eq!(spec.input_schema, r#"{"type":"object"}"#);
+        let Ok(prepared) = runtime.tools()[0].prepare("{}") else {
+            panic!("arguments were refused");
+        };
+        assert_eq!(
+            prepared.review_schema().as_deref(),
+            Some(
+                r#"{"type":"function","name":"mcp_fixture_alpha","description":"First\n\nServer instructions: Prefer alpha.","inputSchema":{"type":"object"}}"#
+            )
+        );
         let statuses: Vec<_> = runtime
             .servers()
             .into_iter()

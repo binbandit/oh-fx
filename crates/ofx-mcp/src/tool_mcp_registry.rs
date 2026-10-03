@@ -45,7 +45,7 @@ pub(crate) fn publish_tools(
                 Projection::Selected { spec, notice } => {
                     notices.extend(notice);
                     tools.push(Arc::new(McpTool {
-                        spec,
+                        spec: Arc::new(spec),
                         server: Arc::clone(server),
                         tool: tool.name.clone(),
                     }));
@@ -146,7 +146,7 @@ fn schema_notice(
 }
 
 struct McpTool {
-    spec: ToolSpec,
+    spec: Arc<ToolSpec>,
     server: Arc<Server>,
     tool: String,
 }
@@ -163,7 +163,7 @@ impl Tool for McpTool {
             )));
         };
         Ok(Box::new(McpCall {
-            name: self.spec.name.clone(),
+            spec: Arc::clone(&self.spec),
             server: Arc::clone(&self.server),
             tool: self.tool.clone(),
             arguments,
@@ -172,7 +172,7 @@ impl Tool for McpTool {
 }
 
 struct McpCall {
-    name: String,
+    spec: Arc<ToolSpec>,
     server: Arc<Server>,
     tool: String,
     arguments: Map<String, Value>,
@@ -181,7 +181,7 @@ struct McpCall {
 impl PreparedCall for McpCall {
     fn describe(&self) -> CallDescription {
         CallDescription {
-            title: format!("MCP: {}", self.name),
+            title: format!("MCP: {}", self.spec.name),
             label: None,
             activity: ToolActivity::Command,
             effect: ToolEffect::Mutating,
@@ -191,6 +191,14 @@ impl PreparedCall for McpCall {
 
     fn mcp_tool(&self) -> bool {
         true
+    }
+
+    fn review_schema(&self) -> Option<String> {
+        Some(function_schema(
+            &self.spec.name,
+            &self.spec.description,
+            &self.spec.input_schema,
+        ))
     }
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
@@ -206,7 +214,7 @@ impl PreparedCall for McpCall {
             );
             let outcome = tokio::select! {
                 () = context.cancellation.cancelled() => {
-                    return ToolOutput::failure(format_tool_execution_error_json(&self.name, "Cancelled"));
+                    return ToolOutput::failure(format_tool_execution_error_json(&self.spec.name, "Cancelled"));
                 }
                 outcome = call => outcome,
             };
@@ -215,15 +223,15 @@ impl PreparedCall for McpCall {
                 Ok(outcome) => model_output(
                     server_name,
                     &self.tool,
-                    &self.name,
+                    &self.spec.name,
                     outcome,
                     DEFAULT_MAX_TOOL_RESULT_BYTES,
                 ),
-                Err(CallFailure::RestartFailed(failure)) => {
-                    ToolOutput::failure(restart_failed_output(server_name, &self.name, &failure))
-                }
+                Err(CallFailure::RestartFailed(failure)) => ToolOutput::failure(
+                    restart_failed_output(server_name, &self.spec.name, &failure),
+                ),
                 Err(CallFailure::Mcp(error)) => ToolOutput::failure(
-                    format_tool_execution_error_json(&self.name, &error.to_string()),
+                    format_tool_execution_error_json(&self.spec.name, &error.to_string()),
                 ),
             }
         })

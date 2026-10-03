@@ -262,6 +262,10 @@ pub trait PreparedCall: Send {
         false
     }
 
+    fn review_schema(&self) -> Option<String> {
+        None
+    }
+
     fn refusal(&self) -> Option<&ToolOutput> {
         None
     }

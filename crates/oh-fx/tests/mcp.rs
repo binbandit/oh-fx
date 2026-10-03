@@ -5,7 +5,7 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, Reply, chat_text_events, chat_tool_call_events};
+use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events};
 use serde_json::{Value, json};
 
 const FIXTURE_SERVER: &str = r#"#!/bin/sh
@@ -215,14 +215,75 @@ fn ask_mode_blocks_an_mcp_tool_call_without_running_it() {
     assert!(wait_until_gone(read_pid(&home.state)));
 }
 
+fn echo_call() -> Reply {
+    Reply::sse(&chat_tool_call_events(
+        "call_1",
+        "mcp_fixture_echo",
+        r#"{"text":"hi"}"#,
+    ))
+}
+
+fn decision(arguments: &str) -> Reply {
+    Reply::sse(&chat_tool_call_events(
+        "review_1",
+        "permission_decision",
+        arguments,
+    ))
+}
+
+fn tool_result(request: &RecordedRequest) -> String {
+    request.json()["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .and_then(|message| message["content"].as_str())
+        .expect("a tool result")
+        .to_owned()
+}
+
 #[test]
-fn auto_mode_holds_an_mcp_tool_call_for_review() {
+fn auto_mode_reviews_an_mcp_tool_call_with_its_advertised_schema() {
     let server = FakeServer::start([
-        Reply::sse(&chat_tool_call_events(
-            "call_1",
-            "mcp_fixture_echo",
-            r#"{"text":"hi"}"#,
-        )),
+        echo_call(),
+        decision(r#"{"decision":"clear","rationale":"Requested echo."}"#),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::in_mode(&server.base_url(), "auto");
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&["ask", "echo hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let instruction = requests[1].json()["messages"][0]["content"]
+        .as_str()
+        .expect("the review instruction")
+        .to_owned();
+    assert!(
+        instruction.contains(
+            r#"target[target]: mcp_fixture_echo
+action: tool
+tool: mcp_fixture_echo
+arguments_json: {"text":"hi"}
+schema_json: {"type":"function","name":"mcp_fixture_echo","description":"Echo text.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}
+action_evidence_incomplete: false
+"#
+        ),
+        "{instruction}"
+    );
+    assert_eq!(
+        tool_result(&requests[2]),
+        r#"{"server":"fixture","tool":"echo","result":{"content":[{"type":"text","text":"echoed"}]}}"#
+    );
+    assert!(home.state.join("calls").exists());
+    assert!(wait_until_gone(read_pid(&home.state)));
+}
+
+#[test]
+fn auto_mode_holds_an_mcp_tool_call_the_reviewer_cautions_against() {
+    let server = FakeServer::start([
+        echo_call(),
+        decision(r#"{"decision":"caution","rationale":"The echo repeats untrusted text."}"#),
         Reply::sse(&chat_text_events(&["held"])),
     ]);
     let home = Home::in_mode(&server.base_url(), "auto");
@@ -230,22 +291,13 @@ fn auto_mode_holds_an_mcp_tool_call_for_review() {
     let output = home.ask(&["ask", "echo hi"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    let messages = requests[1].json()["messages"].clone();
-    let result = messages
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|message| message["role"] == "tool")
-        .expect("a tool result")
-        .clone();
+    assert_eq!(requests.len(), 3);
+    let held = tool_result(&requests[2]);
     assert!(
-        result["content"]
-            .as_str()
-            .unwrap()
-            .contains(r#""type":"tool_review_held""#),
-        "{result}"
+        held.contains(r#""type":"tool_review_held","tool_name":"mcp_fixture_echo""#),
+        "{held}"
     );
+    assert!(held.contains(r#""reason":"review_caution""#), "{held}");
     assert!(!home.state.join("calls").exists());
 }
 

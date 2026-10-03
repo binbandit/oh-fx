@@ -38,11 +38,21 @@ pub(super) fn review_subject<'a>(
             (file_action(&call.name, file), file_targets(mutation, file))
         }
         GatedAction::Command(CommandRequest::Observe | CommandRequest::Stop)
-        | GatedAction::Call(_)
-        | GatedAction::McpTool(_) => (
+        | GatedAction::Call(_) => (
             Action::Tool {
                 tool_name: &call.name,
                 arguments_json: &call.arguments,
+                schema_json: None,
+                schema_required: false,
+            },
+            vec![named_target(&call.name)],
+        ),
+        GatedAction::McpTool(_) => (
+            Action::Tool {
+                tool_name: &call.name,
+                arguments_json: &call.arguments,
+                schema_json: request.schema,
+                schema_required: true,
             },
             vec![named_target(&call.name)],
         ),
