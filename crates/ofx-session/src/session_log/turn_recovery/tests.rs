@@ -323,3 +323,74 @@ fn a_saved_replay_keeps_its_own_provider_binding_under_any_preferences() {
         );
     }
 }
+
+fn bound_replay(binding: &str) -> String {
+    format!(
+        "{{\"source\":{{\"provider\":{{\"name\":\"portkey\",\"binding\":\"{}\"}},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
+        binding.repeat(32)
+    )
+}
+
+fn replayed_step(call_id: &str, binding: &str) -> String {
+    step(call_id, "out").replace(
+        "\"provider_replay\":null",
+        &format!("\"provider_replay\":{}", bound_replay(binding)),
+    )
+}
+
+fn replays_in(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            let frame: serde_json::Value = serde_json::from_str(line).unwrap();
+            let replay = &frame["event"]["assistant"]["provider_replay"];
+            (!replay.is_null()).then(|| replay.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn each_recovered_step_keeps_the_replay_binding_it_was_saved_with() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(
+        3,
+        &checkpoint(
+            "fix the build",
+            &[replayed_step("c1", "11"), replayed_step("c2", "22")],
+            "",
+            "Looking at",
+        ),
+    );
+    drop(fixture.resume().unwrap());
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22")]
+    );
+}
+
+#[test]
+fn a_step_after_a_compacted_prefix_keeps_its_own_replay_binding() {
+    let fixture = Fixture::new();
+    fixture.start(&[
+        user("long task"),
+        call("c1"),
+        result("c1"),
+        ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
+            covers_through_seq: 1,
+            summary: "<summary>started</summary>".to_owned(),
+        }),
+    ]);
+    fixture.save_checkpoint(
+        4,
+        &checkpoint(
+            "long task",
+            &[replayed_step("c1", "11"), replayed_step("c2", "22")],
+            "",
+            "half way",
+        ),
+    );
+    drop(fixture.resume().unwrap());
+    let log = fixture.log();
+    assert_eq!(replays_in(&log[4..]), [bound_replay("22")], "{log:#?}");
+}
