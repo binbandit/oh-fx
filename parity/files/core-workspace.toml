@@ -1,0 +1,143 @@
+[[file]]
+upstream = "src/core/workspace/change_tracker.zig"
+status = "todo"
+modules = []
+note = "Workspace change identity snapshots and stale-file refresh are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/context_contract.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/applicable_target.rs", "crates/ofx-agent/src/project_context.rs"]
+note = "Tool targets and project-context delivery exist; upstream extra-root scope and file-evidence freshness context are absent."
+
+[[file]]
+upstream = "src/core/workspace/current_branch.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/current_branch.rs"]
+note = "Branch/worktree/detached HEAD probing and malformed metadata rejection match upstream tests, with documented metadata path safety checks."
+
+[[file]]
+upstream = "src/core/workspace/diagnostics.zig"
+status = "todo"
+modules = []
+note = "Trace-report network/tool/render/compactor diagnostic aggregation are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/directory_completion_job.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/directory_completion_job.rs"]
+note = "Background path completion exists; upstream multi-root workspace access changes and cancellation scope are absent."
+
+[[file]]
+upstream = "src/core/workspace/file_index.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/file_index.rs"]
+note = "Ranking and revisions exist for one workspace root; additional-root indexing, scope-change rebuilding and cancellable scan behavior are absent."
+
+[[file]]
+upstream = "src/core/workspace/file_index_cache.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/file_index_cache.rs"]
+note = "Private bounded index caching exists; multi-root scope identity and trace failure publication are absent."
+
+[[file]]
+upstream = "src/core/workspace/glob_pattern.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/glob_pattern.rs"]
+note = "Workspace glob pattern algorithms/constants are implemented with edge-case regression tests; discovery/path safety differences are documented in architecture.md."
+
+[[file]]
+upstream = "src/core/workspace/grep_search.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/grep_search.rs"]
+note = "Workspace grep search algorithms/constants are implemented with edge-case regression tests; discovery/path safety differences are documented in architecture.md."
+
+[[file]]
+upstream = "src/core/workspace/ignored_dirs.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/ignored_dirs.rs", "crates/ofx-workspace/src/workspace_files.rs"]
+note = "Workspace ignored dirs algorithms/constants are implemented with edge-case regression tests; discovery/path safety differences are documented in architecture.md."
+
+[[file]]
+upstream = "src/core/workspace/model_catalog_metrics.zig"
+status = "todo"
+modules = []
+note = "Bounded model-catalog diagnostic metrics are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/network_metrics.zig"
+status = "todo"
+modules = []
+note = "Network diagnostic rings and per-turn rollups are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/path_completion.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/path_completion.rs"]
+note = "Directory query completion and candidate validation exist; upstream multi-root scoped completion and all picker metadata are absent."
+
+[[file]]
+upstream = "src/core/workspace/pathing.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/pathing.rs"]
+note = "Workspace/external path resolution and mutation targets exist; complete workspace-access scope and additional-root identity operations are absent."
+
+[[file]]
+upstream = "src/core/workspace/read_tracker.zig"
+status = "todo"
+modules = []
+note = "Session read snapshots with content hash and separate model/snapshot full-file coverage are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/record_tape.zig"
+status = "todo"
+modules = []
+note = "Input/render event recording tape are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/render_metrics.zig"
+status = "todo"
+modules = []
+note = "Bounded rendering diagnostic event ring are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/statusline_identity.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/current_branch.rs", "crates/ofx-tui/src/footer/mod.rs"]
+note = "Current branch identity is displayed; independently cached/disabled refresh state and complete statusline identity snapshot are absent."
+
+[[file]]
+upstream = "src/core/workspace/tool_call_metrics.zig"
+status = "todo"
+modules = []
+note = "Tool-call payload diagnostic ring and lifetime rollups are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/unicode_simple_fold.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/unicode_simple_fold.rs"]
+note = "Workspace unicode simple fold algorithms/constants are implemented with edge-case regression tests; discovery/path safety differences are documented in architecture.md."
+
+[[file]]
+upstream = "src/core/workspace/workspace_access.zig"
+status = "partial"
+modules = ["crates/ofx-workspace/src/pathing.rs"]
+note = "Primary workspace containment and external paths exist; saved additional roots, merged sources and mutable access scopes are absent."
+
+[[file]]
+upstream = "src/core/workspace/workspace_commands.zig"
+status = "todo"
+modules = []
+note = "Durable additional workspace-root mutations are unimplemented."
+
+[[file]]
+upstream = "src/core/workspace/workspace_files.zig"
+status = "ported"
+modules = ["crates/ofx-workspace/src/workspace_files.rs"]
+note = "Workspace workspace files algorithms/constants are implemented with edge-case regression tests; discovery/path safety differences are documented in architecture.md."
+
+[[file]]
+upstream = "src/core/workspace/workspace_menu.zig"
+status = "todo"
+modules = []
+note = "Additional-root workspace picker/menu are unimplemented."

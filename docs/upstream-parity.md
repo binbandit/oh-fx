@@ -19,6 +19,14 @@ A pull request that lands in more than one place has one row per status.
 
 Syntax-highlighting profile storage uses pointerless tables as recorded in [architecture.md](architecture.md). This representation change preserves the existing tokenizer behavior and does not complete a deferred behavior in this ledger.
 
+## Source file map
+
+`parity/files/` records every `.zig` file under the pinned upstream checkout's `src/`, grouped by directory. Each entry names its status and any corresponding Rust modules. Partial ports identify missing behavior; exclusions explain host entrypoints, fixtures or Zig-specific ownership machinery that does not require a Rust module. A file marked `ported` matches upstream or a deliberate difference recorded in [architecture.md](architecture.md).
+
+The full checkout commit is read from `parity/UPSTREAM`. With that checkout available locally, run `cargo xtask parity --upstream <path>` or set `OH_FX_UPSTREAM` and run `cargo xtask parity`. The command fetches nothing and rejects a different checkout commit, missing or stale entries, duplicate entries, invalid statuses, missing required notes and nonexistent or escaping Rust module paths. It prints a count for each status. CI clones the pinned checkout and requires this check through Repository checks.
+
+The file map measures structural coverage. Byte-exact schema, help and prompt goldens remain a separate follow-up.
+
 ## d9f7766..34f1ed1
 
 | PR | Merge | Title | Status | oh-fx | Note |

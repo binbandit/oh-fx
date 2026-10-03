@@ -1,0 +1,59 @@
+[[file]]
+upstream = "src/core/compactor/checkpoint.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/compactor/checkpoint.rs"]
+note = "Checkpoint encoding/restoration exists; legacy state-file import and saved record-ledger reconstruction are absent as documented."
+
+[[file]]
+upstream = "src/core/compactor/compactor.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/compactor.rs"]
+note = "Turn compaction exists; persistent file/tool/read records and record search are absent, and saved-ledger folding is deferred."
+
+[[file]]
+upstream = "src/core/compactor/ledger.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/compactor/ledger.rs"]
+note = "Summary request and index generation exists; persisted M/T/L records, saved ledger handles and earlier-ledger folding are absent."
+
+[[file]]
+upstream = "src/core/compactor/lint.zig"
+status = "ported"
+modules = ["crates/ofx-agent/src/compactor/lint.rs"]
+note = "Compaction summary shape validation and token/work/tool constraints are implemented and covered by dedicated tests."
+
+[[file]]
+upstream = "src/core/compactor/model.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/compactor/model.rs"]
+note = "Summary model requests exist; Vercel cross-family fallback and upstream credential/provider availability checks are absent as documented."
+
+[[file]]
+upstream = "src/core/compactor/records.zig"
+status = "todo"
+modules = []
+note = "Persistent M/T/L record storage, handle lookup and record search are deferred with read_tool_result."
+
+[[file]]
+upstream = "src/core/compactor/settings.zig"
+status = "ported"
+modules = ["crates/ofx-contract/src/compactor_settings.rs", "crates/ofx-config/src/config_runtime.rs"]
+note = "Auto-compaction percentage validation, resolution and settings parsing are implemented with dedicated tests."
+
+[[file]]
+upstream = "src/core/compactor/summarize.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/compactor/summarize.rs"]
+note = "Summary generation and checkpoint validation exist; saved-record references and earlier saved-ledger folding are deferred."
+
+[[file]]
+upstream = "src/core/compactor/trace.zig"
+status = "todo"
+modules = []
+note = "Compaction trace ring, snapshot and trace reporting are not implemented."
+
+[[file]]
+upstream = "src/core/compactor/window.zig"
+status = "ported"
+modules = ["crates/ofx-agent/src/compactor/window.rs"]
+note = "Window sizing, summary reserves, due thresholds and turn cuts are implemented with upstream-derived tests."

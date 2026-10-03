@@ -1,0 +1,389 @@
+[[file]]
+upstream = "src/core/mcp/access_policy.zig"
+status = "todo"
+modules = []
+note = "Missing access policy implementation: upstream surface ToolIdentity, deinit, ServerIdentity, View, clone; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/atomic_value.zig"
+status = "todo"
+modules = []
+note = "Missing atomic value implementation: upstream surface Value, init, load, store, fetchAdd; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/catalog_freshness.zig"
+status = "todo"
+modules = []
+note = "Missing catalog freshness implementation: upstream surface Digest, CacheScope, AuthPartition, eql, authPartition; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/catalog_refresh.zig"
+status = "todo"
+modules = []
+note = "Missing catalog refresh implementation: upstream surface Context, reload, refresh; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/catalog_state.zig"
+status = "todo"
+modules = []
+note = "Missing catalog state implementation: upstream surface McpTool, ToolCatalogSnapshot, deinit, ResourceCatalogSnapshot, ResourceTemplateCatalogSnapshot; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/command_provider.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/command_provider.rs"]
+note = "Add-command parsing exists; resource listing, server summaries, authenticate/logout and delegate execution are missing."
+
+[[file]]
+upstream = "src/core/mcp/connection_control.zig"
+status = "todo"
+modules = []
+note = "Missing connection control implementation: upstream surface check, Control, cancellation, discoveryProbeAt, startAt; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/controlled_lock.zig"
+status = "todo"
+modules = []
+note = "Missing controlled lock implementation: upstream surface rwSharedUntil, rwUntil, mutexUntil, rwSharedWithControl, mutexWithControl; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/docker_run.zig"
+status = "todo"
+modules = []
+note = "Missing docker run implementation: upstream surface Prepared, takeCleanup, deinit, Cleanup, cloneEnvironment; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/elicitation.zig"
+status = "todo"
+modules = []
+note = "Missing elicitation implementation: upstream surface Limits, Error, Wire, isLegacy, Mode; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/elicitation_interaction.zig"
+status = "todo"
+modules = []
+note = "Missing elicitation interaction implementation: upstream surface Error, Questioner, ask, Browser, open; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/feature_catalog.zig"
+status = "todo"
+modules = []
+note = "Missing feature catalog implementation: upstream surface FeatureCatalogKind, invalidation, FeatureCatalogState, featureCatalogState, featureCatalogAvailable; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/feature_catalog_runtime.zig"
+status = "todo"
+modules = []
+note = "Missing feature catalog runtime implementation: upstream surface Operations, ensureResourceCatalog, ensurePromptCatalog, digestResources, digestResourceTemplates; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/feature_operations.zig"
+status = "todo"
+modules = []
+note = "Missing feature operations implementation: upstream surface FetchedResourceRead, listResources, listPrompts, readResource, getPrompt; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/feature_result.zig"
+status = "todo"
+modules = []
+note = "Missing feature result implementation: upstream surface ResourceSummary, deinit, ResourceCatalogResult, PromptSummary, PromptCatalogResult; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/feature_snapshot.zig"
+status = "todo"
+modules = []
+note = "Missing feature snapshot implementation: upstream surface Kind, Snapshot, deinit, CommitGuard, transport; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/feature_transport.zig"
+status = "todo"
+modules = []
+note = "Missing feature transport implementation: upstream surface Response, finishLegacy, deinit, LegacyElicitationSpec, Operations; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/features/common.zig"
+status = "todo"
+modules = []
+note = "Missing common implementation: upstream surface Protocol, CacheScope, Limits, Error, CacheHints; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/features/completion.zig"
+status = "todo"
+modules = []
+note = "Missing completion implementation: upstream surface Protocol, Limits, Error, Reference, Argument; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/features/prompts.zig"
+status = "todo"
+modules = []
+note = "Missing prompts implementation: upstream surface Protocol, CacheScope, ProtocolError, InputRequired, Limits; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/features/resources.zig"
+status = "todo"
+modules = []
+note = "Missing resources implementation: upstream surface Protocol, CacheScope, ProtocolError, ResourceData, ResourceContent; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/features/tools.zig"
+status = "todo"
+modules = []
+note = "Missing tools implementation: upstream surface Protocol, Limits, Error, CacheScope, Tool; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/health.zig"
+status = "todo"
+modules = []
+note = "Missing health implementation: upstream surface ConnectionState, observedConnection, retryDelay, AuthenticationState, Status; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/json_number.zig"
+status = "todo"
+modules = []
+note = "Missing json number implementation: upstream surface Limits, Error, Number, parse, deinit; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/json_schema_pattern.zig"
+status = "todo"
+modules = []
+note = "Missing json schema pattern implementation: upstream surface Limits, Error, validate, matches; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/json_schema_unicode_letter.zig"
+status = "todo"
+modules = []
+note = "Missing json schema unicode letter implementation: upstream surface contains; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/legacy_elicitation_runtime.zig"
+status = "todo"
+modules = []
+note = "Missing legacy elicitation runtime implementation: upstream surface Context, initHttp, initStdio, sink, responseObserver; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/legacy_http_sse.zig"
+status = "todo"
+modules = []
+note = "Missing legacy http sse implementation: upstream surface protocol_version, Control, cancellation, validateInitializeResponse, ReaderFinishReason; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/legacy_sse.zig"
+status = "todo"
+modules = []
+note = "Missing legacy sse implementation: upstream surface max_retry_ms, Event, deinit, Parser, init; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/legacy_streamable_http.zig"
+status = "todo"
+modules = []
+note = "Missing legacy streamable http implementation: upstream surface Version, string, sendsProtocolHeader, allowsPollingClose, supported_versions; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/legacy_url_completion.zig"
+status = "todo"
+modules = []
+note = "Missing legacy url completion implementation: upstream surface SourceState, Waiter, WireCompletionIdentity, EarlyCompletion, deinit; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/mcp_auth.zig"
+status = "todo"
+modules = []
+note = "Missing mcp auth implementation: upstream surface max_document_bytes, expiry_skew_ms, max_scope_reauthorizations, RefreshControl, cancellation; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/mcp_auth_store.zig"
+status = "todo"
+modules = []
+note = "Missing mcp auth store implementation: upstream surface Status, SaveResult, DeleteResult, load, loadCancellable; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/mcp_contract.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/mcp_contract.rs"]
+note = "Configuration and admission types exist; transport precommit, server-request, notification and progress sinks and response-envelope validation are missing."
+
+[[file]]
+upstream = "src/core/mcp/mcp_json.zig"
+status = "todo"
+modules = []
+note = "Missing mcp json implementation: upstream surface write_compact; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/mcp_runtime.zig"
+status = "todo"
+modules = []
+note = "Missing mcp runtime implementation: upstream surface LoadRuntimeFn, PreviewNativeWorkspaceAuthorityFn, ServerState, ToolFreshness, McpServerConfig; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/menu_state.zig"
+status = "todo"
+modules = []
+note = "Missing menu state implementation: upstream surface Section, Screen, max_query_bytes, LoadState, AddTransport; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/message_carrier.zig"
+status = "todo"
+modules = []
+note = "Missing message carrier implementation: upstream surface Request, Carrier, exchange, placeholderUrl; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/model_catalog.zig"
+status = "todo"
+modules = []
+note = "Missing model catalog implementation: upstream surface Availability, ServerSummary, Snapshot, empty, deinit; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/mrtr.zig"
+status = "todo"
+modules = []
+note = "Missing mrtr implementation: upstream surface Limits, Error, method, InputRequest, deinit; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/operation_authority.zig"
+status = "todo"
+modules = []
+note = "Missing operation authority implementation: upstream surface EffectAccess, authorize, permitsSharedEffects, SendGuard, transport; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/operation_control.zig"
+status = "todo"
+modules = []
+note = "Missing operation control implementation: upstream surface monotonicMillis, CancellationState, cancelled, cancellationState, CancellationSources; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/project_config.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/project_config.rs"]
+note = "Configuration parsing and merge exist; ACP-primary ordered workspace merge and retained-workspace-authority detection are missing."
+
+[[file]]
+upstream = "src/core/mcp/protocol_messages.zig"
+status = "todo"
+modules = []
+note = "Missing protocol messages implementation: upstream surface buildDiscoverRequest, buildToolsListRequest, writeModernRequestMetadata, buildToolCallRequest, buildToolCallRequestForProtocol; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/protocol_negotiation.zig"
+status = "todo"
+modules = []
+note = "Missing protocol negotiation implementation: upstream surface legacy_protocol_version, legacy_2025_03_protocol_version, legacy_2025_06_protocol_version, legacy_2025_11_protocol_version, modern_protocol_version; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/selected_schema.zig"
+status = "todo"
+modules = []
+note = "Missing selected schema implementation: upstream surface project; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/server_auth.zig"
+status = "todo"
+modules = []
+note = "Missing server auth implementation: upstream surface loadStoredCredentials, buildResolvedHeaders, refreshResolvedHeaders, currentAuthIdentity, authIdentityForHeaders; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/server_connection.zig"
+status = "todo"
+modules = []
+note = "Missing server connection implementation: upstream surface ServerState, DiscoveryState, DetachedTransport, deinit, deinitAbandoned; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/server_lifecycle.zig"
+status = "todo"
+modules = []
+note = "Missing server lifecycle implementation: upstream surface Operations, ensureFeatureServerRunning, recoverServer, reconnectRemote, recoverLegacyHttpSession; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/server_lifetime.zig"
+status = "todo"
+modules = []
+note = "Missing server lifetime implementation: upstream surface allocateIdentity, Lifetime, acquire, release, retire; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/server_subscriptions.zig"
+status = "todo"
+modules = []
+note = "Missing server subscriptions implementation: upstream surface startToolSubscription, createToolSubscriptionWithResources, publishToolSubscription, legacyCompletionPassthrough, takeFinishedToolSubscription; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/server_transport.zig"
+status = "todo"
+modules = []
+note = "Missing server transport implementation: upstream surface connectServer, connectServerLegacyHttp, connectServerSse, parseAndStoreServerInstructions, start; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/server_views.zig"
+status = "todo"
+modules = []
+note = "Missing server views implementation: upstream surface snapshotServerHealthBeforeDiscoveryPublication, snapshotServerHealth, configuredAuthenticationState, serverAuthenticationState, snapshotServerModelSummary; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/slack_preset.zig"
+status = "todo"
+modules = []
+note = "Slack installation/preset behavior is deliberately omitted pending an owned Slack app, as recorded in docs/architecture.md; this remains todo, not a host exclusion."
+
+[[file]]
+upstream = "src/core/mcp/startup_admission.zig"
+status = "todo"
+modules = []
+note = "Missing startup admission implementation: upstream surface Phase, Decision, decide, decideServer; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/stdio_dispatcher.zig"
+status = "todo"
+modules = []
+note = "Missing stdio dispatcher implementation: upstream surface StderrCapture, append, headSlice, tailSlice, RejectedOutput; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/streamable_http.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/streamable_http.rs"]
+note = "Endpoint and header validation exist; MCP POST transport, cancellation control, authentication rejection and protocol-session handling are missing."
+
+[[file]]
+upstream = "src/core/mcp/tool_catalog.zig"
+status = "todo"
+modules = []
+note = "Missing tool catalog implementation: upstream surface FetchResult, deinit, RequestIds, Transport, fetchCurrent; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/tool_names.zig"
+status = "todo"
+modules = []
+note = "Missing tool names implementation: upstream surface Registry, init, deinit, serverName, name; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/tool_operations.zig"
+status = "todo"
+modules = []
+note = "Missing tool operations implementation: upstream surface Operations, callToolFromSnapshot, mcpResponseFrameCap, terminalOutcomeForCallStatus, handleMcpResponseFrameTooLarge; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/tool_result.zig"
+status = "todo"
+modules = []
+note = "Missing tool result implementation: upstream surface ExtractOptions, extract, protocol_diagnostic_alloc, format_protocol_error, frame_too_large_result; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/tool_search.zig"
+status = "todo"
+modules = []
+note = "Missing tool search implementation: upstream surface search, boundedEncodedScalar, renderAuthenticationRequired, renderServerFailure; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/tool_snapshot.zig"
+status = "todo"
+modules = []
+note = "Missing tool snapshot implementation: upstream surface Snapshot, init, deinit, CommitGuard, transport; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/tool_subscription.zig"
+status = "todo"
+modules = []
+note = "Missing tool subscription implementation: upstream surface Transport, HttpListener, Filters, any, NotificationSource; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/mcp/workspace_config.zig"
+status = "partial"
+modules = ["crates/ofx-mcp/src/workspace_config.rs"]
+note = "Bounded workspace configuration loading and environment expansion exist; upstream caller-selected ConfigScope loading is missing."

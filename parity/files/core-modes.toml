@@ -1,0 +1,11 @@
+[[file]]
+upstream = "src/core/modes/mode_contract.zig"
+status = "todo"
+modules = []
+note = "Missing mode contract implementation: upstream surface ToolPolicy, ModeSpec; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/modes/mode_registry.zig"
+status = "todo"
+modules = []
+note = "Missing mode registry implementation: upstream surface ModeSpec, Registry, lookup, buildModelToolProjection, toolAllowed; no dedicated Rust counterpart."

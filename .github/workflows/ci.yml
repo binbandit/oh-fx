@@ -170,13 +170,32 @@ jobs:
         run: |
           printf '## Footprint\n\nNo report: a setup or measurement step failed, so nothing was measured. See the job log.\n' >> "$GITHUB_STEP_SUMMARY"
 
+  parity:
+    name: Upstream parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check pinned upstream file coverage
+        run: |
+          upstream_commit="$(cat parity/UPSTREAM)"
+          upstream_path="$RUNNER_TEMP/fx-upstream"
+          git clone --filter=blob:none --no-checkout https://github.com/vercel-labs/fx "$upstream_path"
+          git -C "$upstream_path" checkout --detach "$upstream_commit"
+          cargo xtask parity --upstream "$upstream_path"
+
   repository:
     name: Repository checks
-    needs: [automation, rust-lint, rust-test, footprint]
+    needs: [automation, rust-lint, rust-test, footprint, parity]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every check
-        if: needs.automation.result != 'success' || needs.rust-lint.result != 'success' || needs.rust-test.result != 'success'
+        if: needs.automation.result != 'success' || needs.rust-lint.result != 'success' || needs.rust-test.result != 'success' || needs.parity.result != 'success'
         run: exit 1

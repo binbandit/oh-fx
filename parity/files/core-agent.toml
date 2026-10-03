@@ -1,0 +1,275 @@
+[[file]]
+upstream = "src/core/agent/agent_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/lib.rs"]
+note = "Runtime facade exposes the turn loop, but image/question execution and durable recovery-checkpoint effects are absent."
+
+[[file]]
+upstream = "src/core/agent/assistant_presentation.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/assistant_presentation.rs"]
+note = "Streaming Markdown presentation and completion payloads are implemented with the corresponding rendering/parsing regression suites; styled-span representation is documented."
+
+[[file]]
+upstream = "src/core/agent/execution_memory.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/execution_memory.rs"]
+note = "Completed tool exchanges and replay are retained; file-evidence freshness records and image memory are absent."
+
+[[file]]
+upstream = "src/core/agent/presentation/ansi.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/ansi.rs", "crates/ofx-markdown/src/styled.rs"]
+note = "Markers, limits and balanced style transitions are implemented through SpanWriter instead of raw escape writes, as architecture.md describes."
+
+[[file]]
+upstream = "src/core/agent/presentation/block_parse.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/block_parse.rs"]
+note = "Markdown block parse behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/presentation/block_render.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/block_render.rs"]
+note = "Markdown block render behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/presentation/code_highlight.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/code_highlight.rs"]
+note = "Markdown code highlight behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/presentation/code_highlight_languages.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/code_highlight_languages.rs"]
+note = "Markdown code highlight languages behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/presentation/inline_render.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/inline_render.rs"]
+note = "Markdown inline render behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/presentation/payload.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/payload.rs"]
+note = "Markdown payload behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/presentation/text_util.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/text_util.rs"]
+note = "Markdown text util behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/presentation/unicode_classes.zig"
+status = "ported"
+modules = ["crates/ofx-markdown/src/presentation/unicode_classes.rs"]
+note = "Markdown unicode classes behavior is implemented in the corresponding leaf module and exercised by the presentation suite; styled spans replace raw ANSI per architecture.md."
+
+[[file]]
+upstream = "src/core/agent/question_answer.zig"
+status = "todo"
+modules = []
+note = "Question answer ordered JSON codec and structural error validation are unimplemented."
+
+[[file]]
+upstream = "src/core/agent/question_prompt.zig"
+status = "todo"
+modules = []
+note = "Interactive question choices, freeform editing and result projection are unimplemented."
+
+[[file]]
+upstream = "src/core/agent/runtime/agent.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs"]
+note = "History, usage and request calibration exist; inline images and kernel checkpoint restoration are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/assistant_stream.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/assistant_stream.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "Assistant normalization and text deltas exist; streamed tool provisional statuses, language-script staging and semantic lifecycle publication are absent on main."
+
+[[file]]
+upstream = "src/core/agent/runtime/checkpoint.zig"
+status = "todo"
+modules = []
+note = "Kernel history/usage checkpoint codec, inline image roundtrip and fresh-owner restoration are unimplemented; compactor checkpoints are a different format."
+
+[[file]]
+upstream = "src/core/agent/runtime/config.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs"]
+note = "AgentConfig covers model, effort, step limits and compaction; turn-origin authority, image policy and recovery-pause configuration are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/deps.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/tool_dispatch.rs"]
+note = "Narrow traits replace runtime dependencies; image executor, durable recovery checkpoint and secondary publication effects are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/execution_memory.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/execution_memory.rs"]
+note = "Interrupted execution memory retains finished exchanges; steering-message preservation and provider-executed tool history are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/finalization.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
+note = "Turn completion, failed partial text and logging exist; retained candidate recovery, durable attention checkpoints and summary presentations are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/gateway_step.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/stream_provider.rs"]
+note = "Model requests and provider completion are implemented; tool image projection and detailed delivery-certainty evidence are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/image_provider.zig"
+status = "todo"
+modules = []
+note = "Shared image inspection requests and bounded streamed image-provider capture are unimplemented."
+
+[[file]]
+upstream = "src/core/agent/runtime/interruption.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
+note = "Cancelled partial turns and completed tool outputs are logged; interrupted command replay, steering and image evidence are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/lifecycle.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/approvals.rs"]
+note = "Prepared calls and cancellation lifecycle exist; durable stop/attention checkpoints and transport publication authority are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/model_response_recovery.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/model_response_recovery.rs"]
+note = "Backoff and retry causes are implemented; partial-output restart, uncertain-tool reconciliation, pause/inspect recovery strategies are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/orchestrator.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs"]
+note = "Sequential/parallel tools, review, compaction and requests are implemented; steering, vision, questions, dynamic tool advertisement and durable recovery are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/parallel_execution.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs"]
+note = "Read-only parallel groups execute and settle independently; dedicated parallel subagent groups and provider publication evidence are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/prompt_context.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/prompt_context.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "Prompt separation and request calibration exist; request image accounting and each-attempt measurement are absent, as architecture.md records."
+
+[[file]]
+upstream = "src/core/agent/runtime/response_language.zig"
+status = "todo"
+modules = []
+note = "Language-script evidence, expectation inference and mismatch staging decisions are unimplemented."
+
+[[file]]
+upstream = "src/core/agent/runtime/telemetry.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/ui.rs"]
+note = "Usage events and turn totals exist; gateway diagnostic metrics, step traces and completed-tool summary telemetry are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/tests/finalization_flow.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
+note = "Rust regression suite covers basic turns/tools; upstream cases for missing finish-proof recovery, retained candidates and steering finalization are not ported."
+
+[[file]]
+upstream = "src/core/agent/runtime/tests/gateway_flow.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
+note = "Rust regression suite covers basic turns/tools; upstream cases for vision projection, steering during streamed responses and malformed-call continuation are not ported."
+
+[[file]]
+upstream = "src/core/agent/runtime/tests/interruption_flow.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
+note = "Rust regression suite covers basic turns/tools; upstream cases for steering continuation, language mismatch suppression and provisional cancellation settlement are not ported."
+
+[[file]]
+upstream = "src/core/agent/runtime/tests/support.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded test fixture: FakeGateway, execution delegates and synthetic vision runtime support upstream test cases; Rust uses independent scripted provider/tool fixtures."
+
+[[file]]
+upstream = "src/core/agent/runtime/tests/tool_flow.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator/tests.rs"]
+note = "Rust regression suite covers basic turns/tools; upstream cases for search usage propagation, parallel subagent groups and dynamic tool preparation are not ported."
+
+[[file]]
+upstream = "src/core/agent/runtime/text_completion.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/text_completion.rs"]
+note = "Compactor text requests stream into bounded results; host-managed authority/pulse and tool-image request context are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/tool_admission.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/turn_reviews.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "Turn review cache and admission exist; terminal validation retry, identical failure escalation and malformed-call recovery state machines are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/tool_batch.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs"]
+note = "Tool batches, argument validation and parallel execution exist; provider-executed tool batches and subagent-specific lifecycle settlement are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/tool_contracts.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_dispatch.rs", "crates/ofx-contract/src/permission_gate.rs"]
+note = "Prepared calls and permission traits exist; transport publication outcomes and secondary sink ownership contracts are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/tool_presentation.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/tool_presentation.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "Plain action/error labels and authoritative events exist; tracked provisional statuses, unmatched recovery settlement and grouped lifecycle IDs are absent."
+
+[[file]]
+upstream = "src/core/agent/runtime/vision_contracts.zig"
+status = "todo"
+modules = []
+note = "Vision image dispatch requests and executor result contracts are unimplemented."
+
+[[file]]
+upstream = "src/core/agent/runtime/vision_executor.zig"
+status = "todo"
+modules = []
+note = "Vision call image preparation and model execution are unimplemented."
+
+[[file]]
+upstream = "src/core/agent/stream_provider.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/stream_provider.rs"]
+note = "Streaming text/reasoning and completions exist; tool-start/input callbacks, image request modes and delivery evidence are absent on main."
+
+[[file]]
+upstream = "src/core/agent/tool_preparation.zig"
+status = "partial"
+modules = ["crates/ofx-agent/src/orchestrator.rs"]
+note = "Built-in call preparation and panic containment exist; dynamic host tool and image-specific preparation are absent."
+
+[[file]]
+upstream = "src/core/agent/worker_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_agent_runtime.rs"]
+note = "Worker commands drive turn execution and cancellation; active-turn steering and subagent worker origin handling are absent."

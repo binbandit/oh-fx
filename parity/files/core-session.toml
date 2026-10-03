@@ -1,0 +1,257 @@
+[[file]]
+upstream = "src/core/session/artifact_digest.zig"
+status = "todo"
+modules = []
+note = "Missing artifact digest implementation: upstream surface contentAddressedHandle, hasContentDigest, handleMatchesContentDigest; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/command_replay_store.zig"
+status = "todo"
+modules = []
+note = "Missing command replay store implementation: upstream surface max_public_handle_bytes, CapturePolicy, model_handle_notice_reserve_bytes, appendModelHandleNotice, EphemeralStore; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/generation_fact_codec.zig"
+status = "todo"
+modules = []
+note = "Missing generation fact codec implementation: upstream surface write, parse; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/generation_usage_provider.zig"
+status = "todo"
+modules = []
+note = "Missing generation usage provider implementation: upstream surface LookupInput, Record, LookupOutcome, deinit, LookupError; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/history_snapshot.zig"
+status = "todo"
+modules = []
+note = "Missing history snapshot manifests, cursor checkpoints and integrity validation; a buffered line reader is not a snapshot counterpart."
+
+[[file]]
+upstream = "src/core/session/js_host_prompt_history.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host entrypoint: delegates embedded host operations through JavaScript callbacks."
+
+[[file]]
+upstream = "src/core/session/js_host_session_store.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host entrypoint: delegates embedded host operations through JavaScript callbacks."
+
+[[file]]
+upstream = "src/core/session/legacy_background_migration.zig"
+status = "todo"
+modules = []
+note = "Missing legacy background migration implementation: upstream surface Result, migrate; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/profile_usage_runtime.zig"
+status = "todo"
+modules = []
+note = "Missing profile usage runtime implementation: upstream surface InitializeOutcome, Recovery, Runtime, initialize, deinit; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/profile_usage_store.zig"
+status = "todo"
+modules = []
+note = "Missing profile usage store implementation: upstream surface AppendOutcome, Loaded, deinit, Store, initFromHome; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/prompt_history_provider.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/prompt_history_runtime.rs"]
+note = "Shell history initialization exists; the provider append/load/clearWorkspace interface is missing."
+
+[[file]]
+upstream = "src/core/session/prompt_history_store.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/prompt_history_store.rs"]
+note = "Append and recent-entry loading exist; clearWorkspace is missing; invalid-UTF8 history handling remains a documented difference."
+
+[[file]]
+upstream = "src/core/session/result_store.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/result_store.rs"]
+note = "Stored result handles and previews exist; paged ResultReader, image snapshots and compactor content packs are missing."
+
+[[file]]
+upstream = "src/core/session/session.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_store.rs"]
+note = "Modern event/log/store domain exists; legacy image snapshot repair and full recovery/child-session domain behavior are missing."
+
+[[file]]
+upstream = "src/core/session/session_adapter.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_adapter.rs"]
+note = "Environment-flag parsing exists; v1/v2 store routing, recovery, doctor and child-session adapters are missing."
+
+[[file]]
+upstream = "src/core/session/session_authority.zig"
+status = "todo"
+modules = []
+note = "Missing session authority implementation: upstream surface deinit, classifyAuthority, classifyAuthorityAllowingLargeLegacy, loadAuthorityMarkerOptional, requireAuthorityFenceAbsent; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_catalog.zig"
+status = "todo"
+modules = []
+note = "Missing session catalog implementation: upstream surface Scope, LoadState, ResumeFailure, filteredCount, summaryAt; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_catalog_cache.zig"
+status = "todo"
+modules = []
+note = "Missing session catalog cache implementation: upstream surface deinit, Loaded, contains, load, cloneVisibleSummaries; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_child_store.zig"
+status = "todo"
+modules = []
+note = "Missing session child store implementation: upstream surface subagent_relationship_index_file, ManagedChildKind, Mode, Options, SubagentControlInitError; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_codec.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_codec.rs"]
+note = "Modern metadata/preferences codecs exist; legacy schema preference decoding and recovery checkpoint codecs are missing."
+
+[[file]]
+upstream = "src/core/session/session_commands.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_commands.rs"]
+note = "Model-ID query resolution exists; upstream settings, permission, allowlist, history and fast-mode command controllers are missing."
+
+[[file]]
+upstream = "src/core/session/session_compaction.zig"
+status = "todo"
+modules = []
+note = "Missing session compaction implementation: upstream surface Outcome, TestControls, Options, compactIfNeeded; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_discovery.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_discovery.rs"]
+note = "Modern session classification exists; legacy candidate streaming, schema migration and fenced recovery discovery are missing."
+
+[[file]]
+upstream = "src/core/session/session_display_metadata.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_display_metadata.rs"]
+note = "Display-title derivation exists; bounded display sidecar encoding/loading and image preview fallback are missing."
+
+[[file]]
+upstream = "src/core/session/session_event.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_event.rs"]
+note = "Modern conversation events exist; legacy event schemas and complete image/child/execution presentation payloads are missing."
+
+[[file]]
+upstream = "src/core/session/session_json.zig"
+status = "todo"
+modules = []
+note = "Missing legacy summary and presentation JSON codecs; generic JSON field helpers do not implement this module."
+
+[[file]]
+upstream = "src/core/session/session_layout.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_layout.rs"]
+note = "Session-ID validation/generation exists; terminal-specific IDs and v2 directory routing are missing."
+
+[[file]]
+upstream = "src/core/session/session_log.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_log.rs"]
+note = "Modern append/replay exists; recovery checkpoint prefix validation/copy and legacy history imports are missing."
+
+[[file]]
+upstream = "src/core/session/session_migration.zig"
+status = "todo"
+modules = []
+note = "Missing session migration implementation: upstream surface LegacyStoredSession, deinit, MigrationPreferenceSource, migrateLegacyLocked, SchemaV3Import; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_projection.zig"
+status = "todo"
+modules = []
+note = "Missing session projection cache, watermarks and digest/checkpoint validation; a buffered line reader is not a projection counterpart."
+
+[[file]]
+upstream = "src/core/session/session_relationship_index_codec.zig"
+status = "todo"
+modules = []
+note = "Missing session relationship index codec implementation: upstream surface header_magic, page_magic, page_slots, no_slot, max_header_bytes; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_replay.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_replay.rs"]
+note = "Buffered line reading exists; exact-commit, recovery checkpoint and child-identity replay coordination are missing."
+
+[[file]]
+upstream = "src/core/session/session_store.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_store.rs"]
+note = "Modern create/resume/list storage exists; legacy migration, doctor, image repair, projection caches and v2 routing are missing."
+
+[[file]]
+upstream = "src/core/session/session_store_paths.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_store_paths.rs"]
+note = "Workspace normalization and root validation exist; upstream sessionJsonPath/sessionDirPath path-builder facade is missing."
+
+[[file]]
+upstream = "src/core/session/session_store_types.zig"
+status = "todo"
+modules = []
+note = "Missing session store types implementation: upstream surface automatic_legacy_max_bytes, StorageFormat, CandidateStorage, ProjectionState, DiscoveryCause; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_summary_codec.zig"
+status = "partial"
+modules = ["crates/ofx-session/src/session_summary_codec.rs"]
+note = "Resumable pagination/filtering and ordering exist; the separate sessionListPageFromSummaries all-session listing is missing."
+
+[[file]]
+upstream = "src/core/session/session_title_generation.zig"
+status = "todo"
+modules = []
+note = "Missing session title generation implementation: upstream surface max_generated_title_bytes, max_prompt_excerpt_bytes, default_timeout_ms, instructions_text, Gate; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_usage.zig"
+status = "todo"
+modules = []
+note = "Missing session usage implementation: upstream surface usage_report, max_snapshot_bytes, Availability, DeliveryOutcome, UsageCheckpointSink; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/session_usage_sidecar.zig"
+status = "todo"
+modules = []
+note = "Missing session usage sidecar implementation: upstream surface sidecar_file, max_sidecar_bytes, RestoreOutcome, Captured, deinit; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/usage_menu.zig"
+status = "todo"
+modules = []
+note = "Missing usage menu implementation: upstream surface State, openOwned, openError, openLoading, setLoadingScope; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/usage_recovery.zig"
+status = "todo"
+modules = []
+note = "Missing usage recovery implementation: upstream surface OwnedRecovery, deinit, collectFromHome, collectFromHomeConservative, collectFromHomeConservativeCancelable; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/usage_report.zig"
+status = "todo"
+modules = []
+note = "Missing usage report implementation: upstream surface Scope, label, cliValue, previous, next; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/session/web_fetch_artifacts.zig"
+status = "todo"
+modules = []
+note = "Missing web fetch artifacts implementation: upstream surface relative_dir, default_max_bytes, default_max_files, Limits, Artifact; no dedicated Rust counterpart."

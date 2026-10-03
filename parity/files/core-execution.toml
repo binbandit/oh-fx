@@ -1,0 +1,59 @@
+[[file]]
+upstream = "src/core/execution/command_contract.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/command_contract.rs"]
+note = "Command statuses and projections exist; routed foreground comparison evidence and persisted command-result contracts are absent."
+
+[[file]]
+upstream = "src/core/execution/command_environment.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/command_environment.rs"]
+note = "Clean/user environment and shell choices exist; typed direct-route authority and upstream serialized permission identity compatibility are incomplete."
+
+[[file]]
+upstream = "src/core/execution/command_runner.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/command_runner.rs"]
+note = "Foreground supervisor and process completion exist; direct-argv route execution and Darwin lineage tracking are absent."
+
+[[file]]
+upstream = "src/core/execution/local_executor.zig"
+status = "todo"
+modules = []
+note = "Approved direct argv/pipeline route execution and route-specific foreground comparison limits are unimplemented."
+
+[[file]]
+upstream = "src/core/execution/managed_execution.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/managed_execution.rs"]
+note = "Captured running handles, output snapshots, waits and stop exist; persisted execution/replay artifacts and reattached process identities are absent."
+
+[[file]]
+upstream = "src/core/execution/managed_execution_contract.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/managed_execution.rs"]
+note = "Runtime handle/snapshot bounds exist; backend persistence/terminal-state contracts and resumable identity metadata are absent."
+
+[[file]]
+upstream = "src/core/execution/process_identity.zig"
+status = "todo"
+modules = []
+note = "Canonical boot/start-time process instance token capture and exact PID reuse matching are unimplemented."
+
+[[file]]
+upstream = "src/core/execution/process_provider.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/managed_execution.rs"]
+note = "Managed local process operations exist; injected identity provider and token matching backend contracts are absent."
+
+[[file]]
+upstream = "src/core/execution/process_tree.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/process_tree.rs"]
+note = "Linux tree tracking and group fallback exist; Darwin unique-process lineage witnesses are absent, as architecture.md records."
+
+[[file]]
+upstream = "src/core/execution/router.zig"
+status = "todo"
+modules = []
+note = "Authorized direct-versus-shell route preparation, context fingerprints and direct execution dispatch are unimplemented."

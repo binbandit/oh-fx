@@ -1,0 +1,59 @@
+[[file]]
+upstream = "src/core/output/activity_runtime.zig"
+status = "todo"
+modules = []
+note = "The lifecycle presenter registry, focused tool slots, cancellation presentation and finalized-turn watermarks are not implemented."
+
+[[file]]
+upstream = "src/core/output/activity_status.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/output/activity_status.rs"]
+note = "Turn clocks and token suffixes are rendered; focused tool-slot and grouped tool-activity projections remain unported."
+
+[[file]]
+upstream = "src/core/output/compaction_activity.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/output/compaction_activity.rs"]
+note = "Manual compaction phases and feedback exist; identity-scoped operations, automatic/provider-overflow origins and publication provenance are absent."
+
+[[file]]
+upstream = "src/core/output/diff.zig"
+status = "todo"
+modules = []
+note = "Tool-edit preview projection, deferred full reviews and terminal diff-block markers are not implemented; Markdown diff coloring is a separate formatter."
+
+[[file]]
+upstream = "src/core/output/full_transcript_metadata.zig"
+status = "todo"
+modules = []
+note = "Full-transcript UTC entry headers and entry-kind metadata formatting are not implemented."
+
+[[file]]
+upstream = "src/core/output/full_transcript_page.zig"
+status = "todo"
+modules = []
+note = "Bounded full-transcript page ranges, anchors and previous/next navigation are not implemented."
+
+[[file]]
+upstream = "src/core/output/output_contracts.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/output_contracts.rs"]
+note = "Interactive status is rendered; doctor/usage, MCP-health and sessions-v2 output snapshots remain missing."
+
+[[file]]
+upstream = "src/core/output/transcript_presentation.zig"
+status = "todo"
+modules = []
+note = "Full-view depth transitions, retained-entry bookmarks, anchors and viewport restoration are not implemented."
+
+[[file]]
+upstream = "src/core/output/transcript_release.zig"
+status = "todo"
+modules = []
+note = "Finality-gated transcript release, tool-turn floors and mutable assistant-tail byte boundaries are not implemented."
+
+[[file]]
+upstream = "src/core/output/worker_status.zig"
+status = "partial"
+modules = ["crates/ofx-contract/src/types.rs", "crates/oh-fx/src/cli_ask.rs"]
+note = "Route-recovery labels exist for ask; interactive recovery/API projections, recovered-state expiry and awake-deadline countdown refresh are absent."

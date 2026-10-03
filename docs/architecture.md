@@ -281,7 +281,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 
 ## Parity tracking
 
-[Upstream parity](upstream-parity.md) records the upstream commit oh-fx is synced to, where each upstream pull request since the previous sync point lands in oh-fx, and how to run the next parity pass. `parity/` will separately map every upstream source file to its Rust module, with a per-file status of `todo`, `partial`, `ported`, or `not-applicable`. CI will fail when an upstream file has no entry. Goldens dumped from upstream (tool schemas, help text, prompts) will be compared byte for byte.
+[Upstream parity](upstream-parity.md) records the upstream commit oh-fx is synced to, where each upstream pull request since the previous sync point lands in oh-fx, and how to run the next parity pass. `parity/files/` maps every upstream Zig source file to its Rust modules, with a per-file status of `todo`, `partial`, `ported`, or `not-applicable` and concrete notes for partial ports and exclusions. `parity/UPSTREAM` pins the checkout used by `cargo xtask parity --upstream <path>` and the upstream parity CI job. The checker fetches nothing, verifies the checkout's commit, rejects missing or stale source entries and invalid Rust module paths, and prints the counts per status. The job feeds the required Repository checks gate. Structural coverage does not establish behavioral parity; each `ported` classification still rests on source and test review or a documented deliberate difference. Goldens dumped from upstream (tool schemas, help text, prompts) will be compared byte for byte in a separate change.
 
 ## Delivery order
 

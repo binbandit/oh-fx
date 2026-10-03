@@ -1,0 +1,113 @@
+[[file]]
+upstream = "src/core/auth/api_key_validator.zig"
+status = "todo"
+modules = []
+note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
+
+[[file]]
+upstream = "src/core/auth/auth_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/auth_runtime.rs"]
+note = "Codex credential preparation and refresh exist; Vercel/Grok preparation, inventory and provider transition handling are absent."
+
+[[file]]
+upstream = "src/core/auth/auth_transition.zig"
+status = "todo"
+modules = []
+note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
+
+[[file]]
+upstream = "src/core/auth/browser_callback.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/browser_callback.rs"]
+note = "Loopback callback validation exists; upstream callback form-response handling and all non-Codex login flows are absent."
+
+[[file]]
+upstream = "src/core/auth/chatgpt_oauth.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/chatgpt_oauth.rs"]
+note = "Codex browser login, token refresh and logout exist; interactive login-picker integration is absent."
+
+[[file]]
+upstream = "src/core/auth/chatgpt_session.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/chatgpt_session.rs"]
+note = "Codex session parsing and durable file mutation exist; upstream native keychain storage backend is absent."
+
+[[file]]
+upstream = "src/core/auth/credential_authority.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/codex_provider.rs"]
+note = "Codex request credentials retain refresh identity; upstream common credential/account authority derivation across provider families is absent."
+
+[[file]]
+upstream = "src/core/auth/credentials.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/credentials.rs", "crates/ofx-app/src/codex_provider.rs"]
+note = "Auth mode and Codex guidance exist; catalog access authority, Vercel team context and multi-provider credential-source projection are absent."
+
+[[file]]
+upstream = "src/core/auth/grok_oauth.zig"
+status = "todo"
+modules = []
+note = "Grok OAuth sign-in, refresh and durable session storage are not implemented."
+
+[[file]]
+upstream = "src/core/auth/grok_session.zig"
+status = "todo"
+modules = []
+note = "Grok OAuth sign-in, refresh and durable session storage are not implemented."
+
+[[file]]
+upstream = "src/core/auth/js_host_auth.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host authentication FFI entrypoint and host-owned session persistence ABI."
+
+[[file]]
+upstream = "src/core/auth/login_flow.zig"
+status = "todo"
+modules = []
+note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
+
+[[file]]
+upstream = "src/core/auth/oauth.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/oauth.rs"]
+note = "PKCE, endpoint validation and OAuth decoding exist; Vercel device authorization/polling and provider discovery are absent."
+
+[[file]]
+upstream = "src/core/auth/oauth_session.zig"
+status = "todo"
+modules = []
+note = "Vercel OAuth session file/keychain storage, mutation authority and refresh deadlines are not implemented; Codex session storage is separate."
+
+[[file]]
+upstream = "src/core/auth/oauth_transport.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/oauth_transport.rs"]
+note = "OAuth HTTP execution exists; JavaScript host-owned HTTP transport delegation is excluded and native Vercel/Grok consumers are absent."
+
+[[file]]
+upstream = "src/core/auth/provider_catalog.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/provider_catalog.rs"]
+note = "Provider aliases and route labels are implemented; upstream catalog entry descriptions, subscription flags and login-source projection are absent."
+
+[[file]]
+upstream = "src/core/auth/provider_picker_catalog.zig"
+status = "todo"
+modules = []
+note = "Provider login inventory, API-key validation/team selection and interactive provider/auth transition decisions are not implemented."
+
+[[file]]
+upstream = "src/core/auth/secret.zig"
+status = "ported"
+modules = ["crates/ofx-auth/src/secret.rs"]
+note = "Owned secret bytes are zeroed on drop and clearing, matching the upstream secret disposal purpose."
+
+[[file]]
+upstream = "src/core/auth/session_presence.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/session_presence.rs"]
+note = "Private profile-file presence checks exist; upstream native keychain session-presence selection is absent."

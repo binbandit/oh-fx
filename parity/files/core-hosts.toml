@@ -1,0 +1,89 @@
+[[file]]
+upstream = "src/core/hosts/browser_capabilities.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded embedded browser/WASM host model-context entrypoint; native runtime has outbound network capabilities."
+
+[[file]]
+upstream = "src/core/hosts/host.zig"
+status = "todo"
+modules = []
+note = "Missing host implementation: upstream surface TerminalSupport, isSupported, Capabilities, UrlOpenError, UrlOpener; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/hosts/js_host_clipboard.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host entrypoint: delegates embedded host operations through JavaScript callbacks."
+
+[[file]]
+upstream = "src/core/hosts/js_host_steering.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host entrypoint: delegates embedded host operations through JavaScript callbacks."
+
+[[file]]
+upstream = "src/core/hosts/js_host_tools.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host entrypoint: delegates embedded host operations through JavaScript callbacks."
+
+[[file]]
+upstream = "src/core/hosts/js_host_url_opener.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host entrypoint: delegates embedded host operations through JavaScript callbacks."
+
+[[file]]
+upstream = "src/core/hosts/js_host_workspace.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host entrypoint: delegates embedded host operations through JavaScript callbacks."
+
+[[file]]
+upstream = "src/core/hosts/native.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/native.rs"]
+note = "Clipboard host exists; native secret-store/keychain host integration is missing."
+
+[[file]]
+upstream = "src/core/hosts/native_keychain.zig"
+status = "todo"
+modules = []
+note = "Missing native keychain implementation: upstream surface service_name, oauth_session_service_name, AccountBuffer, Error, isAvailable; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/hosts/native_secret_store.zig"
+status = "todo"
+modules = []
+note = "Missing native secret store implementation: upstream surface provider; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/hosts/runtime_profile.zig"
+status = "todo"
+modules = []
+note = "Missing runtime profile implementation: upstream surface Profile, Capability, allows, native, wasm; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/hosts/target.zig"
+status = "todo"
+modules = []
+note = "Missing target implementation: upstream surface is_wasm; no dedicated Rust counterpart."
+
+[[file]]
+upstream = "src/core/hosts/url_opener.zig"
+status = "partial"
+modules = ["crates/ofx-auth/src/url_opener.rs"]
+note = "URL validation and platform spawning exist; Rust reports spawn success while upstream waits for a successful child exit."
+
+[[file]]
+upstream = "src/core/hosts/wasm.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded WASM host entrypoint: embedded WebAssembly host capability bindings."
+
+[[file]]
+upstream = "src/core/hosts/wasm_panic.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded WASM host entrypoint: WASM panic dispatch."

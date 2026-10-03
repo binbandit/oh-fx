@@ -1,0 +1,23 @@
+[[file]]
+upstream = "src/core/skills/skill_commands.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/skill_commands.rs"]
+note = "List/show/create/remove/path commands exist; add/install parse successfully but report installation unavailable."
+
+[[file]]
+upstream = "src/core/skills/skill_contract.zig"
+status = "ported"
+modules = ["crates/ofx-skills/src/skill_contract.rs"]
+note = "Skill names, frontmatter metadata and exact location/resource contracts are implemented with metadata/location regression tests; strict byte/duplicate-key differences are documented."
+
+[[file]]
+upstream = "src/core/skills/skill_invocation.zig"
+status = "partial"
+modules = ["crates/ofx-skills/src/skill_invocation.rs"]
+note = "Explicit bindings and whole location/resource reads exist; legacy named/offset resource calls are intentionally not supported, and runtime result publication remains narrower."
+
+[[file]]
+upstream = "src/core/skills/skill_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-skills/src/skill_runtime.rs"]
+note = "Discovery/catalog roots and validated candidates exist; upstream completion surfaces and traceDiagnostics are absent from the leaf runtime."

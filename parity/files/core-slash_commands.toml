@@ -1,0 +1,11 @@
+[[file]]
+upstream = "src/core/slash_commands/command_router.zig"
+status = "partial"
+modules = ["crates/ofx-cli/src/command_router.rs"]
+note = "Slash parsing exists; the upstream command execution dispatcher and deferred command handlers are missing."
+
+[[file]]
+upstream = "src/core/slash_commands/command_specs.zig"
+status = "partial"
+modules = ["crates/ofx-cli/src/command_specs/mod.rs", "crates/ofx-cli/src/command_specs/slash_specs.rs"]
+note = "Top-level and slash command tables exist; child-chat slash registry and live help/menu behavior are missing."

@@ -1,0 +1,161 @@
+[[file]]
+upstream = "src/core/input/composer_deletion.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/composer_deletion.rs"]
+note = "Text and registered paste/skill deletion are implemented; registered image deletion and attachment release are absent."
+
+[[file]]
+upstream = "src/core/input/composer_history.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/composer_history.rs"]
+note = "Text draft/history navigation is implemented; history entries do not retain and restore image attachments."
+
+[[file]]
+upstream = "src/core/input/composer_insertion.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/composer_insertion.rs"]
+note = "Bounded insertion and paste-expanded admission are implemented; upstream explicit preserve/clear picker policy is absent."
+
+[[file]]
+upstream = "src/core/input/composer_kill_ring.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/composer_kill_ring.rs"]
+note = "Text and paste-block kill/yank are implemented; image-backed kill and yank transitions are absent."
+
+[[file]]
+upstream = "src/core/input/composer_line_continuation.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/composer_line_continuation.rs"]
+
+[[file]]
+upstream = "src/core/input/composer_replacement.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/composer_replacement.rs"]
+note = "Bounded text/range replacement is implemented; upstream image-backed entity ownership and release are absent."
+
+[[file]]
+upstream = "src/core/input/composer_selection.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/composer_selection.rs"]
+
+[[file]]
+upstream = "src/core/input/composer_skill_binding.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/composer_skill_binding.rs"]
+note = "Skill token binding and separator ownership are implemented; allocation-failure atomic staging is not modeled by infallible Rust allocation."
+
+[[file]]
+upstream = "src/core/input/composer_stash.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream ComposerView, capture, restore behavior."
+
+[[file]]
+upstream = "src/core/input/composer_text_replacement.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream Prepared, prepare, replace behavior."
+
+[[file]]
+upstream = "src/core/input/composer_undo.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/composer_undo.rs"]
+
+[[file]]
+upstream = "src/core/input/edit_history.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/edit_history.rs"]
+
+[[file]]
+upstream = "src/core/input/editor_state.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/editor_state.rs"]
+
+[[file]]
+upstream = "src/core/input/file_completion_state.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/file_completion_state.rs"]
+
+[[file]]
+upstream = "src/core/input/file_picker_path.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/file_picker_path.rs"]
+note = "Token/path parsing exists; canonical-escape metadata and public token-position containment behavior are missing."
+
+[[file]]
+upstream = "src/core/input/gesture_state.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/input/gesture_state.rs"]
+
+[[file]]
+upstream = "src/core/input/horizontal_navigation.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/horizontal_navigation.rs"]
+note = "Native horizontal navigation exists; upstream complete frame and ownership integration is absent."
+
+[[file]]
+upstream = "src/core/input/input_action.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/input/input_action.rs"]
+note = "Composer actions exist; question/approval terminal action payloads, focused-edit actions and freeform-question selection context are absent."
+
+[[file]]
+upstream = "src/core/input/input_limit_rejection.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/input_limit_rejection.rs"]
+
+[[file]]
+upstream = "src/core/input/input_reset.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/input_reset.rs"]
+note = "Composer reset preserves history and resets paste state; image attachment cleanup and pending image state are absent."
+
+[[file]]
+upstream = "src/core/input/kill_ring.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/kill_ring.rs"]
+note = "Text and registered paste kill/yank are implemented; image block ownership and release are absent."
+
+[[file]]
+upstream = "src/core/input/paste_framing.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/input/paste_framing.rs"]
+
+[[file]]
+upstream = "src/core/input/pasted_blocks.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/pasted_blocks.rs"]
+
+[[file]]
+upstream = "src/core/input/picker_state.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/file_completion_state.rs", "crates/ofx-tui/src/shell/skills_menu.rs"]
+note = "File and skill picker state exists; model/provider/login/resume/MCP query stages and picker ownership are absent."
+
+[[file]]
+upstream = "src/core/input/registered_entities.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/registered_entities.rs"]
+note = "Registered paste and skill entities are implemented; image entities and attachment ownership are absent."
+
+[[file]]
+upstream = "src/core/input/runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/mod.rs"]
+note = "Composer text runtime exists; upstream image, complete picker and composer-stash ownership are absent."
+
+[[file]]
+upstream = "src/core/input/text_boundaries.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/text_boundaries.rs"]
+
+[[file]]
+upstream = "src/core/input/text_scalar.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/input/text_scalar.rs"]
+note = "Composer text ownership exists; question-freeform and approval-amendment owners and their transitions are missing."
+
+[[file]]
+upstream = "src/core/input/vertical_navigation.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/vertical_navigation.rs"]

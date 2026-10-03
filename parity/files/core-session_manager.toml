@@ -1,0 +1,59 @@
+[[file]]
+upstream = "src/core/session_manager/api.zig"
+status = "todo"
+modules = []
+note = "Missing api implementation: upstream surface Role, Host, Reason, Outcome, SetKey; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/catalog.zig"
+status = "todo"
+modules = []
+note = "Missing catalog implementation: upstream surface host_count, Summary, Record, encodeRecord, decodeRecord; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/diag.zig"
+status = "todo"
+modules = []
+note = "Missing diag implementation: upstream surface Kind, Event, Sink, report, Recorder; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/fold.zig"
+status = "todo"
+modules = []
+note = "Missing fold implementation: upstream surface Interruption, Child, State, deinit, clearChildren; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/log.zig"
+status = "todo"
+modules = []
+note = "Missing log implementation: upstream surface max_line_bytes, crc32c, FrameError, appendLine, appendFramed; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/schema.zig"
+status = "todo"
+modules = []
+note = "Missing schema implementation: upstream surface version, Kind, Header, HeaderError, appendHeader; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/session.zig"
+status = "todo"
+modules = []
+note = "Missing session implementation: upstream surface default_snapshot_every_bytes, Options, Env, observeCatalog, isPlanted; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/storage.zig"
+status = "todo"
+modules = []
+note = "Missing storage implementation: upstream surface hooks, Fault, folder_mode, file_mode, Error; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/storage_fault.zig"
+status = "todo"
+modules = []
+note = "Missing storage fault implementation: upstream surface Fault, WritePlan, init, deinit, kill; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."
+
+[[file]]
+upstream = "src/core/session_manager/trace.zig"
+status = "todo"
+modules = []
+note = "Missing trace implementation: upstream surface default_dir, Planted, Trace, create, append; no dedicated Rust counterpart. Append-only v2 session manager is explicitly deferred in docs/architecture.md."

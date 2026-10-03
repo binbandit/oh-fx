@@ -1,0 +1,47 @@
+[[file]]
+upstream = "src/benchmark_exports.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream benchmark exports and test fixture entrypoints are excluded from the production Rust source map by issue scope."
+
+[[file]]
+upstream = "src/main.zig"
+status = "partial"
+modules = ["crates/oh-fx/src/main.rs", "crates/ofx-app/src/app_bootstrap_runtime.rs"]
+note = "Native command dispatch and shell bootstrap exist; upstream full command set, browser entrypoint and complete application composition are absent."
+
+[[file]]
+upstream = "src/mcp_test_exports.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream benchmark exports and test fixture entrypoints are excluded from the production Rust source map by issue scope."
+
+[[file]]
+upstream = "src/napi_core_main.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream WASM/Node/browser host entrypoint is excluded from the native Rust port by issue scope."
+
+[[file]]
+upstream = "src/napi_fetch_state.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream WASM/Node/browser host entrypoint is excluded from the native Rust port by issue scope."
+
+[[file]]
+upstream = "src/terminal_client_fixture.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream benchmark exports and test fixture entrypoints are excluded from the production Rust source map by issue scope."
+
+[[file]]
+upstream = "src/wasm_core_main.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream WASM/Node/browser host entrypoint is excluded from the native Rust port by issue scope."
+
+[[file]]
+upstream = "src/wasm_term_main.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream WASM/Node/browser host entrypoint is excluded from the native Rust port by issue scope."

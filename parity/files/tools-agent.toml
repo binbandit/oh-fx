@@ -1,0 +1,17 @@
+[[file]]
+upstream = "src/tools/agent/ask_user_question.zig"
+status = "todo"
+modules = []
+note = "Structured question tool requests and answers are unimplemented."
+
+[[file]]
+upstream = "src/tools/agent/subagent.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/subagent.rs", "crates/ofx-contract/src/subagent.rs"]
+note = "Subagent request decoding and provider contracts exist, but composition never registers the tool or runs child workers."
+
+[[file]]
+upstream = "src/tools/agent/vision.zig"
+status = "todo"
+modules = []
+note = "Vision image inspection tool are unimplemented."

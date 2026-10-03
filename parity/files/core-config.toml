@@ -1,0 +1,65 @@
+[[file]]
+upstream = "src/core/config/agent_steps.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/config_runtime.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "Maximum-step settings and turn limits exist; the full upstream override resolution API and host-specific override consumers are not ported as a shared interface."
+
+[[file]]
+upstream = "src/core/config/config_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/config_runtime.rs"]
+note = "Layered settings and startup diagnostics exist; upstream interface, notification and settings-menu fields are not fully parsed or applied."
+
+[[file]]
+upstream = "src/core/config/configured_provider.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/configured_provider.rs"]
+note = "Custom connection parsing is implemented with documented header/TLS/proxy extensions; upstream provider binding and catalog integration across built-in routes remain incomplete."
+
+[[file]]
+upstream = "src/core/config/context_limits.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/context_limits.rs"]
+note = "Context-limit values, overrides and safe clipping are implemented; upstream settings-menu editing and source metadata for every diagnostic are absent."
+
+[[file]]
+upstream = "src/core/config/js_host_config_store.zig"
+status = "not-applicable"
+modules = []
+note = "Excluded JavaScript host configuration get/set FFI entrypoint."
+
+[[file]]
+upstream = "src/core/config/model_capabilities.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/model_capabilities.rs"]
+note = "Custom/Codex capability and request-option resolution exists; Vercel/Grok catalogs and their provider-specific options are absent."
+
+[[file]]
+upstream = "src/core/config/model_preferences.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/settings_store.rs", "crates/ofx-config/src/config_runtime.rs"]
+note = "Saved provider/model preferences exist; upstream reusable owned preference-map merge API is not implemented."
+
+[[file]]
+upstream = "src/core/config/model_provider.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/model_provider.rs"]
+note = "Provider identifiers and selection are implemented; upstream credential-authority binding across Vercel/Grok provider families is absent."
+
+[[file]]
+upstream = "src/core/config/prompt_policy.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_bootstrap_runtime.rs"]
+note = "Native system prompt selection exists; embedded-host prompt variants and model-specific prompt overlays are absent."
+
+[[file]]
+upstream = "src/core/config/settings_catalog.zig"
+status = "todo"
+modules = []
+note = "Interactive settings category/choice catalog and settings-menu navigation are not implemented."
+
+[[file]]
+upstream = "src/core/config/settings_store.zig"
+status = "partial"
+modules = ["crates/ofx-config/src/settings_store.rs"]
+note = "Permission/model preference writes and recovery backups exist; upstream full settings catalog, workspace-directory mutation and project MCP mutation API are incomplete."

@@ -1,0 +1,5 @@
+[[file]]
+upstream = "src/tools/session/read_tool_result.zig"
+status = "todo"
+modules = []
+note = "Saved result lookup and compactor ledger search are unimplemented."

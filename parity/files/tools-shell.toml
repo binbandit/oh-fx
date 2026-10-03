@@ -1,0 +1,17 @@
+[[file]]
+upstream = "src/tools/shell/browser_shell.zig"
+status = "todo"
+modules = []
+note = "Browser workspace completion-only shell are unimplemented."
+
+[[file]]
+upstream = "src/tools/shell/process_provider.zig"
+status = "partial"
+modules = ["crates/ofx-exec/src/managed_execution.rs"]
+note = "Managed process handles exist; provider-bound process-instance token capture/matching and unavailable-provider contract are absent."
+
+[[file]]
+upstream = "src/tools/shell/shell.zig"
+status = "partial"
+modules = ["crates/ofx-tools/src/shell.rs"]
+note = "Run/interact/stop/list and snapshots exist; direct read-only execution plans, command replay persistence and complete TTY presentation evidence are absent."

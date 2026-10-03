@@ -1,0 +1,17 @@
+[[file]]
+upstream = "src/core/github/git_context.zig"
+status = "todo"
+modules = []
+note = "The prepared GitHub draft snapshot of branch, status, recent commits and staged/unstaged diffs is not implemented; workspace git context serves a different contract."
+
+[[file]]
+upstream = "src/core/github/github_publish.zig"
+status = "todo"
+modules = []
+note = "GitHub draft parsing and gh-backed issue/pull-request publication are not implemented."
+
+[[file]]
+upstream = "src/core/github/github_workflows.zig"
+status = "todo"
+modules = []
+note = "GitHub issue and pull-request draft prompts and their repository/context workflow are not implemented."

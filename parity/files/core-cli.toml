@@ -1,0 +1,35 @@
+[[file]]
+upstream = "src/core/cli/acp_runner.zig"
+status = "todo"
+modules = []
+note = "ACP server startup and runtime execution are not implemented."
+
+[[file]]
+upstream = "src/core/cli/cli_ask.zig"
+status = "partial"
+modules = ["crates/ofx-cli/src/cli_ask.rs", "crates/oh-fx/src/cli_ask.rs"]
+note = "Argument parsing and ask runtime exist; styled terminal ask presentation, image inputs, extra roots and session-v2 ask persistence are absent."
+
+[[file]]
+upstream = "src/core/cli/cli_replay.zig"
+status = "partial"
+modules = ["crates/ofx-cli/src/cli_replay.rs"]
+note = "Replay/session command arguments are parsed; replay execution and full transcript rendering command are not implemented."
+
+[[file]]
+upstream = "src/core/cli/cli_surface.zig"
+status = "partial"
+modules = ["crates/ofx-cli/src/cli_surface/mod.rs", "crates/ofx-cli/src/command_specs/mod.rs", "crates/oh-fx/src/main.rs"]
+note = "CLI parsing/help and supported command dispatch exist; doctor, usage, ACP and several session/workspace command runtimes remain unavailable."
+
+[[file]]
+upstream = "src/core/cli/doctor_runtime.zig"
+status = "todo"
+modules = []
+note = "Doctor diagnostic collection and sessions-v2 health/recovery reporting are not implemented."
+
+[[file]]
+upstream = "src/core/cli/usage_cli_runtime.zig"
+status = "todo"
+modules = []
+note = "Provider usage aggregation and CLI usage reporting are not implemented."

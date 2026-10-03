@@ -1,0 +1,453 @@
+[[file]]
+upstream = "src/ui/approval_screen.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream Paint, TranscriptDocumentPlan, TranscriptDocument behavior."
+
+[[file]]
+upstream = "src/ui/ask_presentation.zig"
+status = "partial"
+modules = ["crates/oh-fx/src/ask_session.rs", "crates/oh-fx/src/cli_ask.rs"]
+note = "Plain ask output exists; upstream terminal transcript sink, cursor probing and frame-based ask presentation are absent."
+
+[[file]]
+upstream = "src/ui/assistant/pacer.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream EmitFn, FinishResult, FinishFn behavior."
+
+[[file]]
+upstream = "src/ui/assistant/user_message_card.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/assistant/user_message_card.rs"]
+note = "Connected-rail text cards are implemented; interruptible tail projection and registered skill-token presentation are absent."
+
+[[file]]
+upstream = "src/ui/event_loop.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/event_loop.rs"]
+note = "Native shell event loop exists; upstream full render-attempt scheduling and alternate-screen integrations are absent."
+
+[[file]]
+upstream = "src/ui/footer/approval_readiness.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream SettledFileApproval, settledFileApproval, committedFooterApprovalRows behavior."
+
+[[file]]
+upstream = "src/ui/footer/approval_ui.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/approval_panel.rs", "crates/ofx-tui/src/footer/approval_content.rs"]
+note = "Inline approval copy exists; full-screen file diff composition, constrained viewport and canonical cell-grid geometry are absent."
+
+[[file]]
+upstream = "src/ui/footer/compact_command_menu_presentation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream desiredRowCount, usageVisibleModelItems behavior."
+
+[[file]]
+upstream = "src/ui/footer/help_menu_presentation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream max_visible_items, max_inline_rows, menuRowCount behavior."
+
+[[file]]
+upstream = "src/ui/footer/input_presentation.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/input_presentation.rs"]
+note = "Composer rows, selection and warning hints are implemented; image badges and complete picker/question footer projections are absent."
+
+[[file]]
+upstream = "src/ui/footer/interaction_state.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream approval_chrome_rows, approval_panel_rows_compact, approval_panel_rows_spacious behavior."
+
+[[file]]
+upstream = "src/ui/footer/mcp_menu_presentation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream max_inline_rows, menuRowCount, visibleItemsForBudget behavior."
+
+[[file]]
+upstream = "src/ui/footer/model_menu_presentation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream max_visible_items, max_inline_rows, menuRowCount behavior."
+
+[[file]]
+upstream = "src/ui/footer/paint_plan.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream FooterTranscriptState, FooterPlannerInput, FooterFramePlan behavior."
+
+[[file]]
+upstream = "src/ui/footer/picker_presentation.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/picker_presentation.rs"]
+note = "Basic file and command picker rows are implemented; model/provider/login/resume/MCP picker presentations are absent."
+
+[[file]]
+upstream = "src/ui/footer/question_freeform_layout.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream Direction, Line, CursorMove behavior."
+
+[[file]]
+upstream = "src/ui/footer/question_ui.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream questionPanelRowsForLayout, nextPanelLine, composeQuestionPanelText behavior."
+
+[[file]]
+upstream = "src/ui/footer/render_input.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/input_presentation.rs"]
+note = "Composer input rows exist; full surface ownership, image presentation and all picker footer modes are absent."
+
+[[file]]
+upstream = "src/ui/footer/resume_menu_presentation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream max_visible_items, max_inline_rows, menuRowCount behavior."
+
+[[file]]
+upstream = "src/ui/footer/row_text.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/row_text.rs"]
+note = "Styled terminal-safe rows exist; upstream footer owner/surface composition is not implemented."
+
+[[file]]
+upstream = "src/ui/footer/runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/mod.rs", "crates/ofx-tui/src/render_engine/frame_layout.rs"]
+note = "Compact composer/footer arrangement exists; upstream surface measurement, invalidation and complete picker/question lifecycle are absent."
+
+[[file]]
+upstream = "src/ui/footer/settings_menu_presentation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream max_inline_rows, menuRowCount, visibleNavigationItemsForBudget behavior."
+
+[[file]]
+upstream = "src/ui/footer/skills_menu_presentation.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/skills_menu_presentation.rs"]
+note = "Full skills source tabs and result rows exist; upstream distinct inline six-item prepared-menu presentation is absent."
+
+[[file]]
+upstream = "src/ui/footer/surface_frame.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream SurfaceFooterReservation, SurfaceFooterFrame, label behavior."
+
+[[file]]
+upstream = "src/ui/footer/surface_invalidation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream FooterExtraUpdate, appendMeasuredFooterExtraInvalidation, applyReservationFooterExtraUpdate behavior."
+
+[[file]]
+upstream = "src/ui/footer/viewport.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream Geometry, inputPointerPosition, InputPointerPosition behavior."
+
+[[file]]
+upstream = "src/ui/full_transcript_screen.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream FullDiffResolver, ViewportOffsetSelector, Projection behavior."
+
+[[file]]
+upstream = "src/ui/input/escape_parser.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/input/escape_parser.rs"]
+
+[[file]]
+upstream = "src/ui/input/native_clear_probe.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/terminal/cursor_probe.rs"]
+note = "Private cursor response parsing exists; upstream native clear-probe input runtime and ownership lifecycle are absent."
+
+[[file]]
+upstream = "src/ui/input/runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/input/mod.rs", "crates/ofx-tui/src/shell/app_input_runtime.rs"]
+note = "Native terminal input routing exists; image attachment, question and full model/provider picker ownership are absent."
+
+[[file]]
+upstream = "src/ui/input/shortcuts.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/input/shortcuts.rs"]
+note = "Composer control/escape shortcuts are implemented; upstream focused-editor control aliases are absent."
+
+[[file]]
+upstream = "src/ui/input/terminal_action_decoder.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/input/terminal_action_decoder.rs"]
+note = "Composer and decision paste decoding exist; upstream question-owner and focused-editor decode contexts are not integrated."
+
+[[file]]
+upstream = "src/ui/input/visual_layout.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/composer/visual_layout.rs"]
+note = "Text, paste placeholders and skill tokens wrap and navigate; registered image badges and attachment-id widths are absent."
+
+[[file]]
+upstream = "src/ui/render.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/render.rs", "crates/ofx-tui/src/theme.rs"]
+note = "Welcome, compact model labels and hints exist; upstream complete terminal/footer/theme rendering APIs are absent."
+
+[[file]]
+upstream = "src/ui/render_engine.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/render_engine/mod.rs"]
+note = "Assistant wrapping, transcript blocks and compact layout exist; surface diff, retention, scroll-plan and frame fixed-point modules are absent."
+
+[[file]]
+upstream = "src/ui/render_engine/activity_overlay.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream ActivityPlacement, reservedFooterRows, reservesFooterRow behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/activity_placement.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream resolve behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/assistant_wrap.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/render_engine/assistant_wrap.rs"]
+note = "Markdown line wrapping is implemented; interruptible transcript wrapping, finality projections and retention source maps are absent."
+
+[[file]]
+upstream = "src/ui/render_engine/build_checkpoint.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream BuildCheckpoint, tick, consume behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/footer_layout.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream FooterRows, Input, reservedBaseRows behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/frame_builder.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream FrameBody, SurfacePainter, TraceCounters behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/frame_cell_match.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream gridCellsEqual, gridSurfaceCellsEqual behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/frame_fixed_point.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream CandidatePreparation, CandidateResolution, FramePlan behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/frame_layout.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/render_engine/frame_layout.rs"]
+note = "Compact live footer layout is implemented; upstream measured frame placement, preserved-row geometry and viewport constraints are absent."
+
+[[file]]
+upstream = "src/ui/render_engine/frame_retention.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream RetainedTranscriptBody, TranscriptBodyDisposition, StableRetainCandidate behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/frame_scroll_plan.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream FrameDocumentAppendClear, FrameDocumentAppend, isEmpty behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/frame_surface.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream FrameCell, OwnerWritePolicy, FrameSurfaceError behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/paint_plan.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream CellOwner, FrameBand, empty behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/terminal_diff.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream ShadowCommitState, is_committed, FrameSinkWriteResult behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/transcript_blocks.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/render_engine/transcript_blocks.rs"]
+note = "Basic assistant/tool/notice entries render; upstream full/compact relationship projection and tool-result folding are absent."
+
+[[file]]
+upstream = "src/ui/render_engine/transcript_measure.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream WalkResult, walkText, nextCursorColForLine behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/ui_observer.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream NormalFrameInput, AlternateScreenInput, UiObserver behavior."
+
+[[file]]
+upstream = "src/ui/render_engine/viewport_selection.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream LineRef, resolve, HardLineStarts behavior."
+
+[[file]]
+upstream = "src/ui/render_request.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream Reason, ReasonSet, AnimationCandidate behavior."
+
+[[file]]
+upstream = "src/ui/resize_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/terminal/shell_runtime.rs", "crates/ofx-tui/src/shell/event_loop.rs"]
+note = "Native resize signaling and redraw exist; upstream frame-commit provenance and approval resize interlock are absent."
+
+[[file]]
+upstream = "src/ui/resize_tests.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream Harness, flush, driveResize behavior."
+
+[[file]]
+upstream = "src/ui/shell_runtime.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/terminal/shell_runtime.rs", "crates/ofx-tui/src/shell/mod.rs"]
+note = "Native terminal shell exists; upstream transcript frame state and full alternate-screen ownership are absent."
+
+[[file]]
+upstream = "src/ui/terminal/cursor_probe.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/terminal/cursor_probe.rs"]
+note = "One-shot cursor response parsing exists; upstream private/tagged probe synchronization, forwarded backlog and idle-timeout protocol are absent."
+
+[[file]]
+upstream = "src/ui/terminal/terminal.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/terminal/mod.rs", "crates/ofx-tui/src/terminal/shell_runtime.rs"]
+note = "Native terminal mode, layout and lifecycle exist; WASM geometry and full alternate-screen frame ownership are absent."
+
+[[file]]
+upstream = "src/ui/terminal/theme_detection.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/terminal/theme_detection.rs"]
+note = "Light/dark override, background probe and COLORFGBG fallback exist; upstream named user theme selection is absent."
+
+[[file]]
+upstream = "src/ui/terminal/theme_monitor.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/terminal/theme_monitor.rs"]
+note = "Native theme monitor exists; upstream complete frame and ownership integration is absent."
+
+[[file]]
+upstream = "src/ui/terminal/theme_protocol.zig"
+status = "ported"
+modules = ["crates/ofx-tui/src/terminal/theme_protocol.rs"]
+
+[[file]]
+upstream = "src/ui/terminal/wasm_terminal.zig"
+status = "not-applicable"
+modules = []
+note = "Upstream WASM terminal host bindings are excluded from the native Rust port by issue scope."
+
+[[file]]
+upstream = "src/ui/transcript/command_output_runtime.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream openCommandOutputDirtyEntryId, commandOutputDirtyEntryIdForLifecycle, CommandOutputLine behavior."
+
+[[file]]
+upstream = "src/ui/transcript/full_transcript_worker.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream prepared_cache_overscan_max_rows, prepared_cache_max_bytes, preparedWindowRequest behavior."
+
+[[file]]
+upstream = "src/ui/transcript/io.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream enableShadowVt, disableShadowVt, writeFrameBytes behavior."
+
+[[file]]
+upstream = "src/ui/transcript/painter.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream MeasuredHistoryEndpoint, MeasuredHistoryOrigin, MeasuredHistoryOriginProjection behavior."
+
+[[file]]
+upstream = "src/ui/transcript/resume_projection.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/transcript/history_replay.rs"]
+note = "Session history replay exists; complete retained-tail projection, lifecycle publication and structured diff rehydration are absent."
+
+[[file]]
+upstream = "src/ui/transcript/runtime.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream CommandOutputDisplayState, Styles, AssistantTurnSegments behavior."
+
+[[file]]
+upstream = "src/ui/transcript/runtime_tests.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream runtime tests behavior."
+
+[[file]]
+upstream = "src/ui/transcript/shimmer_runtime.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream ActivityPaintInput, ActivityPaintStyle, paintActivityIntoSurface behavior."
+
+[[file]]
+upstream = "src/ui/transcript/source_preparation.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream RetentionIdentity, TextExtent, clone behavior."
+
+[[file]]
+upstream = "src/ui/transcript/store.zig"
+status = "partial"
+modules = ["crates/ofx-tui/src/transcript/store.rs"]
+note = "Append and width-replay transcript storage is implemented; upstream retention rebasing, rewrite publication and stable lifecycle receipts are absent."
+
+[[file]]
+upstream = "src/ui/transcript/tool_group_projection.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream Projection, replaceSuffix, SummaryStyle behavior."
+
+[[file]]
+upstream = "src/ui/transcript/viewport_runtime.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream initViewport, initViewportWithReservedRows, reserveVisibleViewportRows behavior."
+
+[[file]]
+upstream = "src/ui/transcript/writer.zig"
+status = "todo"
+modules = []
+note = "No Rust implementation of upstream writeTranscriptBytes, writeTranscriptBytesFrom, writeTranscript behavior."

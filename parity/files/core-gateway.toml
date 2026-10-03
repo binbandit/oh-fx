@@ -1,0 +1,29 @@
+[[file]]
+upstream = "src/core/gateway/gateway_provider.zig"
+status = "todo"
+modules = []
+note = "Authenticated/public Vercel model catalog fetching, refresh and ownership are not implemented."
+
+[[file]]
+upstream = "src/core/gateway/model_catalog.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/model_catalog.rs"]
+note = "HTTP failure categories are implemented; upstream catalog fetching, public fallback, projection and picker catalog ownership are absent."
+
+[[file]]
+upstream = "src/core/gateway/model_catalog_metadata.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-config/src/model_capabilities.rs"]
+note = "Codex capabilities are parsed; Vercel catalog metadata conversion and public catalog capability projection are absent."
+
+[[file]]
+upstream = "src/core/gateway/provider_set.zig"
+status = "partial"
+modules = ["crates/ofx-app/src/app_bootstrap_runtime.rs"]
+note = "Custom and Codex provider construction exists; Vercel/Grok selection and deferred usage-provider dispatch are absent."
+
+[[file]]
+upstream = "src/core/gateway/provider_versions.zig"
+status = "partial"
+modules = ["crates/ofx-gateway/src/provider_versions.rs"]
+note = "Codex version resolution exists; the upstream provider-version interface for all built-in routes is absent."

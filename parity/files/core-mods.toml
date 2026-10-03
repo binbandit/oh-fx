@@ -1,0 +1,5 @@
+[[file]]
+upstream = "src/core/mods/registry.zig"
+status = "todo"
+modules = []
+note = "Missing registry implementation: upstream surface ToolRegistry, lookup, CommandRegistry, Match, matchExact; no dedicated Rust counterpart."
