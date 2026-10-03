@@ -128,7 +128,7 @@ impl ApprovalPrompt {
         let shown = visible && review.complete;
         let reviewed = match review.change_shown {
             Some(change_shown) => {
-                self.change_seen |= shown && change_shown;
+                self.change_seen |= visible && change_shown;
                 self.change_seen
             }
             None => self.see_rows(layout.cols, review, shown),
@@ -827,6 +827,43 @@ mod tests {
         let screen = test.screen();
         assert!(!screen.contains("line-00"), "{screen}");
         assert!(screen.contains("❯ 1  Apply once"), "{screen}");
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
+    }
+
+    #[test]
+    fn a_changed_line_seen_before_the_choices_fit_counts_once_they_do() {
+        let mut test = editing();
+        test.resize(12, 40);
+        let before = numbered_lines(1..=40);
+        let after = before.replacen("line-01", "line-00", 1);
+        test.deliver(file_request(
+            4,
+            "edit_file",
+            "notes.md",
+            Some(before.as_bytes()),
+            after.as_bytes(),
+        ));
+        assert!(!test.screen().contains("line-00"));
+        for _ in 0..3 {
+            press(&mut test, b"\x1b[5~");
+            test.screen();
+        }
+        let screen = test.screen();
+        assert!(screen.contains("      1 + line-00"), "{screen}");
+        assert!(screen.contains("· resize to review"), "{screen}");
+        for _ in 0..3 {
+            press(&mut test, b"\x1b[6~");
+            test.screen();
+        }
+        test.resize(12, 80);
+        let screen = test.screen();
+        assert!(!screen.contains("line-00"), "{screen}");
+        assert!(screen.contains("❯ 1  Apply once\n"), "{screen}");
         test.advance(ARMED_MS);
         press(&mut test, b"1");
         assert_eq!(
