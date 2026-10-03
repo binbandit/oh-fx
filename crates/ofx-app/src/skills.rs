@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_agent::{SkillContext, SkillContextFailure, SkillContextProvider};
 use ofx_config::{ContextLimitName, ContextLimitSource, ContextLimits, ProfilePaths, Settings};
-use ofx_contract::{BoxFuture, Notice, NoticeTone, SkillBinding};
+use ofx_contract::{BoxFuture, DEFAULT_MAX_TOOL_RESULT_BYTES, Notice, NoticeTone, SkillBinding};
 use ofx_skills::{
     ExplicitBinding, LoadNotice, RootPolicy, RootSpec, SkillCatalog, SkillDiscovery,
     SkillDiscoveryContext, SkillError, SkillInventory, SkillLoader, SkillSource,
     SymlinkAuthorities, build_skill_prompt,
 };
-use ofx_tools::SkillTool;
+use ofx_tools::{CapabilitySearch, SkillTool};
 use tokio_util::sync::CancellationToken;
 
 const MANAGED_DIRECTORY: &str = "skills";
@@ -94,6 +94,7 @@ struct Shared {
     policy: RootPolicy,
     limits: ContextLimits,
     tool: Arc<SkillTool>,
+    search: Arc<CapabilitySearch>,
     current: Mutex<Arc<SkillDiscovery>>,
 }
 
@@ -104,6 +105,7 @@ impl HostSkills {
         paths: Option<&ProfilePaths>,
         settings: &Settings,
         limits: &ContextLimits,
+        interactive: bool,
     ) -> Self {
         let home = home.map(|home| canonical(Path::new(home)));
         let managed_root = paths.map(|paths| canonical(&paths.config).join(MANAGED_DIRECTORY));
@@ -121,12 +123,22 @@ impl HostSkills {
         };
         let found = discovery.load_visible_skills(&policy);
         let tool = Arc::new(SkillTool::new(discovery.clone(), policy, *limits));
+        let search = Arc::new(
+            CapabilitySearch::new(
+                discovery.clone(),
+                policy,
+                *limits,
+                DEFAULT_MAX_TOOL_RESULT_BYTES,
+            )
+            .with_interactive_host(interactive),
+        );
         Self {
             shared: Arc::new(Shared {
                 discovery,
                 policy,
                 limits: *limits,
                 tool,
+                search,
                 current: Mutex::new(Arc::new(found)),
             }),
         }
@@ -134,6 +146,10 @@ impl HostSkills {
 
     pub(crate) fn tool(&self) -> Arc<SkillTool> {
         Arc::clone(&self.shared.tool)
+    }
+
+    pub(crate) fn search(&self) -> Arc<CapabilitySearch> {
+        Arc::clone(&self.shared.search)
     }
 
     pub(crate) fn current(&self) -> Arc<SkillDiscovery> {
@@ -306,6 +322,21 @@ pub(crate) fn rootless_skill_tool() -> Arc<SkillTool> {
         discovery,
         NO_ROOTS,
         ContextLimits::default(),
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn rootless_capability_search() -> Arc<CapabilitySearch> {
+    Arc::new(CapabilitySearch::new(
+        SkillDiscoveryContext {
+            workspace_root: None,
+            home: None,
+            managed_root: PathBuf::new(),
+            symlink_authorities: SymlinkAuthorities::default(),
+        },
+        NO_ROOTS,
+        ContextLimits::default(),
+        DEFAULT_MAX_TOOL_RESULT_BYTES,
     ))
 }
 
