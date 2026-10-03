@@ -25,6 +25,7 @@ use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline};
+use crate::skill_commands::is_install_command;
 use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
 
@@ -43,6 +44,7 @@ pub(crate) struct ControllerState {
     fast_mode: bool,
     config_pending: bool,
     pending_clear: Option<u64>,
+    pending_skill_installs: VecDeque<String>,
     received_prompts: u64,
     queue: VecDeque<Prompt>,
     permissions: PermissionRuntime,
@@ -360,6 +362,7 @@ impl Controller {
             setup,
             config_pending: false,
             pending_clear: None,
+            pending_skill_installs: VecDeque::new(),
             received_prompts: 0,
             queue: VecDeque::new(),
             context_notices: Arc::new(Mutex::new(notices)),
@@ -819,6 +822,9 @@ impl Controller {
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
             self.clear(first_kept_prompt);
         }
+        while let Some(text) = self.state.pending_skill_installs.pop_front() {
+            handle_command(&self.state, &text, Work::Idle);
+        }
     }
 }
 
@@ -848,6 +854,12 @@ fn run_deferred(
     work: Work,
     cancel: &CancellationToken,
 ) {
+    if let UiCommand::RunCommand { text } = &command {
+        if is_install_command(text) {
+            state.pending_skill_installs.push_back(text.to_owned());
+            return;
+        }
+    }
     let change = match command {
         UiCommand::RunCommand { text } => match handle_command(state, &text, work) {
             CommandEffect::None | CommandEffect::Compact | CommandEffect::OpenSessions => return,
@@ -1271,13 +1283,31 @@ mod tests {
             Self::spawn(home, setup, None)
         }
 
+        fn with_setup_observer(
+            home: tempfile::TempDir,
+            setup: AgentSetup,
+            observe: impl Fn(&UiEvent) + Send + Sync + 'static,
+        ) -> Self {
+            Self::spawn_observer(home, setup, None, observe)
+        }
+
         fn spawn(
             home: tempfile::TempDir,
             setup: AgentSetup,
             persistence: Option<Persistence>,
         ) -> Self {
+            Self::spawn_observer(home, setup, persistence, |_| {})
+        }
+
+        fn spawn_observer(
+            home: tempfile::TempDir,
+            setup: AgentSetup,
+            persistence: Option<Persistence>,
+            observe: impl Fn(&UiEvent) + Send + Sync + 'static,
+        ) -> Self {
             let (events_sender, events) = unbounded_channel();
             let emit: Emit = Arc::new(move |event| {
+                observe(&event);
                 let _ = events_sender.send(event);
             });
             let (commands, receiver) = unbounded_channel();
@@ -3839,6 +3869,146 @@ mod tests {
         let captured = Arc::clone(&events);
         let emit: Emit = Arc::new(move |event| captured.lock().unwrap().push(event));
         (home, Controller::new(setup, emit, None), events)
+    }
+
+    fn held_install_lock(
+        home: &tempfile::TempDir,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let locks = home.path().join("config/.skill-install-locks");
+        fs::create_dir_all(&locks).unwrap();
+        fs::set_permissions(&locks, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = fs::File::create(locks.join("install-pack")).unwrap();
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = wait.recv_timeout(Duration::from_secs(10));
+            drop(file);
+        });
+        (release, worker)
+    }
+
+    #[tokio::test]
+    async fn pending_install_keeps_active_turn_progress_and_cancellation_live() {
+        let gate = ofx_testkit::Gate::default();
+        let held = Reply::held_sse(&chat_text_events(&["during installation\n"])[..2]).after(&gate);
+        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["next"]))]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        write_skill(&home, "install-pack", "new-skill");
+        let source = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
+        let (release, worker) = held_install_lock(&home);
+        let mut harness = Harness::with_setup_observer(home, setup, move |event| {
+            if matches!(event, UiEvent::StatsRequested) {
+                gate.open();
+            }
+            if matches!(
+                event,
+                UiEvent::TurnFinished {
+                    outcome: TurnOutcome::Interrupted,
+                    ..
+                }
+            ) {
+                let _ = release.send(());
+            }
+        });
+        harness.submit("active");
+        harness
+            .until(|event| matches!(event, UiEvent::TurnStarted { .. }))
+            .await;
+        harness.command(&format!("/skills install {}", source.display()));
+        harness.command("/stats");
+        let during = harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        assert!(
+            notices(during).is_empty(),
+            "installation ran before the active operation settled: {during:?}"
+        );
+        let turn_id = harness.running_turn();
+        harness.submit("$new-skill next prompt");
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        let installed = harness.until(|event| matches!(event, UiEvent::Notice { notice } if notice.body == "Installed: new-skill")).await;
+        assert_eq!(
+            notice_body(installed),
+            [
+                format!("skills|Installing from {}...", source.display()),
+                "skills|Installed: new-skill".to_owned()
+            ]
+        );
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(
+            system_text(&server.requests()[1].json()).contains("<skill_content name=\"new-skill\"")
+        );
+        worker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_installs_preserve_fifo_and_compaction_cancellation() {
+        let server = tool_work_then_chat(held_summary(), &["next"]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        write_skill(&home, "install-pack", "new-skill");
+        write_skill(&home, "second-pack", "second-skill");
+        let first = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
+        let second = fs::canonicalize(home.path().join("workspace/second-pack")).unwrap();
+        let (release, worker) = held_install_lock(&home);
+        let mut harness = Harness::with_setup_observer(home, setup, move |event| {
+            if matches!(
+                event,
+                UiEvent::CompactionActivity {
+                    activity: CompactionActivity::Ended(CompactionEnd::Cancelled)
+                }
+            ) {
+                let _ = release.send(());
+            }
+        });
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.command("/compact");
+        harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::CompactionActivity {
+                        activity: CompactionActivity::Summarizing
+                    }
+                )
+            })
+            .await;
+        summary_requested(&server).await;
+        harness.command(&format!("/skills install {}", first.display()));
+        harness.command(&format!("/skills add {}", second.display()));
+        harness.command("/stats");
+        let during = harness
+            .until(|event| matches!(event, UiEvent::StatsRequested))
+            .await;
+        assert!(
+            notices(during).is_empty(),
+            "installation ran during compaction: {during:?}"
+        );
+        harness.submit("$new-skill and $second-skill next prompt");
+        harness.send(UiCommand::CancelCompaction);
+        assert_eq!(
+            activities(harness.until(compaction_settled).await),
+            [CompactionActivity::Ended(CompactionEnd::Cancelled)]
+        );
+        let installed = harness.until(|event| matches!(event, UiEvent::Notice { notice } if notice.body == "Installed: second-skill")).await;
+        assert_eq!(
+            notice_body(installed),
+            [
+                format!("skills|Installing from {}...", first.display()),
+                "skills|Installed: new-skill".to_owned(),
+                format!("skills|Installing from {}...", second.display()),
+                "skills|Installed: second-skill".to_owned(),
+            ]
+        );
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let request = system_text(&server.requests()[7].json());
+        assert!(request.contains("<skill_content name=\"new-skill\""));
+        assert!(request.contains("<skill_content name=\"second-skill\""));
+        worker.join().unwrap();
     }
 
     #[tokio::test]

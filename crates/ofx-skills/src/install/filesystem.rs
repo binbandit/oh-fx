@@ -70,13 +70,45 @@ pub(super) fn make_directory(parent: &OwnedFd, name: &OsStr, mode: Mode) -> io::
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static UNKNOWN_ENTRIES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn with_unknown_entries<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            UNKNOWN_ENTRIES.set(self.0);
+        }
+    }
+    let _reset = Reset(UNKNOWN_ENTRIES.replace(true));
+    run()
+}
+
 pub(super) fn entries(directory: &OwnedFd) -> io::Result<Vec<(std::ffi::OsString, FileType)>> {
     let mut result = Vec::new();
     for entry in Dir::read_from(directory)? {
         let entry = entry?;
         let bytes = entry.file_name().to_bytes();
         if bytes != b"." && bytes != b".." {
-            result.push((OsStr::from_bytes(bytes).to_owned(), entry.file_type()));
+            let kind = entry.file_type();
+            #[cfg(test)]
+            let kind = if UNKNOWN_ENTRIES.get() {
+                FileType::Unknown
+            } else {
+                kind
+            };
+            let name = OsStr::from_bytes(bytes);
+            let kind = if kind == FileType::Unknown {
+                FileType::from_raw_mode(
+                    fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)?.st_mode,
+                )
+            } else {
+                kind
+            };
+            result.push((name.to_owned(), kind));
         }
     }
     Ok(result)
