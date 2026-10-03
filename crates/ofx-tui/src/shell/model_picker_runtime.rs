@@ -71,7 +71,10 @@ impl Shell<'_> {
         }
     }
 
-    pub(super) fn catalog_received(&mut self, catalog: ModelCatalog) {
+    pub(super) fn catalog_received(&mut self, provider: &str, catalog: ModelCatalog) {
+        if provider != self.options.provider {
+            return;
+        }
         self.catalog = match catalog {
             ModelCatalog::Listed { models, source } => CatalogLoad::Listed { models, source },
             ModelCatalog::Failed { retry } => CatalogLoad::Failed(retry),
@@ -119,6 +122,18 @@ impl Shell<'_> {
         self.composer.clear();
         self.restore_model_draft();
         true
+    }
+
+    pub(super) fn provider_selected(&mut self, provider: String) {
+        self.options.provider = provider;
+        self.catalog = CatalogLoad::Idle;
+        if let Some(menu) = &mut self.model_menu {
+            *menu = ModelMenu::default();
+            menu.set_query(self.composer.text());
+        }
+        if self.model_menu.is_some() || self.model_query().is_some() {
+            self.request_catalog(false);
+        }
     }
 
     fn restore_model_draft(&mut self) {

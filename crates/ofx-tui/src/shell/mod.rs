@@ -17,6 +17,7 @@ mod lifecycle_tests;
 pub(crate) mod model_menu;
 mod model_picker_runtime;
 mod picker_state;
+mod provider_picker_runtime;
 pub(crate) mod question_prompt;
 mod session_picker_runtime;
 mod settings_menu_runtime;
@@ -53,6 +54,7 @@ use input_selection_runtime::ClipboardRuntime;
 use leading_whitespace::LeadingWhitespace;
 use model_menu::{CatalogLoad, ModelMenu};
 use picker_state::ModelFlow;
+use provider_picker_runtime::ProviderColumn;
 use question_prompt::QuestionPrompt;
 use session_picker_runtime::SessionPicker;
 use settings_menu_runtime::SettingsMenu;
@@ -114,6 +116,8 @@ pub struct SlashCommandSpec {
 pub struct ShellOptions {
     pub version: String,
     pub model: String,
+    pub provider: String,
+    pub providers: Vec<String>,
     pub permission_mode: PermissionMode,
     pub full_access_warning: bool,
     pub workspace_label: String,
@@ -247,6 +251,7 @@ pub(crate) struct Shell<'a> {
     model_flow: ModelFlow,
     model_draft: Option<ComposerStash>,
     catalog: CatalogLoad,
+    provider_column: ProviderColumn,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
     events: UiEventReceiver,
@@ -450,6 +455,7 @@ impl<'a> Shell<'a> {
             model_flow: ModelFlow::default(),
             model_draft: None,
             catalog: CatalogLoad::default(),
+            provider_column: ProviderColumn::default(),
             yolo_warning,
             picker: None,
             events,
@@ -746,7 +752,12 @@ impl<'a> Shell<'a> {
         if self.approval.is_some() || self.question.is_some() {
             return Vec::new();
         }
-        self.model_column_band(input_extra, banner_rows)
+        let model = self.model_column_band(input_extra, banner_rows);
+        if model.is_empty() {
+            self.provider_column_band(input_extra, banner_rows)
+        } else {
+            model
+        }
     }
 
     fn menu_budget(&self, max_rows: usize) -> usize {
@@ -1295,6 +1306,8 @@ mod tests {
         ShellOptions {
             version: "0.1.0".to_owned(),
             model: "m".to_owned(),
+            provider: "local".to_owned(),
+            providers: Vec::new(),
             permission_mode: PermissionMode::Auto,
             full_access_warning: false,
             workspace_label: "proj\x07".to_owned(),

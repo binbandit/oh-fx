@@ -110,6 +110,7 @@ impl Shell<'_> {
             self.file_picker_after_edit();
             self.model_column_after_edit(preserved);
             self.help_menu_edited();
+            self.provider_column_after_edit();
         }
         self.sync_settings_menu(edited);
         self.sync_skills_menu();
@@ -268,6 +269,7 @@ impl Shell<'_> {
             || self.cancel_model_menu()
             || self.cancel_skills_menu()
             || self.dismiss_model_column()
+            || self.dismiss_provider_column()
             || self.dismiss_file_picker()
         {
             self.gestures.disarm_escape_clear();
@@ -366,6 +368,8 @@ impl Shell<'_> {
                     if !intent.extend_selection
                         && self.composer.selection().is_none()
                         && self.step_back_model_column() => {}
+                MoveKind::CharacterRight
+                    if !intent.extend_selection && self.choose_provider_at_end() => {}
                 _ => {
                     self.composer.move_cursor(intent);
                 }
@@ -467,7 +471,8 @@ impl Shell<'_> {
             self.open_model_menu();
             return;
         }
-        if self.submit_model_column()
+        if self.submit_provider_column()
+            || self.submit_model_column()
             || self.submit_explicit_model()
             || self.model_draft.is_some()
             || self.composer.replace_backslash_before_cursor_with_newline()
@@ -490,7 +495,7 @@ impl Shell<'_> {
             if self.autocomplete_file_picker() == InsertResult::LimitExceeded {
                 self.report_limit();
             }
-        } else {
+        } else if !self.autocomplete_provider_column() {
             self.autocomplete_model_column();
         }
     }
@@ -506,6 +511,7 @@ impl Shell<'_> {
             || self.move_skills_menu(rows)
             || self.navigate_file_picker(delta)
             || self.navigate_model_column(delta)
+            || self.navigate_provider_column(delta)
             || (self.turn.is_some() && self.bare_model_command())
     }
 

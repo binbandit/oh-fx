@@ -1045,6 +1045,8 @@ impl Presenter {
             | UiEvent::ModelSelected { .. }
             | UiEvent::SessionTitleChanged { .. }
             | UiEvent::ModelCatalog { .. }
+            | UiEvent::ProviderPicker { .. }
+            | UiEvent::ProviderSelected { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
             | UiEvent::StatuslineMenuOpened

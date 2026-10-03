@@ -52,9 +52,14 @@ use crate::output_contracts::StatusSnapshot;
 use crate::skills::HostSkills;
 use crate::tool_set::{self, ToolHooks};
 
+mod provider_runtime;
+
+pub(crate) use provider_runtime::{provider_label, provider_names};
+
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
 
+#[derive(Clone)]
 pub struct Profile {
     workspace_root: PathBuf,
     home: Option<OsString>,
@@ -165,10 +170,16 @@ pub struct AgentSetup {
     skills: Arc<HostSkills>,
     context_notices: Vec<String>,
     mode: Option<ActiveMode>,
+    switchboard: Option<Switchboard>,
     config: AgentConfig,
 }
 
-struct Route {
+struct Switchboard {
+    profile: Profile,
+    endpoints: SubscriptionEndpoints,
+}
+
+pub(crate) struct Route {
     provider: Arc<dyn ModelProvider>,
     reviewer: Arc<dyn ReviewTransport>,
     title_model: Option<&'static str>,
@@ -286,6 +297,7 @@ impl Profile {
         cancel: &CancellationToken,
     ) -> Result<AgentSetup, ConnectError> {
         let refreshes = interactive.then(Arc::default);
+        let switchboard = interactive.then(|| self.switchboard(launch.endpoints.clone()));
         let route = self
             .route(launch.model, launch.endpoints, refreshes.clone(), cancel)
             .await?;
@@ -375,6 +387,7 @@ impl Profile {
             skills,
             context_notices,
             mode: launch.mode,
+            switchboard,
             config,
         })
     }
@@ -459,31 +472,7 @@ impl Profile {
             self.settings.selected_model(connection, model, &lookup)
         })?;
         let configured_model = self.settings.selected_model(connection, None, &lookup).ok();
-        let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
-        let uses_tls = uses_tls(&resolved.chat_url);
-        let provider: Arc<dyn ModelProvider> = Arc::new(
-            ChatCompletionsProvider::new(resolved, &user_agent())
-                .map_err(ConnectError::InvalidConnection)?,
-        );
-        let definition = Arc::new(connection.clone());
-        let limits = Arc::clone(&definition);
-        let reviewer = ChatCompletionsReviewTransport::new(
-            Arc::clone(&provider),
-            connection.reviewer_model().map(str::to_owned),
-            move |model| limits.capabilities(model).max_output_tokens,
-        );
-        Ok(Route {
-            provider,
-            reviewer: Arc::new(reviewer),
-            title_model: None,
-            models: ModelSource::Connection(definition),
-            connection: Some(connection.clone()),
-            model: model.map_err(ConnectError::InvalidModel)?,
-            configured_model,
-            source: CredentialSource::Configured,
-            account_id: None,
-            uses_tls,
-        })
+        connection_route(connection, model, configured_model)
     }
 
     async fn codex_route(
@@ -499,6 +488,18 @@ impl Profile {
         })?
         .map_err(ConnectError::InvalidModel)?;
         let configured_model = self.settings.selected_codex_model(None, lookup).ok();
+        self.subscription_route(model, configured_model, endpoints, refreshes, cancel)
+            .await
+    }
+
+    async fn subscription_route(
+        &self,
+        model: String,
+        configured_model: Option<String>,
+        endpoints: SubscriptionEndpoints,
+        refreshes: Option<Arc<DetachedRefreshes>>,
+        cancel: &CancellationToken,
+    ) -> Result<Route, ConnectError> {
         let uses_tls = uses_tls(&endpoints.codex.responses);
         let subscription = codex_subscription(
             self.paths.as_ref(),
@@ -579,6 +580,39 @@ fn select_model(
         Some(requested) if requested.to_str().is_none() => Ok(Err(requested.as_bytes().to_vec())),
         requested => select(requested.and_then(OsStr::to_str)).map(Ok),
     }
+}
+
+fn connection_route(
+    connection: &ProviderDefinition,
+    model: Result<String, Vec<u8>>,
+    configured_model: Option<String>,
+) -> Result<Route, ConnectError> {
+    let lookup = |name: &str| env::var(name).ok();
+    let resolved = connection.resolve(&lookup, env::home_dir().as_deref())?;
+    let uses_tls = uses_tls(&resolved.chat_url);
+    let provider: Arc<dyn ModelProvider> = Arc::new(
+        ChatCompletionsProvider::new(resolved, &user_agent())
+            .map_err(ConnectError::InvalidConnection)?,
+    );
+    let definition = Arc::new(connection.clone());
+    let limits = Arc::clone(&definition);
+    let reviewer = ChatCompletionsReviewTransport::new(
+        Arc::clone(&provider),
+        connection.reviewer_model().map(str::to_owned),
+        move |model| limits.capabilities(model).max_output_tokens,
+    );
+    Ok(Route {
+        provider,
+        reviewer: Arc::new(reviewer),
+        title_model: None,
+        models: ModelSource::Connection(definition),
+        connection: Some(connection.clone()),
+        model: model.map_err(ConnectError::InvalidModel)?,
+        configured_model,
+        source: CredentialSource::Configured,
+        account_id: None,
+        uses_tls,
+    })
 }
 
 fn connection_provider(connection: Option<&ProviderDefinition>) -> ProviderId {

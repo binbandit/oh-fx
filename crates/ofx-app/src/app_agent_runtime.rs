@@ -39,6 +39,8 @@ use crate::user_settings::{self, unsaved_notice};
 use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
 
+mod provider_switch;
+
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 const CONTEXT_TOPIC: &str = "context";
@@ -306,12 +308,19 @@ pub(crate) struct Controller {
 
 struct CatalogFetch {
     source: ModelSource,
+    provider: String,
     pending: Option<BoxFuture<'static, ModelCatalog>>,
     waiting: Vec<ModelChange>,
     settings: Option<SettingsUpdate>,
 }
 
 impl CatalogFetch {
+    fn retarget(&mut self, source: ModelSource, provider: &str) {
+        self.source = source;
+        provider.clone_into(&mut self.provider);
+        self.pending = None;
+    }
+
     fn request(&mut self) {
         if self.pending.is_none() {
             let source = self.source.clone();
@@ -384,7 +393,8 @@ impl CatalogFetch {
         if let Some(update) = self.settings.take() {
             state.show_settings(update, listed(&catalog));
         }
-        state.emit(UiEvent::ModelCatalog { catalog });
+        let provider = self.provider.clone();
+        state.emit(UiEvent::ModelCatalog { provider, catalog });
     }
 }
 
@@ -434,6 +444,7 @@ impl Controller {
                 .with_steering(Arc::clone(&state.worker)),
             catalog: CatalogFetch {
                 source: state.setup.models_source(),
+                provider: state.setup.provider().label().to_owned(),
                 pending: None,
                 waiting: Vec::new(),
                 settings: None,
@@ -525,6 +536,7 @@ impl Controller {
                     }
                 }
                 UiCommand::ListModels => self.catalog.request(),
+                UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
                 UiCommand::SelectModel {
                     model,
                     effort,
@@ -1080,6 +1092,7 @@ fn run_deferred(
             fast_mode,
         }),
         UiCommand::ListModels => return catalog.request(),
+        UiCommand::SelectProvider { .. } => return state.provider_busy(),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
         UiCommand::StepSetting { setting, delta } => {
@@ -2937,7 +2950,7 @@ mod tests {
     async fn listed_catalog(harness: &mut Harness) -> ModelCatalog {
         harness.send(UiCommand::ListModels);
         match harness.until(catalog_event).await.last() {
-            Some(UiEvent::ModelCatalog { catalog }) => catalog.clone(),
+            Some(UiEvent::ModelCatalog { catalog, .. }) => catalog.clone(),
             other => panic!("{other:?}"),
         }
     }
