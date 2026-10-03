@@ -41,9 +41,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/docker_run.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-mcp/src/docker_run.rs"]
-note = "Direct docker run detection, the private cidfile and container cleanup exist; reading the cidfile checks its metadata and then reopens the path, which accepts a hardlink and races a symlink swap, where upstream rejects hardlinks and validates the opened regular file without following the final symlink."
+note = "Launch preparation, the private cidfile, and cleanup match upstream, including its no-follow, single-link regular-file read of the cidfile; skipped and failed cleanups write no trace line, since oh-fx has no trace log yet."
 
 [[file]]
 upstream = "src/core/mcp/elicitation.zig"
