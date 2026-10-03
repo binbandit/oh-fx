@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use ofx_config::{MaxTokensParameter, ToolChoiceMode};
 use ofx_contract::{ChatMessage, FinishReason, ProviderOptions, ToolChoice, ToolSpec};
-use ofx_testkit::{FakeServer, Reply, chat_text_events};
+use ofx_testkit::{FakeServer, RefusedPort, Reply, chat_text_events};
 
 use super::*;
 use crate::chat_completions_protocol::Selection;
@@ -230,6 +230,7 @@ async fn chat_completions_reasoning_presentation_checks_cancellation_before_cont
                 }
             }
             StreamEvent::TextDelta { .. } => content += 1,
+            StreamEvent::Admitted => {}
         };
         let outcome = consume_wire(&wire, wire.len(), Limits::default(), &mut sink, &cancel).await;
         if cancel_on_reasoning {
@@ -524,6 +525,35 @@ async fn portkey_connections_send_configured_headers_and_the_exact_body() {
         r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hi"}]}"#
     );
     assert_eq!(measured.as_deref(), Some(&*request.body_text()));
+}
+
+#[tokio::test]
+async fn every_request_is_admitted_once_before_it_connects() {
+    let request = test_request();
+    let refused = RefusedPort::reserve();
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let outcome = portkey_at(&refused.base_url())
+        .stream(&request.borrowed(), &mut sink, &CancellationToken::new())
+        .await;
+    assert!(outcome.is_err());
+    assert_eq!(events, [StreamEvent::Admitted]);
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["ok"]))]);
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let outcome = portkey(&server)
+        .stream(&request.borrowed(), &mut sink, &CancellationToken::new())
+        .await;
+    assert!(outcome.is_ok());
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Admitted,
+            StreamEvent::TextDelta {
+                text: "ok".to_owned()
+            }
+        ]
+    );
 }
 
 #[tokio::test]

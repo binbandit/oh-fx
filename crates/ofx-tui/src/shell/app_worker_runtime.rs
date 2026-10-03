@@ -231,6 +231,25 @@ impl Shell<'_> {
         true
     }
 
+    pub(super) fn pause_connectivity_wait(&mut self) -> bool {
+        let Some(turn) = self.turn.as_mut() else {
+            return false;
+        };
+        if turn.pause_requested {
+            return true;
+        }
+        let waiting = turn
+            .recovery
+            .as_ref()
+            .is_some_and(RecoveryStatus::is_connectivity_wait);
+        let Some(turn_id) = turn.turn_id.filter(|_| waiting) else {
+            return false;
+        };
+        turn.pause_requested = true;
+        self.send(UiCommand::PauseRecovery { turn_id });
+        true
+    }
+
     pub(super) fn refresh_recovery_status(&mut self, now_ms: i64) {
         let Some(turn) = self.turn.as_mut() else {
             return;
@@ -346,6 +365,7 @@ impl Shell<'_> {
         }
         self.turn = None;
         self.compaction = None;
+        self.kept_recovery = None;
         self.dismiss_approval();
         self.dismiss_question();
         self.composer.reset_for_session();
@@ -460,6 +480,7 @@ impl Shell<'_> {
     }
 
     fn finish_visible_turn(&mut self, mut turn: ActiveTurn, outcome: TurnOutcome) {
+        self.kept_recovery = turn.recovery.take().filter(RecoveryStatus::is_terminal);
         if outcome != TurnOutcome::Interrupted {
             let mut events = Vec::new();
             turn.markdown.flush(&mut events);
@@ -504,6 +525,7 @@ impl Shell<'_> {
         turn.turn_id = submission.turn_id;
         let text = submission.prompt.clone();
         self.turn = Some(turn);
+        self.kept_recovery = None;
         self.push_entry(Entry::UserTurn { text });
     }
 
