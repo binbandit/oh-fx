@@ -126,7 +126,17 @@ impl Observed {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Seen {
+    pub(super) fingerprint: Fingerprint,
+    pub(super) current_layout: bool,
+}
+
 pub(crate) fn fingerprint(sessions: &PrivateDir, id: &str) -> Option<Fingerprint> {
+    observe(sessions, id).map(|seen| seen.fingerprint)
+}
+
+pub(super) fn observe(sessions: &PrivateDir, id: &str) -> Option<Seen> {
     if !is_valid_session_id(id) {
         return None;
     }
@@ -156,13 +166,20 @@ pub(crate) fn fingerprint(sessions: &PrivateDir, id: &str) -> Option<Fingerprint
         None => None,
     };
     let after = stamp(sessions, id).ok()??;
-    (after == directory).then(|| {
-        Observed {
+    let [manifest, log, authority, pending_authority, display] = files;
+    let current_layout = manifest.is_some()
+        && log.is_some()
+        && authority.is_none()
+        && pending_authority.is_none()
+        && display.is_none();
+    (after == directory).then(|| Seen {
+        fingerprint: Observed {
             directory,
             files,
             child,
         }
-        .digest()
+        .digest(),
+        current_layout,
     })
 }
 

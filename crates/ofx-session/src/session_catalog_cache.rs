@@ -139,12 +139,12 @@ impl CachedCatalog {
         self.index.len()
     }
 
-    fn contains(&self, id: &str) -> bool {
-        self.index.contains_key(id)
+    fn row(&self, id: &str) -> Option<&Row> {
+        Some(&self.rows[*self.index.get(id)?])
     }
 
     fn reuse(&self, id: &str, stamp: &Fingerprint) -> Option<Reuse> {
-        let row = &self.rows[*self.index.get(id)?];
+        let row = self.row(id)?;
         if &row.fingerprint != stamp {
             return None;
         }

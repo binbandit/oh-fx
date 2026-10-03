@@ -457,3 +457,54 @@ fn rows_oh_fx_cannot_list_are_classified_again_and_excluded_rows_stay_hidden() {
             .is_none_or(|summary| summary.title.is_none())
     }));
 }
+
+fn inode(sessions: &Sessions) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(sessions.path(CATALOG_FILE)).unwrap().ino()
+}
+
+#[test]
+fn rows_for_sessions_outside_the_current_layout_are_classified_again() {
+    let sessions = Sessions::new();
+    sessions.seed("current", 1);
+    sessions.seed("stray", 1);
+    fs::write(sessions.path("stray/display.json"), "{}").unwrap();
+    fs::create_dir(sessions.path("upgraded")).unwrap();
+    fs::set_permissions(sessions.path("upgraded"), fs::Permissions::from_mode(0o700)).unwrap();
+    for (name, body) in [
+        ("session.json", "{\"schema_version\":3}"),
+        ("events.jsonl", ""),
+        ("authority.json", "{}"),
+    ] {
+        fs::write(sessions.path(&format!("upgraded/{name}")), body).unwrap();
+    }
+    sessions.scan(true);
+    let mut rows = sessions.cached().rows;
+    let upgraded = Row {
+        summary: visible("upgraded", [0; 32])
+            .summary
+            .map(|summary| RowSummary {
+                title: Some("Untitled session".to_owned()),
+                flags: 0,
+                created_at_ms: 1,
+                updated_at_ms: 9_999,
+                history_len: 2,
+                ..summary
+            }),
+        ..visible("upgraded", fingerprint(&sessions.dir, "upgraded").unwrap())
+    };
+    rows.push(upgraded);
+    sessions.write_catalog(&rows);
+    let listed = sessions.scan(true);
+    assert_eq!(
+        Sessions::titles(&listed),
+        [("current", None), ("stray", None)]
+    );
+    assert_eq!(listed.skipped_invalid, 1);
+    let written = inode(&sessions);
+    let again = sessions.scan(true);
+    assert_eq!(Sessions::titles(&again), Sessions::titles(&listed));
+    assert_eq!(again.skipped_invalid, 1);
+    assert_eq!(inode(&sessions), written);
+    assert_eq!(sessions.cached().count(), 3);
+}
