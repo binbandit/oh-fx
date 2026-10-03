@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use ofx_contract::BoxFuture;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, Sleep, Timeout};
@@ -17,18 +18,21 @@ pub(crate) fn sleep(duration: Duration) -> Sleep {
     tokio::time::sleep(duration)
 }
 
-pub(crate) fn spawn<F>(future: F) -> JoinHandle<F::Output>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    tokio::spawn(future)
+pub(crate) fn spawn(future: impl Future<Output = ()> + Send + 'static) -> JoinHandle<()> {
+    spawn_task(Box::pin(future))
 }
 
-pub(crate) fn spawn_on<F>(runtime: &Handle, future: F) -> JoinHandle<F::Output>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    runtime.spawn(future)
+pub(crate) fn spawn_on(
+    runtime: &Handle,
+    future: impl Future<Output = ()> + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_task_on(runtime, Box::pin(future))
+}
+
+fn spawn_task(task: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    tokio::spawn(task)
+}
+
+fn spawn_task_on(runtime: &Handle, task: BoxFuture<'static, ()>) -> JoinHandle<()> {
+    runtime.spawn(task)
 }

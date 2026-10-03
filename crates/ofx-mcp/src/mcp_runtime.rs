@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 
 use ofx_contract::{DynamicTools, Tool};
-use tokio::task::JoinSet;
+use tokio::task::JoinHandle;
 
 use crate::mcp_contract::{ConfigSource, ProfileConfigWarning, WorkspaceAdmission};
 use crate::native_config::NativeConfigLoad;
@@ -13,6 +13,7 @@ use crate::project_config::WorkspaceDiagnostic;
 use crate::server_lifecycle::{Server, ServerStatus};
 use crate::server_transport::ConnectOptions;
 use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
+use crate::timing::spawn;
 use crate::tool_mcp_registry::{SchemaLimits, publish_tools};
 use crate::tool_names::ToolNames;
 use crate::transport::ShutdownMode;
@@ -156,15 +157,15 @@ enum Step {
     Stop(ShutdownMode),
 }
 
-pub struct Settling(JoinSet<()>);
+pub struct Settling(Vec<JoinHandle<()>>);
 
 impl Settling {
     fn all(steps: impl Iterator<Item = (Arc<Server>, Step)>) -> Self {
-        let mut tasks = JoinSet::new();
-        for (server, step) in steps {
-            tasks.spawn(settle(server, step));
-        }
-        Self(tasks)
+        Self(
+            steps
+                .map(|(server, step)| spawn(settle(server, step)))
+                .collect(),
+        )
     }
 }
 
@@ -172,12 +173,20 @@ impl Future for Settling {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
-        loop {
-            match self.0.poll_join_next(context) {
-                Poll::Ready(Some(_)) => {}
-                Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Pending => return Poll::Pending,
+        while let Some(task) = self.0.last_mut() {
+            if Pin::new(task).poll(context).is_pending() {
+                return Poll::Pending;
             }
+            self.0.pop();
+        }
+        Poll::Ready(())
+    }
+}
+
+impl Drop for Settling {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
         }
     }
 }
