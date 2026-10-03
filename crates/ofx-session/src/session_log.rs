@@ -64,7 +64,8 @@ struct OwnedSessionDir {
 
 impl OwnedSessionDir {
     fn acquire(dir: PrivateDir, lock_deadline: Duration) -> Result<Self, SessionError> {
-        let lock = lock_with_deadline(&dir, SESSION_LOCK_FILE, lock_deadline)?;
+        let lock = lock_with_deadline(&dir, SESSION_LOCK_FILE, lock_deadline)?
+            .ok_or(SessionError::SessionBusy)?;
         let previous_owner_died = entry_exists(&dir, OWNER_LIVE_FILE).unwrap_or(false);
         let marker = format!(
             "{{\"pid\":{},\"opened_at_ms\":{}}}\n",

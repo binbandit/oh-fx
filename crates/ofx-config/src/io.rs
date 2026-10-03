@@ -112,6 +112,10 @@ impl PrivateDir {
         Ok(Some(directory))
     }
 
+    pub fn ensure_private(&self) -> Result<(), DurableError> {
+        make_private_directory(&self.fd)
+    }
+
     pub fn owner_writable(&self) -> bool {
         fs::fstat(&self.fd).is_ok_and(|stat| permissions(&stat).contains(Mode::WUSR))
     }
@@ -498,6 +502,9 @@ mod tests {
         PrivateDir::open_existing(&path).unwrap().unwrap();
         assert_eq!(mode(&path), 0o755);
         PrivateDir::open_existing_private(&path).unwrap().unwrap();
+        assert_eq!(mode(&path), 0o700);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750)).unwrap();
+        directory.ensure_private().unwrap();
         assert_eq!(mode(&path), 0o700);
         assert!(
             PrivateDir::open_existing(&root.path().join("missing/oh-fx"))

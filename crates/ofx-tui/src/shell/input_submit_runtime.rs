@@ -1,6 +1,6 @@
 use ofx_contract::UiCommand;
 
-use super::{MAX_PROMPT_HISTORY, Shell, SlashCommandSpec, Submission, SubmissionState};
+use super::{Shell, SlashCommandSpec, Submission, SubmissionState};
 use crate::output::compaction_activity::CompactionStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,8 +103,8 @@ impl Shell<'_> {
         match classify(&text, &self.options.commands) {
             Submit::Empty => self.composer.clear(),
             Submit::Command(command) => {
-                self.composer.record_history(MAX_PROMPT_HISTORY);
                 self.composer.clear();
+                self.record_command_history(&command);
                 let requests_compaction =
                     !self.working() && compacts(&self.options.commands, &command);
                 self.send(UiCommand::RunCommand { text: command });
@@ -113,7 +113,7 @@ impl Shell<'_> {
                 }
             }
             Submit::Prompt(prompt) => {
-                self.composer.record_history(MAX_PROMPT_HISTORY);
+                self.record_prompt_history();
                 self.composer.clear();
                 self.outstanding.push_back(Submission {
                     prompt: prompt.clone(),
@@ -124,6 +124,7 @@ impl Shell<'_> {
                 self.submitted_prompts += 1;
                 self.send(UiCommand::Submit { prompt });
                 self.promote_next();
+                self.save_accepted_input(&text);
             }
         }
     }

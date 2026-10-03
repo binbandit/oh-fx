@@ -100,6 +100,13 @@ impl<'a> Fields<'a> {
         string(self.required(key)?)
     }
 
+    pub(crate) fn text(&mut self, key: &str) -> Option<Cow<'a, str>> {
+        match self.required(key)? {
+            Json::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
     pub(crate) fn unsigned(&mut self, key: &str) -> Option<u64> {
         self.required(key)?.as_u64()
     }

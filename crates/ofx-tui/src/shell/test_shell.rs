@@ -11,7 +11,10 @@ use ofx_testkit::PtyPair;
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::termios::Winsize;
 
-use super::{FOOTER_ROWS, Setup, Shell, ShellOptions, SlashCommandSpec, UiEventSender, ui_channel};
+use super::{
+    FOOTER_ROWS, PromptHistory, Setup, Shell, ShellOptions, SlashCommandSpec, UiEventSender,
+    ui_channel,
+};
 use crate::host::Clipboard;
 use crate::input::{COMPOSER_INPUT_LIMIT_BYTES, TerminalInput};
 use crate::terminal::signal_pipe::SignalPipe;
@@ -252,6 +255,7 @@ fn options() -> ShellOptions {
             spec("/quit", &["/exit"], 0),
         ],
         command_categories: vec!["General".to_owned(), "Model".to_owned()],
+        prompt_history: PromptHistory::enabled(Vec::new(), |_| Ok(())),
     }
 }
 
