@@ -19,6 +19,8 @@ pub(crate) struct Profile {
     pub(crate) workspace: io::Result<PathBuf>,
     pub(crate) endpoints: SubscriptionEndpoints,
     pub(crate) lookup: fn(&str) -> Option<String>,
+    pub(crate) grok: ofx_auth::GrokEndpoints,
+    pub(crate) grok_models: ofx_gateway::GrokModelsEndpoints,
 }
 
 impl Profile {
@@ -28,6 +30,8 @@ impl Profile {
             workspace: env::current_dir().and_then(fs::canonicalize),
             endpoints: SubscriptionEndpoints::default(),
             lookup: |name| env::var(name).ok(),
+            grok: ofx_auth::GrokEndpoints::default(),
+            grok_models: ofx_gateway::GrokModelsEndpoints::default(),
         }
     }
 
@@ -40,6 +44,17 @@ impl Profile {
             paths.data.clone(),
             &ofx_app::user_agent(),
             self.endpoints.chatgpt.clone(),
+        )
+    }
+    pub(crate) fn grok_oauth(&self) -> Result<ofx_auth::GrokOAuth, ofx_auth::GrokError> {
+        let paths = self
+            .paths
+            .as_ref()
+            .ok_or(ofx_auth::GrokError::CredentialStorageUnavailable)?;
+        ofx_auth::GrokOAuth::new(
+            paths.data.clone(),
+            &ofx_app::user_agent(),
+            self.grok.clone(),
         )
     }
 }
@@ -139,6 +154,60 @@ pub(crate) async fn activate_codex(
         .ok_or_else(|| detail("target model catalog is empty"))?;
     save_selection(paths, model).await?;
     Ok(Activation::Selected { signed_in })
+}
+
+pub(crate) async fn activate_grok(profile: &Profile) -> Result<(), ActivationFailure> {
+    let workspace = profile
+        .workspace
+        .as_ref()
+        .map_err(|_| ActivationFailure::Fatal("WorkspaceUnavailable"))?;
+    let paths = profile
+        .paths
+        .as_ref()
+        .ok_or_else(|| detail(SETTINGS_UNAVAILABLE))?;
+    let settings = load_settings(paths, workspace, &profile.lookup)?;
+    let oauth = profile
+        .grok_oauth()
+        .map_err(|error| detail(ofx_auth::grok_login_failure_detail(error)))?;
+    let access = ofx_auth::prepare_grok_credential(&oauth, &CancellationToken::new())
+        .await
+        .map_err(|error| {
+            detail(format!(
+                "{}: {}",
+                ofx_auth::GROK_SOURCE_LABEL,
+                error.notice()
+            ))
+        })?
+        .ok_or_else(|| detail("Grok credential is unavailable"))?;
+    let account = access.account_id().to_owned();
+    let credential = CatalogCredential::new(access.into_token(), account);
+    let catalog = ofx_gateway::GrokModelCatalog::new(
+        &ofx_app::user_agent(),
+        profile.grok_models.clone(),
+        Some(paths.cache.clone()),
+    )
+    .map_err(|_| detail("Grok model catalog is unavailable"))?;
+    let models = catalog
+        .fetch(&credential, &CancellationToken::new())
+        .await
+        .map_err(|error| {
+            detail(format!(
+                "could not load the target model catalog ({})",
+                error.label()
+            ))
+        })?;
+    let ids: Vec<String> = models.into_iter().map(|model| model.id).collect();
+    let model = select_catalog_model(&ids, settings.saved_model(&ofx_config::ProviderId::Grok))
+        .ok_or_else(|| detail("target model catalog is empty"))?;
+    let paths = paths.clone();
+    let model = model.to_owned();
+    tokio::task::spawn_blocking(move || {
+        ofx_config::save_provider_model(&paths, &ofx_config::ProviderId::Grok, &model)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .ok_or_else(|| detail("failed to save provider selection"))
 }
 
 fn load_settings(

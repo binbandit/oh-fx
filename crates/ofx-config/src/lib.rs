@@ -31,6 +31,6 @@ pub use paths::ProfilePaths;
 pub use settings_store::{
     AllowlistResetScope, CommitOutcome, LegacyCleanup, PermissionPatch, SettingsWriteError,
     SettingsWriteFailure, save_codex_model, save_model_preference, save_permission_mode,
-    save_permission_patch, save_yolo_acknowledged,
+    save_permission_patch, save_provider_model, save_yolo_acknowledged,
 };
 pub use strict_json::{StrictJsonError, parse as parse_strict_json};

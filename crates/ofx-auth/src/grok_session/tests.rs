@@ -2,6 +2,8 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 use super::*;
+use crate::session_presence::Presence;
+use crate::subscription_session::DeleteOutcome;
 
 fn session() -> Session {
     Session {

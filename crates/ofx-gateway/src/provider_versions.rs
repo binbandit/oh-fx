@@ -11,6 +11,22 @@ use crate::client::{BoundedFailure, bounded_get};
 
 const CACHE_DIRECTORY: &str = "provider-versions";
 const CODEX_CACHE_FILE: &str = "codex.json";
+const GROK_CACHE_FILE: &str = "grok.json";
+
+#[derive(Clone, Copy)]
+enum ProviderVersion {
+    Codex,
+    Grok,
+}
+
+impl ProviderVersion {
+    const fn cache_file(self) -> &'static str {
+        match self {
+            Self::Codex => CODEX_CACHE_FILE,
+            Self::Grok => GROK_CACHE_FILE,
+        }
+    }
+}
 const MAX_CACHE_BYTES: usize = 256;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -66,31 +82,54 @@ impl VersionLookup<'_> {
         self.resolve_at(cancel, deadline, now_ms()).await
     }
 
+    pub(crate) async fn resolve_grok(
+        &self,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Version, VersionError> {
+        self.resolve_at_for(cancel, deadline, now_ms(), ProviderVersion::Grok)
+            .await
+    }
+
     async fn resolve_at(
         &self,
         cancel: &CancellationToken,
         deadline: Instant,
         now_ms: i64,
     ) -> Result<Version, VersionError> {
+        self.resolve_at_for(cancel, deadline, now_ms, ProviderVersion::Codex)
+            .await
+    }
+
+    async fn resolve_at_for(
+        &self,
+        cancel: &CancellationToken,
+        deadline: Instant,
+        now_ms: i64,
+        provider: ProviderVersion,
+    ) -> Result<Version, VersionError> {
         if cancel.is_cancelled() {
             return Err(VersionError::Cancelled);
         }
-        let cached = self.cache_directory.and_then(load_cache);
+        let cached = self
+            .cache_directory
+            .and_then(|directory| load_provider_cache(directory, provider));
         if let Some(fresh) = cached.as_ref().filter(|cached| cached.fresh(now_ms)) {
             return Ok(fresh.version.clone());
         }
-        let version = match self.fetch(cancel, deadline).await {
+        let version = match self.fetch(cancel, deadline, provider).await {
             Ok(version) => version,
             Err(VersionError::Cancelled) => return Err(VersionError::Cancelled),
             Err(VersionError::Unavailable) => cached.ok_or(VersionError::Unavailable)?.version,
         };
         if let Some(directory) = self.cache_directory {
-            let _ = save_cache(
+            let _ = save_provider_cache(
                 directory,
                 &Cached {
                     version: version.clone(),
                     checked_at_ms: now_ms,
                 },
+                provider,
             );
         }
         Ok(version)
@@ -100,17 +139,26 @@ impl VersionLookup<'_> {
         &self,
         cancel: &CancellationToken,
         outer_deadline: Instant,
+        provider: ProviderVersion,
     ) -> Result<Version, VersionError> {
         let deadline = (Instant::now() + LOOKUP_TIMEOUT).min(outer_deadline);
         let request = self.client.get(self.url);
         match bounded_get(request, MAX_RESPONSE_BYTES, deadline, cancel).await {
-            Ok((StatusCode::OK, body)) => {
-                parse_codex_release(&body).ok_or(VersionError::Unavailable)
+            Ok((StatusCode::OK, body)) => match provider {
+                ProviderVersion::Codex => parse_codex_release(&body),
+                ProviderVersion::Grok => parse_grok_release(&body),
             }
-            Ok(_) | Err(BoundedFailure::Failed) => Err(VersionError::Unavailable),
+            .ok_or(VersionError::Unavailable),
+            Ok(_) | Err(BoundedFailure::Failed | BoundedFailure::TooLarge) => {
+                Err(VersionError::Unavailable)
+            }
             Err(BoundedFailure::Cancelled) => Err(VersionError::Cancelled),
         }
     }
+}
+
+fn parse_grok_release(body: &[u8]) -> Option<Version> {
+    Version::parse(std::str::from_utf8(body).ok()?)
 }
 
 fn parse_codex_release(body: &[u8]) -> Option<Version> {
@@ -120,10 +168,15 @@ fn parse_codex_release(body: &[u8]) -> Option<Version> {
     }
 }
 
+#[cfg(test)]
 fn load_cache(directory: &Path) -> Option<Cached> {
+    load_provider_cache(directory, ProviderVersion::Codex)
+}
+
+fn load_provider_cache(directory: &Path, provider: ProviderVersion) -> Option<Cached> {
     let directory = PrivateDir::open_existing(&directory.join(CACHE_DIRECTORY)).ok()??;
     let bytes = directory
-        .read_private(CODEX_CACHE_FILE, MAX_CACHE_BYTES)
+        .read_private(provider.cache_file(), MAX_CACHE_BYTES)
         .ok()??;
     let Value::Object(record) = parse_strict_json(&bytes).ok()? else {
         return None;
@@ -141,7 +194,16 @@ fn parse_cache_record(record: &Map<String, Value>) -> Option<Cached> {
     })
 }
 
+#[cfg(test)]
 fn save_cache(directory: &Path, cached: &Cached) -> Result<(), DurableError> {
+    save_provider_cache(directory, cached, ProviderVersion::Codex)
+}
+
+fn save_provider_cache(
+    directory: &Path,
+    cached: &Cached,
+    provider: ProviderVersion,
+) -> Result<(), DurableError> {
     PrivateDir::open_or_create(directory)?;
     let versions = PrivateDir::open_or_create(&directory.join(CACHE_DIRECTORY))?;
     let text = format!(
@@ -149,7 +211,7 @@ fn save_cache(directory: &Path, cached: &Cached) -> Result<(), DurableError> {
         cached.version.as_str(),
         cached.checked_at_ms
     );
-    versions.replace(CODEX_CACHE_FILE, text.as_bytes())
+    versions.replace(provider.cache_file(), text.as_bytes())
 }
 
 fn now_ms() -> i64 {

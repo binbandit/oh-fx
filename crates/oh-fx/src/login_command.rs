@@ -19,17 +19,28 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
     if host_managed() {
         return print(&format!("{HOST_MANAGED_AUTH_MESSAGE}\n"));
     }
-    if provider != Some(&ProviderId::Codex) {
+    if !matches!(provider, Some(ProviderId::Codex | ProviderId::Grok)) {
         return unavailable("login");
     }
     let profile = Profile::from_environment();
     let signed_in = runtime()
         .map_err(|error| ActivationFailure::Detail(login_failure_detail(error)))
         .and_then(|runtime| {
-            runtime.block_on(login_codex(&profile, &mut io::stdout(), open_browser()))
+            runtime.block_on(async {
+                match provider {
+                    Some(ProviderId::Grok) => {
+                        login_grok(&profile, &mut io::stdout(), open_browser()).await
+                    }
+                    _ => login_codex(&profile, &mut io::stdout(), open_browser()).await,
+                }
+            })
         });
     match signed_in {
-        Ok(()) => print("Signed in with Codex.\n"),
+        Ok(()) => print(if provider == Some(&ProviderId::Grok) {
+            "Signed in with Grok.\n"
+        } else {
+            "Signed in with Codex.\n"
+        }),
         Err(failure) => {
             failure.report("login");
             ExitCode::FAILURE
@@ -48,10 +59,39 @@ pub(crate) async fn login_codex(
         .map(drop)
 }
 
+pub(crate) async fn login_grok(
+    profile: &Profile,
+    output: &mut (dyn Write + Send),
+    open_browser: bool,
+) -> Result<(), ActivationFailure> {
+    let oauth = profile
+        .grok_oauth()
+        .map_err(|error| ActivationFailure::Detail(ofx_auth::grok_login_failure_detail(error)))?;
+    oauth
+        .run_login(
+            output,
+            open_browser,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| ActivationFailure::Detail(ofx_auth::grok_login_failure_detail(error)))?;
+    crate::provider_activation::activate_grok(profile).await
+}
+
 pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
     if host_managed() {
         return print(&format!("{HOST_MANAGED_AUTH_MESSAGE}\n"));
+    }
+    if provider == Some(&ProviderId::Grok) {
+        let profile = Profile::from_environment();
+        return if let Ok(runtime) = runtime() {
+            runtime.block_on(logout_grok(&profile, &mut io::stdout(), &mut io::stderr()))
+        } else {
+            let _ = io::stderr()
+                .write_all(b"oh-fx logout: failed to durably remove saved Grok login\n");
+            ExitCode::FAILURE
+        };
     }
     if provider != Some(&ProviderId::Codex) {
         return unavailable("logout");
@@ -67,6 +107,37 @@ pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {
             let _ = io::stderr().write_all(LOGOUT_FAILURE.as_bytes());
             ExitCode::FAILURE
         }
+    }
+}
+
+async fn logout_grok(
+    profile: &Profile,
+    output: &mut dyn Write,
+    errors: &mut dyn Write,
+) -> ExitCode {
+    let failed = "oh-fx logout: failed to durably remove saved Grok login\n";
+    let result = match profile.grok_oauth() {
+        Ok(oauth) => oauth.logout().await,
+        Err(error) => Err(error),
+    };
+    let Ok(result) = result else {
+        let _ = errors.write_all(failed.as_bytes());
+        return ExitCode::FAILURE;
+    };
+    if result.revocation_failed && errors.write_all(b"oh-fx logout: local Grok session removed, but remote revocation could not be confirmed\n").is_err() { return ExitCode::FAILURE; }
+    let text = match result.deletion {
+        DeleteOutcome::Deleted => "Signed out of Grok.\n",
+        DeleteOutcome::Missing => "No Grok login session found.\n",
+        DeleteOutcome::DeletedNotDurable => {
+            let _ = errors.write_all(failed.as_bytes());
+            return ExitCode::FAILURE;
+        }
+    };
+    if output.write_all(text.as_bytes()).is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        let _ = errors.write_all(b"oh-fx: WriteFailed\n");
+        ExitCode::FAILURE
     }
 }
 

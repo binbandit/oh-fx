@@ -105,7 +105,7 @@ Port `src/core/mcp/mcp_auth.zig` with the #1101 messages above. Slack's fx-app b
 
 ### Grok model catalog
 
-Port `src/gateway/xai_grok_models.zig` as of #1110 or later.
+Port `src/gateway/xai_grok_models.zig` as of #1110 or later. Grok login currently uses an authenticated model-ID catalog to activate the saved provider and model. Optional modality metadata does not yet add image capabilities to the shared model contract; #1110 remains deferred until that behavior is consumed by the request transport. The model request path and its missing-subscription guidance remain pending with that transport; provider activation uses upstream's distinct credential-unavailable message.
 
 ## How to run a parity pass
 
