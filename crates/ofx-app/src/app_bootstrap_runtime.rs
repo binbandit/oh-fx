@@ -620,6 +620,7 @@ impl AgentSetup {
     pub(crate) fn tool_names(&self) -> Vec<String> {
         self.tools
             .iter()
+            .chain([&self.delegation.tool])
             .map(|tool| tool.spec().name.clone())
             .collect()
     }
