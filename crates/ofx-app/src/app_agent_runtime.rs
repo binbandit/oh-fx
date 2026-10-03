@@ -451,6 +451,7 @@ impl Controller {
                 self.forget_tracked_changes();
                 self.restore_preferences(switched.preferences);
                 self.remember_agent_facts();
+                self.state.session_title.set(switched.title.as_deref());
                 self.state.emit(UiEvent::SessionResumed {
                     history: switched.history,
                 });
@@ -1941,6 +1942,34 @@ mod tests {
         chat(&mut harness, &["fix the renderer"]).await;
         assert_eq!(codex.requests().len(), 1);
         assert!(title_requests(&codex).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_resumed_from_the_picker_names_the_window() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        chat(&mut harness, &["first question"]).await;
+        assert_eq!(
+            rename_notice(&mut harness, "/rename Release prep").await,
+            "session|renamed to \"Release prep\""
+        );
+        let named = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let start = harness.seen.len();
+        harness.send(UiCommand::ResumeSession { id: named });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+        assert_eq!(
+            title_changes(&harness.seen[start..]),
+            [Some("Release prep".to_owned())]
+        );
     }
 
     #[tokio::test]
