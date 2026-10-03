@@ -2,6 +2,7 @@ mod launch_overrides;
 mod persistence;
 mod resume_transcript;
 mod session_picker;
+mod session_titles;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -10,13 +11,15 @@ use ofx_config::SelectionError;
 use ofx_contract::{HistoryEntry, RestoredHistory};
 use ofx_session::{
     ResumeTarget, SavedProvider, SessionDisposal, SessionError, SessionLog, SessionPreferences,
-    SessionStore, WritableSession,
+    SessionStore, TitleGate, WritableSession, prompt_excerpt,
 };
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
+use session_titles::CachedTitle;
 
 pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
+pub use session_titles::TitleGeneration;
 
 #[derive(Debug)]
 pub enum ResumeFailure {
@@ -77,6 +80,7 @@ pub struct LiveSession {
     session: Arc<Mutex<WritableSession>>,
     provider: SavedProvider,
     id: String,
+    title: CachedTitle,
 }
 
 impl LiveSession {
@@ -96,6 +100,7 @@ impl LiveSession {
     fn new(session: WritableSession, provider: SavedProvider) -> Self {
         Self {
             id: session.id().to_owned(),
+            title: Arc::new(Mutex::new(session.title().map(str::to_owned))),
             session: Arc::new(Mutex::new(session)),
             provider,
         }
@@ -117,6 +122,41 @@ impl LiveSession {
 
     fn session(&self) -> MutexGuard<'_, WritableSession> {
         self.session.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn cached_title(&self) -> MutexGuard<'_, Option<String>> {
+        self.title.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn title_generation(
+        &self,
+        setup: &AgentSetup,
+        prompt: &str,
+        history_empty: bool,
+        task_running: bool,
+    ) -> Option<TitleGeneration> {
+        let excerpt = prompt_excerpt(prompt)?;
+        let gate = TitleGate {
+            setting_enabled: setup.session_titles_enabled(),
+            title_model: setup.title_model(),
+            session_untitled: history_empty && self.cached_title().is_none(),
+            task_running,
+        };
+        if !gate.should_generate() {
+            return None;
+        }
+        Some(TitleGeneration {
+            provider: setup.model_provider(),
+            model: setup.title_model()?,
+            session_id: self.id.clone(),
+            excerpt: excerpt.to_owned(),
+            session: Arc::downgrade(&self.session),
+            cached: Arc::clone(&self.title),
+        })
+    }
+
+    pub(crate) fn titled(&self) -> bool {
+        self.session().title().is_some()
     }
 
     pub fn discard_if_pristine(self, store: &SessionStore) -> SessionDisposal {

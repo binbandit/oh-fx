@@ -538,6 +538,7 @@ impl Controller {
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
         self.state.skills().refresh();
+        self.start_title_generation(&prompt.text);
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
         let running = Arc::new(Mutex::new(None));
@@ -640,6 +641,13 @@ impl Controller {
             turn_id,
             outcome: report.outcome,
         });
+    }
+
+    fn start_title_generation(&mut self, prompt: &str) {
+        let history_empty = self.agent.history_turns() == 0;
+        if let Some(persistence) = &mut self.persistence {
+            persistence.start_title_generation(&self.state.setup, prompt, history_empty);
+        }
     }
 
     fn settle_deferred_commands(&mut self) {
@@ -779,14 +787,18 @@ mod tests {
         TurnId, TurnOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
-    use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
-    use ofx_testkit::{FakeServer, Reply, chat_text_events, chat_tool_call_events};
+    use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
+    use ofx_session::{SessionPreferences, SessionStore};
+    use ofx_testkit::{
+        FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+    };
     use serde_json::{Value, json};
     use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
     use tokio::time::timeout;
 
     use super::*;
     use crate::app_bootstrap_runtime::{Launch, Profile};
+    use crate::app_session_runtime::{LaunchOverrides, running_provider};
     use crate::codex_provider::SubscriptionEndpoints;
 
     struct Harness {
@@ -874,6 +886,10 @@ mod tests {
     const CODEX_MODEL: &str = "gpt-6.1-sol";
     const OTHER_CODEX_MODEL: &str = "gpt-6.1-luna";
 
+    fn codex_settings() -> Value {
+        json!({"provider": "codex", "models": {"codex": CODEX_MODEL}})
+    }
+
     fn codex_home() -> tempfile::TempDir {
         let home = tempfile::tempdir().unwrap();
         let data = home.path().join("data");
@@ -949,12 +965,42 @@ mod tests {
 
         async fn codex(codex: &FakeServer, catalog: &FakeServer) -> Self {
             let home = codex_home();
-            let settings = json!({"provider": "codex", "models": {"codex": CODEX_MODEL}});
-            let setup = agent_setup_with(&home, &settings, codex_endpoints(codex, catalog)).await;
+            let setup =
+                agent_setup_with(&home, &codex_settings(), codex_endpoints(codex, catalog)).await;
             Self::with_setup(home, setup)
         }
 
+        async fn codex_saved(codex: &FakeServer, catalog: &FakeServer, settings: &Value) -> Self {
+            let home = codex_home();
+            let setup = agent_setup_with(&home, settings, codex_endpoints(codex, catalog)).await;
+            let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
+            let store =
+                SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
+            let provider = running_provider(&setup).unwrap();
+            let preferences = SessionPreferences {
+                provider: provider.clone(),
+                model: setup.configured_model().to_owned(),
+                effort: ofx_contract::ReasoningEffort::Auto,
+                fast_mode: false,
+            };
+            let overrides = LaunchOverrides {
+                model: None,
+                effort: None,
+                fast_mode: None,
+            };
+            let persistence = Persistence::new(store, provider, preferences, overrides, None);
+            Self::spawn(home, setup, Some(persistence))
+        }
+
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
+            Self::spawn(home, setup, None)
+        }
+
+        fn spawn(
+            home: tempfile::TempDir,
+            setup: AgentSetup,
+            persistence: Option<Persistence>,
+        ) -> Self {
             let (events_sender, events) = unbounded_channel();
             let emit: Emit = Arc::new(move |event| {
                 let _ = events_sender.send(event);
@@ -963,7 +1009,7 @@ mod tests {
             let clipboard = Arc::new(TestClipboard::default());
             let shared: Arc<dyn Clipboard> = clipboard.clone();
             tokio::spawn(
-                Controller::new(setup, emit, None, false)
+                Controller::new(setup, emit, persistence, false)
                     .with_clipboard(shared)
                     .run(receiver),
             );
@@ -1679,6 +1725,89 @@ mod tests {
         assert_eq!(requests[1].json().get("service_tier"), None);
         assert_eq!(requests[2].json()["service_tier"], "priority");
         assert_eq!(catalog.requests().len(), 3);
+    }
+
+    fn saved_sessions(home: &tempfile::TempDir) -> Vec<Value> {
+        let Ok(entries) = fs::read_dir(home.path().join("data/sessions")) else {
+            return Vec::new();
+        };
+        entries
+            .map(|entry| {
+                let manifest = entry.unwrap().path().join("session.json");
+                serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap()
+            })
+            .collect()
+    }
+
+    async fn saved_title(home: &tempfile::TempDir) -> Value {
+        for _ in 0..500 {
+            if let [session] = saved_sessions(home).as_slice()
+                && !session["title"].is_null()
+            {
+                return session["title"].clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Value::Null
+    }
+
+    fn title_requests(codex: &FakeServer) -> Vec<RecordedRequest> {
+        codex
+            .requests()
+            .into_iter()
+            .filter(|request| request.json()["model"] == CODEX_TITLE_MODEL)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_first_prompt_of_a_fresh_codex_session_names_it_in_the_background() {
+        let codex = FakeServer::start([
+            codex_text("Fix the renderer"),
+            codex_text("Fix the renderer"),
+            codex_text("done"),
+        ]);
+        let catalog = codex_catalog(false, 8);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &codex_settings()).await;
+        chat(&mut harness, &["  please fix the renderer\n"]).await;
+        assert_eq!(saved_title(&harness.home).await, "Fix the renderer");
+        chat(&mut harness, &["now the tests"]).await;
+        let titles = title_requests(&codex);
+        assert_eq!(titles.len(), 1);
+        let body = titles[0].json();
+        assert!(
+            body["instructions"]
+                .as_str()
+                .unwrap()
+                .starts_with("Generate a short title for a conversation"),
+            "{body}"
+        );
+        assert_eq!(body["input"].as_array().unwrap().len(), 1, "{body}");
+        assert!(
+            body["input"]
+                .to_string()
+                .contains("please fix the renderer"),
+            "{body}"
+        );
+        assert_eq!(body["tool_choice"], "none");
+        assert_eq!(body.get("tools"), None);
+        let session = &saved_sessions(&harness.home)[0];
+        assert_eq!(titles[0].header("session-id"), session["id"].as_str());
+        assert_eq!(codex.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn sessions_stay_untitled_when_session_titles_are_off() {
+        let codex = FakeServer::start([codex_text("done")]);
+        let catalog = codex_catalog(false, 8);
+        let settings = json!({
+            "provider": "codex",
+            "models": {"codex": CODEX_MODEL},
+            "session_titles": false
+        });
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        chat(&mut harness, &["fix the renderer"]).await;
+        assert_eq!(codex.requests().len(), 1);
+        assert_eq!(saved_sessions(&harness.home)[0]["title"], Value::Null);
     }
 
     #[tokio::test]

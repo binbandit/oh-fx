@@ -1,8 +1,11 @@
 use ofx_agent::{Agent, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, TurnOutcome};
 use ofx_session::{SavedProvider, SessionCatalog, SessionError, SessionPreferences, SessionStore};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use super::{LaunchOverrides, LiveSession, ResumedSession};
+use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(super) const SESSION_TOPIC: &str = "session";
 
@@ -21,6 +24,7 @@ pub(crate) struct Persistence {
     resumption: Option<Resumption>,
     remember_fresh: bool,
     degraded: bool,
+    title_task: Option<JoinHandle<()>>,
 }
 
 impl Persistence {
@@ -41,6 +45,7 @@ impl Persistence {
             resumption,
             remember_fresh: false,
             degraded: false,
+            title_task: None,
         }
     }
 
@@ -125,9 +130,32 @@ impl Persistence {
         saved.clone_into(&mut self.preferences);
     }
 
+    pub(crate) fn start_title_generation(
+        &mut self,
+        setup: &AgentSetup,
+        prompt: &str,
+        history_empty: bool,
+    ) {
+        let running = self
+            .title_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished());
+        let generation = self
+            .live
+            .as_ref()
+            .and_then(|live| live.title_generation(setup, prompt, history_empty, running));
+        if let Some(generation) = generation {
+            self.title_task = Some(tokio::spawn(async move {
+                generation.run(&CancellationToken::new()).await;
+            }));
+        }
+    }
+
     pub(crate) fn close(&mut self, agent: &mut Agent) {
         agent.detach_session();
-        if let Some(live) = self.live.take() {
+        if let Some(live) = self.live.take()
+            && !live.titled()
+        {
             live.discard_if_pristine(&self.store);
         }
         self.remember_fresh = false;

@@ -23,8 +23,8 @@ pub use app_bootstrap_runtime::{
 };
 pub use app_lifecycle::run_interactive;
 pub use app_session_runtime::{
-    LiveSession, ResumeFailure, ResumedSession, configured_preferences, open_store,
-    running_provider,
+    LiveSession, ResumeFailure, ResumedSession, TitleGeneration, configured_preferences,
+    open_store, running_provider,
 };
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 pub use ofx_tools::WebFetchProgress;

@@ -2,7 +2,7 @@ use crate::session_event::ConversationEvent;
 use crate::session_log::SavedHistory;
 
 const MAX_TITLE_WORDS: usize = 8;
-const MAX_TITLE_BYTES: usize = 240;
+pub const MAX_TITLE_BYTES: usize = 240;
 const FALLBACK_TITLE: &str = "Untitled session";
 const PROMPT_TRIM: &[char] = &[' ', '\t', '\r', '\n'];
 const LINE_TRIM: &[char] = &[' ', '\t', '\r'];
