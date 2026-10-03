@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_testkit::{
     FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
@@ -71,7 +71,7 @@ impl Home {
             .expect("spawn oh-fx in a pty")
     }
 
-    fn copy_session(&self, template: &str, id: &str, title: &str) {
+    fn copy_session(&self, template: &str, id: &str, title: &str, updated_at_ms: u64) {
         let source = self.sessions().join(template);
         let target = self.sessions().join(id);
         fs::create_dir(&target).expect("create the copied session");
@@ -84,6 +84,7 @@ impl Home {
         let mut metadata = self.metadata(template);
         metadata["id"] = json!(id);
         metadata["title"] = json!(title);
+        metadata["updated_at_ms"] = json!(updated_at_ms);
         fs::write(target.join("session.json"), metadata.to_string())
             .expect("rewrite the copied session.json");
     }
@@ -1278,11 +1279,19 @@ fn more_sessions_load_as_the_selection_reaches_the_end_of_a_page() {
     wait(&session, "Seeded.");
     exit(session);
     let seed = home.only_session();
-    for index in 0..12 {
+    let copied_at_ms = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock after the epoch")
+            .as_millis(),
+    )
+    .expect("a millisecond clock that fits");
+    for index in 0..12_u64 {
         home.copy_session(
             &seed,
             &format!("copy-{index:02}"),
             &format!("copy {index:02}"),
+            copied_at_ms + 1 + index,
         );
     }
     let session = home.spawn_sized(&["-r"], 14);
