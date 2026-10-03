@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, open, statat};
@@ -19,31 +20,57 @@ pub(super) enum DiscoveryError {
 }
 
 pub(super) fn discover_scope(
-    root: &Path,
+    roots: &[PathBuf],
     stop: &AtomicBool,
 ) -> Result<Vec<Candidate>, DiscoveryError> {
     checkpoint(stop)?;
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    let mut succeeded = 0;
+    for (index, root) in roots.iter().enumerate() {
+        checkpoint(stop)?;
+        if candidates.len() >= MAX_INDEXED_FILES {
+            break;
+        }
+        if discover_root(root, index == 0, stop, &mut seen, &mut candidates)? {
+            succeeded += 1;
+        }
+    }
+    if succeeded == 0 && !roots.is_empty() {
+        return Err(DiscoveryError::Failed);
+    }
+    Ok(candidates)
+}
+
+fn discover_root(
+    root: &Path,
+    relative: bool,
+    stop: &AtomicBool,
+    seen: &mut HashSet<PathBuf>,
+    candidates: &mut Vec<Candidate>,
+) -> Result<bool, DiscoveryError> {
     let options = DiscoveryOptions {
-        candidate_cap: MAX_INDEXED_FILES,
+        candidate_cap: MAX_INDEXED_FILES - candidates.len(),
         untracked: UntrackedFiles::Include,
         include_hidden: true,
         sort_paths: true,
         ..DiscoveryOptions::default()
     };
-    let files = discover_listing_files(root, &options).ok_or(DiscoveryError::Failed)?;
+    let Some(files) = discover_listing_files(root, &options) else {
+        return Ok(false);
+    };
     checkpoint(stop)?;
     let directories = discover_listing_directories(root, &options)
         .map(|listing| listing.files)
         .unwrap_or_default();
     checkpoint(stop)?;
-    let root_directory = open(
+    let Ok(root_directory) = open(
         root,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
-    )
-    .map_err(|_| DiscoveryError::Failed)?;
-
-    let mut candidates = Vec::new();
+    ) else {
+        return Ok(false);
+    };
     let mut files = files.files.iter().peekable();
     let mut directories = directories.iter().peekable();
     loop {
@@ -82,19 +109,20 @@ pub(super) fn discover_scope(
         {
             continue;
         }
+        let absolute = root.join(path);
         let candidate = Candidate {
-            path: path.to_owned(),
+            path: if relative {
+                path.to_owned()
+            } else {
+                absolute.to_string_lossy().into_owned()
+            },
             kind,
         };
-        if accepted_candidate(&candidate)
-            && candidates
-                .last()
-                .is_none_or(|last: &Candidate| last.path != candidate.path)
-        {
+        if accepted_candidate(&candidate) && seen.insert(absolute) {
             candidates.push(candidate);
         }
     }
-    Ok(candidates)
+    Ok(true)
 }
 
 fn checkpoint(stop: &AtomicBool) -> Result<(), DiscoveryError> {

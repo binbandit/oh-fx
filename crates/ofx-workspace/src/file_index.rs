@@ -166,7 +166,7 @@ struct Loader {
 }
 
 pub struct FileIndex {
-    root: Option<PathBuf>,
+    roots: Vec<PathBuf>,
     cache_dir: Option<PathBuf>,
     scope_epoch: u64,
     active: Option<Generation>,
@@ -182,7 +182,7 @@ pub struct FileIndex {
 impl FileIndex {
     pub fn new(cache_dir: Option<PathBuf>) -> Self {
         Self {
-            root: None,
+            roots: Vec::new(),
             cache_dir,
             scope_epoch: 0,
             active: None,
@@ -196,11 +196,16 @@ impl FileIndex {
         }
     }
 
-    pub fn ensure_scope(&mut self, root: &Path) {
-        if self.current_state() != IndexState::Idle || root.as_os_str().is_empty() {
+    pub fn ensure_scope(&mut self, primary: &Path, additional: &[PathBuf]) {
+        if self.current_state() != IndexState::Idle || primary.as_os_str().is_empty() {
             return;
         }
-        self.root = Some(root.to_owned());
+        self.roots = vec![primary.to_owned()];
+        for root in additional {
+            if !self.roots.contains(root) {
+                self.roots.push(root.clone());
+            }
+        }
         self.start_load();
     }
 
@@ -339,28 +344,32 @@ impl FileIndex {
     }
 
     pub fn is_current_candidate_kind(&self, path: &str, expected: CandidateKind) -> bool {
-        let Some(root) = &self.root else {
+        let Some(primary) = self.roots.first() else {
             return false;
         };
         if !is_terminal_safe(path.as_bytes()) {
             return false;
         }
         let resolved = if path.starts_with('/') {
-            if !path_inside(root, Path::new(path)) {
+            if !self
+                .roots
+                .iter()
+                .any(|root| path_inside(root, Path::new(path)))
+            {
                 return false;
             }
             PathBuf::from(path)
         } else {
-            root.join(path)
+            primary.join(path)
         };
         statat(rustix::fs::CWD, &resolved, AtFlags::SYMLINK_NOFOLLOW)
             .is_ok_and(|stat| kind_matches(expected, FileType::from_raw_mode(stat.st_mode)))
     }
 
     fn start_load(&mut self) {
-        let Some(root) = self.root.clone() else {
+        if self.roots.is_empty() {
             return;
-        };
+        }
         if self.loader.is_some() || self.stop.load(Ordering::SeqCst) {
             return;
         }
@@ -370,7 +379,7 @@ impl FileIndex {
         let job = LoadJob {
             id,
             scope_epoch: self.scope_epoch,
-            root,
+            roots: self.roots.clone(),
             cache_dir: self.cache_dir.clone(),
             allow_cache,
             stop: Arc::clone(&self.stop),
@@ -405,7 +414,7 @@ impl Drop for FileIndex {
 struct LoadJob {
     id: usize,
     scope_epoch: u64,
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     cache_dir: Option<PathBuf>,
     allow_cache: bool,
     stop: Arc<AtomicBool>,
@@ -424,7 +433,7 @@ impl LoadJob {
         if self.stopped() {
             return LoaderOutcome::Canceled;
         }
-        let roots = [self.root.as_path()];
+        let roots: Vec<&Path> = self.roots.iter().map(PathBuf::as_path).collect();
         if self.allow_cache
             && let Some(cache_dir) = &self.cache_dir
             && let Some(candidates) = file_index_cache::load(cache_dir, &roots)
@@ -438,7 +447,7 @@ impl LoadJob {
                 None => LoaderOutcome::Canceled,
             };
         }
-        let candidates = match discovery::discover_scope(&self.root, &self.stop) {
+        let candidates = match discovery::discover_scope(&self.roots, &self.stop) {
             Ok(candidates) => candidates,
             Err(discovery::DiscoveryError::Canceled) => return LoaderOutcome::Canceled,
             Err(discovery::DiscoveryError::Failed) => {

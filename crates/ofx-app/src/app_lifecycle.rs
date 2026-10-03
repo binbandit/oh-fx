@@ -264,6 +264,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         prompt_history,
         file_mentions: Some(Box::new(WorkspaceFileMentions::start(
             session.profile.workspace_root(),
+            &session.profile.additional_roots(),
             session.profile.cache_dir(),
         ))),
         opening: session.opening,

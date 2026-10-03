@@ -32,7 +32,7 @@ note = "Background scheduling, cancellation, episode/request matching and harves
 upstream = "src/core/workspace/file_index.zig"
 status = "partial"
 modules = ["crates/ofx-workspace/src/file_index.rs"]
-note = "Ranking and revisions exist for one workspace root; additional-root indexing, scope-change rebuilding and cancellable scan behavior are absent."
+note = "Ranking, revisions and indexing the workspace with its active additional roots exist; scope-change rebuilding and cancellable scan behavior are absent."
 
 [[file]]
 upstream = "src/core/workspace/file_index_cache.zig"
