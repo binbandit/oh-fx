@@ -432,6 +432,7 @@ impl Controller {
         };
         match persistence.resume_selected(id, &mut self.agent) {
             Ok(switched) => {
+                self.forget_tracked_changes();
                 self.restore_preferences(switched.preferences);
                 self.remember_agent_facts();
                 self.state.emit(UiEvent::SessionResumed {
@@ -485,6 +486,12 @@ impl Controller {
         self.state.context_to_compact = self.agent.has_context_to_compact();
     }
 
+    fn forget_tracked_changes(&self) {
+        if let Some(tracker) = self.state.change_tracker() {
+            tracker.clear();
+        }
+    }
+
     fn save_preferences(&mut self) {
         let saved = save_session_preferences(&self.state, &mut self.persistence);
         self.session_notice(saved);
@@ -492,9 +499,7 @@ impl Controller {
 
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
-        if let Some(tracker) = self.state.change_tracker() {
-            tracker.clear();
-        }
+        self.forget_tracked_changes();
         let started = self
             .persistence
             .as_mut()

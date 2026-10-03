@@ -1121,6 +1121,39 @@ fn resume_lists_this_workspace_and_switches_the_shell_to_the_chosen_session() {
 }
 
 #[test]
+fn a_picked_session_leaves_nothing_for_undo_from_the_session_before_it() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Answer one."])),
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "write_file",
+            &json!({"path": "notes.md", "content": "changed\n"}).to_string(),
+        )),
+        Reply::sse(&chat_text_events(&["Wrote it."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let notes = home.workspace.join("notes.md");
+    fs::write(&notes, "original\n").expect("write notes.md");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"topic one\r");
+    wait(&session, "Answer one.");
+    session.send(b"/new\r");
+    session.send(b"write the notes\r");
+    wait(&session, "Wrote it.");
+    session.send(b"/resume\r");
+    wait(&session, PICKER_HEADER);
+    session.send(b"\r");
+    wait(&session, "session resumed: topic one");
+    session.send(b"/undo\r");
+    wait(&session, "* undo: Nothing to undo.");
+    assert_eq!(
+        fs::read_to_string(&notes).expect("read notes.md"),
+        "changed\n"
+    );
+    exit(session);
+}
+
+#[test]
 fn a_session_open_in_another_shell_shows_busy_in_the_picker_until_it_closes() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["Held."])),
