@@ -513,9 +513,8 @@ impl<'a> Shell<'a> {
                     ),
                 });
         let input_extra = composer.rows.len().saturating_sub(1);
-        let column = if catalog_menu.is_none() && self.approval.is_none() && self.question.is_none()
-        {
-            self.model_column_band(input_extra, banner_rows)
+        let column = if catalog_menu.is_none() {
+            self.inline_column_band(input_extra, banner_rows)
         } else {
             Vec::new()
         };
@@ -592,6 +591,13 @@ impl<'a> Shell<'a> {
             skills_menu_band(menu, budget, self.cols(), &self.theme),
             "source",
         ))
+    }
+
+    fn inline_column_band(&self, input_extra: usize, banner_rows: usize) -> Vec<Row> {
+        if self.approval.is_some() || self.question.is_some() {
+            return Vec::new();
+        }
+        self.model_column_band(input_extra, banner_rows)
     }
 
     fn menu_budget(&self, max_rows: usize) -> usize {
