@@ -999,10 +999,6 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
     for (args, feature) in [
         (&["ask", "--image", "shot.png", "hi"][..], "ask --image"),
         (
-            &["ask", "--prompt-permissions", "hi"],
-            "ask --prompt-permissions",
-        ),
-        (
             &["ask", "--resume", "last", "--continue-recovery"],
             "ask --continue-recovery",
         ),
