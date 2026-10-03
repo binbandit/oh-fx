@@ -41,8 +41,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/docker_run.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-mcp/src/docker_run.rs"]
+note = "Direct docker run detection, the private cidfile and container cleanup exist; reading the cidfile checks its metadata and then reopens the path, which accepts a hardlink and races a symlink swap, where upstream rejects hardlinks and validates the opened regular file without following the final symlink."
 
 [[file]]
 upstream = "src/core/mcp/elicitation.zig"
@@ -310,7 +311,7 @@ modules = []
 upstream = "src/core/mcp/tool_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/tool_operations.rs"]
-note = "Tool calls from the published snapshot with the response frame cap exist; progress notifications and input-required results are missing."
+note = "Tool calls from the published snapshot with the response frame cap and progress notifications exist; input-required results are missing."
 
 [[file]]
 upstream = "src/core/mcp/tool_result.zig"

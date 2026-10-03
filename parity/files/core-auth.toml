@@ -54,7 +54,7 @@ note = "Browser and manual-code sign-in, callback classification, token exchange
 upstream = "src/core/auth/grok_session.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/grok_session.rs", "crates/ofx-auth/src/subscription_session.rs"]
-note = "Session encoding and private locked storage through the shared subscription session store exist; the refresh deadline and refresh mutation are deferred with Grok credential refresh."
+note = "Session encoding, the refresh deadline and private locked storage through the shared subscription session store exist; the Grok credential refresh that consumes them is deferred with the Grok request route."
 
 [[file]]
 upstream = "src/core/auth/js_host_auth.zig"
