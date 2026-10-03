@@ -544,6 +544,12 @@ fn only_a_session_started_here_with_nothing_saved_is_discarded() {
     let id = elsewhere.id().to_owned();
     assert_eq!(store.discard_pristine(elsewhere), SessionDisposal::Retained);
     assert!(fixture.session_dir(&id).exists());
+
+    let mut chosen = store.start(preferences()).unwrap();
+    chosen.select_model("other-model", false).unwrap();
+    let id = chosen.id().to_owned();
+    assert_eq!(store.discard_pristine(chosen), SessionDisposal::Retained);
+    assert!(fixture.session_dir(&id).join("session.json").exists());
 }
 
 #[test]

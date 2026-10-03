@@ -25,6 +25,7 @@ pub enum CompactionError {
     SummaryIncomplete,
     EmptySummary,
     InvalidCheckpoint,
+    NotSaved,
     Cancelled,
 }
 
@@ -37,6 +38,7 @@ impl CompactionError {
             Self::SummaryIncomplete => "SummaryIncomplete",
             Self::EmptySummary => "EmptySummary",
             Self::InvalidCheckpoint => "InvalidCheckpoint",
+            Self::NotSaved => "NotSaved",
             Self::Cancelled => "Cancelled",
         }
     }

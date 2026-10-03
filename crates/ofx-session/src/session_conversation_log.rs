@@ -22,6 +22,10 @@ impl SessionLog {
 }
 
 impl ConversationLog for SessionLog {
+    fn require_writable(&self) -> Result<(), LogFailure> {
+        self.session().require_writable().map_err(log_failure)
+    }
+
     fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure> {
         self.session()
             .record_turn(turn, &self.provider)
@@ -32,7 +36,7 @@ impl ConversationLog for SessionLog {
         &mut self,
         checkpoint: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure> {
         self.session()
             .record_compaction(checkpoint, cut, active, &self.provider)

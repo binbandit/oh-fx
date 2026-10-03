@@ -616,6 +616,53 @@ fn replay_starts_after_the_latest_checkpoint_and_keeps_retained_turns() {
 }
 
 #[test]
+fn the_transcript_walks_every_saved_turn_including_compacted_ones() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("transcript");
+    session.append(1, &turn("one")).unwrap();
+    session
+        .append(2, &[checkpoint(3, "first summary")])
+        .unwrap();
+    session.append(3, &tool_turn("two", "c1")).unwrap();
+    session
+        .append(4, &[user("three"), assistant(""), call("c2"), result("c2")])
+        .unwrap();
+    session
+        .append(5, &[checkpoint(14, "second summary")])
+        .unwrap();
+    drop(session);
+    let mut resumed = fixture.resume("transcript").unwrap();
+    let mut walked = Vec::new();
+    resumed.visit_transcript(|turn| walked.push(turn)).unwrap();
+    let walked = SavedHistory {
+        compacted: None,
+        turns: walked,
+    };
+    assert_eq!(prompts(&walked), ["one", "two", "three"]);
+    assert_eq!(walked.turns[1].events, tool_turn("two", "c1"));
+    let open = &walked.turns[2].events;
+    assert_eq!(open.len(), 6);
+    assert!(matches!(open[4], ConversationEvent::ContextCheckpoint(_)));
+    assert!(matches!(open[5], ConversationEvent::Interrupted(_)));
+    assert_eq!(prompts(&resumed.take_history()), ["three"]);
+}
+
+#[test]
+fn the_display_title_prefers_the_saved_title_over_the_first_prompt() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("titled");
+    session.append(1, &turn("/help")).unwrap();
+    session.append(2, &turn("explain the build")).unwrap();
+    drop(session);
+    let resumed = fixture.resume("titled").unwrap();
+    assert_eq!(resumed.display_title(), "explain the build");
+    let mut titled = metadata("named");
+    titled.title = Some("Release prep".to_owned());
+    let named = start_session(&fixture.sessions, titled).unwrap();
+    assert_eq!(named.display_title(), "Release prep");
+}
+
+#[test]
 fn checkpoint_only_sessions_replay_their_summary() {
     let fixture = Fixture::new();
     let mut session = fixture.start("summary");
@@ -797,6 +844,19 @@ fn preference_changes_rewrite_metadata_durably() {
         .filter(|name| name.contains(".tmp."))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn a_model_choice_saves_its_fast_mode_and_keeps_the_other_preferences() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("chosen");
+    session.select_model("openai/gpt-5-mini", true).unwrap();
+    drop(session);
+    let loaded = load_session(&fixture.sessions, "chosen").unwrap();
+    let mut expected = metadata("chosen").preferences;
+    expected.model = "openai/gpt-5-mini".to_owned();
+    expected.fast_mode = true;
+    assert_eq!(loaded.metadata.preferences, expected);
 }
 
 #[test]

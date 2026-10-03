@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use ofx_cli::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,
-    TopLevelKind,
+    RequestedResume, TopLevelKind,
 };
 use rustix::io::Errno;
 use signal_hook::consts::SIGPIPE;
@@ -81,9 +81,8 @@ fn run(invocation: Invocation) -> ExitCode {
             command_write_failure(kind),
         ),
         Invocation::Version => print(&VERSION_LINE, WriteFailure::ReportedUnlessPipeClosed),
-        Invocation::Interactive(modifiers) | Invocation::Resume(modifiers) => {
-            run_interactive(&modifiers)
-        }
+        Invocation::Interactive(modifiers) => run_interactive(&modifiers, None),
+        Invocation::Resume(modifiers, resume) => run_interactive(&modifiers, Some(&resume)),
         Invocation::Command(CommandLaunch { modifiers, command }) => match command {
             Command::Ask(args) => cli_ask::run(&args, &modifiers),
             Command::Upgrade(format) => upgrade_command::run(matches!(format, OutputFormat::Json)),
@@ -97,7 +96,7 @@ fn run(invocation: Invocation) -> ExitCode {
     }
 }
 
-fn run_interactive(modifiers: &LaunchModifiers) -> ExitCode {
+fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedResume>) -> ExitCode {
     let unsupported = [
         (modifiers.overrides_provider(), "--provider"),
         (modifiers.selects_sessions_v2(), "--sessions-v2"),
@@ -107,7 +106,7 @@ fn run_interactive(modifiers: &LaunchModifiers) -> ExitCode {
         .or_else(cli_ask::sessions_v2_variable);
     match unavailable_flag {
         Some(flag) => unavailable(flag),
-        None => ofx_app::run_interactive(modifiers),
+        None => ofx_app::run_interactive(modifiers, resume),
     }
 }
 

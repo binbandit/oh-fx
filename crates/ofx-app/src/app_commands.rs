@@ -69,7 +69,9 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             state.emit(UiEvent::HelpRequested);
             CommandEffect::None
         }
-        SlashKind::ClearScreen | SlashKind::ResetSession => CommandEffect::Clear,
+        SlashKind::ClearScreen | SlashKind::NewSession | SlashKind::ResetSession => {
+            CommandEffect::Clear
+        }
         SlashKind::Status => {
             state.notice(NoticeTone::Neutral, "status", &state.status_body());
             CommandEffect::None
@@ -124,20 +126,21 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
     }
 }
 
-pub(crate) async fn toggle_fast(state: &mut ControllerState) {
+pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
     if state.fast_mode() {
         state.set_fast_mode(false);
         state.save_model_preference(FAST_TOPIC);
         state.notice(NoticeTone::Neutral, FAST_TOPIC, "off");
-        return;
+        return true;
     }
     if !state.supports_fast_mode().await {
         state.notice(NoticeTone::Neutral, FAST_TOPIC, NO_FAST_MODE);
-        return;
+        return false;
     }
     state.set_fast_mode(true);
     state.save_model_preference(FAST_TOPIC);
     state.notice(NoticeTone::Neutral, FAST_TOPIC, "on");
+    true
 }
 
 fn copy_last_reply(state: &ControllerState) {
@@ -179,6 +182,7 @@ mod tests {
             [
                 "/help",
                 "/clear",
+                "/new",
                 "/reset",
                 "/stats",
                 "/status",
@@ -198,9 +202,10 @@ mod tests {
             .map(|spec| spec.command.as_str())
             .collect();
         assert_eq!(compacting, ["/compact"]);
-        assert_eq!(specs[7].description, "browse and manage skills");
-        assert_eq!(specs[12].aliases, ["/exit"]);
-        assert_eq!(specs[12].description, "exit the interactive shell");
+        assert_eq!(specs[2].description, "start a fresh session");
+        assert_eq!(specs[8].description, "browse and manage skills");
+        assert_eq!(specs[13].aliases, ["/exit"]);
+        assert_eq!(specs[13].description, "exit the interactive shell");
     }
 
     #[test]
@@ -216,6 +221,7 @@ mod tests {
             [
                 ("/help", "General"),
                 ("/clear", "General"),
+                ("/new", "Session"),
                 ("/reset", "Session"),
                 ("/stats", "Account"),
                 ("/status", "General"),

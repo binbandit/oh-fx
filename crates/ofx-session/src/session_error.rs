@@ -64,6 +64,8 @@ pub enum SessionError {
     SessionWriterChanged,
     #[error("SessionPersistenceUncertain")]
     SessionPersistenceUncertain,
+    #[error("SessionCommitFailed")]
+    SessionCommitFailed,
     #[error("SessionTargetChanged")]
     SessionTargetChanged,
     #[error("InvalidRememberedSession")]

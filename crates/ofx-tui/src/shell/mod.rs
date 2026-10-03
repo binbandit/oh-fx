@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ofx_contract::{PermissionMode, TurnId, UiCommand};
+use ofx_contract::{HistoryEntry, PermissionMode, TurnId, UiCommand};
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
@@ -58,6 +58,7 @@ use crate::terminal::{
     interactive_mode_enable_sequence,
 };
 use crate::theme::Theme;
+use crate::transcript::history_replay::replayed_entries;
 use crate::transcript::store::Transcript;
 
 const FOOTER_ROWS: u16 = 4;
@@ -86,6 +87,7 @@ pub struct ShellOptions {
     pub command_categories: Vec<String>,
     pub prompt_history: PromptHistory,
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
+    pub history: Option<Vec<HistoryEntry>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,9 +277,12 @@ impl<'a> Shell<'a> {
         renderer.start_at(usize::from(setup.launch_row.max(1)));
         let mut transcript = Transcript::default();
         transcript.restart(usize::from(layout.cols));
-        transcript.push(Entry::Welcome {
-            version: options.version.clone(),
-        });
+        match options.history.take() {
+            Some(history) => replayed_entries(history).for_each(|entry| transcript.push(entry)),
+            None => transcript.push(Entry::Welcome {
+                version: options.version.clone(),
+            }),
+        }
         let yolo_warning = YoloWarning::new(options.full_access_warning);
         let mut composer = Composer::new();
         let history = HistoryRecorder::install(options.prompt_history.take(), &mut composer);
@@ -837,6 +842,7 @@ mod tests {
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
+            history: None,
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
     }

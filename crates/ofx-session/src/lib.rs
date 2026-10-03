@@ -7,6 +7,7 @@ mod session_codec;
 mod session_commands;
 mod session_conversation_log;
 mod session_discovery;
+mod session_display_metadata;
 mod session_error;
 mod session_event;
 mod session_layout;

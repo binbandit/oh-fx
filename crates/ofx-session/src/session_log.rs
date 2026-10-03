@@ -17,6 +17,7 @@ use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
 };
+use crate::session_display_metadata::derive_display_title;
 use crate::session_error::SessionError;
 use crate::session_event::{
     ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent,
@@ -24,7 +25,7 @@ use crate::session_event::{
 use crate::session_layout::is_valid_session_id;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
-use conversation_history::{ReplayScan, replay_history};
+use conversation_history::{ReplayScan, replay_history, visit_turns};
 use conversation_progress::ProgressPoint;
 use conversation_writer::{ConversationWriter, scan_log};
 use managed_file::{
@@ -112,6 +113,25 @@ impl WritableSession {
         self.writer.turn_open()
     }
 
+    pub fn last_seq(&self) -> u64 {
+        self.writer.last_seq()
+    }
+
+    pub fn require_writable(&self) -> Result<(), SessionError> {
+        self.writer.failure().map_or(Ok(()), Err)
+    }
+
+    pub fn visit_transcript(&self, visit: impl FnMut(SavedTurn)) -> Result<(), SessionError> {
+        visit_turns(self.writer.file(), self.writer.committed_bytes(), visit)
+    }
+
+    pub fn display_title(&self) -> String {
+        match &self.metadata.title {
+            Some(title) => title.clone(),
+            None => derive_display_title(&self.history),
+        }
+    }
+
     pub fn take_history(&mut self) -> SavedHistory {
         mem::take(&mut self.history)
     }
@@ -135,33 +155,38 @@ impl WritableSession {
         if nothing_done && !open {
             return Ok(());
         }
+        let saved = self.append_turn(turn, provider, open);
+        if saved.is_err() && self.writer.turn_open() {
+            self.writer.block_open_turn();
+        }
+        saved
+    }
+
+    fn append_turn(
+        &mut self,
+        turn: &HistoryTurn<'_>,
+        provider: &SavedProvider,
+        open: bool,
+    ) -> Result<(), SessionError> {
         let timestamp_ms = now_ms();
         let written = self.written_steps()?;
         let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
-        let unwritten = &events[usize::from(open)..];
-        self.append(timestamp_ms, unwritten)
+        self.append(timestamp_ms, &events[usize::from(open)..])
     }
 
     pub fn record_compaction(
         &mut self,
         summary: &str,
         cut: HistoryCut,
-        active: &HistoryTurn<'_>,
+        active: Option<&HistoryTurn<'_>>,
         provider: &SavedProvider,
     ) -> Result<(), SessionError> {
-        let replied_nothing = TurnEnd::Replied {
-            text: "",
-            provider_replay: None,
-        };
-        if active.end != replied_nothing {
-            return Err(SessionError::InvalidConversationEvent);
-        }
-        let open = self.writer.turn_open();
+        self.require_writable()?;
         let timestamp_ms = now_ms();
-        let written = self.written_steps()?;
-        let mut events = turn_events(&self.artifacts(provider, timestamp_ms), active, written)?;
-        events.pop();
-        events.drain(..usize::from(open));
+        let mut events = match active {
+            Some(active) => self.active_prefix(active, provider, timestamp_ms)?,
+            None => Vec::new(),
+        };
         let covers_through_seq = self
             .writer
             .context_coverage(ProgressPoint::from(cut), &events)?;
@@ -172,6 +197,26 @@ impl WritableSession {
             },
         ));
         self.append(timestamp_ms, &events)
+    }
+
+    fn active_prefix(
+        &self,
+        active: &HistoryTurn<'_>,
+        provider: &SavedProvider,
+        timestamp_ms: i64,
+    ) -> Result<Vec<ConversationEvent>, SessionError> {
+        let replied_nothing = TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        };
+        if active.end != replied_nothing {
+            return Err(SessionError::InvalidConversationEvent);
+        }
+        let written = self.written_steps()?;
+        let mut events = turn_events(&self.artifacts(provider, timestamp_ms), active, written)?;
+        events.pop();
+        events.drain(..usize::from(self.writer.turn_open()));
+        Ok(events)
     }
 
     pub(crate) fn is_pristine(&self) -> bool {
@@ -217,7 +262,16 @@ impl WritableSession {
         let mut proposed = self.metadata.clone();
         proposed.preferences = preferences;
         proposed.updated_at_ms = timestamp_ms;
-        self.write_metadata(proposed)
+        self.write_metadata(proposed)?;
+        self.started = false;
+        Ok(())
+    }
+
+    pub fn select_model(&mut self, model: &str, fast_mode: bool) -> Result<(), SessionError> {
+        let mut preferences = self.metadata.preferences.clone();
+        model.clone_into(&mut preferences.model);
+        preferences.fast_mode = fast_mode;
+        self.set_preferences(preferences, now_ms())
     }
 
     pub(crate) fn rebind_workspace(&mut self, workspace_root: &str) -> Result<(), SessionError> {

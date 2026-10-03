@@ -9,7 +9,7 @@ mod registry;
 pub use cli_ask::{AskArgs, AskError, AskOutput, read_stdin_prompt};
 pub use cli_surface::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,
-    command_failure_json, parse_args,
+    RequestedResume, command_failure_json, parse_args,
 };
 pub use command_router::SlashCommand;
 pub use command_specs::{

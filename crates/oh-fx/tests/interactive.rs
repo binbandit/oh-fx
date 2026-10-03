@@ -103,14 +103,12 @@ fn wait(session: &PtySession, needle: &str) -> String {
 }
 
 #[test]
-fn resume_aliases_and_launch_models_open_the_shell() {
+fn the_picker_alias_and_launch_models_open_the_shell() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Chosen."]))]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    for args in [&["-c"][..], &["-r"], &["resume", "last"]] {
-        let mut session = home.shell_with(args, 24, 80, "auto · model-a");
-        session.send(b"\x04");
-        assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
-    }
+    let mut session = home.shell_with(&["-r"], 24, 80, "auto · model-a");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
     let mut session = home.shell_with(
         &["--model", "vendor/model-b", "--fast"],
         24,
@@ -487,7 +485,7 @@ fn a_prompt_streams_a_reply_and_a_second_ctrl_c_exits() {
     session.send(b"hello there");
     wait(&session, "┃ hello there");
     session.send(b"\r");
-    let screen = wait(&session, "(↑4 ↓3)");
+    let screen = wait(&session, "s (↑4 ↓3)");
     let rows = session.screen_rows();
     assert!(rows[0].starts_with("oh-fx v"));
     assert!(rows[0].ends_with(" · Run /help for commands"));
@@ -527,12 +525,13 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 13");
+    let screen = wait(&session, "Commands 14");
     assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
     assert!(screen.contains("  /skills         browse and manage skills"));
     assert!(screen.contains("  /quit           exit the interactive shell"));
     assert!(screen.contains("  /reset          reset the current session context"));
-    assert!(screen.contains("Commands 13  [All]  General  Session  Account  Model"));
+    assert!(screen.contains("  /new            start a fresh session"));
+    assert!(screen.contains("Commands 14  [All]  General  Session  Account  Model"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session.send(b"/stats\r");
@@ -867,7 +866,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 13");
+    wait(&session, "Commands 14");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 
