@@ -74,3 +74,75 @@ fn arguments_are_compared_exactly_as_the_model_sent_them() {
     );
     assert!(!state.finish_batch());
 }
+
+fn correction(problems: &[&str]) -> String {
+    let problems = problems
+        .iter()
+        .map(|problem| format!("\"{problem}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{"error":{{"code":"invalid_shell_request","executed":false,"problems":[{problems}]}}}}"#
+    )
+}
+
+#[test]
+fn shell_validation_retry_retains_independent_batch_corrections() {
+    let first = correction(&["request.command is required."]);
+    let second = correction(&["request.session_id is required."]);
+    let call = shell("terminal-call", "{}");
+    let mut state = ShellValidationRetry::default();
+
+    state.begin_batch();
+    state.observe(&call, &first);
+    state.observe(&call, &second);
+    state.observe(&call, &first);
+    assert_eq!(state.0.current.len(), 2);
+    assert!(!state.finish_batch());
+
+    state.begin_batch();
+    state.observe(&call, &second);
+    state.observe(&call, "ordinary valid result");
+    state.observe(&call, &first);
+    assert_eq!(state.0.current.len(), 2);
+    assert!(state.finish_batch());
+}
+
+#[test]
+fn shell_request_corrections_stop_after_the_complete_repeated_batch() {
+    let failure = correction(&["request.yield_time_ms must be an integer."]);
+    let mut state = ShellValidationRetry::default();
+    for (index, arguments) in [
+        r#"{"command":"true","yield_time_ms":"1000"}"#,
+        r#"{"yield_time_ms":"1000","command":"true"}"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let call = shell("invalid", arguments);
+        state.begin_batch();
+        state.observe(&call, &failure);
+        state.observe(&call, "ordinary successful neighboring result");
+        assert_eq!(state.finish_batch(), index == 1);
+    }
+}
+
+#[test]
+fn only_shell_corrections_count_as_validation_failures() {
+    let failure = correction(&["request.command is required."]);
+    let other = ToolCall {
+        name: "read_file".to_owned(),
+        ..shell("call", "{}")
+    };
+    let mut state = ShellValidationRetry::default();
+    for _ in 0..2 {
+        state.begin_batch();
+        state.observe(&other, &failure);
+        state.observe(&shell("call", "{}"), "invalid arguments");
+        state.observe(
+            &shell("call", "{}"),
+            r#"{"error":{"code":"invalid_shell_request","executed":true,"problems":["a"]}}"#,
+        );
+        assert!(!state.finish_batch());
+    }
+}

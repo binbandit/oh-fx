@@ -224,7 +224,7 @@ note = "Compactor text requests stream into bounded results; host-managed author
 upstream = "src/core/agent/runtime/tool_admission.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/tool_admission.rs", "crates/ofx-agent/src/turn_reviews.rs"]
-note = "Turn review cache, admission, the malformed-argument stop, identical-failure escalation and the stop for identical shell failures in consecutive batches exist; the repeated shell validation stop and the turn's file-mutation denial memory are absent."
+note = "Turn review cache, admission, the malformed-argument stop, identical-failure escalation, and the stops for repeated shell request corrections and for identical shell failures in consecutive batches exist; terminal action field corrections arrive with TTY sessions, and the turn's file-mutation denial memory is absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tool_batch.zig"
