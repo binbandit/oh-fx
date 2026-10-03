@@ -8,6 +8,7 @@ use ofx_contract::{
     TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_tui::Clipboard;
+use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
@@ -97,6 +98,10 @@ impl ControllerState {
 
     pub(crate) fn last_reply(&self) -> Option<&str> {
         self.last_reply.as_deref()
+    }
+
+    pub(crate) fn change_tracker(&self) -> Option<&ChangeTracker> {
+        self.setup.change_tracker()
     }
 
     pub(crate) fn clipboard(&self) -> &dyn Clipboard {
@@ -363,6 +368,9 @@ impl Controller {
 
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
+        if let Some(tracker) = self.state.change_tracker() {
+            tracker.clear();
+        }
         let started = self
             .persistence
             .as_mut()
@@ -654,6 +662,7 @@ mod tests {
         let workspace = home.path().join("workspace");
         fs::create_dir_all(&config).unwrap();
         fs::create_dir_all(&workspace).unwrap();
+        let workspace = fs::canonicalize(workspace).unwrap();
         fs::write(config.join("settings.json"), settings.to_string()).unwrap();
         let paths = ProfilePaths {
             config,
@@ -1123,7 +1132,7 @@ mod tests {
         let server = FakeServer::start([read, Reply::sse(&chat_text_events(&["done"]))]);
         let mut harness = Harness::start(&server).await;
         fs::write(harness.home.path().join("outside.txt"), "notes\n").unwrap();
-        let workspace = harness.home.path().join("workspace");
+        let workspace = fs::canonicalize(harness.home.path().join("workspace")).unwrap();
         let expected = |turns: usize, grants: usize| {
             format!(
                 "status|model=model-a\nmodel_source=local\nprovider_endpoint={}\nauth=configured provider\nconnected_providers=local\nauth_refreshable=false\npermission_mode=auto\nworkspace={}\nhistory_turns={turns}\nsession_permission_grants={grants}\nagent_step_limit=0",
@@ -1632,6 +1641,60 @@ mod tests {
             unreachable!()
         };
         assert_eq!(notice.tone, NoticeTone::Neutral);
+    }
+
+    async fn undo_notice(harness: &mut Harness) -> String {
+        harness.command("/undo");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        notice_body(shown).pop().unwrap()
+    }
+
+    fn write_call(id: &str, path: &str, content: &str) -> Reply {
+        let arguments = json!({"path": path, "content": content}).to_string();
+        Reply::sse(&chat_tool_call_events(id, "write_file", &arguments))
+    }
+
+    #[tokio::test]
+    async fn undo_reverses_the_session_file_changes_newest_first_until_a_clear() {
+        let server = FakeServer::start([
+            write_call("call-1", "notes.md", "changed\n"),
+            write_call("call-2", "fresh.md", "fresh\n"),
+            Reply::sse(&chat_text_events(&["Wrote both."])),
+            write_call("call-3", "notes.md", "again\n"),
+            Reply::sse(&chat_text_events(&["Wrote it again."])),
+        ]);
+        let mut harness = Harness::start(&server).await;
+        let workspace = fs::canonicalize(harness.home.path().join("workspace")).unwrap();
+        let notes = workspace.join("notes.md");
+        fs::write(&notes, "original\n").unwrap();
+        assert_eq!(undo_notice(&mut harness).await, "undo|Nothing to undo.");
+        harness.submit("write the notes");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(
+            undo_notice(&mut harness).await,
+            format!(
+                "undo|Deleted {} (was newly created)",
+                workspace.join("fresh.md").display()
+            )
+        );
+        assert!(!workspace.join("fresh.md").exists());
+        assert_eq!(
+            undo_notice(&mut harness).await,
+            format!("undo|Restored {}", notes.display())
+        );
+        assert_eq!(fs::read_to_string(&notes).unwrap(), "original\n");
+        assert_eq!(undo_notice(&mut harness).await, "undo|Nothing to undo.");
+        harness.submit("write them again");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(fs::read_to_string(&notes).unwrap(), "again\n");
+        harness.command("/clear");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        assert_eq!(undo_notice(&mut harness).await, "undo|Nothing to undo.");
+        assert_eq!(fs::read_to_string(&notes).unwrap(), "again\n");
     }
 
     #[tokio::test]

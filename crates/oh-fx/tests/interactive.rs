@@ -364,6 +364,57 @@ fn ask_mode_file_changes_run_once_approved_and_project_instructions_reach_the_mo
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
+#[test]
+fn undo_reverses_the_latest_file_change_and_clear_forgets_the_rest() {
+    let write = |id: &str, path: &str, content: &str| {
+        Reply::sse(&chat_tool_call_events(
+            id,
+            "write_file",
+            &json!({"path": path, "content": content}).to_string(),
+        ))
+    };
+    let server = FakeServer::start([
+        write("call-1", "notes.md", "changed\n"),
+        write("call-2", "fresh.md", "fresh\n"),
+        Reply::sse(&chat_text_events(&["Wrote both."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let notes = home.workspace.join("notes.md");
+    let fresh = home.workspace.join("fresh.md");
+    fs::write(&notes, "original\n").expect("write notes.md");
+    let mut session = home.shell(30, 200);
+    session.send(b"/undo\r");
+    wait(&session, "* undo: Nothing to undo.");
+    session.send(b"write the notes\r");
+    wait(&session, "Wrote both.");
+    assert_eq!(
+        fs::read_to_string(&notes).expect("read notes.md"),
+        "changed\n"
+    );
+    session.send(b"/undo\r");
+    let canonical = fs::canonicalize(&home.workspace).expect("canonical workspace");
+    wait(
+        &session,
+        &format!(
+            "* undo: Deleted {} (was newly created)",
+            canonical.join("fresh.md").display()
+        ),
+    );
+    assert!(!fresh.exists());
+    session.send(b"/clear\r");
+    session
+        .wait_for(WAIT, |screen| !screen.contains("Wrote both."))
+        .expect("the old transcript leaves the screen");
+    session.send(b"/undo\r");
+    wait(&session, "* undo: Nothing to undo.");
+    assert_eq!(
+        fs::read_to_string(&notes).expect("read notes.md"),
+        "changed\n"
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
 fn output_after(session: &PtySession, start: usize, needle: &[u8]) -> Vec<u8> {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -525,13 +576,14 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 14");
+    let screen = wait(&session, "Commands 15");
     assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
     assert!(screen.contains("  /skills         browse and manage skills"));
     assert!(screen.contains("  /quit           exit the interactive shell"));
     assert!(screen.contains("  /reset          reset the current session context"));
     assert!(screen.contains("  /new            start a fresh session"));
-    assert!(screen.contains("Commands 14  [All]  General  Session  Account  Model"));
+    assert!(screen.contains("Commands 15  [All]  General  Session  Account  Model"));
+    assert!(screen.contains("  /undo           undo the latest tracked file operation"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session.send(b"/stats\r");
@@ -868,7 +920,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 14");
+    wait(&session, "Commands 15");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 

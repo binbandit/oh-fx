@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 flate2.workspace = true
-getrandom.workspace = true
 memchr.workspace = true
 ofx-config.workspace = true
 ofx-contract.workspace = true

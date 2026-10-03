@@ -83,6 +83,7 @@ mod tests {
             ("/reset", SlashKind::ResetSession),
             ("/stats", SlashKind::Stats),
             ("/status", SlashKind::Status),
+            ("/undo", SlashKind::Undo),
             ("/copy", SlashKind::Copy),
             ("/compact", SlashKind::Compact),
             ("/fast", SlashKind::Fast),

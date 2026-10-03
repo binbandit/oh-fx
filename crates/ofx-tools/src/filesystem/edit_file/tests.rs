@@ -6,7 +6,7 @@ use ofx_contract::{
     FileMutationState, PathAccess, PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect,
     ToolStatusDetail,
 };
-use ofx_workspace::MAX_PATH_BYTES;
+use ofx_workspace::{MAX_PATH_BYTES, UndoResult};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -425,4 +425,23 @@ fn external_edits_are_deferred_until_admission() {
         )
     );
     assert_eq!(fs::read_to_string(&outside).unwrap(), "public value\n");
+}
+
+#[test]
+fn committed_edits_are_tracked_with_the_content_they_replaced() {
+    let workspace = Fixture::new();
+    let tracker = ChangeTracker::default();
+    let tool = EditFile::new(&workspace.workspace).with_change_tracker(tracker.clone());
+    workspace.write("note.txt", "alpha beta\n");
+
+    run(&tool, &arguments("note.txt", "gamma", "delta"));
+    assert_eq!(tracker.undo_last(), UndoResult::Empty);
+
+    run(&tool, &arguments("note.txt", "beta", "gamma"));
+    assert_eq!(workspace.read("note.txt"), "alpha gamma\n");
+    assert_eq!(
+        tracker.undo_last(),
+        UndoResult::Restored(workspace.workspace.join("note.txt"))
+    );
+    assert_eq!(workspace.read("note.txt"), "alpha beta\n");
 }

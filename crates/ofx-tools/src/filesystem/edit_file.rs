@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use ofx_contract::{
     CallPresentation, LivePermissionMode, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec,
 };
+use ofx_workspace::ChangeTracker;
 
 use super::tool_spec;
 use crate::file_mutation::{MAX_CONTENT_BYTES, MutationInput, path_limit_failure};
@@ -34,6 +35,7 @@ impl EditFile {
                 presentation: PRESENTATION,
                 workspace_root: workspace_root.into(),
                 permission_mode: None,
+                change_tracker: None,
             },
         }
     }
@@ -41,6 +43,12 @@ impl EditFile {
     #[must_use]
     pub fn with_permission_mode(mut self, permission_mode: LivePermissionMode) -> Self {
         self.request.permission_mode = Some(permission_mode);
+        self
+    }
+
+    #[must_use]
+    pub fn with_change_tracker(mut self, change_tracker: ChangeTracker) -> Self {
+        self.request.change_tracker = Some(change_tracker);
         self
     }
 }
