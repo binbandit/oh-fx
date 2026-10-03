@@ -217,7 +217,10 @@ impl Owner {
             let run = tokio::spawn(async move {
                 let forward = |request: ApprovalRequest| agents.approval_requested(request);
                 let mut runtime = runtime.lock_owned().await;
-                runtime.run(&active, &instructions, &forward, &cancel).await
+                let tools = agents.work_tools();
+                runtime
+                    .run(&active, &instructions, tools, &forward, &cancel)
+                    .await
             });
             let outcome = run.await.unwrap_or_else(|_| WorkOutcome::panicked());
             owner.finish(&child_id, &work.id, outcome, &sender);

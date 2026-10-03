@@ -265,6 +265,11 @@ impl ManagedExecutions {
     }
 
     #[must_use]
+    pub fn separate(&self) -> Self {
+        Self::new(self.shared.supervisor.clone())
+    }
+
+    #[must_use]
     pub fn with_output_echo(mut self, echo: OutputEcho) -> Self {
         self.echo = Some(echo);
         self

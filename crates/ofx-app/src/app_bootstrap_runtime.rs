@@ -277,26 +277,24 @@ impl Profile {
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
         let change_tracker = interactive.then(ChangeTracker::default);
         let (questions, question_requests) = interactive.then(Questions::new).unzip();
-        let tools_with = |hooks| {
-            tool_set::ask_tools(
-                &self.workspace_root,
-                launch.executions,
-                launch.command_timeout,
-                &permission_mode,
-                skills.tool(),
-                hooks,
-            )
-        };
-        let tools = tools_with(ToolHooks {
-            questions: questions
-                .clone()
-                .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
-            web_fetch_progress: launch.web_fetch_progress,
-            change_tracker: change_tracker.as_ref(),
-        });
+        let tools = tool_set::ask_tools(
+            &self.workspace_root,
+            launch.executions,
+            launch.command_timeout,
+            &permission_mode,
+            skills.tool(),
+            ToolHooks {
+                questions: questions
+                    .clone()
+                    .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
+                web_fetch_progress: launch.web_fetch_progress,
+                change_tracker: change_tracker.as_ref(),
+            },
+        );
         let children = ChildFactory {
             provider: Arc::clone(&route.provider),
-            tools: tools_with(ToolHooks::default()),
+            executions: launch.executions.clone(),
+            command_timeout: launch.command_timeout,
             capabilities: route.capabilities.clone(),
             connection: route.connection.clone(),
             reviewer: Arc::clone(&route.reviewer),

@@ -184,6 +184,21 @@ struct LastReply {
     text: Arc<str>,
 }
 
+fn describe_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<ToolSpec>, String) {
+    let tool_specs: Vec<ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
+    let (remote, offered): (Vec<_>, Vec<_>) = tools
+        .iter()
+        .zip(&tool_specs)
+        .partition(|(tool, _)| tool.provider_executed());
+    let offered_specs = offered.into_iter().map(|(_, spec)| spec.clone()).collect();
+    let tool_guidance = remote
+        .iter()
+        .map(|(_, spec)| spec.description.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (tool_specs, offered_specs, tool_guidance)
+}
+
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
@@ -220,17 +235,7 @@ impl Agent {
         permissions: Arc<dyn PermissionGate>,
         config: AgentConfig,
     ) -> Self {
-        let tool_specs: Vec<ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
-        let (remote, offered): (Vec<_>, Vec<_>) = tools
-            .iter()
-            .zip(&tool_specs)
-            .partition(|(tool, _)| tool.provider_executed());
-        let offered_specs = offered.into_iter().map(|(_, spec)| spec.clone()).collect();
-        let tool_guidance = remote
-            .iter()
-            .map(|(_, spec)| spec.description.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let (tool_specs, offered_specs, tool_guidance) = describe_tools(&tools);
         Self {
             provider,
             tools,
@@ -297,6 +302,11 @@ impl Agent {
 
     pub(crate) fn config(&self) -> &AgentConfig {
         &self.config
+    }
+
+    pub(crate) fn replace_tools(&mut self, tools: Vec<Arc<dyn Tool>>) {
+        (self.tool_specs, self.offered_specs, self.tool_guidance) = describe_tools(&tools);
+        self.tools = tools;
     }
 
     pub(crate) fn inherit_root_user_requests(&mut self, requests: Arc<RootUserRequests>) {

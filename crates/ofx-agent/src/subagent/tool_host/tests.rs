@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
@@ -32,6 +33,7 @@ struct Seen {
     model: String,
     effort: Option<String>,
     system_prompt: String,
+    tools: Vec<String>,
     messages: Vec<ChatMessage>,
 }
 
@@ -67,6 +69,7 @@ impl ModelProvider for Provider {
             model: request.model.to_owned(),
             effort: request.provider_options.reasoning_effort.map(str::to_owned),
             system_prompt: request.instructions[0].to_owned(),
+            tools: request.tools.iter().map(|tool| tool.name.clone()).collect(),
             messages: request.messages.to_vec(),
         });
         let script = self.scripts.lock().unwrap().pop_front();
@@ -176,6 +179,17 @@ struct Agents {
     requested: Mutex<Vec<ApprovalRequest>>,
     decisions: Mutex<VecDeque<ApprovalDecision>>,
     asked: Notify,
+    issued: AtomicUsize,
+    released: Arc<AtomicUsize>,
+}
+
+impl Agents {
+    fn works(&self) -> (usize, usize) {
+        (
+            self.issued.load(Ordering::SeqCst),
+            self.released.load(Ordering::SeqCst),
+        )
+    }
 }
 
 impl ChildAgents for Agents {
@@ -197,13 +211,7 @@ impl ChildAgents for Agents {
             .push((settings.clone(), permission_mode));
         let agent = Agent::new(
             Arc::clone(&self.provider) as Arc<dyn ModelProvider>,
-            vec![Arc::new(Probe {
-                spec: ToolSpec {
-                    name: "probe".to_owned(),
-                    description: "Probe the workspace.".to_owned(),
-                    input_schema: "{}",
-                },
-            })],
+            Vec::new(),
             Arc::new(NoContext),
             Arc::new(AskEveryCall),
             AgentConfig {
@@ -220,6 +228,23 @@ impl ChildAgents for Agents {
             agent.with_approvals(self.approvals.clone())
         } else {
             agent
+        }
+    }
+
+    fn work_tools(&self) -> WorkTools {
+        self.issued.fetch_add(1, Ordering::SeqCst);
+        let released = Arc::clone(&self.released);
+        WorkTools {
+            tools: vec![Arc::new(Probe {
+                spec: ToolSpec {
+                    name: "probe".to_owned(),
+                    description: "Probe the workspace.".to_owned(),
+                    input_schema: "{}",
+                },
+            })],
+            release: Box::pin(async move {
+                released.fetch_add(1, Ordering::SeqCst);
+            }),
         }
     }
 
@@ -257,6 +282,8 @@ impl Harness {
             requested: Mutex::new(Vec::new()),
             decisions: Mutex::new(VecDeque::new()),
             asked: Notify::new(),
+            issued: AtomicUsize::new(0),
+            released: Arc::new(AtomicUsize::new(0)),
         });
         Self {
             host: SubagentHost::new(Arc::clone(&agents) as Arc<dyn ChildAgents>),
@@ -336,6 +363,7 @@ async fn a_run_returns_the_childs_reply_from_a_fresh_conversation() {
     assert_eq!(seen[0].model, "parent-model");
     assert_eq!(seen[0].effort, None);
     assert_eq!(seen[0].system_prompt, BASE_PROMPT);
+    assert_eq!(seen[0].tools, ["probe"]);
     assert_eq!(seen[0].messages, vec![ChatMessage::user("inspect auth")]);
     assert_eq!(seen[1].messages, vec![ChatMessage::user("inspect again")]);
     let created = harness.agents.created.lock().unwrap();
@@ -521,6 +549,40 @@ async fn a_cancelled_parent_cancels_its_child_and_a_busy_child_refuses_new_work(
         succeeded("after cancel")
     );
     assert_eq!(harness.provider.seen().len(), 2);
+}
+
+#[tokio::test]
+async fn every_work_item_gets_fresh_tools_that_are_released_when_it_ends() {
+    let harness = Harness::new(vec![
+        Script::Reply("first"),
+        Script::Fail(ProviderError::new(ProviderErrorKind::Protocol, "Boom")),
+        Script::Hold,
+    ]);
+    assert_eq!(
+        harness
+            .run("call-1", message("reviewer", None, "one"))
+            .await,
+        succeeded("first")
+    );
+    assert_eq!(harness.agents.works(), (1, 1));
+    harness
+        .run("call-2", message("reviewer", None, "two"))
+        .await;
+    assert_eq!(harness.agents.works(), (2, 2));
+    let cancel = CancellationToken::new();
+    let third = tokio::spawn(harness.call("call-3", run("three"), &cancel));
+    harness.provider.holding.notified().await;
+    assert_eq!(harness.agents.works(), (3, 2));
+    cancel.cancel();
+    assert_eq!(third.await.unwrap(), rejected("child_cancelled"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while harness.agents.works() != (3, 3) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the cancelled work releases its tools");
+    assert_eq!(harness.agents.created.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -908,11 +970,18 @@ impl ChildAgents for IntentChildren {
     fn agent(&self, _settings: &ChildSettings, _permission_mode: LivePermissionMode) -> Agent {
         Agent::new(
             Arc::clone(&self.provider) as Arc<dyn ModelProvider>,
-            vec![Described::shell()],
+            Vec::new(),
             Arc::new(NoContext),
             Arc::clone(&self.gate) as Arc<dyn PermissionGate>,
             intent_config(),
         )
+    }
+
+    fn work_tools(&self) -> WorkTools {
+        WorkTools {
+            tools: vec![Described::shell()],
+            release: Box::pin(async {}),
+        }
     }
 
     fn approval_requested(&self, _request: ApprovalRequest) {}

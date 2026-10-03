@@ -1,24 +1,28 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ofx_agent::{
     Agent, AgentConfig, ChildAgents, ChildDefaults, ChildSettings, ProjectContext,
-    SkillContextProvider,
+    SkillContextProvider, WorkTools,
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
     ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider, ReasoningEffort,
-    ReviewTransport, Tool,
+    ReviewTransport,
 };
+use ofx_exec::ManagedExecutions;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 
 use crate::app_bootstrap_runtime::output_tokens;
 use crate::context::{HostProjectContext, HostRuntimeContext};
 use crate::skills::HostSkills;
+use crate::tool_set::{self, ToolHooks};
 
 pub(crate) struct ChildFactory {
     pub(crate) provider: Arc<dyn ModelProvider>,
-    pub(crate) tools: Vec<Arc<dyn Tool>>,
+    pub(crate) executions: ManagedExecutions,
+    pub(crate) command_timeout: Option<Duration>,
     pub(crate) capabilities: Option<Arc<dyn CapabilityResolver>>,
     pub(crate) connection: Option<ProviderDefinition>,
     pub(crate) reviewer: Arc<dyn ReviewTransport>,
@@ -62,7 +66,7 @@ impl ChildAgents for ChildFactory {
                 ));
         let mut agent = Agent::new(
             Arc::clone(&self.provider),
-            self.tools.clone(),
+            Vec::new(),
             Arc::new(HostRuntimeContext::new(
                 self.workspace_root.clone(),
                 permission_mode,
@@ -80,6 +84,22 @@ impl ChildAgents for ChildFactory {
                 agent.with_project_context(provider.clone(), snapshot.clone())
             }
             None => agent,
+        }
+    }
+
+    fn work_tools(&self) -> WorkTools {
+        let executions = self.executions.separate();
+        let tools = tool_set::ask_tools(
+            &self.workspace_root,
+            &executions,
+            self.command_timeout,
+            &self.permission_mode,
+            self.skills.tool(),
+            ToolHooks::default(),
+        );
+        WorkTools {
+            tools,
+            release: Box::pin(async move { executions.shutdown().await }),
         }
     }
 
