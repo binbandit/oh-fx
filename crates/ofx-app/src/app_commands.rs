@@ -11,7 +11,7 @@ use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 use crate::app_agent_runtime::ControllerState;
 use crate::app_session_runtime::{Persistence, RenameError, validate_session_title};
 use crate::session_commands::handle_allowlist;
-use crate::skill_commands::handle_skills;
+use crate::skill_commands::{InstallRequest, handle_skills};
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
 const CLIPBOARD_TOPIC: &str = "clipboard";
@@ -36,6 +36,7 @@ const RENAME_USAGE: &str = "usage: /rename <title>";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
     None,
+    Install(InstallRequest),
     SwitchModel(String),
     Clear,
     ToggleFast,
@@ -158,10 +159,8 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             state.permissions().handle_command(command.payload);
             CommandEffect::None
         }
-        SlashKind::Skills => {
-            handle_skills(state, command.payload);
-            CommandEffect::None
-        }
+        SlashKind::Skills => handle_skills(state, command.payload)
+            .map_or(CommandEffect::None, CommandEffect::Install),
         SlashKind::Model => {
             let resolved = resolve_model_query(state.models(), command.payload);
             let prefix = if work == Work::Turn {

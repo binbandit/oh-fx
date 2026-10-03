@@ -1,6 +1,7 @@
 mod byte_trim;
 mod encoded_scalar;
 mod file_picker_path;
+mod install;
 mod io;
 mod skill_contract;
 mod skill_invocation;
@@ -21,3 +22,5 @@ pub use skill_runtime::{
     SkillCatalog, SkillDiscovery, SkillDiscoveryContext, SymlinkAuthorities, build_skill_prompt,
     diagnostic_summary,
 };
+
+pub use install::{InstallResult, install_local};

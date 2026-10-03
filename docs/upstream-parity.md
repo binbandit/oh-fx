@@ -55,6 +55,13 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 
 The `slack` command (`slack install`, `slack status`, and `slack refresh`) predates this range and is omitted for the same reason as the Slack MCP preset. `oh-fx slack` fails as any unknown command does.
 
+## Skill installation at the sync point
+
+| Area | Status | oh-fx | Note |
+|---|---|---|---|
+| Local directory installation | `ported` | `ofx-skills`, `ofx-app` | `/skills add` and `/skills install` copy skill directories and assets, filter by directory or metadata name, safely replace managed destinations, and refresh the catalog after installation. Filesystem safety differences are recorded in [architecture.md](architecture.md). |
+| Remote sources and CLI installation | `defer:skill-install` | future installer slices | Repository cloning, install-command and URL normalization, and the top-level CLI command remain pending. |
+
 ## Deferred areas
 
 Port each area from the latest upstream. These notes list what changed in the range above, so the port can be checked against it.
