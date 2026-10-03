@@ -174,6 +174,11 @@ pub enum UiEvent {
         turn_id: TurnId,
         text: String,
     },
+    SteeringApplied {
+        turn_id: TurnId,
+        prompt: u64,
+        text: String,
+    },
     ApprovalRequested {
         turn_id: TurnId,
         request: Box<ApprovalRequest>,

@@ -144,6 +144,7 @@ impl Agent {
             size.overflow = pending;
             if !rebuilt && (pending || size.due()) {
                 let conversation = (!pending).then_some(request);
+                self.set_compacting(true);
                 let compacted = self
                     .compacted_history(
                         size,
@@ -153,7 +154,9 @@ impl Agent {
                         &mut || {},
                         cancel,
                     )
-                    .await?;
+                    .await;
+                self.set_compacting(false);
+                let compacted = compacted?;
                 if compacted.is_some() {
                     return Ok(compacted);
                 }

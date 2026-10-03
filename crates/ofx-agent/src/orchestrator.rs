@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
+use crate::execution_memory::steering_text;
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide, recovery_cause,
 };
@@ -33,9 +34,11 @@ use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvid
 use crate::prompt_context::Calibration;
 use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 use crate::turn_reviews::TurnReviews;
+use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
 mod project_gate;
+mod steering;
 mod turn_ledger;
 mod turn_log;
 
@@ -204,6 +207,7 @@ pub struct Agent {
     request_fixed_tokens: Option<usize>,
     turns: u64,
     last_reply: Option<LastReply>,
+    steering: Option<Arc<WorkerRuntime>>,
 }
 
 impl Agent {
@@ -238,6 +242,7 @@ impl Agent {
             request_fixed_tokens: None,
             turns: 0,
             last_reply: None,
+            steering: None,
         }
     }
 
@@ -356,7 +361,7 @@ impl Agent {
             reviews: TurnReviews::default(),
         };
         self.turn_starts.push(turn.start);
-        self.history.push(ChatMessage::user(prompt));
+        self.history.push(self.turn_message(prompt));
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
         let (outcome, final_text, mut failure, ending) = match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
@@ -372,7 +377,7 @@ impl Agent {
             Err(Stop::Failed { failure, partial }) => {
                 let spoke = !partial.trim_matches(TRIMMED).is_empty();
                 let ending = if !spoke
-                    && !self.has_completed_tool_steps(turn.start)
+                    && !self.has_turn_progress(turn.start)
                     && !turn.compaction.compacted_steps
                     && failure != TurnFailure::StepLimitReached
                 {
@@ -448,9 +453,7 @@ impl Agent {
                     TurnFailure::StepLimitReached,
                 ));
             }
-            if cancel.is_cancelled() {
-                return Err(Stop::interrupted());
-            }
+            let step_cancel = self.begin_model_step(turn.id, events, cancel)?;
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
@@ -479,7 +482,9 @@ impl Agent {
                 }
                 Err(error) => return Err(compaction_stop(error, cancel)),
             }
-            let outcome = self.complete(turn, request, body, events, cancel).await;
+            let outcome = self
+                .complete(turn, request, body, events, &step_cancel)
+                .await;
             let completion = match outcome {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
@@ -490,6 +495,13 @@ impl Agent {
                     partial,
                 }) if self.recovers_overflow(turn, &error, &partial, cancel) => {
                     self.settle_measurement(measured, None);
+                    continue;
+                }
+                Err(Stop::Interrupted { partial })
+                    if self.steer_after_cancel(turn.id, &partial, events) =>
+                {
+                    self.settle_measurement(measured, None);
+                    step += 1;
                     continue;
                 }
                 Err(ended) => {
@@ -503,14 +515,20 @@ impl Agent {
                 usage: completion.usage,
             });
             step += 1;
+            let reply = completion.content.as_deref();
+            if self.steered_after_reply(turn.id, reply, &step_cancel, cancel, events)? {
+                continue;
+            }
+            let more_steps = self.config.step_limit == 0 || step < self.config.step_limit;
             match (completion.finish_reason, completion.tool_calls.is_empty()) {
                 (FinishReason::Stop, true) => {
-                    if let Some(text) = self.finish(turn, completion, events)? {
+                    if let Some(text) = self.finish(turn, completion, more_steps, events)? {
                         return Ok(text);
                     }
                 }
                 (FinishReason::ToolCalls, false) => {
-                    self.run_batch(turn, completion, events, cancel).await?;
+                    self.run_batch(turn, completion, more_steps, events, cancel)
+                        .await?;
                 }
                 _ => return Err(Stop::failed(TurnFailure::InvalidCompletion)),
             }
@@ -716,9 +734,11 @@ impl Agent {
         &mut self,
         turn: &mut Turn,
         completion: Completion,
+        more_steps: bool,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<(), Stop> {
+        self.enter_tool_phase();
         turn.silent_tool_steps = if completion
             .content
             .as_deref()
@@ -779,11 +799,15 @@ impl Agent {
             return Err(Stop::interrupted());
         }
         turn.malformed_batches = if all_malformed {
-            turn.malformed_batches + 1
+            (turn.malformed_batches + 1).min(MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES)
         } else {
             0
         };
         if turn.malformed_batches == MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES {
+            if more_steps && let Some(steering) = self.finalizing_steering() {
+                self.append_steering(turn.id, steering, events);
+                return Ok(());
+            }
             return Err(self.stop_with_notice(
                 turn.id,
                 events,
@@ -975,6 +999,7 @@ impl Agent {
         &mut self,
         turn: &mut Turn,
         completion: Completion,
+        more_steps: bool,
         events: EventSink<'_>,
     ) -> Result<Option<String>, Stop> {
         let has_content = completion
@@ -1008,24 +1033,36 @@ impl Agent {
                 .transpose()
                 .map_err(|error| Stop::failed(TurnFailure::Provider(error)))?
                 .flatten();
+            (EMPTY_RESPONSE_TEXT.to_owned(), replay)
+        };
+        let reply = ChatMessage::Assistant {
+            content: Some(history_text.clone()),
+            tool_calls: Vec::new(),
+            provider_replay: history_replay,
+        };
+        if more_steps && let Some(steering) = self.finalizing_steering() {
+            self.history.push(reply);
+            self.append_steering(turn.id, steering, events);
+            return Ok(None);
+        }
+        if !has_content {
             events(UiEvent::Operational {
                 turn_id: turn.id,
                 text: EMPTY_RESPONSE_TEXT.to_owned(),
             });
-            (EMPTY_RESPONSE_TEXT.to_owned(), replay)
-        };
-        self.history.push(ChatMessage::Assistant {
-            content: Some(history_text.clone()),
-            tool_calls: Vec::new(),
-            provider_replay: history_replay,
-        });
+        }
+        self.history.push(reply);
         Ok(Some(history_text))
     }
 
-    fn has_completed_tool_steps(&self, start: usize) -> bool {
-        self.history[start..]
+    fn has_turn_progress(&self, start: usize) -> bool {
+        self.history[start + 1..]
             .iter()
-            .any(|message| matches!(message, ChatMessage::Tool { .. }))
+            .any(|message| match message {
+                ChatMessage::Tool { .. } => true,
+                ChatMessage::User { content } => steering_text(content).is_some(),
+                ChatMessage::System { .. } | ChatMessage::Assistant { .. } => false,
+            })
     }
 
     fn keep_partial_turn(&mut self, start: usize, partial: &str) {
@@ -1409,7 +1446,7 @@ impl<'a> Reviewing<'a> {
 
 fn root_requests<'h>(history: &'h [ChatMessage], turn_starts: &[usize]) -> (&'h str, Vec<&'h str>) {
     let user_request = |start: &usize| match history.get(*start) {
-        Some(ChatMessage::User { content }) => Some(content.as_str()),
+        Some(ChatMessage::User { content }) => Some(steering_text(content).unwrap_or(content)),
         _ => None,
     };
     let Some((current, earlier)) = turn_starts.split_last() else {
