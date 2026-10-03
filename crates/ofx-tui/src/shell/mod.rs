@@ -775,6 +775,7 @@ impl<'a> Shell<'a> {
             self.compaction.and_then(|status| status.expires_ms()),
             self.recovery()
                 .and_then(|recovery| recovery.next_change_ms(now_ms)),
+            self.input.theme_deadline_ms(now_ms),
         ]
         .into_iter()
         .flatten()
