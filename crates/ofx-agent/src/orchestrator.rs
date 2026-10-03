@@ -274,6 +274,10 @@ impl Agent {
         self
     }
 
+    pub(crate) fn config(&self) -> &AgentConfig {
+        &self.config
+    }
+
     pub fn set_config(&mut self, config: AgentConfig) {
         if config.model != self.config.model
             || self
