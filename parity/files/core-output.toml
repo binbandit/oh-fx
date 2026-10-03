@@ -19,7 +19,7 @@ note = "Manual compaction phases and feedback exist; identity-scoped operations,
 upstream = "src/core/output/diff.zig"
 status = "partial"
 modules = ["crates/ofx-markdown/src/diff.rs"]
-note = "Canonical file review operations, line counts and bounded context/elision exist; terminal diff previews, deferred full-diff storage and OSC review publication are missing."
+note = "Canonical file review rows with old and new line numbers, elision counts, line counts and bounded context/elision exist; the bounded six-row preview, terminal diff previews, deferred full-diff storage and OSC review publication are missing."
 
 [[file]]
 upstream = "src/core/output/full_transcript_metadata.zig"

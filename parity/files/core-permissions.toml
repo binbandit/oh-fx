@@ -56,7 +56,7 @@ note = "Approval request/response prompting exists; amendment feedback and compl
 upstream = "src/core/permissions/permission_request.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/permission_gate.rs", "crates/ofx-contract/src/ui.rs"]
-note = "Owned ApprovalRequest fields, argument previews, command/file intents and scoped grants exist; upstream request-origin identity/equality, bounded fileRequestFootprint and amendment capability are absent."
+note = "Owned ApprovalRequest fields, argument previews, command/file intents, the prepared file change content and scoped grants exist; upstream request-origin identity/equality, bounded fileRequestFootprint and amendment capability are absent."
 
 [[file]]
 upstream = "src/core/permissions/permissions.zig"
