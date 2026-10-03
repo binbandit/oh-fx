@@ -137,6 +137,30 @@ async fn a_switched_model_resolves_its_own_capabilities() {
 }
 
 #[tokio::test]
+async fn a_switched_provider_takes_the_conversation_and_resolves_capabilities_again() {
+    let first = FakeProvider::new(vec![text_reply("one")]);
+    let second = FakeProvider::new(vec![text_reply("two")]);
+    let first_resolver = FakeResolver::new(vec![supporting(&["high"], false)]);
+    let second_resolver = FakeResolver::new(vec![supporting(&["low"], true)]);
+    let mut agent = agent_with(
+        &first,
+        Some(&first_resolver),
+        requesting(Some("high"), true),
+    );
+    run(&mut agent, "one").await;
+    let provider: Arc<FakeProvider> = Arc::clone(&second);
+    let resolver: Arc<FakeResolver> = Arc::clone(&second_resolver);
+    agent.set_provider(provider, Some(resolver));
+    agent.set_config(requesting(Some("low"), true));
+    let (report, _) = run(&mut agent, "two").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(first.requests().len(), 1);
+    assert_eq!(sent_options(&second), [(Some("low".to_owned()), true)]);
+    assert_eq!(second_resolver.models(), ["test-model"]);
+    assert_eq!(second.requests()[0].messages.len(), 3);
+}
+
+#[tokio::test]
 async fn unsupported_settings_are_dropped_without_a_notice() {
     for lookup in [
         supporting(&["low", "high"], false),
