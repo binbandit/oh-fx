@@ -21,7 +21,7 @@ use crate::app_commands::{
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
 use crate::native::NativeClipboard;
-use crate::session_commands::SettingsAccess;
+use crate::session_commands::{SessionFacts, SettingsAccess};
 use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
 
@@ -111,6 +111,14 @@ impl ControllerState {
             paths: self.setup.preferences(),
             workspace_root: self.setup.workspace_root(),
             tool_names: self.setup.tool_names(),
+        }
+    }
+
+    pub(crate) fn session_facts(&self) -> SessionFacts<'_> {
+        SessionFacts {
+            model: &self.model,
+            permission_mode: self.setup.permission_mode(),
+            step_limit: self.setup.step_limit(),
         }
     }
 

@@ -248,6 +248,7 @@ fn options() -> ShellOptions {
         full_access_warning: false,
         workspace_label: "workspace".to_owned(),
         workspace_root: PathBuf::from("/workspace"),
+        startup_scrollback: true,
         commands: vec![
             spec("/help", &[], 0),
             spec("/clear", &[], 0),
