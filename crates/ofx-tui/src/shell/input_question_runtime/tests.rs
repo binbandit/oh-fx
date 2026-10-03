@@ -398,3 +398,20 @@ fn typed_and_pasted_answers_stop_at_the_decision_input_limit() {
     let expected = format!("{}b", "a".repeat(4095));
     assert_eq!(answers(&test), [answered(4, Some(&[expected.as_str()]))]);
 }
+
+#[test]
+fn a_paste_meant_for_an_answer_never_reaches_the_composer() {
+    let mut test = asking(proceed());
+    press(&mut test, b"4");
+    press(&mut test, b"\x1b[200~orphan");
+    test.deliver(UiEvent::TurnFinished {
+        turn_id: TurnId::new(1),
+        outcome: TurnOutcome::Completed,
+    });
+    press(&mut test, b"\x1b[201~");
+    assert!(
+        test.shell.composer.is_empty(),
+        "{}",
+        test.shell.composer.text()
+    );
+}

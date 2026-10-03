@@ -153,7 +153,10 @@ impl Shell<'_> {
 
     pub(super) fn handle_paste(&mut self, outcome: PasteOutcome) {
         match outcome {
-            PasteOutcome::Text { text, .. } => {
+            PasteOutcome::Text {
+                owner: PasteOwner::Composer,
+                text,
+            } => {
                 if self
                     .composer
                     .insert_paste(&text, COMPOSER_INPUT_LIMIT_BYTES)
@@ -164,7 +167,7 @@ impl Shell<'_> {
             }
             PasteOutcome::LimitExceeded { .. } => self.report_limit(),
             PasteOutcome::UnsupportedBytes { .. } => self.input_notice(PASTE_UNSUPPORTED_BYTES),
-            PasteOutcome::Secret { .. } | PasteOutcome::Discarded => {}
+            PasteOutcome::Text { .. } | PasteOutcome::Secret { .. } | PasteOutcome::Discarded => {}
             PasteOutcome::TrailingInput { .. } => self.input_notice(PASTE_TRAILING_INPUT),
         }
     }
