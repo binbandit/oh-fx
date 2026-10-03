@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use ofx_contract::{
     ActionLabel, ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription,
     CommandProcessPresentation, CommandProfile, CommandRequest, Concurrency, FileChangeStats,
-    FileMutation, FileMutationState, PathAccess, RequestId, ReviewHold, ToolActivity, ToolCallId,
-    ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnId,
-    TurnOutcome, UiCommand, UiEvent, tool_permission_denied_json, tool_review_held_json,
+    FileMutation, FileMutationState, PathAccess, RequestId, ReviewHold, SubagentActionState,
+    ToolActivity, ToolCallId, ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus,
+    ToolStatusDetail, TurnId, TurnOutcome, UiCommand, UiEvent, format_subagent_plain_action,
+    tool_permission_denied_json, tool_review_held_json,
 };
 
 use super::super::test_shell::TestShell;
@@ -389,6 +390,107 @@ fn a_call_awaiting_approval_shows_as_running_and_settles_with_its_decision() {
     let screen = test.screen();
     assert!(
         screen.contains("● 1 tool call · 1 read · 1 denied\n└ Denied ../notes.txt\n"),
+        "{screen}"
+    );
+}
+
+fn delegated(call: &str, arguments: &str) -> UiEvent {
+    UiEvent::ToolStarted {
+        turn_id: turn(),
+        call_id: ToolCallId::new(call),
+        tool_name: "subagent".to_owned(),
+        description: CallDescription {
+            title: format_subagent_plain_action("subagent", arguments, SubagentActionState::Active)
+                .expect("a subagent row"),
+            label: None,
+            activity: ToolActivity::Subagent,
+            effect: ToolEffect::Mutating,
+            concurrency: Concurrency::Parallel,
+        },
+    }
+}
+
+fn delegation_finished(call: &str, arguments: &str, outcome: Outcome) -> UiEvent {
+    match finished(call, "subagent", outcome) {
+        UiEvent::ToolFinished {
+            turn_id,
+            call_id,
+            tool_name,
+            status,
+            content,
+            command_result,
+            process,
+            status_detail,
+            file_change,
+            ..
+        } => UiEvent::ToolFinished {
+            turn_id,
+            call_id,
+            tool_name,
+            arguments: arguments.to_owned(),
+            status,
+            content,
+            command_result,
+            process,
+            status_detail,
+            file_change,
+        },
+        other => other,
+    }
+}
+
+#[test]
+fn subagent_rows_name_the_child_while_it_works_and_when_it_settles() {
+    let run = r#"{"request":{"action":"run","task":"inspect auth"}}"#;
+    let message = r#"{"request":{"action":"message","agent":"reviewer","message":"check this"}}"#;
+    let mut test = running("delegate");
+    test.deliver(delegated("a", run));
+    test.deliver(delegated("b", message));
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "● 2 tool calls · 2 subagent\n├ Subagent working · inspect auth\n└ reviewer working · check this"
+        ),
+        "{screen}"
+    );
+    test.deliver(delegation_finished(
+        "a",
+        run,
+        Outcome {
+            content: r#"{"ok":true,"result":"done","error_code":null}"#.to_owned(),
+            ..success()
+        },
+    ));
+    test.deliver(delegation_finished(
+        "b",
+        message,
+        failure(r#"{"ok":false,"result":null,"error_code":"child_busy"}"#),
+    ));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "├ Subagent finished · inspect auth\n└ reviewer busy; message not sent · check this"
+        ),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_cancelled_subagent_row_names_the_child() {
+    let mut test = running("delegate");
+    test.deliver(delegated(
+        "a",
+        r#"{"request":{"action":"run","task":"inspect auth"}}"#,
+    ));
+    test.draining(super::super::Shell::cancel_visible_turn);
+    let screen = test.screen();
+    assert!(
+        screen.contains("└ Cancelled Subagent · inspect auth"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("Cancelled Subagent · inspect auth · What can oh-fx do differently?"),
         "{screen}"
     );
 }
