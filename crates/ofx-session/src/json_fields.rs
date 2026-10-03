@@ -142,6 +142,17 @@ impl<'a> Fields<'a> {
         }
     }
 
+    pub(crate) fn present_or_null<T: Default>(
+        &mut self,
+        key: &str,
+        read: impl FnOnce(Json<'a>) -> Option<T>,
+    ) -> Option<T> {
+        match self.required(key)? {
+            Json::Null => Some(T::default()),
+            value => read(value),
+        }
+    }
+
     pub(crate) fn fixed<T: FixedField>(&mut self, key: &str) -> Option<T> {
         self.or(key, T::default(), |value| {
             T::accepts(&value).then(T::default)

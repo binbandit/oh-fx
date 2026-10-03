@@ -65,12 +65,13 @@ fn user(fields: &mut Fields<'_>) -> Option<UserEvent> {
 fn assistant(fields: &mut Fields<'_>) -> Option<AssistantEvent> {
     Some(AssistantEvent {
         text: fields.string("text")?,
-        provider_replay: fields.nullable("provider_replay", |value| replay(value).map(Some))?,
+        provider_replay: fields
+            .nullable("provider_replay", |value| saved_replay(value).map(Some))?,
         standalone_response: fields.or("standalone_response", false, |value| value.as_bool())?,
     })
 }
 
-fn replay(value: Json<'_>) -> Option<SavedReplay> {
+pub(crate) fn saved_replay(value: Json<'_>) -> Option<SavedReplay> {
     let mut fields = Fields::new(value)?;
     let replay = SavedReplay {
         source: replay_source(fields.required("source")?)?,
