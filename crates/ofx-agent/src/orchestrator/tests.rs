@@ -2499,6 +2499,79 @@ struct StreamStartTool {
     preparations: Arc<AtomicUsize>,
 }
 
+struct StreamStartBomb {
+    inner: Arc<dyn Tool>,
+}
+
+impl Tool for StreamStartBomb {
+    fn spec(&self) -> &ToolSpec {
+        self.inner.spec()
+    }
+
+    fn provisional_presentation(&self) -> Option<ofx_contract::CallPresentation> {
+        panic::panic_any(Bomb)
+    }
+
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        self.inner.prepare(arguments)
+    }
+}
+
+#[tokio::test]
+async fn streamed_presentation_panic_payloads_stay_contained() {
+    let provider = FakeProvider::new(vec![Script::Reply(
+        vec![streamed_start("call", "echo")],
+        completion(Some("after"), Vec::new(), FinishReason::Stop),
+    )]);
+    let mut agent = new_agent(
+        provider,
+        vec![Arc::new(StreamStartBomb { inner: echo_tool() })],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+}
+
+#[tokio::test]
+async fn whitespace_before_streamed_tool_start_does_not_insert_a_boundary() {
+    let provider = FakeProvider::new(vec![Script::Reply(
+        vec![
+            StreamEvent::TextDelta {
+                text: "  ".to_owned(),
+            },
+            streamed_start("call", "echo"),
+            StreamEvent::TextDelta {
+                text: "More.".to_owned(),
+            },
+        ],
+        completion(Some("  More."), Vec::new(), FinishReason::Stop),
+    )]);
+    let mut agent = new_agent(
+        provider,
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(assistant_text(&events), "  More.");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+}
+
 impl Tool for StreamStartTool {
     fn spec(&self) -> &ToolSpec {
         self.inner.spec()
@@ -2573,7 +2646,7 @@ async fn streamed_starts_use_registry_metadata_without_preparing_or_executing() 
 }
 
 #[tokio::test]
-async fn streamed_write_edit_and_question_starts_publish_no_provisional() {
+async fn streamed_starts_honor_the_metadata_supplied_by_the_registered_tool() {
     for activity in [ToolActivity::Write, ToolActivity::Edit, ToolActivity::Ask] {
         let preparations = Arc::new(AtomicUsize::new(0));
         let provider = FakeProvider::new(vec![Script::Reply(
@@ -2585,11 +2658,10 @@ async fn streamed_write_edit_and_question_starts_publish_no_provisional() {
             vec![stream_start_tool(activity, Arc::clone(&preparations))],
         );
         let (_, events) = run(&mut agent, "read").await;
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
-        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::ToolProvisional { action_label, .. } if action_label == "Custom activity"
+        )));
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 }
@@ -2659,11 +2731,7 @@ async fn failed_local_streamed_starts_retry_without_executing_the_call() {
 
 #[tokio::test]
 async fn unknown_starts_preserve_text_and_known_ineligible_starts_end_it_once() {
-    for (tool_name, activity, expected_boundaries) in [
-        ("missing", ToolActivity::Read, 0),
-        ("echo", ToolActivity::Write, 1),
-        ("echo", ToolActivity::Ask, 1),
-    ] {
+    for (tool_name, expected_boundaries) in [("missing", 0), ("echo", 1)] {
         let provider = FakeProvider::new(vec![Script::Reply(
             vec![
                 StreamEvent::TextDelta {
@@ -2674,10 +2742,7 @@ async fn unknown_starts_preserve_text_and_known_ineligible_starts_end_it_once() 
             ],
             completion(Some("text"), Vec::new(), FinishReason::Stop),
         )]);
-        let mut agent = new_agent(
-            provider,
-            vec![stream_start_tool(activity, Arc::new(AtomicUsize::new(0)))],
-        );
+        let mut agent = new_agent(provider, vec![echo_tool()]);
         let (_, events) = run(&mut agent, "read").await;
         assert_eq!(assistant_text(&events), "text");
         assert_eq!(

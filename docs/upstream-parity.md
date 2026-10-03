@@ -27,16 +27,12 @@ The full checkout commit is read from `parity/UPSTREAM`. With that checkout avai
 
 The file map measures structural coverage. Re-audit entries and missing-behavior notes when main gains an implementation. The question tool and answer codec remain partial because ignored out-of-range JSON numbers and duplicate result keys differ from upstream. Byte-exact schema, help and prompt goldens remain a separate follow-up.
 
-## Baseline behavior at 34f1ed1
-
-| Behavior | Status | oh-fx | Note |
-|---|---|---|---|
-| Streamed tool progress in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Responses tool identities publish provisional progress before arguments finish, without preparing or executing the call. Read, rejected read, parallel starts, and failed partial streams are covered. Rejected provisional calls count no executed step. The existing plain terminal transcript difference is recorded in [architecture.md](architecture.md); interactive provisional rows remain deferred. |
-
 ## d9f7766..34f1ed1
 
 | PR | Merge | Title | Status | oh-fx | Note |
 |---|---|---|---|---|---|
+| baseline | `34f1ed1` | Streamed tool lifecycle in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Validated Responses tool identities publish provisional progress before arguments finish; read, rejected read, parallel calls and partial failures are covered. Rejected provisional calls count no executed step. Plain transcript and retry differences are recorded in architecture.md. |
+| baseline | `34f1ed1` | Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle and assistant-boundary events; provisional rows and their replacement remain deferred. |
 | #1092 | `7087733` | Keep steering typed after a tool result when a turn is cancelled | `defer:steering` | `ofx-agent` | `buildInterruptedExecutionMemory` keeps steering messages typed right after a tool result when a turn is cancelled. oh-fx has no steering yet; see [Steering](#steering). |
 | #1099 | `07f4e4d` | Keep the FIFO test's reader open until its writer joins | `n/a` | none | This fixes a race in a Zig test's blocked-writer thread. The Rust port of "linked metadata FIFO is rejected before descriptor open" starts no writer thread. |
 | #1072 | `d44cd84` | Add an experimental v2 session store to fx ask | `ported` | `ofx-cli`, `ofx-session`, `oh-fx` | `--sessions-v2`, before any command or inside `ask`, and `OH_FX_SESSIONS_V2` (`1`, or `true` in any letter case) are parsed. `ask` fails as not available yet unless `--no-save` is given. The ask usage and options show the flag. `v2`, in any letter case, is not a valid session id, so session listing skips the `v2` folder. |

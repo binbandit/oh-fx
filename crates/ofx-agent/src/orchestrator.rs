@@ -710,7 +710,7 @@ impl Agent {
                 StreamEvent::TextDelta { text } => {
                     partial.push_str(&text);
                     if !text.is_empty() {
-                        visible_text = true;
+                        visible_text |= !text.trim_matches([' ', '\t', '\r', '\n']).is_empty();
                         ends_in_newline = text.ends_with('\n');
                     }
                     events(UiEvent::AssistantText { turn_id, text });
@@ -792,30 +792,14 @@ impl Agent {
         needs_newline: bool,
         events: EventSink<'_>,
     ) -> bool {
-        let Some(index) = self
-            .tool_specs
-            .iter()
-            .position(|spec| spec.name == tool_name)
-        else {
+        let Some(tool) = self.tool(&tool_name) else {
             return false;
         };
         if needs_newline {
             events(UiEvent::AssistantBoundary { turn_id });
         }
-        let presentation = panic::catch_unwind(AssertUnwindSafe(|| {
-            self.tools[index].provisional_presentation()
-        }))
-        .ok()
-        .flatten();
-        if let Some(presentation) = presentation
-            .filter(|presentation| {
-                !matches!(
-                    presentation.activity,
-                    ToolActivity::Write | ToolActivity::Edit | ToolActivity::Ask
-                )
-            })
-            .filter(|_| !call_id.as_str().is_empty())
-        {
+        let presentation = contained(|| tool.provisional_presentation()).flatten();
+        if let Some(presentation) = presentation.filter(|_| !call_id.as_str().is_empty()) {
             events(UiEvent::ToolProvisional {
                 turn_id,
                 call_id,
