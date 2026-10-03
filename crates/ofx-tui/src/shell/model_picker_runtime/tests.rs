@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    CatalogRetry, ModelCatalogSource, ModelOption, SkillMenuFocus, SkillMenuGroup, SkillMenuItem,
-    SkillMenuSource, TurnId, UiEvent,
+    CatalogRetry, ModelCatalogSource, ModelOption, SessionScope, SkillMenuFocus, SkillMenuGroup,
+    SkillMenuItem, SkillMenuSource, TurnId, UiEvent,
 };
 
 use super::*;
@@ -90,6 +90,10 @@ fn draft(test: &mut TestShell, content: &str, cursor: usize) {
 }
 
 fn skills_menu() -> UiEvent {
+    skills_menu_focused(SkillMenuFocus::Start)
+}
+
+fn skills_menu_focused(focus: SkillMenuFocus) -> UiEvent {
     UiEvent::SkillsMenu {
         items: vec![SkillMenuItem {
             name: "review".to_owned(),
@@ -100,7 +104,13 @@ fn skills_menu() -> UiEvent {
             scope: "oh-fx · Workspace".to_owned(),
             source_label: String::new(),
         }],
-        focus: SkillMenuFocus::Start,
+        focus,
+    }
+}
+
+fn session_picker() -> UiEvent {
+    UiEvent::SessionPickerOpened {
+        scope: SessionScope::CurrentWorkspace,
     }
 }
 
@@ -478,21 +488,71 @@ fn the_model_menu_and_the_skills_menu_are_never_open_together() {
     assert!(test.shell.model_menu.is_none());
     assert!(test.shell.skills_menu.is_some());
     press(&mut test, ESC);
+    open_menu(&mut test);
+    test.deliver(skills_menu());
+    assert!(test.shell.model_menu.is_some());
+    assert!(test.shell.skills_menu.is_none());
+}
+
+#[test]
+fn a_skills_menu_that_answers_late_never_takes_a_lent_draft() {
+    let query = skills_menu_focused(SkillMenuFocus::Query("review".to_owned()));
+    for event in [skills_menu(), query] {
+        let mut test = TestShell::start();
+        draft(&mut test, "keep", 4);
+        press(&mut test, CTRL_P);
+        listed(&mut test, catalog());
+        press(&mut test, b"gpt");
+        test.deliver(event);
+        assert!(test.shell.skills_menu.is_none());
+        assert!(test.shell.model_menu.is_some());
+        assert_eq!(test.shell.composer.text(), "gpt");
+        let screen = test.screen();
+        assert!(screen.contains("Models 2"), "{screen}");
+        assert!(!screen.contains("Skills"), "{screen}");
+        press(&mut test, b"\r");
+        assert!(test.shell.model_draft.is_none());
+        assert_eq!(test.shell.composer.text(), "keep");
+        assert_eq!(test.shell.composer.cursor(), 4);
+    }
+}
+
+#[test]
+fn the_session_picker_keeps_the_footer_from_both_menus() {
+    let mut test = TestShell::start();
+    test.deliver(session_picker());
+    press(&mut test, CTRL_P);
+    press(&mut test, b"/model gpt ");
+    test.deliver(skills_menu());
+    assert!(test.shell.picker.is_some());
+    assert!(test.shell.model_menu.is_none());
+    assert!(test.shell.model_draft.is_none());
+    assert!(test.shell.skills_menu.is_none());
+    assert_eq!(test.shell.composer.text(), "/model gpt ");
+    assert!(!test.sent().contains(&UiCommand::ListModels));
+    let screen = test.screen();
+    assert!(!screen.contains("Models"), "{screen}");
+    assert!(!screen.contains("Skills"), "{screen}");
+}
+
+#[test]
+fn a_session_picker_that_answers_late_leaves_an_open_menu_and_its_draft_alone() {
+    let mut test = TestShell::start();
     draft(&mut test, "keep", 4);
     press(&mut test, CTRL_P);
     listed(&mut test, catalog());
+    press(&mut test, b"gpt");
+    test.deliver(session_picker());
+    assert!(test.shell.picker.is_none());
     assert!(test.shell.model_menu.is_some());
-    test.deliver(skills_menu());
-    assert!(test.shell.model_menu.is_none());
-    assert!(test.shell.skills_menu.is_some());
-    assert_eq!(test.shell.composer.text(), "keep");
-    let screen = test.screen();
-    assert!(screen.contains("Skills 1"), "{screen}");
-    assert!(!screen.contains("Models"), "{screen}");
+    assert_eq!(test.shell.composer.text(), "gpt");
     press(&mut test, ESC);
-    open_menu(&mut test);
+    assert_eq!(test.shell.composer.text(), "keep");
+    assert_eq!(test.shell.composer.cursor(), 4);
     test.deliver(skills_menu());
-    assert!(test.shell.model_menu.is_none());
+    test.deliver(session_picker());
+    assert!(test.shell.picker.is_none());
+    assert!(test.shell.skills_menu.is_some());
 }
 
 #[test]

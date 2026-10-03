@@ -135,7 +135,11 @@ impl SessionPicker {
 
 impl Shell<'_> {
     pub(super) fn session_picker_opened(&mut self, scope: SessionScope) {
-        if self.accepting_session() {
+        if self.accepting_session()
+            || self.model_menu.is_some()
+            || self.model_draft.is_some()
+            || self.skills_menu.is_some()
+        {
             return;
         }
         let query = self.composer.text().to_owned();
