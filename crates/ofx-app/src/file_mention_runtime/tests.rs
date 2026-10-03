@@ -26,8 +26,13 @@ impl Fixture {
     }
 
     fn ready(&self) -> WorkspaceFileMentions {
+        self.ready_with(&[])
+    }
+
+    fn ready_with(&self, additional_roots: &[PathBuf]) -> WorkspaceFileMentions {
         let cache = self.root.path().join("cache");
-        let mut mentions = WorkspaceFileMentions::start(&self.workspace(), Some(&cache));
+        let mut mentions =
+            WorkspaceFileMentions::start(&self.workspace(), additional_roots, Some(&cache));
         let deadline = Instant::now() + Duration::from_secs(10);
         while mentions.is_loading() {
             assert!(Instant::now() < deadline);
@@ -60,6 +65,28 @@ fn the_index_answers_fuzzy_queries_only_at_its_current_revision() {
     };
     assert_eq!(mentions.search(stale, "ma", 32), None);
     assert_eq!(mentions.search(revision, "src/", 32), None);
+}
+
+#[test]
+fn additional_directories_are_indexed_after_the_workspace_with_absolute_paths() {
+    let fixture = Fixture::new();
+    let shared = fs::canonicalize(fixture.root.path())
+        .unwrap()
+        .join("shared");
+    fs::create_dir_all(&shared).unwrap();
+    fs::write(shared.join("manual.md"), "").unwrap();
+    let mentions = fixture.ready_with(std::slice::from_ref(&shared));
+    let revision = mentions.revision();
+    let rows = mentions.search(revision, "manual", 32).unwrap();
+    let absolute = format!("{}/manual.md", shared.display());
+    assert_eq!(paths(&rows), [absolute.as_str()]);
+    assert!(
+        mentions
+            .search(revision, "ma", 32)
+            .unwrap()
+            .iter()
+            .any(|row| row.path == "src/main.rs")
+    );
 }
 
 #[test]

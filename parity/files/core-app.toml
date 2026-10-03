@@ -114,7 +114,7 @@ note = "Worker event delivery, authoritative tool rows, compaction persistence, 
 upstream = "src/core/app/app_workspace_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/file_mention_runtime.rs", "crates/ofx-tui/src/shell/directory_completion_job.rs", "crates/ofx-app/src/app_workspace_runtime.rs"]
-note = "Native workspace file mentions/completion exist, the launch applies additional directories, and the shell installs and refreshes its workspace access as upstream does; indexing additional roots and the file index scope refresh on install are absent."
+note = "Native workspace file mentions/completion exist, the launch applies additional directories and indexes them, and the shell installs and refreshes its workspace access as upstream does; the file index scope refresh on install is absent."
 
 [[file]]
 upstream = "src/core/app/input_approval_runtime.zig"

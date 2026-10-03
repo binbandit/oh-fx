@@ -17,9 +17,13 @@ pub(crate) struct WorkspaceFileMentions {
 }
 
 impl WorkspaceFileMentions {
-    pub(crate) fn start(workspace_root: &Path, cache_dir: Option<&Path>) -> Self {
+    pub(crate) fn start(
+        workspace_root: &Path,
+        additional_roots: &[PathBuf],
+        cache_dir: Option<&Path>,
+    ) -> Self {
         let mut index = FileIndex::new(cache_dir.map(Path::to_owned));
-        index.ensure_scope(workspace_root);
+        index.ensure_scope(workspace_root, additional_roots);
         Self {
             index,
             workspace_root: workspace_root.to_owned(),

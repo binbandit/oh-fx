@@ -253,7 +253,7 @@ impl Profile {
         Ok(())
     }
 
-    fn additional_roots(&self) -> Vec<PathBuf> {
+    pub(crate) fn additional_roots(&self) -> Vec<PathBuf> {
         self.access.active_roots().map(Path::to_path_buf).collect()
     }
 
