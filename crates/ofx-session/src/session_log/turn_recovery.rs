@@ -89,6 +89,7 @@ pub(crate) fn commit_checkpoint(
         dir,
         provider,
         timestamp_ms,
+        earlier_files: &[],
     };
     let mut events = turn_events(&artifacts, &checkpoint.interrupted_turn(), written)?;
     if let Some(ConversationEvent::Interrupted(interrupted)) = events.last_mut() {

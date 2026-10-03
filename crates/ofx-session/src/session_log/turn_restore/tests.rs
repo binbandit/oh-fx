@@ -1590,3 +1590,104 @@ fn an_interrupted_turn_keeps_the_file_evidence_it_gathered() {
     assert_eq!(interrupted["files"][0]["model_view_covers_full_file"], true);
     assert_eq!(interrupted["files"][0]["stale"], false);
 }
+
+fn saved_files(fixture: &Fixture, kind: &str) -> Vec<(String, String, bool, bool)> {
+    let frames = fixture.frames();
+    let event = frames
+        .iter()
+        .rev()
+        .find_map(|frame| frame["event"].get(kind))
+        .unwrap();
+    event["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| {
+            (
+                file["path"].as_str().unwrap().to_owned(),
+                file["action"].as_str().unwrap().to_owned(),
+                file["model_view_covers_full_file"].as_bool().unwrap(),
+                file["stale"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn compacted_reads(end: TurnEnd<'static>, kind: &str) -> Vec<(String, String, bool, bool)> {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    session
+        .record_turn(&simple_turn("first", "one"), &gateway())
+        .unwrap();
+    let first = [with_arguments("call-1", "read_file", r#"{"path":"a.rs"}"#)];
+    let second = [with_arguments("call-2", "read_file", r#"{"path":"b.rs"}"#)];
+    let third = [with_arguments(
+        "call-3",
+        "write_file",
+        r#"{"path":"a.rs","content":"x"}"#,
+    )];
+    let active = HistoryTurn {
+        user: "second",
+        steps: vec![
+            step(
+                "",
+                &first,
+                vec![whole(result(&first[0], "a", ToolResultStatus::Success))],
+            ),
+            step(
+                "",
+                &second,
+                vec![result(&second[0], "b", ToolResultStatus::Success)],
+            ),
+        ],
+        steering: Vec::new(),
+        end: replied(""),
+    };
+    let cut = HistoryCut {
+        turns: 1,
+        tool_steps: 1,
+        ..HistoryCut::default()
+    };
+    session
+        .record_compaction("SUMMARY", cut, Some(&active), &gateway())
+        .unwrap();
+    let rest = HistoryTurn {
+        user: "second",
+        steps: vec![
+            step(
+                "",
+                &second,
+                vec![result(&second[0], "b", ToolResultStatus::Success)],
+            ),
+            step(
+                "",
+                &third,
+                vec![result(&third[0], "written", ToolResultStatus::Success)],
+            ),
+        ],
+        steering: Vec::new(),
+        end,
+    };
+    session.record_turn(&rest, &gateway()).unwrap();
+    saved_files(&fixture, kind)
+}
+
+#[test]
+fn file_evidence_from_steps_a_mid_turn_compaction_cut_reaches_the_saved_turn() {
+    let expected = [
+        ("a.rs".to_owned(), "read".to_owned(), true, true),
+        ("b.rs".to_owned(), "read".to_owned(), false, false),
+        ("a.rs".to_owned(), "write".to_owned(), false, false),
+    ];
+    assert_eq!(compacted_reads(replied("done"), "turn_completed"), expected);
+    assert_eq!(
+        compacted_reads(
+            TurnEnd::Stopped {
+                reason: TurnStop::Failed,
+                partial: "",
+            },
+            "interrupted"
+        ),
+        expected
+    );
+}

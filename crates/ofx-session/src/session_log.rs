@@ -26,13 +26,16 @@ use crate::session_codec::{
 };
 use crate::session_display_metadata::{derive_display_title, prompt_title};
 use crate::session_error::SessionError;
-use crate::session_event::{ContextCheckpointEvent, ConversationEvent, ToolResultEvent};
+use crate::session_event::{
+    ContextCheckpointEvent, ConversationEvent, FileEvidence, ToolResultEvent,
+};
 use crate::session_layout::is_valid_session_id;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
 use conversation_progress::ProgressPoint;
 use conversation_writer::{ConversationWriter, scan_log};
+use file_evidence::steps_file_evidence;
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
     open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
@@ -105,6 +108,7 @@ pub struct WritableSession {
     started: bool,
     language: String,
     recovery: Recovery,
+    compacted_files: Vec<FileEvidence>,
 }
 
 impl WritableSession {
@@ -309,7 +313,9 @@ impl WritableSession {
         let timestamp_ms = now_ms();
         let written = self.written()?;
         let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
-        self.append(timestamp_ms, &events[usize::from(open)..])
+        self.append(timestamp_ms, &events[usize::from(open)..])?;
+        self.compacted_files.clear();
+        Ok(())
     }
 
     pub fn record_compaction(
@@ -326,6 +332,7 @@ impl WritableSession {
             Some(active) => self.active_prefix(active, provider, timestamp_ms)?,
             None => Vec::new(),
         };
+        let active_turn = self.writer.context_progress(None)?.point.turns;
         let covers_through_seq = self
             .writer
             .context_coverage(ProgressPoint::from(cut), &events)?;
@@ -336,10 +343,15 @@ impl WritableSession {
             },
         ));
         self.append(timestamp_ms, &events)?;
-        match active {
-            Some(active) => self.write_first_title(fresh, active.user),
-            None => Ok(()),
+        let Some(active) = active else {
+            return Ok(());
+        };
+        if cut.turns == active_turn {
+            let covered = cut.tool_steps.min(active.steps.len());
+            self.compacted_files
+                .extend(steps_file_evidence(&active.steps[..covered]));
         }
+        self.write_first_title(fresh, active.user)
     }
 
     fn write_first_title(&mut self, fresh: bool, prompt: &str) -> Result<(), SessionError> {
@@ -393,6 +405,7 @@ impl WritableSession {
             dir: &self.owned.dir,
             provider,
             timestamp_ms,
+            earlier_files: &self.compacted_files,
         }
     }
 
@@ -483,6 +496,7 @@ pub(crate) fn start_session(
             started: true,
             language,
             recovery: Recovery::Absent,
+            compacted_files: Vec::new(),
         });
     let session = match prepared {
         Ok(session) => session,
@@ -548,6 +562,7 @@ pub(crate) fn resume_session(
         history,
         started: false,
         recovery,
+        compacted_files: Vec::new(),
     })
 }
 
