@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use super::{KeywordCase, PROFILES, Profile, ProfileFlag, SOURCES};
-use crate::{CodeBlockPayload, render_code_block_payload};
+use crate::{DiffMarkers, highlight, highlight_diff};
 
 const SAMPLE: &str = "const let fn def SELECT FROM package import return true False null nil undefined 42 1.2 \"quoted\" 'single' `backtick` $name ${HOME} --flag && | # hash\n// slash\n/* block */ <!-- markup -->\n+added\n-removed\n@@ -1 +1 @@\n";
 
@@ -96,13 +96,15 @@ fn packed_registry_preserves_every_original_profile_field() {
 fn every_registered_language_retains_its_styled_output() {
     let mut output = String::new();
     for source in &SOURCES {
-        let block = CodeBlockPayload {
-            language: source.label.to_owned(),
-            code: SAMPLE.to_owned(),
+        let profile = super::resolve(source.label).unwrap();
+        let lines = if profile.diff_lines() {
+            highlight_diff(SAMPLE, DiffMarkers::Unstyled)
+        } else {
+            highlight(SAMPLE, profile, None)
         };
         output.push_str(source.label);
         output.push('\n');
-        writeln!(output, "{:?}", render_code_block_payload(&block)).expect("writing to a String");
+        writeln!(output, "{lines:?}").expect("writing to a String");
     }
     assert_eq!(output, include_str!("profile_output.txt"));
 }

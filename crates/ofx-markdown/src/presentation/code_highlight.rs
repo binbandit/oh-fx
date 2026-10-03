@@ -58,10 +58,13 @@ impl Highlighted {
 }
 
 pub fn highlight(source: &str, profile: &Profile, base: Option<Slot>) -> Vec<Line> {
+    let mut line_comments = profile.line_comments();
     let mut highlighter = Highlighter {
         out: Highlighted::new(base),
         source,
         profile,
+        block_comment: profile.block_comment(),
+        line_comments: [line_comments.next(), line_comments.next()],
         command_position: profile.command_words(),
         close_braces: CloseBraceSearch::default(),
     };
@@ -76,6 +79,8 @@ struct Highlighter<'a> {
     out: Highlighted,
     source: &'a str,
     profile: &'a Profile,
+    block_comment: Option<BlockComment>,
+    line_comments: [Option<&'static str>; 2],
     command_position: bool,
     close_braces: CloseBraceSearch,
 }
@@ -110,8 +115,8 @@ impl Highlighter<'_> {
             self.command_position = self.profile.command_words();
             return index + 1;
         }
-        if let Some(end) = block_comment_end(source, index, self.profile.block_comment())
-            .or_else(|| line_comment_end(source, index, self.profile.line_comments()))
+        if let Some(end) = block_comment_end(source, index, self.block_comment)
+            .or_else(|| line_comment_end(source, index, self.line_comments.into_iter().flatten()))
         {
             return self.token(Slot::SyntaxComment, index, end);
         }
