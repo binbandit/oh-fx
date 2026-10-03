@@ -122,7 +122,7 @@ note = "MCP advertised dynamic capability execution and availability checks are 
 upstream = "src/core/tooling/tool_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/tool_presentation.rs", "crates/ofx-tools/src/shell/presentation.rs"]
-note = "Filesystem/shell/subagent plain labels exist; provider-search alias lifecycle, dynamic tool labels and complete completed-result presentation are absent."
+note = "Filesystem/shell/subagent plain labels and subagent failure labels exist; provider-search alias lifecycle, dynamic tool labels and complete completed-result presentation are absent."
 
 [[file]]
 upstream = "src/core/tooling/tool_projection.zig"
