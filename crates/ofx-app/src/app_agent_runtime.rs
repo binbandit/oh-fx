@@ -618,24 +618,28 @@ impl Controller {
             }
         };
         if let Some(turn_id) = running_turn() {
-            let source = self.state.setup.source();
-            let status = match &report.failure {
-                Some(TurnFailure::Persistence(_)) if report.outcome != TurnOutcome::Failed => None,
-                failure => failure
-                    .as_ref()
-                    .and_then(|failure| failure_status(failure, source)),
-            };
-            if let Some(text) = status {
-                self.state.emit(UiEvent::ApiStatus { turn_id, text });
-            }
-            self.state.emit(UiEvent::TurnFinished {
-                turn_id,
-                outcome: report.outcome,
-            });
+            self.announce_turn_end(turn_id, &report);
         }
         self.finish_turn(&report);
         self.settle_deferred_commands();
         open
+    }
+
+    fn announce_turn_end(&self, turn_id: TurnId, report: &TurnReport) {
+        let source = self.state.setup.source();
+        let status = match &report.failure {
+            Some(TurnFailure::Persistence(_)) if report.outcome != TurnOutcome::Failed => None,
+            failure => failure
+                .as_ref()
+                .and_then(|failure| failure_status(failure, source)),
+        };
+        if let Some(text) = status {
+            self.state.emit(UiEvent::ApiStatus { turn_id, text });
+        }
+        self.state.emit(UiEvent::TurnFinished {
+            turn_id,
+            outcome: report.outcome,
+        });
     }
 
     fn settle_deferred_commands(&mut self) {
