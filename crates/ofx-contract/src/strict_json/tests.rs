@@ -37,8 +37,12 @@ const DOCUMENTS: [&str; 28] = [
 
 const INVALID_UTF8: [&[u8]; 2] = [b"{\"bytes\":\"\xff\"}", b"{\"\xc3\x28\":1}"];
 
-fn both_orders() -> [DuplicateKeys; 2] {
-    [DuplicateKeys::BeforeValue, DuplicateKeys::AfterValue]
+fn both_orders() -> [DuplicateKeys; 3] {
+    [
+        DuplicateKeys::BeforeValue,
+        DuplicateKeys::AfterValue,
+        DuplicateKeys::AfterObject,
+    ]
 }
 
 fn compact(json: &Json<'_>) -> String {
@@ -125,6 +129,20 @@ fn a_repeated_key_fails_before_or_after_its_value_as_asked() {
         parse_strict_json(br#"{"a":1,"a":2"#, DuplicateKeys::AfterValue),
         Err(StrictJsonError::DuplicateField)
     );
+    for json in [r#"{"a":1,"a":2"#, r#"{"a":1,"a":2,"#] {
+        assert_eq!(
+            parse_strict_json(json.as_bytes(), DuplicateKeys::AfterObject),
+            Err(StrictJsonError::Syntax),
+            "{json}"
+        );
+    }
+    for json in [r#"[{"a":1,"a":2}"#, r#"[{"a":1,"a":2},"#] {
+        assert_eq!(
+            parse_strict_json(json.as_bytes(), DuplicateKeys::AfterObject),
+            Err(StrictJsonError::DuplicateField),
+            "{json}"
+        );
+    }
 }
 
 #[test]
