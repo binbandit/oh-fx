@@ -15,10 +15,11 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 ofx-http.workspace = true
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "time"] }
 
 [lints]
 workspace = true
