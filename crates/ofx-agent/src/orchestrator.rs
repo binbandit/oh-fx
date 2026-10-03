@@ -1337,12 +1337,14 @@ fn gated_action<'a>(
     call: &'a ToolCall,
     mutation: Option<&'a FileMutation>,
     command: Option<&'a CommandRequest>,
-    mcp_tool: bool,
+    prepared: &dyn PreparedCall,
 ) -> GatedAction<'a> {
     match (mutation, command) {
         (Some(mutation), _) => GatedAction::FileMutation(mutation),
         (None, Some(command)) => GatedAction::Command(command),
-        (None, None) if mcp_tool => GatedAction::McpTool(call),
+        (None, None) if contained(|| prepared.mcp_tool()) == Some(true) => {
+            GatedAction::McpTool(call)
+        }
         (None, None) => GatedAction::Call(call),
     }
 }
@@ -1367,7 +1369,13 @@ struct Judged<'a> {
     call: &'a ToolCall,
     action: GatedAction<'a>,
     description: &'a CallDescription,
-    file: Option<&'a FileChange<'a>>,
+    evidence: &'a ReviewEvidence<'a>,
+}
+
+#[derive(Default)]
+struct ReviewEvidence<'p> {
+    file: Option<FileChange<'p>>,
+    schema: Option<String>,
 }
 
 fn admission<'p>(
@@ -1375,15 +1383,20 @@ fn admission<'p>(
     action: GatedAction<'_>,
     description: &CallDescription,
     prepared: &'p dyn PreparedCall,
-) -> (Admission, Option<FileChange<'p>>) {
+) -> (Admission, ReviewEvidence<'p>) {
     let admission = admit(gate.permissions, action, description);
-    let file = match (&admission, action) {
-        (Admission::ReviewRequired, GatedAction::FileMutation(_)) => {
-            contained(|| prepared.file_change()).flatten()
-        }
-        _ => None,
+    let evidence = match (&admission, action) {
+        (Admission::ReviewRequired, GatedAction::FileMutation(_)) => ReviewEvidence {
+            file: contained(|| prepared.file_change()).flatten(),
+            schema: None,
+        },
+        (Admission::ReviewRequired, GatedAction::McpTool(_)) => ReviewEvidence {
+            file: None,
+            schema: contained(|| prepared.review_schema()).flatten(),
+        },
+        _ => ReviewEvidence::default(),
     };
-    (admission, file)
+    (admission, evidence)
 }
 
 async fn judge(
@@ -1449,7 +1462,8 @@ async fn review(
         batch: reviewing.batch,
         call,
         action: judged.action,
-        file: judged.file,
+        file: judged.evidence.file.as_ref(),
+        schema: judged.evidence.schema.as_deref(),
         attempt_available,
     };
     let reviewed = tokio::select! {
@@ -1611,10 +1625,9 @@ async fn run_group<'c>(
                 dispatched.push((call, Dispatched::Rejected(output, reason)));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
-                let mcp_tool = contained(|| prepared.mcp_tool()) == Some(true);
-                let action = gated_action(call, mutation.as_ref(), command.as_ref(), mcp_tool);
+                let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);
                 let delegates = description.activity == ToolActivity::Subagent;
-                let (admission, file) = admission(gate, action, &description, &*prepared);
+                let (admission, evidence) = admission(gate, action, &description, &*prepared);
                 let shown_while_reviewed =
                     admission == Admission::ReviewRequired && mutation.is_none();
                 if shown_while_reviewed {
@@ -1624,7 +1637,7 @@ async fn run_group<'c>(
                     call,
                     action,
                     description: &description,
-                    file: file.as_ref(),
+                    evidence: &evidence,
                 };
                 let verdict = judge(
                     gate,
