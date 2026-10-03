@@ -449,3 +449,138 @@ fn a_save_whose_settings_cannot_be_read_back_is_reported_as_unresolved() {
         "Warning|allowlist|reset all: removed 1 rule (scope=local); saved but effective source unknown and runtime reload failed (InvalidObject)"
     );
 }
+
+fn facts() -> SessionFacts<'static> {
+    SessionFacts {
+        model: "anthropic/test-model",
+        permission_mode: PermissionMode::Auto,
+        step_limit: 12,
+    }
+}
+
+fn run_settings(access: &SettingsAccess<'_>, rest: &str) -> Vec<String> {
+    handle_settings(access, &facts(), rest)
+        .into_iter()
+        .map(|notice| format!("{:?}|{}|{}", notice.tone, notice.topic, notice.body))
+        .collect()
+}
+
+#[test]
+fn settings_shows_the_session_and_startup_scrollback_status() {
+    let fixture = Fixture::new();
+    fixture.write_settings(&json!({"startup_scrollback": false}));
+    assert_eq!(
+        run_settings(&fixture.access(), ""),
+        [format!(
+            "Neutral|settings|model: anthropic/test-model\nmodel_config_source: compiled_default\npermission_mode: auto\nworkspace: {}\nstep_limit: 12\nstartup_scrollback: off",
+            fixture.workspace.display()
+        )]
+    );
+    fixture.write_settings(&json!({"model": "saved/model"}));
+    let shown = run_settings(&fixture.access(), "  ");
+    assert!(
+        shown[0].contains("model_config_source: user_global\n"),
+        "{shown:?}"
+    );
+    assert!(shown[0].ends_with("startup_scrollback: on"), "{shown:?}");
+}
+
+#[test]
+fn settings_toggles_and_persists_startup_scrollback() {
+    let fixture = Fixture::new();
+    let access = fixture.access();
+    assert_eq!(
+        run_settings(&access, "startup-scrollback"),
+        ["Neutral|settings|startup_scrollback: off (applies on next launch)"]
+    );
+    assert!(!fixture.settings().startup_scrollback());
+    assert_eq!(
+        run_settings(&access, "STARTUP-SCROLLBACK On"),
+        ["Neutral|settings|startup_scrollback: on (applies on next launch)"]
+    );
+    assert!(fixture.settings().startup_scrollback());
+    assert_eq!(
+        run_settings(&access, "startup-scrollback off"),
+        ["Neutral|settings|startup_scrollback: off (applies on next launch)"]
+    );
+    assert_eq!(fixture.saved(), json!({"startup_scrollback": false}));
+    assert_eq!(
+        run_settings(&access, "startup-scrollback"),
+        ["Neutral|settings|startup_scrollback: on (applies on next launch)"]
+    );
+}
+
+#[test]
+fn settings_moves_workspace_copies_into_user_settings_and_reports_the_cleanup() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace.to_string_lossy().into_owned();
+    fixture.write_settings(&json!({"workspaces": {workspace: {"startup_scrollback": true}}}));
+    let recovery = fixture
+        .paths
+        .config
+        .join("backups/settings.json.preference-migration.startup_scrollback.json");
+    assert_eq!(
+        run_settings(&fixture.access(), "startup-scrollback off"),
+        [
+            format!(
+                "Neutral|startup-scrollback|saved to user settings (scope=user); normalized 1 legacy value across 1 workspace; recovery={}",
+                recovery.display()
+            ),
+            "Neutral|settings|startup_scrollback: off (applies on next launch)".to_owned(),
+        ]
+    );
+    assert_eq!(
+        fixture.saved(),
+        json!({"workspaces": {}, "startup_scrollback": false})
+    );
+    assert!(recovery.exists());
+}
+
+#[test]
+fn settings_reports_usage_load_and_save_failures() {
+    let fixture = Fixture::new();
+    let usage = "Error||usage: /settings [startup-scrollback [on|off]]";
+    for rest in [
+        "bogus",
+        "startup-scrollback off extra",
+        "startup-scrollback maybe",
+        "theme dark",
+    ] {
+        assert_eq!(run_settings(&fixture.access(), rest), [usage], "{rest}");
+    }
+    let homeless = SettingsAccess {
+        paths: None,
+        workspace_root: &fixture.workspace,
+        tool_names: Vec::new(),
+    };
+    assert_eq!(
+        run_settings(&homeless, "startup-scrollback off"),
+        ["Error|startup-scrollback|not saved to user settings (HomeNotSet)"]
+    );
+    fixture.write_settings(&json!({"providers": 5}));
+    assert_eq!(
+        run_settings(&fixture.access(), ""),
+        ["Error|settings|Failed to load settings: InvalidObject"]
+    );
+    assert_eq!(
+        run_settings(&fixture.access(), "startup-scrollback"),
+        ["Error|settings|Failed to load settings: InvalidObject"]
+    );
+    assert_eq!(
+        run_settings(&fixture.access(), "startup-scrollback on"),
+        [
+            "Warning|startup-scrollback|saved to user settings (scope=user); next-startup source unknown (InvalidObject)",
+            "Neutral|settings|startup_scrollback: on (saved user default; next-launch source unknown)",
+        ]
+    );
+    fixture.write_settings(&json!({"startup_scrollback": "yes"}));
+    assert_eq!(
+        run_settings(&fixture.access(), "startup-scrollback on"),
+        ["Neutral|settings|startup_scrollback: on (applies on next launch)"]
+    );
+    fixture.write_settings(&json!({"permission": 5}));
+    assert_eq!(
+        run_settings(&fixture.access(), "startup-scrollback on"),
+        ["Error|startup-scrollback|not saved to user settings (InvalidSettingsFormat)"]
+    );
+}

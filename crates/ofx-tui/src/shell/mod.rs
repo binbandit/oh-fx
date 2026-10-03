@@ -94,6 +94,7 @@ pub struct ShellOptions {
     pub full_access_warning: bool,
     pub workspace_label: String,
     pub workspace_root: PathBuf,
+    pub startup_scrollback: bool,
     pub commands: Vec<SlashCommandSpec>,
     pub command_categories: Vec<String>,
     pub prompt_history: PromptHistory,
@@ -252,7 +253,12 @@ impl<'a> Shell<'a> {
         let cursor = terminal.query_cursor_position().ok();
         let typeahead = terminal.take_typeahead();
         let launch_row = StartupViewport::launch_row_from_cursor(cursor, layout);
-        let plan = StartupViewport::plan(layout, launch_row, STARTUP_MIN_BODY_ROWS, true);
+        let plan = StartupViewport::plan(
+            layout,
+            launch_row,
+            STARTUP_MIN_BODY_ROWS,
+            options.startup_scrollback,
+        );
         terminal.push_launch_rows_into_scrollback(layout, plan.scrollback_rows)?;
         terminal.enter_interactive_mode()?;
         let mut input = TerminalInput::new();
@@ -921,6 +927,7 @@ mod tests {
             full_access_warning: false,
             workspace_label: "proj\x07".to_owned(),
             workspace_root: PathBuf::from("/proj"),
+            startup_scrollback: true,
             commands: Vec::new(),
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),

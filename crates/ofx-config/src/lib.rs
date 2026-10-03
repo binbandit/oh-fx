@@ -11,8 +11,8 @@ mod settings_store;
 mod strict_json;
 
 pub use config_runtime::{
-    ConfigDiagnostic, LayerError, PermissionSources, SelectionError, Settings, SettingsError,
-    is_valid_provider_order_list,
+    ConfigDiagnostic, ConfigSource, LayerError, PermissionSources, SelectionError, Settings,
+    SettingsError, is_valid_provider_order_list,
 };
 pub use configured_provider::{
     ConfiguredProviderError, MAX_MODEL_BYTES, MaxTokensParameter, ProviderDefinition,
@@ -31,6 +31,6 @@ pub use paths::ProfilePaths;
 pub use settings_store::{
     AllowlistResetScope, CommitOutcome, LegacyCleanup, PermissionPatch, SettingsWriteError,
     SettingsWriteFailure, save_codex_model, save_model_preference, save_permission_mode,
-    save_permission_patch, save_yolo_acknowledged,
+    save_permission_patch, save_startup_scrollback, save_yolo_acknowledged,
 };
 pub use strict_json::{StrictJsonError, parse as parse_strict_json};
