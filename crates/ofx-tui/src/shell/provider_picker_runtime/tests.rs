@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ModelCatalog, ModelCatalogSource, SkillMenuFocus, SkillMenuGroup, SkillMenuItem,
+    ModelCatalog, ModelCatalogSource, SessionScope, SkillMenuFocus, SkillMenuGroup, SkillMenuItem,
     SkillMenuSource, TurnId, UiEvent,
 };
 
@@ -227,5 +227,25 @@ fn menus_take_the_footer_before_the_provider_column() {
     assert!(screen.contains("Skills 0"), "{screen}");
     assert!(!screen.contains("portkey"), "{screen}");
     press(&mut test, b"\r");
+    assert!(chosen(&test).is_empty());
+}
+
+#[test]
+fn the_session_picker_keeps_the_footer_from_the_provider_column() {
+    let mut test = TestShell::start();
+    test.deliver(UiEvent::SessionPickerOpened {
+        scope: SessionScope::CurrentWorkspace,
+    });
+    press(&mut test, b"/provider ");
+    test.deliver(UiEvent::ProviderPicker {
+        prefix: "/login ".to_owned(),
+        providers: vec!["codex".to_owned()],
+    });
+    assert!(test.shell.picker.is_some());
+    assert_eq!(test.shell.composer.text(), "/provider ");
+    let screen = test.screen();
+    assert!(!screen.contains("portkey"), "{screen}");
+    assert!(!screen.contains("current"), "{screen}");
+    press(&mut test, RIGHT);
     assert!(chosen(&test).is_empty());
 }
