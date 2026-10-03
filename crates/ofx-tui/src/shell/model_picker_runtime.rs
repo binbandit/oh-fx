@@ -114,11 +114,6 @@ impl Shell<'_> {
         true
     }
 
-    pub(super) fn close_model_menu_quietly(&mut self) {
-        self.model_menu = None;
-        self.restore_model_draft();
-    }
-
     pub(super) fn provider_selected(&mut self, provider: String) {
         self.options.provider = provider;
         self.catalog = CatalogLoad::Idle;

@@ -8,10 +8,12 @@ use crate::input::COMPOSER_INPUT_LIMIT_BYTES;
 
 impl Shell<'_> {
     pub(super) fn open_skills_menu(&mut self, items: Vec<SkillMenuItem>, focus: &SkillMenuFocus) {
+        if self.model_menu.is_some() || self.model_draft.is_some() {
+            return;
+        }
         let Some(menu) = SkillsMenu::open(items, focus) else {
             return;
         };
-        self.close_model_menu_quietly();
         if let SkillMenuFocus::Query(query) = focus {
             self.composer.clear();
             if self.composer.insert_text(query, COMPOSER_INPUT_LIMIT_BYTES)
