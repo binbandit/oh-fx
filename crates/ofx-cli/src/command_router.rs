@@ -82,6 +82,8 @@ mod tests {
         for (input, kind) in [
             ("/reset", SlashKind::ResetSession),
             ("/stats", SlashKind::Stats),
+            ("/usage", SlashKind::Usage),
+            ("/cost", SlashKind::Usage),
             ("/status", SlashKind::Status),
             ("/undo", SlashKind::Undo),
             ("/copy", SlashKind::Copy),

@@ -1821,6 +1821,24 @@ mod tests {
         assert_eq!(notice.tone, NoticeTone::Neutral);
     }
 
+    #[tokio::test]
+    async fn usage_and_cost_report_that_durable_profile_usage_is_unavailable() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        for command in ["/usage", "/cost"] {
+            harness.command(command);
+            let shown = harness
+                .until(|event| matches!(event, UiEvent::Notice { .. }))
+                .await;
+            assert_eq!(
+                notice_body(shown),
+                [
+                    "usage|Durable profile usage is unavailable in this host; active session usage remains in memory."
+                ]
+            );
+        }
+    }
+
     async fn undo_notice(harness: &mut Harness) -> String {
         harness.command("/undo");
         let shown = harness

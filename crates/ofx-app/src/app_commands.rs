@@ -20,6 +20,9 @@ const COPY_FAILED: &str = "Failed to copy to clipboard.";
 const FAST_TOPIC: &str = "fast";
 const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
+const USAGE_TOPIC: &str = "usage";
+const PROFILE_USAGE_UNAVAILABLE: &str =
+    "Durable profile usage is unavailable in this host; active session usage remains in memory.";
 const NOTHING_TO_UNDO: &str = "Nothing to undo.";
 const RESUME_DURING_TURN: &str = "resume is unavailable until the response finishes";
 
@@ -91,6 +94,10 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             CommandEffect::None
         }
         SlashKind::ResumeSession => CommandEffect::OpenSessions,
+        SlashKind::Usage => {
+            state.notice(NoticeTone::Neutral, USAGE_TOPIC, PROFILE_USAGE_UNAVAILABLE);
+            CommandEffect::None
+        }
         SlashKind::Status => {
             state.notice(NoticeTone::Neutral, "status", &state.status_body());
             CommandEffect::None
@@ -234,6 +241,7 @@ mod tests {
                 "/reset",
                 "/resume",
                 "/stats",
+                "/usage",
                 "/status",
                 "/model",
                 "/permissions",
@@ -255,9 +263,9 @@ mod tests {
         assert_eq!(compacting, ["/compact"]);
         assert_eq!(specs[2].description, "start a fresh session");
         assert_eq!(specs[4].description, "resume a saved session");
-        assert_eq!(specs[11].description, "browse and manage skills");
-        assert_eq!(specs[16].aliases, ["/exit"]);
-        assert_eq!(specs[16].description, "exit the interactive shell");
+        assert_eq!(specs[12].description, "browse and manage skills");
+        assert_eq!(specs[17].aliases, ["/exit"]);
+        assert_eq!(specs[17].description, "exit the interactive shell");
     }
 
     #[test]
@@ -277,6 +285,7 @@ mod tests {
                 ("/reset", "Session"),
                 ("/resume", "Session"),
                 ("/stats", "Account"),
+                ("/usage", "Account"),
                 ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
