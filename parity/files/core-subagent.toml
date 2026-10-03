@@ -6,8 +6,9 @@ note = "Child turns run through Agent with inherited root-user review context an
 
 [[file]]
 upstream = "src/core/subagent/approval_registry.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-app/src/approval_queue.rs"]
+note = "A child's approval request is shown on the parent's prompt during the parent's turn, after the request already shown, and is denied when no turn is running or the turn ends; stable approval ids and fingerprints, worker route pinning and the 64-request cap are absent."
 
 [[file]]
 upstream = "src/core/subagent/authority.zig"
@@ -64,4 +65,4 @@ note = "Managed request admission, invocation identity, inherited defaults and t
 upstream = "src/core/subagent/tool_provider.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/subagent/tool_provider.rs", "crates/ofx-agent/src/subagent/tool_host.rs", "crates/ofx-app/src/app_subagent_runtime.rs"]
-note = "Provider forwarding has a concrete managed host with cancellation-to-child_cancelled mapping; `ask` installs it when it saves its session, and the interactive session does not install it yet."
+note = "Provider forwarding has a concrete managed host with cancellation-to-child_cancelled mapping; `ask` and the interactive session install it when they save their session."
