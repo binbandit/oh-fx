@@ -133,7 +133,7 @@ note = "Display-title derivation exists; bounded display sidecar encoding/loadin
 upstream = "src/core/session/session_event.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_event.rs"]
-note = "Modern conversation event encoding and sequencing exist; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing."
+note = "Modern conversation event encoding and sequencing exist, and file evidence on turn ends is read and kept; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing."
 
 [[file]]
 upstream = "src/core/session/session_json.zig"
