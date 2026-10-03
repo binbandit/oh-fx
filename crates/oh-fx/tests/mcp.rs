@@ -157,12 +157,25 @@ fn wait_until_gone(pid: i32) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
 fn running(pid: &str) -> bool {
-    Command::new("/bin/kill")
-        .args(["-0", pid])
+    fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, fields)| !fields.starts_with('Z'))
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn running(pid: &str) -> bool {
+    Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", pid])
         .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .output()
+        .is_ok_and(|output| {
+            let state = String::from_utf8_lossy(&output.stdout);
+            let state = state.trim();
+            !state.is_empty() && !state.starts_with('Z')
+        })
 }
 
 fn wait_for(path: &Path) -> String {
@@ -453,4 +466,29 @@ fn a_schema_over_its_context_limit_is_reported_with_its_override() {
     );
     let tools = server.requests()[0].json()["tools"].clone();
     assert!(!tools.to_string().contains("mcp_fixture_echo"), "{tools}");
+}
+
+#[test]
+fn an_exited_unreaped_process_does_not_count_as_running() {
+    let mut live = Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn a long-lived process");
+    assert!(running(&live.id().to_string()));
+    live.kill().expect("stop the long-lived process");
+    live.wait().expect("reap the long-lived process");
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("spawn a short-lived process");
+    let pid = child.id().to_string();
+    let started = Instant::now();
+    while running(&pid) && started.elapsed() < Duration::from_secs(5) {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !running(&pid),
+        "the exited process {pid} still counts as running"
+    );
+    child.wait().expect("reap the process");
 }
