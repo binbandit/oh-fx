@@ -217,7 +217,11 @@ async fn steering_with_skills_ends_the_turn_at_the_next_model_step() {
 
 #[tokio::test]
 async fn an_explicit_cancel_stops_the_turn_and_leaves_the_steer_for_a_continuation() {
-    let provider = FakeProvider::new(vec![streaming("partial"), text_reply("Kept going.")]);
+    let provider = FakeProvider::new(vec![
+        streaming("partial"),
+        text_reply("Kept going."),
+        text_reply("Third."),
+    ]);
     let (log, entries) = MemoryLog::shared();
     let (agent, worker) = steered_agent(&provider);
     let mut agent = logged(agent, log);
@@ -258,6 +262,16 @@ async fn an_explicit_cancel_stops_the_turn_and_leaves_the_steer_for_a_continuati
         })
         .collect();
     assert_eq!(users, ["go", "keep going"]);
+    worker.admit(plain(2, "third"));
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[2].messages[2..],
+        [
+            ChatMessage::user("keep going"),
+            assistant("Kept going."),
+            ChatMessage::user("third"),
+        ]
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -266,7 +280,9 @@ async fn an_interrupted_turn_keeps_steering_typed_right_after_a_tool_result() {
         tool_reply(&[("call-done", r#"{"text":"one"}"#)]),
         tool_reply(&[("call-active", r#"{"hang":true}"#)]),
     ]);
-    let (mut agent, worker) = steered_agent(&provider);
+    let (log, entries) = MemoryLog::shared();
+    let (agent, worker) = steered_agent(&provider);
+    let mut agent = logged(agent, log);
     worker.admit(plain(0, "work"));
     let (report, events) = run_steered(
         &mut agent,
@@ -296,7 +312,7 @@ async fn an_interrupted_turn_keeps_steering_typed_right_after_a_tool_result() {
                 r#"echo {"text":"one"}"#,
                 ToolResultStatus::Success
             ),
-            ChatMessage::user(steering_message("check the tests too")),
+            ChatMessage::restored_steering("check the tests too"),
         ]
     );
     let turn = history_turn(&agent.history, 0, agent.history.len());
@@ -306,6 +322,86 @@ async fn an_interrupted_turn_keeps_steering_typed_right_after_a_tool_result() {
         .map(|entry| (entry.text, entry.after_tool_step_count))
         .collect();
     assert_eq!(steering, [("check the tests too", 1)]);
+    let entries = entries.lock().unwrap();
+    let Logged::Turn {
+        steps,
+        steering,
+        end,
+        ..
+    } = &entries[0]
+    else {
+        panic!("expected a logged turn");
+    };
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steering, &["check the tests too||1"]);
+    assert_eq!(end, r#"Cancelled """#);
+}
+
+#[tokio::test]
+async fn a_steered_reply_is_logged_with_its_partial_text_as_the_steering_prefix() {
+    let provider = FakeProvider::new(vec![streaming("Looking"), text_reply("Done.")]);
+    let (log, entries) = MemoryLog::shared();
+    let (agent, worker) = steered_agent(&provider);
+    let mut agent = logged(agent, log);
+    worker.admit(plain(0, "go"));
+    let mut sent = false;
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, _| {
+            if matches!(event, UiEvent::AssistantText { .. }) && !sent {
+                sent = true;
+                worker.admit(plain(1, "use the new API"));
+            }
+        },
+    )
+    .await;
+    assert_eq!(
+        entries.lock().unwrap()[0],
+        Logged::Turn {
+            user: "go".to_owned(),
+            steps: Vec::new(),
+            steering: vec!["use the new API|Looking|0".to_owned()],
+            end: r#"replied "Done." replay=false"#.to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn later_turns_see_earlier_steering_without_the_wrapper() {
+    let provider = FakeProvider::new(vec![
+        streaming("Looking"),
+        text_reply("Done."),
+        text_reply("Next."),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    worker.admit(plain(0, "go"));
+    let mut sent = false;
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, _| {
+            if matches!(event, UiEvent::AssistantText { .. }) && !sent {
+                sent = true;
+                worker.admit(plain(1, "use the new API"));
+            }
+        },
+    )
+    .await;
+    worker.admit(plain(2, "and now the docs"));
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[2].messages,
+        [
+            ChatMessage::user("go"),
+            assistant("Looking"),
+            ChatMessage::restored_steering("use the new API"),
+            assistant("Done."),
+            ChatMessage::user("and now the docs"),
+        ]
+    );
 }
 
 #[tokio::test]

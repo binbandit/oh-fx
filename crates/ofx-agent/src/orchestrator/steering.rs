@@ -4,7 +4,7 @@ use ofx_contract::{ChatMessage, TurnId, UiEvent};
 use tokio_util::sync::CancellationToken;
 
 use super::{Agent, EventSink, Stop};
-use crate::execution_memory::steering_message;
+use crate::execution_memory::{steering_message, steering_text};
 use crate::worker_runtime::{Boundary, BoundaryKind, Steering, WorkerRuntime};
 
 impl Agent {
@@ -143,6 +143,26 @@ impl Agent {
         match self.steering_boundary(BoundaryKind::Finalizing) {
             Boundary::Continue(steering) => Some(steering),
             Boundary::None | Boundary::Handoff | Boundary::Interrupt => None,
+        }
+    }
+
+    pub(super) fn settle_steering(&mut self, start: usize) {
+        for (index, message) in self.history.iter_mut().enumerate().skip(start) {
+            let ChatMessage::User {
+                content,
+                restored_steering: false,
+            } = message
+            else {
+                continue;
+            };
+            let Some(text) = steering_text(content) else {
+                continue;
+            };
+            *message = if index == start {
+                ChatMessage::user(text)
+            } else {
+                ChatMessage::restored_steering(text)
+            };
         }
     }
 

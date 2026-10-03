@@ -204,7 +204,7 @@ pub(crate) fn write_input(
     for (message, replay) in messages.iter().zip(replays) {
         match message {
             ChatMessage::System { .. } => {}
-            ChatMessage::User { content } => {
+            ChatMessage::User { content, .. } => {
                 push_comma(out, &mut first);
                 out.push_str("{\"role\":\"user\",\"content\":[");
                 if !content.is_empty() {

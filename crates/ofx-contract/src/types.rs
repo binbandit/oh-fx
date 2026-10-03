@@ -94,6 +94,7 @@ pub enum ChatMessage {
     },
     User {
         content: String,
+        restored_steering: bool,
     },
     Assistant {
         content: Option<String>,
@@ -112,6 +113,14 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self::User {
             content: content.into(),
+            restored_steering: false,
+        }
+    }
+
+    pub fn restored_steering(content: impl Into<String>) -> Self {
+        Self::User {
+            content: content.into(),
+            restored_steering: true,
         }
     }
 }

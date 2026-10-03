@@ -15,7 +15,7 @@ impl From<HistoryCut> for ProgressPoint {
         Self {
             turns: cut.turns,
             tool_steps: cut.tool_steps,
-            steering: 0,
+            steering: cut.steering,
         }
     }
 }

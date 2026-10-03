@@ -65,7 +65,7 @@ impl ReviewTransport for Scripted {
         for message in request.messages {
             messages.push(match message {
                 ChatMessage::System { content } => json!({"role": "system", "content": content}),
-                ChatMessage::User { content } => json!({"role": "user", "content": content}),
+                ChatMessage::User { content, .. } => json!({"role": "user", "content": content}),
                 ChatMessage::Assistant {
                     content,
                     tool_calls,

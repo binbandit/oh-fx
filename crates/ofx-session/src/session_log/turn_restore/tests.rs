@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use ofx_config::ProviderId;
 use ofx_contract::{
-    HistoryCut, HistoryStep, HistoryTurn, ReasoningEffort, StepResult, TurnEnd, TurnStop,
+    HistoryCut, HistorySteering, HistoryStep, HistoryTurn, ReasoningEffort, StepResult, TurnEnd,
+    TurnStop,
 };
 use serde_json::Value;
 
@@ -152,6 +153,7 @@ fn simple_turn<'a>(user: &'a str, reply: &'a str) -> HistoryTurn<'a> {
     HistoryTurn {
         user,
         steps: Vec::new(),
+        steering: Vec::new(),
         end: replied(reply),
     }
 }
@@ -184,6 +186,7 @@ fn recorded_turns_restore_the_messages_the_model_saw() {
                 }],
             ),
         ],
+        steering: Vec::new(),
         end: TurnEnd::Replied {
             text: "done",
             provider_replay: Some(&codex),
@@ -268,6 +271,7 @@ fn standalone_steps_and_empty_replies_follow_upstream_boundaries() {
             provider_replay: Some(&reasoning),
             ..step("", &[], Vec::new())
         }],
+        steering: Vec::new(),
         end: replied(""),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -302,6 +306,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
             &HistoryTurn {
                 user: "stop",
                 steps: Vec::new(),
+                steering: Vec::new(),
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Cancelled,
                     partial: "half",
@@ -315,6 +320,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
             &HistoryTurn {
                 user: "nothing",
                 steps: Vec::new(),
+                steering: Vec::new(),
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "",
@@ -332,6 +338,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
                     &read,
                     vec![result(&read[0], "ok", ToolResultStatus::Success)],
                 )],
+                steering: Vec::new(),
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "",
@@ -390,11 +397,13 @@ fn a_mid_turn_checkpoint_covers_the_cut_and_the_rest_of_the_turn_follows_it() {
                 vec![result(&second[0], "b", ToolResultStatus::Success)],
             ),
         ],
+        steering: Vec::new(),
         end: replied(""),
     };
     let cut = HistoryCut {
         turns: 1,
         tool_steps: 1,
+        ..HistoryCut::default()
     };
     session
         .record_compaction("SUMMARY", cut, Some(&active), &gateway())
@@ -413,6 +422,7 @@ fn a_mid_turn_checkpoint_covers_the_cut_and_the_rest_of_the_turn_follows_it() {
             &second,
             vec![result(&second[0], "b", ToolResultStatus::Success)],
         )],
+        steering: Vec::new(),
         end: replied("done"),
     };
     session.record_turn(&rest, &gateway()).unwrap();
@@ -449,6 +459,7 @@ fn a_checkpoint_at_a_turn_boundary_keeps_the_running_turn_after_it() {
     let cut = HistoryCut {
         turns: 1,
         tool_steps: 0,
+        ..HistoryCut::default()
     };
     session
         .record_compaction("S", cut, Some(&simple_turn("second", "")), &gateway())
@@ -459,6 +470,7 @@ fn a_checkpoint_at_a_turn_boundary_keeps_the_running_turn_after_it() {
     let cut = HistoryCut {
         turns: 0,
         tool_steps: 0,
+        ..HistoryCut::default()
     };
     session
         .record_compaction("S2", cut, Some(&simple_turn("second", "")), &gateway())
@@ -496,6 +508,7 @@ fn a_checkpoint_between_turns_is_written_alone_and_keeps_the_turns_after_its_cut
     let cut = HistoryCut {
         turns: 2,
         tool_steps: 0,
+        ..HistoryCut::default()
     };
     session
         .record_compaction("S", cut, None, &gateway())
@@ -543,11 +556,13 @@ fn a_crash_after_a_mid_turn_checkpoint_closes_the_turn_on_resume() {
                 vec![result(&second[0], "b", ToolResultStatus::Success)],
             ),
         ],
+        steering: Vec::new(),
         end: replied(""),
     };
     let cut = HistoryCut {
         turns: 0,
         tool_steps: 1,
+        ..HistoryCut::default()
     };
     session
         .record_compaction("S", cut, Some(&active), &gateway())
@@ -583,6 +598,7 @@ fn checkpoint_prefixes_must_not_carry_a_reply() {
     let missing = HistoryCut {
         turns: 3,
         tool_steps: 0,
+        ..HistoryCut::default()
     };
     assert_eq!(
         session.record_compaction("S", missing, Some(&simple_turn("q", "")), &gateway()),
@@ -607,6 +623,7 @@ fn restored_results_fall_back_when_their_artifact_is_missing_or_changed() {
                 result(&calls[1], "small", ToolResultStatus::Success),
             ],
         )],
+        steering: Vec::new(),
         end: replied("ok"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -639,6 +656,7 @@ fn replays_are_saved_only_with_a_provider_identity_that_reads_back() {
         let turn = HistoryTurn {
             user: "q",
             steps: Vec::new(),
+            steering: Vec::new(),
             end: TurnEnd::Replied {
                 text: "a",
                 provider_replay: Some(replay),
@@ -764,7 +782,7 @@ fn saved_turns_written_by_upstream_restore_as_upstream_projects_them() {
             ),
             ChatMessage::user("steer"),
             assistant(Some("prefix"), &[]),
-            ChatMessage::user("also this"),
+            ChatMessage::restored_steering("also this"),
             assistant(Some("final"), &[]),
             ChatMessage::user("aborted"),
             assistant(Some("p"), &[shell("c2")]),
@@ -806,6 +824,7 @@ fn a_turn_left_open_by_a_failed_save_blocks_every_later_save() {
     let cut = HistoryCut {
         turns: 1,
         tool_steps: 0,
+        ..HistoryCut::default()
     };
     session
         .record_compaction("S", cut, Some(&simple_turn("second", "")), &gateway())
@@ -841,6 +860,7 @@ fn a_turn_whose_results_cannot_be_stored_after_a_checkpoint_blocks_every_later_s
     let cut = HistoryCut {
         turns: 1,
         tool_steps: 0,
+        ..HistoryCut::default()
     };
     session
         .record_compaction("S", cut, Some(&simple_turn("second", "")), &gateway())
@@ -855,6 +875,7 @@ fn a_turn_whose_results_cannot_be_stored_after_a_checkpoint_blocks_every_later_s
             &calls,
             vec![result(&calls[0], "contents", ToolResultStatus::Success)],
         )],
+        steering: Vec::new(),
         end: replied("two"),
     };
     assert!(session.record_turn(&second, &gateway()).is_err());
@@ -917,6 +938,7 @@ fn saved_tool_results_read_back_whole_from_their_preview_or_their_artifact() {
                 result(&calls[1], &large, ToolResultStatus::Success),
             ],
         )],
+        steering: Vec::new(),
         end: replied("done"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -958,6 +980,7 @@ fn saved_results_larger_than_replay_limit_keep_the_complete_sidecar() {
             &calls,
             vec![result(&calls[0], &output, ToolResultStatus::Success)],
         )],
+        steering: Vec::new(),
         end: replied("done"),
     };
     session.record_turn(&turn, &gateway()).unwrap();
@@ -1066,6 +1089,7 @@ fn a_title_saved_before_the_first_turn_is_kept() {
             HistoryCut {
                 turns: 0,
                 tool_steps: 0,
+                steering: 0,
             },
             Some(&simple_turn("compacted first", "")),
             &gateway(),
@@ -1081,6 +1105,7 @@ fn a_resumed_session_or_a_checkpointed_first_turn_keeps_titles_as_upstream() {
     let cut = HistoryCut {
         turns: 0,
         tool_steps: 0,
+        steering: 0,
     };
     session
         .record_compaction(
@@ -1110,4 +1135,183 @@ fn a_resumed_session_or_a_checkpointed_first_turn_keeps_titles_as_upstream() {
         .record_turn(&simple_turn("named later", "ok"), &gateway())
         .unwrap();
     assert_eq!(saved_title(&fixture), Value::Null);
+}
+
+fn steering<'a>(text: &'a str, assistant_prefix: &'a str, after: usize) -> HistorySteering<'a> {
+    HistorySteering {
+        text,
+        assistant_prefix,
+        after_tool_step_count: after,
+    }
+}
+
+#[test]
+fn steering_is_saved_at_its_step_boundary_and_restored_as_plain_user_text() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let read = [call("call-1", "read_file")];
+    let turn = HistoryTurn {
+        user: "go",
+        steps: vec![step(
+            "",
+            &read,
+            vec![result(&read[0], "a", ToolResultStatus::Success)],
+        )],
+        steering: vec![steering("first", "Looking", 0), steering("second", "", 1)],
+        end: replied("done"),
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
+    let kinds: Vec<String> = fixture.events().into_iter().map(|(_, kind)| kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            "user",
+            "assistant",
+            "steering",
+            "tool_call",
+            "tool_result",
+            "steering",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+    let frames = fixture.frames();
+    assert_eq!(
+        frames[2]["event"],
+        serde_json::json!({"steering": {"text": "first"}})
+    );
+    assert_eq!(
+        frames[1]["event"]["assistant"]["standalone_response"],
+        false
+    );
+    assert_eq!(
+        fixture.resumed().messages,
+        [
+            ChatMessage::user("go"),
+            assistant(Some("Looking"), &[]),
+            ChatMessage::restored_steering("first"),
+            assistant(None, &read),
+            tool(&read[0], "a", ToolResultStatus::Success),
+            ChatMessage::restored_steering("second"),
+            assistant(Some("done"), &[]),
+        ]
+    );
+}
+
+#[test]
+fn a_turn_that_only_took_steering_is_saved() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let turn = HistoryTurn {
+        user: "go",
+        steps: Vec::new(),
+        steering: vec![steering("change course", "partial", 0)],
+        end: TurnEnd::Stopped {
+            reason: TurnStop::Failed,
+            partial: "",
+        },
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
+    assert_eq!(
+        fixture.resumed().messages[..3],
+        [
+            ChatMessage::user("go"),
+            assistant(Some("partial"), &[]),
+            ChatMessage::restored_steering("change course"),
+        ]
+    );
+}
+
+#[test]
+fn steering_past_the_last_step_is_refused() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let turn = HistoryTurn {
+        steering: vec![steering("late", "", 1)],
+        ..simple_turn("go", "done")
+    };
+    assert_eq!(
+        session.record_turn(&turn, &gateway()),
+        Err(SessionError::InvalidConversationEvent)
+    );
+}
+
+#[test]
+fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
+    let first = [call("call-1", "read_file")];
+    let second = [call("call-2", "read_file")];
+    let active = HistoryTurn {
+        user: "work",
+        steps: vec![
+            step(
+                "",
+                &first,
+                vec![result(&first[0], "a", ToolResultStatus::Success)],
+            ),
+            step(
+                "",
+                &second,
+                vec![result(&second[0], "b", ToolResultStatus::Success)],
+            ),
+        ],
+        steering: vec![steering("between", "", 1), steering("after", "", 2)],
+        end: replied(""),
+    };
+    for (cut, kept) in [
+        (
+            HistoryCut {
+                turns: 0,
+                tool_steps: 1,
+                steering: 0,
+            },
+            vec![
+                ChatMessage::user("work"),
+                ChatMessage::restored_steering("between"),
+                assistant(None, &second),
+                tool(&second[0], "b", ToolResultStatus::Success),
+                ChatMessage::restored_steering("after"),
+            ],
+        ),
+        (
+            HistoryCut {
+                turns: 0,
+                tool_steps: 2,
+                steering: 2,
+            },
+            vec![ChatMessage::user("work")],
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let mut session = fixture.start();
+        session
+            .record_compaction("S", cut, Some(&active), &gateway())
+            .unwrap();
+        let rest = HistoryTurn {
+            user: "work",
+            steps: Vec::new(),
+            steering: Vec::new(),
+            end: replied("done"),
+        };
+        let retained_steps = active.steps[cut.tool_steps..].to_vec();
+        let retained_steering = active.steering[cut.steering..]
+            .iter()
+            .map(|entry| HistorySteering {
+                after_tool_step_count: entry.after_tool_step_count - cut.tool_steps,
+                ..*entry
+            })
+            .collect();
+        let rest = HistoryTurn {
+            steps: retained_steps,
+            steering: retained_steering,
+            ..rest
+        };
+        session.record_turn(&rest, &gateway()).unwrap();
+        drop(session);
+        let restored = fixture.resumed();
+        let mut expected = kept;
+        expected.push(assistant(Some("done"), &[]));
+        assert_eq!(restored.messages, expected, "{cut:?}");
+    }
 }

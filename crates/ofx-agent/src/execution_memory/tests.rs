@@ -44,7 +44,7 @@ fn contents(history: &[ChatMessage]) -> Vec<String> {
     history
         .iter()
         .map(|message| match message {
-            ChatMessage::User { content } | ChatMessage::System { content } => {
+            ChatMessage::User { content, .. } | ChatMessage::System { content } => {
                 format!("user:{}", steering_text(content).unwrap_or(content))
             }
             ChatMessage::Assistant {
@@ -522,4 +522,21 @@ fn compacting_a_whole_running_turn_covers_the_steering_after_its_last_step() {
             "user:also this"
         ]
     );
+}
+
+#[test]
+fn restored_steering_is_read_as_steering_without_a_wrapper() {
+    let history = vec![
+        ChatMessage::user("go"),
+        assistant("", &["a"]),
+        result("a", ToolResultStatus::Success),
+        ChatMessage::restored_steering("from an earlier session"),
+        assistant("Done.", &[]),
+    ];
+    let turn = history_turn(&history, 0, history.len());
+    assert_eq!(
+        steering_entries(&turn),
+        [("from an earlier session", "", 1)]
+    );
+    assert_eq!(turn.reply, "Done.");
 }
