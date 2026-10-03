@@ -198,6 +198,23 @@ fn tokens(text: &str) -> impl Iterator<Item = Token> + '_ {
     })
 }
 
+pub(crate) fn contains_position(text: &str, position: usize) -> bool {
+    for token in tokens(text) {
+        if position < token.path_start {
+            return false;
+        }
+        let end = if token.quoted && token.status == Status::Complete {
+            token.path_end
+        } else {
+            token.end
+        };
+        if position <= end {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn decode(payload: &str) -> Option<String> {
     if !is_terminal_safe(payload.as_bytes()) {
         return None;
@@ -342,6 +359,19 @@ mod tests {
             (8, 9, 11)
         );
         assert!(query_at("@a b", 4).is_none());
+    }
+
+    #[test]
+    fn positions_inside_a_mention_path_are_contained() {
+        assert!(contains_position("@./", 3));
+        assert!(contains_position("see @src/main.rs", 9));
+        assert!(contains_position("see @src/main.rs", 16));
+        assert!(!contains_position("see @src/main.rs", 4));
+        assert!(!contains_position("see @src/main.rs ok", 17));
+        assert!(contains_position("@\"./space ", 10));
+        assert!(contains_position("@\"./escaped\\", 12));
+        assert!(!contains_position("@\"a b\" ok", 8));
+        assert!(!contains_position("plain text", 3));
     }
 
     #[test]

@@ -16,7 +16,7 @@ mod transcript;
 pub use composer::file_completion_state::{FileMatch, IndexRevision, IndexState, MentionKind};
 pub use host::Clipboard;
 pub use shell::{
-    DirectoryLister, FileMentionSource, Opening, PromptHistory, ShellOptions, SlashCommandSpec,
-    UiEventReceiver, UiEventSender, run_shell, ui_channel,
+    DirectoryLister, FileMentionSource, Opening, PromptHistory, ShellOptions, SkillCatalogSource,
+    SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell, ui_channel,
 };
 pub use terminal::TerminalError;

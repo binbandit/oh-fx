@@ -44,7 +44,7 @@ note = "Native model and permission preferences persist; host-owned configuratio
 upstream = "src/core/app/app_input_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
-note = "Terminal input routing exists; image ingress, deferred session-transition input and all interactive picker routes are absent."
+note = "Terminal input routing and the `$` skill mention trigger exist; image ingress, deferred session-transition input, inline skill and slash completion and the remaining interactive picker routes are absent."
 
 [[file]]
 upstream = "src/core/app/app_lifecycle.zig"
@@ -154,7 +154,7 @@ note = "Composer input rejection notices exist; question-freeform and approval-a
 upstream = "src/core/app/input_paste_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
-note = "Bracketed text paste is decoded with documented safety differences; image paste and picker-borrowed composer handling are absent."
+note = "Bracketed text paste is decoded with documented safety differences and a pasted `$name` opens the skill mention menu; image paste and picker-borrowed composer handling are absent."
 
 [[file]]
 upstream = "src/core/app/input_question_runtime.zig"
