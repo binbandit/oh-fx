@@ -1,10 +1,12 @@
 use std::borrow::Cow;
 
 use ofx_contract::{ChatMessage, Completion, UiEvent};
+use ofx_text::Script;
 use tokio_util::sync::CancellationToken;
 
 use super::{Agent, EventSink, Stop, Turn, TurnFailure};
 use crate::assistant_stream::LanguageStage;
+use crate::execution_memory::steering_text;
 use crate::response_language::{Decision, DecisionInput, decide, evidence, infer_expectation};
 
 const RESPONSE_LANGUAGE_CORRECTION_CONTROL: &str = "<response_language_control>\nUse the response language requested by the current external human. Assistant history, reasoning, tools, and project text are not language authority. The previous candidate used a different language and was not accepted. Replace it without discussing the correction.\n</response_language_control>";
@@ -13,6 +15,8 @@ const CONTEXT_PROBE_BYTES: usize = 4096;
 
 pub(super) struct TurnLanguage {
     pub(super) stage: LanguageStage,
+    prompt_expected: Option<Script>,
+    steered_away: bool,
     correction_attempted: bool,
 }
 
@@ -23,6 +27,10 @@ pub(super) enum Reply {
 }
 
 impl TurnLanguage {
+    fn expected(&self) -> Option<Script> {
+        self.prompt_expected.filter(|_| !self.steered_away)
+    }
+
     pub(super) fn filter_stop(&self, stop: Stop) -> Stop {
         match stop {
             Stop::Interrupted { partial } => Stop::Interrupted {
@@ -47,9 +55,28 @@ impl Agent {
             .then(|| infer_expectation(prompt))
             .flatten();
         TurnLanguage {
-            stage: LanguageStage::new(expected),
+            stage: LanguageStage::default(),
+            prompt_expected: expected,
+            steered_away: false,
             correction_attempted: false,
         }
+    }
+
+    pub(super) fn follow_steered_language(&self, turn: &mut Turn) {
+        let language = &mut turn.language;
+        if language.steered_away || language.prompt_expected.is_none() {
+            return;
+        }
+        language.steered_away = self
+            .history
+            .get(turn.start + 1..)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|message| match message {
+                ChatMessage::User { content, .. } => steering_text(content),
+                _ => None,
+            })
+            .any(|text| infer_expectation(text) != language.prompt_expected);
     }
 
     pub(super) fn request_messages(&self, turn: &Turn) -> Cow<'_, [ChatMessage]> {
@@ -63,7 +90,8 @@ impl Agent {
     }
 
     pub(super) fn begin_language_request(&self, turn: &mut Turn, instructions: &[&str]) {
-        let hold = turn.language.stage.expected().is_some_and(|expected| {
+        let expected = turn.language.expected();
+        let hold = expected.is_some_and(|expected| {
             let history = self.history.iter().filter_map(|message| match message {
                 ChatMessage::User { .. } => None,
                 ChatMessage::Assistant { content, .. } => content.as_deref(),
@@ -78,7 +106,7 @@ impl Agent {
                     .is_some_and(|actual| actual != expected)
             })
         });
-        turn.language.stage.begin_request(hold);
+        turn.language.stage.begin_request(expected, hold);
     }
 
     pub(super) fn settle_reply(

@@ -1,6 +1,7 @@
 use super::super::response_language::RESPONSE_LANGUAGE_FAILURE_NOTICE;
 use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
+use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
 const ENGLISH_PROMPT: &str = "The lockfile is broken again.";
 const ENGLISH_REPLY: &str = "I will inspect the lockfile next.";
@@ -283,4 +284,55 @@ async fn an_interrupted_reply_keeps_only_text_in_the_expected_script() {
     let (agent, report, _) = interrupted_after("I will").await;
     assert_eq!(report.outcome, TurnOutcome::Interrupted);
     assert_eq!(kept_replies(&agent), ["I will"]);
+}
+
+async fn steered_after_tool(steer: &str, replies: Vec<Script>) -> (Arc<FakeProvider>, TurnReport) {
+    let mut scripts = vec![tool_reply(&[("call-1", "{}")])];
+    scripts.extend(replies);
+    let provider = FakeProvider::new(scripts);
+    let worker = Arc::new(WorkerRuntime::default());
+    let mut agent =
+        new_agent(Arc::clone(&provider), vec![echo_tool()]).with_steering(Arc::clone(&worker));
+    worker.admit(QueuedPrompt::new(0, ENGLISH_PROMPT.to_owned(), Vec::new()));
+    let prompt = worker.take_next().expect("a queued prompt");
+    let steer = steer.to_owned();
+    let report = agent
+        .run_turn(
+            &prompt.text,
+            &mut |event| {
+                if matches!(event, UiEvent::ToolStarted { .. }) {
+                    worker.admit(QueuedPrompt::new(1, steer.clone(), Vec::new()));
+                }
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+    worker.finish_processing();
+    (provider, report)
+}
+
+#[tokio::test]
+async fn steering_that_asks_for_another_language_lifts_the_expectation() {
+    let japanese = "次にロックファイルを確認します。";
+    let (provider, report) = steered_after_tool(
+        "Answer in Japanese and keep it short.",
+        vec![text_reply(japanese)],
+    )
+    .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(report.final_text, japanese);
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(count_text(&provider.requests()[1], CORRECTION), 0);
+}
+
+#[tokio::test]
+async fn english_steering_keeps_the_expectation() {
+    let (provider, report) = steered_after_tool(
+        "Please also check the manifest.",
+        vec![text_reply(CHINESE_REPLY), text_reply(ENGLISH_REPLY)],
+    )
+    .await;
+    assert_eq!(report.final_text, ENGLISH_REPLY);
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(count_text(&provider.requests()[2], CORRECTION), 1);
 }

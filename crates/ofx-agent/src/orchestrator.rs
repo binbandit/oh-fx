@@ -504,7 +504,7 @@ impl Agent {
                     TurnFailure::StepLimitReached,
                 ));
             }
-            let step_cancel = self.begin_model_step(turn.id, events, cancel)?;
+            let step_cancel = self.begin_model_step(turn, events, cancel)?;
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }

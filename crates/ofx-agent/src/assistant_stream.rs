@@ -8,7 +8,7 @@ const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const LANGUAGE_PROBE_LIMIT_BYTES: usize = 4096;
 const FIRST_LANGUAGE_PROBE_BYTES: usize = 5;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct LanguageStage {
     expected: Option<Script>,
     accepted: bool,
@@ -18,17 +18,8 @@ pub(crate) struct LanguageStage {
 }
 
 impl LanguageStage {
-    pub(crate) fn new(expected: Option<Script>) -> Self {
-        Self {
-            expected,
-            accepted: false,
-            hold_until_completion: false,
-            next_probe_bytes: FIRST_LANGUAGE_PROBE_BYTES,
-            staged: String::new(),
-        }
-    }
-
-    pub(crate) fn begin_request(&mut self, hold_until_completion: bool) {
+    pub(crate) fn begin_request(&mut self, expected: Option<Script>, hold_until_completion: bool) {
+        self.expected = expected;
         self.accepted = false;
         self.hold_until_completion = hold_until_completion;
         self.next_probe_bytes = FIRST_LANGUAGE_PROBE_BYTES;

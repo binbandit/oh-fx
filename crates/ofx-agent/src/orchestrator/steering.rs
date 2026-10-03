@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ofx_contract::{ChatMessage, TurnId, UiEvent};
 use tokio_util::sync::CancellationToken;
 
-use super::{Agent, EventSink, Stop};
+use super::{Agent, EventSink, Stop, Turn};
 use crate::execution_memory::{steering_message, steering_text};
 use crate::worker_runtime::{Boundary, BoundaryKind, Steering, WorkerRuntime};
 
@@ -62,16 +62,17 @@ impl Agent {
 
     pub(super) fn begin_model_step(
         &mut self,
-        turn_id: TurnId,
+        turn: &mut Turn,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<CancellationToken, Stop> {
-        if self.interrupt_requested(cancel) && !self.steer_after_cancel(turn_id, cancel, events) {
+        if self.interrupt_requested(cancel) && !self.steer_after_cancel(turn.id, cancel, events) {
             return Err(Stop::interrupted());
         }
-        if !self.steer_at_model_boundary(turn_id, events) {
+        if !self.steer_at_model_boundary(turn.id, events) {
             return Err(Stop::interrupted());
         }
+        self.follow_steered_language(turn);
         Ok(self.model_step(cancel))
     }
 
