@@ -224,6 +224,7 @@ mod tests {
                 command: None,
                 file: None,
                 origin: ApprovalOrigin::ActiveSession,
+                change: None,
             }),
         });
         test.screen();

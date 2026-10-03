@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/ui/approval_screen.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream Paint, TranscriptDocumentPlan, TranscriptDocument behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/file_approval.rs", "crates/ofx-tui/src/footer/file_approval/review_document.rs", "crates/ofx-tui/src/footer/file_approval/wrapped_line.rs", "crates/ofx-tui/src/footer/approval_panel.rs"]
+note = "The file review (numbered rows, context, elisions, trailing newline markers, wrapped and escaped lines, spaced, compact and choices-only controls) and the command review layout are drawn in the live region below the transcript, as architecture.md records; the alternate-screen transcript document, mouse-wheel scrolling and the progressive first frame are absent."
 
 [[file]]
 upstream = "src/ui/ask_presentation.zig"
@@ -30,15 +30,15 @@ note = "Fact collection, bounded 32-read input bursts and frame commits exist; u
 
 [[file]]
 upstream = "src/ui/footer/approval_readiness.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream SettledFileApproval, settledFileApproval, committedFooterApprovalRows behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/approval_runtime.rs"]
+note = "A file approval's yes waits for a committed frame at the current size that shows the file name whole and every choice while a changed line or the notice is or was on screen; committedFooterApprovalRows has no counterpart because the prompt is drawn in the live region."
 
 [[file]]
 upstream = "src/ui/footer/approval_ui.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/approval_panel.rs", "crates/ofx-tui/src/footer/approval_content.rs"]
-note = "Inline approval copy exists; full-screen file diff composition, constrained viewport and canonical cell-grid geometry are absent."
+modules = ["crates/ofx-tui/src/footer/approval_panel.rs", "crates/ofx-tui/src/footer/approval_content.rs", "crates/ofx-tui/src/footer/file_approval.rs"]
+note = "Inline approval copy and the file approval rows (the Review change header with the action and counts, the path kept to its whole basename, the question, the Apply and Reveal choices and the hints) exist; amendment drafts and canonical cell-grid geometry are absent."
 
 [[file]]
 upstream = "src/ui/footer/compact_command_menu_presentation.zig"

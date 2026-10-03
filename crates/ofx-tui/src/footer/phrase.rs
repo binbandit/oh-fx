@@ -1,6 +1,6 @@
 use ofx_text::visible_width;
 
-use super::command_text::{approval_text, suffix_terminal_safe_by_width};
+use super::command_text::{approval_text, suffix_terminal_safe_by_width, unambiguous};
 
 const LEADING_ELLIPSIS: &str = "…";
 
@@ -21,6 +21,25 @@ impl PathText {
             text: approval_text(raw),
             basename_len: approval_text(&raw[basename_start..]).len(),
         }
+    }
+
+    pub(crate) fn from_encoded(encoded: &str) -> Self {
+        let basename_start = encoded
+            .trim_end_matches('/')
+            .rfind('/')
+            .map_or(0, |separator| separator + 1);
+        Self {
+            text: unambiguous(encoded.to_owned()),
+            basename_len: unambiguous(encoded[basename_start..].to_owned()).len(),
+        }
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn basename_start(&self) -> usize {
+        self.text.len() - self.basename_len
     }
 }
 
@@ -101,6 +120,23 @@ mod tests {
         let (cut, complete) = phrase.fit(46);
         assert_eq!(cut, "allow reads under …\\xffotes for this session");
         assert!(!complete);
+    }
+
+    #[test]
+    fn encoded_paths_keep_their_escapes_and_their_name_whole() {
+        let path = PathText::from_encoded("…/deep/n\\x1b\\xff\u{fe0f}otes.md");
+        assert_eq!(path.text(), "…/deep/n\\x1b\\xff\\u{fe0f}otes.md");
+        assert_eq!(
+            &path.text()[path.basename_start()..],
+            "n\\x1b\\xff\\u{fe0f}otes.md"
+        );
+        let phrase = Phrase::with_path("", path, "");
+        assert_eq!(
+            phrase.fit(25),
+            ("…n\\x1b\\xff\\u{fe0f}otes.md".to_owned(), true)
+        );
+        assert!(!phrase.fit(24).1);
+        assert_eq!(PathText::from_encoded("plain.txt").basename_start(), 0);
     }
 
     #[test]

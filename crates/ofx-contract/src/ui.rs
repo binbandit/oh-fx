@@ -1,5 +1,7 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
-use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
+use crate::permission_gate::{
+    ApprovalDecision, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
+};
 use crate::session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionScope};
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::tool_dispatch::CallDescription;
@@ -110,6 +112,7 @@ pub struct ApprovalRequest {
     pub scope: ApprovalScope,
     pub command: Option<CommandRequest>,
     pub file: Option<FileMutation>,
+    pub change: Option<ProposedFileChange>,
     pub origin: ApprovalOrigin,
 }
 

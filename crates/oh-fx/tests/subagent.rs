@@ -387,6 +387,60 @@ fn a_childs_command_review_weighs_the_users_request_not_the_parents_task() {
 }
 
 #[test]
+fn the_shell_reviews_a_childs_edit_with_its_diff() {
+    let server = FakeServer::start([
+        delegate("call_1", &json!({"action": "run", "task": "fix the notes"})),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "edit_file",
+            r#"{"path":"notes.md","old_string":"beta","new_string":"BETA"}"#,
+        )),
+        text("fixed the notes"),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let settings_path = home.root.join("config/oh-fx/settings.json");
+    let mut settings: Value =
+        serde_json::from_str(&fs::read_to_string(&settings_path).expect("read settings"))
+            .expect("parse settings");
+    settings["permission_mode"] = json!("ask");
+    fs::write(&settings_path, settings.to_string()).expect("write settings");
+    let notes = home.workspace.join("notes.md");
+    fs::write(&notes, "alpha\nbeta\ngamma\n").expect("write the notes");
+    let mut session = home.shell();
+    session.send(b"delegate the fix\r");
+    let screen = session
+        .wait_for(WAIT, |screen| {
+            screen.contains("Subagent 1 needs permission") || screen.contains("Permission needed")
+        })
+        .unwrap_or_else(|screen| panic!("no approval:\n{screen}"));
+    if !screen.contains("Subagent 1 needs permission") {
+        thread::sleep(APPROVAL_ARMING);
+        session.send(b"1");
+    }
+    let screen = wait(&session, "Subagent 1 needs permission");
+    for line in [
+        "      2 - beta",
+        "      2 + BETA",
+        "Edit · +1  -1",
+        "notes.md  ·  Apply this change?",
+        "❯ 1  Apply once",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    assert!(!screen.contains("Review change"), "{screen}");
+    thread::sleep(APPROVAL_ARMING);
+    session.send(b"1");
+    wait(&session, "parent done");
+    assert_eq!(
+        fs::read_to_string(&notes).expect("read the notes"),
+        "alpha\nBETA\ngamma\n"
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
 fn the_shell_asks_a_childs_approval_on_the_parents_prompt() {
     let server = FakeServer::start([
         delegate(
