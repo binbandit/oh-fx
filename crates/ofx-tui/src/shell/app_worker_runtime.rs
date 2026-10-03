@@ -115,20 +115,44 @@ impl Shell<'_> {
     }
 
     fn handle_ui_event(&mut self, delivery: Delivery) {
-        self.mark_dirty();
-        match delivery.event {
-            UiEvent::TurnStarted { turn_id } => self.turn_started(turn_id),
-            event @ (UiEvent::AssistantText { .. }
-            | UiEvent::AssistantRestarted { .. }
-            | UiEvent::Operational { .. }) => self.turn_text(event),
+        let Delivery { event, file } = delivery;
+        match event {
+            UiEvent::AssistantText { turn_id, text } => {
+                if self.is_visible_turn(turn_id) {
+                    let shown = self.assistant_text(&text);
+                    self.note_streamed(shown);
+                }
+            }
             UiEvent::ReasoningText { turn_id, text } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
                     turn.tokens.consume_reasoning(&text);
+                    self.note_streamed(false);
                 }
+            }
+            event => {
+                self.mark_dirty();
+                self.handle_presented_event(event, file);
+            }
+        }
+    }
+
+    fn note_streamed(&mut self, shown: bool) {
+        if shown {
+            self.mark_dirty();
+        } else {
+            self.frame.tokens_due = true;
+        }
+    }
+
+    fn handle_presented_event(&mut self, event: UiEvent, file: Option<Box<FileApproval>>) {
+        match event {
+            UiEvent::TurnStarted { turn_id } => self.turn_started(turn_id),
+            event @ (UiEvent::AssistantRestarted { .. } | UiEvent::Operational { .. }) => {
+                self.turn_text(event);
             }
             UiEvent::ApprovalRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
-                self.approval_requested(turn_id, *request, delivery.file);
+                self.approval_requested(turn_id, *request, file);
             }
             UiEvent::QuestionRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
@@ -145,7 +169,9 @@ impl Shell<'_> {
                 prompt,
                 text,
             } => self.steering_applied(turn_id, prompt, text),
-            UiEvent::ContextNotice { .. } => {}
+            UiEvent::ContextNotice { .. }
+            | UiEvent::AssistantText { .. }
+            | UiEvent::ReasoningText { .. } => {}
             UiEvent::Recovery { turn_id, status } => self.recovery_reported(turn_id, status),
             UiEvent::UsageReported {
                 turn_id,
@@ -218,9 +244,6 @@ impl Shell<'_> {
 
     fn turn_text(&mut self, event: UiEvent) {
         match event {
-            UiEvent::AssistantText { turn_id, text } if self.is_visible_turn(turn_id) => {
-                self.assistant_text(&text);
-            }
             UiEvent::AssistantRestarted { turn_id, text } if self.is_visible_turn(turn_id) => {
                 self.restart_assistant(&text);
             }
@@ -518,13 +541,15 @@ impl Shell<'_> {
         }
     }
 
-    fn assistant_text(&mut self, text: &str) {
+    fn assistant_text(&mut self, text: &str) -> bool {
         let Some(turn) = &mut self.turn else {
-            return;
+            return false;
         };
+        let phase_changed = turn.phase != TurnPhase::Generating;
         turn.phase = TurnPhase::Generating;
         turn.tokens.consume_content(text);
-        self.present_assistant(text);
+        let shown = self.present_assistant(text);
+        phase_changed || shown
     }
 
     fn restart_assistant(&mut self, text: &str) {
@@ -541,12 +566,12 @@ impl Shell<'_> {
         self.present_assistant(notice);
     }
 
-    fn present_assistant(&mut self, text: &str) {
+    fn present_assistant(&mut self, text: &str) -> bool {
         let Some(turn) = &mut self.turn else {
-            return;
+            return false;
         };
         let Some(text) = turn.leading_whitespace.release(text) else {
-            return;
+            return false;
         };
         let trailing = text.len() - text.trim_end_matches('\n').len();
         turn.step_break = if trailing == text.len() {
@@ -557,7 +582,9 @@ impl Shell<'_> {
         };
         let mut events = Vec::new();
         turn.markdown.push(&text, &mut events);
+        let shown = !events.is_empty();
         self.transcript.append_assistant(events, &self.theme);
+        shown
     }
 
     fn end_assistant_step(&mut self, turn_id: TurnId) {
@@ -762,7 +789,7 @@ mod tests {
     use ofx_contract::{
         ActionLabel, CallDescription, CompactionActivity, CompactionEnd, Concurrency, HistoryEntry,
         Notice, NoticeTone, ToolActivity, ToolCallId, ToolEffect, ToolResultStatus, TurnId,
-        TurnOutcome, UiCommand, UiEvent,
+        TurnOutcome, UiCommand, UiEvent, Usage,
     };
 
     use super::super::Opening;
@@ -815,6 +842,65 @@ mod tests {
             ),
             "{screen}"
         );
+    }
+
+    fn streaming() -> TestShell {
+        let mut test = TestShell::start();
+        test.submit("go");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.screen();
+        test
+    }
+
+    fn token_redraw_due_ms(test: &TestShell) -> Option<i64> {
+        let now_ms = test.shell.now_ms();
+        test.shell
+            .next_deadline_ms(now_ms)
+            .filter(|deadline_ms| *deadline_ms <= now_ms + 50)
+    }
+
+    #[test]
+    fn token_counts_alone_redraw_at_most_every_50_ms() {
+        let mut test = streaming();
+        for _ in 0..20 {
+            test.deliver(UiEvent::ReasoningText {
+                turn_id: TurnId::new(1),
+                text: "think ".repeat(20),
+            });
+        }
+        assert!(!test.written().contains('↓'));
+        assert!(token_redraw_due_ms(&test).is_some());
+        test.advance(50);
+        let written = test.written();
+        assert_eq!(written.matches('↓').count(), 1, "{written:?}");
+        assert_eq!(token_redraw_due_ms(&test), None);
+        test.deliver(UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: "partial".to_owned(),
+        });
+        let written = test.written();
+        assert!(written.contains("Generating"), "{written:?}");
+        test.deliver(UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: " words".repeat(20),
+        });
+        assert!(test.written().is_empty());
+        test.deliver(UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: " done\n\nnext\n".to_owned(),
+        });
+        assert!(test.written().contains("done"));
+        test.deliver(UiEvent::UsageReported {
+            turn_id: TurnId::new(1),
+            usage: Usage {
+                input_tokens: Some(10),
+                output_tokens: Some(999),
+            },
+            context_window: None,
+        });
+        assert!(test.written().contains("↓999"));
     }
 
     fn compaction(activity: CompactionActivity) -> UiEvent {

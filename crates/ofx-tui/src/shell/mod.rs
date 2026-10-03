@@ -101,6 +101,7 @@ const STARTUP_MIN_BODY_ROWS: u16 = 11;
 const MAX_PROMPT_HISTORY: usize = 100;
 const RESIZE_DEBOUNCE_MS: i64 = 100;
 const FILE_PICKER_POLL_MS: i64 = 8;
+const TOKEN_REDRAW_INTERVAL_MS: i64 = 50;
 const MAX_WINDOW_TITLE_BYTES: usize = 128;
 const TITLE_CUT: &str = "...";
 
@@ -295,6 +296,8 @@ enum FreshScreen {
 #[derive(Default)]
 struct FrameCache {
     stale: bool,
+    tokens_due: bool,
+    drawn_ms: i64,
     drawn_activity: Option<i64>,
     composer: Option<ComposerView>,
 }
@@ -579,7 +582,17 @@ impl<'a> Shell<'a> {
     }
 
     fn frame_due(&self, now_ms: i64) -> bool {
-        self.frame.stale || self.activity_phase(now_ms) != self.frame.drawn_activity
+        self.frame.stale
+            || self.activity_phase(now_ms) != self.frame.drawn_activity
+            || self
+                .token_redraw_ms()
+                .is_some_and(|due_ms| due_ms <= now_ms)
+    }
+
+    fn token_redraw_ms(&self) -> Option<i64> {
+        self.frame
+            .tokens_due
+            .then_some(self.frame.drawn_ms + TOKEN_REDRAW_INTERVAL_MS)
     }
 
     fn activity_rows(&self, now_ms: i64) -> Vec<Row> {
@@ -619,11 +632,19 @@ impl<'a> Shell<'a> {
             .collect()
     }
 
+    fn note_frame_started(&mut self, now_ms: i64) {
+        self.frame.stale = false;
+        self.frame.tokens_due = false;
+        self.frame.drawn_ms = now_ms;
+        self.frame.drawn_activity = self.activity_phase(now_ms);
+    }
+
     fn frame_held(&self, now_ms: i64) -> bool {
-        self.dimensions_invalid
-            || self.pending_resize.is_some()
-            || self.input.native_clear_active()
-            || !self.frame_due(now_ms)
+        self.frames_blocked() || !self.frame_due(now_ms)
+    }
+
+    fn frames_blocked(&self) -> bool {
+        self.dimensions_invalid || self.pending_resize.is_some() || self.input.native_clear_active()
     }
 
     fn commit_frame(&mut self) -> Result<(), TerminalError> {
@@ -635,8 +656,7 @@ impl<'a> Shell<'a> {
         if self.frame_held(now_ms) {
             return self.flush_output();
         }
-        self.frame.stale = false;
-        self.frame.drawn_activity = self.activity_phase(now_ms);
+        self.note_frame_started(now_ms);
         let appended = self.transcript.take_new_rows(&self.theme);
         self.statusline.refresh();
         let (menu_band, hint, warning_included) = self.menu_band_and_hint();
@@ -1057,6 +1077,7 @@ impl<'a> Shell<'a> {
                 .and_then(|recovery| recovery.next_change_ms(now_ms)),
             self.input.theme_deadline_ms(now_ms),
             self.input.native_clear_deadline_ms(),
+            self.token_redraw_ms().filter(|_| !self.frames_blocked()),
         ]
         .into_iter()
         .flatten()
