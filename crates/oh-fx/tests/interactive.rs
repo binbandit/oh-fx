@@ -1036,6 +1036,7 @@ fn the_model_asks_in_the_footer_and_receives_the_answers() {
     wait(&session, "Ship it?");
     session.send(b"3after review\r");
     let screen = wait(&session, "Shipping fast.");
+    assert!(!screen.contains("tool call"), "{screen}");
     for line in [
         "  1) Which depth?",
         "     Fast",
@@ -1069,7 +1070,11 @@ fn escape_cancels_the_question_with_its_turn() {
     session.send(b"\x1b");
     let screen = wait(&session, "■ Cancelled");
     assert!(!screen.contains("Which depth?"), "{screen}");
-    assert!(!screen.contains(CANCELLATION), "{screen}");
+    assert!(
+        !screen.contains("What can oh-fx do differently?"),
+        "{screen}"
+    );
+    assert!(!screen.contains("tool call"), "{screen}");
     session.send(b"go on\r");
     wait(&session, "Asking in text instead.");
     assert_eq!(
