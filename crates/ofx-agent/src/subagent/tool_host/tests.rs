@@ -8,7 +8,7 @@ use ofx_contract::{
     ChatMessage, Completion, Concurrency, FinishReason, ModelProvider, ModelRequest, PathAccess,
     PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ReviewRequest, ReviewVerdict,
     Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool, ToolActivity, ToolCall,
-    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, Usage,
+    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -16,8 +16,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::approvals::Approvals;
+use crate::execution_memory::steering_message;
 use crate::orchestrator::{AgentConfig, RuntimeContext};
 use crate::scripted_provider::{ScriptedProvider, calling, text};
+use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
 const BASE_PROMPT: &str = "base prompt";
 
@@ -1036,6 +1038,65 @@ async fn a_childs_reviewer_weighs_the_root_users_requests_and_never_the_parents_
         gate.seen(),
         [(ROOT_CURRENT.to_owned(), vec![ROOT_FIRST.to_owned()])]
     );
+}
+
+#[tokio::test]
+async fn steering_typed_while_a_child_works_waits_for_the_parent() {
+    let steer = "Also check the docs.";
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        Ok(calling(tool_call(
+            "call-1",
+            "subagent",
+            &serde_json::json!({ "task": "inspect the parser" }).to_string(),
+        ))),
+        Ok(calling(tool_call("child-1", "shell", "{}"))),
+        Ok(text("child done")),
+        Ok(text("parent done")),
+    ]));
+    let gate = Arc::new(IntentGate::default());
+    let host = intent_host(&provider, &gate);
+    let worker = Arc::new(WorkerRuntime::default());
+    let mut parent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn ModelProvider>,
+        vec![Described::delegate(&host)],
+        Arc::new(NoContext),
+        Arc::clone(&gate) as Arc<dyn PermissionGate>,
+        intent_config(),
+    )
+    .with_steering(Arc::clone(&worker));
+    worker.admit(QueuedPrompt::new(0, ROOT_CURRENT.to_owned(), Vec::new()));
+    let prompt = worker.take_next().expect("a queued prompt");
+    let report = parent
+        .run_turn(
+            &prompt.text,
+            &mut |event| {
+                if matches!(event, UiEvent::ToolStarted { .. }) {
+                    worker.admit(QueuedPrompt::new(1, steer.to_owned(), Vec::new()));
+                }
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+    worker.finish_processing();
+    assert_eq!(report.final_text, "parent done");
+    let seen = provider.seen();
+    assert_eq!(seen.len(), 4);
+    for child in &seen[1..3] {
+        assert!(
+            !child
+                .messages
+                .iter()
+                .any(|message| *message == ChatMessage::user(steering_message(steer))),
+            "{:?}",
+            child.messages
+        );
+    }
+    assert_eq!(seen[2].messages[0], ChatMessage::user("inspect the parser"));
+    assert_eq!(
+        seen[3].messages.last(),
+        Some(&ChatMessage::user(steering_message(steer)))
+    );
+    assert!(worker.take_next().is_none());
 }
 
 #[tokio::test]
