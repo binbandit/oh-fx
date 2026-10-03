@@ -6,8 +6,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use ofx_contract::{
-    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, SkillMenuFocus, SkillMenuGroup,
-    SkillMenuItem, SkillMenuSource, TurnId, UiCommand, UiEvent,
+    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, ResumeRefusal, SessionPage,
+    SessionRow, SessionScope, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
+    TurnId, UiCommand, UiEvent,
 };
 
 use super::*;
@@ -248,6 +249,51 @@ fn an_open_skills_menu_owns_the_footer_until_it_closes() {
     test.advance(40);
     test.draining(|shell| shell.flush_pending_input().unwrap());
     assert!(test.shell.skills_menu.is_none());
+    assert!(test.shell.composer.is_empty());
+    let screen = press(&mut test, b"@mai");
+    assert!(screen.contains("src/main.rs"), "{screen}");
+}
+
+#[test]
+fn an_open_session_picker_owns_the_footer_and_filters_by_a_typed_at() {
+    let (mut test, _) = files();
+    let scope = SessionScope::CurrentWorkspace;
+    test.deliver(UiEvent::SessionPickerOpened { scope });
+    test.deliver(UiEvent::SessionsListed {
+        page: SessionPage {
+            scope,
+            after: None,
+            rows: vec![SessionRow {
+                id: "mailbox".to_owned(),
+                title: Some("fix @mailbox".to_owned()),
+                workspace_root: "/workspace".to_owned(),
+                updated_at_ms: 0,
+                turns: 1,
+            }],
+            has_more: false,
+        },
+    });
+    let screen = press(&mut test, b"@ma");
+    assert!(screen.contains("fix @mailbox"), "{screen}");
+    assert!(!screen.contains("src/main.rs"), "{screen}");
+    assert!(!test.shell.file_picker_owns_surface());
+    press(&mut test, b"\t");
+    assert_eq!(test.shell.composer.text(), "@ma");
+    press(&mut test, b"\r");
+    assert_eq!(
+        test.sent().last(),
+        Some(&UiCommand::ResumeSession {
+            id: "mailbox".to_owned()
+        })
+    );
+    test.deliver(UiEvent::SessionResumeFailed {
+        id: "mailbox".to_owned(),
+        refusal: ResumeRefusal::Unavailable,
+    });
+    press(&mut test, ESCAPE);
+    test.advance(40);
+    test.draining(|shell| shell.flush_pending_input().unwrap());
+    assert!(!test.shell.picker_active());
     assert!(test.shell.composer.is_empty());
     let screen = press(&mut test, b"@mai");
     assert!(screen.contains("src/main.rs"), "{screen}");

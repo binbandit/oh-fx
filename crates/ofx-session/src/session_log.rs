@@ -17,7 +17,7 @@ use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
 };
-use crate::session_display_metadata::derive_display_title;
+use crate::session_display_metadata::{derive_display_title, prompt_title};
 use crate::session_error::SessionError;
 use crate::session_event::{
     ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent, ToolResultEvent,
@@ -150,6 +150,7 @@ impl WritableSession {
         provider: &SavedProvider,
     ) -> Result<(), SessionError> {
         let open = self.writer.turn_open();
+        let fresh = self.started;
         let nothing_done = turn.steps.is_empty()
             && turn.end
                 == TurnEnd::Stopped {
@@ -163,7 +164,8 @@ impl WritableSession {
         if saved.is_err() && self.writer.turn_open() {
             self.writer.block_open_turn();
         }
-        saved
+        saved?;
+        self.write_first_title(fresh, turn.user)
     }
 
     fn append_turn(
@@ -186,6 +188,7 @@ impl WritableSession {
         provider: &SavedProvider,
     ) -> Result<(), SessionError> {
         self.require_writable()?;
+        let fresh = self.started;
         let timestamp_ms = now_ms();
         let mut events = match active {
             Some(active) => self.active_prefix(active, provider, timestamp_ms)?,
@@ -200,7 +203,22 @@ impl WritableSession {
                 summary: summary.to_owned(),
             },
         ));
-        self.append(timestamp_ms, &events)
+        self.append(timestamp_ms, &events)?;
+        match active {
+            Some(active) => self.write_first_title(fresh, active.user),
+            None => Ok(()),
+        }
+    }
+
+    fn write_first_title(&mut self, fresh: bool, prompt: &str) -> Result<(), SessionError> {
+        let untitled = fresh && self.metadata.title.is_none();
+        let Some(title) = untitled.then(|| prompt_title(prompt)).flatten() else {
+            return Ok(());
+        };
+        let mut proposed = self.metadata.clone();
+        proposed.title = Some(title);
+        self.write_metadata(proposed)
+            .or_else(|_| self.require_writable())
     }
 
     fn active_prefix(
@@ -254,6 +272,7 @@ impl WritableSession {
         self.writer.append(timestamp_ms, events)?;
         if !events.is_empty() {
             self.metadata.updated_at_ms = timestamp_ms;
+            self.started = false;
         }
         Ok(())
     }

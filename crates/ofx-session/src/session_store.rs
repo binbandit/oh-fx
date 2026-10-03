@@ -43,6 +43,33 @@ pub enum ListScope {
     CurrentWorkspace,
 }
 
+pub struct SessionCatalog {
+    summaries: Vec<SessionSummary>,
+    workspace_root: String,
+}
+
+impl SessionCatalog {
+    pub fn page(
+        &self,
+        scope: ListScope,
+        active_id: Option<&str>,
+        continuation: Option<&ResumeContinuation>,
+        limit: usize,
+    ) -> ResumablePage {
+        let workspace_root = match scope {
+            ListScope::AllWorkspaces => None,
+            ListScope::CurrentWorkspace => Some(self.workspace_root.as_str()),
+        };
+        resumable_page_from_summaries(
+            &self.summaries,
+            workspace_root,
+            active_id,
+            continuation,
+            limit,
+        )
+    }
+}
+
 pub struct SessionStore {
     data: Option<PrivateDir>,
     sessions: Option<PrivateDir>,
@@ -108,14 +135,27 @@ impl SessionStore {
     }
 
     pub fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
+        let mut session = self.open_within(id, self.lock_deadline)?;
+        self.move_here(&mut session)?;
+        Ok(session)
+    }
+
+    pub fn open_without_waiting(&self, id: &str) -> Result<WritableSession, SessionError> {
+        self.open_within(id, Duration::ZERO)
+    }
+
+    pub fn move_here(&self, session: &mut WritableSession) -> Result<(), SessionError> {
+        if session.metadata().workspace_root == self.workspace_root {
+            return Ok(());
+        }
+        session.rebind_workspace(&self.workspace_root)
+    }
+
+    fn open_within(&self, id: &str, deadline: Duration) -> Result<WritableSession, SessionError> {
         let sessions = self
             .writable_sessions()
             .map_err(|_| SessionError::SessionNotFound)?;
-        let mut session = resume_session(sessions, id, self.lock_deadline)?;
-        if session.metadata().workspace_root != self.workspace_root {
-            session.rebind_workspace(&self.workspace_root)?;
-        }
-        Ok(session)
+        resume_session(sessions, id, deadline)
     }
 
     pub fn resume_latest(&self) -> Result<WritableSession, SessionError> {
@@ -179,25 +219,11 @@ impl SessionStore {
         load_session(sessions, id)
     }
 
-    pub fn resumable_page(
-        &self,
-        scope: ListScope,
-        active_id: Option<&str>,
-        continuation: Option<&ResumeContinuation>,
-        limit: usize,
-    ) -> Result<ResumablePage, SessionError> {
-        let scan = self.scan_summaries()?;
-        let workspace_root = match scope {
-            ListScope::AllWorkspaces => None,
-            ListScope::CurrentWorkspace => Some(self.workspace_root.as_str()),
-        };
-        Ok(resumable_page_from_summaries(
-            &scan.summaries,
-            workspace_root,
-            active_id,
-            continuation,
-            limit,
-        ))
+    pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
+        Ok(SessionCatalog {
+            summaries: self.scan_summaries()?.summaries,
+            workspace_root: self.workspace_root.clone(),
+        })
     }
 
     pub fn remembered_session_id(&self) -> Result<Option<String>, SessionError> {

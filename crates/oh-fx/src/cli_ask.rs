@@ -918,6 +918,11 @@ impl Presenter {
             | UiEvent::CompactionActivity { .. }
             | UiEvent::SkillsMenu { .. }
             | UiEvent::ConversationCleared { .. }
+            | UiEvent::SessionPickerOpened { .. }
+            | UiEvent::SessionsListed { .. }
+            | UiEvent::SessionsUnavailable { .. }
+            | UiEvent::SessionResumeFailed { .. }
+            | UiEvent::SessionResumed { .. }
             | UiEvent::ExitRequested => Ok(()),
         };
         match written {

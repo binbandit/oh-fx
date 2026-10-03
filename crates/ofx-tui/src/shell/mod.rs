@@ -11,17 +11,19 @@ mod input_selection_runtime;
 mod input_submit_runtime;
 mod leading_whitespace;
 pub(crate) mod question_prompt;
+mod session_picker_runtime;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
 #[cfg(test)]
 mod test_shell;
 
 use std::collections::VecDeque;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ofx_contract::{HistoryEntry, PermissionMode, TurnId, UiCommand};
+use ofx_contract::{HistoryEntry, PermissionMode, SessionScope, TurnId, UiCommand};
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
@@ -36,6 +38,7 @@ use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
 use leading_whitespace::LeadingWhitespace;
 use question_prompt::QuestionPrompt;
+use session_picker_runtime::SessionPicker;
 use skills_menu::SkillsMenu;
 
 use crate::composer::Composer;
@@ -93,7 +96,14 @@ pub struct ShellOptions {
     pub command_categories: Vec<String>,
     pub prompt_history: PromptHistory,
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
-    pub history: Option<Vec<HistoryEntry>>,
+    pub opening: Opening,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opening {
+    Welcome,
+    Transcript(Vec<HistoryEntry>),
+    SessionPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +169,7 @@ pub(crate) struct Shell<'a> {
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
     yolo_warning: YoloWarning,
+    picker: Option<SessionPicker>,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
     clipboard: ClipboardRuntime,
@@ -286,17 +297,24 @@ impl<'a> Shell<'a> {
         renderer.start_at(usize::from(setup.launch_row.max(1)));
         let mut transcript = Transcript::default();
         transcript.restart(usize::from(layout.cols));
-        match options.history.take() {
-            Some(history) => replayed_entries(history).for_each(|entry| transcript.push(entry)),
-            None => transcript.push(Entry::Welcome {
-                version: options.version.clone(),
-            }),
-        }
+        let picking = match mem::replace(&mut options.opening, Opening::Welcome) {
+            Opening::Welcome => {
+                transcript.push(Entry::Welcome {
+                    version: options.version.clone(),
+                });
+                false
+            }
+            Opening::Transcript(history) => {
+                replayed_entries(history).for_each(|entry| transcript.push(entry));
+                false
+            }
+            Opening::SessionPicker => true,
+        };
         let yolo_warning = YoloWarning::new(options.full_access_warning);
         let mut composer = Composer::new();
         let history = HistoryRecorder::install(options.prompt_history.take(), &mut composer);
         let file_picker = FilePicker::new(options.file_mentions.take());
-        Self {
+        let mut shell = Self {
             terminal: setup.terminal,
             input: setup.input,
             composer,
@@ -318,6 +336,7 @@ impl<'a> Shell<'a> {
             question: None,
             skills_menu: None,
             yolo_warning,
+            picker: None,
             events,
             send,
             clipboard: ClipboardRuntime::new(clipboard),
@@ -332,7 +351,11 @@ impl<'a> Shell<'a> {
                 ..FrameCache::default()
             },
             metrics: Metrics::default(),
+        };
+        if picking {
+            shell.session_picker_opened(SessionScope::CurrentWorkspace);
         }
+        shell
     }
 
     fn now_ms(&self) -> i64 {
@@ -479,6 +502,12 @@ impl<'a> Shell<'a> {
                     ),
                 });
         let picker = self.file_picker_band(composer.rows.len().saturating_sub(1), banner_rows);
+        let (menu, hint) = self.footer_menu(
+            composer.rows.len(),
+            skills_menu.unwrap_or(picker.rows),
+            hint,
+        );
+        let warning_included = warning_included && hint.is_some();
         let review = composer.review.clone();
         let banner = if review.as_ref().is_some_and(|review| review.screen) {
             Vec::new()
@@ -493,7 +522,7 @@ impl<'a> Shell<'a> {
                 activity,
                 banner,
                 composer: &composer,
-                menu: skills_menu.unwrap_or(picker.rows),
+                menu,
                 hint,
             },
             usize::from(self.layout.rows),
@@ -561,7 +590,7 @@ impl<'a> Shell<'a> {
         if self.output.is_empty() {
             return Ok(());
         }
-        let bytes = std::mem::take(&mut self.output);
+        let bytes = mem::take(&mut self.output);
         self.terminal.write_all(bytes.as_bytes())?;
         self.metrics.ansi_bytes += bytes.len();
         Ok(())
@@ -676,15 +705,24 @@ impl<'a> Shell<'a> {
     }
 
     fn start_fresh_transcript(&mut self, screen: FreshScreen) {
+        let welcome = Entry::Welcome {
+            version: self.options.version.clone(),
+        };
+        self.restart_transcript(screen, [welcome]);
+    }
+
+    fn restart_transcript(
+        &mut self,
+        screen: FreshScreen,
+        entries: impl IntoIterator<Item = Entry>,
+    ) {
         match screen {
             FreshScreen::Erase => self.renderer.reset_screen(&mut self.output),
             FreshScreen::KeepScrollback => self.renderer.release_screen(&mut self.output),
         }
         self.transcript.clear();
         self.transcript.restart(self.cols());
-        self.push_entry(Entry::Welcome {
-            version: self.options.version.clone(),
-        });
+        entries.into_iter().for_each(|entry| self.push_entry(entry));
         self.invalidate();
     }
 
@@ -865,7 +903,7 @@ mod tests {
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
-            history: None,
+            opening: Opening::Welcome,
         };
         assert_eq!(title_sequence(&options), "\x1b]2;oh-fx v0.1.0 | proj\x07");
     }

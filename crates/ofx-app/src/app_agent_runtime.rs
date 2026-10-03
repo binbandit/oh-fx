@@ -5,17 +5,21 @@ use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailur
 use ofx_config::save_model_preference;
 use ofx_contract::{
     CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, QuestionRequest,
-    SkillBinding, TurnId, TurnOutcome, UiCommand, UiEvent,
+    ResumeRefusal, SessionCursor, SessionScope, SkillBinding, TurnId, TurnOutcome, UiCommand,
+    UiEvent,
 };
+use ofx_session::SessionError;
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
-use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
+use crate::app_commands::{
+    CommandEffect, Work, handle_command, refuse_resume_during_turn, toggle_fast,
+};
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_session_runtime::Persistence;
+use crate::app_session_runtime::{Persistence, RestoredPreferences};
 use crate::native::NativeClipboard;
 use crate::session_commands::SettingsAccess;
 use crate::skills::HostSkills;
@@ -149,11 +153,15 @@ impl ControllerState {
         if model != self.model {
             self.fast_mode = false;
         }
+        self.use_model(model);
+        self.save_model_preference(MODEL_TOPIC);
+    }
+
+    fn use_model(&mut self, model: String) {
         self.model = model;
         self.emit(UiEvent::ModelSelected {
             model: self.model.clone(),
         });
-        self.save_model_preference(MODEL_TOPIC);
     }
 
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>) {
@@ -204,10 +212,16 @@ pub(crate) struct Controller {
     state: ControllerState,
     persistence: Option<Persistence>,
     questions: Option<QuestionRequests>,
+    pick_at_start: bool,
 }
 
 impl Controller {
-    pub(crate) fn new(mut setup: AgentSetup, emit: Emit, persistence: Option<Persistence>) -> Self {
+    pub(crate) fn new(
+        mut setup: AgentSetup,
+        emit: Emit,
+        persistence: Option<Persistence>,
+        pick_at_start: bool,
+    ) -> Self {
         let questions = setup.take_question_requests();
         let notices = ContextNotices {
             startup: setup.context_notices().to_vec(),
@@ -234,6 +248,7 @@ impl Controller {
             state,
             persistence,
             questions,
+            pick_at_start,
         }
     }
 
@@ -245,11 +260,13 @@ impl Controller {
 
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
         self.show_startup_notices();
-        let opened = self
-            .persistence
-            .as_mut()
-            .and_then(|persistence| persistence.open(&mut self.agent));
-        self.session_notice(opened);
+        if !self.pick_at_start {
+            let opened = self
+                .persistence
+                .as_mut()
+                .and_then(|persistence| persistence.open(&mut self.agent));
+            self.session_notice(opened);
+        }
         self.remember_agent_facts();
         self.serve(&mut commands).await;
         if let Some(persistence) = &mut self.persistence {
@@ -279,6 +296,14 @@ impl Controller {
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
                 }
+                UiCommand::ListSessions {
+                    scope,
+                    after,
+                    limit,
+                } => self.list_sessions(scope, after, limit),
+                UiCommand::OpenSessions { scope } => self.open_picker(scope),
+                UiCommand::ResumeSession { id } => self.resume_session(&id),
+                UiCommand::CloseSessionPicker => self.close_picker(),
                 UiCommand::Cancel { .. }
                 | UiCommand::Approval { .. }
                 | UiCommand::QuestionAnswered { .. }
@@ -307,6 +332,7 @@ impl Controller {
                 self.reconfigure();
             }
             CommandEffect::Compact => return self.compact(commands).await,
+            CommandEffect::OpenSessions => self.open_picker(SessionScope::CurrentWorkspace),
         }
         true
     }
@@ -347,6 +373,12 @@ impl Controller {
                             | UiCommand::Approval { .. }
                             | UiCommand::QuestionAnswered { .. },
                         ) => {}
+                        Some(
+                            command @ (UiCommand::OpenSessions { .. }
+                            | UiCommand::ListSessions { .. }
+                            | UiCommand::ResumeSession { .. }
+                            | UiCommand::CloseSessionPicker),
+                        ) => refuse_session_command(state, command),
                         Some(UiCommand::RunCommand { text }) => {
                             run_deferred_command(
                                 state,
@@ -366,6 +398,82 @@ impl Controller {
         open
     }
 
+    fn open_picker(&self, scope: SessionScope) {
+        self.state.emit(UiEvent::SessionPickerOpened { scope });
+    }
+
+    fn list_sessions(&mut self, scope: SessionScope, after: Option<SessionCursor>, limit: usize) {
+        let more = after.is_some();
+        let listed = self
+            .persistence
+            .as_mut()
+            .map_or(Err(SessionError::SessionStoreUnavailable), |persistence| {
+                persistence.page(scope, after, limit)
+            });
+        match listed {
+            Ok(page) => self.state.emit(UiEvent::SessionsListed { page }),
+            Err(error) => {
+                let action = if more {
+                    "unable to load more saved sessions"
+                } else {
+                    "unable to list saved sessions"
+                };
+                self.state
+                    .notice(NoticeTone::Error, "session", &format!("{action}: {error}"));
+                self.state.emit(UiEvent::SessionsUnavailable { scope });
+            }
+        }
+    }
+
+    fn resume_session(&mut self, id: &str) {
+        let Some(persistence) = &mut self.persistence else {
+            self.refuse_resume(id, ResumeRefusal::Unavailable);
+            return;
+        };
+        match persistence.resume_selected(id, &mut self.agent) {
+            Ok(switched) => {
+                self.forget_tracked_changes();
+                self.restore_preferences(switched.preferences);
+                self.remember_agent_facts();
+                self.state.emit(UiEvent::SessionResumed {
+                    history: switched.history,
+                });
+                self.show_startup_notices();
+                self.session_notice(switched.notice);
+            }
+            Err(refused) => {
+                self.session_notice(refused.notice);
+                self.refuse_resume(id, refused.refusal);
+            }
+        }
+    }
+
+    fn restore_preferences(&mut self, restored: RestoredPreferences) {
+        self.state
+            .setup
+            .restore_reasoning(restored.reasoning_effort, restored.fast_mode);
+        self.state.fast_mode = restored.fast_mode;
+        if restored.model != self.state.model {
+            self.state.use_model(restored.model);
+        }
+        self.reconfigure();
+    }
+
+    fn refuse_resume(&self, id: &str, refusal: ResumeRefusal) {
+        self.state.emit(UiEvent::SessionResumeFailed {
+            id: id.to_owned(),
+            refusal,
+        });
+    }
+
+    fn close_picker(&mut self) {
+        let started = self
+            .persistence
+            .as_mut()
+            .and_then(|persistence| persistence.begin_unless_open(&mut self.agent));
+        self.session_notice(started);
+    }
+
     fn reconfigure(&mut self) {
         let mut config = self.state.setup.config(&self.state.model);
         config.fast_mode = self.state.fast_mode;
@@ -378,6 +486,12 @@ impl Controller {
         self.state.context_to_compact = self.agent.has_context_to_compact();
     }
 
+    fn forget_tracked_changes(&self) {
+        if let Some(tracker) = self.state.change_tracker() {
+            tracker.clear();
+        }
+    }
+
     fn save_preferences(&mut self) {
         let saved = save_session_preferences(&self.state, &mut self.persistence);
         self.session_notice(saved);
@@ -385,9 +499,7 @@ impl Controller {
 
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
-        if let Some(tracker) = self.state.change_tracker() {
-            tracker.clear();
-        }
+        self.forget_tracked_changes();
         let started = self
             .persistence
             .as_mut()
@@ -493,6 +605,12 @@ impl Controller {
                             run_deferred_command(state, persistence, &text, Work::Turn, &cancel)
                                 .await;
                         }
+                        Some(
+                            command @ (UiCommand::OpenSessions { .. }
+                            | UiCommand::ListSessions { .. }
+                            | UiCommand::ResumeSession { .. }
+                            | UiCommand::CloseSessionPicker),
+                        ) => refuse_session_command(state, command),
                         Some(UiCommand::CancelCompaction) => {}
                     },
                     request = next_question(questions) => relay_question(state, running_turn(), request),
@@ -500,24 +618,28 @@ impl Controller {
             }
         };
         if let Some(turn_id) = running_turn() {
-            let source = self.state.setup.source();
-            let status = match &report.failure {
-                Some(TurnFailure::Persistence(_)) if report.outcome != TurnOutcome::Failed => None,
-                failure => failure
-                    .as_ref()
-                    .and_then(|failure| failure_status(failure, source)),
-            };
-            if let Some(text) = status {
-                self.state.emit(UiEvent::ApiStatus { turn_id, text });
-            }
-            self.state.emit(UiEvent::TurnFinished {
-                turn_id,
-                outcome: report.outcome,
-            });
+            self.announce_turn_end(turn_id, &report);
         }
         self.finish_turn(&report);
         self.settle_deferred_commands();
         open
+    }
+
+    fn announce_turn_end(&self, turn_id: TurnId, report: &TurnReport) {
+        let source = self.state.setup.source();
+        let status = match &report.failure {
+            Some(TurnFailure::Persistence(_)) if report.outcome != TurnOutcome::Failed => None,
+            failure => failure
+                .as_ref()
+                .and_then(|failure| failure_status(failure, source)),
+        };
+        if let Some(text) = status {
+            self.state.emit(UiEvent::ApiStatus { turn_id, text });
+        }
+        self.state.emit(UiEvent::TurnFinished {
+            turn_id,
+            outcome: report.outcome,
+        });
     }
 
     fn settle_deferred_commands(&mut self) {
@@ -557,7 +679,7 @@ async fn run_deferred_command(
     cancel: &CancellationToken,
 ) {
     match handle_command(state, text, work) {
-        CommandEffect::None | CommandEffect::Compact => return,
+        CommandEffect::None | CommandEffect::Compact | CommandEffect::OpenSessions => return,
         CommandEffect::SwitchModel(model) => {
             state.config_pending = true;
             state.select_model(model);
@@ -577,6 +699,20 @@ async fn run_deferred_command(
     }
     if let Some(notice) = save_session_preferences(state, persistence) {
         state.emit(UiEvent::Notice { notice });
+    }
+}
+
+fn refuse_session_command(state: &ControllerState, command: UiCommand) {
+    match command {
+        UiCommand::ListSessions { scope, .. } => {
+            state.emit(UiEvent::SessionsUnavailable { scope });
+        }
+        UiCommand::ResumeSession { id } => state.emit(UiEvent::SessionResumeFailed {
+            id,
+            refusal: ResumeRefusal::Unavailable,
+        }),
+        UiCommand::OpenSessions { .. } => refuse_resume_during_turn(state),
+        _ => {}
     }
 }
 
@@ -827,7 +963,7 @@ mod tests {
             let clipboard = Arc::new(TestClipboard::default());
             let shared: Arc<dyn Clipboard> = clipboard.clone();
             tokio::spawn(
-                Controller::new(setup, emit, None)
+                Controller::new(setup, emit, None, false)
                     .with_clipboard(shared)
                     .run(receiver),
             );
