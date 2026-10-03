@@ -2655,6 +2655,7 @@ fn unconfigured_hold(tool_name: &str) -> String {
 struct SwitchedTools {
     generation: AtomicUsize,
     tools: Mutex<Vec<Arc<dyn Tool>>>,
+    notices: Mutex<Vec<String>>,
 }
 
 impl DynamicTools for SwitchedTools {
@@ -2664,6 +2665,10 @@ impl DynamicTools for SwitchedTools {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         self.tools.lock().unwrap().clone()
+    }
+
+    fn take_notices(&self) -> Vec<String> {
+        mem::take(&mut self.notices.lock().unwrap())
     }
 }
 
@@ -2677,6 +2682,7 @@ async fn dynamic_tools_are_advertised_from_the_step_after_they_change() {
     let source = Arc::new(SwitchedTools {
         generation: AtomicUsize::new(0),
         tools: Mutex::new(Vec::new()),
+        notices: Mutex::new(Vec::new()),
     });
     let mut agent =
         new_agent(Arc::clone(&provider), Vec::new()).with_dynamic_tools(Arc::clone(&source) as _);
@@ -2700,4 +2706,29 @@ async fn dynamic_tools_are_advertised_from_the_step_after_they_change() {
             ..
         }
     )));
+}
+
+#[tokio::test]
+async fn notices_from_a_dynamic_tool_refresh_are_reported_once_in_the_turn() {
+    let provider = FakeProvider::new(vec![text_reply("first"), text_reply("second")]);
+    let source = Arc::new(SwitchedTools {
+        generation: AtomicUsize::new(1),
+        tools: Mutex::new(vec![echo_tool()]),
+        notices: Mutex::new(vec!["[context] MCP schema \"big\" rejected".to_owned()]),
+    });
+    let mut agent =
+        new_agent(Arc::clone(&provider), Vec::new()).with_dynamic_tools(Arc::clone(&source) as _);
+    let notices = |events: &[UiEvent]| -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::ContextNotice { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let (_, events) = run(&mut agent, "first").await;
+    assert_eq!(notices(&events), ["[context] MCP schema \"big\" rejected"]);
+    let (_, events) = run(&mut agent, "second").await;
+    assert!(notices(&events).is_empty());
 }

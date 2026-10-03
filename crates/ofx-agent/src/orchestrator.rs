@@ -525,19 +525,12 @@ impl Agent {
             .await?;
         let mut step = 0;
         loop {
-            if self.config.step_limit != 0 && step >= self.config.step_limit {
-                return Err(self.stop_with_notice(
-                    turn.id,
-                    events,
-                    STEP_LIMIT_NOTICE,
-                    TurnFailure::StepLimitReached,
-                ));
-            }
+            self.stop_at_step_limit(turn.id, step, events)?;
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
-            self.refresh_dynamic_tools();
+            self.refresh_dynamic_tools(turn.id, events);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
             let messages = self.request_messages(turn);
@@ -1050,7 +1043,24 @@ impl Agent {
             .find_map(|(tool, spec)| (spec.name == name).then_some(tool))
     }
 
-    fn refresh_dynamic_tools(&mut self) {
+    fn stop_at_step_limit(
+        &mut self,
+        turn_id: TurnId,
+        step: u64,
+        events: EventSink<'_>,
+    ) -> Result<(), Stop> {
+        if self.config.step_limit != 0 && step >= self.config.step_limit {
+            return Err(self.stop_with_notice(
+                turn_id,
+                events,
+                STEP_LIMIT_NOTICE,
+                TurnFailure::StepLimitReached,
+            ));
+        }
+        Ok(())
+    }
+
+    fn refresh_dynamic_tools(&mut self, turn_id: TurnId, events: EventSink<'_>) {
         let Some(set) = &mut self.dynamic else {
             return;
         };
@@ -1060,6 +1070,9 @@ impl Agent {
         }
         set.generation = Some(generation);
         set.tools = set.source.tools();
+        for text in set.source.take_notices() {
+            events(UiEvent::ContextNotice { turn_id, text });
+        }
         self.tool_specs.truncate(self.tools.len());
         self.tool_specs
             .extend(set.tools.iter().map(|tool| tool.spec().clone()));
