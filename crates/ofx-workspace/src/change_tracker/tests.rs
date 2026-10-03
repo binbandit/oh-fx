@@ -479,3 +479,16 @@ fn a_file_restored_where_none_remains_is_created_under_the_umask() {
         fs::metadata(&reference).unwrap().permissions().mode() & PERMISSION_BITS
     );
 }
+
+#[test]
+fn a_file_with_the_longest_allowed_name_is_restored_without_residue() {
+    let root = Root::new();
+    let name = "n".repeat(255);
+    let path = root.join(&name);
+    fs::write(&path, "changed").unwrap();
+    let tracker = ChangeTracker::default();
+    tracker.push_operation(root.capture(&name, Some("original")));
+    assert_eq!(tracker.undo_last(), UndoResult::Restored(path.clone()));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+    assert_eq!(fs::read_dir(&root.path).unwrap().count(), 1);
+}

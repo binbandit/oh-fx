@@ -14,7 +14,7 @@ use ofx_permissions::{FileMutationKind, FileMutationTargets, TraversalDirectory}
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
 use ofx_workspace::{
     FileIdentity, FileOperation, MAX_PATH_BYTES, PathError, descriptor_identity, entry_identity,
-    open_child_directory, open_directory,
+    open_child_directory, open_directory, stage_name,
 };
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, RenameFlags, Stat, fchmod, fstat, linkat, mkdirat, openat,
@@ -27,7 +27,6 @@ use tokio_util::sync::CancellationToken;
 pub(crate) const MAX_CONTENT_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_ENCODED_PATH_BYTES: usize = 4 * 1024;
 const WRITE_CHUNK_BYTES: usize = 64 * 1024;
-const STAGE_PREFIX: &str = ".fx-stage-";
 const READ_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::NONBLOCK)
@@ -617,7 +616,7 @@ impl<'a> Transaction<'a> {
         let mutation = self.mutation;
         let name = mutation.target_name();
         let permissions = validate_preimage(parent, name, mutation, None)?;
-        let stage_name = stage_name()?;
+        let stage_name = stage_name().ok_or(RejectReason::IoFailure)?;
         let descriptor = openat(
             parent,
             stage_name.as_os_str(),
@@ -992,18 +991,6 @@ fn file_hash(file: &mut File) -> io::Result<Vec<u8>> {
         }
         hasher.update(&buffer[..read]);
     }
-}
-
-fn stage_name() -> Result<OsString, RejectReason> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random).map_err(|_| RejectReason::IoFailure)?;
-    let name = random
-        .iter()
-        .fold(STAGE_PREFIX.to_owned(), |mut name, byte| {
-            let _ = write!(name, "{byte:02x}");
-            name
-        });
-    Ok(OsString::from(name))
 }
 
 fn is_regular_stat(stat: &Stat) -> bool {

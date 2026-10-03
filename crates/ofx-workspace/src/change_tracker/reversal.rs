@@ -1,8 +1,7 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::OwnedFd;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rustix::fs::{AtFlags, Mode, OFlags, fchmod, openat, renameat, statat, unlinkat};
 use rustix::io::Errno;
@@ -13,6 +12,7 @@ use crate::pathing::{
     FileIdentity, FileKind, descriptor_identity, entry_identity, open_child_directory,
     open_directory,
 };
+use crate::staging::stage_name;
 
 const STAGE_FLAGS: OFlags = OFlags::RDWR
     .union(OFlags::CREATE)
@@ -92,7 +92,7 @@ fn restore(parent: &OwnedFd, name: &OsStr, content: &[u8]) -> Result<(), Unavail
         Some(FileKind::RegularFile) => Some(writable_mode(parent, name)?),
         Some(FileKind::Directory | FileKind::Other) => return Err(Unavailable),
     };
-    let stage = stage_name(name);
+    let stage = stage_name().ok_or(Unavailable)?;
     let descriptor = openat(
         parent,
         &stage,
@@ -164,16 +164,4 @@ fn delete(parent: &OwnedFd, name: &OsStr) -> Result<(), Unavailable> {
         Ok(()) | Err(Errno::NOENT) => Ok(()),
         Err(_) => Err(Unavailable),
     }
-}
-
-fn stage_name(name: &OsStr) -> OsString {
-    let mut stage = name.to_owned();
-    stage.push(format!(".tmp.{}", nano_timestamp()));
-    stage
-}
-
-fn nano_timestamp() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos())
 }
