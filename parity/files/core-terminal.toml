@@ -15,8 +15,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/terminal/engine.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-vt/src/engine.rs"]
+note = "The grid's text model is ported for replay: parsing, cursor movement, wrapping, erasing, insertion and deletion, scroll regions, the alternate screen, synchronized output, resizing, and snapshots. Cell styles, hyperlinks, terminal replies, checkpoints, and diffs are not."
 
 [[file]]
 upstream = "src/core/terminal/host.zig"
