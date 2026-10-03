@@ -135,6 +135,9 @@ impl SessionPicker {
 
 impl Shell<'_> {
     pub(super) fn session_picker_opened(&mut self, scope: SessionScope) {
+        if self.accepting_session() {
+            return;
+        }
         let query = self.composer.text().to_owned();
         self.picker = Some(SessionPicker::new(scope, query));
         self.request_first_page(scope);
@@ -558,6 +561,47 @@ mod tests {
             test.sent()
         );
         assert!(test.shell.composer.is_empty());
+    }
+
+    #[test]
+    fn an_open_queued_before_the_choice_leaves_the_pending_resume_in_place() {
+        let mut test = TestShell::start();
+        opened(&mut test);
+        keys(&mut test, b"\x1b[114;9u\r");
+        assert_eq!(
+            test.sent()[1..],
+            [
+                UiCommand::OpenSessions {
+                    scope: SessionScope::AllWorkspaces
+                },
+                UiCommand::ResumeSession { id: "a".to_owned() }
+            ]
+        );
+        test.deliver(UiEvent::SessionPickerOpened {
+            scope: SessionScope::AllWorkspaces,
+        });
+        let sent = test.sent().len();
+        escape(&mut test);
+        keys(&mut test, b"for the old session\r");
+        assert_eq!(test.sent().len(), sent, "{:?}", test.sent());
+        assert!(
+            test.screen()
+                .contains("Sessions 0  [Current workspace]  All workspaces")
+        );
+        test.deliver(UiEvent::SessionResumeFailed {
+            id: "a".to_owned(),
+            refusal: ResumeRefusal::Unavailable,
+        });
+        escape(&mut test);
+        assert_eq!(test.sent().last(), Some(&UiCommand::CloseSessionPicker));
+        assert!(
+            !test
+                .sent()
+                .iter()
+                .any(|command| matches!(command, UiCommand::Submit { .. })),
+            "{:?}",
+            test.sent()
+        );
     }
 
     #[test]
