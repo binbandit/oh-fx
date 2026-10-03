@@ -2,6 +2,7 @@ mod fixed_field;
 mod json_fields;
 mod prompt_history_store;
 mod result_store;
+mod session;
 mod session_adapter;
 mod session_codec;
 mod session_commands;

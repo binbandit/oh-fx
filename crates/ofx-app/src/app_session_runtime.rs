@@ -127,6 +127,10 @@ impl LiveSession {
         );
     }
 
+    pub fn observe_prompt(&self, prompt: &str) {
+        self.session().observe_prompt(prompt);
+    }
+
     fn session(&self) -> MutexGuard<'_, WritableSession> {
         self.session.lock().unwrap_or_else(PoisonError::into_inner)
     }

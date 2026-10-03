@@ -299,7 +299,10 @@ impl Controller {
                 return;
             };
             match command {
-                UiCommand::Submit { prompt, skills } => self.state.receive_prompt(prompt, skills),
+                UiCommand::Submit { prompt, skills } => {
+                    observe_prompt(self.persistence.as_ref(), &prompt);
+                    self.state.receive_prompt(prompt, skills);
+                }
                 UiCommand::RunCommand { text } => {
                     if !self.run_idle_command(&text, commands).await {
                         return;
@@ -377,6 +380,7 @@ impl Controller {
                             cancel.cancel();
                         }
                         Some(UiCommand::Submit { prompt, skills }) => {
+                            observe_prompt(persistence.as_ref(), &prompt);
                             state.receive_prompt(prompt, skills);
                         }
                         Some(UiCommand::CancelCompaction) => cancel.cancel(),
@@ -522,6 +526,9 @@ impl Controller {
             .as_mut()
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
         self.state.session_title.set(None);
+        for prompt in &self.state.queue {
+            observe_prompt(self.persistence.as_ref(), &prompt.text);
+        }
         self.remember_agent_facts();
         self.state
             .emit(UiEvent::ConversationCleared { first_kept_prompt });
@@ -599,6 +606,7 @@ impl Controller {
                             cancel.cancel();
                         }
                         Some(UiCommand::Submit { prompt, skills }) => {
+                            observe_prompt(persistence.as_ref(), &prompt);
                             state.receive_prompt(prompt, skills);
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
@@ -757,6 +765,12 @@ fn refuse_session_command(state: &ControllerState, command: UiCommand) {
         }),
         UiCommand::OpenSessions { .. } => refuse_resume_during_turn(state),
         _ => {}
+    }
+}
+
+fn observe_prompt(persistence: Option<&Persistence>, prompt: &str) {
+    if let Some(persistence) = persistence {
+        persistence.observe_prompt(prompt);
     }
 }
 

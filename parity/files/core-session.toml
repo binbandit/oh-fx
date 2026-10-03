@@ -71,7 +71,7 @@ note = "Stored result handles and previews exist; paged ResultReader, image snap
 [[file]]
 upstream = "src/core/session/session.zig"
 status = "partial"
-modules = ["crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_store.rs"]
+modules = ["crates/ofx-session/src/session.rs", "crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_store.rs"]
 note = "Modern event/log/store domain exists; legacy image snapshot repair and full recovery/child-session domain behavior are missing."
 
 [[file]]

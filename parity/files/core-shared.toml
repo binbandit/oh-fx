@@ -54,9 +54,9 @@ note = "Semantic JSON comparison is used for repeated provider items; standalone
 
 [[file]]
 upstream = "src/core/shared/language_script.zig"
-status = "todo"
-modules = []
-note = "Unicode script/prose profiles and code/quoted-data exclusion for response language checks are unimplemented."
+status = "partial"
+modules = ["crates/ofx-text/src/language_script.rs"]
+note = "The whole-text script profile that names a session's conversation language is ported; prose profiles with code and quoted-data exclusion for response language checks are unimplemented."
 
 [[file]]
 upstream = "src/core/shared/lexical_relevance.zig"

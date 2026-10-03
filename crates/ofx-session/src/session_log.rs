@@ -13,6 +13,7 @@ use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
 use ofx_contract::{HistoryCut, HistoryTurn, RestoredHistory, TurnEnd, TurnStop};
 use ofx_text::lowercase_hex;
 
+use crate::session::infer_conversation_language;
 use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
@@ -94,6 +95,7 @@ pub struct WritableSession {
     metadata: SessionMetadata,
     history: SavedHistory,
     started: bool,
+    language: String,
 }
 
 impl WritableSession {
@@ -123,6 +125,13 @@ impl WritableSession {
 
     pub fn visit_transcript(&self, visit: impl FnMut(SavedTurn)) -> Result<(), SessionError> {
         visit_turns(self.writer.file(), self.writer.committed_bytes(), visit)
+    }
+
+    pub fn observe_prompt(&mut self, prompt: &str) {
+        let inferred = infer_conversation_language(prompt, &self.language);
+        if inferred != self.language {
+            self.language = inferred.to_owned();
+        }
     }
 
     pub fn display_title(&self) -> String {
@@ -196,7 +205,23 @@ impl WritableSession {
             self.writer.block_open_turn();
         }
         saved?;
-        self.write_first_title(fresh, turn.user)
+        self.write_first_title(fresh, turn.user)?;
+        self.save_language()
+    }
+
+    fn save_language(&mut self) -> Result<(), SessionError> {
+        if self.language == self.metadata.conversation_language {
+            return Ok(());
+        }
+        let mut proposed = self.metadata.clone();
+        proposed.conversation_language.clone_from(&self.language);
+        self.write_metadata(proposed).map_err(|error| {
+            self.writer.mark_uncertain();
+            match error {
+                SessionError::SessionPersistenceUncertain => error,
+                _ => SessionError::SessionPersistenceUncertain,
+            }
+        })
     }
 
     fn append_turn(
@@ -364,6 +389,7 @@ pub(crate) fn start_session(
     }
     let staging = staging_name()?;
     create_private_dir(sessions, &staging).map_err(|_| SessionError::SessionStartFailed)?;
+    let language = metadata.conversation_language.clone();
     let prepared =
         prepare_session(sessions, &staging, &manifest).map(|(owned, writer)| WritableSession {
             owned,
@@ -371,6 +397,7 @@ pub(crate) fn start_session(
             metadata,
             history: SavedHistory::default(),
             started: true,
+            language,
         });
     let session = match prepared {
         Ok(session) => session,
@@ -435,6 +462,7 @@ pub(crate) fn resume_session(
     Ok(WritableSession {
         owned,
         writer,
+        language: metadata.conversation_language.clone(),
         metadata,
         history,
         started: false,

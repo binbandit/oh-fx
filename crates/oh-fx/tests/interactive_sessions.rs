@@ -275,6 +275,52 @@ fn a_renamed_session_resumes_under_its_new_title() {
 }
 
 #[test]
+fn a_prompt_queued_behind_a_deferred_clear_names_the_fresh_sessions_language() {
+    let stubborn = json!({"request": {
+        "action": "run",
+        "command": "trap '' TERM; touch ready; exec /bin/sleep 30",
+        "profile": "clean"
+    }})
+    .to_string();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events("call-1", "shell", &stubborn)),
+        Reply::sse(&chat_text_events(&["Готово."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let mut command = home.command_in(&home.workspace, &[]);
+    command.env("OH_FX_PERMISSION_MODE", "full-access");
+    let session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "full access · model-a");
+    session.send(b"keep going\r");
+    session
+        .wait_for(WAIT, |_| home.workspace.join("ready").exists())
+        .unwrap_or_else(|screen| panic!("the command never started:\n{screen}"));
+    session.send("/clear\rОткрой файл\r".as_bytes());
+    wait(&session, "Готово.");
+    exit(session);
+    let fresh = session_with_prompt(&home, &home.session_ids(), "Открой файл");
+    assert_eq!(home.metadata(&fresh)["conversation_language"], "und-Cyrl");
+}
+
+#[test]
+fn the_shell_saves_the_conversation_language_of_its_prompts() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Lu."])),
+        Reply::sse(&chat_text_events(&["Gelesen."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send("Открой страницу\r".as_bytes());
+    wait(&session, "Lu.");
+    let id = home.only_session();
+    assert_eq!(home.metadata(&id)["conversation_language"], "und-Cyrl");
+    session.send(b"42\r");
+    wait(&session, "Gelesen.");
+    exit(session);
+    assert_eq!(home.metadata(&id)["conversation_language"], "und-Cyrl");
+}
+
+#[test]
 fn a_shell_saves_its_turns_and_continue_reopens_them_in_the_scrollback() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["First **answer**."])),
