@@ -217,6 +217,73 @@ mod tests {
         );
     }
 
+    fn watching_the_theme() -> TestShell {
+        let mut test = TestShell::start();
+        test.shell.input.start_theme_monitor();
+        test.screen();
+        test
+    }
+
+    fn wakes_now(test: &TestShell) -> bool {
+        let now_ms = test.shell.now_ms();
+        test.shell
+            .next_deadline_ms(now_ms)
+            .is_some_and(|deadline_ms| deadline_ms <= now_ms)
+    }
+
+    #[test]
+    fn a_theme_notification_samples_and_applies_the_background_without_a_key() {
+        let mut test = watching_the_theme();
+        test.type_bytes(b"\x1b[?997;2n");
+        test.step();
+        assert!(wakes_now(&test));
+        test.step();
+        assert_eq!(test.written(), "\x1b[c");
+        test.type_bytes(b"\x1b[?1;2c");
+        test.step();
+        assert!(wakes_now(&test));
+        test.step();
+        assert_eq!(test.written(), "\x1b]11;?\x1b\\\x1b[c");
+        test.type_bytes(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?1;2c");
+        test.step();
+        assert!(wakes_now(&test));
+        test.step();
+        assert!(test.shell.theme.light);
+        assert!(test.written().contains("\x1b[0;1;38;5;235moh-fx"));
+    }
+
+    #[test]
+    fn a_terminal_that_never_answers_still_switches_once_the_wait_runs_out() {
+        let mut test = watching_the_theme();
+        test.type_bytes(b"\x1b[?997;2n");
+        test.step();
+        test.step();
+        assert_eq!(test.written(), "\x1b[c");
+        let now_ms = test.shell.now_ms();
+        let deadline_ms = test.shell.next_deadline_ms(now_ms).unwrap();
+        assert!(deadline_ms > now_ms && deadline_ms <= now_ms + 200);
+        test.advance(200);
+        test.step();
+        assert!(wakes_now(&test));
+        test.step();
+        assert!(test.shell.theme.light);
+    }
+
+    #[test]
+    fn theme_queries_wait_for_a_paste_to_end() {
+        let mut test = watching_the_theme();
+        test.type_bytes(b"\x1b[?997;2n\x1b[200~pasted");
+        test.step();
+        assert!(!wakes_now(&test));
+        assert!(!test.written().contains("\x1b[c"));
+        test.type_bytes(b" text\x1b[201~");
+        test.step();
+        assert!(wakes_now(&test));
+        test.step();
+        assert!(test.written().contains("\x1b[c"));
+        assert_eq!(test.shell.composer.text(), "pasted text");
+    }
+
     #[test]
     fn cancelling_a_started_turn_names_it() {
         let mut test = TestShell::start();

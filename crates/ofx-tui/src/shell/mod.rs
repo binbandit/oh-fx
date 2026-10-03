@@ -742,6 +742,7 @@ impl<'a> Shell<'a> {
             self.yolo_warning.deadline_ms(),
             self.resize_due_ms,
             self.compaction.and_then(|status| status.expires_ms()),
+            self.input.theme_deadline_ms(now_ms),
         ]
         .into_iter()
         .flatten()

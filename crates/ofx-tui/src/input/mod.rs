@@ -140,7 +140,15 @@ impl TerminalInput {
     }
 
     pub(crate) fn take_theme_query(&mut self, now_ms: i64) -> Option<ThemeQuery> {
+        if self.paste.active() {
+            return None;
+        }
         self.theme_monitor.take_query_request(now_ms)
+    }
+
+    pub(crate) fn theme_deadline_ms(&self, now_ms: i64) -> Option<i64> {
+        self.theme_monitor
+            .next_deadline_ms(now_ms, self.paste.active())
     }
 
     pub(crate) fn fail_theme_query(&mut self) {
