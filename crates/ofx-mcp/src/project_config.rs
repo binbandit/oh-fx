@@ -1,3 +1,4 @@
+use ofx_text::encode_terminal_safe;
 use serde_json::{Map, Value};
 
 use crate::mcp_contract::{
@@ -7,6 +8,7 @@ use crate::mcp_contract::{
     ProfileConfigWarningCause, TransportType, WorkspaceAdmission, source_allows_scope,
     source_allows_workspace_admission,
 };
+use crate::protocol_messages::parse_json;
 use crate::streamable_http::{validate_endpoint, validate_static_headers};
 use crate::uri::Uri;
 
@@ -16,6 +18,8 @@ pub const ENABLE_ALL_KEY: &str = "enableAllProjectMcpServers";
 
 const MAX_PROFILE_ROOT_SCAN_ENTRIES: usize = 64;
 const MAX_PROFILE_CHILD_SCAN_ENTRIES: usize = 64;
+const MAX_RENDERED_SERVER_NAME_BYTES: usize = 160;
+const MAX_RENDERED_ENVIRONMENT_NAME_BYTES: usize = 128;
 const MAX_EXPANDED_WORKSPACE_VALUE_BYTES: usize = 1024 * 1024;
 const MAX_EXPANDED_WORKSPACE_TOTAL_BYTES: usize = 1024 * 1024;
 
@@ -133,6 +137,39 @@ impl WorkspaceDiagnostic {
     }
 }
 
+pub fn render_workspace_diagnostic(diagnostic: &WorkspaceDiagnostic) -> String {
+    let server = encode_terminal_safe(
+        diagnostic
+            .server_name
+            .as_deref()
+            .unwrap_or("unknown")
+            .as_bytes(),
+        MAX_RENDERED_SERVER_NAME_BYTES,
+    )
+    .text;
+    if diagnostic.cause == WorkspaceDiagnosticCause::MissingEnvironmentVariable {
+        let variable = encode_terminal_safe(
+            diagnostic
+                .environment_variable
+                .as_deref()
+                .unwrap_or("unknown")
+                .as_bytes(),
+            MAX_RENDERED_ENVIRONMENT_NAME_BYTES,
+        )
+        .text;
+        let field = diagnostic
+            .environment_field
+            .map_or("value", WorkspaceEnvironmentField::as_str);
+        return format!(
+            ".mcp.json server '{server}' field {field} requires environment variable '{variable}'; set it or use ${{{variable}:-default}}."
+        );
+    }
+    format!(
+        ".mcp.json server '{server}' was skipped: {}.",
+        diagnostic.cause.as_str()
+    )
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceParseResult {
     pub configs: Vec<McpServerConfig>,
@@ -179,13 +216,12 @@ pub struct ProjectMcpTransition {
 
 impl ProjectMcpChoices {
     pub fn parse(
-        workspace: Option<&Value>,
+        workspace: Option<&Map<String, Value>>,
         diagnostics: &mut Vec<WorkspaceDiagnostic>,
     ) -> Result<Self, InvalidProjectMcpChoices> {
-        let Some(value) = workspace else {
+        let Some(object) = workspace else {
             return Ok(Self::default());
         };
-        let object = value.as_object().ok_or(InvalidProjectMcpChoices)?;
         let approved = match object.get(ENABLED_SERVERS_KEY) {
             Some(field) => parse_unique_string_array(field)?,
             None => Vec::new(),
@@ -323,8 +359,7 @@ enum ServerMapShape {
 }
 
 pub fn parse_profile_document(json_text: &[u8]) -> Result<ProfileParseResult, McpConfigError> {
-    let root: Value =
-        serde_json::from_slice(json_text).map_err(|_| McpConfigError::McpConfigInvalidJson)?;
+    let root = parse_json(json_text).ok_or(McpConfigError::McpConfigInvalidJson)?;
     let object = root
         .as_object()
         .ok_or(McpConfigError::McpConfigRootMustBeObject)?;
@@ -495,7 +530,7 @@ pub fn parse_workspace_document(
     choices: &ProjectMcpChoices,
 ) -> WorkspaceParseResult {
     let mut result = WorkspaceParseResult::default();
-    let Ok(root) = serde_json::from_slice::<Value>(json_text) else {
+    let Some(root) = parse_json(json_text) else {
         result.diagnostics.push(WorkspaceDiagnostic::new(
             WorkspaceDiagnosticCause::InvalidJson,
         ));
@@ -619,18 +654,14 @@ fn expand_workspace_template(
     budget: &mut ExpansionBudget,
 ) -> TemplateExpansion {
     let mut output = String::new();
-    let mut cursor = 0;
-    while let Some(relative_start) = input[cursor..].find("${") {
-        let start = cursor + relative_start;
-        if !append_expanded(&mut output, &input[cursor..start], budget) {
+    let mut rest = input;
+    while let Some((text, after)) = rest.split_once("${") {
+        if !append_expanded(&mut output, text, budget) {
             return TemplateExpansion::LimitExceeded;
         }
-        let expression_start = start + 2;
-        let Some(relative_end) = input[expression_start..].find('}') else {
+        let Some((expression, remainder)) = after.split_once('}') else {
             return TemplateExpansion::Invalid;
         };
-        let end = expression_start + relative_end;
-        let expression = &input[expression_start..end];
         let (variable_name, default_value) = match expression.split_once(":-") {
             Some((name, default)) => (name, Some(default)),
             None => (expression, None),
@@ -648,9 +679,9 @@ fn expand_workspace_template(
         if !append_expanded(&mut output, &replacement, budget) {
             return TemplateExpansion::LimitExceeded;
         }
-        cursor = end + 1;
+        rest = remainder;
     }
-    if !append_expanded(&mut output, &input[cursor..], budget) {
+    if !append_expanded(&mut output, rest, budget) {
         return TemplateExpansion::LimitExceeded;
     }
     TemplateExpansion::Expanded(output)
@@ -1463,7 +1494,7 @@ mod tests {
             "disabledMcpjsonServers": ["overlap", "beta"],
             "enableAllProjectMcpServers": true,
         });
-        let choices = ProjectMcpChoices::parse(Some(&value), &mut diagnostics).unwrap();
+        let choices = ProjectMcpChoices::parse(value.as_object(), &mut diagnostics).unwrap();
         assert_eq!(choices.approved, vec!["alpha".to_owned()]);
         assert_eq!(
             choices.rejected,
@@ -1479,12 +1510,12 @@ mod tests {
         );
         let empty_name = serde_json::json!({"enabledMcpjsonServers": [""]});
         assert_eq!(
-            ProjectMcpChoices::parse(Some(&empty_name), &mut Vec::new()),
+            ProjectMcpChoices::parse(empty_name.as_object(), &mut Vec::new()),
             Err(InvalidProjectMcpChoices)
         );
         let bad_flag = serde_json::json!({"enableAllProjectMcpServers": "yes"});
         assert_eq!(
-            ProjectMcpChoices::parse(Some(&bad_flag), &mut Vec::new()),
+            ProjectMcpChoices::parse(bad_flag.as_object(), &mut Vec::new()),
             Err(InvalidProjectMcpChoices)
         );
     }

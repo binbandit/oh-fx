@@ -28,6 +28,19 @@ impl PermissionGate for RememberingGate {
         ArgumentGate.admit_file_mutation(mutation)
     }
 
+    fn admit_mcp_tool(&self, call: &ToolCall) -> Admission {
+        if self
+            .remembered
+            .lock()
+            .unwrap()
+            .contains(&format!("{:?}", SessionGrant::McpTool(call.name.clone())))
+        {
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        } else {
+            Admission::ApprovalRequired
+        }
+    }
+
     fn admit_command(&self, request: &CommandRequest) -> Admission {
         ArgumentGate.admit_command(request)
     }
@@ -45,6 +58,7 @@ impl PermissionGate for RememberingGate {
                 .parent()
                 .map(|parent| SessionGrant::FileChangesUnder(parent.to_path_buf())),
             GatedAction::Command(_) => None,
+            GatedAction::McpTool(call) => Some(SessionGrant::McpTool(call.name.clone())),
         };
         ApprovalScope { always, ..tree }
     }
@@ -358,4 +372,34 @@ async fn an_answer_given_as_the_turn_is_cancelled_is_applied_and_never_dropped()
             "{cancel_first}"
         );
     }
+}
+
+#[tokio::test]
+async fn mcp_tool_calls_ask_through_their_own_gate_and_always_covers_the_tool() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"mcp_call":1,"serial":1}"#)]),
+        tool_reply(&[("call-2", r#"{"mcp_call":2,"serial":1}"#)]),
+        text_reply("done"),
+    ]);
+    let gate = Arc::new(RememberingGate::default());
+    let (report, events, _) = run_approving(Arc::clone(&provider), Arc::clone(&gate), |_| {
+        Some(ApprovalDecision::Always)
+    })
+    .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = approval_requests(&events);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].scope.always,
+        Some(SessionGrant::McpTool("echo".to_owned()))
+    );
+    assert_eq!(
+        requests[0].tool_arguments_preview,
+        r#"{"mcp_call":1,"serial":1}"#
+    );
+    assert_eq!(
+        *gate.remembered.lock().unwrap(),
+        [r#"McpTool("echo")"#.to_owned()]
+    );
+    assert_eq!(started_titles(&events).len(), 2);
 }

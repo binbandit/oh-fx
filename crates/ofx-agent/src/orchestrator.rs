@@ -8,16 +8,17 @@ use std::time::Duration;
 use ofx_contract::{
     Admission, ApprovalDecision, ApprovalRequest, ApprovalScope, AutoCompactPercent, BoxFuture,
     CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage, CommandRequest, Completion,
-    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange,
-    FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
-    ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
-    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
-    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
+    Concurrency, ConversationLog, DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure,
+    FileChange, FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities,
+    ModelFailureDiagnostic, ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId,
+    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
+    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity,
+    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext,
+    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    TurnStop, UiEvent, Usage, malformed_tool_arguments_json, non_object_tool_arguments_json,
+    prepare_model_output, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -199,12 +200,19 @@ fn describe_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<ToolSpec>, Str
     (tool_specs, offered_specs, tool_guidance)
 }
 
+struct DynamicToolSet {
+    source: Arc<dyn DynamicTools>,
+    generation: Option<u64>,
+    tools: Vec<Arc<dyn Tool>>,
+}
+
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
     tool_specs: Vec<ToolSpec>,
     offered_specs: Vec<ToolSpec>,
     tool_guidance: String,
+    dynamic: Option<DynamicToolSet>,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
@@ -242,6 +250,7 @@ impl Agent {
             tool_specs,
             offered_specs,
             tool_guidance,
+            dynamic: None,
             context,
             permissions,
             approvals: None,
@@ -268,6 +277,16 @@ impl Agent {
     #[must_use]
     pub fn with_approvals(mut self, approvals: Approvals) -> Self {
         self.approvals = Some(approvals);
+        self
+    }
+
+    #[must_use]
+    pub fn with_dynamic_tools(mut self, source: Arc<dyn DynamicTools>) -> Self {
+        self.dynamic = Some(DynamicToolSet {
+            source,
+            generation: None,
+            tools: Vec::new(),
+        });
         self
     }
 
@@ -307,6 +326,9 @@ impl Agent {
     pub(crate) fn replace_tools(&mut self, tools: Vec<Arc<dyn Tool>>) {
         (self.tool_specs, self.offered_specs, self.tool_guidance) = describe_tools(&tools);
         self.tools = tools;
+        if let Some(set) = &mut self.dynamic {
+            set.generation = None;
+        }
     }
 
     pub(crate) fn inherit_root_user_requests(&mut self, requests: Arc<RootUserRequests>) {
@@ -492,6 +514,7 @@ impl Agent {
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
+            self.refresh_dynamic_tools(turn.id, events);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
             let request = ModelRequest {
@@ -945,10 +968,38 @@ impl Agent {
     }
 
     fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        let dynamic = self.dynamic.iter().flat_map(|set| &set.tools);
         self.tools
             .iter()
+            .chain(dynamic)
             .zip(&self.tool_specs)
             .find_map(|(tool, spec)| (spec.name == name).then_some(tool))
+    }
+
+    fn refresh_dynamic_tools(&mut self, turn_id: TurnId, events: EventSink<'_>) {
+        let Some(set) = &mut self.dynamic else {
+            return;
+        };
+        let generation = set.source.generation();
+        if set.generation == Some(generation) {
+            return;
+        }
+        set.generation = Some(generation);
+        set.tools = set.source.tools();
+        for text in set.source.take_notices() {
+            events(UiEvent::ContextNotice { turn_id, text });
+        }
+        self.tool_specs.truncate(self.tools.len());
+        self.tool_specs
+            .extend(set.tools.iter().map(|tool| tool.spec().clone()));
+        let offered = self.tools.iter().filter(|tool| !tool.provider_executed());
+        self.offered_specs.truncate(offered.count());
+        self.offered_specs.extend(
+            set.tools
+                .iter()
+                .filter(|tool| !tool.provider_executed())
+                .map(|tool| tool.spec().clone()),
+        );
     }
 
     fn history_call(&self, call: ToolCall) -> ToolCall {
@@ -1316,10 +1367,14 @@ fn gated_action<'a>(
     call: &'a ToolCall,
     mutation: Option<&'a FileMutation>,
     command: Option<&'a CommandRequest>,
+    prepared: &dyn PreparedCall,
 ) -> GatedAction<'a> {
     match (mutation, command) {
         (Some(mutation), _) => GatedAction::FileMutation(mutation),
         (None, Some(command)) => GatedAction::Command(command),
+        (None, None) if contained(|| prepared.mcp_tool()) == Some(true) => {
+            GatedAction::McpTool(call)
+        }
         (None, None) => GatedAction::Call(call),
     }
 }
@@ -1332,6 +1387,7 @@ fn admit(
     match action {
         GatedAction::FileMutation(mutation) => permissions.admit_file_mutation(mutation),
         GatedAction::Command(command) => permissions.admit_command(command),
+        GatedAction::McpTool(call) => permissions.admit_mcp_tool(call),
         GatedAction::Call(_) if description.effect == ToolEffect::None => {
             Admission::Allowed(PathAccess::WorkspaceOnly)
         }
@@ -1343,7 +1399,13 @@ struct Judged<'a> {
     call: &'a ToolCall,
     action: GatedAction<'a>,
     description: &'a CallDescription,
-    file: Option<&'a FileChange<'a>>,
+    evidence: &'a ReviewEvidence<'a>,
+}
+
+#[derive(Default)]
+struct ReviewEvidence<'p> {
+    file: Option<FileChange<'p>>,
+    schema: Option<String>,
 }
 
 fn admission<'p>(
@@ -1351,15 +1413,20 @@ fn admission<'p>(
     action: GatedAction<'_>,
     description: &CallDescription,
     prepared: &'p dyn PreparedCall,
-) -> (Admission, Option<FileChange<'p>>) {
+) -> (Admission, ReviewEvidence<'p>) {
     let admission = admit(gate.permissions, action, description);
-    let file = match (&admission, action) {
-        (Admission::ReviewRequired, GatedAction::FileMutation(_)) => {
-            contained(|| prepared.file_change()).flatten()
-        }
-        _ => None,
+    let evidence = match (&admission, action) {
+        (Admission::ReviewRequired, GatedAction::FileMutation(_)) => ReviewEvidence {
+            file: contained(|| prepared.file_change()).flatten(),
+            schema: None,
+        },
+        (Admission::ReviewRequired, GatedAction::McpTool(_)) => ReviewEvidence {
+            file: None,
+            schema: contained(|| prepared.review_schema()).flatten(),
+        },
+        _ => ReviewEvidence::default(),
     };
-    (admission, file)
+    (admission, evidence)
 }
 
 async fn judge(
@@ -1425,7 +1492,8 @@ async fn review(
         batch: reviewing.batch,
         call,
         action: judged.action,
-        file: judged.file,
+        file: judged.evidence.file.as_ref(),
+        schema: judged.evidence.schema.as_deref(),
         attempt_available,
     };
     let reviewed = tokio::select! {
@@ -1543,7 +1611,7 @@ fn approval_request(
     scope: &ApprovalScope,
 ) -> ApprovalRequest {
     let (command, file) = match action {
-        GatedAction::Call(_) => (None, None),
+        GatedAction::Call(_) | GatedAction::McpTool(_) => (None, None),
         GatedAction::FileMutation(mutation) => (None, Some(mutation.clone())),
         GatedAction::Command(command) => (Some(command.clone()), None),
     };
@@ -1587,9 +1655,9 @@ async fn run_group<'c>(
                 dispatched.push((call, Dispatched::Rejected(output, reason)));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
-                let action = gated_action(call, mutation.as_ref(), command.as_ref());
+                let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);
                 let delegates = description.activity == ToolActivity::Subagent;
-                let (admission, file) = admission(gate, action, &description, &*prepared);
+                let (admission, evidence) = admission(gate, action, &description, &*prepared);
                 let shown_while_reviewed =
                     admission == Admission::ReviewRequired && mutation.is_none();
                 if shown_while_reviewed {
@@ -1599,7 +1667,7 @@ async fn run_group<'c>(
                     call,
                     action,
                     description: &description,
-                    file: file.as_ref(),
+                    evidence: &evidence,
                 };
                 let verdict = judge(
                     gate,

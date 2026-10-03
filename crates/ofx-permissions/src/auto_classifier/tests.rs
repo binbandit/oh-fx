@@ -92,7 +92,7 @@ impl ReviewTransport for Scripted {
                 "tools": request.tools.iter().map(|tool| json!({
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": serde_json::from_str::<Value>(tool.input_schema).unwrap(),
+                    "parameters": serde_json::from_str::<Value>(&tool.input_schema).unwrap(),
                 })).collect::<Vec<_>>(),
                 "messages": messages,
             })
@@ -197,6 +197,8 @@ fn tool_subject(batch: &[ToolCall], target: usize) -> ReviewSubject<'_> {
         action: Action::Tool {
             tool_name: &batch[target].name,
             arguments_json: &batch[target].arguments,
+            schema_json: None,
+            schema_required: false,
         },
     }
 }
@@ -239,7 +241,7 @@ fn automatic_review_schema_requires_only_the_authoritative_decision() {
         spec.description,
         "Return bounded safety advice for one exact fx action."
     );
-    let schema: Value = serde_json::from_str(spec.input_schema).unwrap();
+    let schema: Value = serde_json::from_str(&spec.input_schema).unwrap();
     assert_eq!(
         schema,
         json!({
@@ -482,9 +484,20 @@ fn review_view_selection_uses_only_normalized_action_facts() {
     assert_eq!(
         review_view(&Action::Tool {
             tool_name: "web_fetch",
-            arguments_json: "{}"
+            arguments_json: "{}",
+            schema_json: None,
+            schema_required: false,
         }),
         ReviewView::Normal
+    );
+    assert_eq!(
+        review_view(&Action::Tool {
+            tool_name: "mcp_example_write",
+            arguments_json: "{}",
+            schema_json: None,
+            schema_required: true,
+        }),
+        ReviewView::Contextual
     );
     assert_eq!(
         review_view(&Action::FileMutation {
@@ -1090,6 +1103,38 @@ fn prepared_file_lines_are_kept_whole_within_the_evidence_budget() {
     );
     assert!(!evidence.text.contains("workspace:"));
     assert!(!evidence.text.contains("phase:"));
+}
+
+#[test]
+fn tool_schema_evidence_is_bounded_and_required_only_for_dynamic_tools() {
+    let batch = [call("structured", "mcp_example_write", "{}")];
+    let mut subject = tool_subject(&batch, 0);
+    let schema = format!("{{\"description\":\"{}\"}}", "s".repeat(20 * 1024));
+    subject.action = Action::Tool {
+        tool_name: "mcp_example_write",
+        arguments_json: "{}",
+        schema_json: Some(&schema),
+        schema_required: true,
+    };
+    let evidence = evidence::serialize(&subject);
+    assert!(evidence.action_complete);
+    assert!(evidence.text.contains(&format!("schema_json: {schema}\n")));
+    subject.action = Action::Tool {
+        tool_name: "mcp_example_write",
+        arguments_json: "{}",
+        schema_json: None,
+        schema_required: true,
+    };
+    let evidence = evidence::serialize(&subject);
+    assert!(!evidence.action_complete);
+    assert!(
+        evidence
+            .text
+            .ends_with("schema_json: [evidence unavailable]\naction_evidence_incomplete: true\n")
+    );
+    let evidence = evidence::serialize(&tool_subject(&batch, 0));
+    assert!(evidence.action_complete);
+    assert!(!evidence.text.contains("schema_json"));
 }
 
 #[test]

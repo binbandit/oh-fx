@@ -64,7 +64,7 @@ fn is_scheme(scheme: &str) -> bool {
 fn split_host_port(host_port: &str) -> Option<(&str, Option<u16>)> {
     let port_separator = if host_port.starts_with('[') {
         let close = host_port.find(']')?;
-        match &host_port[close + 1..] {
+        match host_port.get(close + 1..)? {
             "" => None,
             rest if rest.starts_with(':') => Some(close + 1),
             _ => return None,
@@ -75,8 +75,9 @@ fn split_host_port(host_port: &str) -> Option<(&str, Option<u16>)> {
     let Some(separator) = port_separator else {
         return Some((host_port, None));
     };
-    let port = host_port[separator + 1..].parse().ok()?;
-    Some((&host_port[..separator], Some(port)))
+    let (host, port) = host_port.split_at_checked(separator)?;
+    let port = port.get(1..)?.parse().ok()?;
+    Some((host, Some(port)))
 }
 
 #[cfg(test)]

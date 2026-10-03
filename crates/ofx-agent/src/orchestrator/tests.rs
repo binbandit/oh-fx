@@ -354,6 +354,16 @@ impl PreparedCall for EchoCall {
         self.command.as_ref()
     }
 
+    fn mcp_tool(&self) -> bool {
+        self.arguments.contains("mcp_call")
+    }
+
+    fn review_schema(&self) -> Option<String> {
+        self.arguments
+            .contains("mcp_schema")
+            .then(|| format!("schema {}", self.arguments))
+    }
+
     fn refusal(&self) -> Option<&ToolOutput> {
         assert!(
             !self.arguments.contains("refusal_panic"),
@@ -478,7 +488,7 @@ fn echo_tool_with(cleaned_up: Arc<AtomicBool>) -> Arc<dyn Tool> {
         spec: ToolSpec {
             name: "echo".to_owned(),
             description: "Echo the arguments.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
         cleaned_up,
         meeting: Arc::new(tokio::sync::Barrier::new(2)),
@@ -702,7 +712,7 @@ fn provider_tool(name: &str, description: &str) -> Arc<dyn Tool> {
         spec: ToolSpec {
             name: name.to_owned(),
             description: description.to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
     })
 }
@@ -2491,4 +2501,85 @@ fn unconfigured_hold(tool_name: &str) -> String {
         tool_name,
         ReviewHold::Unavailable(ReviewFailure::ReviewerUnconfigured),
     )
+}
+
+struct SwitchedTools {
+    generation: AtomicUsize,
+    tools: Mutex<Vec<Arc<dyn Tool>>>,
+    notices: Mutex<Vec<String>>,
+}
+
+impl DynamicTools for SwitchedTools {
+    fn generation(&self) -> u64 {
+        u64::try_from(self.generation.load(Ordering::SeqCst)).unwrap()
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.lock().unwrap().clone()
+    }
+
+    fn take_notices(&self) -> Vec<String> {
+        mem::take(&mut self.notices.lock().unwrap())
+    }
+}
+
+#[tokio::test]
+async fn dynamic_tools_are_advertised_from_the_step_after_they_change() {
+    let provider = FakeProvider::new(vec![
+        text_reply("none yet"),
+        tool_reply(&[("call-1", r#"{"text":"a"}"#)]),
+        text_reply("done"),
+    ]);
+    let source = Arc::new(SwitchedTools {
+        generation: AtomicUsize::new(0),
+        tools: Mutex::new(Vec::new()),
+        notices: Mutex::new(Vec::new()),
+    });
+    let mut agent =
+        new_agent(Arc::clone(&provider), Vec::new()).with_dynamic_tools(Arc::clone(&source) as _);
+    run(&mut agent, "first").await;
+    source.tools.lock().unwrap().push(echo_tool());
+    source.generation.store(1, Ordering::SeqCst);
+    let (report, events) = run(&mut agent, "second").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert!(requests[0].tools.is_empty());
+    let names: Vec<_> = requests[1]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    assert_eq!(names, ["echo"]);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        UiEvent::ToolFinished {
+            status: ToolResultStatus::Success,
+            ..
+        }
+    )));
+}
+
+#[tokio::test]
+async fn notices_from_a_dynamic_tool_refresh_are_reported_once_in_the_turn() {
+    let provider = FakeProvider::new(vec![text_reply("first"), text_reply("second")]);
+    let source = Arc::new(SwitchedTools {
+        generation: AtomicUsize::new(1),
+        tools: Mutex::new(vec![echo_tool()]),
+        notices: Mutex::new(vec!["[context] MCP schema \"big\" rejected".to_owned()]),
+    });
+    let mut agent =
+        new_agent(Arc::clone(&provider), Vec::new()).with_dynamic_tools(Arc::clone(&source) as _);
+    let notices = |events: &[UiEvent]| -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::ContextNotice { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let (_, events) = run(&mut agent, "first").await;
+    assert_eq!(notices(&events), ["[context] MCP schema \"big\" rejected"]);
+    let (_, events) = run(&mut agent, "second").await;
+    assert!(notices(&events).is_empty());
 }

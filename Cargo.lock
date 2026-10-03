@@ -683,6 +683,7 @@ dependencies = [
  "ofx-exec",
  "ofx-gateway",
  "ofx-http",
+ "ofx-mcp",
  "ofx-permissions",
  "ofx-session",
  "ofx-skills",
@@ -835,6 +836,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "ofx-config",
+ "ofx-contract",
  "ofx-http",
  "ofx-jsonrpc",
  "ofx-text",
@@ -844,6 +846,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1009,6 +1012,7 @@ dependencies = [
  "ofx-exec",
  "ofx-gateway",
  "ofx-http",
+ "ofx-mcp",
  "ofx-session",
  "ofx-testkit",
  "ofx-text",

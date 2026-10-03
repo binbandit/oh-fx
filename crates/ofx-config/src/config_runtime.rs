@@ -299,6 +299,7 @@ pub struct Settings {
     providers: ProviderRegistry,
     global: Layer,
     workspace: Layer,
+    workspace_entry: Option<Map<String, Value>>,
     resumed: Layer,
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
@@ -338,6 +339,10 @@ impl Settings {
 
     pub fn diagnostics(&self) -> &[ConfigDiagnostic] {
         &self.diagnostics
+    }
+
+    pub fn workspace_entry(&self) -> Option<&Map<String, Value>> {
+        self.workspace_entry.as_ref()
     }
 
     pub fn profile_is_unusable(&self) -> bool {
@@ -636,6 +641,7 @@ impl Settings {
         };
         if let Some(entry) = workspace {
             self.workspace = self.parse_profile_layer(entry)?;
+            self.workspace_entry = Some(entry.clone());
         }
         Ok(())
     }

@@ -76,7 +76,7 @@ pub(crate) fn tool_spec(name: &str, description: &str, input_schema: &'static st
     ToolSpec {
         name: name.to_owned(),
         description: description.to_owned(),
-        input_schema,
+        input_schema: input_schema.into(),
     }
 }
 

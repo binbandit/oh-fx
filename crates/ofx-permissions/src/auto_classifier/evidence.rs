@@ -40,6 +40,8 @@ pub(crate) enum Action<'a> {
     Tool {
         tool_name: &'a str,
         arguments_json: &'a str,
+        schema_json: Option<&'a str>,
+        schema_required: bool,
     },
 }
 
@@ -197,10 +199,18 @@ pub(super) fn serialize(subject: &ReviewSubject<'_>) -> Evidence {
         Action::Tool {
             tool_name,
             arguments_json,
+            schema_json,
+            schema_required,
         } => {
             out.push_str("action: tool\n");
             write_action_field(&mut out, "tool", tool_name, &mut complete);
             write_action_field(&mut out, "arguments_json", arguments_json, &mut complete);
+            if let Some(schema) = schema_json {
+                write_action_field(&mut out, "schema_json", schema, &mut complete);
+            } else if *schema_required {
+                complete = false;
+                out.push_str("schema_json: [evidence unavailable]\n");
+            }
         }
     }
     let _ = writeln!(out, "action_evidence_incomplete: {}", !complete);

@@ -74,7 +74,7 @@ impl WebFetch {
             spec: ToolSpec {
                 name: TOOL_NAME.to_owned(),
                 description: DESCRIPTION.to_owned(),
-                input_schema: INPUT_SCHEMA,
+                input_schema: INPUT_SCHEMA.into(),
             },
             state: Arc::new(state),
         }

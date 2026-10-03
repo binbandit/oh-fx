@@ -52,7 +52,7 @@ impl Default for Limits {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Tool {
+pub(crate) struct Tool {
     pub name: String,
     pub title: Option<String>,
     pub description: String,
@@ -64,24 +64,24 @@ pub struct Tool {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ToolCatalog {
+pub(crate) struct ToolCatalog {
     pub tools: Vec<Tool>,
 }
 
 impl ToolCatalog {
-    pub fn get(&self, name: &str) -> Option<&Tool> {
+    pub(crate) fn get(&self, name: &str) -> Option<&Tool> {
         self.tools.iter().find(|tool| tool.name == name)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ResourceContents {
+pub(crate) enum ResourceContents {
     Text(String),
     Blob(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolContent {
+pub(crate) enum ToolContent {
     Text {
         text: String,
     },
@@ -108,7 +108,7 @@ pub enum ToolContent {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ToolCallResult {
+pub(crate) struct ToolCallResult {
     pub content: Vec<ToolContent>,
     pub is_error: bool,
     pub structured_content: Option<Value>,
@@ -116,7 +116,7 @@ pub struct ToolCallResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolCallOutcome {
+pub(crate) enum ToolCallOutcome {
     Complete(ToolCallResult),
     ProtocolFailure(RpcError),
 }
@@ -181,16 +181,12 @@ impl CatalogBuilder {
             Some(_) => {}
             None => self.cache_scope = Some(page.cache_scope),
         }
-        let mut page_names = HashSet::new();
         for tool in &page.tools {
-            if self.names.contains(&tool.name) || !page_names.insert(tool.name.as_str()) {
+            if !self.names.insert(tool.name.clone()) {
                 return Err(McpError::DuplicateTool);
             }
         }
-        for tool in page.tools {
-            self.names.insert(tool.name.clone());
-            self.tools.push(tool);
-        }
+        self.tools.extend(page.tools);
         if let Some(cursor) = &page.next_cursor {
             self.cursors.insert(cursor.clone());
         }
@@ -203,7 +199,7 @@ impl CatalogBuilder {
             return Err(McpError::InvalidListResult);
         }
         self.tools
-            .sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+            .sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
         Ok(ToolCatalog { tools: self.tools })
     }
 }
@@ -664,7 +660,7 @@ fn is_valid_base64(value: &str) -> bool {
     if padding > 2 {
         return false;
     }
-    let data = &bytes[..bytes.len() - padding];
+    let data = bytes.get(..bytes.len() - padding).unwrap_or_default();
     let Some(indices) = data
         .iter()
         .map(|byte| base64_index(*byte))

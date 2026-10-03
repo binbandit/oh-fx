@@ -42,6 +42,17 @@ pub(super) fn review_subject<'a>(
             Action::Tool {
                 tool_name: &call.name,
                 arguments_json: &call.arguments,
+                schema_json: None,
+                schema_required: false,
+            },
+            vec![named_target(&call.name)],
+        ),
+        GatedAction::McpTool(_) => (
+            Action::Tool {
+                tool_name: &call.name,
+                arguments_json: &call.arguments,
+                schema_json: request.schema,
+                schema_required: true,
             },
             vec![named_target(&call.name)],
         ),

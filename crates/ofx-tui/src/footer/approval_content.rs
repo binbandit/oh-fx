@@ -11,6 +11,9 @@ use super::command_text::{approval_text, project_command_text, unambiguous};
 use super::phrase::{PathText, Phrase};
 
 const GENERIC_KIND: &str = "Tool";
+pub(crate) const MCP_KIND: &str = "MCP tool";
+const MCP_QUESTION: &str = "Allow this MCP tool call?";
+const MCP_REASON: &str = "This MCP tool needs approval before oh-fx can send the request.";
 const COMMAND_KIND: &str = "Command";
 const GENERIC_QUESTION: &str = "Would you like to allow this action?";
 const COMMAND_QUESTION: &str = "Would you like to run the following command?";
@@ -54,6 +57,9 @@ pub(crate) enum ActionBlock {
 
 impl ApprovalContent {
     pub(crate) fn from_request(request: &ApprovalRequest, workspace_root: &Path) -> Self {
+        if matches!(request.scope.always, Some(SessionGrant::McpTool(_))) {
+            return Self::mcp_tool(request);
+        }
         let remember = request.scope.always.as_ref().map(remember_label);
         match &request.command {
             Some(CommandRequest::Run {
@@ -162,6 +168,28 @@ impl ApprovalContent {
         }
     }
 
+    fn mcp_tool(request: &ApprovalRequest) -> Self {
+        let target = safe_text(request.tool_name.as_bytes());
+        let action = if request.tool_arguments_truncated {
+            vec![
+                ActionBlock::Line(Phrase::plain(target)),
+                ActionBlock::Refusal(ARGUMENTS_TOO_LONG),
+            ]
+        } else {
+            vec![ActionBlock::Arguments {
+                target,
+                preview: unambiguous(request.tool_arguments_preview.clone()),
+            }]
+        };
+        Self {
+            kind: MCP_KIND,
+            question: MCP_QUESTION,
+            reason: Some(MCP_REASON.to_owned()),
+            action,
+            remember: None,
+        }
+    }
+
     pub(crate) fn deny_only(&self) -> bool {
         self.action
             .iter()
@@ -266,6 +294,7 @@ fn remember_label(grant: &SessionGrant) -> Phrase {
         SessionGrant::ReadsUnder(root) => under("allow reads under ", root),
         SessionGrant::GlobsUnder(root) => under("allow name searches under ", root),
         SessionGrant::GrepsUnder(root) => under("allow content searches under ", root),
+        SessionGrant::McpTool(_) => Phrase::plain(format!("allow this MCP tool{FOR_THIS_SESSION}")),
     }
 }
 
@@ -898,5 +927,34 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn mcp_tools_are_named_with_their_arguments_and_the_session_choice() {
+        let mut request = request(
+            CommandRequest::Stop,
+            Some(SessionGrant::McpTool("mcp_mail_send".to_owned())),
+        );
+        request.command = None;
+        request.tool_name = "mcp_mail_send".to_owned();
+        request.description.title = "MCP: mcp_mail_send".to_owned();
+        request.tool_arguments_preview = r#"{"to":"a\x1b"}"#.to_owned();
+        let shown = ApprovalContent::from_request(&request, Path::new("/ws"));
+        assert_eq!(shown.kind, MCP_KIND);
+        assert_eq!(shown.question, "Allow this MCP tool call?");
+        assert_eq!(
+            shown.reason.as_deref(),
+            Some("This MCP tool needs approval before oh-fx can send the request.")
+        );
+        assert_eq!(
+            shown.action,
+            vec![ActionBlock::Arguments {
+                target: "mcp_mail_send".to_owned(),
+                preview: r#"{"to":"a\x1b"}"#.to_owned(),
+            }]
+        );
+        request.tool_arguments_truncated = true;
+        let truncated = ApprovalContent::from_request(&request, Path::new("/ws"));
+        assert!(truncated.deny_only());
     }
 }

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -17,7 +18,7 @@ use crate::types::{
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
-    pub input_schema: &'static str,
+    pub input_schema: Cow<'static, str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -209,6 +210,14 @@ pub trait Tool: Send + Sync {
     }
 }
 
+pub trait DynamicTools: Send + Sync {
+    fn generation(&self) -> u64;
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>>;
+
+    fn take_notices(&self) -> Vec<String>;
+}
+
 pub trait PreparedCall: Send {
     fn describe(&self) -> CallDescription;
 
@@ -231,6 +240,14 @@ pub trait PreparedCall: Send {
     }
 
     fn command_request(&self) -> Option<&CommandRequest> {
+        None
+    }
+
+    fn mcp_tool(&self) -> bool {
+        false
+    }
+
+    fn review_schema(&self) -> Option<String> {
         None
     }
 

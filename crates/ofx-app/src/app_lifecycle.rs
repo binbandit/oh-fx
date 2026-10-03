@@ -9,8 +9,12 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_cli::{LaunchModifiers, RequestedResume};
-use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
+use ofx_contract::{
+    BoxFuture, DynamicTools, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent,
+};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
+use ofx_mcp::{McpRuntime, ServerStatus, ShutdownMode, StartupPhase, render_workspace_diagnostic};
+use ofx_text::encode_terminal_safe;
 use ofx_tui::{
     Opening, ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel,
 };
@@ -280,7 +284,9 @@ fn agent_work(
     runtime: Runtime,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
     let refreshes = setup.refreshes();
+    let mcp = setup.mcp().cloned();
     move |events, commands| {
+        let notices = events.clone();
         let controller = Controller::new(
             setup,
             Arc::new(move |event| events.send(event)),
@@ -288,13 +294,55 @@ fn agent_work(
             pick_at_start,
         );
         runtime.block_on(async {
+            let discovery = mcp.clone().map(|mcp| {
+                tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))
+            });
             controller.run(commands).await;
+            if let Some(discovery) = discovery {
+                discovery.abort();
+            }
+            if let Some(mcp) = &mcp {
+                mcp.shutdown(ShutdownMode::Immediate).await;
+            }
             executions.shutdown().await;
             if let Some(refreshes) = refreshes {
                 refreshes.settle().await;
             }
         });
         runtime.shutdown_timeout(Duration::from_millis(100));
+    }
+}
+
+async fn discover_mcp(mcp: Arc<McpRuntime>, events: UiEventSender) {
+    let warn = |body: String| {
+        events.send(UiEvent::Notice {
+            notice: Notice::new(NoticeTone::Warning, "", body),
+        });
+    };
+    for diagnostic in mcp.workspace_diagnostics() {
+        warn(render_workspace_diagnostic(diagnostic));
+    }
+    let pending = mcp.pending_workspace_names();
+    if !pending.is_empty() {
+        let names: Vec<String> = pending
+            .iter()
+            .map(|name| encode_terminal_safe(name.as_bytes(), usize::MAX).text)
+            .collect();
+        warn(format!(
+            "Skipped unapproved project MCP servers: {}.",
+            names.join(", ")
+        ));
+    }
+    mcp.connect(StartupPhase::All).await;
+    for server in mcp.servers() {
+        if let ServerStatus::Failed(failure) = server.status {
+            let name = encode_terminal_safe(server.name.as_bytes(), usize::MAX).text;
+            warn(format!("MCP server '{name}' failed to start: {failure}"));
+        }
+    }
+    let _ = mcp.tools();
+    for notice in mcp.take_notices() {
+        warn(notice);
     }
 }
 

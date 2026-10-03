@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use ofx_text::lowercase_hex;
 use tokio::process::Command;
-use tokio::time::timeout;
+
+use crate::timing::timeout;
 
 const MAX_CONTAINER_ID_BYTES: u64 = 128;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(15);
