@@ -128,6 +128,30 @@ async fn a_policy_without_a_reviewer_reports_it_unconfigured() {
 }
 
 #[tokio::test]
+async fn a_reviewer_set_on_a_shared_policy_reviews_the_next_held_call() {
+    let batch = [shell_call()];
+    let command = touch();
+    let first = Arc::new(Recording::default());
+    let policy = Arc::new(
+        PermissionPolicy::new(PermissionMode::Auto, "/workspace")
+            .with_reviewer(Reviewer::new(first.clone(), Duration::from_secs(1))),
+    );
+    let shared = Arc::clone(&policy);
+    let second = Arc::new(Recording::default());
+    shared.set_reviewer(Reviewer::new(second.clone(), Duration::from_secs(1)));
+    assert_eq!(
+        verdict(
+            &policy,
+            request(&batch, GatedAction::Command(&command), &[], None)
+        )
+        .await,
+        ReviewVerdict::Clear
+    );
+    assert!(first.bodies.lock().unwrap().is_empty());
+    assert_eq!(second.bodies.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn a_spent_reviewer_budget_and_an_unprepared_change_hold_without_a_request() {
     let (policy, transport) = reviewed_policy();
     let batch = [shell_call()];

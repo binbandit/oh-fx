@@ -3,6 +3,7 @@ mod review_request;
 use std::fmt;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalScope, BoxFuture, CommandRequest, FileMutation,
@@ -51,7 +52,7 @@ pub struct PermissionPolicy {
     mode: LivePermissionMode,
     workspace_root: PathBuf,
     session_grants: SessionGrants,
-    reviewer: Option<Reviewer>,
+    reviewer: RwLock<Option<Arc<Reviewer>>>,
 }
 
 impl fmt::Debug for PermissionPolicy {
@@ -61,7 +62,7 @@ impl fmt::Debug for PermissionPolicy {
             .field("mode", &self.mode)
             .field("workspace_root", &self.workspace_root)
             .field("session_grants", &self.session_grants)
-            .field("reviewer", &self.reviewer.is_some())
+            .field("reviewer", &self.reviewer().is_some())
             .finish()
     }
 }
@@ -72,7 +73,7 @@ impl PermissionPolicy {
             mode: mode.into(),
             workspace_root: workspace_root.into(),
             session_grants: SessionGrants::default(),
-            reviewer: None,
+            reviewer: RwLock::new(None),
         }
     }
 
@@ -89,9 +90,23 @@ impl PermissionPolicy {
     }
 
     #[must_use]
-    pub fn with_reviewer(mut self, reviewer: Reviewer) -> Self {
-        self.reviewer = Some(reviewer);
+    pub fn with_reviewer(self, reviewer: Reviewer) -> Self {
+        self.set_reviewer(reviewer);
         self
+    }
+
+    pub fn set_reviewer(&self, reviewer: Reviewer) {
+        *self
+            .reviewer
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(reviewer));
+    }
+
+    fn reviewer(&self) -> Option<Arc<Reviewer>> {
+        self.reviewer
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -192,7 +207,7 @@ impl PermissionGate for PermissionPolicy {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<Reviewed>> {
         Box::pin(async move {
-            let Some(reviewer) = &self.reviewer else {
+            let Some(reviewer) = self.reviewer() else {
                 return Some(Reviewed::unavailable(ReviewFailure::ReviewerUnconfigured));
             };
             if !request.attempt_available {
