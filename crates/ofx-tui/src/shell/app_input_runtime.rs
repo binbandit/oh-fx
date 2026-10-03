@@ -114,7 +114,12 @@ impl Shell<'_> {
             _ => {
                 if let Some(action) = raw.composer_shortcut {
                     self.route_shortcut(action);
+                } else if byte == b'$' {
+                    self.insert_dollar();
                 } else if (32..127).contains(&byte) {
+                    if byte == b' ' {
+                        self.close_skill_mention();
+                    }
                     self.insert(char::from(byte).encode_utf8(&mut [0; 4]));
                 }
             }
@@ -178,12 +183,17 @@ impl Shell<'_> {
                 owner: PasteOwner::Composer,
                 text,
             } => {
-                if self
+                let start = self
+                    .composer
+                    .selection()
+                    .map_or(self.composer.cursor(), |selection| selection.start);
+                match self
                     .composer
                     .insert_paste(&text, COMPOSER_INPUT_LIMIT_BYTES)
-                    == InsertResult::LimitExceeded
                 {
-                    self.report_limit();
+                    InsertResult::LimitExceeded => self.report_limit(),
+                    InsertResult::Inserted => self.open_pasted_skill_mention(start, &text),
+                    InsertResult::Inactive => {}
                 }
             }
             PasteOutcome::LimitExceeded { .. } => self.report_limit(),
@@ -338,7 +348,7 @@ impl Shell<'_> {
             }
             ShortcutAction::Redraw => self.start_fresh_transcript(FreshScreen::Erase),
             ShortcutAction::InsertNewline => {
-                if self.skills_menu.is_none() {
+                if !self.command_skills_menu_open() {
                     self.insert("\n");
                 }
             }

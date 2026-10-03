@@ -30,6 +30,7 @@ pub use app_worker_runtime::{UiEventReceiver, UiEventSender, ui_channel};
 pub use directory_completion_job::DirectoryLister;
 pub use input_completion_runtime::FileMentionSource;
 pub use input_history_runtime::PromptHistory;
+pub use skills_menu_runtime::SkillCatalogSource;
 
 use app_permission_runtime::YoloWarning;
 use approval_runtime::ApprovalPrompt;
@@ -100,6 +101,7 @@ pub struct ShellOptions {
     pub command_categories: Vec<String>,
     pub prompt_history: PromptHistory,
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
+    pub skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     pub opening: Opening,
 }
 
@@ -174,6 +176,7 @@ pub(crate) struct Shell<'a> {
     approval: Option<ApprovalPrompt>,
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
+    skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     session_title: Option<String>,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
@@ -326,6 +329,7 @@ impl<'a> Shell<'a> {
         let mut composer = Composer::new();
         let history = HistoryRecorder::install(options.prompt_history.take(), &mut composer);
         let file_picker = FilePicker::new(options.file_mentions.take());
+        let skill_catalog = options.skill_catalog.take();
         let mut shell = Self {
             terminal: setup.terminal,
             input: setup.input,
@@ -347,6 +351,7 @@ impl<'a> Shell<'a> {
             approval: None,
             question: None,
             skills_menu: None,
+            skill_catalog,
             session_title: None,
             yolo_warning,
             picker: None,
@@ -489,7 +494,7 @@ impl<'a> Shell<'a> {
         self.frame.drawn_activity = self.activity_phase(now_ms);
         let appended = self.transcript.take_new_rows(&self.theme);
         let skills_menu = match (&self.skills_menu, &self.approval, &self.question) {
-            (Some(menu), None, None) => Some(skills_menu_band(
+            (Some(menu), None, None) if menu.is_visible() => Some(skills_menu_band(
                 menu,
                 self.skills_menu_budget(),
                 self.cols(),
@@ -947,6 +952,7 @@ mod tests {
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
+            skill_catalog: None,
             opening: Opening::Welcome,
         }
     }

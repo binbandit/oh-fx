@@ -30,6 +30,12 @@ pub(crate) fn filter_label(filter: Option<SkillMenuSource>) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MentionAnchor {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkillsMenu {
     items: Vec<SkillMenuItem>,
@@ -37,6 +43,7 @@ pub(crate) struct SkillsMenu {
     query: String,
     selected: usize,
     window_start: usize,
+    mention: Option<MentionAnchor>,
 }
 
 impl SkillsMenu {
@@ -47,6 +54,7 @@ impl SkillsMenu {
             query: String::new(),
             selected: 0,
             window_start: 0,
+            mention: None,
         };
         match focus {
             SkillMenuFocus::Start => {}
@@ -60,6 +68,38 @@ impl SkillsMenu {
             }
         }
         Some(menu)
+    }
+
+    pub(crate) fn mention(items: Vec<SkillMenuItem>, anchor: MentionAnchor, query: &str) -> Self {
+        Self {
+            items,
+            filter: 0,
+            query: query.to_owned(),
+            selected: 0,
+            window_start: 0,
+            mention: Some(anchor),
+        }
+    }
+
+    pub(crate) fn mention_anchor(&self) -> Option<MentionAnchor> {
+        self.mention
+    }
+
+    pub(crate) fn set_mention_end(&mut self, end: usize) {
+        if let Some(anchor) = &mut self.mention {
+            anchor.end = end;
+        }
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.mention.is_none() || self.matches_any_source()
+    }
+
+    fn matches_any_source(&self) -> bool {
+        let query = self.query.trim_matches(QUERY_TRIM);
+        self.items
+            .iter()
+            .any(|item| match_rank(item, query).is_some())
     }
 
     pub(crate) fn filter(&self) -> Option<SkillMenuSource> {

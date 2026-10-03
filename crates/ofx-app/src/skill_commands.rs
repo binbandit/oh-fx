@@ -284,7 +284,7 @@ fn path_notice(managed_root: &Path) -> String {
     )
 }
 
-fn menu_item(skill: &Skill) -> SkillMenuItem {
+pub(crate) fn menu_item(skill: &Skill) -> SkillMenuItem {
     SkillMenuItem {
         name: skill.name.clone(),
         description: skill.description.clone(),
