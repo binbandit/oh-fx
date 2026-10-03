@@ -642,8 +642,10 @@ impl Drop for CancelOnDrop<'_> {
 async fn reader_main(shared: Arc<Shared>, stdout: ChildStdout, mut child: Child) {
     let mut reader = LineReader::new(BufReader::new(stdout));
     let terminal = loop {
-        let limit = shared.max_frame_bytes.load(Ordering::Relaxed);
-        match reader.read_line(limit).await {
+        match reader
+            .read_line(|| shared.max_frame_bytes.load(Ordering::Relaxed))
+            .await
+        {
             Ok(Some(LineRead::Line(mut line))) => {
                 while line.last() == Some(&b'\r') {
                     line.pop();

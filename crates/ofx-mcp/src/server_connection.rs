@@ -219,6 +219,47 @@ done
             .unwrap_or_default()
     }
 
+    const LARGE_IMAGE_SERVER: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      reply "$id" '{"tools":[{"name":"snapshot","inputSchema":{"type":"object"}}]}' ;;
+    *'"method":"tools/call"'*)
+      data=$(head -c 1572864 /dev/zero | base64 | tr -d '\n')
+      reply "$id" "{\"content\":[{\"type\":\"image\",\"data\":\"$data\",\"mimeType\":\"image/png\"}]}" ;;
+  esac
+done
+"#;
+
+    #[tokio::test]
+    async fn a_tool_result_above_the_discovery_frame_cap_reaches_an_idle_reader() {
+        let state = tempfile::tempdir().unwrap();
+        let config = script_config("fixture", LARGE_IMAGE_SERVER, state.path());
+        let client = McpClient::connect(&config, &ConnectOptions::default())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let outcome = client
+            .call_tool("snapshot", &json!({}), CallOptions::default())
+            .await
+            .unwrap();
+        let ToolCallOutcome::Complete(result) = outcome else {
+            panic!("expected a complete call result");
+        };
+        let ToolContent::Image { data, mime_type } = &result.content[0] else {
+            panic!("expected an image");
+        };
+        assert_eq!(data.len(), 2_097_152);
+        assert_eq!(mime_type, "image/png");
+        assert!(client.is_running());
+        client.shutdown(ShutdownMode::Immediate).await;
+    }
+
     #[tokio::test]
     async fn stdio_startup_negotiates_discovers_and_calls_tools() {
         let state = tempfile::tempdir().unwrap();
