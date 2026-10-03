@@ -517,6 +517,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                     output,
                     output_bytes: 12,
                     status: ToolResultStatus::Success,
+                    model_view_covers_full_file: false,
                 }],
             }],
             steering: vec![HistorySteering {

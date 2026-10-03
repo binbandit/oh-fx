@@ -106,6 +106,7 @@ fn result<'a>(call: &'a ToolCall, output: &'a str, status: ToolResultStatus) -> 
         output,
         output_bytes: output.len(),
         status,
+        model_view_covers_full_file: false,
     }
 }
 
@@ -1388,4 +1389,204 @@ fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
         expected.push(assistant(Some("done"), &[]));
         assert_eq!(restored.messages, expected, "{cut:?}");
     }
+}
+
+fn with_arguments(id: &str, name: &str, arguments: &str) -> ToolCall {
+    ToolCall::new(id, name, arguments)
+}
+
+fn whole(result: StepResult<'_>) -> StepResult<'_> {
+    StepResult {
+        model_view_covers_full_file: true,
+        ..result
+    }
+}
+
+fn evidence(
+    path: &str,
+    id: &str,
+    tool: &str,
+    action: &str,
+    status: &str,
+    flags: [bool; 2],
+) -> String {
+    let [whole, stale] = flags;
+    format!(
+        "{{\"path\":\"{path}\",\"new_path\":null,\"tool_call_id\":\"{id}\",\"tool_name\":\"{tool}\",\"action\":\"{action}\",\"status\":\"{status}\",\"model_view_covers_full_file\":{whole},\"stale\":{stale}}}"
+    )
+}
+
+fn tidying_calls() -> [ToolCall; 9] {
+    [
+        with_arguments("call_read", "read_file", r#"{"path":"src/lib.rs"}"#),
+        with_arguments(
+            "call_part",
+            "read_file",
+            r#"{"path":"README.md","start_line":5}"#,
+        ),
+        with_arguments(
+            "call_grep",
+            "grep_files",
+            r#"{"pattern":"fn","path":"src"}"#,
+        ),
+        with_arguments("call_glob", "glob_files", r#"{"pattern":"*.rs","path":""}"#),
+        with_arguments("call_shell", "shell", r#"{"command":"ls"}"#),
+        with_arguments("call_missing", "read_file", r#"{"path":"gone.rs"}"#),
+        with_arguments("call_bad", "read_file", "not json"),
+        with_arguments(
+            "call_edit",
+            "edit_file",
+            r#"{"path":"src/lib.rs","old_string":"a","new_string":"b"}"#,
+        ),
+        with_arguments(
+            "sk-proj-0123456789abcdefghij",
+            "write_file",
+            r#"{"path":"README.md","content":"x"}"#,
+        ),
+    ]
+}
+
+fn tidying_steps(calls: &[ToolCall]) -> Vec<HistoryStep<'_>> {
+    let (first, second) = calls.split_at(7);
+    vec![
+        step(
+            "",
+            first,
+            vec![
+                whole(result(&first[0], "lib", ToolResultStatus::Success)),
+                result(&first[1], "part", ToolResultStatus::Success),
+                whole(result(&first[2], "hits", ToolResultStatus::Success)),
+                result(&first[3], "files", ToolResultStatus::Success),
+                result(&first[4], "listing", ToolResultStatus::Success),
+                whole(result(&first[5], "missing", ToolResultStatus::Failure)),
+                result(&first[6], "bad", ToolResultStatus::Failure),
+            ],
+        ),
+        step(
+            "",
+            second,
+            vec![
+                result(&second[0], "edited", ToolResultStatus::Success),
+                result(&second[1], "refused", ToolResultStatus::Failure),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn a_saved_turn_keeps_upstreams_file_evidence_for_its_file_tools() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let calls = tidying_calls();
+    let turn = HistoryTurn {
+        user: "tidy the crate",
+        steps: tidying_steps(&calls),
+        steering: Vec::new(),
+        end: replied("done"),
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    let completed = fs::read_to_string(fixture.dir().join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .find(|line| line.contains("\"turn_completed\""))
+        .unwrap()
+        .to_owned();
+    let files = [
+        evidence(
+            "src/lib.rs",
+            "call_read",
+            "read_file",
+            "read",
+            "success",
+            [true, true],
+        ),
+        evidence(
+            "README.md",
+            "call_part",
+            "read_file",
+            "read",
+            "success",
+            [false, false],
+        ),
+        evidence(
+            "src",
+            "call_grep",
+            "grep_files",
+            "search",
+            "success",
+            [false, false],
+        ),
+        evidence(
+            ".",
+            "call_glob",
+            "glob_files",
+            "search",
+            "success",
+            [false, false],
+        ),
+        evidence(
+            "gone.rs",
+            "call_missing",
+            "read_file",
+            "read",
+            "failure",
+            [false, false],
+        ),
+        evidence(
+            "src/lib.rs",
+            "call_edit",
+            "edit_file",
+            "edit",
+            "success",
+            [false, false],
+        ),
+        evidence(
+            "README.md",
+            "redacted-94ef11c05501c8117ead8adf",
+            "write_file",
+            "write",
+            "failure",
+            [false, false],
+        ),
+    ]
+    .join(",");
+    assert!(
+        completed.ends_with(&format!(
+            "\"event\":{{\"turn_completed\":{{\"files\":[{files}],\"turn_summary\":null}}}}}}"
+        )),
+        "{completed}"
+    );
+}
+
+#[test]
+fn an_interrupted_turn_keeps_the_file_evidence_it_gathered() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let calls = [with_arguments(
+        "call_read",
+        "read_file",
+        r#"{"path":"a.rs"}"#,
+    )];
+    let turn = HistoryTurn {
+        user: "look",
+        steps: vec![step(
+            "",
+            &calls,
+            vec![whole(result(&calls[0], "a", ToolResultStatus::Success))],
+        )],
+        steering: Vec::new(),
+        end: TurnEnd::Stopped {
+            reason: TurnStop::Cancelled,
+            partial: "",
+        },
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    let interrupted = fixture
+        .frames()
+        .into_iter()
+        .find_map(|frame| frame["event"].get("interrupted").cloned())
+        .unwrap();
+    assert_eq!(interrupted["files"][0]["path"], "a.rs");
+    assert_eq!(interrupted["files"][0]["model_view_covers_full_file"], true);
+    assert_eq!(interrupted["files"][0]["stale"], false);
 }

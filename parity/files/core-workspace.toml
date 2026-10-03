@@ -84,9 +84,9 @@ note = "Workspace/external path resolution and mutation targets exist; complete 
 
 [[file]]
 upstream = "src/core/workspace/read_tracker.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
-note = "Session read snapshots with content hash and separate model/snapshot full-file coverage are unimplemented."
+note = "Upstream creates a ReadTracker only in read_file's tests; its production dispatch context leaves the tracker unset, so no decision reads these snapshots. Read coverage reaches the session through file evidence instead."
 
 [[file]]
 upstream = "src/core/workspace/record_tape.zig"

@@ -169,6 +169,7 @@ impl SavedToolStep {
                     output: &result.output,
                     output_bytes: result.output_bytes,
                     status: result.status,
+                    model_view_covers_full_file: false,
                 })
                 .collect(),
         }

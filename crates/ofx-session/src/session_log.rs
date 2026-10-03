@@ -1,6 +1,7 @@
 mod conversation_history;
 mod conversation_progress;
 mod conversation_writer;
+mod file_evidence;
 pub(crate) mod managed_file;
 mod turn_events;
 mod turn_recovery;

@@ -13,6 +13,7 @@ use crate::session_event::{
     TurnCompletedEvent, UserEvent,
 };
 use crate::session_log::conversation_progress::ProgressPoint;
+use crate::session_log::file_evidence::turn_file_evidence;
 
 pub(crate) struct TurnArtifacts<'a> {
     pub(crate) dir: &'a PrivateDir,
@@ -66,9 +67,9 @@ pub(crate) fn turn_events(
                     standalone_response: false,
                 }));
             }
-            events.push(ConversationEvent::TurnCompleted(
-                TurnCompletedEvent::default(),
-            ));
+            let mut completed = TurnCompletedEvent::default();
+            completed.files = turn_file_evidence(&turn.steps);
+            events.push(ConversationEvent::TurnCompleted(completed));
         }
         TurnEnd::Stopped { reason, partial } => {
             let reason = match reason {
@@ -76,9 +77,9 @@ pub(crate) fn turn_events(
                 TurnStop::Failed => InterruptReason::Failed,
             };
             let partial = (!partial.is_empty()).then(|| partial.to_owned());
-            events.push(ConversationEvent::Interrupted(InterruptedEvent::new(
-                reason, partial,
-            )));
+            let mut interrupted = InterruptedEvent::new(reason, partial);
+            interrupted.files = turn_file_evidence(&turn.steps);
+            events.push(ConversationEvent::Interrupted(interrupted));
         }
     }
     Ok(events)

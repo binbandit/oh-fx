@@ -7,6 +7,7 @@ use ofx_contract::{
 };
 
 use super::{Agent, EventSink, Stop, Turn, TurnFailure, escalate_repeated_failure};
+use crate::execution_memory::RawOutput;
 
 pub(super) fn provider_executed(call: &ToolCall) -> bool {
     call.provenance == ToolExecutionProvenance::ProviderExecuted
@@ -47,7 +48,8 @@ impl Agent {
         } else {
             ToolResultStatus::Success
         };
-        turn.raw_outputs.push((call.id.clone(), result.len()));
+        turn.raw_outputs
+            .push(RawOutput::partial_view(call.id.clone(), result.len()));
         let model_output = prepare_model_output(&call.name, result, DEFAULT_MAX_TOOL_RESULT_BYTES);
         let content = if ToolArgumentIntegrity::classify_function_input(&call.arguments)
             == ToolArgumentIntegrity::Valid
