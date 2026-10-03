@@ -338,11 +338,7 @@ fn built(scripts: Vec<Script>, snapshot: Option<ProjectContext>) -> Harness {
 fn scoped_reply(calls: &[(&str, &str)]) -> Script {
     let calls = calls
         .iter()
-        .map(|(id, arguments)| ToolCall {
-            id: ToolCallId::new(*id),
-            name: "scoped".to_owned(),
-            arguments: (*arguments).to_owned(),
-        })
+        .map(|(id, arguments)| ToolCall::new(*id, "scoped", *arguments))
         .collect();
     Script::Reply(Vec::new(), completion(None, calls, FinishReason::ToolCalls))
 }

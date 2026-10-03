@@ -137,11 +137,7 @@ mod tests {
     use super::*;
 
     fn call(id: &str) -> ToolCall {
-        ToolCall {
-            id: ToolCallId::new(id),
-            name: "read".to_owned(),
-            arguments: "{}".to_owned(),
-        }
+        ToolCall::new(id, "read", "{}")
     }
 
     fn assistant(calls: Vec<ToolCall>) -> ChatMessage {

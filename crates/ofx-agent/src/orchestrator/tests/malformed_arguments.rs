@@ -402,16 +402,8 @@ async fn malformed_arguments_are_judged_before_the_tool_is_looked_up() {
             completion(
                 None,
                 vec![
-                    ToolCall {
-                        id: ToolCallId::new("call-1"),
-                        name: "missing".to_owned(),
-                        arguments: "[]".to_owned(),
-                    },
-                    ToolCall {
-                        id: ToolCallId::new("call-2"),
-                        name: "missing".to_owned(),
-                        arguments: "{}".to_owned(),
-                    },
+                    ToolCall::new("call-1", "missing", "[]"),
+                    ToolCall::new("call-2", "missing", "{}"),
                 ],
                 FinishReason::ToolCalls,
             ),

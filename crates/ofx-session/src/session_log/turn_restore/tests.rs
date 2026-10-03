@@ -85,11 +85,7 @@ fn gateway() -> SavedProvider {
 }
 
 fn call(id: &str, name: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: name.to_owned(),
-        arguments: format!(r#"{{"id":"{id}"}}"#),
-    }
+    ToolCall::new(id, name, format!(r#"{{"id":"{id}"}}"#))
 }
 
 fn replay(provider: &str, parts: &str) -> ProviderReplay {
@@ -764,11 +760,7 @@ fn saved_turns_written_by_upstream_restore_as_upstream_projects_them() {
         saved_turn(vec![user("aborted"), saved_call("c2"), stopped(Some("p"))]),
     ])
     .unwrap();
-    let shell = |id: &str| ToolCall {
-        id: ToolCallId::new(id),
-        name: "shell".to_owned(),
-        arguments: "{}".to_owned(),
-    };
+    let shell = |id: &str| ToolCall::new(id, "shell", "{}");
     assert_eq!(restored.turn_starts, [0, 3, 7]);
     assert_eq!(
         restored.messages,

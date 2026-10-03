@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use ofx_contract::{
     ChatMessage, CommandProfile, Completion, FileMutationState, FinishReason, ModelRequest,
-    ReviewTransport, ReviewTransportOutcome, ToolCallId,
+    ReviewTransport, ReviewTransportOutcome,
 };
 use serde_json::Value;
 
@@ -45,11 +45,11 @@ impl ReviewTransport for Recording {
         Box::pin(async {
             ReviewTransportOutcome::Completion(Completion {
                 content: None,
-                tool_calls: vec![ToolCall {
-                    id: ToolCallId::new("review"),
-                    name: "permission_decision".to_owned(),
-                    arguments: r#"{"decision":"clear"}"#.to_owned(),
-                }],
+                tool_calls: vec![ToolCall::new(
+                    "review",
+                    "permission_decision",
+                    r#"{"decision":"clear"}"#,
+                )],
                 finish_reason: FinishReason::ToolCalls,
                 usage: Usage::default(),
                 provider_replay: None,
@@ -66,11 +66,11 @@ fn reviewed_policy() -> (PermissionPolicy, Arc<Recording>) {
 }
 
 fn shell_call() -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new("call-1"),
-        name: "shell".to_owned(),
-        arguments: r#"{"request":{"action":"run","command":"touch marker"}}"#.to_owned(),
-    }
+    ToolCall::new(
+        "call-1",
+        "shell",
+        r#"{"request":{"action":"run","command":"touch marker"}}"#,
+    )
 }
 
 fn touch() -> CommandRequest {
@@ -212,12 +212,11 @@ impl ReviewTransport for SwitchingMidReview {
         Box::pin(async {
             ReviewTransportOutcome::Completion(Completion {
                 content: None,
-                tool_calls: vec![ToolCall {
-                    id: ToolCallId::new("review"),
-                    name: "permission_decision".to_owned(),
-                    arguments: r#"{"decision":"caution","rationale":"Untrusted output."}"#
-                        .to_owned(),
-                }],
+                tool_calls: vec![ToolCall::new(
+                    "review",
+                    "permission_decision",
+                    r#"{"decision":"caution","rationale":"Untrusted output."}"#.to_owned(),
+                )],
                 finish_reason: FinishReason::ToolCalls,
                 usage: Usage::default(),
                 provider_replay: None,

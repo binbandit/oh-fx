@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use ofx_contract::{
-    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolSpec,
-    Usage,
+    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
 use serde_json::Value;
@@ -1375,14 +1374,13 @@ impl Reducer {
         let tool_calls: Vec<ToolCall> = self
             .tools
             .into_iter()
-            .map(|tool| ToolCall {
-                id: ToolCallId::new(tool.id),
-                name: tool.name,
-                arguments: if tool.arguments_finalized || !tool.arguments.is_empty() {
+            .map(|tool| {
+                let arguments = if tool.arguments_finalized || !tool.arguments.is_empty() {
                     tool.arguments
                 } else {
                     "{}".to_owned()
-                },
+                };
+                ToolCall::new(tool.id, tool.name, arguments)
             })
             .collect();
         let finish = self.finish.unwrap_or(if tool_calls.is_empty() {

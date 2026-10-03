@@ -22,6 +22,20 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+impl ToolCall {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: ToolCallId::new(id),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolResultStatus {
     Success,

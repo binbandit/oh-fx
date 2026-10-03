@@ -14,11 +14,7 @@ fn checkpoint() -> RecoveryCheckpoint {
                 assistant: Some("Reading.".to_owned()),
                 durable_replay: None,
                 provider_replay: None,
-                tool_calls: vec![ToolCall {
-                    id: ToolCallId::new("call_1"),
-                    name: "read_file".to_owned(),
-                    arguments: "{\"path\":\"a.rs\"}".to_owned(),
-                }],
+                tool_calls: vec![ToolCall::new("call_1", "read_file", "{\"path\":\"a.rs\"}")],
                 tool_results: vec![SavedToolResult {
                     tool_call_id: "call_1".to_owned(),
                     tool_name: "read_file".to_owned(),
