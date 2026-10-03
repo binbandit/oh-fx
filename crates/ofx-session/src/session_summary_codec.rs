@@ -6,6 +6,7 @@ pub struct SessionSummary {
     pub workspace_root: String,
     pub origin_workspace_root: String,
     pub title: Option<String>,
+    pub preview: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub conversation_language: String,
@@ -37,6 +38,28 @@ pub(crate) fn sort_summaries_newest_first(summaries: &mut [SessionSummary]) {
             .cmp(&a.updated_at_ms)
             .then_with(|| b.id.cmp(&a.id))
     });
+}
+
+pub(crate) fn listed_page_from_summaries(
+    summaries: &[SessionSummary],
+    workspace_root: Option<&str>,
+    continuation: Option<&ResumeContinuation>,
+    limit: usize,
+) -> ResumablePage {
+    let mut page = ResumablePage::default();
+    for summary in summaries {
+        if workspace_root.is_some_and(|root| summary.workspace_root != root)
+            || continuation.is_some_and(|position| !summary_follows(summary, position))
+        {
+            continue;
+        }
+        if page.summaries.len() >= limit {
+            page.has_more = true;
+            break;
+        }
+        page.summaries.push(summary.clone());
+    }
+    page
 }
 
 pub(crate) fn resumable_page_from_summaries(
@@ -82,6 +105,7 @@ mod tests {
             workspace_root: "/workspace".to_owned(),
             origin_workspace_root: "/workspace".to_owned(),
             title: None,
+            preview: None,
             created_at_ms: 1,
             updated_at_ms,
             conversation_language: "en".to_owned(),

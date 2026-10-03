@@ -22,8 +22,8 @@ use crate::session_log::{
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
 use crate::session_summary_codec::{
-    ResumablePage, ResumeContinuation, SessionSummary, resumable_page_from_summaries,
-    sort_summaries_newest_first,
+    ResumablePage, ResumeContinuation, SessionSummary, listed_page_from_summaries,
+    resumable_page_from_summaries, sort_summaries_newest_first,
 };
 
 const SESSIONS_DIR: &str = "sessions";
@@ -45,10 +45,31 @@ pub enum ListScope {
 
 pub struct SessionCatalog {
     summaries: Vec<SessionSummary>,
+    skipped_invalid: usize,
     workspace_root: String,
 }
 
 impl SessionCatalog {
+    pub fn listed_page(
+        &self,
+        scope: ListScope,
+        continuation: Option<&ResumeContinuation>,
+        limit: usize,
+    ) -> ResumablePage {
+        listed_page_from_summaries(&self.summaries, self.scope_root(scope), continuation, limit)
+    }
+
+    pub fn skipped_invalid(&self) -> usize {
+        self.skipped_invalid
+    }
+
+    fn scope_root(&self, scope: ListScope) -> Option<&str> {
+        match scope {
+            ListScope::AllWorkspaces => None,
+            ListScope::CurrentWorkspace => Some(self.workspace_root.as_str()),
+        }
+    }
+
     pub fn page(
         &self,
         scope: ListScope,
@@ -56,13 +77,9 @@ impl SessionCatalog {
         continuation: Option<&ResumeContinuation>,
         limit: usize,
     ) -> ResumablePage {
-        let workspace_root = match scope {
-            ListScope::AllWorkspaces => None,
-            ListScope::CurrentWorkspace => Some(self.workspace_root.as_str()),
-        };
         resumable_page_from_summaries(
             &self.summaries,
-            workspace_root,
+            self.scope_root(scope),
             active_id,
             continuation,
             limit,
@@ -220,8 +237,10 @@ impl SessionStore {
     }
 
     pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
+        let scan = self.scan_summaries()?;
         Ok(SessionCatalog {
-            summaries: self.scan_summaries()?.summaries,
+            summaries: scan.summaries,
+            skipped_invalid: scan.skipped_invalid,
             workspace_root: self.workspace_root.clone(),
         })
     }

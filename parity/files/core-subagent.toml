@@ -51,8 +51,9 @@ note = "Request/result validation exists; matchCatalogModel catalog matching and
 
 [[file]]
 upstream = "src/core/subagent/resume_admission.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_store.rs"]
+note = "The visible session page that sessions lists, with its skipped-session count, exists; hiding subagent child sessions and resume admission for them wait for saved child sessions."
 
 [[file]]
 upstream = "src/core/subagent/tool_host.zig"
