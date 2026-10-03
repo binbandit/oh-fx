@@ -18,6 +18,7 @@ pub(crate) struct TurnArtifacts<'a> {
     pub(crate) dir: &'a PrivateDir,
     pub(crate) provider: &'a SavedProvider,
     pub(crate) timestamp_ms: i64,
+    pub(crate) saved_replays: &'a [SavedReplay],
 }
 
 pub(crate) fn turn_events(
@@ -62,7 +63,7 @@ pub(crate) fn turn_events(
                 events.push(ConversationEvent::Assistant(AssistantEvent {
                     text: text.to_owned(),
                     provider_replay: provider_replay
-                        .and_then(|replay| saved_replay(replay, artifacts.provider)),
+                        .and_then(|replay| saved_replay(replay, artifacts)),
                     standalone_response: false,
                 }));
             }
@@ -110,7 +111,7 @@ fn step_events(
             text: step.assistant.to_owned(),
             provider_replay: step
                 .provider_replay
-                .and_then(|replay| saved_replay(replay, artifacts.provider)),
+                .and_then(|replay| saved_replay(replay, artifacts)),
             standalone_response: step.tool_calls.is_empty(),
         }));
     }
@@ -145,7 +146,15 @@ fn step_events(
     Ok(())
 }
 
-fn saved_replay(replay: &ProviderReplay, running: &SavedProvider) -> Option<SavedReplay> {
+fn saved_replay(replay: &ProviderReplay, artifacts: &TurnArtifacts<'_>) -> Option<SavedReplay> {
+    if let Some(saved) = artifacts
+        .saved_replays
+        .iter()
+        .find(|saved| saved.projects_to(replay))
+    {
+        return Some(saved.clone());
+    }
+    let running = artifacts.provider;
     let id = ProviderId::parse(&replay.source.provider)?;
     let provider = if id == *running.id() {
         running.clone()

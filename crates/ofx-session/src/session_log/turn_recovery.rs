@@ -36,10 +36,12 @@ pub(crate) fn close_unfinished_turn(
     } else {
         ProgressPoint::default()
     };
+    let saved_replays = checkpoint.saved_replays();
     let artifacts = TurnArtifacts {
         dir,
         provider,
         timestamp_ms,
+        saved_replays: &saved_replays,
     };
     let mut events = turn_events(&artifacts, &checkpoint.interrupted_turn(), written)?;
     if let Some(ConversationEvent::Interrupted(interrupted)) = events.last_mut() {

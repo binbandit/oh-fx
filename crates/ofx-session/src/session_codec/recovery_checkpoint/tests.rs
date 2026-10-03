@@ -12,6 +12,7 @@ fn checkpoint() -> RecoveryCheckpoint {
         execution: SavedExecution {
             tool_steps: vec![SavedToolStep {
                 assistant: Some("Reading.".to_owned()),
+                durable_replay: None,
                 provider_replay: None,
                 tool_calls: vec![ToolCall {
                     id: ToolCallId::new("call_1"),

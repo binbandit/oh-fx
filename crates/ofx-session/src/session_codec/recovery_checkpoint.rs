@@ -13,7 +13,7 @@ use crate::json_fields::{Fields, Json, parse_json};
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_codec::parse_saved_provider;
 use crate::session_error::SessionError;
-use crate::session_event::{FileEvidence, WireTag, are_valid_files, saved_replay};
+use crate::session_event::{FileEvidence, SavedReplay, WireTag, are_valid_files, saved_replay};
 
 pub(crate) const MAX_RECOVERY_FILE_BYTES: usize = EMERGENCY_CEILING_BYTES + 128;
 const CHECKPOINT_VERSION: u64 = 2;
@@ -70,6 +70,7 @@ struct SavedExecution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SavedToolStep {
     assistant: Option<String>,
+    durable_replay: Option<SavedReplay>,
     provider_replay: Option<ProviderReplay>,
     tool_calls: Vec<ToolCall>,
     tool_results: Vec<SavedToolResult>,
@@ -128,6 +129,14 @@ impl RecoveryCheckpoint {
                 partial: &self.assistant_source,
             },
         }
+    }
+
+    pub(crate) fn saved_replays(&self) -> Vec<SavedReplay> {
+        self.execution
+            .tool_steps
+            .iter()
+            .filter_map(|step| step.durable_replay.clone())
+            .collect()
     }
 
     pub(crate) fn into_files(self) -> Vec<FileEvidence> {
@@ -255,11 +264,15 @@ fn execution(value: Json<'_>) -> Option<SavedExecution> {
 
 fn tool_step(value: Json<'_>) -> Option<SavedToolStep> {
     let mut fields = Fields::new(value)?;
+    let assistant = fields.present_or_null("assistant", |value| durable_text(value).map(Some))?;
+    let durable_replay =
+        fields.present_or_null("provider_replay", |value| saved_replay(value).map(Some))?;
     let step = SavedToolStep {
-        assistant: fields.present_or_null("assistant", |value| durable_text(value).map(Some))?,
-        provider_replay: fields.present_or_null("provider_replay", |value| {
-            saved_replay(value).map(|replay| Some(replay.into_provider_replay()))
-        })?,
+        assistant,
+        provider_replay: durable_replay
+            .clone()
+            .map(SavedReplay::into_provider_replay),
+        durable_replay,
         tool_calls: list(fields.required("tool_calls")?, tool_call)?,
         tool_results: list(fields.required("tool_results")?, tool_result)?,
     };

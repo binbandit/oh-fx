@@ -317,6 +317,7 @@ impl WritableSession {
             dir: &self.owned.dir,
             provider,
             timestamp_ms,
+            saved_replays: &[],
         }
     }
 

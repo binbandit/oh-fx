@@ -31,7 +31,16 @@ impl Fixture {
     }
 
     fn start(&self, events: &[ConversationEvent]) {
-        let mut session = start_session(&self.sessions, metadata()).unwrap();
+        self.start_under(
+            SavedProvider::new(ProviderId::Gateway, None).unwrap(),
+            events,
+        );
+    }
+
+    fn start_under(&self, provider: SavedProvider, events: &[ConversationEvent]) {
+        let mut metadata = metadata();
+        metadata.preferences.provider = provider;
+        let mut session = start_session(&self.sessions, metadata).unwrap();
         session.append(2, events).unwrap();
     }
 
@@ -273,4 +282,44 @@ fn a_checkpoint_ahead_of_the_log_or_unreadable_fails_the_resume_untouched() {
     );
     assert_eq!(fixture.log(), before);
     assert!(fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
+fn a_saved_replay_keeps_its_own_provider_binding_under_any_preferences() {
+    let saved = format!(
+        "{{\"source\":{{\"provider\":{{\"name\":\"portkey\",\"binding\":\"{}\"}},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
+        "22".repeat(32)
+    );
+    let replayed = step("c2", "out").replace(
+        "\"provider_replay\":null",
+        &format!("\"provider_replay\":{saved}"),
+    );
+    let preferences = [
+        SavedProvider::new(ProviderId::Gateway, None).unwrap(),
+        SavedProvider::new(
+            ProviderId::Configured("portkey".to_owned()),
+            Some([0x11; 32]),
+        )
+        .unwrap(),
+    ];
+    for provider in preferences {
+        let fixture = Fixture::new();
+        fixture.start_under(provider.clone(), &finished_turn());
+        fixture.save_checkpoint(
+            3,
+            &checkpoint(
+                "fix the build",
+                std::slice::from_ref(&replayed),
+                "",
+                "Looking at",
+            ),
+        );
+        drop(fixture.resume().unwrap());
+        let log = fixture.log();
+        assert!(
+            log[4].contains(&format!("\"provider_replay\":{saved}")),
+            "{provider:?}: {}",
+            log[4]
+        );
+    }
 }

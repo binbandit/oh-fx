@@ -83,6 +83,12 @@ impl SavedReplay {
             parts_json: self.parts_json,
         }
     }
+
+    pub(crate) fn projects_to(&self, replay: &ProviderReplay) -> bool {
+        self.source.provider.id().label() == replay.source.provider
+            && self.source.model == replay.source.model
+            && self.parts_json == replay.parts_json
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
