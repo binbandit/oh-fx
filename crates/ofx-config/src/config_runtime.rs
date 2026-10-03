@@ -1422,6 +1422,31 @@ mod tests {
     }
 
     #[test]
+    fn a_skill_or_context_limit_diagnostic_keeps_prompt_history_disabled() {
+        for field in [
+            r#""skill_match_fuzzy":true"#,
+            r#""skill_symlink_authorities":"/nix/store""#,
+            r#""context_limits":{"unknown_limit":10}"#,
+        ] {
+            let global = fixture_settings(&format!(
+                r#"{{"prompt_history":{{"enabled":false}},{field}}}"#
+            ));
+            assert_eq!(global.diagnostics().len(), 1, "{field}");
+            assert!(!global.profile_is_unusable(), "{field}");
+            assert!(!global.prompt_history_enabled(), "{field}");
+            let scoped = fixture(None, None);
+            let workspace = serde_json::to_string(&scoped.workspace.to_string_lossy()).unwrap();
+            let json = format!(
+                r#"{{"workspaces":{{{workspace}:{{"prompt_history":{{"enabled":false}},{field}}}}}}}"#
+            );
+            fs::write(scoped.paths.config.join(SETTINGS_FILE), json).unwrap();
+            let loaded = load(&scoped).unwrap();
+            assert_eq!(loaded.diagnostics().len(), 1, "{field}");
+            assert!(!loaded.prompt_history_enabled(), "{field}");
+        }
+    }
+
+    #[test]
     fn context_switch_follows_workspace_global_then_project_layers() {
         assert!(fixture_settings("{}").context_enabled());
         assert!(!fixture_settings(r#"{"context":false}"#).context_enabled());
