@@ -5,12 +5,15 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
+#[cfg(test)]
+use crate::unicode_display_data::RGI_EMOJI_SEQUENCE_LINES;
 use crate::unicode_display_data::{RGI_EMOJI_SEQUENCES, VARIATION_BASES};
 
 const MAX_RGI_SEQUENCE_CODEPOINTS: usize = 10;
 const VARIATION_SELECTOR_15: char = '\u{fe0e}';
 const VARIATION_SELECTOR_16: char = '\u{fe0f}';
 const COMBINING_ENCLOSING_KEYCAP: char = '\u{20e3}';
+const ZERO_WIDTH_JOINER: char = '\u{200d}';
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DisplayUnit {
@@ -144,11 +147,30 @@ pub fn display_unit_at(text: &str, index: usize) -> DisplayUnit {
     }
 }
 
+pub fn starts_display_unit(previous: char, next: char) -> bool {
+    previous != ZERO_WIDTH_JOINER
+        && !matches!(
+            next,
+            VARIATION_SELECTOR_15
+                | VARIATION_SELECTOR_16
+                | COMBINING_ENCLOSING_KEYCAP
+                | ZERO_WIDTH_JOINER
+                | '\u{1f1e6}'..='\u{1f1ff}'
+                | '\u{1f3fb}'..='\u{1f3ff}'
+                | '\u{e0020}'..='\u{e007f}'
+        )
+}
+
 pub fn escape_ambiguous_width(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
     let mut escaped = String::new();
     let mut copied = 0;
     let mut index = 0;
     while index < text.len() {
+        if (b' '..=b'~').contains(&bytes[index]) && bytes.get(index + 1).is_none_or(u8::is_ascii) {
+            index += 1;
+            continue;
+        }
         let unit = display_unit_at(text, index);
         let end = index + unit.byte_len.max(1);
         let rgi = unit.byte_len > 1 && match_rgi_sequence(&text[index..]) == unit.byte_len;
@@ -501,6 +523,10 @@ mod tests {
             ("\u{17a4}", "\\u{17a4}"),
             ("\u{1f1e6}", "\\u{1f1e6}"),
             ("1\u{20e3}", "1\\u{20e3}"),
+            ("say 1\u{fe0f}\u{20e3} ok", "say 1\u{fe0f}\u{20e3} ok"),
+            ("cafe\u{301} au lait", "cafe\\u{0301} au lait"),
+            ("tag #\u{fe0f}", "tag #\\u{fe0f}"),
+            ("x\u{1f44d}\u{1f3fd}y", "x\u{1f44d}\u{1f3fd}y"),
         ] {
             assert_eq!(escape_ambiguous_width(text), escaped, "{text:?}");
         }
@@ -508,6 +534,123 @@ mod tests {
             escape_ambiguous_width("ok \u{1f600}"),
             Cow::Borrowed(_)
         ));
+    }
+
+    fn escape_every_unit(text: &str) -> String {
+        let mut escaped = String::new();
+        let mut index = 0;
+        while index < text.len() {
+            let unit = display_unit_at(text, index);
+            let end = index + unit.byte_len.max(1);
+            let rgi = unit.byte_len > 1 && match_rgi_sequence(&text[index..]) == unit.byte_len;
+            for codepoint in text[index..end].chars() {
+                if !rgi && has_ambiguous_width(codepoint) {
+                    let _ = write!(escaped, "\\u{{{:04x}}}", u32::from(codepoint));
+                } else {
+                    escaped.push(codepoint);
+                }
+            }
+            index = end;
+        }
+        escaped
+    }
+
+    #[test]
+    fn no_rgi_sequence_continues_into_a_character_said_to_start_a_unit() {
+        for sequence in RGI_EMOJI_SEQUENCE_LINES.lines() {
+            let mut previous = None;
+            for next in sequence.chars() {
+                if let Some(previous) = previous {
+                    assert!(
+                        !starts_display_unit(previous, next),
+                        "{sequence:?} {previous:?} {next:?}"
+                    );
+                }
+                previous = Some(next);
+            }
+        }
+    }
+
+    #[test]
+    fn a_character_said_to_start_a_unit_starts_one_wherever_it_follows() {
+        const PIECES: [&str; 18] = [
+            "a",
+            "#",
+            "1",
+            "\u{4e2d}",
+            "\u{fe0f}",
+            "\u{fe0e}",
+            "\u{20e3}",
+            "\u{301}",
+            "\u{200d}",
+            "\u{1f44d}",
+            "\u{1f3fd}",
+            "\u{2764}",
+            "\u{1f1e6}",
+            "\u{1f1fa}",
+            "\u{1f469}",
+            "\u{1f4bb}",
+            "\u{1f3f4}",
+            "\u{e0067}",
+        ];
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..10 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                text.push_str(PIECES[usize::try_from(state % 18).unwrap()]);
+            }
+            let mut boundaries = vec![0];
+            let mut index = 0;
+            while index < text.len() {
+                index += display_unit_at(&text, index).byte_len.max(1);
+                boundaries.push(index);
+            }
+            let mut previous = None;
+            for (offset, next) in text.char_indices() {
+                if previous.is_some_and(|previous| starts_display_unit(previous, next)) {
+                    assert!(boundaries.contains(&offset), "{text:?} {offset}");
+                }
+                previous = Some(next);
+            }
+        }
+    }
+
+    #[test]
+    fn skipping_printable_ascii_escapes_exactly_what_every_display_unit_escapes() {
+        const PIECES: [&str; 14] = [
+            "a",
+            "#",
+            "1",
+            " ",
+            "~",
+            "\u{fe0f}",
+            "\u{20e3}",
+            "\u{301}",
+            "\u{200d}",
+            "\u{1f44d}",
+            "\u{1f3fd}",
+            "\u{2764}",
+            "\u{4e2d}",
+            "\u{1f1e6}",
+        ];
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..4000 {
+            let mut text = String::new();
+            for _ in 0..12 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                text.push_str(PIECES[usize::try_from(state % 14).unwrap()]);
+            }
+            assert_eq!(
+                escape_ambiguous_width(&text),
+                escape_every_unit(&text),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

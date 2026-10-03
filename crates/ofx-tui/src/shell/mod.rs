@@ -19,7 +19,6 @@ mod test_shell;
 
 use std::collections::VecDeque;
 use std::mem;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -94,7 +93,6 @@ pub struct ShellOptions {
     pub permission_mode: PermissionMode,
     pub full_access_warning: bool,
     pub workspace_label: String,
-    pub workspace_root: PathBuf,
     pub startup_scrollback: bool,
     pub commands: Vec<SlashCommandSpec>,
     pub command_categories: Vec<String>,
@@ -554,20 +552,18 @@ impl<'a> Shell<'a> {
             banner.len() + 1
         };
         let tail_gap = self.transcript.tail_wants_footer_gap();
-        let composer =
-            self.frame
-                .composer
-                .take()
-                .unwrap_or_else(|| match (&self.approval, &self.question) {
-                    (Some(prompt), _) => prompt.view(&self.theme, self.layout, banner_rows),
-                    (None, Some(prompt)) => prompt.composer_view(&self.theme, self.layout.cols),
-                    (None, None) => composer_view(
-                        &self.composer,
-                        self.layout.cols,
-                        input_row_limit(usize::from(self.layout.content_bottom)),
-                        &self.theme,
-                    ),
-                });
+        let composer = self.frame.composer.take().unwrap_or_else(|| {
+            match (&mut self.approval, &self.question) {
+                (Some(prompt), _) => prompt.view(&self.theme, self.layout, banner_rows),
+                (None, Some(prompt)) => prompt.composer_view(&self.theme, self.layout.cols),
+                (None, None) => composer_view(
+                    &self.composer,
+                    self.layout.cols,
+                    input_row_limit(usize::from(self.layout.content_bottom)),
+                    &self.theme,
+                ),
+            }
+        });
         let picker = self.file_picker_band(composer.rows.len().saturating_sub(1), banner_rows);
         let (menu, hint) = self.footer_menu(
             composer.rows.len(),
@@ -987,7 +983,6 @@ mod tests {
             permission_mode: PermissionMode::Auto,
             full_access_warning: false,
             workspace_label: "proj\x07".to_owned(),
-            workspace_root: PathBuf::from("/proj"),
             startup_scrollback: true,
             commands: Vec::new(),
             command_categories: Vec::new(),

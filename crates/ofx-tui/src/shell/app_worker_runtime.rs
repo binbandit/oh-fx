@@ -12,6 +12,7 @@ use ofx_contract::{
 
 use super::leading_whitespace::LeadingWhitespace;
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
+use crate::footer::file_approval::FileApproval;
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
 use crate::output::recovery_status::RecoveryStatus;
@@ -23,21 +24,43 @@ const ASK_USER_QUESTION: &str = "ask_user_question";
 
 #[derive(Clone)]
 pub struct UiEventSender {
-    events: Sender<UiEvent>,
+    events: Sender<Delivery>,
     wake: Arc<UnixStream>,
     woken: Arc<AtomicBool>,
 }
 
 impl UiEventSender {
     pub fn send(&self, event: UiEvent) {
-        if self.events.send(event).is_ok() && !self.woken.swap(true, Ordering::AcqRel) {
+        let delivery = Delivery::prepare(event);
+        if self.events.send(delivery).is_ok() && !self.woken.swap(true, Ordering::AcqRel) {
             let _ = (&*self.wake).write(&[1]);
         }
     }
 }
 
+struct Delivery {
+    event: UiEvent,
+    file: Option<Box<FileApproval>>,
+}
+
+impl Delivery {
+    fn prepare(mut event: UiEvent) -> Self {
+        let file = match &mut event {
+            UiEvent::ApprovalRequested { request, .. } => {
+                let change = request.change.take();
+                request
+                    .file
+                    .as_ref()
+                    .map(|file| Box::new(FileApproval::new(request, file, change.as_ref())))
+            }
+            _ => None,
+        };
+        Self { event, file }
+    }
+}
+
 pub struct UiEventReceiver {
-    events: Receiver<UiEvent>,
+    events: Receiver<Delivery>,
     wake: UnixStream,
     woken: Arc<AtomicBool>,
 }
@@ -79,7 +102,7 @@ impl Shell<'_> {
         self.events.drain_wake();
         loop {
             match self.events.events.try_recv() {
-                Ok(event) => self.handle_ui_event(event),
+                Ok(delivery) => self.handle_ui_event(delivery),
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
                     self.should_exit = true;
@@ -89,9 +112,9 @@ impl Shell<'_> {
         }
     }
 
-    fn handle_ui_event(&mut self, event: UiEvent) {
+    fn handle_ui_event(&mut self, delivery: Delivery) {
         self.mark_dirty();
-        match event {
+        match delivery.event {
             UiEvent::TurnStarted { turn_id } => self.turn_started(turn_id),
             UiEvent::AssistantText { turn_id, text } => {
                 if self.is_visible_turn(turn_id) {
@@ -110,7 +133,7 @@ impl Shell<'_> {
             }
             UiEvent::ApprovalRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
-                self.approval_requested(turn_id, *request);
+                self.approval_requested(turn_id, *request, delivery.file);
             }
             UiEvent::QuestionRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
@@ -1138,8 +1161,14 @@ mod tests {
 #[cfg(test)]
 mod wake_tests {
     use std::io::Read;
+    use std::path::PathBuf;
+    use std::sync::Arc;
 
-    use ofx_contract::UiEvent;
+    use ofx_contract::{
+        ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription, Concurrency, FileMutation,
+        FileMutationState, PathAccess, ProposedFileChange, RequestId, ToolActivity, ToolCallId,
+        ToolEffect, TurnId, UiEvent,
+    };
 
     use super::ui_channel;
 
@@ -1159,6 +1188,52 @@ mod wake_tests {
         assert_eq!(receiver.events.try_iter().count(), 100);
         sender.send(UiEvent::HelpRequested);
         assert_eq!(pending_wake_bytes(&receiver), 1);
+    }
+
+    #[test]
+    fn a_file_approval_is_reviewed_by_the_sender_and_reaches_the_ui_without_its_copy() {
+        let (sender, receiver) = ui_channel().unwrap();
+        sender.send(UiEvent::ApprovalRequested {
+            turn_id: TurnId::new(1),
+            request: Box::new(ApprovalRequest {
+                id: RequestId::new(1),
+                tool_name: "edit_file".to_owned(),
+                call_id: ToolCallId::new("call-1"),
+                description: CallDescription {
+                    title: "Editing notes.md".to_owned(),
+                    label: None,
+                    activity: ToolActivity::Edit,
+                    effect: ToolEffect::Irreversible,
+                    concurrency: Concurrency::Serial,
+                },
+                tool_arguments_preview: String::new(),
+                tool_arguments_truncated: false,
+                scope: ApprovalScope {
+                    target: None,
+                    access: PathAccess::WorkspaceOnly,
+                    always: None,
+                },
+                command: None,
+                file: Some(FileMutation {
+                    target: PathBuf::from("/workspace/notes.md"),
+                    state: FileMutationState::Changes,
+                }),
+                change: Some(ProposedFileChange {
+                    display_path: "notes.md".to_owned(),
+                    before: Some(Arc::from(&b"old\n"[..])),
+                    after: Arc::from(&b"new\n"[..]),
+                }),
+                origin: ApprovalOrigin::ActiveSession,
+            }),
+        });
+        sender.send(UiEvent::HelpRequested);
+        let deliveries: Vec<_> = receiver.events.try_iter().collect();
+        assert!(deliveries[0].file.is_some());
+        assert!(matches!(
+            &deliveries[0].event,
+            UiEvent::ApprovalRequested { request, .. } if request.change.is_none()
+        ));
+        assert!(deliveries[1].file.is_none());
     }
 }
 

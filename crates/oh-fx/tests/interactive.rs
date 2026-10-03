@@ -345,8 +345,10 @@ fn ask_mode_file_changes_run_once_approved_and_project_instructions_reach_the_mo
     fs::write(home.workspace.join("AGENTS.md"), "WORKSPACE RULE\n").expect("write AGENTS.md");
     let mut session = home.shell_with(&[], 30, 100, "ask · model-a");
     session.send(b"write the notes\r");
-    let screen = wait(&session, "Permission needed · Choose one");
-    assert!(screen.contains("notes.md"), "{screen}");
+    let screen = wait(&session, "Permission needed · Review change");
+    for line in ["      1 + approved", "  notes.md  ·  Apply this change?"] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
     thread::sleep(APPROVAL_ARMING);
     session.send(b"1");
     wait(&session, "Wrote it.");
@@ -355,7 +357,10 @@ fn ask_mode_file_changes_run_once_approved_and_project_instructions_reach_the_mo
         "approved\n"
     );
     session.send(b"rewrite them\r");
-    wait(&session, "Permission needed · Choose one");
+    let screen = wait(&session, "Write · +1  -1");
+    for line in ["      1 - approved", "      1 + denied"] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
     session.send(b"3");
     wait(&session, "Left it alone.");
     assert_eq!(

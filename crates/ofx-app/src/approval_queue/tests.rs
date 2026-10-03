@@ -30,6 +30,7 @@ fn request(id: u64, origin: ApprovalOrigin) -> ApprovalRequest {
         },
         command: None,
         file: None,
+        change: None,
         origin,
     }
 }

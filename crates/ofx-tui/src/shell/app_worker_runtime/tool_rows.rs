@@ -348,6 +348,7 @@ fn approval(
             command: None,
             file,
             origin: ApprovalOrigin::ActiveSession,
+            change: None,
         }),
     }
 }
