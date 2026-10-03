@@ -6,8 +6,8 @@ use std::mem;
 use ofx_config::{MAX_MODEL_BYTES, MaxTokensParameter, ToolChoiceMode, is_valid_model_id};
 use ofx_contract::{
     ChatMessage, Completion, DuplicateKeys, FinishReason, Json, ModelRequest, Object,
-    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolSpec, Usage, parse_strict_json,
-    parse_strict_json_value,
+    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolSpec, Usage,
+    parse_strict_json, parse_strict_json_value,
 };
 use serde::Serialize;
 
@@ -34,6 +34,8 @@ pub(crate) enum ProtocolError {
     InvalidProviderPrompt,
     #[error("InvalidModel")]
     InvalidModel,
+    #[error("UnsupportedToolProvenance")]
+    UnsupportedToolProvenance,
     #[error("InvalidOutputLimit")]
     InvalidOutputLimit,
     #[error("InvalidToolSelection")]
@@ -227,6 +229,10 @@ fn validate_history(messages: &[ChatMessage]) -> ProtocolResult<()> {
             return Err(ProtocolError::TooManyTools);
         }
         for call in tool_calls {
+            if call.provenance != ToolExecutionProvenance::FxLocal || call.provider_result.is_some()
+            {
+                return Err(ProtocolError::UnsupportedToolProvenance);
+            }
             if call.id.as_str().is_empty() {
                 return Err(ProtocolError::InvalidToolCallId);
             }

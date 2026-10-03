@@ -8,7 +8,7 @@ note = "Custom chat-completions transport, admitted before it connects, is imple
 upstream = "src/gateway/chat_completions_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/chat_completions_protocol.rs"]
-note = "Function selection, request validation and streaming reduction exist; upstream image content parts and provider replay projection are incomplete, alongside documented gateway-dialect differences."
+note = "Function selection, request validation, provider-executed history refusal and streaming reduction exist; upstream image content parts and provider replay projection are incomplete, alongside documented gateway-dialect differences."
 
 [[file]]
 upstream = "src/gateway/client.zig"
@@ -87,9 +87,9 @@ note = "SSE framing, data concatenation, terminal dispatch and byte limits are c
 
 [[file]]
 upstream = "src/gateway/tool_call_ids.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-gateway/src/tool_call_ids.rs"]
-note = "Portable wire-ID projection, opaque replay protection and collision handling exist; upstream provider-executed ToolCall.provenance protection has no Rust call-provenance field."
+note = "Portable wire-ID projection, collision handling, and protection of opaque-replay and provider-executed call ids match upstream and its tests."
 
 [[file]]
 upstream = "src/gateway/vercel_failure_diagnostics.zig"

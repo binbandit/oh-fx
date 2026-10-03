@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use ofx_contract::ChatMessage;
+use ofx_contract::{ChatMessage, ToolCall, ToolExecutionProvenance};
 use sha2::{Digest, Sha256};
 
 const MAX_ID_BYTES: usize = 64;
@@ -45,8 +45,12 @@ impl Projection {
         let protected: HashSet<&str> = messages
             .iter()
             .enumerate()
-            .filter(|(index, _)| is_replayed(*index))
-            .flat_map(|(_, message)| call_ids(std::slice::from_ref(message)))
+            .flat_map(|(index, message)| {
+                calls(message)
+                    .iter()
+                    .filter(move |call| is_replayed(index) || provider_executed(call))
+            })
+            .map(|call| call.id.as_str())
             .collect();
         let opaque_history = replayed.contains(&true);
         for (index, message) in messages.iter().enumerate() {
@@ -55,7 +59,8 @@ impl Projection {
             };
             for call in tool_calls {
                 let id = call.id.as_str();
-                if portable(projection.resolve(id)) || is_replayed(index) {
+                if portable(projection.resolve(id)) || is_replayed(index) || provider_executed(call)
+                {
                     continue;
                 }
                 if protected.contains(id) {
@@ -82,14 +87,19 @@ impl Projection {
     }
 }
 
+fn calls(message: &ChatMessage) -> &[ToolCall] {
+    match message {
+        ChatMessage::Assistant { tool_calls, .. } => tool_calls,
+        _ => &[],
+    }
+}
+
+fn provider_executed(call: &ToolCall) -> bool {
+    call.provenance == ToolExecutionProvenance::ProviderExecuted
+}
+
 fn call_ids(messages: &[ChatMessage]) -> impl Iterator<Item = &str> {
-    messages
-        .iter()
-        .flat_map(|message| match message {
-            ChatMessage::Assistant { tool_calls, .. } => tool_calls.as_slice(),
-            _ => &[],
-        })
-        .map(|call| call.id.as_str())
+    messages.iter().flat_map(calls).map(|call| call.id.as_str())
 }
 
 fn all_ids(messages: &[ChatMessage]) -> impl Iterator<Item = &str> {
@@ -132,7 +142,7 @@ fn portable(id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ofx_contract::{ToolCall, ToolCallId, ToolResultStatus};
+    use ofx_contract::{ToolCallId, ToolResultStatus};
 
     use super::*;
 
@@ -231,6 +241,22 @@ mod tests {
         ];
         assert_eq!(
             Projection::protecting(&reused, &[false, true]).unwrap_err(),
+            ProjectionError::ProtectedToolCallId
+        );
+    }
+
+    #[test]
+    fn tool_call_id_projection_never_rewrites_provider_executed_identities() {
+        let native = ToolCall {
+            provenance: ToolExecutionProvenance::ProviderExecuted,
+            ..call("native:0")
+        };
+        let history = [assistant(vec![native.clone()]), result("native:0", "")];
+        let projection = Projection::new(&history).unwrap();
+        assert_eq!(projection.resolve("native:0"), "native:0");
+        assert_eq!(
+            Projection::new(&[assistant(vec![call("native:0")]), assistant(vec![native])])
+                .unwrap_err(),
             ProjectionError::ProtectedToolCallId
         );
     }
