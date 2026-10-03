@@ -57,6 +57,10 @@ Upstream lets a prompt typed while a turn runs steer that turn. oh-fx's interact
 - the test "interrupted execution memory keeps steering typed right after a tool result";
 - the end-to-end check in `gateway-stream-lifecycle.test.ts`, where `STEERING_FIRST` appears once in the saved turn.
 
+### Tool-result store
+
+The private result reader supports bounded raw pages, and storage no longer applies the 8 MiB replay cap. Saved-result replay consumes the held reader. The `defer:sessions` compaction rows remain deferred until `read_tool_result`, saved M/T/L records and earlier-summary folding land.
+
 ### Sessions v2
 
 #1072, #1082, #1091, and #1111 build an append-only v2 store beside the v1 store.

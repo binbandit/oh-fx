@@ -294,3 +294,7 @@ Crates land in the order they are wired into the binary.
 6. Permissions with the write tools and approvals, then the shell tool with `ofx-exec`.
 7. MCP, skills, subagents, web tools, the Vercel AI Gateway protocol, menus, and the ported renderer.
 8. ACP and subscription logins.
+
+## Tool-result reader
+
+Saved tool outputs already live in private `tool-results` sidecars. Storage keeps complete outputs above 8 MiB; replay retains upstream's 8 MiB limit and exact byte-count requirement. A private reader holds the opened regular file and reads raw bounded pages without reopening its path or creating a missing route. Replay consumes this reader. The `read_tool_result` tool, artifact retention, compaction record search and web-fetch artifact integration remain pending.
