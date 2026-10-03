@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use ofx_cli::{LaunchModifiers, RequestedResume};
-use ofx_contract::{Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
+use ofx_contract::{BoxFuture, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent};
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ServerStatus, ShutdownMode, StartupPhase, render_workspace_diagnostic};
 use ofx_text::encode_terminal_safe;
@@ -299,9 +299,9 @@ fn agent_work(
             pick_at_start,
         );
         runtime.block_on(async {
-            let discovery = mcp
-                .clone()
-                .map(|mcp| tokio::spawn(discover_mcp(mcp, notices)));
+            let discovery = mcp.clone().map(|mcp| {
+                tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))
+            });
             controller.run(commands).await;
             if let Some(discovery) = discovery {
                 discovery.abort();
