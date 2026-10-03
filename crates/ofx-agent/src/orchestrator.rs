@@ -12,12 +12,12 @@ use ofx_contract::{
     FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
     ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
-    ReviewRequest, ReviewVerdict, Reviewed, RouteRecoveryKind, RouteRecoveryStatus, StreamEvent,
-    Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice,
-    ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId,
-    TurnOutcome, TurnStop, UiEvent, Usage, format_unknown_action, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
-    tool_permission_denied_json, tool_review_held_json,
+    ReviewRequest, ReviewVerdict, Reviewed, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding,
+    StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
+    ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec,
+    TurnId, TurnOutcome, TurnStop, UiEvent, Usage, format_unknown_action,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
+    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -301,6 +301,16 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> TurnReport {
+        self.run_turn_with_skills(prompt, &[], events, cancel).await
+    }
+
+    pub async fn run_turn_with_skills(
+        &mut self,
+        prompt: &str,
+        skills: &[SkillBinding],
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> TurnReport {
         self.turns += 1;
         let id = TurnId::new(self.turns);
         events(UiEvent::TurnStarted { turn_id: id });
@@ -320,7 +330,7 @@ impl Agent {
         };
         self.turn_starts.push(turn.start);
         self.history.push(ChatMessage::user(prompt));
-        let result = self.drive(&mut turn, prompt, events, cancel).await;
+        let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
         let (mut outcome, final_text, mut failure, ending) = match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
             Err(Stop::Interrupted { partial }) => {
@@ -390,13 +400,16 @@ impl Agent {
         &mut self,
         turn: &mut Turn,
         prompt: &str,
+        bindings: &[SkillBinding],
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<String, Stop> {
         if self.config.reasoning_effort.is_some() || self.config.fast_mode {
             self.resolve_capabilities(cancel).await?;
         }
-        let skills = self.prepare_skills(turn.id, prompt, events, cancel).await?;
+        let skills = self
+            .prepare_skills(turn.id, prompt, bindings, events, cancel)
+            .await?;
         let mut step = 0;
         loop {
             if self.config.step_limit != 0 && step >= self.config.step_limit {
@@ -504,6 +517,7 @@ impl Agent {
         &mut self,
         turn_id: TurnId,
         prompt: &str,
+        bindings: &[SkillBinding],
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<SkillContext, Stop> {
@@ -522,7 +536,10 @@ impl Agent {
                 events(UiEvent::ContextNotice { turn_id, text });
             }
         };
-        let mut prepared = match skills.prepare(prompt, context_window, cancel).await {
+        let mut prepared = match skills
+            .prepare(prompt, bindings, context_window, cancel)
+            .await
+        {
             Ok(prepared) => prepared,
             Err(SkillContextFailure::Cancelled) => return Err(Stop::interrupted()),
             Err(SkillContextFailure::Failed {

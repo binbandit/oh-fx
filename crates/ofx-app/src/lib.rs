@@ -10,6 +10,7 @@ mod context;
 mod native;
 mod output_contracts;
 mod prompt_history_runtime;
+mod skill_commands;
 mod skills;
 mod tool_set;
 mod user_settings;

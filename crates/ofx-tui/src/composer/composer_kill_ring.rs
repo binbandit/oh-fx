@@ -176,7 +176,7 @@ mod tests {
     }
 
     fn prime_history_draft(composer: &mut Composer, draft: &str) {
-        composer.prompt_history.record(1, "history entry", &[]);
+        composer.prompt_history.record_text(1, "history entry");
         replace_text(composer, draft);
         assert_eq!(
             composer.navigate_history(-1, usize::MAX),

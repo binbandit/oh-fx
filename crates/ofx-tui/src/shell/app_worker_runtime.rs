@@ -137,6 +137,7 @@ impl Shell<'_> {
             UiEvent::HelpRequested => self.help_requested(),
             UiEvent::StatsRequested => self.stats_requested(),
             UiEvent::CompactionActivity { activity } => self.compaction_activity(activity),
+            UiEvent::SkillsMenu { items, focus } => self.open_skills_menu(items, &focus),
             UiEvent::ConversationCleared { first_kept_prompt } => {
                 self.conversation_cleared(first_kept_prompt);
             }
@@ -485,7 +486,8 @@ mod tests {
                     text: "/compact".to_owned()
                 },
                 UiCommand::Submit {
-                    prompt: "after".to_owned()
+                    prompt: "after".to_owned(),
+                    skills: Vec::new(),
                 },
             ]
         );
@@ -598,7 +600,8 @@ mod tests {
                         text: "/compact".to_owned()
                     },
                     UiCommand::Submit {
-                        prompt: "after".to_owned()
+                        prompt: "after".to_owned(),
+                        skills: Vec::new(),
                     },
                     UiCommand::CancelCompaction,
                 ],
@@ -820,13 +823,15 @@ mod tests {
             test.sent(),
             [
                 UiCommand::Submit {
-                    prompt: "one".to_owned()
+                    prompt: "one".to_owned(),
+                    skills: Vec::new(),
                 },
                 UiCommand::RunCommand {
                     text: "/clear".to_owned()
                 },
                 UiCommand::Submit {
-                    prompt: "two".to_owned()
+                    prompt: "two".to_owned(),
+                    skills: Vec::new(),
                 },
             ]
         );

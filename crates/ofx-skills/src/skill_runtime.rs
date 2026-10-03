@@ -12,7 +12,7 @@ pub(crate) use candidate::{
     resource_is_skill_file,
 };
 pub use catalog::{SkillCatalog, build_skill_prompt};
-pub(crate) use diagnostics::diagnostic_summary;
+pub use diagnostics::diagnostic_summary;
 pub use discovery::{SkillDiscovery, SkillDiscoveryContext};
 pub(crate) use explicit::{
     ExplicitSelection, collect_explicit_skill_selections, explicit_name_candidates,

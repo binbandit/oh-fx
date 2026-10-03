@@ -1,4 +1,4 @@
-use ofx_contract::{Notice, NoticeTone};
+use ofx_contract::{Notice, NoticeTone, SkillBinding};
 
 use super::*;
 
@@ -7,10 +7,12 @@ const CATALOG: &str =
 const EXPLICIT: &str = "Explicitly invoked skill content for this query:\n";
 const PROJECT: &str = "<project-rules>\n</project-rules>";
 
+type ProviderCall = (String, Vec<SkillBinding>, Option<u32>);
+
 struct FakeSkills {
     uses_window: bool,
     prepared: Result<SkillContext, SkillContextFailure>,
-    calls: Mutex<Vec<(String, Option<u32>)>>,
+    calls: Mutex<Vec<ProviderCall>>,
 }
 
 impl FakeSkills {
@@ -22,7 +24,7 @@ impl FakeSkills {
         })
     }
 
-    fn calls(&self) -> Vec<(String, Option<u32>)> {
+    fn calls(&self) -> Vec<ProviderCall> {
         self.calls.lock().unwrap().clone()
     }
 }
@@ -35,13 +37,14 @@ impl SkillContextProvider for FakeSkills {
     fn prepare<'a>(
         &'a self,
         prompt: &'a str,
+        bindings: &'a [SkillBinding],
         context_window: Option<u32>,
         _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<SkillContext, SkillContextFailure>> {
         self.calls
             .lock()
             .unwrap()
-            .push((prompt.to_owned(), context_window));
+            .push((prompt.to_owned(), bindings.to_vec(), context_window));
         let prepared = self.prepared.clone();
         Box::pin(async move { prepared })
     }
@@ -136,7 +139,10 @@ async fn the_catalog_follows_the_system_prompt_and_explicit_skills_precede_the_r
     let mut agent = skilled_agent(&provider, &skills, &resolver);
     let (report, events) = run(&mut agent, "use $review").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    assert_eq!(skills.calls(), [("use $review".to_owned(), Some(400_000))]);
+    assert_eq!(
+        skills.calls(),
+        [("use $review".to_owned(), Vec::new(), Some(400_000))]
+    );
     assert_eq!(resolver.lookups.load(Ordering::SeqCst), 1);
     let expected = [
         SYSTEM_PROMPT,
@@ -171,7 +177,10 @@ async fn the_catalog_follows_the_system_prompt_and_explicit_skills_precede_the_r
         .unwrap();
     assert!(started < summary);
     run(&mut agent, "again").await;
-    assert_eq!(skills.calls()[1], ("again".to_owned(), Some(400_000)));
+    assert_eq!(
+        skills.calls()[1],
+        ("again".to_owned(), Vec::new(), Some(400_000))
+    );
     assert_eq!(resolver.lookups.load(Ordering::SeqCst), 1);
 }
 
@@ -183,7 +192,7 @@ async fn a_catalog_that_needs_no_window_leaves_the_capabilities_unresolved() {
     let mut agent = skilled_agent(&provider, &skills, &resolver);
     let (report, events) = run(&mut agent, "hello").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    assert_eq!(skills.calls(), [("hello".to_owned(), None)]);
+    assert_eq!(skills.calls(), [("hello".to_owned(), Vec::new(), None)]);
     assert_eq!(resolver.lookups.load(Ordering::SeqCst), 0);
     assert_eq!(
         provider.requests()[0].instructions,
@@ -377,5 +386,30 @@ async fn a_checkpoint_lists_the_skills_the_compacted_turns_loaded() {
             "Skills and MCP tools used:\n- skill skill:0000000000000001:0/review: 2 calls, first T1, last T3\n- skill skill:0000000000000001:0/review references/checklist.md: 1 call, T2\n"
         ),
         "{checkpoint}"
+    );
+}
+
+#[tokio::test]
+async fn skills_bound_to_a_prompt_reach_the_skill_provider() {
+    let provider = FakeProvider::new(vec![text_reply("done")]);
+    let skills = FakeSkills::new(false, Ok(SkillContext::default()));
+    let resolver = resolver();
+    let mut agent = skilled_agent(&provider, &skills, &resolver);
+    let bound = vec![SkillBinding {
+        name: "review".to_owned(),
+        path: PathBuf::from("/skills/review"),
+    }];
+    let report = agent
+        .run_turn_with_skills(
+            "$review the change",
+            &bound,
+            &mut |_| {},
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        skills.calls(),
+        [("$review the change".to_owned(), bound, None)]
     );
 }

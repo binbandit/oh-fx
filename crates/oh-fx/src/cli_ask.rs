@@ -924,6 +924,7 @@ impl Presenter {
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested
             | UiEvent::CompactionActivity { .. }
+            | UiEvent::SkillsMenu { .. }
             | UiEvent::ConversationCleared { .. }
             | UiEvent::ExitRequested => Ok(()),
         };

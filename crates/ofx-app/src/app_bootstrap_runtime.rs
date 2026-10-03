@@ -531,8 +531,8 @@ impl AgentSetup {
         self.refreshes.clone()
     }
 
-    pub(crate) fn refresh_skills(&self) {
-        self.skills.refresh();
+    pub(crate) fn skills(&self) -> &HostSkills {
+        &self.skills
     }
 
     pub(crate) fn config(&self, model: &str) -> AgentConfig {

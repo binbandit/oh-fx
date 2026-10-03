@@ -1,5 +1,6 @@
 use super::Composer;
 use super::pasted_blocks::{PastedBlock, expanded_len};
+use super::registered_entities::{Entities, SkillToken};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HistoryNavigation {
@@ -12,6 +13,17 @@ pub(crate) enum HistoryNavigation {
 struct Snapshot {
     text: String,
     pasted_blocks: Vec<PastedBlock>,
+    skill_tokens: Vec<SkillToken>,
+}
+
+impl Snapshot {
+    fn of(text: &str, entities: &Entities) -> Self {
+        Self {
+            text: text.to_owned(),
+            pasted_blocks: entities.pasted_blocks.clone(),
+            skill_tokens: entities.skill_tokens.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,23 +74,23 @@ impl PromptHistory {
             .into_iter()
             .map(|text| Snapshot {
                 text,
-                pasted_blocks: Vec::new(),
+                ..Snapshot::default()
             })
             .collect();
         self.reset_navigation();
     }
 
-    pub(crate) fn record(&mut self, max_entries: usize, text: &str, pasted_blocks: &[PastedBlock]) {
-        let entry = Snapshot {
-            text: text.to_owned(),
-            pasted_blocks: pasted_blocks.to_vec(),
-        };
+    fn record(&mut self, max_entries: usize, entry: Snapshot) {
         if self.entries.last() == Some(&entry) {
             return;
         }
         self.entries.push(entry);
         let excess = self.entries.len().saturating_sub(max_entries);
         self.entries.drain(..excess);
+    }
+
+    pub(crate) fn record_text(&mut self, max_entries: usize, text: &str) {
+        self.record(max_entries, Snapshot::of(text, &Entities::default()));
     }
 
     pub(crate) fn reset_navigation(&mut self) {
@@ -111,10 +123,7 @@ impl Composer {
         };
 
         if entering_history {
-            self.prompt_history.draft = Some(Snapshot {
-                text: self.edit.input.clone(),
-                pasted_blocks: self.entities.pasted_blocks.clone(),
-            });
+            self.prompt_history.draft = Some(Snapshot::of(&self.edit.input, &self.entities));
         }
         self.replace_active_composer(prepared);
         self.entities.next_paste_id = next_paste_id;
@@ -135,11 +144,11 @@ impl Composer {
 
     pub(crate) fn record_history(&mut self, max_entries: usize) {
         self.prompt_history
-            .record(max_entries, &self.edit.input, &self.entities.pasted_blocks);
+            .record(max_entries, Snapshot::of(&self.edit.input, &self.entities));
     }
 
     pub(crate) fn record_text_history(&mut self, max_entries: usize, text: &str) {
-        self.prompt_history.record(max_entries, text, &[]);
+        self.prompt_history.record_text(max_entries, text);
     }
 
     fn replace_active_composer(&mut self, snapshot: Snapshot) {
@@ -148,6 +157,8 @@ impl Composer {
         let mut text = snapshot.text;
         self.edit.swap_input(&mut text);
         self.entities.pasted_blocks = snapshot.pasted_blocks;
+        self.entities.skill_tokens = snapshot.skill_tokens;
+        self.entities.discard_pending_separator();
         self.limit_rejection.clear();
     }
 }
@@ -159,6 +170,14 @@ mod tests {
     use super::super::test_fixture::replace_text;
     use super::*;
     use crate::input::TextOwner;
+
+    fn entry(text: &str, pasted_blocks: &[PastedBlock]) -> Snapshot {
+        Snapshot {
+            text: text.to_owned(),
+            pasted_blocks: pasted_blocks.to_vec(),
+            skill_tokens: Vec::new(),
+        }
+    }
 
     fn paste_block(id: usize, backing: &str, start: usize) -> PastedBlock {
         PastedBlock {
@@ -174,8 +193,8 @@ mod tests {
     }
 
     fn install(composer: &mut Composer, entries: &[&str]) {
-        for entry in entries {
-            composer.prompt_history.record(usize::MAX, entry, &[]);
+        for text in entries {
+            composer.prompt_history.record(usize::MAX, entry(text, &[]));
         }
     }
 
@@ -207,10 +226,10 @@ mod tests {
     #[test]
     fn record_deduplicates_adjacent_entries_and_prunes_the_oldest() {
         let mut history = PromptHistory::default();
-        history.record(2, "one", &[]);
-        history.record(2, "one", &[]);
-        history.record(2, "two", &[]);
-        history.record(2, "three", &[]);
+        history.record(2, entry("one", &[]));
+        history.record(2, entry("one", &[]));
+        history.record(2, entry("two", &[]));
+        history.record(2, entry("three", &[]));
         assert_eq!(entry_texts(&history), ["two", "three"]);
     }
 
@@ -254,8 +273,12 @@ mod tests {
     #[test]
     fn prompt_history_recalls_previous_inputs_with_up_and_down() {
         let mut composer = Composer::new();
-        composer.prompt_history.record(100, "first prompt", &[]);
-        composer.prompt_history.record(100, "second prompt", &[]);
+        composer
+            .prompt_history
+            .record(100, entry("first prompt", &[]));
+        composer
+            .prompt_history
+            .record(100, entry("second prompt", &[]));
         replace_text(&mut composer, "draft");
 
         navigate(&mut composer, -1);
@@ -292,9 +315,18 @@ mod tests {
     fn prompt_history_semantic_dedupe_distinguishes_paste_provenance() {
         let placeholder = format_placeholder(4, 1);
         let mut history = PromptHistory::default();
-        history.record(100, &placeholder, &[paste_block(4, "first backing", 0)]);
-        history.record(100, &placeholder, &[paste_block(4, "first backing", 0)]);
-        history.record(100, &placeholder, &[paste_block(4, "second backing", 0)]);
+        history.record(
+            100,
+            entry(&placeholder, &[paste_block(4, "first backing", 0)]),
+        );
+        history.record(
+            100,
+            entry(&placeholder, &[paste_block(4, "first backing", 0)]),
+        );
+        history.record(
+            100,
+            entry(&placeholder, &[paste_block(4, "second backing", 0)]),
+        );
         let backings: Vec<&str> = history
             .entries
             .iter()
@@ -308,7 +340,7 @@ mod tests {
         let mut composer = Composer::new();
         composer
             .prompt_history
-            .record(100, "historical prompt", &[]);
+            .record(100, entry("historical prompt", &[]));
         replace_text(&mut composer, "unsent draft");
 
         navigate(&mut composer, -1);
@@ -327,7 +359,7 @@ mod tests {
     fn prompt_history_restores_the_complete_saved_semantic_draft() {
         let placeholder = format_placeholder(3, 1);
         let mut composer = Composer::new();
-        composer.prompt_history.record(100, "entry", &[]);
+        composer.prompt_history.record(100, entry("entry", &[]));
         replace_text(&mut composer, &format!("draft {placeholder}"));
         composer
             .entities
@@ -344,8 +376,8 @@ mod tests {
     #[test]
     fn prompt_history_limit_rejection_preserves_active_and_saved_drafts() {
         let mut composer = Composer::new();
-        composer.prompt_history.record(100, "oversized", &[]);
-        composer.prompt_history.record(100, "new", &[]);
+        composer.prompt_history.record(100, entry("oversized", &[]));
+        composer.prompt_history.record(100, entry("new", &[]));
         replace_text(&mut composer, "unsent draft");
 
         assert_eq!(
@@ -374,7 +406,7 @@ mod tests {
         let mut composer = Composer::new();
         composer
             .prompt_history
-            .record(100, &placeholder, &[paste_block(1, &backing, 0)]);
+            .record(100, entry(&placeholder, &[paste_block(1, &backing, 0)]));
         replace_text(&mut composer, "draft");
         assert_eq!(
             composer.navigate_history(-1, backing.len() - 1),
