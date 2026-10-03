@@ -90,6 +90,46 @@ fn steering_applied_to_a_hidden_turn_only_leaves_the_banner() {
 }
 
 #[test]
+fn steering_applied_after_a_local_cancel_retires_the_turn_promoted_for_it() {
+    let mut test = running(&waiting(&[]));
+    test.submit("steer B");
+    press(&mut test, b"\x03");
+    let screen = test.screen();
+    assert!(screen.contains("┃ steer B"), "{screen}");
+    assert!(test.shell.turn.is_some());
+    test.deliver(UiEvent::SteeringApplied {
+        turn_id: TurnId::new(1),
+        prompt: 1,
+        text: "steer B".to_owned(),
+    });
+    test.deliver(UiEvent::TurnFinished {
+        turn_id: TurnId::new(1),
+        outcome: TurnOutcome::Interrupted,
+    });
+    assert!(test.shell.turn.is_none());
+    assert!(test.shell.outstanding.is_empty());
+    test.submit("next prompt");
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(2),
+    });
+    test.deliver(UiEvent::AssistantText {
+        turn_id: TurnId::new(2),
+        text: "Next answer.\n".to_owned(),
+    });
+    test.deliver(UiEvent::TurnFinished {
+        turn_id: TurnId::new(2),
+        outcome: TurnOutcome::Completed,
+    });
+    let screen = test.screen();
+    assert!(
+        screen.contains("┃ steer B\n\n┃ next prompt\n\n  Next answer.\n"),
+        "{screen}"
+    );
+    assert!(test.shell.turn.is_none());
+    assert!(test.shell.outstanding.is_empty());
+}
+
+#[test]
 fn up_pulls_the_newest_waiting_steer_back_into_an_empty_composer() {
     let queue = waiting(&[(1, "first steer"), (2, "second steer")]);
     let mut test = running(&queue);
