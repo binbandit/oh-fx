@@ -5,7 +5,7 @@ use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailur
 use ofx_config::save_model_preference;
 use ofx_contract::{
     CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, QuestionRequest,
-    SkillBinding, TurnOutcome, UiCommand, UiEvent,
+    SkillBinding, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
@@ -486,14 +486,7 @@ impl Controller {
                         }
                         Some(UiCommand::CancelCompaction) => {}
                     },
-                    Some(request) = next_question(questions) => match running_turn() {
-                        Some(turn_id) => state.emit(UiEvent::QuestionRequested { turn_id, request }),
-                        None => {
-                            if let Some(questions) = state.setup.questions() {
-                                questions.resolve(request.id, None);
-                            }
-                        }
-                    },
+                    request = next_question(questions) => relay_question(state, running_turn(), request),
                 }
             }
         };
@@ -529,10 +522,21 @@ impl Controller {
     }
 }
 
-async fn next_question(requests: &mut Option<QuestionRequests>) -> Option<QuestionRequest> {
+async fn next_question(requests: &mut Option<QuestionRequests>) -> QuestionRequest {
     match requests {
         Some(requests) => requests.next().await,
         None => std::future::pending().await,
+    }
+}
+
+fn relay_question(state: &ControllerState, turn: Option<TurnId>, request: QuestionRequest) {
+    match turn {
+        Some(turn_id) => state.emit(UiEvent::QuestionRequested { turn_id, request }),
+        None => {
+            if let Some(questions) = state.setup.questions() {
+                questions.resolve(request.id, None);
+            }
+        }
     }
 }
 
