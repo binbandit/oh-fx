@@ -28,7 +28,7 @@ pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabili
 pub use permission_gate::{
     Admission, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest, FileChange,
     FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ReviewRequest,
-    ReviewVerdict, Reviewed, SessionGrant,
+    ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
 };
 pub use skill_menu::{
     SkillBinding, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
@@ -38,10 +38,9 @@ pub use stream_provider::{
     ProviderOptions, StreamEvent, StreamSink,
 };
 pub use subagent::{
-    ChildKind, ChildPhase, ChildSnapshot, STEERING_PENDING_RESULT, SteeringDelivery,
-    SubagentAction, SubagentOverride, SubagentPlan, SubagentProvider, SubagentRejectCode,
-    SubagentRequest, SubagentRequestError, SubagentRequestInput, SubagentResult, feedback_result,
-    valid_agent_name, valid_instructions,
+    ChildKind, ChildPhase, ChildSnapshot, SteeringDelivery, SubagentAction, SubagentOverride,
+    SubagentPlan, SubagentProvider, SubagentRejectCode, SubagentRequest, SubagentRequestError,
+    SubagentRequestInput, SubagentResult, valid_agent_name, valid_instructions,
 };
 pub use tool_args::{
     ToolArgValue, ToolArgs, ToolArgsError, parse_json_value, parse_tool_args_object,
@@ -51,9 +50,8 @@ pub use tool_dispatch::{
     ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
 };
 pub use tool_presentation::{
-    SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
-    format_unknown_action, plain_description, subagent_action, subagent_failure_label,
-    subagent_status_line,
+    SubagentActionState, format_plain_action, format_subagent_plain_action, format_unknown_action,
+    plain_description,
 };
 pub use tool_result_errors::{
     DetailValue, ExecutionFailure, ReviewHold, ToolPermissionDenialReason,

@@ -10,6 +10,7 @@ mod questions;
 #[cfg(test)]
 mod scripted_provider;
 mod skill_context;
+mod subagent;
 mod text_completion;
 mod turn_reviews;
 
@@ -22,3 +23,4 @@ pub use orchestrator::{
 pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 pub use questions::{QuestionRequests, Questions};
 pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
+pub use subagent::{ChildAgents, ChildDefaults, ChildSettings, SubagentHost};

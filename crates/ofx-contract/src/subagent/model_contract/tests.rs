@@ -257,25 +257,20 @@ fn results_encode_upstream_fields_in_order_with_json_escapes() {
 }
 
 #[test]
-fn feedback_results_describe_delivery_rather_than_completion() {
-    assert_eq!(
-        feedback_result(SteeringDelivery::Queued).encode(),
-        r#"{"ok":true,"result":"Feedback queued for the running child. Its result will arrive automatically.","error_code":null,"delivery":"queued"}"#
-    );
-    assert_eq!(
-        feedback_result(SteeringDelivery::Applied).encode(),
-        r#"{"ok":true,"result":"Feedback consumed at the child's safe boundary. This is not a task-completion result.","error_code":null,"delivery":"applied"}"#
-    );
-    assert_eq!(
-        feedback_result(SteeringDelivery::NotApplied).encode(),
-        r#"{"ok":false,"result":"Feedback was not applied before the child stopped.","error_code":"feedback_not_applied","delivery":"not_applied"}"#
-    );
-    for delivery in [
-        SteeringDelivery::Queued,
-        SteeringDelivery::Applied,
-        SteeringDelivery::NotApplied,
+fn results_encode_feedback_delivery_after_the_terminal_fields() {
+    for (delivery, label) in [
+        (SteeringDelivery::Queued, "queued"),
+        (SteeringDelivery::Applied, "applied"),
+        (SteeringDelivery::NotApplied, "not_applied"),
     ] {
-        assert_eq!(SteeringDelivery::parse(delivery.label()), Some(delivery));
+        assert_eq!(
+            SubagentResult {
+                ok: true,
+                delivery: Some(delivery),
+                ..SubagentResult::default()
+            }
+            .encode(),
+            format!(r#"{{"ok":true,"result":null,"error_code":null,"delivery":"{label}"}}"#)
+        );
     }
-    assert_eq!(SteeringDelivery::parse("delivered"), None);
 }

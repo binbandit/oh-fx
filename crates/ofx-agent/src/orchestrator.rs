@@ -12,12 +12,12 @@ use ofx_contract::{
     FileMutation, FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate, PreparedCall,
     ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure, ReviewHold,
-    ReviewRequest, ReviewVerdict, Reviewed, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding,
-    StreamEvent, Tool, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
-    ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec,
-    TurnId, TurnOutcome, TurnStop, UiEvent, Usage, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
-    tool_permission_denied_json, tool_review_held_json,
+    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
+    RouteRecoveryStatus, SkillBinding, StreamEvent, Tool, ToolActivity, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput,
+    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
+    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::task::{JoinError, JoinHandle};
@@ -195,6 +195,7 @@ pub struct Agent {
     skills: Option<Arc<dyn SkillContextProvider>>,
     history: Vec<ChatMessage>,
     turn_starts: Vec<usize>,
+    inherited_requests: Option<Arc<RootUserRequests>>,
     ledger: TurnLedger,
     compacted: Option<Payload>,
     calibration: Option<Calibration>,
@@ -228,6 +229,7 @@ impl Agent {
             skills: None,
             history: Vec::new(),
             turn_starts: Vec::new(),
+            inherited_requests: None,
             ledger: TurnLedger::default(),
             compacted: None,
             calibration: None,
@@ -272,6 +274,14 @@ impl Agent {
     pub fn with_skills(mut self, skills: Arc<dyn SkillContextProvider>) -> Self {
         self.skills = Some(skills);
         self
+    }
+
+    pub(crate) fn config(&self) -> &AgentConfig {
+        &self.config
+    }
+
+    pub(crate) fn inherit_root_user_requests(&mut self, requests: Arc<RootUserRequests>) {
+        self.inherited_requests = Some(requests);
     }
 
     pub fn set_config(&mut self, config: AgentConfig) {
@@ -753,6 +763,7 @@ impl Agent {
                 history: &self.history,
                 turn_starts: &self.turn_starts,
                 compacted_turns: self.compacted.as_ref().map(|payload| payload.turn_count),
+                inherited_requests: self.inherited_requests.as_ref(),
                 turn_start: turn.start,
                 batch: &calls,
                 reviews: &mut turn.reviews,
@@ -900,14 +911,14 @@ impl Agent {
             Some(uncompleted) => uncompleted.complete(&calls[start].name),
             None => self.prepare(&calls[start], malformed[start].take()),
         };
-        let parallel = head.is_parallel();
+        let parallel = head.parallel_group();
         let mut group = vec![(&calls[start], head)];
         for (call, malformed) in calls[start + 1..].iter().zip(&mut malformed[start + 1..]) {
-            if !parallel {
+            if parallel.is_none() {
                 break;
             }
             let uncompleted = self.prepare_uncompleted(call, malformed.take());
-            if !uncompleted.is_parallel() {
+            if uncompleted.parallel_group() != parallel {
                 carried.0 = Some(uncompleted);
                 break;
             }
@@ -1149,9 +1160,26 @@ impl Drop for Deferred {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParallelGroup {
+    ReadOnly,
+    Subagent,
+}
+
+fn parallel_group(description: &CallDescription) -> Option<ParallelGroup> {
+    match (description.concurrency, description.activity) {
+        (Concurrency::Serial, _) => None,
+        (Concurrency::Parallel, ToolActivity::Subagent) => Some(ParallelGroup::Subagent),
+        (Concurrency::Parallel, _) => Some(ParallelGroup::ReadOnly),
+    }
+}
+
 impl Prepared {
-    fn is_parallel(&self) -> bool {
-        matches!(self, Self::Ready(_, description, ..) if description.concurrency == Concurrency::Parallel)
+    fn parallel_group(&self) -> Option<ParallelGroup> {
+        match self {
+            Self::Ready(_, description, ..) => parallel_group(description),
+            Self::Rejected(_) => None,
+        }
     }
 
     fn complete(self, tool_name: &str) -> Self {
@@ -1191,6 +1219,7 @@ struct Reviewing<'a> {
     history: &'a [ChatMessage],
     turn_starts: &'a [usize],
     compacted_turns: Option<usize>,
+    inherited_requests: Option<&'a Arc<RootUserRequests>>,
     turn_start: usize,
     batch: &'a [ToolCall],
     reviews: &'a mut TurnReviews,
@@ -1308,13 +1337,12 @@ async fn review(
         return Some(verdict);
     }
     let attempt_available = reviewing.reviews.attempt_available(call);
-    let (current_request, earlier_requests) =
-        root_requests(reviewing.history, reviewing.turn_starts);
+    let (current_request, earlier_requests, compacted_turns) = reviewing.root_user_requests();
     let request = ReviewRequest {
         model: reviewing.model,
         current_request,
         earlier_requests: &earlier_requests,
-        compacted_turns: reviewing.compacted_turns,
+        compacted_turns,
         turn: &reviewing.history[reviewing.turn_start..],
         held: reviewing.reviews.held_results(),
         batch: reviewing.batch,
@@ -1336,6 +1364,47 @@ async fn review(
     reviewing.usage.accumulate(reviewed.usage);
     reviewing.reviews.remember(call, &reviewed.verdict);
     Some(reviewed.verdict)
+}
+
+impl<'a> Reviewing<'a> {
+    fn root_user_requests(&self) -> (&'a str, Vec<&'a str>, Option<usize>) {
+        if let Some(inherited) = self.inherited_requests {
+            return (
+                &inherited.current,
+                inherited.earlier.iter().map(String::as_str).collect(),
+                inherited.compacted_turns,
+            );
+        }
+        let (current, earlier) = root_requests(self.history, self.turn_starts);
+        (current, earlier, self.compacted_turns)
+    }
+
+    fn delegated_requests(&self) -> Arc<RootUserRequests> {
+        if let Some(inherited) = self.inherited_requests {
+            return Arc::clone(inherited);
+        }
+        let (current, earlier, compacted_turns) = self.root_user_requests();
+        Arc::new(RootUserRequests {
+            current: current.to_owned(),
+            earlier: earlier.into_iter().map(str::to_owned).collect(),
+            compacted_turns,
+        })
+    }
+
+    fn tool_context(
+        &self,
+        call: &ToolCall,
+        delegates: bool,
+        path_access: PathAccess,
+        cancel: &CancellationToken,
+    ) -> ToolContext {
+        let context = ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
+        if delegates {
+            context.with_root_user_requests(self.delegated_requests())
+        } else {
+            context
+        }
+    }
 }
 
 fn root_requests<'h>(history: &'h [ChatMessage], turn_starts: &[usize]) -> (&'h str, Vec<&'h str>) {
@@ -1442,6 +1511,7 @@ async fn run_group<'c>(
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref());
+                let delegates = description.activity == ToolActivity::Subagent;
                 let (admission, file) = admission(gate, action, &description, &*prepared);
                 let shown_while_reviewed =
                     admission == Admission::ReviewRequired && mutation.is_none();
@@ -1485,8 +1555,7 @@ async fn run_group<'c>(
                 }
                 let (held, review_hold) = match verdict {
                     Verdict::Run(path_access) => {
-                        let context =
-                            ToolContext::new(call.id.clone(), cancel.child_token(), path_access);
+                        let context = reviewing.tool_context(call, delegates, path_access, cancel);
                         let task = tokio::spawn(async move { prepared.execute(context).await });
                         dispatched.push((call, Dispatched::Running(task)));
                         continue;
