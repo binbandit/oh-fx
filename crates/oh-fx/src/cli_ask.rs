@@ -288,7 +288,7 @@ pub(crate) fn unsupported_launch_modifier(modifiers: &LaunchModifiers) -> Option
         .any(|limit| !APPLIED_LIMITS.contains(&limit.name));
     first_requested([
         (unsupported_limit, "--context-limit"),
-        (modifiers.adds_directories(), "--add-dir"),
+        (!modifiers.additional_directories().is_empty(), "--add-dir"),
     ])
 }
 
