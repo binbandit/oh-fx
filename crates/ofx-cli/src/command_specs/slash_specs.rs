@@ -10,6 +10,7 @@ pub enum SlashKind {
     Status,
     Model,
     Permissions,
+    Allowlist,
     Undo,
     Skills,
     Copy,
@@ -207,6 +208,7 @@ mod tests {
                 "/status",
                 "/model",
                 "/permissions",
+                "/allowlist",
                 "/undo",
                 "/skills",
                 "/copy",
@@ -254,6 +256,10 @@ mod tests {
             "summarize context into a fresh window"
         );
         assert_eq!(
+            spec(SlashKind::Allowlist).completion_description,
+            "manage trusted commands, tools, and URLs"
+        );
+        assert_eq!(
             spec(SlashKind::Undo).completion_description,
             "undo the latest tracked file operation"
         );
@@ -277,6 +283,7 @@ mod tests {
                 ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
+                ("/allowlist", "Security"),
                 ("/undo", "Session"),
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),

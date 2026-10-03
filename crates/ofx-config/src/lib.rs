@@ -11,7 +11,7 @@ mod settings_store;
 mod strict_json;
 
 pub use config_runtime::{
-    ConfigDiagnostic, LayerError, SelectionError, Settings, SettingsError,
+    ConfigDiagnostic, LayerError, PermissionSources, SelectionError, Settings, SettingsError,
     is_valid_provider_order_list,
 };
 pub use configured_provider::{
@@ -29,7 +29,8 @@ pub use model_capabilities::{Capabilities, request_output_tokens};
 pub use model_provider::{ProviderId, is_valid_provider_id};
 pub use paths::ProfilePaths;
 pub use settings_store::{
-    LegacyCleanup, SettingsWriteError, SettingsWriteFailure, save_codex_model,
-    save_model_preference, save_permission_mode, save_yolo_acknowledged,
+    AllowlistResetScope, CommitOutcome, LegacyCleanup, PermissionPatch, SettingsWriteError,
+    SettingsWriteFailure, save_codex_model, save_model_preference, save_permission_mode,
+    save_permission_patch, save_yolo_acknowledged,
 };
 pub use strict_json::{StrictJsonError, parse as parse_strict_json};

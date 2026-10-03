@@ -17,6 +17,7 @@ use crate::app_commands::{CommandEffect, Work, handle_command, toggle_fast};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::Persistence;
 use crate::native::NativeClipboard;
+use crate::session_commands::SettingsAccess;
 use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
 
@@ -98,6 +99,14 @@ impl ControllerState {
 
     pub(crate) fn last_reply(&self) -> Option<&str> {
         self.last_reply.as_deref()
+    }
+
+    pub(crate) fn settings_access(&self) -> SettingsAccess<'_> {
+        SettingsAccess {
+            paths: self.setup.preferences(),
+            workspace_root: self.setup.workspace_root(),
+            tool_names: self.setup.tool_names(),
+        }
     }
 
     pub(crate) fn change_tracker(&self) -> Option<&ChangeTracker> {

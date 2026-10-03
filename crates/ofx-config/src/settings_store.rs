@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ofx_contract::PermissionMode;
+use ofx_contract::{PermissionAction, PermissionMode};
 use serde_json::{Map, Value};
 
 use crate::config_runtime::{
@@ -122,6 +122,50 @@ impl From<DurableError> for SettingsWriteFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllowlistResetScope {
+    All,
+    Commands,
+    Tools,
+    Urls,
+    WebFetchDomains,
+}
+
+impl AllowlistResetScope {
+    fn matches_category(self, category: &str) -> bool {
+        let canonical = category.trim_matches([' ', '\t', '\r', '\n']);
+        let is_url = matches!(canonical, "url" | "open_url" | "browser_navigate");
+        let is_fetch = canonical == "web_fetch";
+        match self {
+            Self::All => true,
+            Self::Commands => canonical == "bash",
+            Self::Urls => is_url,
+            Self::WebFetchDomains => is_fetch,
+            Self::Tools => canonical != "bash" && !is_url && !is_fetch && canonical != "*",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionPatch<'a> {
+    Add {
+        category: &'a str,
+        pattern: &'a str,
+        action: PermissionAction,
+    },
+    Remove {
+        category: &'a str,
+        pattern: &'a str,
+    },
+    Reset(AllowlistResetScope),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitOutcome {
+    Unchanged,
+    Committed { permission_rules_removed: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Patch<'a> {
     CodexModel(&'a str),
     ModelPreference {
@@ -131,6 +175,10 @@ enum Patch<'a> {
     },
     PermissionMode(PermissionMode),
     YoloAcknowledged,
+    Permission {
+        workspace: Option<&'a str>,
+        patch: PermissionPatch<'a>,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -138,6 +186,7 @@ struct Application {
     changed: bool,
     fields_removed: usize,
     workspaces_changed: usize,
+    permission_rules_removed: usize,
     migration_snapshot: Option<&'static str>,
 }
 
@@ -148,7 +197,9 @@ struct Migration {
 }
 
 pub fn save_codex_model(paths: &ProfilePaths, model: &str) -> Result<(), SettingsWriteError> {
-    commit(paths, Patch::CodexModel(model), &mut || {}).map_err(|failure| failure.error)
+    commit(paths, Patch::CodexModel(model), &mut || {})
+        .map(drop)
+        .map_err(|failure| failure.error)
 }
 
 pub fn save_model_preference(
@@ -166,24 +217,41 @@ pub fn save_model_preference(
         },
         &mut || {},
     )
+    .map(drop)
 }
 
 pub fn save_permission_mode(
     paths: &ProfilePaths,
     mode: PermissionMode,
 ) -> Result<(), SettingsWriteFailure> {
-    commit(paths, Patch::PermissionMode(mode), &mut || {})
+    commit(paths, Patch::PermissionMode(mode), &mut || {}).map(drop)
 }
 
 pub fn save_yolo_acknowledged(paths: &ProfilePaths) -> Result<(), SettingsWriteFailure> {
-    commit(paths, Patch::YoloAcknowledged, &mut || {})
+    commit(paths, Patch::YoloAcknowledged, &mut || {}).map(drop)
+}
+
+pub fn save_permission_patch(
+    paths: &ProfilePaths,
+    workspace_root: Option<&Path>,
+    patch: PermissionPatch<'_>,
+) -> Result<CommitOutcome, SettingsWriteFailure> {
+    let workspace = workspace_root.map(Path::to_string_lossy);
+    commit(
+        paths,
+        Patch::Permission {
+            workspace: workspace.as_deref(),
+            patch,
+        },
+        &mut || {},
+    )
 }
 
 fn commit(
     paths: &ProfilePaths,
     patch: Patch<'_>,
     before_commit: &mut dyn FnMut(),
-) -> Result<(), SettingsWriteFailure> {
+) -> Result<CommitOutcome, SettingsWriteFailure> {
     let directory = PrivateDir::open_or_create(&paths.config)?;
     let _lock = lock(&directory)?;
     for _ in 0..COMMIT_ATTEMPTS {
@@ -197,7 +265,7 @@ fn commit(
         };
         let application = apply(&mut root, patch)?;
         if !application.changed {
-            return Ok(());
+            return Ok(CommitOutcome::Unchanged);
         }
         if existing.as_deref().is_some_and(has_unpreserved_number) {
             return Err(SettingsWriteError::NumberNotPreserved.into());
@@ -206,7 +274,7 @@ fn commit(
         if candidate.len() > MAX_SETTINGS_BYTES {
             return Err(SettingsWriteError::TooLarge.into());
         }
-        validate_candidate(&candidate)?;
+        validate_candidate(&candidate, patch)?;
         let recovery_paths = match application.migration_snapshot {
             Some(snapshot) => {
                 write_migration_snapshot(&directory, paths, existing.as_deref(), snapshot)?
@@ -225,7 +293,9 @@ fn commit(
             continue;
         }
         return match directory.replace(SETTINGS_FILE, candidate.as_bytes()) {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(CommitOutcome::Committed {
+                permission_rules_removed: application.permission_rules_removed,
+            }),
             Err(DurableError::PostRenameFailed) => Err(SettingsWriteFailure {
                 error: SettingsWriteError::CommitIndeterminate,
                 cleanup: LegacyCleanup {
@@ -381,8 +451,150 @@ fn apply(
             migrate_workspace_preference(root, &PERMISSION_MODE_MIGRATION, &mut application);
         }
         Patch::YoloAcknowledged => application.changed |= put_bool(root, YOLO_ACKNOWLEDGED, true),
+        Patch::Permission { workspace, patch } => {
+            let target = match workspace {
+                Some(workspace_root) => workspace_object(root, workspace_root)?,
+                None => root,
+            };
+            let (changed, removed) = apply_permission_patch(target, patch)?;
+            application.changed |= changed;
+            application.permission_rules_removed = removed;
+        }
     }
     Ok(application)
+}
+
+fn workspace_object<'r>(
+    root: &'r mut Map<String, Value>,
+    workspace_root: &str,
+) -> Result<&'r mut Map<String, Value>, SettingsWriteError> {
+    let Value::Object(workspaces) = root
+        .entry("workspaces")
+        .or_insert_with(|| Value::Object(Map::new()))
+    else {
+        return Err(SettingsWriteError::InvalidFormat);
+    };
+    match workspaces
+        .entry(workspace_root)
+        .or_insert_with(|| Value::Object(Map::new()))
+    {
+        Value::Object(workspace) => Ok(workspace),
+        _ => Err(SettingsWriteError::InvalidFormat),
+    }
+}
+
+fn apply_permission_patch(
+    target: &mut Map<String, Value>,
+    patch: PermissionPatch<'_>,
+) -> Result<(bool, usize), SettingsWriteError> {
+    match patch {
+        PermissionPatch::Add {
+            category,
+            pattern,
+            action,
+        } => {
+            let permission =
+                permission_object(target, true)?.ok_or(SettingsWriteError::InvalidFormat)?;
+            let rules = permission
+                .entry(category)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !rules.is_object() {
+                let mut replacement = Map::new();
+                replacement.insert("*".to_owned(), rules.take());
+                *rules = Value::Object(replacement);
+            }
+            let Value::Object(rules) = rules else {
+                return Err(SettingsWriteError::InvalidFormat);
+            };
+            Ok((put_string(rules, pattern, action.label()), 0))
+        }
+        PermissionPatch::Remove { category, pattern } => {
+            let Some(permission) = permission_object(target, false)? else {
+                return Ok((false, 0));
+            };
+            let Some(category_key) = canonical_permission_key(permission, category) else {
+                return Ok((false, 0));
+            };
+            let Some(Value::Object(rules)) = permission.get_mut(&category_key) else {
+                return Ok((false, 0));
+            };
+            let Some(pattern_key) = canonical_permission_key(rules, pattern) else {
+                return Ok((false, 0));
+            };
+            rules.shift_remove(&pattern_key);
+            if rules.is_empty() {
+                permission.shift_remove(&category_key);
+            }
+            Ok((true, 1))
+        }
+        PermissionPatch::Reset(scope) => {
+            let Some(permission) = permission_object(target, false)? else {
+                return Ok((false, 0));
+            };
+            let mut removed = 0;
+            while remove_one_allowlist_rule(permission, scope) {
+                removed += 1;
+            }
+            if permission.is_empty() {
+                target.shift_remove("permission");
+            }
+            Ok((removed > 0, removed))
+        }
+    }
+}
+
+fn permission_object(
+    target: &mut Map<String, Value>,
+    create: bool,
+) -> Result<Option<&mut Map<String, Value>>, SettingsWriteError> {
+    if create && !target.contains_key("permission") {
+        target.insert("permission".to_owned(), Value::Object(Map::new()));
+    }
+    match target.get_mut("permission") {
+        None => Ok(None),
+        Some(Value::Object(permission)) => Ok(Some(permission)),
+        Some(_) => Err(SettingsWriteError::InvalidFormat),
+    }
+}
+
+fn remove_one_allowlist_rule(
+    permission: &mut Map<String, Value>,
+    scope: AllowlistResetScope,
+) -> bool {
+    let is_allow = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|action| action.eq_ignore_ascii_case("allow"))
+    };
+    let found = permission
+        .iter()
+        .filter(|(category, _)| scope.matches_category(category))
+        .find_map(|(category, value)| match value {
+            Value::String(_) if is_allow(value) => Some((category.clone(), None)),
+            Value::Object(rules) => rules
+                .iter()
+                .find(|(_, action)| is_allow(action))
+                .map(|(pattern, _)| (category.clone(), Some(pattern.clone()))),
+            _ => None,
+        });
+    let Some((category, pattern)) = found else {
+        return false;
+    };
+    if let (Some(pattern), Some(Value::Object(rules))) = (pattern, permission.get_mut(&category)) {
+        rules.shift_remove(&pattern);
+        if !rules.is_empty() {
+            return true;
+        }
+    }
+    permission.shift_remove(&category);
+    true
+}
+
+fn canonical_permission_key(object: &Map<String, Value>, expected: &str) -> Option<String> {
+    object
+        .keys()
+        .find(|key| key.trim_matches([' ', '\t', '\r', '\n']) == expected)
+        .cloned()
 }
 
 fn migrate_workspace_preference(
@@ -485,10 +697,23 @@ fn clear_workspace_fast_mode_bindings(root: &mut Map<String, Value>) {
     });
 }
 
-fn validate_candidate(candidate: &str) -> Result<(), SettingsWriteError> {
+fn validate_candidate(candidate: &str, patch: Patch<'_>) -> Result<(), SettingsWriteError> {
     let Ok(Value::Object(root)) = strict_json::parse(candidate.as_bytes()) else {
         return Err(SettingsWriteError::InvalidFormat);
     };
+    if let Patch::Permission {
+        workspace: Some(workspace_root),
+        ..
+    } = patch
+    {
+        let workspace = root
+            .get("workspaces")
+            .and_then(|workspaces| workspaces.get(workspace_root));
+        if !matches!(workspace, Some(Value::Object(workspace)) if is_valid_profile_layer(workspace))
+        {
+            return Err(SettingsWriteError::InvalidFormat);
+        }
+    }
     let canonical = match root.get("models") {
         Some(Value::Object(models)) => models
             .keys()

@@ -536,6 +536,17 @@ impl AgentSetup {
         self.approvals.as_ref()
     }
 
+    pub(crate) fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    pub(crate) fn tool_names(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .map(|tool| tool.spec().name.clone())
+            .collect()
+    }
+
     pub(crate) fn change_tracker(&self) -> Option<&ChangeTracker> {
         self.change_tracker.as_ref()
     }

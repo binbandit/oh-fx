@@ -225,6 +225,36 @@ impl PermissionMode {
 
 pub const FULL_ACCESS_WARNING: &str = "Full access enabled: oh-fx permission checks disabled";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PermissionAction {
+    Allow,
+    Ask,
+    Deny,
+}
+
+impl PermissionAction {
+    pub fn parse(raw: &str) -> Option<Self> {
+        [Self::Allow, Self::Ask, Self::Deny]
+            .into_iter()
+            .find(|action| raw.eq_ignore_ascii_case(action.label()))
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Ask => "ask",
+            Self::Deny => "deny",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PermissionRule {
+    pub permission: String,
+    pub pattern: String,
+    pub action: PermissionAction,
+}
+
 #[derive(Debug, Clone)]
 pub struct LivePermissionMode(Arc<AtomicU8>);
 
@@ -461,6 +491,22 @@ impl RouteRecoveryStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_actions_parse_in_any_letter_case_and_keep_upstream_labels() {
+        assert_eq!(
+            PermissionAction::parse("ALLOW"),
+            Some(PermissionAction::Allow)
+        );
+        assert_eq!(PermissionAction::parse("Ask"), Some(PermissionAction::Ask));
+        assert_eq!(
+            PermissionAction::parse("deny"),
+            Some(PermissionAction::Deny)
+        );
+        assert_eq!(PermissionAction::parse("allowed"), None);
+        assert_eq!(PermissionAction::parse(""), None);
+        assert_eq!(PermissionAction::Deny.label(), "deny");
+    }
 
     #[test]
     fn provider_replay_matches_only_its_own_provider_and_model() {

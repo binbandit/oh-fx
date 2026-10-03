@@ -3,7 +3,9 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use ofx_contract::{AutoCompactPercent, PermissionMode, ReasoningEffort};
+use ofx_contract::{
+    AutoCompactPercent, PermissionAction, PermissionMode, PermissionRule, ReasoningEffort,
+};
 use serde_json::{Map, Value};
 
 use crate::configured_provider::{
@@ -85,6 +87,19 @@ enum DiagnosticCause {
 }
 
 impl DiagnosticCause {
+    const fn resolution_failure(self) -> Option<&'static str> {
+        match self {
+            Self::MalformedSettings
+            | Self::RetiredSkillMatchFuzzy
+            | Self::InvalidContextLimits
+            | Self::InvalidSkillSymlinkAuthorities => Some("InvalidSettingsFormat"),
+            Self::SettingsTooLarge => Some("SettingsPrimaryTooLarge"),
+            Self::DurablePathUnsafe => Some("DurablePathUnsafe"),
+            Self::InvalidModelId => Some("InvalidModelValue"),
+            Self::IgnoredProjectUserOnlySetting => None,
+        }
+    }
+
     const fn label(self) -> &'static str {
         match self {
             Self::MalformedSettings => "malformed_settings",
@@ -189,6 +204,12 @@ pub enum LayerError {
     InvalidPromptHistoryType,
     #[error("InvalidPromptHistoryEnabledType")]
     InvalidPromptHistoryEnabledType,
+    #[error("InvalidPermissionRulesType")]
+    InvalidPermissionRulesType,
+    #[error("InvalidPermissionAction")]
+    InvalidPermissionAction,
+    #[error("InvalidPermissionRuleTool")]
+    InvalidPermissionRuleTool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -239,6 +260,7 @@ struct Layer {
     context: Option<bool>,
     skill_symlink_authorities: Option<Vec<PathBuf>>,
     prompt_history: Option<bool>,
+    permission_rules: Option<Vec<PermissionRule>>,
 }
 
 impl Layer {
@@ -280,6 +302,13 @@ pub struct Settings {
     diagnostics: Vec<ConfigDiagnostic>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionSources<'a> {
+    pub user: &'a [PermissionRule],
+    pub local: &'a [PermissionRule],
+    pub user_shadowed_by_local: bool,
+}
+
 impl From<LayerError> for DiagnosticCause {
     fn from(error: LayerError) -> Self {
         match error {
@@ -319,6 +348,40 @@ impl Settings {
                         | DiagnosticCause::DurablePathUnsafe
                 )
         })
+    }
+
+    pub fn unsafe_path_failure(&self) -> Option<&'static str> {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.cause == DiagnosticCause::DurablePathUnsafe)
+            .then_some("DurablePathUnsafe")
+    }
+
+    pub fn user_layer_failure(&self) -> Option<&'static str> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.layer == ConfigLayer::User)
+            .find_map(|diagnostic| diagnostic.cause.resolution_failure())
+    }
+
+    pub fn permission_sources(&self) -> PermissionSources<'_> {
+        PermissionSources {
+            user: self.global.permission_rules.as_deref().unwrap_or_default(),
+            local: self
+                .workspace
+                .permission_rules
+                .as_deref()
+                .unwrap_or_default(),
+            user_shadowed_by_local: self.workspace.permission_rules.is_some(),
+        }
+    }
+
+    pub fn effective_permission_rules(&self) -> &[PermissionRule] {
+        self.workspace
+            .permission_rules
+            .as_deref()
+            .or(self.global.permission_rules.as_deref())
+            .unwrap_or_default()
     }
 
     pub fn permission_mode(&self, lookup: EnvironmentLookup<'_>) -> PermissionMode {
@@ -713,6 +776,10 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         )?,
         Some(_) => return Err(LayerError::InvalidPromptHistoryType),
     };
+    layer.permission_rules = object
+        .get("permission")
+        .map(parse_permission_config)
+        .transpose()?;
     if object.contains_key("skill_match_fuzzy") {
         rejected.push(LayerError::RetiredSkillMatchFuzzy);
     }
@@ -725,6 +792,42 @@ fn parse_layer(object: &Map<String, Value>) -> Result<ParsedLayer, LayerError> {
         Err(error) => rejected.push(error),
     }
     Ok(ParsedLayer { layer, rejected })
+}
+
+fn parse_permission_config(value: &Value) -> Result<Vec<PermissionRule>, LayerError> {
+    let rule = |permission: &str, pattern: &str, action: &Value| {
+        let action = action
+            .as_str()
+            .and_then(PermissionAction::parse)
+            .ok_or(LayerError::InvalidPermissionAction)?;
+        Ok(PermissionRule {
+            permission: permission.to_owned(),
+            pattern: pattern.to_owned(),
+            action,
+        })
+    };
+    let permissions = match value {
+        Value::String(_) => return Ok(vec![rule("*", "*", value)?]),
+        Value::Object(permissions) => permissions,
+        _ => return Err(LayerError::InvalidPermissionRulesType),
+    };
+    let mut rules = Vec::new();
+    for (permission, entry) in permissions {
+        let permission = permission.trim_matches(TRIMMED);
+        if permission.is_empty() {
+            return Err(LayerError::InvalidPermissionRuleTool);
+        }
+        match entry {
+            Value::String(_) => rules.push(rule(permission, "*", entry)?),
+            Value::Object(patterns) => {
+                for (pattern, action) in patterns {
+                    rules.push(rule(permission, pattern.trim_matches(TRIMMED), action)?);
+                }
+            }
+            _ => return Err(LayerError::InvalidPermissionRulesType),
+        }
+    }
+    Ok(rules)
 }
 
 fn parse_skill_symlink_authorities(value: &Value) -> Result<Vec<PathBuf>, LayerError> {
