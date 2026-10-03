@@ -7,6 +7,7 @@ use ofx_text::is_terminal_safe;
 use tokio_util::sync::CancellationToken;
 
 use super::child_state::{ActiveWork, Outcome};
+use super::tool_host::WorkTools;
 use crate::orchestrator::{Agent, TurnFailure, TurnReport};
 
 const MAX_DIAGNOSTIC_BYTES: usize = 256;
@@ -47,9 +48,12 @@ impl ChildRuntime {
         &mut self,
         work: &ActiveWork,
         instructions: &str,
+        tools: WorkTools,
         approvals: &(dyn Fn(ApprovalRequest) + Sync),
         cancel: &CancellationToken,
     ) -> WorkOutcome {
+        let WorkTools { tools, release } = tools;
+        self.agent.replace_tools(tools);
         let mut config = self.agent.config().clone();
         config.system_prompt = system_prompt(&self.base_prompt, instructions);
         self.agent.set_config(config);
@@ -70,6 +74,8 @@ impl ChildRuntime {
                 cancel,
             )
             .await;
+        self.agent.replace_tools(Vec::new());
+        release.await;
         work_outcome(report, partial, cancel.is_cancelled())
     }
 }

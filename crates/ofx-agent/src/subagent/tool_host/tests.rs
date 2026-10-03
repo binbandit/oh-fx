@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
@@ -7,7 +8,7 @@ use ofx_contract::{
     ChatMessage, Completion, Concurrency, FinishReason, ModelProvider, ModelRequest, PathAccess,
     PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ReviewRequest, ReviewVerdict,
     Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool, ToolActivity, ToolCall,
-    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, Usage,
+    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -15,8 +16,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::approvals::Approvals;
+use crate::execution_memory::steering_message;
 use crate::orchestrator::{AgentConfig, RuntimeContext};
 use crate::scripted_provider::{ScriptedProvider, calling, text};
+use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
 const BASE_PROMPT: &str = "base prompt";
 
@@ -32,6 +35,7 @@ struct Seen {
     model: String,
     effort: Option<String>,
     system_prompt: String,
+    tools: Vec<String>,
     messages: Vec<ChatMessage>,
 }
 
@@ -67,6 +71,7 @@ impl ModelProvider for Provider {
             model: request.model.to_owned(),
             effort: request.provider_options.reasoning_effort.map(str::to_owned),
             system_prompt: request.instructions[0].to_owned(),
+            tools: request.tools.iter().map(|tool| tool.name.clone()).collect(),
             messages: request.messages.to_vec(),
         });
         let script = self.scripts.lock().unwrap().pop_front();
@@ -176,6 +181,17 @@ struct Agents {
     requested: Mutex<Vec<ApprovalRequest>>,
     decisions: Mutex<VecDeque<ApprovalDecision>>,
     asked: Notify,
+    issued: AtomicUsize,
+    released: Arc<AtomicUsize>,
+}
+
+impl Agents {
+    fn works(&self) -> (usize, usize) {
+        (
+            self.issued.load(Ordering::SeqCst),
+            self.released.load(Ordering::SeqCst),
+        )
+    }
 }
 
 impl ChildAgents for Agents {
@@ -197,13 +213,7 @@ impl ChildAgents for Agents {
             .push((settings.clone(), permission_mode));
         let agent = Agent::new(
             Arc::clone(&self.provider) as Arc<dyn ModelProvider>,
-            vec![Arc::new(Probe {
-                spec: ToolSpec {
-                    name: "probe".to_owned(),
-                    description: "Probe the workspace.".to_owned(),
-                    input_schema: "{}",
-                },
-            })],
+            Vec::new(),
             Arc::new(NoContext),
             Arc::new(AskEveryCall),
             AgentConfig {
@@ -220,6 +230,23 @@ impl ChildAgents for Agents {
             agent.with_approvals(self.approvals.clone())
         } else {
             agent
+        }
+    }
+
+    fn work_tools(&self) -> WorkTools {
+        self.issued.fetch_add(1, Ordering::SeqCst);
+        let released = Arc::clone(&self.released);
+        WorkTools {
+            tools: vec![Arc::new(Probe {
+                spec: ToolSpec {
+                    name: "probe".to_owned(),
+                    description: "Probe the workspace.".to_owned(),
+                    input_schema: "{}",
+                },
+            })],
+            release: Box::pin(async move {
+                released.fetch_add(1, Ordering::SeqCst);
+            }),
         }
     }
 
@@ -257,6 +284,8 @@ impl Harness {
             requested: Mutex::new(Vec::new()),
             decisions: Mutex::new(VecDeque::new()),
             asked: Notify::new(),
+            issued: AtomicUsize::new(0),
+            released: Arc::new(AtomicUsize::new(0)),
         });
         Self {
             host: SubagentHost::new(Arc::clone(&agents) as Arc<dyn ChildAgents>),
@@ -336,6 +365,7 @@ async fn a_run_returns_the_childs_reply_from_a_fresh_conversation() {
     assert_eq!(seen[0].model, "parent-model");
     assert_eq!(seen[0].effort, None);
     assert_eq!(seen[0].system_prompt, BASE_PROMPT);
+    assert_eq!(seen[0].tools, ["probe"]);
     assert_eq!(seen[0].messages, vec![ChatMessage::user("inspect auth")]);
     assert_eq!(seen[1].messages, vec![ChatMessage::user("inspect again")]);
     let created = harness.agents.created.lock().unwrap();
@@ -521,6 +551,40 @@ async fn a_cancelled_parent_cancels_its_child_and_a_busy_child_refuses_new_work(
         succeeded("after cancel")
     );
     assert_eq!(harness.provider.seen().len(), 2);
+}
+
+#[tokio::test]
+async fn every_work_item_gets_fresh_tools_that_are_released_when_it_ends() {
+    let harness = Harness::new(vec![
+        Script::Reply("first"),
+        Script::Fail(ProviderError::new(ProviderErrorKind::Protocol, "Boom")),
+        Script::Hold,
+    ]);
+    assert_eq!(
+        harness
+            .run("call-1", message("reviewer", None, "one"))
+            .await,
+        succeeded("first")
+    );
+    assert_eq!(harness.agents.works(), (1, 1));
+    harness
+        .run("call-2", message("reviewer", None, "two"))
+        .await;
+    assert_eq!(harness.agents.works(), (2, 2));
+    let cancel = CancellationToken::new();
+    let third = tokio::spawn(harness.call("call-3", run("three"), &cancel));
+    harness.provider.holding.notified().await;
+    assert_eq!(harness.agents.works(), (3, 2));
+    cancel.cancel();
+    assert_eq!(third.await.unwrap(), rejected("child_cancelled"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while harness.agents.works() != (3, 3) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the cancelled work releases its tools");
+    assert_eq!(harness.agents.created.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -908,11 +972,18 @@ impl ChildAgents for IntentChildren {
     fn agent(&self, _settings: &ChildSettings, _permission_mode: LivePermissionMode) -> Agent {
         Agent::new(
             Arc::clone(&self.provider) as Arc<dyn ModelProvider>,
-            vec![Described::shell()],
+            Vec::new(),
             Arc::new(NoContext),
             Arc::clone(&self.gate) as Arc<dyn PermissionGate>,
             intent_config(),
         )
+    }
+
+    fn work_tools(&self) -> WorkTools {
+        WorkTools {
+            tools: vec![Described::shell()],
+            release: Box::pin(async {}),
+        }
     }
 
     fn approval_requested(&self, _request: ApprovalRequest) {}
@@ -967,6 +1038,65 @@ async fn a_childs_reviewer_weighs_the_root_users_requests_and_never_the_parents_
         gate.seen(),
         [(ROOT_CURRENT.to_owned(), vec![ROOT_FIRST.to_owned()])]
     );
+}
+
+#[tokio::test]
+async fn steering_typed_while_a_child_works_waits_for_the_parent() {
+    let steer = "Also check the docs.";
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        Ok(calling(tool_call(
+            "call-1",
+            "subagent",
+            &serde_json::json!({ "task": "inspect the parser" }).to_string(),
+        ))),
+        Ok(calling(tool_call("child-1", "shell", "{}"))),
+        Ok(text("child done")),
+        Ok(text("parent done")),
+    ]));
+    let gate = Arc::new(IntentGate::default());
+    let host = intent_host(&provider, &gate);
+    let worker = Arc::new(WorkerRuntime::default());
+    let mut parent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn ModelProvider>,
+        vec![Described::delegate(&host)],
+        Arc::new(NoContext),
+        Arc::clone(&gate) as Arc<dyn PermissionGate>,
+        intent_config(),
+    )
+    .with_steering(Arc::clone(&worker));
+    worker.admit(QueuedPrompt::new(0, ROOT_CURRENT.to_owned(), Vec::new()));
+    let prompt = worker.take_next().expect("a queued prompt");
+    let report = parent
+        .run_turn(
+            &prompt.text,
+            &mut |event| {
+                if matches!(event, UiEvent::ToolStarted { .. }) {
+                    worker.admit(QueuedPrompt::new(1, steer.to_owned(), Vec::new()));
+                }
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+    worker.finish_processing();
+    assert_eq!(report.final_text, "parent done");
+    let seen = provider.seen();
+    assert_eq!(seen.len(), 4);
+    for child in &seen[1..3] {
+        assert!(
+            !child
+                .messages
+                .iter()
+                .any(|message| *message == ChatMessage::user(steering_message(steer))),
+            "{:?}",
+            child.messages
+        );
+    }
+    assert_eq!(seen[2].messages[0], ChatMessage::user("inspect the parser"));
+    assert_eq!(
+        seen[3].messages.last(),
+        Some(&ChatMessage::user(steering_message(steer)))
+    );
+    assert!(worker.take_next().is_none());
 }
 
 #[tokio::test]

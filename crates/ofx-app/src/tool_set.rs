@@ -54,5 +54,18 @@ pub(crate) fn ask_tools(
     ]
 }
 
+pub(crate) fn with_subagent(
+    tools: &[Arc<dyn Tool>],
+    subagent: &Arc<dyn Tool>,
+) -> Vec<Arc<dyn Tool>> {
+    let shell = tools
+        .iter()
+        .position(|tool| tool.spec().name == "shell")
+        .map_or(tools.len(), |index| index + 1);
+    let mut delegating = tools.to_vec();
+    delegating.insert(shell, Arc::clone(subagent));
+    delegating
+}
+
 #[cfg(test)]
 mod tests;

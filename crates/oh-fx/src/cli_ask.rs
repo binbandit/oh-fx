@@ -452,12 +452,11 @@ async fn prepare_agent(
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
     };
     let setup = profile.connect(launch, cancel).await?;
-    let mut agent = setup.agent();
-    let saved = match resumed {
-        Some((store, resumed)) => Some(SavedAsk::resume(store, resumed, &setup, &mut agent)?),
+    let store = match &resumed {
+        Some(_) => None,
         None if args.session.no_save => None,
         None => match open_store(&profile) {
-            Ok(store) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
+            Ok(store) => Some(store),
             Err(error) => {
                 write_stderr(&format!(
                     "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
@@ -466,6 +465,12 @@ async fn prepare_agent(
                 None
             }
         },
+    };
+    let mut agent = setup.agent(resumed.is_some() || store.is_some());
+    let saved = match (resumed, store) {
+        (Some((store, resumed)), _) => Some(SavedAsk::resume(store, resumed, &setup, &mut agent)?),
+        (None, Some(store)) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
+        (None, None) => None,
     };
     let title = saved
         .as_ref()
