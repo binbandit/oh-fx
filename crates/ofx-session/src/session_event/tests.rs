@@ -161,6 +161,99 @@ fn every_event_kind_is_written_in_upstream_shape_and_round_trips() {
 }
 
 #[test]
+fn file_evidence_from_upstream_frames_round_trips_byte_for_byte() {
+    let read = "{\"path\":\"src/main.rs\",\"new_path\":null,\"tool_call_id\":\"call_1\",\"tool_name\":\"read_file\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":true,\"stale\":true}";
+    let renamed = "{\"path\":\"old.rs\",\"new_path\":\"new.rs\",\"tool_call_id\":\"call_2\",\"tool_name\":\"shell\",\"action\":\"rename\",\"status\":\"failure\",\"model_view_covers_full_file\":false,\"stale\":false}";
+    for event in [
+        format!("{{\"turn_completed\":{{\"files\":[{read},{renamed}],\"turn_summary\":null}}}}"),
+        format!(
+            "{{\"interrupted\":{{\"reason\":\"failed\",\"partial_text\":\"half\",\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_artifact_ref\":null,\"files\":[{read}],\"turn_summary\":null}}}}"
+        ),
+    ] {
+        let frame =
+            format!("{{\"schema_version\":3,\"seq\":4,\"timestamp_ms\":2,\"event\":{event}}}\n");
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(4, 2, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+    }
+    let ConversationEvent::TurnCompleted(completed) = decode(&format!(
+        "{{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{{\"turn_completed\":{{\"files\":[{read},{renamed}]}}}}}}\n"
+    ))
+    .unwrap() else {
+        panic!("a completed turn");
+    };
+    assert_eq!(
+        completed.files,
+        [
+            FileEvidence {
+                path: "src/main.rs".to_owned(),
+                new_path: None,
+                tool_call_id: "call_1".to_owned(),
+                tool_name: "read_file".to_owned(),
+                action: FileEvidenceAction::Read,
+                status: ToolResultStatus::Success,
+                model_view_covers_full_file: true,
+                stale: true,
+            },
+            FileEvidence {
+                path: "old.rs".to_owned(),
+                new_path: Some("new.rs".to_owned()),
+                tool_call_id: "call_2".to_owned(),
+                tool_name: "shell".to_owned(),
+                action: FileEvidenceAction::Rename,
+                status: ToolResultStatus::Failure,
+                model_view_covers_full_file: false,
+                stale: false,
+            },
+        ]
+    );
+}
+
+#[test]
+fn file_evidence_takes_upstream_defaults_and_rejects_what_upstream_rejects() {
+    let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"turn_completed\":{\"files\":[";
+    let ConversationEvent::TurnCompleted(completed) = decode(&format!(
+        "{base}{{\"path\":\"a\",\"tool_call_id\":\"c\",\"tool_name\":\"t\"}}]}}}}}}\n"
+    ))
+    .unwrap() else {
+        panic!("a completed turn");
+    };
+    assert_eq!(completed.files[0].action, FileEvidenceAction::Unknown);
+    assert_eq!(completed.files[0].status, ToolResultStatus::Success);
+    for action in [
+        "read", "write", "edit", "delete", "rename", "copy", "search", "list", "unknown",
+    ] {
+        let frame = format!(
+            "{base}{{\"path\":\"a\",\"tool_call_id\":\"c\",\"tool_name\":\"t\",\"action\":\"{action}\"}}]}}}}}}\n"
+        );
+        assert!(decode(&frame).is_ok(), "{frame}");
+    }
+    let long_path = "p".repeat(MAX_PATH_BYTES + 1);
+    for file in [
+        "{\"path\":\"\",\"tool_call_id\":\"c\",\"tool_name\":\"t\"}".to_owned(),
+        format!("{{\"path\":\"{long_path}\",\"tool_call_id\":\"c\",\"tool_name\":\"t\"}}"),
+        "{\"path\":\"a\",\"new_path\":\"\",\"tool_call_id\":\"c\",\"tool_name\":\"t\"}".to_owned(),
+        "{\"path\":\"a\",\"tool_call_id\":\"\",\"tool_name\":\"t\"}".to_owned(),
+        "{\"path\":\"a\",\"tool_call_id\":\"c\"}".to_owned(),
+        "{\"path\":\"a\",\"tool_call_id\":\"c\",\"tool_name\":\"t\",\"action\":\"move\"}"
+            .to_owned(),
+        "{\"path\":\"a\",\"tool_call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"skipped\"}"
+            .to_owned(),
+        "{\"path\":\"a\",\"tool_call_id\":\"c\",\"tool_name\":\"t\",\"stale\":1}".to_owned(),
+        "{\"path\":\"a\",\"tool_call_id\":\"c\",\"tool_name\":\"t\",\"extra\":1}".to_owned(),
+        "{\"path\":\"a\",\"path\":\"b\",\"tool_call_id\":\"c\",\"tool_name\":\"t\"}".to_owned(),
+        "\"a\"".to_owned(),
+    ] {
+        let frame = format!("{base}{file}]}}}}}}\n");
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame:.200}"
+        );
+    }
+}
+
+#[test]
 fn review_feedback_defaults_old_records_and_is_never_written() {
     let frame = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"tool_result\":{\"call_id\":\"call-review\",\"tool_name\":\"shell\",\"status\":\"failure\",\"artifact_ref\":\"result.txt\",\"stored_bytes\":0,\"completeness\":\"complete\",\"preview\":\"Security review held this action.\"}}}\n";
     let event = decode(frame).unwrap();
@@ -197,7 +290,7 @@ fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
         "{\"interrupted\":{\"reason\":\"failed\",\"cancellation_origin\":\"compaction\"}}",
         "{\"interrupted\":{\"reason\":\"failed\",\"cancellation_origin\":0}}",
         "{\"interrupted\":{\"reason\":\"stopped\"}}",
-        "{\"turn_completed\":{\"files\":[{\"path\":\"a\"}]}}",
+        "{\"turn_completed\":{\"files\":[{\"path\":\"a\",\"tool_call_id\":\"c\"}]}}",
         "{\"turn_completed\":{\"turn_summary\":{\"started_at_ms\":1}}}",
         "{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",\"provider_native\":true}}",
         "{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",\"permission_feedback\":[\"no\"]}}",

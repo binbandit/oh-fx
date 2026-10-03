@@ -8,6 +8,7 @@ use crate::fixed_field::{False, LocalProvenance, NoItems, Null, TurnOrigin, Vali
 use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
+use crate::session_store_paths::MAX_PATH_BYTES;
 use frame_decode::envelope_from;
 
 pub(crate) const CONVERSATION_SCHEMA_VERSION: u8 = 3;
@@ -203,12 +204,53 @@ pub struct SteeringEvent {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FileEvidenceAction {
+    Read,
+    Write,
+    Edit,
+    Delete,
+    Rename,
+    Copy,
+    Search,
+    List,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FileEvidence {
+    pub(crate) path: String,
+    #[serde(default)]
+    pub(crate) new_path: Option<String>,
+    pub(crate) tool_call_id: String,
+    pub(crate) tool_name: String,
+    #[serde(default)]
+    pub(crate) action: FileEvidenceAction,
+    #[serde(with = "wire_tag")]
+    #[cfg_attr(test, serde(default = "succeeded"))]
+    pub(crate) status: ToolResultStatus,
+    #[serde(default)]
+    pub(crate) model_view_covers_full_file: bool,
+    #[serde(default)]
+    pub(crate) stale: bool,
+}
+
+#[cfg(test)]
+fn succeeded() -> ToolResultStatus {
+    ToolResultStatus::Success
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(deny_unknown_fields)]
 pub struct TurnCompletedEvent {
     #[serde(default)]
-    files: NoItems,
+    pub(crate) files: Vec<FileEvidence>,
     #[serde(default)]
     turn_summary: Null,
 }
@@ -235,7 +277,7 @@ pub struct InterruptedEvent {
     #[serde(default)]
     command_artifact_ref: Null,
     #[serde(default)]
-    files: NoItems,
+    pub(crate) files: Vec<FileEvidence>,
     #[serde(default)]
     turn_summary: Null,
     #[serde(default, skip_serializing)]
@@ -250,7 +292,7 @@ impl InterruptedEvent {
             command_replay_ref: Null,
             command_replay_bytes: Null,
             command_artifact_ref: Null,
-            files: NoItems,
+            files: Vec::new(),
             turn_summary: Null,
             cancellation_origin: TurnOrigin,
         }
@@ -557,18 +599,34 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
                     .is_none_or(|preview| preview.len() <= MAX_PREVIEW_BYTES)
                 && result.created_at_ms >= 0
         }
-        ConversationEvent::Interrupted(interrupted) => interrupted
-            .partial_text
-            .as_ref()
-            .is_none_or(|text| text.len() <= MAX_TEXT_BYTES),
+        ConversationEvent::Interrupted(interrupted) => {
+            interrupted
+                .partial_text
+                .as_ref()
+                .is_none_or(|text| text.len() <= MAX_TEXT_BYTES)
+                && are_valid_files(&interrupted.files)
+        }
         ConversationEvent::ContextCheckpoint(checkpoint) => is_valid_text(&checkpoint.summary),
-        ConversationEvent::TurnCompleted(_) => true,
+        ConversationEvent::TurnCompleted(completed) => are_valid_files(&completed.files),
     };
     if valid {
         Ok(())
     } else {
         Err(SessionError::InvalidConversationEvent)
     }
+}
+
+fn are_valid_files(files: &[FileEvidence]) -> bool {
+    files.iter().all(|file| {
+        is_valid_path(&file.path)
+            && file.new_path.as_deref().is_none_or(is_valid_path)
+            && is_valid_identity(&file.tool_call_id)
+            && is_valid_identity(&file.tool_name)
+    })
+}
+
+fn is_valid_path(path: &str) -> bool {
+    (1..=MAX_PATH_BYTES).contains(&path.len())
 }
 
 fn is_valid_text(text: &str) -> bool {
@@ -630,6 +688,34 @@ impl WireTag for InterruptReason {
         match self {
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
+        }
+    }
+}
+
+impl WireTag for FileEvidenceAction {
+    const ALL: &'static [Self] = &[
+        Self::Read,
+        Self::Write,
+        Self::Edit,
+        Self::Delete,
+        Self::Rename,
+        Self::Copy,
+        Self::Search,
+        Self::List,
+        Self::Unknown,
+    ];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Edit => "edit",
+            Self::Delete => "delete",
+            Self::Rename => "rename",
+            Self::Copy => "copy",
+            Self::Search => "search",
+            Self::List => "list",
+            Self::Unknown => "unknown",
         }
     }
 }

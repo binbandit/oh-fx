@@ -1,9 +1,10 @@
-use ofx_contract::ToolArgumentIntegrity;
+use ofx_contract::{ToolArgumentIntegrity, ToolResultStatus};
 
 use super::{
     AssistantEvent, CONVERSATION_SCHEMA_VERSION, ContextCheckpointEvent, ConversationEnvelope,
-    ConversationEvent, InterruptedEvent, SavedReplay, SavedReplaySource, SteeringEvent,
-    ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent, WireTag,
+    ConversationEvent, FileEvidence, FileEvidenceAction, InterruptedEvent, SavedReplay,
+    SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent, TurnCompletedEvent,
+    UserEvent, WireTag,
 };
 use crate::json_fields::{Fields, Json, string};
 use crate::session_codec::parse_saved_provider;
@@ -40,7 +41,7 @@ fn event_from(value: Json<'_>) -> Option<ConversationEvent> {
             text: fields.string("text")?,
         }),
         "turn_completed" => ConversationEvent::TurnCompleted(TurnCompletedEvent {
-            files: fields.fixed("files")?,
+            files: fields.or("files", Vec::new(), files)?,
             turn_summary: fields.fixed("turn_summary")?,
         }),
         "interrupted" => ConversationEvent::Interrupted(interrupted(&mut fields)?),
@@ -134,10 +135,34 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
         command_replay_ref: fields.fixed("command_replay_ref")?,
         command_replay_bytes: fields.fixed("command_replay_bytes")?,
         command_artifact_ref: fields.fixed("command_artifact_ref")?,
-        files: fields.fixed("files")?,
+        files: fields.or("files", Vec::new(), files)?,
         turn_summary: fields.fixed("turn_summary")?,
         cancellation_origin: fields.fixed("cancellation_origin")?,
     })
+}
+
+fn files(value: Json<'_>) -> Option<Vec<FileEvidence>> {
+    let Json::List(items) = value else {
+        return None;
+    };
+    items.into_iter().map(file_evidence).collect()
+}
+
+fn file_evidence(value: Json<'_>) -> Option<FileEvidence> {
+    let mut fields = Fields::new(value)?;
+    let file = FileEvidence {
+        path: fields.string("path")?,
+        new_path: fields.nullable("new_path", |value| string(value).map(Some))?,
+        tool_call_id: fields.string("tool_call_id")?,
+        tool_name: fields.string("tool_name")?,
+        action: fields.or("action", FileEvidenceAction::Unknown, |value| tag(&value))?,
+        status: fields.or("status", ToolResultStatus::Success, |value| tag(&value))?,
+        model_view_covers_full_file: fields.or("model_view_covers_full_file", false, |value| {
+            value.as_bool()
+        })?,
+        stale: fields.or("stale", false, |value| value.as_bool())?,
+    };
+    fields.finish(file)
 }
 
 fn tag<T: WireTag>(value: &Json<'_>) -> Option<T> {
