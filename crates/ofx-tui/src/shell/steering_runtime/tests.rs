@@ -1,6 +1,10 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use ofx_contract::{TurnId, TurnOutcome, UiEvent};
+use ofx_contract::{
+    ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction,
+    RouteRecoveryKind, RouteRecoveryStatus, TurnId, TurnOutcome, UiEvent,
+};
 
 use super::super::test_shell::TestShell;
 use crate::host::SteeringQueue;
@@ -47,6 +51,61 @@ fn text(value: &str) -> UiEvent {
         turn_id: TurnId::new(1),
         text: value.to_owned(),
     }
+}
+
+fn recovery(status: RouteRecoveryStatus) -> UiEvent {
+    UiEvent::Recovery {
+        turn_id: TurnId::new(1),
+        status,
+    }
+}
+
+fn rate_limited(wait: Option<Duration>) -> RouteRecoveryStatus {
+    RouteRecoveryStatus {
+        kind: RouteRecoveryKind::AutoRetry,
+        failed_attempt: 1,
+        succeeded_attempt: 0,
+        attempt_limit: 10,
+        cause: Some(ModelRecoveryCause::RateLimited),
+        action: Some(ModelRecoveryAction::RetryingRequest),
+        required_action: ModelRecoveryRequiredAction::None,
+        delay_seconds: 60,
+        diagnostic: Some(ModelFailureDiagnostic::new("HTTP 429 · slow")),
+        retry_wait: wait,
+    }
+}
+
+fn recovered() -> RouteRecoveryStatus {
+    RouteRecoveryStatus {
+        kind: RouteRecoveryKind::AutoRecovered,
+        failed_attempt: 0,
+        succeeded_attempt: 2,
+        attempt_limit: 10,
+        cause: None,
+        action: None,
+        required_action: ModelRecoveryRequiredAction::None,
+        delay_seconds: 0,
+        diagnostic: None,
+        retry_wait: None,
+    }
+}
+
+fn steer(test: &mut TestShell, prompt: &str) {
+    test.submit(prompt);
+    test.deliver(UiEvent::SteeringApplied {
+        turn_id: TurnId::new(1),
+        prompt: 1,
+        text: prompt.to_owned(),
+    });
+}
+
+fn after(test: &mut TestShell, millis: u64) -> String {
+    test.advance(millis);
+    test.draining(|shell| {
+        let now_ms = shell.now_ms();
+        shell.refresh_recovery_status(now_ms);
+    });
+    test.screen()
 }
 
 #[test]
@@ -156,4 +215,42 @@ fn up_with_a_draft_leaves_the_steer_waiting() {
     test.shell.composer.clear();
     assert_eq!(press(&mut test, UP), "steer");
     assert!(queue.lock().unwrap().is_empty());
+}
+
+#[test]
+fn steering_that_ends_a_retry_wait_clears_the_retry_status() {
+    let mut test = running(&waiting(&[]));
+    test.deliver(recovery(rate_limited(Some(Duration::from_mins(1)))));
+    assert!(test.screen().contains("retrying request in 60s"));
+    steer(&mut test, "steer now");
+    let screen = test.screen();
+    assert!(!screen.contains("Rate limited"), "{screen}");
+    assert!(screen.contains("Thinking"), "{screen}");
+    assert!(screen.contains("┃ steer now"), "{screen}");
+    test.deliver(text("Steered.\n"));
+    let screen = after(&mut test, 61_000);
+    assert!(!screen.contains("retrying request"), "{screen}");
+    assert!(!screen.contains("recovered"), "{screen}");
+}
+
+#[test]
+fn steering_during_a_retried_request_clears_its_retry_label() {
+    let mut test = running(&waiting(&[]));
+    test.deliver(recovery(rate_limited(None)));
+    assert!(test.screen().contains("retrying request in 60s"));
+    steer(&mut test, "steer now");
+    let screen = test.screen();
+    assert!(!screen.contains("retrying request"), "{screen}");
+    assert!(screen.contains("Thinking"), "{screen}");
+}
+
+#[test]
+fn steering_leaves_a_recovered_status_to_expire_on_its_own() {
+    let mut test = running(&waiting(&[]));
+    test.deliver(recovery(recovered()));
+    steer(&mut test, "steer now");
+    assert!(test.screen().contains("✓ recovered · attempt 2"));
+    let screen = after(&mut test, 2_000);
+    assert!(!screen.contains("recovered"), "{screen}");
+    assert!(screen.contains("Thinking"), "{screen}");
 }
