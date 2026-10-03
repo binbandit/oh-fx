@@ -6,6 +6,7 @@ use ofx_text::{
 };
 
 const ESCAPE_LEAD: char = '\\';
+const UNIT_LOOKAHEAD_BYTES: usize = 64;
 
 pub(crate) fn approval_text(raw: &[u8]) -> String {
     unambiguous(encode_terminal_safe(raw, usize::MAX).text)
@@ -19,12 +20,56 @@ pub(crate) fn approval_text_boundary(raw: &[u8], index: usize) -> bool {
         return true;
     }
     if (0x80..0xc0).contains(&byte) {
-        return false;
+        return !inside_char(raw, index);
     }
     let Some(next) = leading_char(&raw[index..]) else {
         return true;
     };
     !is_terminal_safe_char(next) || starts_display_unit(shown_before(&raw[..index]), next)
+}
+
+pub(crate) fn approval_text_chunk_end(raw: &[u8], from: usize, min_len: usize) -> usize {
+    let target = from + min_len;
+    let probe_end = target + UNIT_LOOKAHEAD_BYTES;
+    if probe_end >= raw.len() {
+        return raw.len();
+    }
+    if let Some(end) = (target..probe_end).find(|index| approval_text_boundary(raw, *index)) {
+        return end;
+    }
+    let start = (from..target)
+        .rev()
+        .find(|index| approval_text_boundary(raw, *index))
+        .unwrap_or(from);
+    let first_len = leading_char(&raw[start..]).map_or(1, char::len_utf8);
+    let slice_end = (probe_end + UNIT_LOOKAHEAD_BYTES).min(raw.len());
+    let shown = encode_terminal_safe(&raw[start..slice_end], usize::MAX).text;
+    let first_shown = encode_terminal_safe(&raw[start..start + first_len], usize::MAX)
+        .text
+        .len();
+    let mut index = 0;
+    while index < shown.len() {
+        index += display_unit_at(&shown, index).byte_len.max(1);
+        if index < first_shown {
+            continue;
+        }
+        let end = start + first_len + (index - first_shown);
+        if end >= probe_end {
+            break;
+        }
+        if end >= target {
+            return end;
+        }
+    }
+    raw.len()
+}
+
+fn inside_char(raw: &[u8], index: usize) -> bool {
+    (1..=3.min(index)).any(|back| {
+        let lead = index - back;
+        !(0x80..0xc0).contains(&raw[lead])
+            && leading_char(&raw[lead..]).is_some_and(|character| character.len_utf8() > back)
+    })
 }
 
 fn shown_before(raw: &[u8]) -> char {
@@ -352,6 +397,64 @@ mod tests {
                 .map(|pair| approval_text(&raw[pair[0]..pair[1]]))
                 .collect();
             assert_eq!(pieces, whole, "{raw:?}");
+        }
+    }
+
+    fn chunked(raw: &[u8], min_len: usize) -> (String, usize) {
+        let mut text = String::new();
+        let mut start = 0;
+        let mut widest = 0;
+        while start < raw.len() {
+            let end = approval_text_chunk_end(raw, start, min_len);
+            assert!(end > start, "{raw:?} {start}");
+            widest = widest.max(end - start);
+            text.push_str(&approval_text(&raw[start..end]));
+            start = end;
+        }
+        (text, widest)
+    }
+
+    #[test]
+    fn chunks_end_within_reach_of_their_length_and_join_into_the_whole_text() {
+        const JOINERS: [&str; 9] = [
+            "\u{1f1fa}\u{1f1f8}",
+            "\u{1f1fa}",
+            "\u{fe0f}",
+            "\u{fe0e}",
+            "\u{20e3}",
+            "\u{1f3fd}",
+            "\u{200d}",
+            "\u{e0067}",
+            "\u{1f469}",
+        ];
+        let mut rng = Xorshift(0x7a3d_19c5);
+        for raw in raw_samples(0x1bad_cafe, 3000) {
+            let mut raw = raw;
+            for _ in 0..rng.below(4) {
+                let joiner = JOINERS[rng.below(JOINERS.len())];
+                let at = rng.below(raw.len() + 1);
+                let run = joiner.repeat(1 + rng.below(40));
+                raw.splice(at..at, run.bytes());
+            }
+            for min_len in [1, 5, 33] {
+                let (text, widest) = chunked(&raw, min_len);
+                assert_eq!(text, approval_text(&raw), "{raw:?} {min_len}");
+                assert!(widest <= min_len + 64, "{raw:?} {min_len} {widest}");
+            }
+        }
+    }
+
+    #[test]
+    fn runs_of_flags_and_selectors_still_end_their_chunks_near_the_length() {
+        for run in [
+            "\u{1f1fa}\u{1f1f8}".repeat(20_000),
+            "\u{fe0f}".repeat(30_000),
+            format!("x{}", "\u{1f3fd}".repeat(20_000)),
+            format!("\t{}", "\u{1f1fa}".repeat(20_001)),
+        ] {
+            let (text, widest) = chunked(run.as_bytes(), 4096);
+            assert!(widest <= 4096 + 64, "{widest}");
+            assert_eq!(text, approval_text(run.as_bytes()));
         }
     }
 
