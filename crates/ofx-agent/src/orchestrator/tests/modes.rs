@@ -155,3 +155,36 @@ async fn provider_executed_tools_offer_guidance_only_when_the_mode_allows_them()
         assert_eq!(request.instructions, expected, "{id}");
     }
 }
+
+#[tokio::test]
+async fn work_tools_given_to_a_child_keep_its_modes_projection_and_denials() {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            Vec::new(),
+            completion(
+                None,
+                vec![ToolCall {
+                    id: ToolCallId::new("call-1"),
+                    name: "mutate".to_owned(),
+                    arguments: r#"{"text":"x"}"#.to_owned(),
+                }],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply("Blocked."),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new()).with_mode(mode("inspect"));
+    agent.replace_tools(vec![echo_tool(), mutate_tool()]);
+    run(&mut agent, "go").await;
+    let requests = provider.requests();
+    assert_eq!(advertised(&requests[0]), ["echo"]);
+    assert_eq!(
+        requests[1].messages.last(),
+        Some(&ChatMessage::Tool {
+            call_id: ToolCallId::new("call-1"),
+            tool_name: "mutate".to_owned(),
+            content: r#"{"error":{"type":"tool_execution_failed","tool_name":"mutate","message":"Inspection mode blocks mutations.","suggestion":"Do not retry the same tool call unchanged. Adjust the request or use an allowed alternative."}}"#.to_owned(),
+            status: ToolResultStatus::Failure,
+        })
+    );
+}

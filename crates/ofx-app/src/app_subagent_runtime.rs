@@ -8,8 +8,8 @@ use ofx_agent::{
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
-    ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider, ReasoningEffort,
-    ReviewTransport,
+    ActiveMode, ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider,
+    ReasoningEffort, ReviewTransport,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
@@ -31,6 +31,7 @@ pub(crate) struct ChildFactory {
     pub(crate) workspace_root: PathBuf,
     pub(crate) permission_mode: LivePermissionMode,
     pub(crate) config: AgentConfig,
+    pub(crate) mode: Option<ActiveMode>,
 }
 
 impl ChildAgents for ChildFactory {
@@ -78,6 +79,9 @@ impl ChildAgents for ChildFactory {
         .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>);
         if let Some(capabilities) = &self.capabilities {
             agent = agent.with_capability_resolver(Arc::clone(capabilities));
+        }
+        if let Some(mode) = self.mode {
+            agent = agent.with_mode(mode);
         }
         match &self.project {
             Some((provider, snapshot)) => {
