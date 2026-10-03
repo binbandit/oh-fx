@@ -185,6 +185,9 @@ pub enum UiEvent {
         turn_id: TurnId,
         text: String,
     },
+    SystemNotice {
+        text: String,
+    },
     SteeringApplied {
         turn_id: TurnId,
         prompt: u64,

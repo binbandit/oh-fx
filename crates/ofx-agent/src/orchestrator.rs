@@ -40,6 +40,7 @@ use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
 mod project_gate;
+mod response_language;
 mod steering;
 mod turn_ledger;
 mod turn_log;
@@ -49,6 +50,7 @@ use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
 #[cfg(test)]
 use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
+use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
 
@@ -96,6 +98,7 @@ pub enum TurnFailure {
     Provider(ProviderError),
     StepLimitReached,
     RepeatedMalformedArguments,
+    ResponseLanguageMismatch,
     InvalidCompletion,
     PermissionRequired(BlockedCall),
     ProjectContext,
@@ -111,6 +114,7 @@ impl TurnFailure {
             Self::Provider(error) => &error.code,
             Self::StepLimitReached => "StepLimitReached",
             Self::RepeatedMalformedArguments => "RepeatedMalformedToolArguments",
+            Self::ResponseLanguageMismatch => "ResponseLanguageMismatch",
             Self::InvalidCompletion => "ModelError",
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
             Self::ProjectContext => "ProjectContextFailed",
@@ -168,6 +172,7 @@ struct Turn {
     compaction: TurnCompaction,
     raw_outputs: Vec<(ToolCallId, usize)>,
     reviews: TurnReviews,
+    language: TurnLanguage,
 }
 
 struct ProjectInstructions {
@@ -400,6 +405,7 @@ impl Agent {
             compaction: TurnCompaction::default(),
             raw_outputs: Vec::new(),
             reviews: TurnReviews::default(),
+            language: self.turn_language(prompt),
         };
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
@@ -498,16 +504,17 @@ impl Agent {
                     TurnFailure::StepLimitReached,
                 ));
             }
-            let step_cancel = self.begin_model_step(turn.id, events, cancel)?;
+            let step_cancel = self.begin_model_step(turn, events, cancel)?;
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
+            let messages = self.request_messages(turn);
             let request = ModelRequest {
                 model: &self.config.model,
                 instructions: &instructions,
-                messages: &self.history,
+                messages: &messages,
                 tools: &self.offered_specs,
                 tool_choice: ToolChoice::Auto,
                 max_output_tokens: self.config.max_output_tokens,
@@ -527,9 +534,11 @@ impl Agent {
                 }
                 Err(error) => return Err(compaction_stop(error, cancel)),
             }
+            self.begin_language_request(turn, &instructions);
             let outcome = self
                 .complete(turn, request, body, events, &step_cancel)
-                .await;
+                .await
+                .map_err(|stop| turn.language.filter_stop(stop));
             let completion = match outcome {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
@@ -553,16 +562,16 @@ impl Agent {
                     return Err(ended);
                 }
             };
-            turn.usage.accumulate(completion.usage);
-            events(UiEvent::UsageReported {
-                turn_id: turn.id,
-                usage: completion.usage,
-            });
+            let completion =
+                match self.settle_reply(turn, completion, &step_cancel, cancel, events)? {
+                    Reply::Accepted(completion) => completion,
+                    Reply::Steered => {
+                        step += 1;
+                        continue;
+                    }
+                    Reply::Rejected => continue,
+                };
             step += 1;
-            let reply = completion.content.as_deref();
-            if self.steered_after_reply(reply, &step_cancel, cancel)? {
-                continue;
-            }
             let more_steps = self.config.step_limit == 0 || step < self.config.step_limit;
             match (completion.finish_reason, completion.tool_calls.is_empty()) {
                 (FinishReason::Stop, true) => {
@@ -602,7 +611,9 @@ impl Agent {
             instructions.push(&skills.explicit);
         }
         instructions.extend(context.iter().map(String::as_str));
-        instructions.push(RESPONSE_LANGUAGE_CONTROL);
+        if self.answers_the_root_user() {
+            instructions.push(RESPONSE_LANGUAGE_CONTROL);
+        }
         instructions
     }
 
@@ -714,7 +725,9 @@ impl Agent {
                 }
                 StreamEvent::TextDelta { text } => {
                     partial.push_str(&text);
-                    events(UiEvent::AssistantText { turn_id, text });
+                    if let Some(text) = turn.language.stage.admit(text) {
+                        events(UiEvent::AssistantText { turn_id, text });
+                    }
                 }
                 StreamEvent::ReasoningDelta { text } => {
                     events(UiEvent::ReasoningText { turn_id, text });

@@ -12,6 +12,26 @@ pub enum Script {
     Han,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Profile {
+    pub script: Option<Script>,
+    pub letters: usize,
+    pub dominant_letters: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProseProfiles {
+    pub all: Profile,
+    pub non_latin: Profile,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quote {
+    Double,
+    CurlySingle,
+    CurlyDouble,
+}
+
 #[derive(Default)]
 struct Counts {
     latin: usize,
@@ -31,7 +51,86 @@ pub fn dominant_script(text: &str) -> Option<Script> {
     for character in text.chars() {
         counts.observe(u32::from(character));
     }
-    counts.dominant()
+    counts.profile().script
+}
+
+pub fn prose_profiles(text: &str) -> ProseProfiles {
+    let mut counts = prose_counts(text);
+    let all = counts.profile();
+    counts.latin = 0;
+    ProseProfiles {
+        all,
+        non_latin: counts.profile(),
+    }
+}
+
+fn prose_counts(text: &str) -> Counts {
+    let mut counts = Counts::default();
+    let mut characters = text.chars().peekable();
+    let mut in_code = false;
+    let mut quote = None;
+    let mut delimiter_depth = 0_usize;
+    while let Some(character) = characters.next() {
+        if character == '`' {
+            while characters.next_if_eq(&'`').is_some() {}
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            continue;
+        }
+        if let Some(open) = quote {
+            if closes(open, character) {
+                quote = None;
+            }
+            continue;
+        }
+        if delimiter_depth > 0 {
+            if opens_delimiter(character) {
+                delimiter_depth = delimiter_depth.saturating_add(1);
+            } else if closes_delimiter(character) {
+                delimiter_depth -= 1;
+            }
+            continue;
+        }
+        quote = match character {
+            '"' => Some(Quote::Double),
+            '\u{2018}' => Some(Quote::CurlySingle),
+            '\u{201C}' => Some(Quote::CurlyDouble),
+            _ => None,
+        };
+        if quote.is_some() {
+            continue;
+        }
+        if opens_delimiter(character) {
+            delimiter_depth = 1;
+            continue;
+        }
+        counts.observe(u32::from(character));
+    }
+    counts
+}
+
+fn closes(quote: Quote, character: char) -> bool {
+    match quote {
+        Quote::Double => character == '"',
+        Quote::CurlySingle => character == '\u{2019}',
+        Quote::CurlyDouble => character == '\u{201D}',
+    }
+}
+
+fn opens_delimiter(character: char) -> bool {
+    matches!(
+        character,
+        '(' | '[' | '{' | '\u{FF08}' | '\u{3010}' | '\u{300C}'
+    )
+}
+
+fn closes_delimiter(character: char) -> bool {
+    matches!(
+        character,
+        ')' | ']' | '}' | '\u{FF09}' | '\u{3011}' | '\u{300D}'
+    )
 }
 
 impl Counts {
@@ -64,12 +163,34 @@ impl Counts {
         *count += 1;
     }
 
-    fn dominant(&self) -> Option<Script> {
+    fn letters(&self) -> usize {
+        self.latin
+            + self.cyrillic
+            + self.arabic
+            + self.hebrew
+            + self.devanagari
+            + self.thai
+            + self.greek
+            + self.hangul
+            + self.kana
+            + self.han
+    }
+
+    fn profile(&self) -> Profile {
+        let letters = self.letters();
         if self.kana > 0 {
-            return Some(Script::Japanese);
+            return Profile {
+                script: Some(Script::Japanese),
+                letters,
+                dominant_letters: self.kana + self.han,
+            };
         }
         if self.hangul > 0 {
-            return Some(Script::Hangul);
+            return Profile {
+                script: Some(Script::Hangul),
+                letters,
+                dominant_letters: self.hangul,
+            };
         }
         let candidates = [
             (Script::Han, self.han),
@@ -96,7 +217,11 @@ impl Counts {
                 tied = true;
             }
         }
-        if tied { None } else { best }
+        Profile {
+            script: if tied { None } else { best },
+            letters,
+            dominant_letters: best_count,
+        }
     }
 }
 
