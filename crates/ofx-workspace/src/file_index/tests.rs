@@ -406,7 +406,12 @@ fn nested_repositories_symlink_loops_and_undecodable_names_stay_out_of_the_index
     assert!(run_git(&nested, &["init", "-q"]));
     write(&root, "vendor/nested/inner.rs");
     symlink(&root, root.join("src/loop")).unwrap();
-    fs::write(root.join(OsStr::from_bytes(b"bad\xffname.txt")), "x").unwrap();
+    if let Err(error) = fs::write(root.join(OsStr::from_bytes(b"bad\xffname.txt")), "x") {
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::ILSEQ.raw_os_error())
+        );
+    }
     let listed = discovered(&root);
     assert_eq!(
         listed,
