@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
+use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use ofx_contract::{
     NoticeTone, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiEvent,
 };
@@ -82,6 +83,13 @@ fn parse_install(arguments: &str) -> Command<'_> {
                 filter: Some(arguments[index + 8..].trim_matches(TRIMMED)),
             },
         )
+}
+
+pub(crate) fn is_install_command(text: &str) -> bool {
+    SLASH_REGISTRY.parse_command(text).is_some_and(|command| {
+        command.kind == SlashKind::Skills
+            && matches!(parse(command.payload), Command::Install { .. })
+    })
 }
 
 pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {

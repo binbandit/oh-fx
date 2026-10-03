@@ -226,3 +226,25 @@ fn creation_never_follows_a_link_out_of_the_managed_root() {
     assert!(create_template(&linked_root, "fresh").is_err());
     assert_eq!(listing(&outside), before);
 }
+
+#[test]
+fn only_parsed_skill_install_commands_wait_for_the_active_operation() {
+    for text in [
+        "/skills add ./pack",
+        "/skills install ./pack --skill=review",
+        "/skills  install ./pack",
+    ] {
+        assert!(is_install_command(text), "{text}");
+    }
+    for text in [
+        "/skills",
+        "/skills install",
+        "/skills show install",
+        "/skills create add",
+        "/skills path",
+        "/unknown install",
+        "skills install ./pack",
+    ] {
+        assert!(!is_install_command(text), "{text}");
+    }
+}

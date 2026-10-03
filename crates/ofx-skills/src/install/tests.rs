@@ -224,3 +224,34 @@ fn candidate_order_follows_skill_file_entries_in_native_walk_order() {
         expected
     );
 }
+
+#[test]
+fn unknown_entries_preserve_discovery_assets_and_cleanup_without_following_links() {
+    let (temp, source, root) = fixture();
+    skill(&source, "review", "review-name");
+    let outside = temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("sentinel"), b"untouched").unwrap();
+    symlink(&outside, source.join("outside-link")).unwrap();
+    symlink(&outside, source.join("review/assets/link")).unwrap();
+    filesystem::with_unknown_entries(|| {
+        assert_eq!(
+            install_local(&root, &source, None).unwrap().installed,
+            ["review-name"]
+        );
+        assert_eq!(
+            fs::read(root.join("review/assets/data")).unwrap(),
+            b"asset\0bytes"
+        );
+        assert_eq!(
+            fs::read(root.join("review/SKILL.md")).unwrap(),
+            fs::read(source.join("review/SKILL.md")).unwrap()
+        );
+        assert!(!root.join("review/assets/link").exists());
+        let parent = path_directory(&root, false).unwrap();
+        symlink(&outside, root.join("review/cleanup-link")).unwrap();
+        filesystem::remove_tree(&parent, std::ffi::OsStr::new("review")).unwrap();
+        assert!(!root.join("review").exists());
+    });
+    assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"untouched");
+}
