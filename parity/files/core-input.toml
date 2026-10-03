@@ -86,7 +86,7 @@ note = "Staged rows, presented receipts and index revisions exist; upstream work
 upstream = "src/core/input/file_picker_path.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/composer/file_picker_path.rs"]
-note = "Token/path parsing and token-position containment exist; canonical-escape metadata is missing."
+note = "Token and path parsing and token-position containment exist; the canonical-escape flag serves image attachment tokens (OH-23)."
 
 [[file]]
 upstream = "src/core/input/gesture_state.zig"
@@ -133,7 +133,7 @@ note = "Composer, decision, question and authorization paste capture exist; appr
 upstream = "src/core/input/pasted_blocks.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/composer/pasted_blocks.rs"]
-note = "Registered paste expansion, length admission and placeholders exist; upstream cursor-offset projection through expanded paste blocks is absent."
+note = "Registered paste expansion, length admission and placeholders exist; projectOffsetThroughExpansion serves image token submission (OH-23) and the skill token styling of the submitted prompt card (OH-46)."
 
 [[file]]
 upstream = "src/core/input/picker_state.zig"

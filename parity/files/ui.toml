@@ -90,9 +90,9 @@ note = "Basic file and command picker rows are implemented; model/provider/login
 
 [[file]]
 upstream = "src/ui/footer/question_freeform_layout.zig"
-status = "partial"
-modules = ["crates/ofx-tui/src/footer/question_freeform_layout.rs"]
-note = "Freeform wrapping, cursor normalization and vertical movement are implemented; upstream lineCount for cursor-position layout measurement is absent."
+status = "ported"
+modules = ["crates/ofx-tui/src/footer/question_freeform_layout.rs", "crates/ofx-tui/src/footer/question_ui.rs"]
+note = "The freeform panel's rows come from the same line walk question_ui draws, including the trailing cursor row, which is what lineCount measures for upstream's footer planner."
 
 [[file]]
 upstream = "src/ui/footer/question_ui.zig"
