@@ -308,6 +308,7 @@ fn run_a_worker_that_panics() -> ! {
         command_categories: Vec::new(),
         prompt_history: PromptHistory::disabled(),
         file_mentions: None,
+        skill_catalog: None,
         opening: Opening::Welcome,
     };
     let outcome = host(options, events, receiver, None, |events, mut commands| {
@@ -383,6 +384,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         command_categories: Vec::new(),
         prompt_history: PromptHistory::disabled(),
         file_mentions: None,
+        skill_catalog: None,
         opening: Opening::Welcome,
     };
     let stopped = directory.join("stopped");

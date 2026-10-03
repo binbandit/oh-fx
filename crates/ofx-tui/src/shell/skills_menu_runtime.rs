@@ -1,11 +1,16 @@
 use ofx_contract::{SkillMenuFocus, SkillMenuItem};
 
 use super::Shell;
-use super::skills_menu::SkillsMenu;
+use super::skills_menu::{MentionAnchor, SkillsMenu};
 use crate::composer::InsertResult;
+use crate::composer::file_picker_path::contains_position;
 use crate::footer::input_presentation::input_row_limit;
 use crate::footer::skills_menu_presentation::{menu_row_budget, visible_item_rows};
 use crate::input::COMPOSER_INPUT_LIMIT_BYTES;
+
+pub trait SkillCatalogSource {
+    fn menu_items(&self) -> Vec<SkillMenuItem>;
+}
 
 impl Shell<'_> {
     pub(super) fn open_skills_menu(&mut self, items: Vec<SkillMenuItem>, focus: &SkillMenuFocus) {
@@ -40,17 +45,17 @@ impl Shell<'_> {
 
     pub(super) fn move_skills_menu(&mut self, delta: isize) -> bool {
         let budget = self.skills_menu_budget();
-        let Some(menu) = &mut self.skills_menu else {
+        let Some(menu) = self.visible_skills_menu_mut() else {
             return false;
         };
         let rows = visible_item_rows(menu, budget);
-        menu.move_selection(delta, rows);
-        true
+        let moved = menu.move_selection(delta, rows);
+        moved || menu.mention_anchor().is_none()
     }
 
     pub(super) fn cycle_skills_menu_source(&mut self, delta: isize) -> bool {
         let budget = self.skills_menu_budget();
-        let Some(menu) = &mut self.skills_menu else {
+        let Some(menu) = self.visible_skills_menu_mut() else {
             return false;
         };
         let rows = visible_item_rows(menu, budget);
@@ -59,9 +64,17 @@ impl Shell<'_> {
     }
 
     pub(super) fn cancel_skills_menu(&mut self) -> bool {
-        if self.skills_menu.take().is_none() {
+        let Some(menu) = &self.skills_menu else {
             return false;
+        };
+        if menu.mention_anchor().is_some() {
+            if !menu.is_visible() {
+                return false;
+            }
+            self.skills_menu = None;
+            return true;
         }
+        self.skills_menu = None;
         self.composer.clear();
         true
     }
@@ -70,36 +83,160 @@ impl Shell<'_> {
         let Some(menu) = &self.skills_menu else {
             return false;
         };
+        let anchor = menu.mention_anchor();
         let Some(item) = menu.selected_item() else {
+            if anchor.is_some() {
+                self.skills_menu = None;
+                return false;
+            }
             return true;
         };
         let (name, path) = (item.name.clone(), item.path.clone());
         self.skills_menu = None;
-        let end = self.composer.text().len();
+        let (start, end) = anchor.map_or((0, self.composer.text().len()), |anchor| {
+            (anchor.start, anchor.end)
+        });
         let inserted = self.composer.skill_token_inserted_len(end, &name);
         if !self
             .composer
-            .can_replace_range(0, end, inserted, COMPOSER_INPUT_LIMIT_BYTES)
+            .can_replace_range(start, end, inserted, COMPOSER_INPUT_LIMIT_BYTES)
         {
             self.report_limit();
             return true;
         }
-        self.composer.bind_skill_token(0, end, &name, &path);
+        self.composer.bind_skill_token(start, end, &name, &path);
         true
     }
 
     pub(super) fn sync_skills_menu(&mut self) {
-        if self.skills_menu.is_none() {
+        let Some(menu) = &self.skills_menu else {
             return;
-        }
+        };
         let budget = self.skills_menu_budget();
-        let query = self.composer.text().to_owned();
+        let text = self.composer.text();
+        let query = match menu.mention_anchor() {
+            None => text.to_owned(),
+            Some(anchor) if text.as_bytes().get(anchor.start) == Some(&b'$') => {
+                let end = skill_token_end(text, anchor.start + 1);
+                let query = text[anchor.start + 1..end].to_owned();
+                if let Some(menu) = &mut self.skills_menu {
+                    menu.set_mention_end(end);
+                }
+                query
+            }
+            Some(_) => {
+                self.skills_menu = None;
+                return;
+            }
+        };
         if let Some(menu) = &mut self.skills_menu {
             let rows = visible_item_rows(menu, budget);
             menu.set_query(&query, rows);
         }
     }
+
+    pub(super) fn skills_menu_visible(&self) -> bool {
+        self.skills_menu
+            .as_ref()
+            .is_some_and(SkillsMenu::is_visible)
+    }
+
+    pub(super) fn command_skills_menu_open(&self) -> bool {
+        self.skills_menu
+            .as_ref()
+            .is_some_and(|menu| menu.mention_anchor().is_none())
+    }
+
+    pub(super) fn insert_dollar(&mut self) {
+        let start = self
+            .composer
+            .selection()
+            .map_or(self.composer.cursor(), |selection| selection.start);
+        let mentions = self.skill_catalog.is_some()
+            && !self.command_skills_menu_open()
+            && !self.picker_active()
+            && !contains_position(self.composer.text(), start);
+        match self.composer.insert_text("$", COMPOSER_INPUT_LIMIT_BYTES) {
+            InsertResult::LimitExceeded => self.report_limit(),
+            InsertResult::Inserted
+                if mentions && self.composer.text().as_bytes().get(start) == Some(&b'$') =>
+            {
+                self.open_skill_mention(start);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn close_skill_mention(&mut self) {
+        if self
+            .skills_menu
+            .as_ref()
+            .is_some_and(|menu| menu.mention_anchor().is_some())
+        {
+            self.skills_menu = None;
+        }
+    }
+
+    pub(super) fn open_pasted_skill_mention(&mut self, start: usize, pasted: &str) {
+        if self.skills_menu.is_some() || self.skill_catalog.is_none() {
+            return;
+        }
+        let text = self.composer.text();
+        if text.get(start..start + pasted.len()) != Some(pasted) {
+            return;
+        }
+        let Some(source) = &self.skill_catalog else {
+            return;
+        };
+        let items = source.menu_items();
+        let found = (start..start + pasted.len())
+            .filter(|&index| text.as_bytes()[index] == b'$' && !contains_position(text, index))
+            .find_map(|index| {
+                let end = skill_token_end(text, index + 1);
+                let menu = SkillsMenu::mention(
+                    items.clone(),
+                    MentionAnchor { start: index, end },
+                    &text[index + 1..end],
+                );
+                (end > index + 1 && menu.is_visible()).then_some(menu)
+            });
+        if let Some(menu) = found {
+            self.skills_menu = Some(menu);
+            self.invalidate();
+        }
+    }
+
+    fn open_skill_mention(&mut self, start: usize) {
+        let Some(source) = &self.skill_catalog else {
+            return;
+        };
+        let anchor = MentionAnchor {
+            start,
+            end: start + 1,
+        };
+        let menu = SkillsMenu::mention(source.menu_items(), anchor, "");
+        self.skills_menu = Some(menu);
+        self.invalidate();
+    }
+
+    fn visible_skills_menu_mut(&mut self) -> Option<&mut SkillsMenu> {
+        self.skills_menu.as_mut().filter(|menu| menu.is_visible())
+    }
 }
+
+fn skill_token_end(text: &str, start: usize) -> usize {
+    text.as_bytes()
+        .get(start..)
+        .and_then(|rest| {
+            rest.iter().position(|byte| {
+                !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+            })
+        })
+        .map_or(text.len(), |offset| start + offset)
+}
+
+#[cfg(test)]
+mod mention_tests;
 
 #[cfg(test)]
 mod tests {

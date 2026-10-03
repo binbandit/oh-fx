@@ -30,6 +30,7 @@ use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
+use crate::skill_mention_runtime::SkillMentions;
 use startup_resume::open_requested;
 
 mod startup_resume;
@@ -260,6 +261,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.workspace_root(),
             session.profile.cache_dir(),
         ))),
+        skill_catalog: Some(Box::new(SkillMentions::new(session.setup.skills().clone()))),
         opening: session.opening,
     };
     let picking = matches!(options.opening, Opening::SessionPicker);

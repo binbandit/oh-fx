@@ -321,6 +321,7 @@ mod tests {
             command_categories: Vec::new(),
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
+            skill_catalog: None,
             opening: Opening::Welcome,
         };
         let outcome = panics.contain_shell(|| {

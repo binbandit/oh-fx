@@ -86,7 +86,7 @@ note = "Staged rows, presented receipts and index revisions exist; upstream work
 upstream = "src/core/input/file_picker_path.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/composer/file_picker_path.rs"]
-note = "Token/path parsing exists; canonical-escape metadata and public token-position containment behavior are missing."
+note = "Token/path parsing and token-position containment exist; canonical-escape metadata is missing."
 
 [[file]]
 upstream = "src/core/input/gesture_state.zig"

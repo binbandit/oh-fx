@@ -84,6 +84,7 @@ const NO_ROOTS: RootPolicy = RootPolicy {
     global_roots: &[],
 };
 
+#[derive(Clone)]
 pub(crate) struct HostSkills {
     shared: Arc<Shared>,
 }
