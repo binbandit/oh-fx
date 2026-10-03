@@ -20,7 +20,9 @@ impl Fixture {
     }
 
     fn workspace(&self) -> PathBuf {
-        self.root.path().join("workspace")
+        fs::canonicalize(self.root.path())
+            .unwrap()
+            .join("workspace")
     }
 
     fn ready(&self) -> WorkspaceFileMentions {
