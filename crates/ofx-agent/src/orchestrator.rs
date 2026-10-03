@@ -409,6 +409,7 @@ impl Agent {
             }
         };
         let recorded = self.record_turn(prompt, &turn, ending);
+        self.settle_steering(turn.start);
         self.note_recorded(&turn, ending, recorded.is_ok());
         if let Err(error) = recorded
             && failure.is_none()
@@ -1076,7 +1077,10 @@ impl Agent {
             .iter()
             .any(|message| match message {
                 ChatMessage::Tool { .. } => true,
-                ChatMessage::User { content } => steering_text(content).is_some(),
+                ChatMessage::User {
+                    content,
+                    restored_steering,
+                } => *restored_steering || steering_text(content).is_some(),
                 ChatMessage::System { .. } | ChatMessage::Assistant { .. } => false,
             })
     }
@@ -1462,7 +1466,7 @@ impl<'a> Reviewing<'a> {
 
 fn root_requests<'h>(history: &'h [ChatMessage], turn_starts: &[usize]) -> (&'h str, Vec<&'h str>) {
     let user_request = |start: &usize| match history.get(*start) {
-        Some(ChatMessage::User { content }) => Some(steering_text(content).unwrap_or(content)),
+        Some(ChatMessage::User { content, .. }) => Some(steering_text(content).unwrap_or(content)),
         _ => None,
     };
     let Some((current, earlier)) = turn_starts.split_last() else {

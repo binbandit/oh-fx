@@ -328,7 +328,7 @@ fn skill_reply(id: &str, arguments: &str) -> Script {
 
 fn user_text(message: &ChatMessage) -> &str {
     match message {
-        ChatMessage::User { content } => content,
+        ChatMessage::User { content, .. } => content,
         _ => "",
     }
 }

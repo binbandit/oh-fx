@@ -37,10 +37,18 @@ pub enum TurnEnd<'a> {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistorySteering<'a> {
+    pub text: &'a str,
+    pub assistant_prefix: &'a str,
+    pub after_tool_step_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryTurn<'a> {
     pub user: &'a str,
     pub steps: Vec<HistoryStep<'a>>,
+    pub steering: Vec<HistorySteering<'a>>,
     pub end: TurnEnd<'a>,
 }
 
@@ -48,6 +56,7 @@ pub struct HistoryTurn<'a> {
 pub struct HistoryCut {
     pub turns: usize,
     pub tool_steps: usize,
+    pub steering: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

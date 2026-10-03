@@ -7,6 +7,7 @@ pub(super) enum Logged {
     Turn {
         user: String,
         steps: Vec<String>,
+        steering: Vec<String>,
         end: String,
     },
     Compaction {
@@ -113,6 +114,16 @@ impl ConversationLog for MemoryLog {
         self.entries.lock().unwrap().push(Logged::Turn {
             user: turn.user.to_owned(),
             steps: described_steps(turn),
+            steering: turn
+                .steering
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}|{}|{}",
+                        entry.text, entry.assistant_prefix, entry.after_tool_step_count
+                    )
+                })
+                .collect(),
             end: described_end(turn.end),
         });
         Ok(())
@@ -153,6 +164,7 @@ fn logged_turn(user: &str, steps: &[&str], end: &str) -> Logged {
     Logged::Turn {
         user: user.to_owned(),
         steps: steps.iter().map(|step| (*step).to_owned()).collect(),
+        steering: Vec::new(),
         end: end.to_owned(),
     }
 }
