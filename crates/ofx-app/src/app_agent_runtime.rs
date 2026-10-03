@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailure, TurnReport};
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, Notice, NoticeTone, ProviderError, QuestionRequest,
-    ResumeRefusal, SessionCursor, SessionScope, SkillBinding, TurnId, TurnOutcome, UiCommand,
-    UiEvent,
+    CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, Notice, NoticeTone,
+    ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor, SessionScope,
+    SkillBinding, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -16,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
 use crate::app_commands::{
-    CommandEffect, Work, handle_command, refuse_resume_during_turn, rename_session, toggle_fast,
+    CommandEffect, ModelPick, Work, handle_command, pick_model, refuse_resume_during_turn,
+    rename_session, switch_model, toggle_fast,
 };
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
@@ -29,12 +30,14 @@ pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 const CONTEXT_TOPIC: &str = "context";
 const MODEL_TOPIC: &str = "model";
+const MODEL_PICKER_TOPIC: &str = "model picker";
 const LEGACY_CONTEXT_LINE: &str = "[context]";
 const LEGACY_CONTEXT_PREFIX: &str = "[context] ";
 
 pub(crate) struct ControllerState {
     setup: AgentSetup,
     model: String,
+    effort: ReasoningEffort,
     fast_mode: bool,
     config_pending: bool,
     pending_clear: Option<u64>,
@@ -60,10 +63,6 @@ impl ControllerState {
         &self.model
     }
 
-    pub(crate) fn models(&self) -> &[String] {
-        self.setup.models()
-    }
-
     pub(crate) fn permissions(&self) -> &PermissionRuntime {
         &self.permissions
     }
@@ -76,10 +75,16 @@ impl ControllerState {
         self.fast_mode = enabled;
     }
 
-    pub(crate) fn save_model_preference(&self, topic: &str) {
+    pub(crate) fn save_model_preference(&self, topic: &str, effort: Option<&ReasoningEffort>) {
         let provider = self.setup.provider();
         let saved = user_settings::save(self.setup.preferences(), |paths| {
-            save_model_preference(paths, &provider, &self.model, None, self.fast_mode)
+            save_model_preference(
+                paths,
+                &provider,
+                &self.model,
+                effort.map(ReasoningEffort::label),
+                self.fast_mode,
+            )
         });
         if let Err(unsaved) = saved {
             self.emit(UiEvent::Notice {
@@ -88,8 +93,26 @@ impl ControllerState {
         }
     }
 
-    pub(crate) async fn supports_fast_mode(&self) -> bool {
-        self.setup.supports_fast_mode(&self.model).await
+    pub(crate) async fn capabilities(&self, model: &str) -> ModelCapabilities {
+        self.setup.capabilities(model).await
+    }
+
+    pub(crate) async fn catalog_ids(&self) -> Vec<String> {
+        match self.setup.models_source().catalog().await {
+            ModelCatalog::Listed { models, .. } => {
+                models.into_iter().map(|option| option.id).collect()
+            }
+            ModelCatalog::Failed { .. } => Vec::new(),
+        }
+    }
+
+    fn list_models(&self) {
+        let source = self.setup.models_source();
+        let emit = Arc::clone(&self.emit);
+        tokio::spawn(async move {
+            let catalog = source.catalog().await;
+            emit(UiEvent::ModelCatalog { catalog });
+        });
     }
 
     pub(crate) fn status_body(&self) -> String {
@@ -154,12 +177,26 @@ impl ControllerState {
         });
     }
 
-    fn select_model(&mut self, model: String) {
+    pub(crate) fn select_model(&mut self, model: String) {
         if model != self.model {
             self.fast_mode = false;
         }
         self.use_model(model);
-        self.save_model_preference(MODEL_TOPIC);
+        self.save_model_preference(MODEL_TOPIC, None);
+    }
+
+    pub(crate) fn apply_pick(
+        &mut self,
+        model: String,
+        effort: Option<&ReasoningEffort>,
+        fast_mode: bool,
+    ) {
+        if let Some(effort) = effort {
+            effort.clone_into(&mut self.effort);
+        }
+        self.fast_mode = fast_mode;
+        self.use_model(model);
+        self.save_model_preference(MODEL_PICKER_TOPIC, effort);
     }
 
     fn use_model(&mut self, model: String) {
@@ -235,6 +272,7 @@ impl Controller {
         let state = ControllerState {
             session_title: SessionTitle::new(Arc::clone(&emit)),
             model: setup.model().to_owned(),
+            effort: setup.reasoning_effort(),
             permissions: setup.permission_runtime(Arc::clone(&emit)),
             fast_mode: setup.fast_mode(),
             setup,
@@ -308,6 +346,22 @@ impl Controller {
                         return;
                     }
                 }
+                UiCommand::ListModels => self.state.list_models(),
+                UiCommand::SelectModel {
+                    model,
+                    effort,
+                    fast_mode,
+                } => {
+                    let pick = ModelPick {
+                        model,
+                        effort,
+                        fast_mode,
+                    };
+                    if let Some(effort) = pick_model(&mut self.state, pick, Work::Idle).await {
+                        self.save_preferences(effort.as_ref());
+                        self.reconfigure();
+                    }
+                }
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
@@ -335,15 +389,15 @@ impl Controller {
     ) -> bool {
         match handle_command(&self.state, text, Work::Idle) {
             CommandEffect::None => {}
-            CommandEffect::SwitchModel(model) => {
-                self.state.select_model(model);
-                self.save_preferences();
+            CommandEffect::SwitchModel(query) => {
+                switch_model(&mut self.state, &query, Work::Idle).await;
+                self.save_preferences(None);
                 self.reconfigure();
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => {
                 if toggle_fast(&mut self.state).await {
-                    self.save_preferences();
+                    self.save_preferences(None);
                 }
                 self.reconfigure();
             }
@@ -409,6 +463,11 @@ impl Controller {
                             )
                             .await;
                         }
+                        Some(UiCommand::ListModels) => state.list_models(),
+                        Some(UiCommand::SelectModel { model, effort, fast_mode }) => {
+                            let pick = ModelPick { model, effort, fast_mode };
+                            run_deferred_pick(state, persistence, pick, Work::Compaction).await;
+                        }
                     },
                 }
             }
@@ -473,6 +532,7 @@ impl Controller {
         self.state
             .setup
             .restore_reasoning(restored.reasoning_effort, restored.fast_mode);
+        self.state.effort = self.state.setup.reasoning_effort();
         self.state.fast_mode = restored.fast_mode;
         if restored.model != self.state.model {
             self.state.use_model(restored.model);
@@ -498,6 +558,7 @@ impl Controller {
     fn reconfigure(&mut self) {
         let mut config = self.state.setup.config(&self.state.model);
         config.fast_mode = self.state.fast_mode;
+        config.reasoning_effort = self.state.effort.clone().into_named();
         self.agent.set_config(config);
     }
 
@@ -513,8 +574,8 @@ impl Controller {
         }
     }
 
-    fn save_preferences(&mut self) {
-        let saved = save_session_preferences(&self.state, &mut self.persistence);
+    fn save_preferences(&mut self, effort: Option<&ReasoningEffort>) {
+        let saved = save_session_preferences(&self.state, &mut self.persistence, effort);
         self.session_notice(saved);
     }
 
@@ -638,6 +699,11 @@ impl Controller {
                             | UiCommand::ResumeSession { .. }
                             | UiCommand::CloseSessionPicker),
                         ) => refuse_session_command(state, command),
+                        Some(UiCommand::ListModels) => state.list_models(),
+                        Some(UiCommand::SelectModel { model, effort, fast_mode }) => {
+                            let pick = ModelPick { model, effort, fast_mode };
+                            run_deferred_pick(state, persistence, pick, Work::Turn).await;
+                        }
                         Some(UiCommand::CancelCompaction) => {}
                     },
                     request = next_question(questions) => relay_question(state, running_turn(), request),
@@ -728,9 +794,9 @@ async fn run_deferred_command(
 ) {
     match handle_command(state, text, work) {
         CommandEffect::None | CommandEffect::Compact | CommandEffect::OpenSessions => return,
-        CommandEffect::SwitchModel(model) => {
+        CommandEffect::SwitchModel(query) => {
             state.config_pending = true;
-            state.select_model(model);
+            switch_model(state, &query, work).await;
         }
         CommandEffect::Clear => {
             state.pending_clear = Some(state.received_prompts);
@@ -749,7 +815,22 @@ async fn run_deferred_command(
             }
         }
     }
-    if let Some(notice) = save_session_preferences(state, persistence) {
+    if let Some(notice) = save_session_preferences(state, persistence, None) {
+        state.emit(UiEvent::Notice { notice });
+    }
+}
+
+async fn run_deferred_pick(
+    state: &mut ControllerState,
+    persistence: &mut Option<Persistence>,
+    pick: ModelPick,
+    work: Work,
+) {
+    let Some(effort) = pick_model(state, pick, work).await else {
+        return;
+    };
+    state.config_pending = true;
+    if let Some(notice) = save_session_preferences(state, persistence, effort.as_ref()) {
         state.emit(UiEvent::Notice { notice });
     }
 }
@@ -777,10 +858,11 @@ fn observe_prompt(persistence: Option<&Persistence>, prompt: &str) {
 fn save_session_preferences(
     state: &ControllerState,
     persistence: &mut Option<Persistence>,
+    effort: Option<&ReasoningEffort>,
 ) -> Option<Notice> {
     persistence
         .as_mut()
-        .and_then(|persistence| persistence.select_model(&state.model, state.fast_mode))
+        .and_then(|persistence| persistence.select_model(&state.model, effort, state.fast_mode))
 }
 
 fn compaction_activity(result: Result<Compaction, CompactionError>) -> CompactionActivity {
@@ -1040,7 +1122,7 @@ mod tests {
             let preferences = SessionPreferences {
                 provider: provider.clone(),
                 model: setup.configured_model().to_owned(),
-                effort: ofx_contract::ReasoningEffort::Auto,
+                effort: ReasoningEffort::Auto,
                 fast_mode: false,
             };
             let overrides = LaunchOverrides {
@@ -1176,10 +1258,7 @@ mod tests {
         let shown = harness
             .until(|event| matches!(event, UiEvent::Notice { .. }))
             .await;
-        assert_eq!(
-            notice_body(shown),
-            ["model|model-a\navailable: model-a, vendor/model-b"]
-        );
+        assert_eq!(notice_body(shown), ["model|model-a"]);
         harness.command("/model model-b");
         let switched = harness
             .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
@@ -2157,6 +2236,190 @@ mod tests {
             .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == topic))
             .await;
         notice_body(shown)
+    }
+
+    fn catalog_event(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::ModelCatalog { .. })
+    }
+
+    async fn listed_catalog(harness: &mut Harness) -> ModelCatalog {
+        harness.send(UiCommand::ListModels);
+        match harness.until(catalog_event).await.last() {
+            Some(UiEvent::ModelCatalog { catalog }) => catalog.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn select(model: &str, effort: ReasoningEffort, fast_mode: Option<bool>) -> UiCommand {
+        UiCommand::SelectModel {
+            model: model.to_owned(),
+            effort,
+            fast_mode,
+        }
+    }
+
+    fn low() -> ReasoningEffort {
+        ReasoningEffort::Named("low".to_owned())
+    }
+
+    #[tokio::test]
+    async fn the_picker_lists_a_connection_s_models_with_their_metadata() {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let settings = json!({
+            "provider": "local",
+            "providers": {"local": {
+                "protocol": "openai-chat-completions",
+                "base_url": server.base_url(),
+                "auth": {"type": "none"},
+                "models": ["model-a", "vendor/model-b"],
+                "model_metadata": {"vendor/model-b": {"context_window": 128_000, "max_output_tokens": 16_000}}
+            }}
+        });
+        let setup = agent_setup_with(&home, &settings, SubscriptionEndpoints::default()).await;
+        let mut harness = Harness::with_setup(home, setup);
+        let ModelCatalog::Listed { models, source } = listed_catalog(&mut harness).await else {
+            panic!("the connection lists its models");
+        };
+        assert_eq!(source, ofx_contract::ModelCatalogSource::ProfileSettings);
+        let ids: Vec<&str> = models.iter().map(|option| option.id.as_str()).collect();
+        assert_eq!(ids, ["model-a", "vendor/model-b"]);
+        assert_eq!(models[1].capabilities.context_window, Some(128_000));
+        assert_eq!(models[1].max_output_tokens, Some(16_000));
+        assert!(models[1].capabilities.reasoning_efforts.is_empty());
+        assert!(server.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn codex_catalog_failures_offer_a_retry_only_when_upstream_would() {
+        for (status, retry) in [
+            (503, Some(ofx_contract::CatalogRetry::Unreachable)),
+            (502, Some(ofx_contract::CatalogRetry::Unreachable)),
+            (429, Some(ofx_contract::CatalogRetry::RateLimited)),
+            (501, None),
+            (505, None),
+            (403, None),
+        ] {
+            let codex = FakeServer::start([]);
+            let catalog = FakeServer::start([catalog_version(), Reply::status(status, "{}")]);
+            let mut harness = Harness::codex(&codex, &catalog).await;
+            assert_eq!(
+                listed_catalog(&mut harness).await,
+                ModelCatalog::Failed { retry },
+                "{status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_picked_model_applies_its_effort_and_fast_mode_and_saves_them_together() {
+        let codex = FakeServer::start([codex_text("picked")]);
+        let catalog = codex_catalog(true, 1);
+        let settings = json!({
+            "provider": "codex",
+            "models": {"codex": CODEX_MODEL},
+            "session_titles": false
+        });
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        let ModelCatalog::Listed { models, .. } = listed_catalog(&mut harness).await else {
+            panic!("the Codex catalog lists its models");
+        };
+        assert_eq!(models[1].id, OTHER_CODEX_MODEL);
+        assert_eq!(models[1].capabilities.reasoning_efforts, ["low"]);
+        assert!(models[1].capabilities.supports_fast_mode);
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        let picked = harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        assert_eq!(
+            notice_body(picked),
+            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+        );
+        harness.submit("go");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let request = codex.requests()[0].json();
+        assert_eq!(request["model"], OTHER_CODEX_MODEL);
+        assert_eq!(request["reasoning"]["effort"], "low");
+        assert_eq!(request["service_tier"], "priority");
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["models"]["codex"], OTHER_CODEX_MODEL);
+        assert_eq!(saved["effort"], "low");
+        assert_eq!(saved["fast_mode"], true);
+        assert_eq!(saved["fast_mode_model_bound"], true);
+        let session = &saved_sessions(&harness.home)[0];
+        assert_eq!(session["model"], OTHER_CODEX_MODEL);
+        assert_eq!(session["effort"], "low");
+        assert_eq!(session["fast_mode"], true);
+    }
+
+    #[tokio::test]
+    async fn a_choice_the_model_cannot_take_explains_the_usage_and_changes_nothing() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        for choice in [
+            select(CODEX_MODEL, ReasoningEffort::Named("max".to_owned()), None),
+            select(CODEX_MODEL, low(), Some(true)),
+        ] {
+            harness.send(choice);
+            let shown = harness
+                .until(|event| matches!(event, UiEvent::Notice { .. }))
+                .await;
+            assert_eq!(
+                notice_body(shown),
+                ["|usage: /model <id> <effort> [normal|fast]"]
+            );
+        }
+        harness.send(select(OTHER_CODEX_MODEL, ReasoningEffort::Auto, None));
+        let picked = harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        assert_eq!(
+            notice_body(picked),
+            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+        );
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["effort"], "auto");
+        assert_eq!(saved["fast_mode"], false);
+    }
+
+    #[tokio::test]
+    async fn a_model_picked_during_a_turn_applies_to_the_next_one() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["ok"]))]);
+        let mut harness = Harness::start(&server).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        harness.send(select("vendor/model-b", ReasoningEffort::Auto, None));
+        let notice = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        assert_eq!(notice_body(notice), ["|Next turn will use vendor/model-b"]);
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
+        harness.submit("next");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = server.requests();
+        assert_eq!(requests[0].json()["model"], "model-a");
+        assert_eq!(requests[1].json()["model"], "vendor/model-b");
+    }
+
+    #[tokio::test]
+    async fn a_model_query_resolves_against_the_codex_catalog() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.command("/model luna");
+        let picked = harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        assert_eq!(
+            notice_body(picked),
+            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+        );
     }
 
     #[tokio::test]

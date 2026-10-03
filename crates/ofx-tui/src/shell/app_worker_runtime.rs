@@ -136,6 +136,7 @@ impl Shell<'_> {
             UiEvent::Notice { notice } => self.push_entry(Entry::Notice(notice)),
             UiEvent::ModelSelected { model } => self.options.model = model,
             UiEvent::SessionTitleChanged { title } => self.session_title_changed(title),
+            UiEvent::ModelCatalog { .. } => {}
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,
