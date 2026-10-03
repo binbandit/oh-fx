@@ -301,6 +301,16 @@ impl Agent {
         self.config = config;
     }
 
+    pub fn set_provider(
+        &mut self,
+        provider: Arc<dyn ModelProvider>,
+        resolver: Option<Arc<dyn CapabilityResolver>>,
+    ) {
+        self.provider = provider;
+        self.capability_resolver = resolver;
+        self.capabilities = None;
+    }
+
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.turn_starts.clear();
