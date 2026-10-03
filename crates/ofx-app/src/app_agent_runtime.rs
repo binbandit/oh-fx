@@ -3157,6 +3157,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_working_child_reports_the_sessions_model_before_its_row_settles() {
+        let server = FakeServer::start([
+            delegate("read the notes"),
+            Reply::sse(&chat_text_events(&["the notes say hi"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let mut harness = Harness::start_saved(&server).await;
+        harness.submit("delegate the reading");
+        let events = harness.until(finished(TurnOutcome::Completed)).await;
+        let reported: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::SubagentStatus {
+                    call_id, status, ..
+                } => Some(format!("status {} {}", call_id.as_str(), status.model)),
+                UiEvent::ToolFinished { call_id, .. } => {
+                    Some(format!("finish {}", call_id.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reported,
+            ["status call-delegate model-a", "finish call-delegate"]
+        );
+    }
+
+    #[tokio::test]
     async fn undo_leaves_a_childs_file_changes_alone() {
         let server = FakeServer::start([
             delegate("write the note"),

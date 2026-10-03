@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use ofx_contract::{
     ActionLabel, ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile,
     CommandRequest, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
-    PreparedCall, ProviderReplay, ReplaySource, RootUserRequests, StreamSink, ToolActivity,
-    ToolCallId, ToolEffect,
+    PreparedCall, ProviderReplay, ReasoningEffort, ReplaySource, RootUserRequests, StreamSink,
+    SubagentStatus, ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -418,6 +418,16 @@ impl PreparedCall for EchoCall {
             }
             if self.arguments.contains("intent") {
                 return ToolOutput::success(format!("{:?}", context.root_user_requests));
+            }
+            if self.arguments.contains("status") {
+                let Some(sink) = &context.subagent_status else {
+                    return ToolOutput::success("no status sink");
+                };
+                sink.publish(SubagentStatus {
+                    model: "child-model".to_owned(),
+                    effort: ReasoningEffort::Named("high".to_owned()),
+                });
+                return ToolOutput::success("status published");
             }
             if self.arguments.contains("noticed") {
                 return ToolOutput::success(format!("echo {}", self.arguments))
@@ -1463,6 +1473,45 @@ async fn delegations_carry_the_root_users_requests_and_other_calls_do_not() {
                 ToolResultStatus::Success
             ),
             tool_message("call-2", "None", ToolResultStatus::Success),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_delegation_reports_its_childs_status_before_it_finishes() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"status":1,"delegate":1}"#),
+            ("call-2", r#"{"status":2}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let reported: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::SubagentStatus {
+                call_id, status, ..
+            } => Some(format!("status {} {}", call_id.as_str(), status.model)),
+            UiEvent::ToolFinished { call_id, .. } => Some(format!("finish {}", call_id.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reported,
+        [
+            "status call-1 child-model",
+            "finish call-1",
+            "finish call-2"
+        ]
+    );
+    assert_eq!(
+        provider.requests()[1].messages[2..],
+        [
+            tool_message("call-1", "status published", ToolResultStatus::Success),
+            tool_message("call-2", "no status sink", ToolResultStatus::Success),
         ]
     );
 }

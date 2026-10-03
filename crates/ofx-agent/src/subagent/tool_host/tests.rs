@@ -7,8 +7,9 @@ use ofx_contract::{
     Admission, ApplicableTarget, ApprovalDecision, ApprovalOrigin, AutoCompactPercent,
     CallDescription, ChatMessage, Completion, Concurrency, FinishReason, ModelProvider,
     ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ReviewRequest, ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool,
-    ToolActivity, ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, UiEvent, Usage,
+    ReviewRequest, ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput,
+    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolCall, ToolCallId, ToolEffect,
+    ToolResultStatus, ToolSpec, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -551,6 +552,77 @@ async fn a_cancelled_parent_cancels_its_child_and_a_busy_child_refuses_new_work(
         succeeded("after cancel")
     );
     assert_eq!(harness.provider.seen().len(), 2);
+}
+
+fn reported_status(
+    harness: &Harness,
+    call_id: &str,
+    input: SubagentRequestInput<'_>,
+) -> (
+    BoxFuture<'static, ToolOutput>,
+    Arc<Mutex<Vec<SubagentStatus>>>,
+) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let reported = Arc::clone(&seen);
+    let output = harness.host.execute(
+        SubagentRequest::validate(input).unwrap(),
+        ToolContext::new(
+            ToolCallId::new(call_id),
+            CancellationToken::new(),
+            PathAccess::WorkspaceOnly,
+        )
+        .with_subagent_status(SubagentStatusSink::new(move |status| {
+            reported.lock().unwrap().push(status);
+        })),
+    );
+    (output, seen)
+}
+
+#[tokio::test]
+async fn a_working_child_reports_the_model_and_effort_it_was_created_with() {
+    let harness = Harness::new(vec![
+        Script::Reply("one"),
+        Script::Reply("two"),
+        Script::Reply("three"),
+    ]);
+    let (output, first) = reported_status(
+        &harness,
+        "call-1",
+        SubagentRequestInput::Message {
+            agent: "reviewer",
+            instructions: None,
+            message: "first",
+            model: Some("child-model"),
+            effort: Some("high"),
+        },
+    );
+    assert_eq!(output.await, succeeded("one"));
+    let created = SubagentStatus {
+        model: "child-model".to_owned(),
+        effort: ReasoningEffort::Named("high".to_owned()),
+    };
+    assert_eq!(*first.lock().unwrap(), std::slice::from_ref(&created));
+    let (output, again) = reported_status(&harness, "call-2", message("reviewer", None, "again"));
+    assert_eq!(output.await, succeeded("two"));
+    assert_eq!(*again.lock().unwrap(), [created]);
+    let (output, fresh) = reported_status(&harness, "call-3", run("other"));
+    assert_eq!(output.await, succeeded("three"));
+    assert_eq!(
+        *fresh.lock().unwrap(),
+        [SubagentStatus {
+            model: "parent-model".to_owned(),
+            effort: ReasoningEffort::Auto,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_replayed_result_reports_no_status() {
+    let harness = Harness::new(vec![Script::Reply("done")]);
+    assert_eq!(harness.run("call-1", run("task")).await, succeeded("done"));
+    let (output, replayed) = reported_status(&harness, "call-1", run("task"));
+    assert_eq!(output.await, succeeded("done"));
+    assert!(replayed.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

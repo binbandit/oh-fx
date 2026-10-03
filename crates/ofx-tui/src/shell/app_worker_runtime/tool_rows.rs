@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use ofx_contract::{
     ActionLabel, ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription,
     CommandProcessPresentation, CommandProfile, CommandRequest, Concurrency, FileChangeStats,
-    FileMutation, FileMutationState, PathAccess, RequestId, ReviewHold, SubagentActionState,
-    ToolActivity, ToolCallId, ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus,
-    ToolStatusDetail, TurnId, TurnOutcome, UiCommand, UiEvent, format_subagent_plain_action,
-    tool_permission_denied_json, tool_review_held_json,
+    FileMutation, FileMutationState, PathAccess, ReasoningEffort, RequestId, ReviewHold,
+    SubagentActionState, SubagentStatus, ToolActivity, ToolCallId, ToolDeferral, ToolEffect,
+    ToolRejection, ToolResultStatus, ToolStatusDetail, TurnId, TurnOutcome, UiCommand, UiEvent,
+    format_subagent_plain_action, tool_permission_denied_json, tool_review_held_json,
 };
 
 use super::super::test_shell::TestShell;
@@ -471,6 +471,67 @@ fn subagent_rows_name_the_child_while_it_works_and_when_it_settles() {
     assert!(
         screen.contains(
             "├ Subagent finished · inspect auth\n└ reviewer busy; message not sent · check this"
+        ),
+        "{screen}"
+    );
+}
+
+fn child_status(call: &str, model: &str, effort: ReasoningEffort) -> UiEvent {
+    UiEvent::SubagentStatus {
+        turn_id: turn(),
+        call_id: ToolCallId::new(call),
+        status: SubagentStatus {
+            model: model.to_owned(),
+            effort,
+        },
+    }
+}
+
+#[test]
+fn working_children_show_their_model_under_their_rows() {
+    let run = r#"{"request":{"action":"run","task":"inspect auth"}}"#;
+    let message = r#"{"request":{"action":"message","agent":"reviewer","message":"check this"}}"#;
+    let mut test = running("delegate");
+    test.deliver(delegated("a", run));
+    test.deliver(delegated("b", message));
+    test.deliver(child_status(
+        "a",
+        "openai/gpt-5.5",
+        ReasoningEffort::Named("high".to_owned()),
+    ));
+    test.deliver(child_status(
+        "b",
+        "anthropic/claude-sonnet-4-5",
+        ReasoningEffort::Auto,
+    ));
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "● 2 tool calls · 2 subagent\n├ Subagent working · inspect auth\n│ gpt-5.5 · high\n└ reviewer working · check this\n  sonnet 4-5\n"
+        ),
+        "{screen}"
+    );
+    test.deliver(delegation_finished(
+        "a",
+        run,
+        Outcome {
+            content: r#"{"ok":true,"result":"done","error_code":null}"#.to_owned(),
+            ..success()
+        },
+    ));
+    test.deliver(delegation_finished(
+        "b",
+        message,
+        Outcome {
+            content: r#"{"ok":true,"result":"ok","error_code":null}"#.to_owned(),
+            ..success()
+        },
+    ));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "├ Subagent finished · inspect auth\n│ gpt-5.5 · high\n└ reviewer replied · check this\n  sonnet 4-5"
         ),
         "{screen}"
     );

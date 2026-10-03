@@ -77,11 +77,16 @@ async fn execute_managed(
     match owner.admit(request, &operation_id, root_user_requests) {
         Admitted::Rejected(code) => output(SubagentResult::failure(code)),
         Admitted::Completed(finished) => complete(&finished),
-        Admitted::Ready(waiter) => match Owner::observe(waiter, &context.cancellation).await {
-            Observed::Finished(finished) => complete(&finished),
-            Observed::Cancelled => output(SubagentResult::failure("child_cancelled")),
-            Observed::Unavailable => output(SubagentResult::failure("state_unavailable")),
-        },
+        Admitted::Ready(waiter) => {
+            if let Some(sink) = &context.subagent_status {
+                sink.publish(waiter.status().clone());
+            }
+            match Owner::observe(waiter, &context.cancellation).await {
+                Observed::Finished(finished) => complete(&finished),
+                Observed::Cancelled => output(SubagentResult::failure("child_cancelled")),
+                Observed::Unavailable => output(SubagentResult::failure("state_unavailable")),
+            }
+        }
     }
 }
 

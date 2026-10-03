@@ -2,6 +2,7 @@ use crate::ids::{RequestId, ToolCallId, TurnId};
 use crate::permission_gate::{ApprovalDecision, ApprovalScope, CommandRequest, FileMutation};
 use crate::session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionScope};
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
+use crate::subagent::SubagentStatus;
 use crate::tool_dispatch::CallDescription;
 use crate::types::{
     CommandProcessPresentation, FileChangeStats, PermissionMode, QuestionBatchEntry,
@@ -163,6 +164,11 @@ pub enum UiEvent {
         process: Option<CommandProcessPresentation>,
         status_detail: Option<ToolStatusDetail>,
         file_change: Option<FileChangeStats>,
+    },
+    SubagentStatus {
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        status: SubagentStatus,
     },
     ToolDeferred {
         turn_id: TurnId,

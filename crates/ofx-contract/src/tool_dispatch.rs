@@ -8,6 +8,7 @@ use crate::permission_gate::{
     CommandRequest, FileChange, FileMutation, PathAccess, RootUserRequests,
 };
 use crate::stream_provider::BoxFuture;
+use crate::subagent::SubagentStatusSink;
 use crate::types::{
     CommandProcessPresentation, FileChangeStats, QuestionBatchEntry, ToolResultStatus,
     ToolStatusDetail,
@@ -168,6 +169,7 @@ pub struct ToolContext {
     pub cancellation: CancellationToken,
     pub path_access: PathAccess,
     pub root_user_requests: Option<Arc<RootUserRequests>>,
+    pub subagent_status: Option<SubagentStatusSink>,
 }
 
 impl ToolContext {
@@ -181,12 +183,19 @@ impl ToolContext {
             cancellation,
             path_access,
             root_user_requests: None,
+            subagent_status: None,
         }
     }
 
     #[must_use]
     pub fn with_root_user_requests(mut self, requests: Arc<RootUserRequests>) -> Self {
         self.root_user_requests = Some(requests);
+        self
+    }
+
+    #[must_use]
+    pub fn with_subagent_status(mut self, sink: SubagentStatusSink) -> Self {
+        self.subagent_status = Some(sink);
         self
     }
 }

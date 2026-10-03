@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_contract::{
     ApprovalOrigin, ApprovalRequest, ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode,
-    ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest,
+    ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest, SubagentStatus,
 };
 use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -35,6 +35,13 @@ pub(crate) enum Admitted {
 pub(crate) struct Waiter {
     abandoned: DropGuard,
     finished: watch::Receiver<Option<Finished>>,
+    status: SubagentStatus,
+}
+
+impl Waiter {
+    pub(crate) fn status(&self) -> &SubagentStatus {
+        &self.status
+    }
 }
 
 pub(crate) enum Observed {
@@ -46,6 +53,7 @@ pub(crate) enum Observed {
 struct Slot {
     cancel: CancellationToken,
     finished: watch::Receiver<Option<Finished>>,
+    status: SubagentStatus,
 }
 
 impl Slot {
@@ -53,14 +61,20 @@ impl Slot {
         Waiter {
             abandoned: self.cancel.clone().drop_guard(),
             finished: self.finished.clone(),
+            status: self.status.clone(),
         }
     }
+}
+
+struct NamedChild {
+    runtime: SharedRuntime,
+    status: SubagentStatus,
 }
 
 #[derive(Default)]
 struct State {
     registry: Registry,
-    runtimes: HashMap<String, SharedRuntime>,
+    named: HashMap<String, NamedChild>,
     slots: HashMap<String, Slot>,
     texts: HashMap<String, Option<String>>,
     issued: u64,
@@ -71,6 +85,7 @@ struct Start {
     work: ActiveWork,
     instructions: String,
     runtime: SharedRuntime,
+    status: SubagentStatus,
 }
 
 pub(crate) struct Owner {
@@ -154,6 +169,7 @@ impl Owner {
         let Waiter {
             abandoned,
             mut finished,
+            ..
         } = waiter;
         let observed = tokio::select! {
             biased;
@@ -193,16 +209,25 @@ impl Owner {
             agent,
             permission_mode,
         )));
+        let status = SubagentStatus {
+            model: settings.model,
+            effort: settings.effort,
+        };
         if request.agent_name().is_some() {
-            state
-                .runtimes
-                .insert(child_id.clone(), Arc::clone(&runtime));
+            state.named.insert(
+                child_id.clone(),
+                NamedChild {
+                    runtime: Arc::clone(&runtime),
+                    status: status.clone(),
+                },
+            );
         }
         Ok(Start {
             child_id,
             work,
             instructions: instructions.to_owned(),
             runtime,
+            status,
         })
     }
 
@@ -212,6 +237,7 @@ impl Owner {
         let slot = Slot {
             cancel: cancel.clone(),
             finished: receiver,
+            status: start.status.clone(),
         };
         let waiter = slot.waiter();
         state.slots.insert(start.child_id.clone(), slot);
@@ -222,6 +248,7 @@ impl Owner {
                 work,
                 instructions,
                 runtime,
+                ..
             } = start;
             let active = work.clone();
             let agents = Arc::clone(&owner.agents);
@@ -295,10 +322,10 @@ fn continue_persistent(
         SubagentPlan::Reject(code) => return Err(code.code()),
         SubagentPlan::CreateOneOff | SubagentPlan::CreatePersistent => return Err("host_failure"),
     }
-    let runtime = state
-        .runtimes
+    let (runtime, status) = state
+        .named
         .get(child_id)
-        .cloned()
+        .map(|named| (Arc::clone(&named.runtime), named.status.clone()))
         .ok_or("state_unavailable")?;
     let instructions = state
         .registry
@@ -311,6 +338,7 @@ fn continue_persistent(
         work,
         instructions,
         runtime,
+        status,
     })
 }
 

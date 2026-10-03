@@ -1,11 +1,13 @@
 use ofx_contract::{
-    ActionLabel, CallDescription, CommandProcessPresentation, FileChangeStats, SubagentActionState,
-    ToolActivity, ToolArgsError, ToolCallId, ToolDeferral, ToolPermissionDenialReason,
-    ToolRejection, ToolResultStatus, ToolStatusDetail, TurnOutcome, parse_tool_args_object,
-    shell_request_invalid_field_count, subagent_action, subagent_failure_label,
-    tool_permission_denial_reason,
+    ActionLabel, CallDescription, CommandProcessPresentation, FileChangeStats, ReasoningEffort,
+    SubagentActionState, SubagentStatus, ToolActivity, ToolArgsError, ToolCallId, ToolDeferral,
+    ToolPermissionDenialReason, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnOutcome,
+    parse_tool_args_object, shell_request_invalid_field_count, subagent_action,
+    subagent_failure_label, tool_permission_denial_reason,
 };
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_inline, mask_secrets};
+
+use crate::render::compact_model_label;
 
 const MAX_RUN_COMMAND_ACTIVITY_BYTES: usize = 120;
 const MAX_TARGET_BYTES: usize = MAX_RUN_COMMAND_ACTIVITY_BYTES * MAX_RUN_COMMAND_ACTIVITY_BYTES - 1;
@@ -13,6 +15,7 @@ const MAX_FAILURE_DETAIL_BYTES: usize = 256;
 const SHELL_TOOL: &str = "shell";
 const SUBAGENT_TOOL: &str = "subagent";
 const SUBAGENT_ACTIVE_VERB: &str = " working";
+const STATUS_SEPARATOR: &str = " · ";
 const FILE_MUTATION_TOOLS: [&str; 2] = ["write_file", "edit_file"];
 pub(crate) const FILE_MUTATION_TARGET: &str = "file";
 const INVALID_ARGUMENTS_TARGET: &str = "tool call";
@@ -49,6 +52,7 @@ pub(crate) struct ToolActivityRow {
     label: Option<ActionLabel>,
     title: String,
     pub(crate) status: ToolStatus,
+    child_status: Option<String>,
 }
 
 pub(crate) struct Finished<'a> {
@@ -102,6 +106,7 @@ impl ToolActivityRow {
                 label_len: 0,
                 process: None,
             },
+            child_status: None,
         }
     }
 
@@ -187,13 +192,31 @@ impl ToolActivityRow {
     pub(crate) fn cancel(&mut self) {
         if self.is_active() {
             self.status = self.settled(ToolOutcome::Cancelled, CANCELLED, None, None);
+            self.child_status = None;
         }
+    }
+
+    pub(crate) fn report_child(&mut self, status: &SubagentStatus) {
+        if !self.delegates() {
+            return;
+        }
+        let mut line = compact_model_label(&status.model);
+        if let ReasoningEffort::Named(effort) = &status.effort {
+            line.push_str(STATUS_SEPARATOR);
+            line.push_str(effort);
+        }
+        self.child_status = Some(encoded_target(&line));
+    }
+
+    pub(crate) fn child_status(&self) -> Option<&str> {
+        self.child_status.as_deref()
     }
 
     pub(crate) fn abandon(&mut self, outcome: TurnOutcome) {
         if !self.is_active() {
             return;
         }
+        self.child_status = None;
         let (outcome, phrase) = match outcome {
             TurnOutcome::Completed => (ToolOutcome::Unreported, "Tool completion was not reported"),
             TurnOutcome::Interrupted => (ToolOutcome::Cancelled, "Tool cancelled"),
@@ -432,8 +455,9 @@ fn encoded_target(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        Concurrency, ReviewFailure, ReviewHold, SubagentActionState, ToolEffect,
-        format_subagent_plain_action, tool_permission_denied_json, tool_review_held_json,
+        Concurrency, ReasoningEffort, ReviewFailure, ReviewHold, SubagentActionState,
+        SubagentStatus, ToolEffect, format_subagent_plain_action, tool_permission_denied_json,
+        tool_review_held_json,
     };
 
     use super::*;
@@ -760,6 +784,48 @@ mod tests {
             assert_eq!(child.status.label_len, label.len(), "{content}");
             assert_eq!(child.status.outcome, Some(outcome), "{content}");
         }
+    }
+
+    fn status(model: &str, effort: ReasoningEffort) -> SubagentStatus {
+        SubagentStatus {
+            model: model.to_owned(),
+            effort,
+        }
+    }
+
+    #[test]
+    fn a_subagent_row_keeps_its_childs_status_until_it_is_cancelled() {
+        let mut child = subagent_row(RUN_CHILD);
+        assert_eq!(child.child_status(), None);
+        child.report_child(&status(
+            "openai/gpt-5.5",
+            ReasoningEffort::Named("high".to_owned()),
+        ));
+        assert_eq!(child.child_status(), Some("gpt-5.5 · high"));
+        child.report_child(&status(
+            "anthropic/claude-sonnet-4-5",
+            ReasoningEffort::Auto,
+        ));
+        assert_eq!(child.child_status(), Some("sonnet 4-5"));
+        child.finish(&Finished {
+            arguments: RUN_CHILD,
+            status: ToolResultStatus::Success,
+            content: r#"{"ok":true,"result":"done","error_code":null}"#,
+            process: None,
+            status_detail: None,
+            file_change: None,
+        });
+        assert_eq!(child.child_status(), Some("sonnet 4-5"));
+        let mut cancelled = subagent_row(RUN_CHILD);
+        cancelled.report_child(&status("gpt-5.5", ReasoningEffort::Auto));
+        cancelled.cancel();
+        assert_eq!(cancelled.child_status(), None);
+        let mut hostile = subagent_row(RUN_CHILD);
+        hostile.report_child(&status("evil\u{1b}[2J", ReasoningEffort::Auto));
+        assert_eq!(hostile.child_status(), Some("evil\\x1b[2J"));
+        let mut read = row("read_file", ToolActivity::Read, ("Reading", "Read", "a"));
+        read.report_child(&status("gpt-5.5", ReasoningEffort::Auto));
+        assert_eq!(read.child_status(), None);
     }
 
     #[test]
