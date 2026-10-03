@@ -8,6 +8,7 @@ pub enum SlashKind {
     ResetSession,
     ResumeSession,
     Stats,
+    Usage,
     Status,
     Model,
     Permissions,
@@ -207,6 +208,7 @@ mod tests {
                 "/reset",
                 "/resume",
                 "/stats",
+                "/usage",
                 "/status",
                 "/model",
                 "/permissions",
@@ -221,6 +223,11 @@ mod tests {
             ]
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
+        assert_eq!(spec(SlashKind::Usage).aliases, ["/cost"]);
+        assert_eq!(
+            spec(SlashKind::Usage).completion_description,
+            "show local oh-fx tokens, models, and spend"
+        );
         assert_eq!(
             spec(SlashKind::Permissions).completion_description,
             "choose what oh-fx is allowed to do"
@@ -283,6 +290,7 @@ mod tests {
                 ("/reset", "Session"),
                 ("/resume", "Session"),
                 ("/stats", "Account"),
+                ("/usage", "Account"),
                 ("/status", "General"),
                 ("/model", "Model"),
                 ("/permissions", "Security"),
