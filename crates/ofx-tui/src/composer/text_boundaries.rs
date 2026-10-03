@@ -50,6 +50,57 @@ pub(crate) fn is_whitespace_character_at(text: &str, index: usize) -> bool {
         .is_some_and(|character| character.is_ascii_whitespace() || character == '\u{b}')
 }
 
+pub(crate) fn previous_word_start(text: &str, cursor: usize) -> usize {
+    let mut position = cursor.min(text.len());
+    for word in [false, true] {
+        while position > 0 {
+            let previous = previous_character_start(text, position);
+            if is_word_character_at(text, previous) != word {
+                break;
+            }
+            position = previous;
+        }
+    }
+    position
+}
+
+pub(crate) fn next_word_end(text: &str, cursor: usize) -> usize {
+    scan_right(text, cursor, [false, true])
+}
+
+pub(crate) fn next_word_delete_end(text: &str, cursor: usize) -> usize {
+    scan_right(text, cursor, [true, false])
+}
+
+fn scan_right(text: &str, cursor: usize, runs: [bool; 2]) -> usize {
+    let mut position = cursor.min(text.len());
+    for word in runs {
+        while position < text.len() && is_word_character_at(text, position) == word {
+            position = next_character_end(text, position);
+        }
+    }
+    position
+}
+
+pub(crate) fn previous_whitespace_delimited_token_start(
+    text: &str,
+    cursor: usize,
+    lower_bound: usize,
+) -> usize {
+    let mut position = cursor.min(text.len());
+    let lower = lower_bound.min(position);
+    for whitespace in [true, false] {
+        while position > lower {
+            let previous = previous_character_start(text, position);
+            if is_whitespace_character_at(text, previous) != whitespace {
+                break;
+            }
+            position = previous;
+        }
+    }
+    position
+}
+
 pub(crate) fn logical_line_start(text: &str, cursor: usize) -> usize {
     let start = cursor.min(text.len());
     text.as_bytes()[..start]
@@ -216,6 +267,34 @@ mod tests {
             }
             assert_eq!(cursor, text.len());
         }
+    }
+
+    #[test]
+    fn plain_word_boundaries_skip_separators_before_or_after_a_word() {
+        let text = "alpha, beta_2  é";
+        assert_eq!(previous_word_start(text, text.len()), text.len() - 2);
+        assert_eq!(previous_word_start(text, 13), 7);
+        assert_eq!(previous_word_start(text, 7), 0);
+        assert_eq!(next_word_end(text, 5), 13);
+        assert_eq!(next_word_end(text, 0), 5);
+        assert_eq!(next_word_delete_end(text, 0), 7);
+        assert_eq!(next_word_delete_end(text, 5), 7);
+        assert_eq!(next_word_delete_end(text, text.len()), text.len());
+    }
+
+    #[test]
+    fn whitespace_delimited_tokens_stop_at_the_lower_bound() {
+        let text = "one\ntwo-three  ";
+        assert_eq!(
+            previous_whitespace_delimited_token_start(text, text.len(), 4),
+            4
+        );
+        assert_eq!(
+            previous_whitespace_delimited_token_start(text, text.len(), 0),
+            4
+        );
+        assert_eq!(previous_whitespace_delimited_token_start(text, 3, 0), 0);
+        assert_eq!(previous_whitespace_delimited_token_start(text, 6, 6), 6);
     }
 
     #[test]

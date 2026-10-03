@@ -8,6 +8,7 @@ use ofx_text::{prefix_by_width, visible_width};
 use super::assistant_wrap::{gutter_width, wrap_line};
 use super::display_units::{Unit, display_units};
 use crate::assistant::user_message_card::user_prompt_card;
+use crate::footer::question_ui::{cancelled_resolution_row, resolution_rows};
 use crate::output::activity_status::{ProgressSuffix, TokenProgress, static_status_rows};
 use crate::render::welcome_rows;
 use crate::row_text::{Paint, Row, terminal_safe, terminal_safe_keeping_breaks};
@@ -37,6 +38,10 @@ pub(crate) enum Entry {
         progress: TokenProgress,
     },
     Cancellation,
+    QuestionResolution {
+        answers: Vec<(String, String)>,
+    },
+    QuestionCancelled,
     TurnFailure {
         text: String,
     },
@@ -70,6 +75,8 @@ impl Entry {
                 progress,
             } => vec![turn_summary_row(*duration_ms, *progress, theme).clipped(cols)],
             Self::Cancellation => vec![cancellation_row(theme).clipped(cols)],
+            Self::QuestionResolution { answers } => resolution_rows(theme, answers, cols),
+            Self::QuestionCancelled => vec![cancelled_resolution_row(theme).clipped(cols)],
             Self::TurnFailure { text } => static_status_rows(text, theme.red, cols),
             Self::HelpCatalog {
                 categories,

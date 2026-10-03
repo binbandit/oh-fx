@@ -6,7 +6,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use ofx_contract::{
-    SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiCommand, UiEvent,
+    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, SkillMenuFocus, SkillMenuGroup,
+    SkillMenuItem, SkillMenuSource, TurnId, UiCommand, UiEvent,
 };
 
 use super::*;
@@ -313,4 +314,44 @@ fn without_a_source_at_mentions_are_plain_text() {
             skills: Vec::new(),
         }]
     );
+}
+
+#[test]
+fn a_question_hides_the_picker_until_it_is_answered() {
+    let (mut test, _) = files();
+    test.submit("work");
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(1),
+    });
+    let screen = press(&mut test, b"look at @ma");
+    assert!(screen.contains("src/main.rs"), "{screen}");
+    test.deliver(UiEvent::QuestionRequested {
+        turn_id: TurnId::new(1),
+        request: QuestionRequest {
+            id: RequestId::new(4),
+            entries: vec![QuestionBatchEntry {
+                question: "Proceed?".to_owned(),
+                options: ["Yes", "No"]
+                    .into_iter()
+                    .map(|label| QuestionOption {
+                        label: label.to_owned(),
+                        description: None,
+                    })
+                    .collect(),
+            }],
+        },
+    });
+    let screen = test.screen();
+    assert!(screen.contains("Proceed?"), "{screen}");
+    assert!(!screen.contains("src/main.rs"), "{screen}");
+    let screen = press(&mut test, DOWN);
+    assert!(!screen.contains("src/main.rs"), "{screen}");
+    press(&mut test, b"\r");
+    assert!(test.sent().contains(&UiCommand::QuestionAnswered {
+        request_id: RequestId::new(4),
+        answers: Some(vec!["No".to_owned()]),
+    }));
+    assert_eq!(test.shell.composer.text(), "look at @ma");
+    let screen = test.screen();
+    assert!(screen.contains("src/main.rs"), "{screen}");
 }

@@ -21,7 +21,7 @@ mod pasted_blocks;
 mod registered_entities;
 #[cfg(test)]
 mod test_fixture;
-mod text_boundaries;
+pub(crate) mod text_boundaries;
 mod vertical_navigation;
 mod visual_layout;
 

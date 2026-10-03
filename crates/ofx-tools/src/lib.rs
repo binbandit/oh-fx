@@ -1,3 +1,4 @@
+mod ask_user_question;
 mod file_mutation;
 mod file_mutation_execution;
 mod filesystem;
@@ -9,6 +10,7 @@ mod tool_args;
 mod tool_runtime;
 mod web;
 
+pub use ask_user_question::{AskUserQuestion, answered_questions};
 pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
 pub use skill::SkillTool;
@@ -63,7 +65,8 @@ mod tests {
             ContextLimits::default(),
         );
         let subagent = SubagentTool::new(Arc::new(NoProvider));
-        let tools: [&dyn Tool; 8] = [
+        let ask = AskUserQuestion::new(None);
+        let tools: [&dyn Tool; 9] = [
             &ReadFile::new("/"),
             &GlobFiles::new("/"),
             &GrepFiles::new("/"),
@@ -72,6 +75,7 @@ mod tests {
             &shell,
             &skill,
             &subagent,
+            &ask,
         ];
         for tool in tools {
             let spec = tool.spec();

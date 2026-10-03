@@ -41,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ask_session::SavedAsk;
 use crate::command_echo::CommandEcho;
+use crate::question_call_record::question_text;
 use crate::shell_call_record::{
     CallError, ShellFailure, failed_call, preflight_failed_call, rejected_call,
 };
@@ -609,11 +610,14 @@ struct ToolRecord {
     error: Option<CallError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     command_result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    question: Option<String>,
 }
 
 impl ToolRecord {
-    fn new(name: String, status: ToolResultStatus) -> Self {
+    fn new(name: String, arguments: &str, status: ToolResultStatus) -> Self {
         Self {
+            question: question_text(&name, arguments),
             name,
             status: match status {
                 ToolResultStatus::Success => "success",
@@ -637,18 +641,18 @@ impl ToolRecord {
             .flatten();
         Self {
             command_result: command_result.and_then(|result| serde_json::from_str(result).ok()),
-            ..Self::new(name, status).with_failure(failure)
+            ..Self::new(name, arguments, status).with_failure(failure)
         }
     }
 
     fn rejected(name: String, arguments: &str) -> Self {
         let failure = rejected_call(&name, arguments);
-        Self::new(name, ToolResultStatus::Failure).with_failure(failure)
+        Self::new(name, arguments, ToolResultStatus::Failure).with_failure(failure)
     }
 
     fn preflight_failed(name: String, arguments: &str) -> Self {
         let failure = preflight_failed_call(&name, arguments);
-        Self::new(name, ToolResultStatus::Failure).with_failure(failure)
+        Self::new(name, arguments, ToolResultStatus::Failure).with_failure(failure)
     }
 
     fn with_failure(self, failure: Option<ShellFailure>) -> Self {
@@ -903,6 +907,7 @@ impl Presenter {
             | UiEvent::UsageReported { .. }
             | UiEvent::TurnFinished { .. }
             | UiEvent::ApprovalRequested { .. }
+            | UiEvent::QuestionRequested { .. }
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }
@@ -1618,8 +1623,8 @@ mod tests {
     #[test]
     fn tool_records_and_recovery_follow_the_upstream_shape() {
         let records = [
-            ToolRecord::new("read_file".to_owned(), ToolResultStatus::Success),
-            ToolRecord::new("read_file".to_owned(), ToolResultStatus::Failure),
+            ToolRecord::new("read_file".to_owned(), "{}", ToolResultStatus::Success),
+            ToolRecord::new("read_file".to_owned(), "{}", ToolResultStatus::Failure),
         ];
         let recovered = RouteRecoveryStatus {
             kind: RouteRecoveryKind::AutoRecovered,

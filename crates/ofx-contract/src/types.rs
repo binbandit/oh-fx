@@ -1,3 +1,4 @@
+mod question_batch;
 mod tool_argument_integrity;
 
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use ofx_text::mask_secrets;
 
 use crate::ids::ToolCallId;
 
+pub use question_batch::{QuestionBatchEntry, QuestionOption};
 pub(crate) use tool_argument_integrity::ToolArgumentFailure;
 pub use tool_argument_integrity::{ToolArgumentDiagnostic, ToolArgumentIntegrity};
 
