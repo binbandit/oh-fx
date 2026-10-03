@@ -68,6 +68,18 @@ impl<'a> Json<'a> {
         }
     }
 
+    pub fn is_string(&self) -> bool {
+        matches!(self, Self::String(_))
+    }
+
+    pub fn is_i64(&self) -> bool {
+        matches!(self, Self::Number(number) if number.is_i64())
+    }
+
+    pub fn is_u64(&self) -> bool {
+        matches!(self, Self::Number(number) if number.is_u64())
+    }
+
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::Number(number) => number.as_u64(),
@@ -131,6 +143,10 @@ impl<'a> Object<'a> {
             .iter()
             .find(|(name, _)| name == key)
             .map(|(_, value)| value)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Json<'a>)> {
