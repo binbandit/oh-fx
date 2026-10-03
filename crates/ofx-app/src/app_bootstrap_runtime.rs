@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, ChildStore, ProjectContext, QuestionRequests, Questions, RuntimeContext,
-    SkillContextProvider,
+    Agent, AgentConfig, Approvals, ChildStore, ProjectContext, QuestionRequests, Questions,
+    RuntimeContext, SkillContextProvider,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
@@ -142,6 +142,7 @@ pub struct Launch<'a> {
     pub endpoints: SubscriptionEndpoints,
     pub web_fetch_progress: Option<WebFetchProgress>,
     pub mode: Option<ActiveMode>,
+    pub permission_prompts: bool,
 }
 
 pub struct AgentSetup {
@@ -167,6 +168,7 @@ pub struct AgentSetup {
     workspace: WorkspaceRuntime,
     yolo_acknowledged: bool,
     approvals: Option<Arc<ApprovalQueue>>,
+    permission_prompts: Option<Approvals>,
     change_tracker: Option<ChangeTracker>,
     questions: Option<Questions>,
     question_requests: Option<QuestionRequests>,
@@ -304,6 +306,28 @@ impl Profile {
         self.prepare(launch, true, cancel).await
     }
 
+    fn instructions(&self, overrides: &[ContextLimitOverride]) -> Instructions {
+        let mut limits = self.settings.context_limits();
+        limits.apply_command_line(overrides);
+        let skills = Arc::new(HostSkills::load(
+            &self.workspace_root,
+            self.home.as_deref(),
+            self.paths.as_ref(),
+            &self.settings,
+            &limits,
+        ));
+        let mut project = self.project_context(&limits);
+        let context_notices = project
+            .as_mut()
+            .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
+            .unwrap_or_default();
+        Instructions {
+            skills,
+            project,
+            context_notices,
+        }
+    }
+
     async fn prepare(
         &self,
         launch: Launch<'_>,
@@ -391,6 +415,8 @@ impl Profile {
             yolo_acknowledged: self.settings.yolo_acknowledged(),
             workspace_root: self.workspace_root.clone(),
             approvals,
+            permission_prompts: (!interactive && launch.permission_prompts)
+                .then(Approvals::default),
             change_tracker,
             questions,
             question_requests,
@@ -826,6 +852,10 @@ impl AgentSetup {
         }
     }
 
+    pub fn permission_prompts(&self) -> Option<&Approvals> {
+        self.permission_prompts.as_ref()
+    }
+
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
@@ -962,6 +992,9 @@ impl AgentSetup {
         if let Some(mode) = self.mode {
             agent = agent.with_mode(mode);
         }
+        if let Some(approvals) = &self.permission_prompts {
+            agent = agent.with_permission_prompts(approvals.clone());
+        }
         match &self.project {
             Some((provider, snapshot)) => {
                 agent.with_project_context(provider.clone(), snapshot.clone())
@@ -1030,6 +1063,7 @@ mod tests {
                     executions: &executions,
                     web_fetch_progress: None,
                     mode: None,
+                    permission_prompts: false,
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -1083,6 +1117,7 @@ mod tests {
                     endpoints: SubscriptionEndpoints::default(),
                     web_fetch_progress: None,
                     mode: None,
+                    permission_prompts: false,
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
@@ -1175,6 +1210,7 @@ mod tests {
                     command_timeout: None,
                     executions: &executions,
                     web_fetch_progress: None,
+                    permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
                     mode: Some(ActiveMode {
                         registry: &INSPECTION,
@@ -1355,6 +1391,7 @@ mod tests {
                     command_timeout: None,
                     executions: &executions,
                     web_fetch_progress: None,
+                    permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
                     mode: None,
                 },
