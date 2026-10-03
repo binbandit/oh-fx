@@ -142,10 +142,10 @@ enum EventOutcome {
     Final,
 }
 
-struct NotificationResume {
+#[derive(Default)]
+struct StreamCursor {
     last_event_id: Option<String>,
     retry_ms: u32,
-    received_events: bool,
 }
 
 pub(crate) struct LegacyHttpClient {
@@ -430,7 +430,9 @@ impl HttpShared {
         request_id: u64,
         options: &PostOptions<'_>,
     ) -> Result<String, McpError> {
-        let mut result = self.read_sse_stream(response, request_id, options).await?;
+        let mut result = self
+            .read_sse_stream(response, request_id, options, &StreamCursor::default())
+            .await?;
         loop {
             match result {
                 StreamResult::Final(body) => return Ok(body),
@@ -450,7 +452,13 @@ impl HttpShared {
                     if media_type(&response)? != MediaType::EventStream {
                         return Err(McpError::UnsupportedContentType);
                     }
-                    result = self.read_sse_stream(response, request_id, options).await?;
+                    let resumed = StreamCursor {
+                        last_event_id: Some(last_event_id),
+                        retry_ms,
+                    };
+                    result = self
+                        .read_sse_stream(response, request_id, options, &resumed)
+                        .await?;
                 }
             }
         }
@@ -461,6 +469,7 @@ impl HttpShared {
         mut response: Response,
         request_id: u64,
         options: &PostOptions<'_>,
+        resumed: &StreamCursor,
     ) -> Result<StreamResult, McpError> {
         let mut parser = Parser::new(
             options.max_response_bytes,
@@ -469,9 +478,25 @@ impl HttpShared {
         );
         let mut events = Vec::new();
         let mut last_event_id: Option<String> = None;
-        let mut retry_ms = 0;
+        let mut retry_ms = resumed.retry_ms;
         let mut saw_polling_priming = false;
-        while let Some(chunk) = response.chunk().await? {
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(error) => {
+                    let cursor = last_event_id.or_else(|| resumed.last_event_id.clone());
+                    if self.version.is_some_and(|version| {
+                        close_is_resumable(version, cursor.as_deref(), saw_polling_priming)
+                    }) {
+                        return Ok(StreamResult::Resumable {
+                            last_event_id: cursor.unwrap_or_default(),
+                            retry_ms,
+                        });
+                    }
+                    return Err(error.into());
+                }
+            };
             parser.feed(&chunk, &mut events)?;
             for event in events.drain(..) {
                 if let Some(id) = &event.id {
@@ -517,12 +542,9 @@ impl HttpShared {
             .await
     }
 
-    async fn listen_once(
-        &self,
-        last_event_id: Option<&str>,
-    ) -> Result<NotificationResume, McpError> {
+    async fn listen_once(&self, cursor: &mut StreamCursor) -> Result<bool, McpError> {
         let mut response = self
-            .builder(Method::GET, false, last_event_id)?
+            .builder(Method::GET, false, cursor.last_event_id.as_deref())?
             .send()
             .await?;
         reject_redirect_or_authentication(&response)?;
@@ -535,20 +557,16 @@ impl HttpShared {
         }
         let mut parser = Parser::new(0, NOTIFICATION_FRAME_LIMIT, 0);
         let mut events = Vec::new();
-        let mut resume = NotificationResume {
-            last_event_id: last_event_id.map(str::to_owned),
-            retry_ms: 0,
-            received_events: false,
-        };
+        let mut received_events = false;
         while let Some(chunk) = response.chunk().await? {
             parser.feed(&chunk, &mut events)?;
             for event in events.drain(..) {
-                resume.received_events = true;
+                received_events = true;
                 if let Some(id) = event.id {
-                    resume.last_event_id = Some(id);
+                    cursor.last_event_id = Some(id);
                 }
                 if let Some(value) = event.retry_ms {
-                    resume.retry_ms = value;
+                    cursor.retry_ms = value;
                 }
                 if !event.data.is_empty() {
                     self.route_notification(&event.data)?;
@@ -556,7 +574,7 @@ impl HttpShared {
             }
         }
         parser.finish()?;
-        Ok(resume)
+        Ok(received_events)
     }
 
     fn route_notification(&self, data: &str) -> Result<(), McpError> {
@@ -587,17 +605,14 @@ impl HttpShared {
 }
 
 async fn listener_main(shared: Arc<HttpShared>) {
-    let mut last_event_id: Option<String> = None;
+    let mut cursor = StreamCursor::default();
     let mut attempt = 0;
     loop {
-        match shared.listen_once(last_event_id.as_deref()).await {
-            Ok(resume) => {
-                last_event_id = resume.last_event_id;
-                if resume.received_events {
-                    attempt = 0;
-                    sleep(Duration::from_millis(resume.retry_ms.into())).await;
-                    continue;
-                }
+        match shared.listen_once(&mut cursor).await {
+            Ok(true) => {
+                attempt = 0;
+                sleep(Duration::from_millis(cursor.retry_ms.into())).await;
+                continue;
             }
             Err(
                 McpError::McpNotificationListenerUnsupported
@@ -605,7 +620,7 @@ async fn listener_main(shared: Arc<HttpShared>) {
                 | McpError::McpSessionExpired
                 | McpError::MissingFinalResponse,
             ) => return,
-            Err(_) => last_event_id = None,
+            Ok(false) | Err(_) => {}
         }
         if shared.stopping.load(Ordering::Acquire) {
             return;
@@ -1143,6 +1158,137 @@ mod tests {
             [ServerNotification::ToolsListChanged]
         );
         assert_eq!(client.current_tools().await.unwrap().tools[0].name, "after");
+        client.shutdown(ShutdownMode::ProcessExit).await;
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_tool_call_stream_resumes_from_its_last_event() {
+        let server = FakeServer::start(|request| match (request.method.as_str(), request.method_name().as_deref()) {
+            ("POST", Some("tools/call")) => Reply::sse(&[
+                "id: event-1\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n",
+                "id: event-2\ndata: {\"jsonrpc\":\"2.0\",",
+            ])
+            .interrupted(),
+            ("GET", _) => Reply::sse(&[
+                "data: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[]}}\n\n",
+            ]),
+            _ => session_handler("2025-11-25")(request),
+        })
+        .await;
+        let client = McpClient::connect(&remote(&server.url), &ConnectOptions::default())
+            .await
+            .unwrap();
+        let outcome = client
+            .call_tool("remote_tool", &json!({}), CallOptions::default())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
+        let requests = server.requests();
+        let resume = requests
+            .iter()
+            .find(|request| request.method == "GET")
+            .unwrap();
+        assert_eq!(resume.header("last-event-id"), Some("event-1"));
+        let calls = requests
+            .iter()
+            .filter(|request| request.method_name().as_deref() == Some("tools/call"))
+            .count();
+        assert_eq!(calls, 1);
+        client.shutdown(ShutdownMode::ProcessExit).await;
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_tool_call_stream_without_an_event_id_fails() {
+        let server = FakeServer::start(|request| match request.method_name().as_deref() {
+            Some("tools/call") => Reply::sse(&[
+                "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n",
+            ])
+            .interrupted(),
+            _ => session_handler("2025-11-25")(request),
+        })
+        .await;
+        let client = McpClient::connect(&remote(&server.url), &ConnectOptions::default())
+            .await
+            .unwrap();
+        assert!(
+            client
+                .call_tool("remote_tool", &json!({}), CallOptions::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            server
+                .requests()
+                .iter()
+                .all(|request| request.method != "GET")
+        );
+        client.shutdown(ShutdownMode::ProcessExit).await;
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_notification_stream_resumes_from_its_last_event() {
+        let gets = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&gets);
+        let server = FakeServer::start(move |request| match (request.method.as_str(), request.method_name().as_deref()) {
+            ("POST", Some("initialize")) => {
+                initialize_reply(request, "2025-11-25", r#"{"tools":{"listChanged":true}}"#)
+            }
+            ("GET", _) if seen.fetch_add(1, Ordering::Relaxed) == 0 => Reply::sse(&[
+                "id: notice-1\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n",
+            ])
+            .interrupted(),
+            ("GET", _) => Reply::sse(&[]).held_open(),
+            _ => session_handler("2025-11-25")(request),
+        })
+        .await;
+        let client = McpClient::connect(&remote(&server.url), &ConnectOptions::default())
+            .await
+            .unwrap();
+        assert!(
+            server
+                .wait_for(|request| request.method == "GET"
+                    && request.header("last-event-id") == Some("notice-1"))
+                .await
+        );
+        client.shutdown(ShutdownMode::ProcessExit).await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_notification_stream_keeps_its_cursor_for_the_retry() {
+        let gets = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&gets);
+        let server = FakeServer::start(move |request| match (request.method.as_str(), request.method_name().as_deref()) {
+            ("POST", Some("initialize")) => {
+                initialize_reply(request, "2025-11-25", r#"{"tools":{"listChanged":true}}"#)
+            }
+            ("GET", _) => match seen.fetch_add(1, Ordering::Relaxed) {
+                0 => Reply::sse(&[
+                    "id: notice-1\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n",
+                ]),
+                1 => Reply::status(503),
+                _ => Reply::sse(&[]).held_open(),
+            },
+            _ => session_handler("2025-11-25")(request),
+        })
+        .await;
+        let client = McpClient::connect(&remote(&server.url), &ConnectOptions::default())
+            .await
+            .unwrap();
+        assert!(server.wait_for(|_| gets.load(Ordering::Relaxed) >= 3).await);
+        let cursors: Vec<_> = server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "GET")
+            .map(|request| request.header("last-event-id").map(str::to_owned))
+            .collect();
+        assert_eq!(
+            cursors[..3],
+            [
+                None,
+                Some("notice-1".to_owned()),
+                Some("notice-1".to_owned())
+            ]
+        );
         client.shutdown(ShutdownMode::ProcessExit).await;
     }
 

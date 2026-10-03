@@ -281,6 +281,7 @@ Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depen
 - Until MCP OAuth lands, a remote server that answers 401 fails with `McpAuthenticationRequired`, and `mcp auth` and `mcp logout` are not available. Static `headers`, `header_env`, and `bearer_token_env` work as upstream sends them. oh-fx advertises no elicitation capability, so a server's `elicitation/create` request is refused, where upstream asks the user.
 - A failed MCP transport reports its error name, such as `ConnectionRefused`, `Timeout`, or `FileNotFound` for a missing stdio command, never the underlying message, which for HTTP names the request URL and anything in its query.
 - Stopping a stdio MCP server also kills what is left in its process group after the server itself exited, so a background process it started does not outlive it. Upstream signals the group only while the server is still running.
+- A Streamable HTTP event stream that breaks partway, answering a request or carrying notifications, is resumed with a GET whose `Last-Event-ID` is the last complete event's id, as the MCP resumability rules allow for network failures, and the notification stream keeps that id and the server's retry delay across its reconnection attempts. The request itself is never posted again. Upstream fails such a request with `ReadFailed` and restarts its notification stream without `Last-Event-ID`.
 
 ## Parity tracking
 

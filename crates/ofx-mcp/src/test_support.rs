@@ -42,6 +42,7 @@ pub(crate) struct Reply {
     parts: Vec<Vec<u8>>,
     streamed: bool,
     hold_open: bool,
+    interrupted: bool,
     live: Option<mpsc::UnboundedReceiver<String>>,
 }
 
@@ -53,6 +54,7 @@ impl Reply {
             parts: Vec::new(),
             streamed: false,
             hold_open: false,
+            interrupted: false,
             live: None,
         }
     }
@@ -93,6 +95,11 @@ impl Reply {
 
     pub(crate) fn held_open(mut self) -> Self {
         self.hold_open = true;
+        self
+    }
+
+    pub(crate) fn interrupted(mut self) -> Self {
+        self.interrupted = true;
         self
     }
 }
@@ -163,8 +170,9 @@ async fn serve(
     for (name, value) in &reply.headers {
         let _ = write!(head, "{name}: {value}\r\n");
     }
-    if !reply.streamed {
-        let length: usize = reply.parts.iter().map(Vec::len).sum();
+    if !reply.streamed || reply.interrupted {
+        let sent: usize = reply.parts.iter().map(Vec::len).sum();
+        let length = if reply.interrupted { sent + 1024 } else { sent };
         let _ = write!(head, "Content-Length: {length}\r\n");
     }
     head.push_str("\r\n");
