@@ -474,6 +474,10 @@ impl ProviderFailure {
 pub(crate) enum Delta {
     Text(String),
     Reasoning(String),
+    ToolCallStarted {
+        call_id: ToolCallId,
+        tool_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -934,6 +938,10 @@ impl Reducer {
                         limits.tool_arguments_bytes,
                     )?;
                 }
+                self.deltas.push(Delta::ToolCallStarted {
+                    call_id: ToolCallId::new(call_id),
+                    tool_name: name.to_owned(),
+                });
                 Ok(())
             }
             Some("reasoning") => self.reconcile_reasoning(output_index, item, Evidence::Identity),
