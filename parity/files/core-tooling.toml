@@ -18,9 +18,9 @@ note = "Output sanitization and shell snapshots exist; cross-stream canonical fo
 
 [[file]]
 upstream = "src/core/tooling/command_policy.zig"
-status = "todo"
-modules = []
-note = "Destructive effect annotations, risk notes and safer command alternatives are unimplemented."
+status = "partial"
+modules = ["crates/ofx-shell/src/command_policy.rs"]
+note = "Destructive effects, risk notes and safer command alternatives are implemented; semantic exit-code annotations are absent."
 
 [[file]]
 upstream = "src/core/tooling/command_result_mapping.zig"
