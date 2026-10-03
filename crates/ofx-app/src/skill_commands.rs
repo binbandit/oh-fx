@@ -82,8 +82,9 @@ pub(crate) fn handle_skills(state: &ControllerState, rest: &str) {
         skills.refresh();
     }
     let found = skills.current();
-    if let Some(summary) = diagnostic_summary(&found.diagnostics) {
-        state.claim_context_notice(&summary);
+    if let Some(summary) = diagnostic_summary(&found.diagnostics)
+        && state.claim_context_notice(&summary)
+    {
         state.notice(NoticeTone::Warning, TOPIC, &summary);
     }
     match command {

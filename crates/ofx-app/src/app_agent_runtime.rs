@@ -106,8 +106,8 @@ impl ControllerState {
         self.setup.skills()
     }
 
-    pub(crate) fn claim_context_notice(&self, text: &str) {
-        self.lock_context_notices().claim(text);
+    pub(crate) fn claim_context_notice(&self, text: &str) -> bool {
+        self.lock_context_notices().claim(text).is_some()
     }
 
     fn lock_context_notices(&self) -> MutexGuard<'_, ContextNotices> {
@@ -2105,6 +2105,29 @@ mod tests {
             skills_notice(&mut harness, "/skills show missing").await,
             "skills|Skill 'missing' not found."
         );
+    }
+
+    fn skill_warnings(events: &[UiEvent]) -> usize {
+        notice_body(events)
+            .iter()
+            .filter(|body| body.starts_with("skills|skill discovery warning:"))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn skills_commands_warn_about_an_unchanged_invalid_skill_once_per_conversation() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        let broken = harness.home.path().join("workspace/skills/broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("SKILL.md"), "---\ndescription: nameless\n---\n").unwrap();
+        harness.command("/skills");
+        assert_eq!(skill_warnings(harness.until(is_skills_menu).await), 1);
+        harness.command("/skills");
+        assert_eq!(skill_warnings(harness.until(is_skills_menu).await), 0);
+        harness.command("/clear");
+        harness.command("/skills");
+        assert_eq!(skill_warnings(harness.until(is_skills_menu).await), 1);
     }
 
     #[tokio::test]
