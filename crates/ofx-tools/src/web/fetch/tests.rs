@@ -108,11 +108,37 @@ fn advertises_upstream_schema_description_and_progress_title() {
     assert_eq!(
         prepared.describe(),
         CallDescription {
-            title: "Fetching http://Example.com/docs".to_owned(),
+            title: "Fetching https://example.com/docs".to_owned(),
             activity: ToolActivity::Read,
             effect: ToolEffect::ReadOnly,
             concurrency: Concurrency::Parallel,
         }
+    );
+}
+
+#[test]
+fn the_progress_title_shows_the_fetched_url_with_its_secrets_redacted() {
+    let prepared = WebFetch::default()
+        .prepare(
+            r#"{"url":" http://user@Docs.Example.Test/release?token=terminal-secret-value&safe=ok&X-Amz-Signature=signature-value#frag "}"#,
+        )
+        .err();
+    assert_eq!(
+        prepared,
+        Some(ToolOutput::failure(
+            "web_fetch refuses credential-bearing URLs"
+        ))
+    );
+    let title = WebFetch::default()
+        .prepare(
+            r#"{"url":" http://Docs.Example.Test/release?token=terminal-secret-value&safe=ok&X-Amz-Signature=signature-value#frag "}"#,
+        )
+        .unwrap()
+        .describe()
+        .title;
+    assert_eq!(
+        title,
+        "Fetching https://docs.example.test/release?token=[redacted]&safe=ok&X-Amz-Signature=[redacted]"
     );
 }
 

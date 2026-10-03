@@ -4,8 +4,7 @@ use std::time::Instant;
 
 use ofx_contract::{
     BoxFuture, CallDescription, CallPresentation, Concurrency, DetailValue, PreparedCall, Tool,
-    ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec, format_plain_action,
-    valued_execution_failure_json,
+    ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec, valued_execution_failure_json,
 };
 use ofx_text::{clipped_label, is_model_safe_text, redact_url_for_display};
 
@@ -90,7 +89,11 @@ impl Tool for WebFetch {
         let url = validate(&decode(arguments)?)?;
         Ok(Box::new(WebFetchCall {
             description: CallDescription {
-                title: format_plain_action(TOOL_NAME, &PRESENTATION, arguments),
+                title: format!(
+                    "{} {}",
+                    PRESENTATION.action_label,
+                    redact_url_for_display(&url.retrieval_url)
+                ),
                 activity: PRESENTATION.activity,
                 effect: ToolEffect::ReadOnly,
                 concurrency: Concurrency::Parallel,

@@ -1,9 +1,11 @@
 use std::fs;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use ofx_testkit::{
-    ConnectProxy, FakeServer, RecordedRequest, Reply, WEB_CA_PEM, chat_text_events,
+    ConnectProxy, FakeServer, PtySession, RecordedRequest, Reply, WEB_CA_PEM, chat_text_events,
     chat_tool_call_events,
 };
 use serde_json::{Value, json};
@@ -54,7 +56,16 @@ impl Home {
     }
 
     fn ask_with(&self, proxy: &ConnectProxy, args: &[&str], envs: &[(&str, &str)]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        self.command(&proxy.url(), args)
+            .envs(envs.iter().copied())
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx")
+    }
+
+    fn command(&self, proxy_url: &str, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
             .args(args)
             .current_dir(self.root.join("workspace"))
             .env_clear()
@@ -65,13 +76,10 @@ impl Home {
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("SHELL", "/bin/sh")
             .env("OH_FX_AUTO_UPGRADE", "0")
-            .env("HTTPS_PROXY", proxy.url())
+            .env("HTTPS_PROXY", proxy_url)
             .env("SSL_CERT_FILE", self.root.join("web-ca.pem"))
-            .env(KEY.0, KEY.1)
-            .envs(envs.iter().copied())
-            .stdin(Stdio::null())
-            .output()
-            .expect("run oh-fx")
+            .env(KEY.0, KEY.1);
+        command
     }
 }
 
@@ -217,4 +225,37 @@ fn ask_fetches_no_proxy_hosts_directly_with_their_local_answer() {
         serde_json::from_str(content.as_str().expect("text content")).expect("a JSON failure");
     assert_eq!(failure["error"]["message"], "web_fetch transport failed");
     assert_eq!(failure["error"]["details"]["error"], "UnknownHostName");
+}
+
+#[test]
+fn terminal_ask_shows_the_fetched_url_with_its_secrets_redacted() {
+    let closed = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let proxy = format!("http://{}", closed.local_addr().expect("read the port"));
+    drop(closed);
+    let chat = fetch_then_answer(
+        "https://docs.example.test/release?token=terminal-secret-value&X-Amz-Signature=signature-value",
+    );
+    let home = Home::new(&chat, "ask");
+    let mut session = PtySession::spawn(home.command(&proxy, &["ask", "what changed?"]), 24, 200)
+        .expect("spawn oh-fx in a pty");
+    let screen = session
+        .wait_for(Duration::from_secs(30), |screen| {
+            screen.contains("Version 2 is out.")
+        })
+        .unwrap_or_else(|screen| panic!("the answer never appeared:\n{screen}"));
+    assert!(
+        screen.contains(
+            "Fetching https://docs.example.test/release?token=[redacted]&X-Amz-Signature=[redacted]"
+        ),
+        "{screen}"
+    );
+    assert!(
+        session
+            .wait_exit(Duration::from_secs(30))
+            .is_some_and(|status| status.success())
+    );
+    let output = String::from_utf8_lossy(&session.output()).into_owned();
+    assert!(!output.contains("terminal-secret-value"), "{output}");
+    assert!(!output.contains("signature-value"), "{output}");
+    assert_eq!(chat.requests().len(), 2);
 }
