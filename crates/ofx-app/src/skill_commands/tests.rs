@@ -141,3 +141,55 @@ fn menu_items_carry_their_tab_group_and_labels() {
         "global ~/.claude/skills"
     );
 }
+
+#[test]
+fn creating_an_existing_skill_keeps_its_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("skills");
+    fs::create_dir_all(root.join("review")).unwrap();
+    fs::write(root.join("review/SKILL.md"), "custom\n").unwrap();
+    assert!(create_template(&root, "review").is_err());
+    assert_eq!(
+        fs::read_to_string(root.join("review/SKILL.md")).unwrap(),
+        "custom\n"
+    );
+}
+
+fn listing(directory: &Path) -> Vec<(std::ffi::OsString, Option<String>)> {
+    let mut entries: Vec<_> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            (
+                path.file_name().unwrap().to_owned(),
+                fs::read_to_string(&path).ok(),
+            )
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+#[test]
+fn creation_never_follows_a_link_out_of_the_managed_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("target.md"), "external\n").unwrap();
+    let before = listing(&outside);
+    let root = temp.path().join("config/skills");
+    fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("review")).unwrap();
+    assert!(create_template(&root, "review").is_err());
+    fs::create_dir_all(root.join("deploy")).unwrap();
+    std::os::unix::fs::symlink(outside.join("target.md"), root.join("deploy/SKILL.md")).unwrap();
+    assert!(create_template(&root, "deploy").is_err());
+    fs::create_dir_all(root.join("dangling")).unwrap();
+    std::os::unix::fs::symlink(outside.join("new.md"), root.join("dangling/SKILL.md")).unwrap();
+    assert!(create_template(&root, "dangling").is_err());
+    let linked_root = temp.path().join("linked/skills");
+    fs::create_dir_all(linked_root.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&outside, &linked_root).unwrap();
+    assert!(create_template(&linked_root, "fresh").is_err());
+    assert_eq!(listing(&outside), before);
+}

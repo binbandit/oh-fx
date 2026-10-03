@@ -1,11 +1,15 @@
-use std::fs;
-use std::io;
+use std::ffi::OsStr;
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     NoticeTone, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiEvent,
 };
 use ofx_skills::{Skill, SkillDiscovery, SkillSource, diagnostic_summary};
+use rustix::fs::{Mode, OFlags, mkdirat, openat};
+use rustix::io::Errno;
 
 use crate::app_agent_runtime::ControllerState;
 
@@ -15,6 +19,14 @@ const USAGE: &str = "usage: /skills [list|add|install|show|create|remove|path] [
 const INVALID_NAME: &str = "Invalid skill name. Use a single directory name without '/' or '\\'.";
 const MAX_NAME_BYTES: usize = 256;
 const SKILL_FILE: &str = "SKILL.md";
+const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::CLOEXEC);
+const NEW_FILE_FLAGS: OFlags = OFlags::WRONLY
+    .union(OFlags::CREATE)
+    .union(OFlags::EXCL)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command<'a> {
@@ -144,6 +156,14 @@ fn create(state: &ControllerState, name: &str) {
                 &format!("Created {}", path.display()),
             );
         }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => state.notice(
+            NoticeTone::Error,
+            TOPIC,
+            &format!(
+                "Failed to create skill '{name}': {} already exists",
+                skills.managed_root().join(name).join(SKILL_FILE).display()
+            ),
+        ),
         Err(error) => state.notice(
             NoticeTone::Error,
             TOPIC,
@@ -153,16 +173,43 @@ fn create(state: &ControllerState, name: &str) {
 }
 
 fn create_template(managed_root: &Path, name: &str) -> io::Result<PathBuf> {
-    let directory = managed_directory(managed_root, name)?;
-    fs::create_dir_all(&directory)?;
-    let path = directory.join(SKILL_FILE);
-    fs::write(
-        &path,
+    let (Some(parent), Some(root_name), true) = (
+        managed_root.parent(),
+        managed_root.file_name(),
+        managed_root.is_absolute(),
+    ) else {
+        return Err(io::ErrorKind::NotFound.into());
+    };
+    fs::create_dir_all(parent)?;
+    let parent = rustix::fs::open(parent, DIRECTORY_FLAGS, Mode::empty())?;
+    let root = child_directory(&parent, root_name)?;
+    let directory = child_directory(&root, OsStr::new(name))?;
+    let file = openat(
+        &directory,
+        SKILL_FILE,
+        NEW_FILE_FLAGS,
+        Mode::from_raw_mode(0o666),
+    )?;
+    File::from(file).write_all(
         format!(
             "---\nname: {name}\ndescription: Describe when this skill should activate\n---\n\n# {name}\n\nInstructions for this skill...\n"
-        ),
+        )
+        .as_bytes(),
     )?;
-    Ok(path)
+    Ok(managed_root.join(name).join(SKILL_FILE))
+}
+
+fn child_directory(parent: &OwnedFd, name: &OsStr) -> io::Result<OwnedFd> {
+    match mkdirat(parent, name, Mode::from_raw_mode(0o755)) {
+        Ok(()) | Err(Errno::EXIST) => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(openat(
+        parent,
+        name,
+        DIRECTORY_FLAGS.union(OFlags::NOFOLLOW),
+        Mode::empty(),
+    )?)
 }
 
 fn remove(state: &ControllerState, found: &SkillDiscovery, name: &str) {
