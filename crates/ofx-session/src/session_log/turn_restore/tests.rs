@@ -1044,6 +1044,37 @@ fn a_title_that_cannot_be_written_leaves_the_turn_saved() {
 }
 
 #[test]
+fn a_title_saved_before_the_first_turn_is_kept() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let mut renamed = session.metadata.clone();
+    renamed.title = Some("Renamed by hand".to_owned());
+    session.write_metadata(renamed).unwrap();
+    session
+        .record_turn(&simple_turn("fix the build", "ok"), &gateway())
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "Renamed by hand");
+    assert_eq!(session.display_title(), "Renamed by hand");
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let mut renamed = session.metadata.clone();
+    renamed.title = Some("Generated title".to_owned());
+    session.write_metadata(renamed).unwrap();
+    session
+        .record_compaction(
+            "S",
+            HistoryCut {
+                turns: 0,
+                tool_steps: 0,
+            },
+            Some(&simple_turn("compacted first", "")),
+            &gateway(),
+        )
+        .unwrap();
+    assert_eq!(saved_title(&fixture), "Generated title");
+}
+
+#[test]
 fn a_resumed_session_or_a_checkpointed_first_turn_keeps_titles_as_upstream() {
     let fixture = Fixture::new();
     let mut session = fixture.start();

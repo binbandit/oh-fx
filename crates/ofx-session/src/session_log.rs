@@ -211,7 +211,8 @@ impl WritableSession {
     }
 
     fn write_first_title(&mut self, fresh: bool, prompt: &str) -> Result<(), SessionError> {
-        let Some(title) = fresh.then(|| prompt_title(prompt)).flatten() else {
+        let untitled = fresh && self.metadata.title.is_none();
+        let Some(title) = untitled.then(|| prompt_title(prompt)).flatten() else {
             return Ok(());
         };
         let mut proposed = self.metadata.clone();
