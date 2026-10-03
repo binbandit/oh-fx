@@ -1,11 +1,12 @@
 use std::env;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use ofx_text::lowercase_hex;
+use rustix::fs::{FileType, Mode, OFlags};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -109,12 +110,19 @@ fn temporary_root() -> PathBuf {
 
 fn read_container_id(path: &Path) -> io::Result<String> {
     let invalid = || io::Error::from(io::ErrorKind::InvalidData);
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.len() > MAX_CONTAINER_ID_BYTES {
+    let flags =
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
+    let fd = rustix::fs::open(path, flags, Mode::empty())?;
+    let stat = rustix::fs::fstat(&fd)?;
+    let oversized = u64::try_from(stat.st_size).map_or(true, |size| size > MAX_CONTAINER_ID_BYTES);
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || stat.st_nlink > 1
+        || oversized
+    {
         return Err(invalid());
     }
     let mut text = String::new();
-    fs::File::open(path)?
+    File::from(fd)
         .take(MAX_CONTAINER_ID_BYTES)
         .read_to_string(&mut text)?;
     let id = text.trim_matches([' ', '\t', '\r', '\n']);
@@ -128,6 +136,11 @@ fn read_container_id(path: &Path) -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+    use std::process::Command;
+    use std::sync::mpsc;
+    use std::thread;
+
     use super::*;
 
     fn argv(items: &[&str]) -> Vec<String> {
@@ -173,6 +186,54 @@ mod tests {
         assert_eq!(read_container_id(&cidfile).unwrap(), "0123456789abcdef");
         fs::write(&cidfile, "not-a-container-id\n").unwrap();
         assert!(read_container_id(&cidfile).is_err());
+    }
+
+    #[test]
+    fn docker_mcp_cleanup_rejects_hard_linked_cidfiles() {
+        let directory = tempfile::tempdir().unwrap();
+        let cidfile = directory.path().join("fixture.cid");
+        fs::write(&cidfile, "0123456789abcdef\n").unwrap();
+        let linked = directory.path().join("linked.cid");
+        fs::hard_link(&cidfile, &linked).unwrap();
+        assert!(read_container_id(&linked).is_err());
+        assert!(read_container_id(&cidfile).is_err());
+        fs::remove_file(&linked).unwrap();
+        assert_eq!(read_container_id(&cidfile).unwrap(), "0123456789abcdef");
+    }
+
+    #[test]
+    fn docker_mcp_cleanup_never_follows_a_symlinked_cidfile() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.cid");
+        fs::write(&target, "0123456789abcdef\n").unwrap();
+        let cidfile = directory.path().join("fixture.cid");
+        symlink(&target, &cidfile).unwrap();
+        assert!(read_container_id(&cidfile).is_err());
+    }
+
+    #[test]
+    fn docker_mcp_cleanup_rejects_special_cidfiles_without_blocking() {
+        let directory = tempfile::tempdir().unwrap();
+        let fifo = directory.path().join("fifo.cid");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(read_container_id(&fifo).is_err());
+        });
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("a FIFO cidfile is refused without waiting for a writer")
+        );
+        let nested = directory.path().join("directory.cid");
+        fs::create_dir(&nested).unwrap();
+        assert!(read_container_id(&nested).is_err());
     }
 
     #[tokio::test]
