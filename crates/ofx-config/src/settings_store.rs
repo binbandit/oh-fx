@@ -63,6 +63,7 @@ const FAST_MODE_MIGRATION: Migration = Migration {
     snapshot: "settings.json.preference-migration.fast_mode.json",
 };
 const EFFORT_MIGRATION: Migration = Migration {
+    container: None,
     field: EFFORT,
     binding: None,
     snapshot: "settings.json.preference-migration.effort.json",

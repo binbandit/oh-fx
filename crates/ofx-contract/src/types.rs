@@ -328,6 +328,13 @@ impl ReasoningEffort {
             Self::Named(name) => name,
         }
     }
+
+    pub fn display_label(&self) -> &str {
+        match self {
+            Self::Auto => "default",
+            Self::Named(name) => name,
+        }
+    }
 }
 
 pub fn is_valid_reasoning_effort(raw: &str) -> bool {
@@ -718,6 +725,11 @@ mod tests {
         );
         assert_eq!(ReasoningEffort::parse("default").unwrap().label(), "auto");
         assert_eq!(ReasoningEffort::parse("xHigh").unwrap().label(), "xHigh");
+        assert_eq!(ReasoningEffort::Auto.display_label(), "default");
+        assert_eq!(
+            ReasoningEffort::parse("xHigh").unwrap().display_label(),
+            "xHigh"
+        );
     }
 
     #[test]

@@ -79,8 +79,8 @@ pub use types::{
     valid_credential_account_id,
 };
 pub use ui::{
-    ApprovalOrigin, ApprovalRequest, CompactionActivity, CompactionEnd, HistoryEntry, Notice,
-    NoticeLink, NoticeTone, QuestionRequest, SavedToolCall, StatuslineItem, StatuslineToggles,
-    ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity,
-    WorkspaceIdentitySource,
+    ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,
+    ModelCatalog, ModelCatalogSource, ModelOption, Notice, NoticeLink, NoticeTone, QuestionRequest,
+    SavedToolCall, StatuslineItem, StatuslineToggles, ToolDeferral, ToolRejection, TurnOutcome,
+    UiCommand, UiEvent, WorkspaceIdentity, WorkspaceIdentitySource,
 };

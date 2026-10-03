@@ -183,6 +183,7 @@ impl Shell<'_> {
             }
             UiEvent::SessionTitleChanged { title } => self.session_title_changed(title),
             UiEvent::StatuslineChanged { item, enabled } => self.statusline.set(item, enabled),
+            UiEvent::ModelCatalog { .. } => {}
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,
