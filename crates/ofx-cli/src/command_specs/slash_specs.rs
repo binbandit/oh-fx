@@ -18,6 +18,7 @@ pub enum SlashKind {
     Skills,
     Copy,
     Compact,
+    Alias,
     Fast,
     Workspace,
     Version,
@@ -220,6 +221,7 @@ mod tests {
                 "/skills",
                 "/copy",
                 "/compact",
+                "/alias",
                 "/fast",
                 "/workspace",
                 "/version",
@@ -228,6 +230,11 @@ mod tests {
         );
         assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
         assert_eq!(spec(SlashKind::Usage).aliases, ["/cost"]);
+        assert!(spec(SlashKind::Alias).aliases.is_empty());
+        assert_eq!(
+            spec(SlashKind::Alias).completion_description,
+            "show alias availability"
+        );
         assert_eq!(
             spec(SlashKind::Workspace).completion_description,
             "manage additional workspace directories"
@@ -312,6 +319,7 @@ mod tests {
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),
+                ("/alias", "Extensions"),
                 ("/fast", "Model"),
                 ("/workspace", "Workspace"),
                 ("/version", "General"),

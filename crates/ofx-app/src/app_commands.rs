@@ -23,6 +23,8 @@ const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
 const USAGE_TOPIC: &str = "usage";
 const WORKSPACE_TOPIC: &str = "workspace";
+const ALIASES_TOPIC: &str = "aliases";
+const ALIASES_UNAVAILABLE: &str = "Aliases are not yet configurable.";
 const WORKSPACE_ACCESS_UNAVAILABLE: &str = "Workspace access is unavailable in this runtime.";
 const PROFILE_USAGE_UNAVAILABLE: &str =
     "Durable profile usage is unavailable in this host; active session usage remains in memory.";
@@ -113,19 +115,12 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             state.emit(UiEvent::StatsRequested);
             CommandEffect::None
         }
+        SlashKind::Alias => {
+            state.notice(NoticeTone::Neutral, ALIASES_TOPIC, ALIASES_UNAVAILABLE);
+            CommandEffect::None
+        }
         SlashKind::Fast => CommandEffect::ToggleFast,
-        SlashKind::Compact => match work {
-            Work::Compaction => CommandEffect::None,
-            _ if !state.has_context_to_compact() => {
-                state.compaction(CompactionActivity::Ended(CompactionEnd::NothingToCompact));
-                CommandEffect::None
-            }
-            Work::Idle => CommandEffect::Compact,
-            Work::Turn => {
-                state.compaction(CompactionActivity::Ended(CompactionEnd::Busy));
-                CommandEffect::None
-            }
-        },
+        SlashKind::Compact => compaction_effect(state, work),
         SlashKind::Allowlist => {
             state.emit(UiEvent::Notice {
                 notice: handle_allowlist(&state.settings_access(), command.payload),
@@ -176,6 +171,21 @@ pub(crate) fn handle_command(state: &ControllerState, text: &str, work: Work) ->
             };
             state.notice(NoticeTone::Neutral, "", &format!("{prefix}{resolved}"));
             CommandEffect::SwitchModel(resolved)
+        }
+    }
+}
+
+fn compaction_effect(state: &ControllerState, work: Work) -> CommandEffect {
+    match work {
+        Work::Compaction => CommandEffect::None,
+        _ if !state.has_context_to_compact() => {
+            state.compaction(CompactionActivity::Ended(CompactionEnd::NothingToCompact));
+            CommandEffect::None
+        }
+        Work::Idle => CommandEffect::Compact,
+        Work::Turn => {
+            state.compaction(CompactionActivity::Ended(CompactionEnd::Busy));
+            CommandEffect::None
         }
     }
 }
@@ -300,6 +310,7 @@ mod tests {
                 "/skills",
                 "/copy",
                 "/compact",
+                "/alias",
                 "/fast",
                 "/workspace",
                 "/version",
@@ -316,8 +327,8 @@ mod tests {
         assert_eq!(specs[4].description, "resume a saved session");
         assert_eq!(specs[5].description, "rename the current session");
         assert_eq!(specs[13].description, "browse and manage skills");
-        assert_eq!(specs[19].aliases, ["/exit"]);
-        assert_eq!(specs[19].description, "exit the interactive shell");
+        assert_eq!(specs[20].aliases, ["/exit"]);
+        assert_eq!(specs[20].description, "exit the interactive shell");
     }
 
     #[test]
@@ -347,6 +358,7 @@ mod tests {
                 ("/skills", "Extensions"),
                 ("/copy", "Session"),
                 ("/compact", "Session"),
+                ("/alias", "Extensions"),
                 ("/fast", "Model"),
                 ("/workspace", "Workspace"),
                 ("/version", "General"),

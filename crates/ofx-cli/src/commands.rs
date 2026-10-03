@@ -594,6 +594,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Alias,
+        "/alias",
+        "show alias availability",
+        SlashPresentationCategory::Extensions,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Fast,
         "/fast",
         "toggle Fast mode when supported",
