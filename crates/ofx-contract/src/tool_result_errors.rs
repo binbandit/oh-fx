@@ -2,6 +2,7 @@ use ofx_text::mask_secrets;
 use serde_json::{Map, Value};
 
 use crate::auto_classifier::ReviewFailure;
+use crate::strict_json::parse_strict_json_value;
 use crate::tool_args::parse_json_value;
 use crate::types::{ToolArgumentDiagnostic, ToolArgumentFailure};
 
@@ -280,6 +281,20 @@ pub fn tool_permission_denial_reason(output: &str) -> Option<ToolPermissionDenia
     (held == reason.is_review_hold()).then_some(reason)
 }
 
+pub fn is_tool_output_error(output: &str) -> bool {
+    let structured = match parse_strict_json_value(output.as_bytes()) {
+        Ok(Value::Object(root)) => {
+            root.get("error")
+                .and_then(Value::as_object)
+                .and_then(|error| error.get("type"))
+                .and_then(Value::as_str)
+                == Some("tool_execution_failed")
+        }
+        _ => false,
+    };
+    structured || (output.starts_with("Tool ") && output.contains("failed:"))
+}
+
 pub fn shell_request_invalid_field_count(output: &str) -> Option<usize> {
     let Some(Value::Object(root)) = parse_json_value(output) else {
         return None;
@@ -301,6 +316,36 @@ fn masked(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_output_errors_are_structured_or_active_legacy_failures() {
+        assert!(is_tool_output_error(
+            "Tool read_file failed: file not found"
+        ));
+        assert!(is_tool_output_error(
+            "{\"error\":{\"type\":\"tool_execution_failed\",\"tool_name\":\"read_file\",\"message\":\"failed\"}}"
+        ));
+        assert!(!is_tool_output_error("file content here"));
+        assert!(!is_tool_output_error("Tool result: success"));
+        for adapter in [
+            "Unsupported tool: legacy_tool",
+            "read_file failed: missing.txt",
+            "edit_file failed: old_string not found",
+            "open_url not supported on this OS",
+            "failed to open https://example.test",
+        ] {
+            assert!(!is_tool_output_error(adapter), "{adapter}");
+        }
+        for other in [
+            "{\"error\":{\"type\":\"tool_permission_denied\"}}",
+            "{\"error\":\"tool_execution_failed\"}",
+            "{\"error\":{\"type\":\"other\",\"type\":\"tool_execution_failed\"}}",
+            "{\"error\":{\"type\":\"tool_execution_failed\"}} trailing",
+            "[{\"error\":{\"type\":\"tool_execution_failed\"}}]",
+        ] {
+            assert!(!is_tool_output_error(other), "{other}");
+        }
+    }
 
     #[test]
     fn execution_failure_keeps_upstream_key_order() {

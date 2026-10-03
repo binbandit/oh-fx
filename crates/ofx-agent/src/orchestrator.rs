@@ -44,6 +44,7 @@ use crate::worker_runtime::WorkerRuntime;
 mod compaction;
 mod mode_policy;
 mod project_gate;
+mod provider_tools;
 mod recovery;
 mod response_language;
 mod steering;
@@ -54,6 +55,9 @@ pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use mode_policy::{Offer, denial, offer};
 use project_gate::GatedGroup;
+use provider_tools::{
+    ends_with_provider_results, joins_parallel_groups, malformed_provider_calls, provider_executed,
+};
 use recovery::recovery_tool_choice;
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
@@ -107,6 +111,8 @@ pub enum TurnFailure {
     ResponseLanguageMismatch,
     RepeatedShellExecutionFailure,
     InvalidCompletion,
+    MalformedProviderResult,
+    MalformedProviderArguments,
     PermissionRequired(BlockedCall),
     ProjectContext,
     SkillContext(String),
@@ -124,6 +130,8 @@ impl TurnFailure {
             Self::ResponseLanguageMismatch => "ResponseLanguageMismatch",
             Self::RepeatedShellExecutionFailure => "RepeatedShellExecutionFailure",
             Self::InvalidCompletion => "ModelError",
+            Self::MalformedProviderResult => "MalformedProviderResultIdentity",
+            Self::MalformedProviderArguments => "MalformedProviderToolArguments",
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
             Self::ProjectContext => "ProjectContextFailed",
             Self::SkillContext(code) => code,
@@ -644,20 +652,43 @@ impl Agent {
                     }
                     Reply::Rejected => continue,
                 };
+            if let Some(failure) = malformed_provider_calls(&completion.tool_calls) {
+                return Err(Stop::failed(failure));
+            }
             step += 1;
             let more_steps = self.config.step_limit == 0 || step < self.config.step_limit;
-            match (completion.finish_reason, completion.tool_calls.is_empty()) {
-                (FinishReason::Stop, true) => {
-                    if let Some(text) = self.finish(turn, completion, more_steps, events)? {
-                        return Ok(text);
-                    }
-                }
-                (FinishReason::ToolCalls, false) => {
-                    self.run_batch(turn, completion, more_steps, events, cancel)
-                        .await?;
-                }
-                _ => return Err(Stop::failed(TurnFailure::InvalidCompletion)),
+            if let Some(text) = self
+                .settle_completion(turn, completion, more_steps, events, cancel)
+                .await?
+            {
+                return Ok(text);
             }
+        }
+    }
+
+    async fn settle_completion(
+        &mut self,
+        turn: &mut Turn,
+        completion: Completion,
+        more_steps: bool,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, Stop> {
+        match (completion.finish_reason, completion.tool_calls.is_empty()) {
+            (FinishReason::Stop, true) => self.finish(turn, completion, more_steps, events),
+            (FinishReason::Stop, false) if ends_with_provider_results(&completion) => {
+                self.finish_with_provider_results(turn, completion, more_steps, events)
+            }
+            (FinishReason::Stop, false) if completion.tool_calls.iter().all(provider_executed) => {
+                self.run_batch(turn, completion, more_steps, events, cancel)
+                    .await
+                    .map(|()| None)
+            }
+            (FinishReason::ToolCalls, false) => self
+                .run_batch(turn, completion, more_steps, events, cancel)
+                .await
+                .map(|()| None),
+            _ => Err(Stop::failed(TurnFailure::InvalidCompletion)),
         }
     }
 
@@ -966,6 +997,11 @@ impl Agent {
             if cancel.is_cancelled() {
                 return Err(Stop::interrupted());
             }
+            if provider_executed(&calls[next]) {
+                self.publish_provider_result(turn, &calls[next]);
+                next += 1;
+                continue;
+            }
             let group = match &mut gate {
                 Some(gate) => match self.gated_group(gate, &calls, next) {
                     GatedGroup::Run(group) => group,
@@ -1080,7 +1116,13 @@ impl Agent {
         let malformed: Vec<Option<ToolOutput>> = completion
             .tool_calls
             .iter()
-            .map(argument_rejection)
+            .map(|call| {
+                if provider_executed(call) {
+                    None
+                } else {
+                    argument_rejection(call)
+                }
+            })
             .collect();
         let calls: Vec<ToolCall> = completion
             .tool_calls
@@ -1098,8 +1140,8 @@ impl Agent {
             .iter()
             .zip(&malformed)
             .map(|(call, rejection)| match rejection {
-                Some(_) => call.clone(),
-                None => self.history_call(call.clone()),
+                None if !provider_executed(call) => self.history_call(call.clone()),
+                _ => call.clone(),
             })
             .collect();
         self.history.push(ChatMessage::Assistant {
@@ -1198,10 +1240,12 @@ impl Agent {
             Some(uncompleted) => uncompleted.complete(&calls[start].name),
             None => self.prepare(&calls[start], malformed[start].take()),
         };
-        let parallel = head.parallel_group();
+        let parallel = head
+            .parallel_group()
+            .filter(|_| joins_parallel_groups(&calls[start]));
         let mut group = vec![(&calls[start], head)];
         for (call, malformed) in calls[start + 1..].iter().zip(&mut malformed[start + 1..]) {
-            if parallel.is_none() {
+            if parallel.is_none() || !joins_parallel_groups(call) {
                 break;
             }
             let uncompleted = self.prepare_uncompleted(call, malformed.take());
