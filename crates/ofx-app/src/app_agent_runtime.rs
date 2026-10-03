@@ -27,7 +27,7 @@ use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline, set_statusline};
 use crate::skill_commands::is_install_command;
-use crate::skills::HostSkills;
+use crate::skills::{HostSkills, SkillInstall};
 use crate::user_settings::{self, unsaved_notice};
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
@@ -45,7 +45,7 @@ pub(crate) struct ControllerState {
     fast_mode: bool,
     config_pending: bool,
     pending_clear: Option<u64>,
-    pending_skill_installs: VecDeque<String>,
+    pending_skill_installs: VecDeque<(String, SkillInstall)>,
     received_prompts: u64,
     queue: VecDeque<Prompt>,
     permissions: PermissionRuntime,
@@ -853,8 +853,9 @@ impl Controller {
         if let Some(first_kept_prompt) = self.state.pending_clear.take() {
             self.clear(first_kept_prompt);
         }
-        while let Some(text) = self.state.pending_skill_installs.pop_front() {
+        while let Some((text, accepted)) = self.state.pending_skill_installs.pop_front() {
             handle_command(&self.state, &text, Work::Idle);
+            drop(accepted);
         }
     }
 }
@@ -887,7 +888,7 @@ fn run_deferred(
 ) {
     if let UiCommand::RunCommand { text } = &command {
         if is_install_command(text) {
-            state.pending_skill_installs.push_back(text.to_owned());
+            state.pending_skill_installs.push_back((text.to_owned(), state.skills().installations().start()));
             return;
         }
     }
@@ -4215,6 +4216,13 @@ mod tests {
                 ]
             );
             assert!(controller.state.skills().current().skills.is_empty());
+            assert!(
+                !controller
+                    .state
+                    .skills()
+                    .installations()
+                    .wait_for_running(Duration::ZERO)
+            );
         }
     }
 
