@@ -104,29 +104,32 @@ impl State {
         self.model_step = None;
     }
 
-    fn take_steering(&mut self) -> Vec<Steering> {
-        let targeted = |prompt: &QueuedPrompt| prompt.delivery == Delivery::ActiveTurn;
-        if self
-            .queue
+    fn reachable_steering(&self) -> usize {
+        self.queue
             .iter()
-            .any(|prompt| targeted(prompt) && !prompt.same_turn_eligible())
-        {
+            .take_while(|prompt| prompt.delivery == Delivery::ActiveTurn)
+            .count()
+    }
+
+    fn hands_off(&self) -> bool {
+        self.queue
+            .iter()
+            .take(self.reachable_steering())
+            .any(|prompt| !prompt.same_turn_eligible())
+    }
+
+    fn take_steering(&mut self) -> Vec<Steering> {
+        if self.hands_off() {
             return Vec::new();
         }
-        let mut steering = Vec::new();
-        let mut kept = VecDeque::with_capacity(self.queue.len());
-        for prompt in self.queue.drain(..) {
-            if targeted(&prompt) {
-                steering.push(Steering {
-                    id: prompt.id,
-                    text: prompt.text,
-                });
-            } else {
-                kept.push_back(prompt);
-            }
-        }
-        self.queue = kept;
-        steering
+        let reachable = self.reachable_steering();
+        self.queue
+            .drain(..reachable)
+            .map(|prompt| Steering {
+                id: prompt.id,
+                text: prompt.text,
+            })
+            .collect()
     }
 }
 
@@ -144,7 +147,8 @@ impl WorkerRuntime {
         let mut state = self.lock();
         let mut interrupt = false;
         prompt.delivery = if state.processing() && state.interruption != Interruption::Stop {
-            interrupt = !state.waits_for_boundary();
+            interrupt =
+                !state.waits_for_boundary() && state.reachable_steering() == state.queue.len();
             Delivery::ActiveTurn
         } else {
             Delivery::Ordinary
@@ -170,9 +174,10 @@ impl WorkerRuntime {
         state.begin(Work::Turn { continuation });
         if continuation {
             for queued in &mut state.queue {
-                if queued.is_continuation() && queued.same_turn_eligible() {
-                    queued.delivery = Delivery::ActiveTurn;
+                if !queued.is_continuation() || !queued.same_turn_eligible() {
+                    break;
                 }
+                queued.delivery = Delivery::ActiveTurn;
             }
         }
         Some(prompt)
@@ -240,9 +245,7 @@ impl WorkerRuntime {
                 if state.interruption != Interruption::None {
                     return Boundary::None;
                 }
-                if state.queue.iter().any(|prompt| {
-                    prompt.delivery == Delivery::ActiveTurn && !prompt.same_turn_eligible()
-                }) {
+                if state.hands_off() {
                     return Boundary::Handoff;
                 }
                 let steering = state.take_steering();
@@ -282,6 +285,10 @@ impl WorkerRuntime {
 
     pub(crate) fn interrupt_requested(&self) -> bool {
         self.lock().interruption != Interruption::None
+    }
+
+    pub(crate) fn steering_interrupt(&self) -> bool {
+        self.lock().interruption == Interruption::Steering
     }
 }
 

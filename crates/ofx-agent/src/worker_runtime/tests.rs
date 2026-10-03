@@ -358,3 +358,51 @@ fn boundaries_outside_a_turn_only_report_a_requested_cancel() {
         Boundary::Interrupt
     );
 }
+
+#[test]
+fn a_continuation_with_skills_holds_back_the_plain_steering_typed_after_it() {
+    let runtime = running(&[]);
+    runtime.enter_tool_phase();
+    runtime.admit(prompt(1, "first"));
+    runtime.admit(rich(2, "second with a skill"));
+    runtime.admit(prompt(3, "third"));
+    runtime.finish_processing();
+    let first = runtime.take_next().unwrap();
+    assert_eq!(first.text, "first");
+    assert_eq!(runtime.take_boundary(BoundaryKind::Model), Boundary::None);
+    assert_eq!(
+        runtime.take_boundary(BoundaryKind::Finalizing),
+        Boundary::None
+    );
+    runtime.finish_processing();
+    let second = runtime.take_next().unwrap();
+    assert!(second.is_continuation());
+    assert_eq!(second.text, "second with a skill");
+    assert_eq!(
+        continued(runtime.take_boundary(BoundaryKind::Model)),
+        ["third"]
+    );
+}
+
+#[test]
+fn steering_typed_behind_a_waiting_prompt_waits_without_interrupting_the_turn() {
+    let runtime = running(&[]);
+    runtime.enter_tool_phase();
+    runtime.admit(prompt(1, "first"));
+    runtime.admit(rich(2, "with a skill"));
+    runtime.finish_processing();
+    runtime.take_next().unwrap();
+    let step = runtime.model_step(&CancellationToken::new());
+    runtime.admit(prompt(3, "typed later"));
+    assert!(!step.is_cancelled());
+    assert!(!runtime.interrupt_requested());
+    assert_eq!(runtime.take_boundary(BoundaryKind::Model), Boundary::None);
+    runtime.finish_processing();
+    assert_eq!(
+        queued(&runtime),
+        [
+            ("with a skill".to_owned(), true),
+            ("typed later".to_owned(), true)
+        ]
+    );
+}
