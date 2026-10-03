@@ -143,7 +143,8 @@ impl Shell<'_> {
             event @ (UiEvent::ToolStarted { .. }
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
-            | UiEvent::ToolDeferred { .. }) => self.tool_event(event),
+            | UiEvent::ToolDeferred { .. }
+            | UiEvent::SubagentStatus { .. }) => self.tool_event(event),
             UiEvent::ContextNotice { .. } | UiEvent::SteeringApplied { .. } => {}
             UiEvent::Recovery { turn_id, status } => {
                 let now_ms = self.now_ms();
@@ -367,6 +368,17 @@ impl Shell<'_> {
                         status_detail,
                         file_change,
                     });
+                }
+            }
+            UiEvent::SubagentStatus {
+                turn_id,
+                call_id,
+                status,
+            } => {
+                if self.is_visible_turn(turn_id)
+                    && let Some(row) = self.transcript.tool_row_mut(&call_id)
+                {
+                    row.report_child(&status);
                 }
             }
             UiEvent::ToolDeferred {
