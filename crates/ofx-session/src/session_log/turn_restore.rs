@@ -1,12 +1,9 @@
 use std::mem;
 
 use ofx_config::PrivateDir;
-use ofx_contract::{
-    ChatMessage, ProviderReplay, ReplaySource, RestoredHistory, ToolCall, ToolCallId,
-    ToolResultStatus,
-};
+use ofx_contract::{ChatMessage, RestoredHistory, ToolCall, ToolCallId, ToolResultStatus};
 
-use crate::result_store::{format_stored_result_output, read_for_replay};
+use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_error::SessionError;
 use crate::session_event::{
     ArtifactCompleteness, AssistantEvent, ConversationEvent, SavedReplay, ToolCallEvent,
@@ -16,8 +13,6 @@ use crate::session_log::conversation_history::SavedHistory;
 
 const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
 const ABORTED_TOOL_OUTPUT: &str = "aborted by user";
-const RESULT_UNAVAILABLE: &str =
-    "Saved tool-result content is unavailable. The complete output could not be restored.";
 const INTERRUPTED_TURN_CONTEXT: &str = "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>";
 
 struct Step {
@@ -227,7 +222,7 @@ fn push_execution(
         messages.push(ChatMessage::Assistant {
             content: step.assistant,
             tool_calls: step.calls.into_iter().map(tool_call).collect(),
-            provider_replay: step.replay.map(provider_replay),
+            provider_replay: step.replay.map(SavedReplay::into_provider_replay),
         });
         for result in step.results {
             let content = result_body(&result, dir);
@@ -262,7 +257,7 @@ fn push_ending(messages: &mut Vec<ChatMessage>, ending: Ending) {
                 messages.push(ChatMessage::Assistant {
                     content: Some(text),
                     tool_calls: Vec::new(),
-                    provider_replay: replay.map(provider_replay),
+                    provider_replay: replay.map(SavedReplay::into_provider_replay),
                 });
             }
         }
@@ -324,16 +319,6 @@ fn tool_call(call: ToolCallEvent) -> ToolCall {
         id: ToolCallId::new(call.call_id),
         name: call.tool_name,
         arguments: call.arguments_json,
-    }
-}
-
-fn provider_replay(replay: SavedReplay) -> ProviderReplay {
-    ProviderReplay {
-        source: ReplaySource {
-            provider: replay.source.provider.id().label().to_owned(),
-            model: replay.source.model,
-        },
-        parts_json: replay.parts_json,
     }
 }
 
