@@ -1357,10 +1357,13 @@ fn admission<'p>(
     prepared: &'p dyn PreparedCall,
 ) -> (Admission, Option<FileChange<'p>>) {
     let admission = admit(gate.permissions, action, description);
-    let file = match (&admission, action) {
-        (Admission::ReviewRequired, GatedAction::FileMutation(_)) => {
-            contained(|| prepared.file_change()).flatten()
-        }
+    let shown = match admission {
+        Admission::ReviewRequired => true,
+        Admission::ApprovalRequired => gate.approvals.is_some(),
+        Admission::Allowed(_) => false,
+    };
+    let file = match action {
+        GatedAction::FileMutation(_) if shown => contained(|| prepared.file_change()).flatten(),
         _ => None,
     };
     (admission, file)
@@ -1518,13 +1521,7 @@ async fn ask_approval(
     let mut pending = approvals.open();
     events(UiEvent::ApprovalRequested {
         turn_id,
-        request: Box::new(approval_request(
-            pending.id(),
-            judged.call,
-            judged.action,
-            judged.description,
-            &scope,
-        )),
+        request: Box::new(approval_request(pending.id(), judged, &scope)),
     });
     let answer = tokio::select! {
         biased;
@@ -1541,14 +1538,9 @@ async fn ask_approval(
     }
 }
 
-fn approval_request(
-    id: RequestId,
-    call: &ToolCall,
-    action: GatedAction<'_>,
-    description: &CallDescription,
-    scope: &ApprovalScope,
-) -> ApprovalRequest {
-    let (command, file) = match action {
+fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -> ApprovalRequest {
+    let call = judged.call;
+    let (command, file) = match judged.action {
         GatedAction::Call(_) => (None, None),
         GatedAction::FileMutation(mutation) => (None, Some(mutation.clone())),
         GatedAction::Command(command) => (Some(command.clone()), None),
@@ -1558,13 +1550,14 @@ fn approval_request(
         id,
         call_id: call.id.clone(),
         tool_name: call.name.clone(),
-        description: description.clone(),
+        description: judged.description.clone(),
         tool_arguments_preview: preview.text,
         tool_arguments_truncated: preview.truncated,
         scope: scope.clone(),
         command,
         file,
         origin: ApprovalOrigin::ActiveSession,
+        change: judged.file.map(FileChange::to_proposed),
     }
 }
 

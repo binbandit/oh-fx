@@ -316,7 +316,6 @@ mod tests {
             permission_mode: PermissionMode::Auto,
             full_access_warning: false,
             workspace_label: "workspace".to_owned(),
-            workspace_root: PathBuf::from("/workspace"),
             startup_scrollback: true,
             commands: Vec::new(),
             command_categories: Vec::new(),

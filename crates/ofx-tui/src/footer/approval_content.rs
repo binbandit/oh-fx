@@ -2,10 +2,7 @@ use std::fmt::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use ofx_contract::{
-    ApprovalOrigin, ApprovalRequest, CommandProfile, CommandRequest, FileMutation,
-    FileMutationState, SessionGrant,
-};
+use ofx_contract::{ApprovalOrigin, ApprovalRequest, CommandProfile, CommandRequest, SessionGrant};
 use ofx_text::shell_word;
 
 use super::command_text::{approval_text, project_command_text, unambiguous};
@@ -16,8 +13,6 @@ const COMMAND_KIND: &str = "Command";
 const GENERIC_QUESTION: &str = "Would you like to allow this action?";
 const COMMAND_QUESTION: &str = "Would you like to run the following command?";
 const GENERIC_REASON: &str = "This action needs approval before oh-fx can continue.";
-const WORKSPACE_CHANGE_REASON: &str = "This action changes files in your workspace.";
-const EXTERNAL_CHANGE_REASON: &str = "This action changes a file outside your workspace.";
 const COMMAND_LEAD: &str = "$ ";
 const INPUT_LEAD: &str = "> ";
 const HEADER_LEAD: &str = "# ";
@@ -47,7 +42,6 @@ pub(crate) struct ApprovalContent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActionBlock {
     Line(Phrase),
-    Note(&'static str),
     Refusal(&'static str),
     Header { lead: &'static str, text: String },
     Wrapped { lead: &'static str, text: String },
@@ -55,17 +49,17 @@ pub(crate) enum ActionBlock {
 }
 
 impl ApprovalContent {
-    pub(crate) fn from_request(request: &ApprovalRequest, workspace_root: &Path) -> Self {
+    pub(crate) fn from_request(request: &ApprovalRequest) -> Self {
         Self {
             requester: match &request.origin {
                 ApprovalOrigin::ActiveSession => None,
                 ApprovalOrigin::Subagent(child) => Some(safe_text(child.as_bytes())),
             },
-            ..Self::for_action(request, workspace_root)
+            ..Self::for_action(request)
         }
     }
 
-    fn for_action(request: &ApprovalRequest, workspace_root: &Path) -> Self {
+    fn for_action(request: &ApprovalRequest) -> Self {
         let remember = request.scope.always.as_ref().map(remember_label);
         match &request.command {
             Some(CommandRequest::Run {
@@ -109,70 +103,24 @@ impl ApprovalContent {
             Some(CommandRequest::Observe | CommandRequest::Stop) => {
                 Self::generic(vec![title_line(request)], remember)
             }
-            None => match (&request.file, &request.scope.target) {
-                (Some(file), _) => Self::file_change(request, file, workspace_root, remember),
-                (None, Some(target)) => {
-                    Self::generic(vec![labelled_path(request, target)], remember)
-                }
-                (None, None) if request.tool_arguments_truncated => Self::generic(
+            None => match &request.scope.target {
+                Some(target) => Self::generic(vec![labelled_path(request, target)], remember),
+                None if request.tool_arguments_truncated => Self::generic(
                     vec![
                         title_line(request),
                         ActionBlock::Refusal(ARGUMENTS_TOO_LONG),
                     ],
                     None,
                 ),
-                (None, None) if !request.tool_arguments_preview.is_empty() => Self::generic(
+                None if !request.tool_arguments_preview.is_empty() => Self::generic(
                     vec![ActionBlock::Arguments {
                         target: safe_text(request.description.title.as_bytes()),
                         preview: unambiguous(request.tool_arguments_preview.clone()),
                     }],
                     remember,
                 ),
-                (None, None) => Self::generic(vec![title_line(request)], remember),
+                None => Self::generic(vec![title_line(request)], remember),
             },
-        }
-    }
-
-    fn file_change(
-        request: &ApprovalRequest,
-        file: &FileMutation,
-        workspace_root: &Path,
-        remember: Option<Phrase>,
-    ) -> Self {
-        let (kind, question) = match request.tool_name.as_str() {
-            "write_file" => (
-                "Write file",
-                "Would you like to create or update this file?",
-            ),
-            "edit_file" => ("Edit file", "Would you like to edit this file?"),
-            _ => (GENERIC_KIND, GENERIC_QUESTION),
-        };
-        let reason = if file.target.starts_with(workspace_root) {
-            WORKSPACE_CHANGE_REASON
-        } else {
-            EXTERNAL_CHANGE_REASON
-        };
-        Self {
-            kind,
-            question,
-            reason: Some(reason.to_owned()),
-            action: vec![
-                labelled_path(request, &file.target),
-                ActionBlock::Note(match file.state {
-                    FileMutationState::Creates => {
-                        "Creates this file. Its content is not previewed here."
-                    }
-                    FileMutationState::Changes => {
-                        "Changes this file. The change is not previewed here."
-                    }
-                    FileMutationState::Unchanged => "Leaves this file unchanged.",
-                    FileMutationState::Unread => {
-                        "Writes this file without having read it. The change is not previewed here."
-                    }
-                }),
-            ],
-            remember,
-            requester: None,
         }
     }
 
@@ -247,7 +195,7 @@ fn run_header(settings: &RunSettings<'_>) -> String {
     header
 }
 
-fn remember_label(grant: &SessionGrant) -> Phrase {
+pub(super) fn remember_label(grant: &SessionGrant) -> Phrase {
     match grant {
         SessionGrant::Command {
             cwd,
@@ -435,6 +383,7 @@ mod tests {
             command: Some(command),
             file: None,
             origin: ApprovalOrigin::ActiveSession,
+            change: None,
         }
     }
 
@@ -459,7 +408,7 @@ mod tests {
     }
 
     fn content(command: CommandRequest, always: Option<SessionGrant>) -> ApprovalContent {
-        ApprovalContent::from_request(&request(command, always), Path::new("/ws"))
+        ApprovalContent::from_request(&request(command, always))
     }
 
     #[test]
@@ -748,6 +697,7 @@ mod tests {
             command: None,
             file: None,
             origin: ApprovalOrigin::ActiveSession,
+            change: None,
         };
         let root = || PathBuf::from("/home/me");
         for (tool, grant, label) in [
@@ -767,7 +717,7 @@ mod tests {
                 "allow content searches under ",
             ),
         ] {
-            let shown = ApprovalContent::from_request(&read(tool, Some(grant)), Path::new("/ws"));
+            let shown = ApprovalContent::from_request(&read(tool, Some(grant)));
             assert_eq!(
                 shown.action,
                 [ActionBlock::Line(Phrase::with_path(
@@ -785,67 +735,6 @@ mod tests {
                 ))
             );
         }
-    }
-
-    #[test]
-    fn file_changes_name_their_target_and_what_the_change_does() {
-        let change = |tool: &str, target: &str, state| ApprovalRequest {
-            id: RequestId::new(1),
-            tool_name: tool.to_owned(),
-            call_id: ToolCallId::new("call-1"),
-            description: CallDescription {
-                title: "Writing notes.md".to_owned(),
-                label: None,
-                activity: ToolActivity::Read,
-                effect: ToolEffect::ReadOnly,
-                concurrency: Concurrency::Serial,
-            },
-            tool_arguments_preview: String::new(),
-            tool_arguments_truncated: false,
-            scope: ApprovalScope {
-                target: None,
-                access: PathAccess::WorkspaceOnly,
-                always: None,
-            },
-            command: None,
-            file: Some(FileMutation {
-                target: PathBuf::from(target),
-                state,
-            }),
-            origin: ApprovalOrigin::ActiveSession,
-        };
-        let shown = ApprovalContent::from_request(
-            &change("write_file", "/ws/notes.md", FileMutationState::Creates),
-            Path::new("/ws"),
-        );
-        assert_eq!(shown.kind, "Write file");
-        assert_eq!(
-            shown.question,
-            "Would you like to create or update this file?"
-        );
-        assert_eq!(shown.reason.as_deref(), Some(WORKSPACE_CHANGE_REASON));
-        assert_eq!(
-            shown.action,
-            [
-                ActionBlock::Line(Phrase::with_path(
-                    "write_file ",
-                    PathText::from_raw(b"/ws/notes.md"),
-                    ""
-                )),
-                ActionBlock::Note("Creates this file. Its content is not previewed here.")
-            ]
-        );
-        let shown = ApprovalContent::from_request(
-            &change("edit_file", "/etc/hosts", FileMutationState::Changes),
-            Path::new("/ws"),
-        );
-        assert_eq!(shown.kind, "Edit file");
-        assert_eq!(shown.question, "Would you like to edit this file?");
-        assert_eq!(shown.reason.as_deref(), Some(EXTERNAL_CHANGE_REASON));
-        assert_eq!(
-            shown.action[1],
-            ActionBlock::Note("Changes this file. The change is not previewed here.")
-        );
     }
 
     #[test]
@@ -887,8 +776,9 @@ mod tests {
             command: None,
             file: None,
             origin: ApprovalOrigin::ActiveSession,
+            change: None,
         };
-        let shown = ApprovalContent::from_request(&request, Path::new("/ws"));
+        let shown = ApprovalContent::from_request(&request);
         assert_eq!(
             shown.action,
             [ActionBlock::Arguments {

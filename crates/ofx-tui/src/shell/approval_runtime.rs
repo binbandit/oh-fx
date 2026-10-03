@@ -5,6 +5,7 @@ use ofx_contract::{
 use super::Shell;
 use crate::footer::approval_content::ApprovalContent;
 use crate::footer::approval_panel::{Choice, PanelFrame, Review, approval_panel_rows, choices_for};
+use crate::footer::file_approval::{FileApproval, ReviewLayout, file_approval_rows};
 use crate::footer::input_presentation::ComposerView;
 use crate::input::{Action, COMPOSER_INPUT_LIMIT_BYTES, InputEvent, PasteOwner};
 use crate::terminal::{Layout, TerminalError};
@@ -17,7 +18,8 @@ const LIVE_ROWS_BELOW_PANEL: usize = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ApprovalPrompt {
     request: ApprovalRequest,
-    content: ApprovalContent,
+    content: PromptContent,
+    review_layout: Option<ReviewLayout>,
     choices: Vec<Choice>,
     choice: usize,
     shown: Option<Shown>,
@@ -27,6 +29,7 @@ pub(super) struct ApprovalPrompt {
     page: usize,
     seen: Vec<bool>,
     seen_cols: u16,
+    change_seen: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,45 +39,80 @@ struct Shown {
     since_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PromptContent {
+    Request(ApprovalContent),
+    FileChange(Box<FileApproval>),
+}
+
 impl ApprovalPrompt {
-    fn new(request: ApprovalRequest, content: ApprovalContent) -> Self {
-        let choices = choices_for(&content);
+    fn new(request: ApprovalRequest, file: Option<Box<FileApproval>>) -> Self {
+        let (content, choices, scroll) = if let Some(file) = file {
+            let choices = file.choices();
+            (PromptContent::FileChange(file), choices, usize::MAX)
+        } else {
+            let content = ApprovalContent::from_request(&request);
+            let choices = choices_for(&content);
+            (PromptContent::Request(content), choices, 0)
+        };
         Self {
             request,
             content,
+            review_layout: None,
             choices,
             choice: 0,
             shown: None,
             typed_ms: None,
             held_ms: None,
-            scroll: 0,
+            scroll,
             page: 1,
             seen: Vec::new(),
             seen_cols: 0,
+            change_seen: false,
         }
     }
 
-    pub(super) fn view(&self, theme: &Theme, layout: Layout, banner_rows: usize) -> ComposerView {
+    pub(super) fn view(
+        &mut self,
+        theme: &Theme,
+        layout: Layout,
+        banner_rows: usize,
+    ) -> ComposerView {
+        let cols = usize::from(layout.cols);
         let screen_rows = usize::from(layout.rows).saturating_sub(LIVE_ROWS_BELOW_PANEL);
         let seen: &[bool] = if self.seen_cols == layout.cols {
             &self.seen
         } else {
             &[]
         };
-        let panel = approval_panel_rows(
-            theme,
-            &self.content,
-            &self.choices,
-            self.choice,
-            PanelFrame {
-                cols: usize::from(layout.cols),
-                terminal_rows: layout.rows,
-                inline_rows: screen_rows.saturating_sub(banner_rows),
-                screen_rows,
-                scroll: self.scroll,
-                seen,
-            },
-        );
+        let frame = PanelFrame {
+            cols,
+            terminal_rows: layout.rows,
+            inline_rows: screen_rows.saturating_sub(banner_rows),
+            screen_rows,
+            scroll: self.scroll,
+            seen,
+        };
+        let panel = match &self.content {
+            PromptContent::Request(content) => {
+                approval_panel_rows(theme, content, &self.choices, self.choice, frame)
+            }
+            PromptContent::FileChange(file) => {
+                let review = match &mut self.review_layout {
+                    Some(review) if review.cols() == cols => review,
+                    slot => slot.insert(ReviewLayout::measure(file, cols)),
+                };
+                file_approval_rows(
+                    theme,
+                    file,
+                    review,
+                    &self.choices,
+                    self.choice,
+                    frame,
+                    self.change_seen,
+                )
+            }
+        };
         ComposerView {
             rows: panel.rows,
             cursor: None,
@@ -89,19 +127,21 @@ impl ApprovalPrompt {
         visible: bool,
         now_ms: i64,
     ) {
-        if self.seen_cols != layout.cols || self.seen.len() != review.action_rows {
-            self.seen = vec![false; review.action_rows];
-            self.seen_cols = layout.cols;
-        }
-        self.scroll = review.window.start;
-        self.page = review.window.len().max(1);
         let shown = visible && review.complete;
-        if shown {
-            for row in review.window.clone() {
-                self.seen[row] = true;
+        let reviewed = match review.change_shown {
+            Some(change_shown) => {
+                self.change_seen |= shown && change_shown;
+                self.change_seen
             }
-        }
-        let complete = shown && self.seen.iter().all(|seen| *seen);
+            None => self.see_rows(layout.cols, review, shown),
+        };
+        self.scroll = if review.change_shown.is_some() && !review.screen {
+            usize::MAX
+        } else {
+            review.window.start
+        };
+        self.page = review.window.len().max(1);
+        let complete = shown && reviewed;
         self.shown = match self.shown {
             _ if !complete => None,
             Some(shown) if shown.rows == layout.rows && shown.cols == layout.cols => Some(shown),
@@ -111,6 +151,19 @@ impl ApprovalPrompt {
                 since_ms: now_ms,
             }),
         };
+    }
+
+    fn see_rows(&mut self, cols: u16, review: &Review, shown: bool) -> bool {
+        if self.seen_cols != cols || self.seen.len() != review.action_rows {
+            self.seen = vec![false; review.action_rows];
+            self.seen_cols = cols;
+        }
+        if shown {
+            for row in review.window.clone() {
+                self.seen[row] = true;
+            }
+        }
+        self.seen.iter().all(|seen| *seen)
     }
 
     pub(super) fn forget_review(&mut self) {
@@ -144,7 +197,12 @@ impl ApprovalPrompt {
 }
 
 impl Shell<'_> {
-    pub(super) fn approval_requested(&mut self, turn_id: TurnId, request: ApprovalRequest) {
+    pub(super) fn approval_requested(
+        &mut self,
+        turn_id: TurnId,
+        request: ApprovalRequest,
+        file: Option<Box<FileApproval>>,
+    ) {
         if !self.is_visible_turn(turn_id) {
             self.send(UiCommand::Approval {
                 request_id: request.id,
@@ -161,8 +219,7 @@ impl Shell<'_> {
                 request.description.clone(),
             ));
         }
-        let content = ApprovalContent::from_request(&request, &self.options.workspace_root);
-        if let Some(displaced) = self.approval.replace(ApprovalPrompt::new(request, content)) {
+        if let Some(displaced) = self.approval.replace(ApprovalPrompt::new(request, file)) {
             self.send(UiCommand::Approval {
                 request_id: displaced.request.id,
                 decision: ApprovalDecision::Deny,
@@ -348,15 +405,18 @@ fn starts_before_permission(request: &ApprovalRequest, mode: PermissionMode) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use ofx_contract::{
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription,
         CommandProfile, CommandRequest, Concurrency, FileMutation, FileMutationState, PathAccess,
-        RequestId, SessionGrant, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome,
-        UiCommand, UiEvent,
+        ProposedFileChange, RequestId, SessionGrant, ToolActivity, ToolCallId, ToolEffect, TurnId,
+        TurnOutcome, UiCommand, UiEvent,
     };
+    use ofx_text::{encode_terminal_safe_path_tail, visible_width};
 
     use super::super::Shell;
     use super::super::test_shell::TestShell;
@@ -396,6 +456,7 @@ mod tests {
                 command: None,
                 file: None,
                 origin: ApprovalOrigin::ActiveSession,
+                change: None,
             }),
         }
     }
@@ -463,6 +524,7 @@ mod tests {
                 }),
                 file: None,
                 origin: ApprovalOrigin::ActiveSession,
+                change: None,
             }),
         }
     }
@@ -539,6 +601,7 @@ mod tests {
                 command: None,
                 file: None,
                 origin: ApprovalOrigin::ActiveSession,
+                change: None,
             }),
         });
         let screen = test.screen();
@@ -555,24 +618,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_file_change_names_its_target_and_says_it_is_not_previewed() {
-        let mut test = TestShell::start();
-        test.submit("write it");
-        test.deliver(UiEvent::TurnStarted {
-            turn_id: TurnId::new(1),
-        });
-        test.deliver(UiEvent::ApprovalRequested {
+    fn file_request(
+        id: u64,
+        tool: &str,
+        path: &str,
+        before: Option<&[u8]>,
+        after: &[u8],
+    ) -> UiEvent {
+        let (title, state) = match before {
+            Some(_) => (format!("Editing {path}"), FileMutationState::Changes),
+            None => (format!("Writing {path}"), FileMutationState::Creates),
+        };
+        UiEvent::ApprovalRequested {
             turn_id: TurnId::new(1),
             request: Box::new(ApprovalRequest {
-                id: RequestId::new(4),
-                tool_name: "write_file".to_owned(),
+                id: RequestId::new(id),
+                tool_name: tool.to_owned(),
                 call_id: ToolCallId::new("call-1"),
                 description: CallDescription {
-                    title: "Writing notes.md".to_owned(),
+                    title,
                     label: None,
-                    activity: ToolActivity::Read,
-                    effect: ToolEffect::ReadOnly,
+                    activity: ToolActivity::Edit,
+                    effect: ToolEffect::Irreversible,
                     concurrency: Concurrency::Serial,
                 },
                 tool_arguments_preview: String::new(),
@@ -584,23 +651,331 @@ mod tests {
                 },
                 command: None,
                 file: Some(FileMutation {
-                    target: PathBuf::from("/workspace/docs/notes.md"),
-                    state: FileMutationState::Changes,
+                    target: PathBuf::from("/workspace").join(path),
+                    state,
+                }),
+                change: Some(ProposedFileChange {
+                    display_path: encode_terminal_safe_path_tail(path.as_bytes(), 4096).unwrap(),
+                    before: before.map(Arc::from),
+                    after: Arc::from(after),
                 }),
                 origin: ApprovalOrigin::ActiveSession,
             }),
+        }
+    }
+
+    fn editing() -> TestShell {
+        let mut test = TestShell::start();
+        test.submit("edit it");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
         });
+        test
+    }
+
+    fn numbered_lines(lines: std::ops::RangeInclusive<usize>) -> String {
+        lines.fold(String::new(), |mut text, line| {
+            let _ = writeln!(text, "line-{line:02}");
+            text
+        })
+    }
+
+    #[test]
+    fn an_edit_approval_shows_the_diff_of_the_exact_change() {
+        let mut test = editing();
+        test.deliver(file_request(
+            4,
+            "edit_file",
+            "docs/notes.md",
+            Some(b"alpha\nbeta\ngamma\n"),
+            b"alpha\nBETA\ngamma\n",
+        ));
         let screen = test.screen();
         for line in [
-            "Write file",
-            "Would you like to create or update this file?",
-            "Reason: This action changes files in your workspace.",
-            "write_file /workspace/docs/notes.md",
-            "Changes this file. The change is not previewed here.",
-            "2. Yes, and allow workspace file access for this session",
+            "      1   alpha\n      2 - beta\n      2 + BETA\n      3   gamma\n",
+            "Permission needed · Review change",
+            "Edit · +1  -1",
+            "  docs/notes.md  ·  Apply this change?",
+            "  ❯ 1  Apply once\n    2  Apply + allow workspace file access for this session\n    3  Don't apply",
         ] {
             assert!(screen.contains(line), "{line}\n{screen}");
         }
+        assert!(!screen.contains("Choose one"), "{screen}");
+        press(&mut test, b"1");
+        assert!(!approved(&test));
+        test.advance(ARMED_MS);
+        press(&mut test, b"\t");
+        press(&mut test, b"\r");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Always))
+        );
+        assert!(!test.screen().contains("Review change"));
+    }
+
+    #[test]
+    fn a_write_that_creates_a_file_shows_every_line_it_adds() {
+        let mut test = editing();
+        test.deliver(file_request(
+            4,
+            "write_file",
+            "src/new.rs",
+            None,
+            b"fn main() {\n    run();\n}",
+        ));
+        let screen = test.screen();
+        for line in [
+            "      1 + fn main() {\n      2 +     run();\n      3 + }\n",
+            "Write · +3  -0",
+            "  src/new.rs  ·  Apply this change?",
+            "❯ 1  Apply once",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
+        assert!(!screen.contains("trailing newline"), "{screen}");
+        test.advance(ARMED_MS);
+        press(&mut test, b"3");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Deny))
+        );
+    }
+
+    #[test]
+    fn a_long_diff_elides_unchanged_lines_and_opens_at_its_tail() {
+        let mut test = editing();
+        test.resize(40, 80);
+        let before = (1..=200).fold(String::new(), |mut text, line| {
+            let _ = writeln!(text, "line-{line:03}");
+            text
+        });
+        let after = before.replace("line-100\n", "LINE-100\n");
+        test.deliver(file_request(
+            4,
+            "edit_file",
+            "notes.md",
+            Some(before.as_bytes()),
+            after.as_bytes(),
+        ));
+        let screen = test.screen();
+        let review = [
+            "        ⋯ 94 unchanged lines ⋯",
+            "     95   line-095",
+            "     96   line-096",
+            "     97   line-097",
+            "     98   line-098",
+            "     99   line-099",
+            "    100 - line-100",
+            "    100 + LINE-100",
+            "    101   line-101",
+            "    102   line-102",
+            "    103   line-103",
+            "    104   line-104",
+            "    105   line-105",
+            "        ⋯ 95 unchanged lines ⋯",
+        ]
+        .join("\n");
+        assert!(screen.contains(&review), "{screen}");
+        assert!(!screen.contains("line-094"), "{screen}");
+        assert!(!screen.contains("line-106"), "{screen}");
+        let mut test = editing();
+        let after = numbered_lines(1..=60);
+        test.deliver(file_request(
+            5,
+            "write_file",
+            "notes.md",
+            None,
+            after.as_bytes(),
+        ));
+        let screen = test.screen();
+        assert!(screen.contains("     60 + line-60"), "{screen}");
+        assert!(!screen.contains("line-01"), "{screen}");
+        assert!(screen.contains("pgup/pgdn scroll"), "{screen}");
+        assert!(screen.contains("❯ 1  Apply once"), "{screen}");
+        for _ in 0..10 {
+            press(&mut test, b"\x1b[5~");
+            test.screen();
+        }
+        let screen = test.screen();
+        assert!(screen.contains("      1 + line-01"), "{screen}");
+        assert!(!screen.contains("line-60"), "{screen}");
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(5, ApprovalDecision::Once))
+        );
+    }
+
+    #[test]
+    fn a_file_review_refuses_a_yes_until_a_changed_line_has_been_on_screen() {
+        let mut test = editing();
+        test.resize(12, 80);
+        let before = numbered_lines(1..=40);
+        let after = before.replacen("line-01", "line-00", 1);
+        test.deliver(file_request(
+            4,
+            "edit_file",
+            "notes.md",
+            Some(before.as_bytes()),
+            after.as_bytes(),
+        ));
+        let screen = test.screen();
+        assert!(screen.contains("34 unchanged lines"), "{screen}");
+        assert!(!screen.contains("line-00"), "{screen}");
+        assert!(
+            screen.contains("❯ ! 1  Apply once · scroll to review"),
+            "{screen}"
+        );
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        press(&mut test, b"\r");
+        assert!(!approved(&test));
+        for _ in 0..3 {
+            press(&mut test, b"\x1b[5~");
+            test.screen();
+        }
+        let screen = test.screen();
+        assert!(screen.contains("      1 + line-00"), "{screen}");
+        assert!(screen.contains("❯ 1  Apply once"), "{screen}");
+        for _ in 0..3 {
+            press(&mut test, b"\x1b[6~");
+            test.screen();
+        }
+        let screen = test.screen();
+        assert!(!screen.contains("line-00"), "{screen}");
+        assert!(screen.contains("❯ 1  Apply once"), "{screen}");
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
+    }
+
+    #[test]
+    fn hostile_escapes_in_a_file_change_never_reach_the_terminal() {
+        let mut test = editing();
+        test.deliver(file_request(
+            4,
+            "edit_file",
+            "notes\u{1b}[2J.md",
+            Some(b"plain\n"),
+            "\x1b[31mred\x1b]0;pwned\x07 \u{202e}txt\u{200b}\n\x1bP+q\x1b\\ \u{9b}2J\n".as_bytes(),
+        ));
+        let written = test.written();
+        for raw in [
+            "\u{1b}[31mred",
+            "\u{1b}]0;pwned",
+            "notes\u{1b}[2J",
+            "\u{202e}",
+            "\u{200b}",
+            "\u{1b}P+q",
+            "\u{9b}2J",
+        ] {
+            assert!(!written.contains(raw), "{raw:?} {written:?}");
+        }
+        let screen = test.screen();
+        for line in [
+            "      1 + \\x1b[31mred\\x1b]0;pwned\\x07 \\u{202e}txt\\u{200b}",
+            "      2 + \\x1bP+q\\x1b\\ \\u{009b}2J",
+            "  notes\\x1b[2J.md  ·  Apply this change?",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
+        let mut raw = b"bad \xff\xfe bytes\n".to_vec();
+        raw.extend_from_slice(b"\r\x08\x7f\n");
+        let mut test = editing();
+        test.deliver(file_request(5, "write_file", "raw.bin", None, &raw));
+        let screen = test.screen();
+        for line in [
+            "      1 + bad \\xff\\xfe bytes",
+            "      2 + \\x0d\\x08\\x7f",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_terminal_wraps_the_review_and_refuses_a_yes_until_the_choices_fit() {
+        let mut test = editing();
+        test.resize(24, 40);
+        let after = format!("{}\nshort\n", "w".repeat(45));
+        test.deliver(file_request(
+            4,
+            "edit_file",
+            "notes.md",
+            Some(b"short\n"),
+            after.as_bytes(),
+        ));
+        let screen = test.screen();
+        for line in [
+            &format!(
+                "      1 + {}\n          {}\n",
+                "w".repeat(30),
+                "w".repeat(15)
+            ),
+            "      2   short",
+            "  notes.md  ·  Apply this change?",
+            "❯ ! 1  Apply once · resize to review",
+            "  enter confirm    esc cancel",
+        ] {
+            assert!(screen.contains(line), "{line}\n{screen}");
+        }
+        assert!(
+            screen.lines().all(|row| visible_width(row) <= 40),
+            "{screen}"
+        );
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        press(&mut test, b"\r");
+        assert!(!approved(&test));
+        test.resize(24, 80);
+        let screen = test.screen();
+        assert!(screen.contains("❯ 1  Apply once"), "{screen}");
+        press(&mut test, b"1");
+        assert!(!approved(&test));
+        test.advance(ARMED_MS);
+        press(&mut test, b"1");
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
+    }
+
+    #[test]
+    fn a_resize_while_the_review_is_open_redraws_it_at_its_tail_and_restarts_the_wait() {
+        let mut test = editing();
+        let after = numbered_lines(1..=8);
+        test.deliver(file_request(
+            4,
+            "write_file",
+            "notes.md",
+            None,
+            after.as_bytes(),
+        ));
+        let screen = test.screen();
+        assert!(screen.contains("      1 + line-01"), "{screen}");
+        assert!(screen.contains("❯ 1  Apply once"), "{screen}");
+        test.advance(ARMED_MS);
+        test.resize(16, 80);
+        let screen = test.screen();
+        assert!(screen.contains("      8 + line-08"), "{screen}");
+        assert!(!screen.contains("line-01"), "{screen}");
+        assert!(screen.contains("Review change"), "{screen}");
+        assert!(screen.contains("❯ 1  Apply once"), "{screen}");
+        assert!(!approve_now(&mut test));
+        test.resize(30, 80);
+        let screen = test.screen();
+        assert!(screen.contains("      1 + line-01"), "{screen}");
+        assert!(screen.contains("      8 + line-08"), "{screen}");
+        assert!(!approve_now(&mut test));
+        test.advance(ARMED_MS);
+        assert!(approve_now(&mut test));
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Once))
+        );
     }
 
     #[test]
@@ -991,6 +1366,7 @@ mod tests {
                 command: None,
                 file: None,
                 origin: ApprovalOrigin::ActiveSession,
+                change: None,
             }),
         });
         let screen = test.screen();

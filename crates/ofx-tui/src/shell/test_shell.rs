@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -122,6 +121,9 @@ impl TestShell {
     }
 
     pub(super) fn resize(&mut self, rows: u16, cols: u16) {
+        let pending = std::mem::take(&mut self.output);
+        self.screen.process(&pending);
+        self.screen.screen_mut().set_size(rows, cols);
         rustix::termios::tcsetwinsize(&self.pty.master, winsize(rows, cols)).unwrap();
         self.shell.resize_due_ms = Some(0);
         self.draining(|shell| {
@@ -247,7 +249,6 @@ fn options() -> ShellOptions {
         permission_mode: PermissionMode::Auto,
         full_access_warning: false,
         workspace_label: "workspace".to_owned(),
-        workspace_root: PathBuf::from("/workspace"),
         startup_scrollback: true,
         commands: vec![
             spec("/help", &[], 0),

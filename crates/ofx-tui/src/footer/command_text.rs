@@ -103,12 +103,17 @@ impl<'a> CommandSegments<'a> {
     }
 }
 
-fn prefix_terminal_safe_by_width(encoded: &str, max_width: usize) -> &str {
+pub(crate) fn prefix_terminal_safe_by_width(encoded: &str, max_width: usize) -> &str {
     let mut width = 0;
     let mut end = 0;
     while end < encoded.len() {
-        let token_end = end + encoded_token_len(&encoded[end..]);
-        let token_width = visible_width(&encoded[end..token_end]);
+        let (token_end, token_width) =
+            if let Some(len) = ascii_token_len(&encoded.as_bytes()[end..]) {
+                (end + len, len)
+            } else {
+                let token_end = end + encoded_token_len(&encoded[end..]);
+                (token_end, visible_width(&encoded[end..token_end]))
+            };
         if width + token_width > max_width {
             break;
         }
@@ -127,6 +132,12 @@ pub(crate) fn suffix_terminal_safe_by_width(encoded: &str, max_width: usize) -> 
         start = token_end;
     }
     &encoded[start..]
+}
+
+fn ascii_token_len(bytes: &[u8]) -> Option<usize> {
+    let len = escape_len(bytes).max(1);
+    let printable = bytes[..len].iter().all(|byte| (b' '..=b'~').contains(byte));
+    (printable && bytes.get(len).is_none_or(u8::is_ascii)).then_some(len)
 }
 
 fn encoded_token_len(encoded: &str) -> usize {
@@ -252,6 +263,36 @@ pub(crate) mod grapheme_fuzz {
 mod tests {
     use super::grapheme_fuzz::{Xorshift, random_clusters};
     use super::*;
+
+    fn prefix_by_display_units(encoded: &str, max_width: usize) -> &str {
+        let mut width = 0;
+        let mut end = 0;
+        while end < encoded.len() {
+            let token_end = end + encoded_token_len(&encoded[end..]);
+            let token_width = visible_width(&encoded[end..token_end]);
+            if width + token_width > max_width {
+                break;
+            }
+            width += token_width;
+            end = token_end;
+        }
+        &encoded[..end]
+    }
+
+    #[test]
+    fn ascii_tokens_are_measured_as_their_display_units() {
+        for raw in random_clusters(0x00a5_c11f, 3000) {
+            for encoded in [approval_text(raw.as_bytes()), raw.clone()] {
+                for width in [0, 1, 3, 4, 5, 9, 17, 64] {
+                    assert_eq!(
+                        prefix_terminal_safe_by_width(&encoded, width),
+                        prefix_by_display_units(&encoded, width),
+                        "{encoded:?} {width}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn approval_command_projection_keeps_literal_escapes_and_encodes_controls() {
