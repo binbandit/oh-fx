@@ -22,7 +22,7 @@ function stepScript(name) {
   }
   return script.join('\n');
 }
-const compare = stepScript('Compare the reviewed patches');
+const compare = stepScript('Replay the reviewed change');
 const remove = stepScript('Remove the approval');
 const comment = lines[stepLine('Remove the approval', /^ +COMMENT: /)].replace(/^ +COMMENT: /, '');
 const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'approval-guard-')));
@@ -68,9 +68,9 @@ function repository() {
       });
       return fs.readFileSync(output, 'utf8').trim();
     },
-    advanceMain() {
+    advanceMain(files = { 'main.txt': 'main\n' }) {
       git('switch', '-q', 'main');
-      repo.commit('rename the first line', { 'run.sh': script({ 0: 'line one' }) });
+      repo.commit('advance main', files);
       repo.push('main');
       git('switch', '-q', 'pull');
     },
@@ -84,17 +84,44 @@ function repository() {
   return repo;
 }
 
-test('a rebase that keeps every patch keeps the approval', () => {
-  const repo = repository();
-  repo.advanceMain();
-  repo.git('rebase', '-q', 'main');
-  assert.equal(repo.reviewed(repo.approved, repo.push()), 'reviewed=unchanged');
+test('a clean rebase keeps the approval, even when main changed nearby lines', () => {
+  for (const files of [undefined, { 'run.sh': script({ 12: 'line thirteen' }) }]) {
+    const repo = repository();
+    repo.advanceMain(files);
+    repo.git('rebase', '-q', 'main');
+    assert.equal(repo.reviewed(repo.approved, repo.push()), 'reviewed=unchanged');
+  }
 });
 
-test('reworded commits keep the approval because their patches are unchanged', () => {
+test('a rebase that resolves a conflict drops the approval', () => {
+  const repo = repository();
+  repo.advanceMain({ 'run.sh': script({ 14: 'line fifteen' }) });
+  repo.git('reset', '-q', '--hard', 'main');
+  repo.commit('clean the build', { 'run.sh': script({ 14: 'rm -rf /tmp/build' }) });
+  repo.commit('add notes', { 'notes.txt': 'first\n' });
+  assert.equal(repo.reviewed(repo.approved, repo.push()), 'reviewed=changed');
+});
+
+test('reworded or squashed commits keep the approval because the change is the same', () => {
   const repo = repository();
   repo.git('commit', '-q', '--amend', '-m', 'add release notes');
   assert.equal(repo.reviewed(repo.approved, repo.push()), 'reviewed=unchanged');
+  repo.git('reset', '-q', '--soft', 'HEAD~1');
+  repo.git('commit', '-q', '--amend', '-m', 'clean the build and add notes');
+  assert.equal(repo.reviewed(repo.approved, repo.push()), 'reviewed=unchanged');
+});
+
+test('the same edit moved to another function with identical context drops the approval', () => {
+  const body = name => [`${name}() {`, ...Array(6).fill('  :'), '  printf "%s\\n" "safe"', ...Array(6).fill('  :'), '}'];
+  const functions = (one, two) => `${[...body('one'), ...body('two')].map((line, index) =>
+    (index === 7 && one) || (index === 22 && two) || line).join('\n')}\n`;
+  const repo = repository();
+  const parent = repo.commit('add functions', { 'functions.sh': functions() });
+  repo.commit('print unsafe', { 'functions.sh': functions('  printf "%s\\n" "unsafe"') });
+  const approved = repo.push();
+  repo.git('reset', '-q', '--hard', parent);
+  repo.commit('print unsafe', { 'functions.sh': functions(undefined, '  printf "%s\\n" "unsafe"') });
+  assert.equal(repo.reviewed(approved, repo.push()), 'reviewed=changed');
 });
 
 test('a new commit or a rewritten patch drops the approval', () => {

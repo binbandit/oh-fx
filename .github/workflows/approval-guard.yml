@@ -20,8 +20,9 @@ jobs:
     timeout-minutes: 5
     steps:
       # No checkout: pushed commits are fetched as data and never executed.
-      # A rebase keeps every commit's patch, so it keeps the approval; anything else, or any failure, drops it.
-      - name: Compare the reviewed patches
+      # The approval stays only when replaying the reviewed change onto the pushed fork point,
+      # without conflicts, gives exactly the pushed tree. Anything else, or any failure, drops it.
+      - name: Replay the reviewed change
         id: compare
         shell: bash
         env:
@@ -29,22 +30,23 @@ jobs:
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
         run: |
-          patches() {
-            local fork merges
-            fork="$(git merge-base refs/base "$1")" || return 1
-            merges="$(git rev-list --merges "$fork..$1")" || return 1
+          fork() {
+            local point merges
+            point="$(git merge-base refs/base "$1")" || return 1
+            merges="$(git rev-list --merges "$point..$1")" || return 1
             [ -z "$merges" ] || return 1
-            git log -p --full-index --no-renames --format='commit %H' "$fork..$1" |
-              git patch-id --verbatim | cut -d ' ' -f 1 | sort
+            echo "$point"
           }
           export GIT_DIR="$RUNNER_TEMP/approval.git"
           git init -q --bare
           reviewed=changed
           if git fetch -q --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "+refs/heads/$BASE_REF:refs/base" "$BEFORE" "$AFTER" &&
-            before="$(patches "$BEFORE")" && after="$(patches "$AFTER")" && [ "$before" = "$after" ]; then
+            reviewed_fork="$(fork "$BEFORE")" && pushed_fork="$(fork "$AFTER")" &&
+            replayed="$(git merge-tree --write-tree --merge-base="$reviewed_fork" "$pushed_fork" "$BEFORE")" &&
+            pushed="$(git rev-parse --verify "$AFTER^{tree}")" && [ "$replayed" = "$pushed" ]; then
             reviewed=unchanged
           fi
-          echo "Reviewed patches: $reviewed"
+          echo "Reviewed change: $reviewed"
           echo "reviewed=$reviewed" >> "$GITHUB_OUTPUT"
       - name: Remove the approval
         if: ${{ !cancelled() && steps.compare.outputs.reviewed != 'unchanged' }}
