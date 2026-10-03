@@ -26,9 +26,27 @@ pub enum WaitError<E> {
 
 type Sender<T, E> = oneshot::Sender<Result<T, E>>;
 
+struct Registration<T, E> {
+    number: u64,
+    sender: Sender<T, E>,
+}
+
 struct State<T, E> {
-    pending: HashMap<RequestId, Sender<T, E>>,
+    pending: HashMap<RequestId, Registration<T, E>>,
+    registrations: u64,
     closed: Option<E>,
+}
+
+impl<T, E> State<T, E> {
+    fn retire(&mut self, id: &RequestId, number: u64) {
+        if self
+            .pending
+            .get(id)
+            .is_some_and(|registration| registration.number == number)
+        {
+            self.pending.remove(id);
+        }
+    }
 }
 
 pub struct Correlator<T, E> {
@@ -48,6 +66,7 @@ impl<T, E> Default for Correlator<T, E> {
         Self {
             state: Arc::new(Mutex::new(State {
                 pending: HashMap::new(),
+                registrations: 0,
                 closed: None,
             })),
         }
@@ -68,17 +87,22 @@ impl<T, E: Clone> Correlator<T, E> {
             return Err(RegisterError::Duplicate);
         }
         let (sender, receiver) = oneshot::channel();
-        state.pending.insert(id.clone(), sender);
+        let number = state.registrations;
+        state.registrations = number.wrapping_add(1);
+        state
+            .pending
+            .insert(id.clone(), Registration { number, sender });
         Ok(PendingResponse {
             id,
+            number,
             receiver,
             state: Arc::clone(&self.state),
         })
     }
 
     pub fn resolve(&self, id: &RequestId, outcome: Result<T, E>) -> bool {
-        let sender = lock(&self.state).pending.remove(id);
-        sender.is_some_and(|sender| sender.send(outcome).is_ok())
+        let registration = lock(&self.state).pending.remove(id);
+        registration.is_some_and(|registration| registration.sender.send(outcome).is_ok())
     }
 
     pub fn close(&self, error: E) {
@@ -87,7 +111,11 @@ impl<T, E: Clone> Correlator<T, E> {
             if state.closed.is_none() {
                 state.closed = Some(error.clone());
             }
-            state.pending.drain().map(|(_, sender)| sender).collect()
+            state
+                .pending
+                .drain()
+                .map(|(_, registration)| registration.sender)
+                .collect()
         };
         for sender in senders {
             let _ = sender.send(Err(error.clone()));
@@ -97,6 +125,7 @@ impl<T, E: Clone> Correlator<T, E> {
 
 pub struct PendingResponse<T, E> {
     id: RequestId,
+    number: u64,
     receiver: oneshot::Receiver<Result<T, E>>,
     state: Arc<Mutex<State<T, E>>>,
 }
@@ -109,7 +138,7 @@ impl<T, E> PendingResponse<T, E> {
                 Err(_) => Err(WaitError::Abandoned),
             };
         }
-        lock(&self.state).pending.remove(&self.id);
+        lock(&self.state).retire(&self.id, self.number);
         match self.receiver.try_recv() {
             Ok(outcome) => outcome.map_err(WaitError::Failed),
             Err(_) => Err(WaitError::TimedOut),
@@ -119,7 +148,7 @@ impl<T, E> PendingResponse<T, E> {
 
 impl<T, E> Drop for PendingResponse<T, E> {
     fn drop(&mut self) {
-        lock(&self.state).pending.remove(&self.id);
+        lock(&self.state).retire(&self.id, self.number);
     }
 }
 
@@ -183,6 +212,44 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(10);
         assert_eq!(pending.wait_until(deadline).await, Err(WaitError::TimedOut));
         assert_eq!(pending_count(&correlator), 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_an_earlier_response_keeps_a_reused_id_registered() {
+        let correlator = TestCorrelator::new();
+        let first = correlator.register(RequestId::Integer(1)).unwrap();
+        assert!(correlator.resolve(&RequestId::Integer(1), Ok("first".to_owned())));
+        let second = correlator.register(RequestId::Integer(1)).unwrap();
+        drop(first);
+        assert!(correlator.resolve(&RequestId::Integer(1), Ok("second".to_owned())));
+        assert_eq!(second.wait_until(far()).await, Ok("second".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_completed_wait_keeps_a_reused_id_registered() {
+        let correlator = TestCorrelator::new();
+        let first = correlator.register(RequestId::Integer(1)).unwrap();
+        assert!(correlator.resolve(&RequestId::Integer(1), Ok("first".to_owned())));
+        let second = correlator.register(RequestId::Integer(1)).unwrap();
+        assert_eq!(first.wait_until(far()).await, Ok("first".to_owned()));
+        assert!(correlator.resolve(&RequestId::Integer(1), Ok("second".to_owned())));
+        assert_eq!(second.wait_until(far()).await, Ok("second".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_wait_keeps_a_reused_id_registered() {
+        let correlator = TestCorrelator::new();
+        let first = correlator.register(RequestId::Integer(1)).unwrap();
+        let raced = lock(&correlator.state)
+            .pending
+            .remove(&RequestId::Integer(1));
+        let second = correlator.register(RequestId::Integer(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(10);
+        assert_eq!(first.wait_until(deadline).await, Err(WaitError::TimedOut));
+        assert_eq!(pending_count(&correlator), 1);
+        assert!(correlator.resolve(&RequestId::Integer(1), Ok("second".to_owned())));
+        assert_eq!(second.wait_until(far()).await, Ok("second".to_owned()));
+        drop(raced);
     }
 
     #[tokio::test]
