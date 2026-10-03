@@ -36,6 +36,7 @@ ofx-tui = { path = "crates/ofx-tui" }
 ofx-text = { path = "crates/ofx-text" }
 ofx-tools = { path = "crates/ofx-tools" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
+ofx-vt = { path = "crates/ofx-vt" }
 ofx-workspace = { path = "crates/ofx-workspace" }
 percent-encoding = "2.3.2"
 ra-ap-rustc_lexer = "0.174.0"
