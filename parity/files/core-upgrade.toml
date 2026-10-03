@@ -6,15 +6,15 @@ note = "The interactive shell's in-process upgrader, its footer labels, stop-dur
 
 [[file]]
 upstream = "src/core/upgrade/update_notes.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-upgrade/src/release_source.rs"]
-note = "Release notes URL exists; stable changelog normalization and development revision compare ranges are missing; release source differs deliberately."
+note = "Update notices link the new version's GitHub release page; upstream's changelog anchors and revision compare ranges belong to its two channels, as docs/differences/upgrade.md records."
 
 [[file]]
 upstream = "src/core/upgrade/update_target.zig"
-status = "partial"
-modules = ["crates/ofx-upgrade/src/update_target.rs"]
-note = "Version/revision validators exist; bounded development manifest parsing, channel routing and immutable target selection are missing."
+status = "ported"
+modules = ["crates/ofx-upgrade/src/update_target.rs", "crates/ofx-upgrade/src/release_source.rs"]
+note = "Versions are normalized, validated and ordered, with `-dev.<n>` ordered numerically, and revisions are validated; upstream's development manifest, channel routing and revision targets serve its two channels, as docs/differences/upgrade.md records."
 
 [[file]]
 upstream = "src/core/upgrade/upgrade_helpers.zig"
