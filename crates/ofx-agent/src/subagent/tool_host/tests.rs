@@ -1,15 +1,16 @@
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalDecision, ApprovalOrigin, AutoCompactPercent,
-    CallDescription, ChatMessage, Completion, Concurrency, FinishReason, ModelProvider,
-    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ReviewRequest, ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool,
-    ToolActivity, ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent,
-    Usage,
+    CallDescription, ChatMessage, Completion, Concurrency, FileChange, FileMutation,
+    FileMutationState, FinishReason, ModelProvider, ModelRequest, PathAccess, PermissionGate,
+    PreparedCall, ProposedFileChange, ProviderError, ProviderErrorKind, ReviewRequest,
+    ReviewVerdict, Reviewed, StreamEvent, StreamSink, SubagentRequestInput, Tool, ToolActivity,
+    ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -24,10 +25,12 @@ use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
 const BASE_PROMPT: &str = "base prompt";
 const PARENT_TURN: TurnId = TurnId::new(7);
+const EDIT_ARGUMENTS: &str = r#"{"path":"notes.md"}"#;
 
 enum Script {
     Reply(&'static str),
     Probe,
+    Edit,
     Fail(ProviderError),
     Hold,
 }
@@ -80,17 +83,8 @@ impl ModelProvider for Provider {
         let probes = request.messages.len();
         Box::pin(async move {
             match script {
-                Some(Script::Probe) => Ok(Completion {
-                    content: None,
-                    tool_calls: vec![ToolCall {
-                        id: ToolCallId::new(format!("probe-{probes}")),
-                        name: "probe".to_owned(),
-                        arguments: "{}".to_owned(),
-                    }],
-                    finish_reason: FinishReason::ToolCalls,
-                    usage: Usage::default(),
-                    provider_replay: None,
-                }),
+                Some(Script::Probe) => Ok(probe_completion(probes, "{}")),
+                Some(Script::Edit) => Ok(probe_completion(probes, EDIT_ARGUMENTS)),
                 Some(Script::Reply(text)) => {
                     sink.emit(StreamEvent::TextDelta {
                         text: text.to_owned(),
@@ -121,6 +115,20 @@ impl ModelProvider for Provider {
     }
 }
 
+fn probe_completion(probes: usize, arguments: &str) -> Completion {
+    Completion {
+        content: None,
+        tool_calls: vec![ToolCall {
+            id: ToolCallId::new(format!("probe-{probes}")),
+            name: "probe".to_owned(),
+            arguments: arguments.to_owned(),
+        }],
+        finish_reason: FinishReason::ToolCalls,
+        usage: Usage::default(),
+        provider_replay: None,
+    }
+}
+
 struct NoContext;
 
 impl RuntimeContext for NoContext {
@@ -147,15 +155,22 @@ struct Probe {
     spec: ToolSpec,
 }
 
-struct ProbeCall;
+struct ProbeCall {
+    mutation: Option<FileMutation>,
+}
 
 impl Tool for Probe {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
 
-    fn prepare(&self, _arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
-        Ok(Box::new(ProbeCall))
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        Ok(Box::new(ProbeCall {
+            mutation: (arguments == EDIT_ARGUMENTS).then(|| FileMutation {
+                target: PathBuf::from("/workspace/notes.md"),
+                state: FileMutationState::Changes,
+            }),
+        }))
     }
 }
 
@@ -168,6 +183,20 @@ impl PreparedCall for ProbeCall {
             effect: ToolEffect::ReadOnly,
             concurrency: Concurrency::Serial,
         }
+    }
+
+    fn file_mutation(&self) -> Option<&FileMutation> {
+        self.mutation.as_ref()
+    }
+
+    fn file_change(&self) -> Option<FileChange<'_>> {
+        self.mutation.as_ref().map(|_| FileChange {
+            display_path: "notes.md".to_owned(),
+            before: Some(b"old\n"),
+            after: b"new\n",
+            parents: Vec::new(),
+            line_counts: None,
+        })
     }
 
     fn execute(self: Box<Self>, _context: ToolContext) -> BoxFuture<'static, ToolOutput> {
@@ -697,6 +726,44 @@ async fn a_childs_approval_is_raised_as_the_subagents_request_and_its_answer_app
     let seen = harness.provider.seen();
     assert_eq!(tool_results(&seen[1]), ["probed"]);
     assert_ne!(tool_results(&seen[3]), ["probed"]);
+}
+
+#[tokio::test]
+async fn a_childs_file_approval_carries_the_change_for_the_parents_review() {
+    let harness = Harness::new(vec![Script::Edit, Script::Reply("edited it")]);
+    harness
+        .agents
+        .decisions
+        .lock()
+        .unwrap()
+        .push_back(ApprovalDecision::Once);
+    assert_eq!(
+        harness
+            .run("call-1", message("editor", None, "edit the notes"))
+            .await,
+        succeeded("edited it")
+    );
+    let requested = harness.agents.requested.lock().unwrap().clone();
+    assert_eq!(requested.len(), 1);
+    assert_eq!(
+        requested[0].origin,
+        ApprovalOrigin::Subagent("1".to_owned())
+    );
+    assert_eq!(
+        requested[0].file,
+        Some(FileMutation {
+            target: PathBuf::from("/workspace/notes.md"),
+            state: FileMutationState::Changes,
+        })
+    );
+    assert_eq!(
+        requested[0].change,
+        Some(ProposedFileChange {
+            display_path: "notes.md".to_owned(),
+            before: Some(Arc::from(&b"old\n"[..])),
+            after: Arc::from(&b"new\n"[..]),
+        })
+    );
 }
 
 #[tokio::test]

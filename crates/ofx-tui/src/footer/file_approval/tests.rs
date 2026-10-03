@@ -574,3 +574,29 @@ fn a_large_single_line_draws_any_window_from_a_nearby_resume_point() {
         assert!(change_shown);
     }
 }
+
+#[test]
+fn a_subagents_file_review_names_the_child_in_place_of_the_title() {
+    let child = ApprovalRequest {
+        origin: ApprovalOrigin::Subagent("approval-child\u{1b}[31m".to_owned()),
+        ..request(
+            "edit_file",
+            change("docs/notes.md", "alpha\nbeta\n", "alpha\nBETA\n"),
+            Some(SessionGrant::WorkspaceFiles),
+        )
+    };
+    let shown = texts(&view(&file_approval(&child), frame(96, 22)).rows);
+    let title = "  Subagent approval-child\\x1b[31m needs permission";
+    let header = shown
+        .iter()
+        .find(|row| row.starts_with(title))
+        .unwrap_or_else(|| panic!("{shown:?}"));
+    assert!(header.ends_with("Edit · +1  -1"), "{header}");
+    assert!(!shown.iter().any(|row| row.contains("Review change")));
+    assert!(shown.iter().any(|row| row == "      2 + BETA"), "{shown:?}");
+    assert!(
+        shown
+            .iter()
+            .any(|row| row == "  docs/notes.md  ·  Apply this change?")
+    );
+}

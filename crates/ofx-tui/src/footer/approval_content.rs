@@ -51,10 +51,7 @@ pub(crate) enum ActionBlock {
 impl ApprovalContent {
     pub(crate) fn from_request(request: &ApprovalRequest) -> Self {
         Self {
-            requester: match &request.origin {
-                ApprovalOrigin::ActiveSession => None,
-                ApprovalOrigin::Subagent(child) => Some(safe_text(child.as_bytes())),
-            },
+            requester: requester(request),
             ..Self::for_action(request)
         }
     }
@@ -344,6 +341,13 @@ fn url_host(url: &str) -> Option<&str> {
         _ => host.split(':').next().unwrap_or_default(),
     };
     (!host.is_empty()).then_some(host)
+}
+
+pub(crate) fn requester(request: &ApprovalRequest) -> Option<String> {
+    match &request.origin {
+        ApprovalOrigin::ActiveSession => None,
+        ApprovalOrigin::Subagent(child) => Some(safe_text(child.as_bytes())),
+    }
 }
 
 fn safe_text(raw: &[u8]) -> String {

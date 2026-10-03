@@ -302,12 +302,13 @@ fn header_row(theme: &Theme, content: &ApprovalContent, cols: usize) -> Row {
 }
 
 fn header(content: &ApprovalContent) -> Cow<'static, str> {
-    content
-        .requester
-        .as_ref()
-        .map_or(Cow::Borrowed(HEADER), |child| {
-            Cow::Owned(format!("Subagent {child} needs permission"))
-        })
+    requested_title(content.requester.as_deref(), HEADER)
+}
+
+pub(super) fn requested_title(requester: Option<&str>, title: &'static str) -> Cow<'static, str> {
+    requester.map_or(Cow::Borrowed(title), |child| {
+        Cow::Owned(format!("Subagent {child} needs permission"))
+    })
 }
 
 fn reason_row(theme: &Theme, reason: Option<&str>) -> Row {

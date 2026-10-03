@@ -8,10 +8,10 @@ use ofx_contract::{
 use ofx_markdown::ReviewOp;
 use ofx_text::visible_width;
 
-use super::approval_content::remember_label;
+use super::approval_content::{remember_label, requester};
 use super::approval_panel::{
     Choice, HINTS, PanelFrame, PanelView, RESIZE_TO_REVIEW, Review, SCREEN_HINTS, SCROLL_TO_REVIEW,
-    hint_for,
+    hint_for, requested_title,
 };
 use super::command_text::{prefix_terminal_safe_by_width, suffix_terminal_safe_by_width};
 use super::phrase::{PathText, Phrase};
@@ -83,6 +83,7 @@ pub(crate) struct FileApproval {
     path: PathText,
     review: ReviewDocument,
     remember: Option<Phrase>,
+    requester: Option<String>,
 }
 
 impl FileApproval {
@@ -117,6 +118,7 @@ impl FileApproval {
             path,
             review,
             remember: request.scope.always.as_ref().map(remember_label),
+            requester: requester(request),
         }
     }
 
@@ -632,18 +634,18 @@ impl Controls<'_> {
     }
 
     fn header_row(&self, theme: &Theme) -> Row {
-        let title = self.file.intent.title();
+        let title = requested_title(self.file.requester.as_deref(), self.file.intent.title());
         let inner = self.cols.saturating_sub(INSET + RIGHT_MARGIN);
         let mut row = Row::new();
         row.push_spaces(INSET.min(self.cols));
-        let (shown, whole) = clip(title, inner);
+        let (shown, whole) = clip(&title, inner);
         row.push(&shown, Paint::PLAIN.with_bold());
         let action_width = visible_width(self.file.action);
         let right_width = action_width
             + self.header.stats.map_or(0, |changes| {
                 visible_width(STATS_SEPARATOR) + stats_width(changes)
             });
-        let title_width = visible_width(title);
+        let title_width = visible_width(&title);
         if !whole || title_width + right_width + 1 > inner {
             return row;
         }

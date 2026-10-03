@@ -1141,7 +1141,7 @@ mod wake_tests {
     use std::sync::Arc;
 
     use ofx_contract::{
-        ApprovalRequest, ApprovalScope, CallDescription, Concurrency, FileMutation,
+        ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription, Concurrency, FileMutation,
         FileMutationState, PathAccess, ProposedFileChange, RequestId, ToolActivity, ToolCallId,
         ToolEffect, TurnId, UiEvent,
     };
@@ -1199,6 +1199,7 @@ mod wake_tests {
                     before: Some(Arc::from(&b"old\n"[..])),
                     after: Arc::from(&b"new\n"[..]),
                 }),
+                origin: ApprovalOrigin::ActiveSession,
             }),
         });
         sender.send(UiEvent::HelpRequested);
