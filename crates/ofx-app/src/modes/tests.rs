@@ -1,13 +1,13 @@
-use std::path::Path;
-use std::sync::Arc;
-
-use ofx_contract::{ModeSpec, PermissionMode, Tool, ToolPolicy, ToolSet};
-use ofx_tools::ReadFile;
+use ofx_contract::{ModeSpec, PermissionMode, ToolPolicy, ToolSet, ToolSpec};
 
 use super::default_mode;
 
-fn names(tools: &[Arc<dyn Tool>]) -> Vec<&str> {
-    tools.iter().map(|tool| tool.spec().name.as_str()).collect()
+fn spec(name: &str) -> ToolSpec {
+    ToolSpec {
+        name: name.to_owned(),
+        description: name.to_owned(),
+        input_schema: "{}",
+    }
 }
 
 #[test]
@@ -56,12 +56,17 @@ fn built_in_read_only_tool_set_matches_plan_inspection_tools() {
 }
 
 #[test]
-fn built_in_mode_projections_use_the_supplied_tool_set() {
-    let tools: [Arc<dyn Tool>; 1] = [Arc::new(ReadFile::new(Path::new("/workspace")))];
+fn built_in_modes_allow_every_tool_of_the_supplied_tool_set() {
+    let specs = [spec("read_file"), spec("write_file")];
     let set = ToolSet {
-        tools: &tools,
-        read_only_tool_names: &["write_file", "read_file"],
+        specs: &specs,
+        read_only_tool_names: &["read_file"],
     };
-    let projected = default_mode().registry.model_tools(&set, "ask");
-    assert_eq!(names(&projected), ["read_file"]);
+    let registry = default_mode().registry;
+    for id in ["code", "ask"] {
+        for name in ["read_file", "write_file"] {
+            assert!(registry.tool_allowed(&set, id, name), "{id} {name}");
+            assert_eq!(registry.tool_policy_denied_json(&set, id, name), None);
+        }
+    }
 }

@@ -46,7 +46,7 @@ mod turn_log;
 
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
-use mode_policy::ModePolicy;
+use mode_policy::{Offer, denial, offer};
 use project_gate::GatedGroup;
 #[cfg(test)]
 use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
@@ -187,28 +187,21 @@ struct LastReply {
     text: Arc<str>,
 }
 
-fn describe_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<ToolSpec>, String) {
-    let tool_specs: Vec<ToolSpec> = tools.iter().map(|tool| tool.spec().clone()).collect();
-    let (remote, offered): (Vec<_>, Vec<_>) = tools
+fn read_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<bool>) {
+    tools
         .iter()
-        .zip(&tool_specs)
-        .partition(|(tool, _)| tool.provider_executed());
-    let offered_specs = offered.into_iter().map(|(_, spec)| spec.clone()).collect();
-    let tool_guidance = remote
-        .iter()
-        .map(|(_, spec)| spec.description.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    (tool_specs, offered_specs, tool_guidance)
+        .map(|tool| (tool.spec().clone(), tool.provider_executed()))
+        .unzip()
 }
 
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
     tool_specs: Vec<ToolSpec>,
+    provider_executed: Vec<bool>,
     offered_specs: Vec<ToolSpec>,
     tool_guidance: String,
-    mode: Option<ModePolicy>,
+    mode: Option<ActiveMode>,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
@@ -239,11 +232,16 @@ impl Agent {
         permissions: Arc<dyn PermissionGate>,
         config: AgentConfig,
     ) -> Self {
-        let (tool_specs, offered_specs, tool_guidance) = describe_tools(&tools);
+        let (tool_specs, provider_executed) = read_tools(&tools);
+        let Offer {
+            specs: offered_specs,
+            guidance: tool_guidance,
+        } = offer(&tool_specs, &provider_executed, None);
         Self {
             provider,
             tools,
             tool_specs,
+            provider_executed,
             offered_specs,
             tool_guidance,
             mode: None,
@@ -272,7 +270,8 @@ impl Agent {
 
     #[must_use]
     pub fn with_mode(mut self, mode: ActiveMode) -> Self {
-        self.mode = Some(ModePolicy::new(mode, &self.tools));
+        self.mode = Some(mode);
+        self.offer_tools();
         self
     }
 
@@ -316,8 +315,19 @@ impl Agent {
     }
 
     pub(crate) fn replace_tools(&mut self, tools: Vec<Arc<dyn Tool>>) {
-        (self.tool_specs, self.offered_specs, self.tool_guidance) = describe_tools(&tools);
+        (self.tool_specs, self.provider_executed) = read_tools(&tools);
         self.tools = tools;
+        self.offer_tools();
+    }
+
+    fn offer_tools(&mut self) {
+        let Offer { specs, guidance } = offer(
+            &self.tool_specs,
+            &self.provider_executed,
+            self.mode.as_ref(),
+        );
+        self.offered_specs = specs;
+        self.tool_guidance = guidance;
     }
 
     pub(crate) fn inherit_root_user_requests(&mut self, requests: Arc<RootUserRequests>) {
@@ -509,7 +519,7 @@ impl Agent {
                 model: &self.config.model,
                 instructions: &instructions,
                 messages: &self.history,
-                tools: self.advertised_tools(),
+                tools: &self.offered_specs,
                 tool_choice: ToolChoice::Auto,
                 max_output_tokens: self.config.max_output_tokens,
                 provider_options: self.provider_options(turn, events),
@@ -955,12 +965,6 @@ impl Agent {
         Stop::failed(failure)
     }
 
-    fn advertised_tools(&self) -> &[ToolSpec] {
-        self.mode
-            .as_ref()
-            .map_or(&self.offered_specs, ModePolicy::advertised)
-    }
-
     fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools
             .iter()
@@ -1034,7 +1038,7 @@ impl Agent {
         if let Some(output) = self
             .mode
             .as_ref()
-            .and_then(|mode| mode.denial(&self.tools, &call.name))
+            .and_then(|mode| denial(mode, &self.tool_specs, &call.name))
         {
             return Err(Rejection {
                 reason: ToolRejection::Invalid,

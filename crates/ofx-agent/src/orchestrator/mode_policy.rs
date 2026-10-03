@@ -1,38 +1,44 @@
-use std::sync::Arc;
+use ofx_contract::{ActiveMode, ToolOutput, ToolSet, ToolSpec};
 
-use ofx_contract::{ActiveMode, Tool, ToolOutput, ToolSet, ToolSpec};
-
-pub(super) struct ModePolicy {
-    mode: ActiveMode,
-    advertised: Vec<ToolSpec>,
+pub(super) struct Offer {
+    pub(super) specs: Vec<ToolSpec>,
+    pub(super) guidance: String,
 }
 
-impl ModePolicy {
-    pub(super) fn new(mode: ActiveMode, tools: &[Arc<dyn Tool>]) -> Self {
-        let advertised = mode
-            .registry
-            .model_tools(&tool_set(mode, tools), mode.id)
+pub(super) fn offer(
+    specs: &[ToolSpec],
+    provider_executed: &[bool],
+    mode: Option<&ActiveMode>,
+) -> Offer {
+    let (remote, offered): (Vec<_>, Vec<_>) = specs
+        .iter()
+        .zip(provider_executed)
+        .filter(|(spec, _)| mode.is_none_or(|mode| allows(mode, specs, &spec.name)))
+        .partition(|(_, remote)| **remote);
+    Offer {
+        specs: offered.into_iter().map(|(spec, _)| spec.clone()).collect(),
+        guidance: remote
             .iter()
-            .map(|tool| tool.spec().clone())
-            .collect();
-        Self { mode, advertised }
-    }
-
-    pub(super) fn advertised(&self) -> &[ToolSpec] {
-        &self.advertised
-    }
-
-    pub(super) fn denial(&self, tools: &[Arc<dyn Tool>], tool_name: &str) -> Option<ToolOutput> {
-        self.mode
-            .registry
-            .tool_policy_denied_json(&tool_set(self.mode, tools), self.mode.id, tool_name)
-            .map(ToolOutput::failure)
+            .map(|(spec, _)| spec.description.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
     }
 }
 
-fn tool_set(mode: ActiveMode, tools: &[Arc<dyn Tool>]) -> ToolSet<'_> {
+pub(super) fn denial(mode: &ActiveMode, specs: &[ToolSpec], tool_name: &str) -> Option<ToolOutput> {
+    mode.registry
+        .tool_policy_denied_json(&tool_set(mode, specs), mode.id, tool_name)
+        .map(ToolOutput::failure)
+}
+
+fn allows(mode: &ActiveMode, specs: &[ToolSpec], tool_name: &str) -> bool {
+    mode.registry
+        .tool_allowed(&tool_set(mode, specs), mode.id, tool_name)
+}
+
+fn tool_set<'a>(mode: &ActiveMode, specs: &'a [ToolSpec]) -> ToolSet<'a> {
     ToolSet {
-        tools,
+        specs,
         read_only_tool_names: mode.read_only_tool_names,
     }
 }
