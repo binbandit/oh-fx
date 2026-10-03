@@ -59,8 +59,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/app/app_mcp_runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-app/src/app_mcp_runtime.rs"]
+note = "Background reloads, authority reductions after trust changes and their notices exist; the MCP menu, the project trust prompt, OAuth and elicitation hosting are missing."
 
 [[file]]
 upstream = "src/core/app/app_notification_runtime.zig"
