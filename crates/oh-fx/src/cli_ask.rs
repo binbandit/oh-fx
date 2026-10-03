@@ -2595,6 +2595,7 @@ mod tests {
                 action: Some(ModelRecoveryAction::RetryingRequest),
                 delay_seconds: 0,
                 diagnostic: None,
+                retry_wait: None,
             },
         };
         present(&mut presenter, [provisional("abandoned"), retry]);
@@ -2632,6 +2633,7 @@ mod tests {
                         action: None,
                         delay_seconds: 0,
                         diagnostic: None,
+                        retry_wait: None,
                     },
                 },
                 rejected(
