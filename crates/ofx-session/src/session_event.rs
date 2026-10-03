@@ -1,7 +1,7 @@
 mod frame_decode;
 
 use ofx_config::EMERGENCY_CEILING_BYTES;
-use ofx_contract::{ToolArgumentIntegrity, ToolResultStatus};
+use ofx_contract::{ProviderReplay, ReplaySource, ToolArgumentIntegrity, ToolResultStatus};
 use serde::Serialize;
 
 use crate::fixed_field::{False, LocalProvenance, NoItems, Null, TurnOrigin, ValidIdentity};
@@ -10,6 +10,7 @@ use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_store_paths::MAX_PATH_BYTES;
 use frame_decode::envelope_from;
+pub(crate) use frame_decode::saved_replay;
 
 pub(crate) const CONVERSATION_SCHEMA_VERSION: u8 = 3;
 pub(crate) const EVENT_FRAME_MAX_BYTES: usize = EMERGENCY_CEILING_BYTES;
@@ -70,6 +71,18 @@ pub struct AssistantEvent {
 pub struct SavedReplay {
     pub source: SavedReplaySource,
     pub parts_json: String,
+}
+
+impl SavedReplay {
+    pub(crate) fn into_provider_replay(self) -> ProviderReplay {
+        ProviderReplay {
+            source: ReplaySource {
+                provider: self.source.provider.id().label().to_owned(),
+                model: self.source.model,
+            },
+            parts_json: self.parts_json,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -616,7 +629,7 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
     }
 }
 
-fn are_valid_files(files: &[FileEvidence]) -> bool {
+pub(crate) fn are_valid_files(files: &[FileEvidence]) -> bool {
     files.iter().all(|file| {
         is_valid_path(&file.path)
             && file.new_path.as_deref().is_none_or(is_valid_path)
@@ -647,7 +660,7 @@ fn valid_arguments() -> ToolArgumentIntegrity {
     ToolArgumentIntegrity::Valid
 }
 
-trait WireTag: Copy + 'static {
+pub(crate) trait WireTag: Copy + 'static {
     const ALL: &'static [Self];
 
     fn tag(self) -> &'static str;

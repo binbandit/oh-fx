@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use ofx_config::ProviderId;
 use ofx_contract::{
-    HistoryCut, HistorySteering, HistoryStep, HistoryTurn, ReasoningEffort, StepResult, TurnEnd,
-    TurnStop,
+    HistoryCut, HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, ReasoningEffort,
+    ReplaySource, StepResult, TurnEnd, TurnStop,
 };
 use serde_json::Value;
 

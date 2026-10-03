@@ -1,0 +1,396 @@
+use std::fs;
+use std::path::PathBuf;
+
+use ofx_config::ProviderId;
+use ofx_contract::{ReasoningEffort, ToolArgumentIntegrity, ToolResultStatus};
+
+use super::*;
+use crate::session_codec::{SessionMetadata, SessionPreferences};
+use crate::session_event::{
+    ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, FileEvidence, FileEvidenceAction,
+    SteeringEvent, ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
+};
+use crate::session_log::{
+    EVENTS_FILE, LOCK_DEADLINE, WritableSession, resume_session, start_session,
+};
+
+struct Fixture {
+    root: tempfile::TempDir,
+    sessions: PrivateDir,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = PrivateDir::open_or_create(&root.path().join("sessions")).unwrap();
+        Self { root, sessions }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.path().join("sessions/saved").join(name)
+    }
+
+    fn start(&self, events: &[ConversationEvent]) {
+        self.start_under(
+            SavedProvider::new(ProviderId::Gateway, None).unwrap(),
+            events,
+        );
+    }
+
+    fn start_under(&self, provider: SavedProvider, events: &[ConversationEvent]) {
+        let mut metadata = metadata();
+        metadata.preferences.provider = provider;
+        let mut session = start_session(&self.sessions, metadata).unwrap();
+        session.append(2, events).unwrap();
+    }
+
+    fn save_checkpoint(&self, conversation_seq: u64, checkpoint: &str) {
+        let text =
+            format!("{{\"conversation_seq\":{conversation_seq},\"checkpoint\":{checkpoint}}}\n");
+        fs::write(self.path(RECOVERY_FILE), text).unwrap();
+        fs::write(self.path(RECOVERY_ASKED_FILE), "{\"asked_at_ms\":3}\n").unwrap();
+    }
+
+    fn resume(&self) -> Result<WritableSession, SessionError> {
+        resume_session(&self.sessions, "saved", LOCK_DEADLINE)
+    }
+
+    fn log(&self) -> Vec<String> {
+        fs::read_to_string(self.path(EVENTS_FILE))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn metadata() -> SessionMetadata {
+    SessionMetadata {
+        id: "saved".to_owned(),
+        origin_workspace_root: "/workspace".to_owned(),
+        workspace_root: "/workspace".to_owned(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        conversation_language: "und".to_owned(),
+        preferences: SessionPreferences {
+            provider: SavedProvider::new(ProviderId::Gateway, None).unwrap(),
+            model: "openai/gpt-5".to_owned(),
+            effort: ReasoningEffort::Auto,
+            fast_mode: false,
+        },
+        title: None,
+    }
+}
+
+fn user(text: &str) -> ConversationEvent {
+    ConversationEvent::User(UserEvent::new(text))
+}
+
+fn assistant(text: &str) -> ConversationEvent {
+    ConversationEvent::Assistant(AssistantEvent {
+        text: text.to_owned(),
+        provider_replay: None,
+        standalone_response: false,
+    })
+}
+
+fn call(id: &str) -> ConversationEvent {
+    ConversationEvent::ToolCall(ToolCallEvent::new(
+        id,
+        "shell",
+        "{\"command\":\"ls\"}",
+        ToolArgumentIntegrity::Valid,
+    ))
+}
+
+fn result(id: &str) -> ConversationEvent {
+    ConversationEvent::ToolResult(ToolResultEvent::new(
+        id,
+        "shell",
+        ToolResultStatus::Success,
+        "result.txt",
+        3,
+        ArtifactCompleteness::Complete,
+    ))
+}
+
+fn finished_turn() -> Vec<ConversationEvent> {
+    vec![
+        user("before"),
+        assistant("done before"),
+        ConversationEvent::TurnCompleted(TurnCompletedEvent::default()),
+    ]
+}
+
+fn step(call_id: &str, output: &str) -> String {
+    let bytes = output.len();
+    format!(
+        "{{\"assistant\":null,\"provider_replay\":null,\"tool_calls\":[{{\"id\":\"{call_id}\",\"name\":\"shell\",\"arguments_json\":\"{{\\\"command\\\":\\\"ls\\\"}}\",\"provider_result\":null}}],\"tool_results\":[{{\"tool_call_id\":\"{call_id}\",\"tool_name\":\"shell\",\"status\":\"success\",\"output\":\"{output}\",\"output_handle\":null,\"preview\":null,\"output_bytes\":{bytes},\"stored_output_bytes\":{bytes},\"truncated\":false,\"provider_native\":false,\"review_feedback\":false,\"created_at_ms\":5,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_output_replay\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}]}}"
+    )
+}
+
+const EVIDENCE: &str = "{\"path\":\"a.rs\",\"new_path\":null,\"tool_call_id\":\"c2\",\"tool_name\":\"shell\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":true,\"stale\":false}";
+
+fn checkpoint(user: &str, steps: &[String], steering: &str, partial: &str) -> String {
+    let steps = steps.join(",");
+    format!(
+        "{{\"version\":2,\"turn_id\":7,\"user\":{{\"text\":\"{user}\",\"images\":[]}},\"assistant_source\":\"{partial}\",\"execution\":{{\"schema_version\":10,\"tool_steps\":[{steps}],\"files\":[{EVIDENCE}],\"steering\":[{steering}],\"turn_summary\":null}},\"cause\":\"network_interrupted\",\"action\":\"retrying_request\",\"tool_state\":\"none\",\"authority\":{{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"credential_source\":null,\"credential_identity\":null}},\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":1,\"outstanding_reservation\":false}}"
+    )
+}
+
+fn evidence() -> FileEvidence {
+    FileEvidence {
+        path: "a.rs".to_owned(),
+        new_path: None,
+        tool_call_id: "c2".to_owned(),
+        tool_name: "shell".to_owned(),
+        action: FileEvidenceAction::Read,
+        status: ToolResultStatus::Success,
+        model_view_covers_full_file: true,
+        stale: false,
+    }
+}
+
+#[test]
+fn a_matching_checkpoint_resumes_as_its_interrupted_turn() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(
+        3,
+        &checkpoint(
+            "fix the build",
+            &[step("c2", "out")],
+            "{\"text\":\"also tests\",\"assistant_prefix\":null,\"after_tool_step_count\":1}",
+            "Looking at",
+        ),
+    );
+    let mut resumed = fixture.resume().unwrap();
+    assert!(!resumed.turn_open());
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+    assert!(!fixture.path(RECOVERY_ASKED_FILE).exists());
+    let history = resumed.take_history();
+    assert_eq!(history.turns.len(), 2);
+    let events = &history.turns[1].events;
+    assert_eq!(events[0], user("fix the build"));
+    assert_eq!(events[1], call("c2"));
+    let ConversationEvent::ToolResult(saved) = &events[2] else {
+        panic!("expected a tool result, got {:?}", events[2]);
+    };
+    assert_eq!(resumed.tool_result_output(saved).as_deref(), Some("out"));
+    assert_eq!(
+        events[3],
+        ConversationEvent::Steering(SteeringEvent {
+            text: "also tests".to_owned(),
+        })
+    );
+    let mut ended = InterruptedEvent::new(InterruptReason::Failed, Some("Looking at".to_owned()));
+    ended.files = vec![evidence()];
+    assert_eq!(events[4], ConversationEvent::Interrupted(ended));
+    assert_eq!(events.len(), 5);
+    let log = fixture.log();
+    assert_eq!(log.len(), 8);
+    assert!(
+        log[7].contains(&format!("\"files\":[{EVIDENCE}]")),
+        "{}",
+        log[7]
+    );
+    drop(resumed);
+    assert_eq!(fixture.resume().unwrap().take_history().turns.len(), 2);
+    assert_eq!(fixture.log().len(), 8);
+}
+
+#[test]
+fn a_turn_left_open_by_compaction_keeps_its_saved_prefix() {
+    let fixture = Fixture::new();
+    fixture.start(&[
+        user("long task"),
+        call("c1"),
+        result("c1"),
+        ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
+            covers_through_seq: 1,
+            summary: "<summary>started</summary>".to_owned(),
+        }),
+    ]);
+    fixture.save_checkpoint(
+        4,
+        &checkpoint(
+            "long task",
+            &[step("c1", "old"), step("c2", "new")],
+            "",
+            "half way",
+        ),
+    );
+    drop(fixture.resume().unwrap());
+    let log = fixture.log();
+    assert_eq!(log.len(), 7, "{log:#?}");
+    assert!(
+        log[4].contains("\"tool_call\":{\"call_id\":\"c2\""),
+        "{}",
+        log[4]
+    );
+    assert!(
+        log[5].contains("\"tool_result\":{\"call_id\":\"c2\""),
+        "{}",
+        log[5]
+    );
+    assert!(
+        log[6].contains("\"interrupted\":{\"reason\":\"failed\",\"partial_text\":\"half way\""),
+        "{}",
+        log[6]
+    );
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
+fn a_stale_checkpoint_is_left_for_upstream_and_the_turn_closes_as_before() {
+    let fixture = Fixture::new();
+    fixture.start(&[
+        user("long task"),
+        call("c1"),
+        result("c1"),
+        ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
+            covers_through_seq: 3,
+            summary: "<summary>started</summary>".to_owned(),
+        }),
+    ]);
+    fixture.save_checkpoint(3, &checkpoint("long task", &[], "", "stale"));
+    drop(fixture.resume().unwrap());
+    let log = fixture.log();
+    assert_eq!(log.len(), 5);
+    assert!(
+        log[4].contains("\"interrupted\":{\"reason\":\"failed\",\"partial_text\":null"),
+        "{}",
+        log[4]
+    );
+    assert!(fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
+fn a_checkpoint_ahead_of_the_log_or_unreadable_fails_the_resume_untouched() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let before = fixture.log();
+    fixture.save_checkpoint(4, &checkpoint("next", &[], "", ""));
+    assert_eq!(
+        fixture.resume().err(),
+        Some(SessionError::InvalidRecoveryCheckpoint)
+    );
+    fixture.save_checkpoint(3, "{\"version\":2}");
+    assert_eq!(
+        fixture.resume().err(),
+        Some(SessionError::InvalidRecoveryCheckpoint)
+    );
+    assert_eq!(fixture.log(), before);
+    assert!(fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
+fn a_saved_replay_keeps_its_own_provider_binding_under_any_preferences() {
+    let saved = format!(
+        "{{\"source\":{{\"provider\":{{\"name\":\"portkey\",\"binding\":\"{}\"}},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
+        "22".repeat(32)
+    );
+    let replayed = step("c2", "out").replace(
+        "\"provider_replay\":null",
+        &format!("\"provider_replay\":{saved}"),
+    );
+    let preferences = [
+        SavedProvider::new(ProviderId::Gateway, None).unwrap(),
+        SavedProvider::new(
+            ProviderId::Configured("portkey".to_owned()),
+            Some([0x11; 32]),
+        )
+        .unwrap(),
+    ];
+    for provider in preferences {
+        let fixture = Fixture::new();
+        fixture.start_under(provider.clone(), &finished_turn());
+        fixture.save_checkpoint(
+            3,
+            &checkpoint(
+                "fix the build",
+                std::slice::from_ref(&replayed),
+                "",
+                "Looking at",
+            ),
+        );
+        drop(fixture.resume().unwrap());
+        let log = fixture.log();
+        assert!(
+            log[4].contains(&format!("\"provider_replay\":{saved}")),
+            "{provider:?}: {}",
+            log[4]
+        );
+    }
+}
+
+fn bound_replay(binding: &str) -> String {
+    format!(
+        "{{\"source\":{{\"provider\":{{\"name\":\"portkey\",\"binding\":\"{}\"}},\"model\":\"claude\"}},\"parts_json\":\"[1]\"}}",
+        binding.repeat(32)
+    )
+}
+
+fn replayed_step(call_id: &str, binding: &str) -> String {
+    step(call_id, "out").replace(
+        "\"provider_replay\":null",
+        &format!("\"provider_replay\":{}", bound_replay(binding)),
+    )
+}
+
+fn replays_in(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            let frame: serde_json::Value = serde_json::from_str(line).unwrap();
+            let replay = &frame["event"]["assistant"]["provider_replay"];
+            (!replay.is_null()).then(|| replay.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn each_recovered_step_keeps_the_replay_binding_it_was_saved_with() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(
+        3,
+        &checkpoint(
+            "fix the build",
+            &[replayed_step("c1", "11"), replayed_step("c2", "22")],
+            "",
+            "Looking at",
+        ),
+    );
+    drop(fixture.resume().unwrap());
+    assert_eq!(
+        replays_in(&fixture.log()),
+        [bound_replay("11"), bound_replay("22")]
+    );
+}
+
+#[test]
+fn a_step_after_a_compacted_prefix_keeps_its_own_replay_binding() {
+    let fixture = Fixture::new();
+    fixture.start(&[
+        user("long task"),
+        call("c1"),
+        result("c1"),
+        ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
+            covers_through_seq: 1,
+            summary: "<summary>started</summary>".to_owned(),
+        }),
+    ]);
+    fixture.save_checkpoint(
+        4,
+        &checkpoint(
+            "long task",
+            &[replayed_step("c1", "11"), replayed_step("c2", "22")],
+            "",
+            "half way",
+        ),
+    );
+    drop(fixture.resume().unwrap());
+    let log = fixture.log();
+    assert_eq!(replays_in(&log[4..]), [bound_replay("22")], "{log:#?}");
+}

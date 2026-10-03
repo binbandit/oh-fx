@@ -3,6 +3,7 @@ mod conversation_progress;
 mod conversation_writer;
 pub(crate) mod managed_file;
 mod turn_events;
+mod turn_recovery;
 mod turn_restore;
 
 use std::mem;
@@ -20,9 +21,7 @@ use crate::session_codec::{
 };
 use crate::session_display_metadata::{derive_display_title, prompt_title};
 use crate::session_error::SessionError;
-use crate::session_event::{
-    ContextCheckpointEvent, ConversationEvent, InterruptReason, InterruptedEvent, ToolResultEvent,
-};
+use crate::session_event::{ContextCheckpointEvent, ConversationEvent, ToolResultEvent};
 use crate::session_layout::is_valid_session_id;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
@@ -35,6 +34,7 @@ use managed_file::{
     same_directory, sync_dir,
 };
 use turn_events::{TurnArtifacts, turn_events};
+use turn_recovery::close_unfinished_turn;
 use turn_restore::{complete_result_output, restored_history};
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
@@ -317,6 +317,7 @@ impl WritableSession {
             dir: &self.owned.dir,
             provider,
             timestamp_ms,
+            saved_replays: &[],
         }
     }
 
@@ -449,14 +450,10 @@ pub(crate) fn resume_session(
         .ok_or(SessionError::InvalidSessionFormat)?;
     let mut replay = ReplayScan::default();
     let mut writer = ConversationWriter::open(file, &mut replay)?;
-    if writer.turn_open() {
-        let offset = writer.committed_bytes();
-        let interrupted =
-            ConversationEvent::Interrupted(InterruptedEvent::new(InterruptReason::Failed, None));
-        writer.append(now_ms(), std::slice::from_ref(&interrupted))?;
-        replay.observe(offset, writer.last_seq(), &interrupted)?;
-    }
+    let closed_from = writer.committed_bytes();
+    close_unfinished_turn(&owned.dir, &mut writer, &metadata.preferences.provider)?;
     let end = writer.committed_bytes();
+    replay.observe_range(writer.file(), closed_from, end)?;
     let window = replay.finish(writer.file(), end)?;
     let history = replay_history(writer.file(), end, &window)?;
     Ok(WritableSession {

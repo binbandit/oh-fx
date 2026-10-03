@@ -1,3 +1,5 @@
+pub(crate) mod recovery_checkpoint;
+
 use ofx_config::ProviderId;
 use ofx_contract::ReasoningEffort;
 use ofx_text::lowercase_hex;
