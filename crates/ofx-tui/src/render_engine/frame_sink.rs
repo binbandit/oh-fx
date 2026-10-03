@@ -8,6 +8,7 @@ const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
 const ERASE_BELOW: &str = "\x1b[0m\x1b[J";
 const ERASE_LINE_TAIL: &str = "\x1b[K";
+const CLEAR_SCREEN_AND_HISTORY: &str = "\x1b[0m\x1b[2J\x1b[3J\x1b[H";
 
 pub(crate) struct Frame<'a> {
     pub(crate) appended: &'a [Row],
@@ -18,9 +19,11 @@ pub(crate) struct Frame<'a> {
 pub(crate) trait FrameSink {
     fn present(&mut self, frame: &Frame<'_>, out: &mut String);
 
-    fn reset_screen(&mut self, out: &mut String);
+    fn reset_screen(&mut self);
 
-    fn release_screen(&mut self, out: &mut String);
+    fn release_screen(&mut self);
+
+    fn flush_queued(&mut self, out: &mut String);
 
     fn resize(&mut self, rows: u16, cols: u16);
 
@@ -32,6 +35,8 @@ pub(crate) struct LiveRegionRenderer {
     cols: usize,
     sync_updates: bool,
     reset_sequence: String,
+    before_frame: String,
+    in_frame: String,
     top: usize,
     pinned: bool,
     padding: usize,
@@ -47,6 +52,8 @@ impl LiveRegionRenderer {
             cols: usize::from(cols.max(1)),
             sync_updates,
             reset_sequence,
+            before_frame: String::new(),
+            in_frame: String::new(),
             top: 1,
             pinned: false,
             padding: 0,
@@ -192,30 +199,41 @@ impl FrameSink for LiveRegionRenderer {
         }
         self.valid = true;
         let cursor = self.cursor_target(frame, live.len());
-        if body.is_empty() && cursor == self.cursor {
+        if body.is_empty() && cursor == self.cursor && self.in_frame.is_empty() {
             return;
         }
         self.cursor = cursor;
+        out.push_str(&self.before_frame);
         self.begin(out);
+        out.push_str(&self.in_frame);
         out.push_str(&body);
         self.end(out);
+        self.before_frame.clear();
+        self.in_frame.clear();
     }
 
-    fn reset_screen(&mut self, out: &mut String) {
-        out.push_str(&self.reset_sequence);
-        out.push_str("\x1b[0m\x1b[2J\x1b[3J\x1b[H");
+    fn reset_screen(&mut self) {
+        self.before_frame.push_str(&self.reset_sequence);
+        self.in_frame.push_str(CLEAR_SCREEN_AND_HISTORY);
         self.restart_at_top();
     }
 
-    fn release_screen(&mut self, out: &mut String) {
-        move_to(out, self.top, 1);
-        out.push_str(ERASE_BELOW);
+    fn release_screen(&mut self) {
+        move_to(&mut self.in_frame, self.top, 1);
+        self.in_frame.push_str(ERASE_BELOW);
         if self.top > 1 {
-            move_to(out, self.rows, 1);
-            out.push_str(&"\n".repeat(self.top - 1));
+            move_to(&mut self.in_frame, self.rows, 1);
+            self.in_frame.push_str(&"\n".repeat(self.top - 1));
         }
-        move_to(out, 1, 1);
+        move_to(&mut self.in_frame, 1, 1);
         self.restart_at_top();
+    }
+
+    fn flush_queued(&mut self, out: &mut String) {
+        out.push_str(&self.before_frame);
+        out.push_str(&self.in_frame);
+        self.before_frame.clear();
+        self.in_frame.clear();
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -415,11 +433,10 @@ mod tests {
     fn releasing_the_screen_moves_the_transcript_into_scrollback() {
         let mut screen = Screen::new(6, 20);
         screen.present(&["one", "two"], &["┃ ", "status"], None);
-        let mut out = String::new();
-        screen.renderer.release_screen(&mut out);
-        screen.parser.process(out.as_bytes());
+        screen.renderer.release_screen();
+        let out = screen.present(&["welcome", ""], &["┃ ", "status"], None);
+        assert!(out.starts_with(SYNC_BEGIN), "{out:?}");
         assert_eq!(screen.history(), ["one", "two"]);
-        screen.present(&["welcome", ""], &["┃ ", "status"], None);
         assert_eq!(screen.lines()[0], "welcome");
         assert_eq!(screen.lines()[3], "status");
     }
@@ -428,12 +445,43 @@ mod tests {
     fn resets_clear_the_screen_and_repaint_from_the_top() {
         let mut screen = Screen::new(6, 20);
         screen.present(&["one", "two"], &["┃ ", "status"], None);
-        let mut out = String::new();
         screen.renderer.resize(6, 10);
-        screen.renderer.reset_screen(&mut out);
-        assert!(out.contains("\x1b[2J\x1b[3J\x1b[H"));
-        screen.parser.process(out.as_bytes());
-        screen.present(&["one", "two"], &["┃ abcdefghijklmnop", "status"], None);
+        screen.renderer.reset_screen();
+        let out = screen.present(&["one", "two"], &["┃ abcdefghijklmnop", "status"], None);
+        assert!(
+            out.starts_with("\x1b[?2026h\x1b[?25l\x1b[0m\x1b[2J\x1b[3J\x1b[H"),
+            "{out:?}"
+        );
         assert_eq!(screen.lines()[2], "┃ abcdefgh");
+    }
+
+    #[test]
+    fn a_full_terminal_reset_goes_out_before_the_synchronized_frame_that_clears() {
+        let mut renderer = LiveRegionRenderer::new(6, 20, true, "\x1bc\x1b[?2004h".to_owned());
+        let mut out = String::new();
+        renderer.reset_screen();
+        assert!(out.is_empty());
+        renderer.present(
+            &Frame {
+                appended: &[Row::plain("one")],
+                live: &[Row::plain("status")],
+                cursor: None,
+            },
+            &mut out,
+        );
+        assert!(
+            out.starts_with("\x1bc\x1b[?2004h\x1b[?2026h\x1b[?25l\x1b[0m\x1b[2J\x1b[3J\x1b[H"),
+            "{out:?}"
+        );
+        let mut next = String::new();
+        renderer.present(
+            &Frame {
+                appended: &[],
+                live: &[Row::plain("status")],
+                cursor: None,
+            },
+            &mut next,
+        );
+        assert!(next.is_empty(), "{next:?}");
     }
 }
