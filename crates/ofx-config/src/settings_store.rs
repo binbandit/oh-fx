@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ofx_contract::{PermissionAction, PermissionMode};
+use ofx_contract::{PermissionAction, PermissionMode, StatuslineItem};
 use serde_json::{Map, Value};
 
 use crate::config_runtime::{
-    BYTE_ORDER_MARK, MAX_SETTINGS_BYTES, SETTINGS_FILE, is_valid_profile_layer,
+    BYTE_ORDER_MARK, LayerScope, MAX_SETTINGS_BYTES, SETTINGS_FILE, is_valid_profile_layer,
 };
 use crate::configured_provider::is_valid_model_id;
 use crate::io::{AdvisoryLock, DurableError, PrivateDir};
@@ -32,16 +32,32 @@ const PERMISSION_MODE: &str = "permission_mode";
 const YOLO_ACKNOWLEDGED: &str = "yolo_acknowledged";
 const STARTUP_SCROLLBACK: &str = "startup_scrollback";
 const PERMISSION_MODE_MIGRATION: Migration = Migration {
+    container: None,
     field: PERMISSION_MODE,
     binding: None,
     snapshot: "settings.json.preference-migration.permission_mode.json",
 };
 const STARTUP_SCROLLBACK_MIGRATION: Migration = Migration {
+    container: None,
     field: STARTUP_SCROLLBACK,
     binding: None,
     snapshot: "settings.json.preference-migration.startup_scrollback.json",
 };
+const STATUSLINE: &str = "statusLine";
+const STATUSLINE_CONTEXT_MIGRATION: Migration = Migration {
+    container: Some(STATUSLINE),
+    field: "context",
+    binding: None,
+    snapshot: "settings.json.preference-migration.statusline_context.json",
+};
+const STATUSLINE_SESSION_MIGRATION: Migration = Migration {
+    container: Some(STATUSLINE),
+    field: "session",
+    binding: None,
+    snapshot: "settings.json.preference-migration.statusline_session.json",
+};
 const FAST_MODE_MIGRATION: Migration = Migration {
+    container: None,
     field: FAST_MODE,
     binding: Some(FAST_MODE_MODEL_BOUND),
     snapshot: "settings.json.preference-migration.fast_mode.json",
@@ -185,6 +201,10 @@ enum Patch<'a> {
     PermissionMode(PermissionMode),
     YoloAcknowledged,
     StartupScrollback(bool),
+    StatuslineItem {
+        item: StatuslineItem,
+        enabled: bool,
+    },
     Permission {
         workspace: Option<&'a str>,
         patch: PermissionPatch<'a>,
@@ -201,6 +221,7 @@ struct Application {
 }
 
 struct Migration {
+    container: Option<&'static str>,
     field: &'static str,
     binding: Option<&'static str>,
     snapshot: &'static str,
@@ -246,6 +267,14 @@ pub fn save_startup_scrollback(
     enabled: bool,
 ) -> Result<CommitOutcome, SettingsWriteFailure> {
     commit(paths, Patch::StartupScrollback(enabled), &mut || {})
+}
+
+pub fn save_statusline_item(
+    paths: &ProfilePaths,
+    item: StatuslineItem,
+    enabled: bool,
+) -> Result<CommitOutcome, SettingsWriteFailure> {
+    commit(paths, Patch::StatuslineItem { item, enabled }, &mut || {})
 }
 
 pub fn save_permission_patch(
@@ -476,6 +505,23 @@ fn apply(
             migrate_workspace_preference(root, &PERMISSION_MODE_MIGRATION, &mut application);
         }
         Patch::YoloAcknowledged => application.changed |= put_bool(root, YOLO_ACKNOWLEDGED, true),
+        Patch::StatuslineItem { item, enabled } => {
+            let Value::Object(statusline) = root
+                .entry(STATUSLINE)
+                .or_insert_with(|| Value::Object(Map::new()))
+            else {
+                return Err(SettingsWriteError::InvalidFormat);
+            };
+            application.changed |= put_bool(statusline, item.label(), enabled);
+            let migration = match item {
+                StatuslineItem::Context => Some(&STATUSLINE_CONTEXT_MIGRATION),
+                StatuslineItem::Session => Some(&STATUSLINE_SESSION_MIGRATION),
+                StatuslineItem::Workspace => None,
+            };
+            if let Some(migration) = migration {
+                migrate_workspace_preference(root, migration, &mut application);
+            }
+        }
         Patch::StartupScrollback(enabled) => {
             application.changed |= put_bool(root, STARTUP_SCROLLBACK, enabled);
             migrate_workspace_preference(root, &STARTUP_SCROLLBACK_MIGRATION, &mut application);
@@ -638,7 +684,10 @@ fn migrate_workspace_preference(
         let Value::Object(workspace) = workspace else {
             return true;
         };
-        let field = workspace.shift_remove(migration.field).is_some();
+        let field = match migration.container {
+            None => workspace.shift_remove(migration.field).is_some(),
+            Some(container) => remove_nested_leaf(workspace, container, migration.field),
+        };
         let binding = migration
             .binding
             .is_some_and(|binding| workspace.shift_remove(binding).is_some());
@@ -653,6 +702,19 @@ fn migrate_workspace_preference(
         }
         !workspace.is_empty()
     });
+}
+
+fn remove_nested_leaf(workspace: &mut Map<String, Value>, container: &str, leaf: &str) -> bool {
+    let Some(Value::Object(object)) = workspace.get_mut(container) else {
+        return false;
+    };
+    if object.shift_remove(leaf).is_none() {
+        return false;
+    }
+    if object.is_empty() {
+        workspace.shift_remove(container);
+    }
+    true
 }
 
 fn put_bool(object: &mut Map<String, Value>, key: &str, value: bool) -> bool {
@@ -738,7 +800,7 @@ fn validate_candidate(candidate: &str, patch: Patch<'_>) -> Result<(), SettingsW
         let workspace = root
             .get("workspaces")
             .and_then(|workspaces| workspaces.get(workspace_root));
-        if !matches!(workspace, Some(Value::Object(workspace)) if is_valid_profile_layer(workspace))
+        if !matches!(workspace, Some(Value::Object(workspace)) if is_valid_profile_layer(workspace, LayerScope::Workspace))
         {
             return Err(SettingsWriteError::InvalidFormat);
         }
@@ -749,7 +811,7 @@ fn validate_candidate(candidate: &str, patch: Patch<'_>) -> Result<(), SettingsW
             .all(|key| ProviderId::parse(key).is_some_and(|provider| provider.label() == key)),
         _ => true,
     };
-    if canonical && is_valid_profile_layer(&root) {
+    if canonical && is_valid_profile_layer(&root, LayerScope::Global) {
         Ok(())
     } else {
         Err(SettingsWriteError::InvalidFormat)

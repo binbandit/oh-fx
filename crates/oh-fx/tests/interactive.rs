@@ -486,6 +486,56 @@ fn settings_shows_the_session_and_saves_startup_scrollback() {
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
+#[test]
+fn statusline_toggles_the_context_and_workspace_segments() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Noted."])),
+        Reply::sse(&chat_text_events(&["Again."])),
+    ]);
+    let mut settings = settings(&server.base_url());
+    settings["providers"]["local"]["model_metadata"] =
+        json!({"model-a": {"context_window": 128_000}});
+    let home = Home::with_settings(&settings);
+    fs::create_dir_all(home.workspace.join(".git")).expect("create the git directory");
+    fs::write(
+        home.workspace.join(".git/HEAD"),
+        "ref: refs/heads/feature/pty\n",
+    )
+    .expect("write HEAD");
+    let mut session = home.shell(30, 120);
+    session.send(b"/statusline\r");
+    let screen = wait(&session, "* statusline: context: off");
+    assert!(screen.contains("session: off"), "{screen}");
+    assert!(screen.contains("workspace: off"), "{screen}");
+    session.send(b"/statusline workspace\r");
+    let screen = wait(&session, "* statusline: workspace: on");
+    assert!(
+        screen.contains("* statusline: saved to user settings (scope=user)"),
+        "{screen}"
+    );
+    wait(&session, "workspace (feature/pty)");
+    session.send(b"/statusline context\r");
+    wait(&session, "* statusline: context: on");
+    session.send(b"hello\r");
+    wait(&session, "Noted.");
+    wait(&session, "auto · model-a · 0k · ");
+    session.send(b"again\r");
+    wait(&session, "Again.");
+    wait(&session, "auto · model-a · 0k/128k 0% · ");
+    session.send(b"/statusline workspace\r");
+    let screen = wait(&session, "* statusline: workspace: off");
+    assert!(!screen.contains("(feature/pty)"), "{screen}");
+    assert!(screen.contains("auto · model-a · 0k/128k 0%"), "{screen}");
+    session.send(b"/statusline branch\r");
+    wait(&session, "usage: /statusline [context|session|workspace]");
+    assert_eq!(
+        saved_settings(&home)["statusLine"],
+        json!({"workspace": false, "context": true})
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
 fn output_after(session: &PtySession, start: usize, needle: &[u8]) -> Vec<u8> {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -654,7 +704,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
     let menu = [
-        "Commands 22  [All]  General  Session  Account  Model",
+        "Commands 23  [All]  General  Session  Account  Model",
         "  /permissions    choose what oh-fx is allowed to do",
         "  /skills         browse and manage skills",
         "  /quit           exit the interactive shell",
@@ -1016,7 +1066,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 22");
+    wait(&session, "Commands 23");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 

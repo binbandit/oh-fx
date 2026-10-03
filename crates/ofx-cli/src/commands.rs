@@ -614,6 +614,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Model,
     ),
     SlashSpec::new(
+        SlashKind::Statusline,
+        "/statusline",
+        "toggle status line segments",
+        SlashPresentationCategory::Appearance,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Workspace,
         "/workspace",
         "manage additional workspace directories",

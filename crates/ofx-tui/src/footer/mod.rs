@@ -8,3 +8,4 @@ pub(crate) mod question_freeform_layout;
 pub(crate) mod question_ui;
 pub(crate) mod resume_menu_presentation;
 pub(crate) mod skills_menu_presentation;
+pub(crate) mod statusline;

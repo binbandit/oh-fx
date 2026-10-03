@@ -989,6 +989,7 @@ dependencies = [
  "getrandom 0.4.3",
  "memchr",
  "ofx-config",
+ "ofx-contract",
  "ofx-text",
  "rustix",
  "sha2",

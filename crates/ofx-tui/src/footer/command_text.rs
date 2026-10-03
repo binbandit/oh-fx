@@ -103,7 +103,7 @@ impl<'a> CommandSegments<'a> {
     }
 }
 
-fn prefix_terminal_safe_by_width(encoded: &str, max_width: usize) -> &str {
+pub(crate) fn prefix_terminal_safe_by_width(encoded: &str, max_width: usize) -> &str {
     let mut width = 0;
     let mut end = 0;
     while end < encoded.len() {

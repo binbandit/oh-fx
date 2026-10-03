@@ -14,6 +14,7 @@ use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_tui::{
     Opening, ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel,
 };
+use ofx_workspace::StatuslineIdentity;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
@@ -262,6 +263,10 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.cache_dir(),
         ))),
         opening: session.opening,
+        statusline: session.setup.statusline(),
+        workspace_identity: Some(Box::new(StatuslineIdentity::new(
+            session.profile.workspace_root(),
+        ))),
     };
     let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();
