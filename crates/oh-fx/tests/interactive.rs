@@ -628,16 +628,20 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
-    let screen = wait(&session, "Commands 17");
-    assert!(screen.contains("  /permissions    choose what oh-fx is allowed to do"));
-    assert!(screen.contains("  /skills         browse and manage skills"));
-    assert!(screen.contains("  /quit           exit the interactive shell"));
-    assert!(screen.contains("  /reset          reset the current session context"));
-    assert!(screen.contains("  /new            start a fresh session"));
-    assert!(screen.contains("  /resume         resume a saved session"));
-    assert!(screen.contains("Commands 17  [All]  General  Session  Account  Model"));
-    assert!(screen.contains("  /undo           undo the latest tracked file operation"));
-    assert!(screen.contains("  /allowlist      manage trusted commands, tools, and URLs"));
+    let menu = [
+        "Commands 17  [All]  General  Session  Account  Model",
+        "  /permissions    choose what oh-fx is allowed to do",
+        "  /skills         browse and manage skills",
+        "  /quit           exit the interactive shell",
+        "  /reset          reset the current session context",
+        "  /new            start a fresh session",
+        "  /resume         resume a saved session",
+        "  /undo           undo the latest tracked file operation",
+        "  /allowlist      manage trusted commands, tools, and URLs",
+    ];
+    session
+        .wait_for(WAIT, |screen| menu.iter().all(|line| screen.contains(line)))
+        .unwrap_or_else(|screen| panic!("the help menu is incomplete:\n{screen}"));
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session.send(b"/stats\r");
