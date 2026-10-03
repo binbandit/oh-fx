@@ -424,6 +424,25 @@ fn vanished_and_unreadable_sessions_leave_the_catalog_and_count_as_skipped() {
 }
 
 #[test]
+fn cached_rows_keep_and_return_their_first_prompt_preview() {
+    let sessions = Sessions::new();
+    sessions.seed("alpha", 1);
+    let listed = sessions.scan(true);
+    let preview = listed.summaries[0].preview.clone();
+    assert!(preview.is_some());
+    let row = sessions.cached().rows.remove(0);
+    assert_eq!(row.summary.as_ref().unwrap().preview, preview);
+    let mut row = row;
+    row.summary.as_mut().unwrap().preview = Some("cached preview".to_owned());
+    sessions.write_catalog(&[row]);
+    let reused = sessions.scan(true);
+    assert_eq!(
+        reused.summaries[0].preview.as_deref(),
+        Some("cached preview")
+    );
+}
+
+#[test]
 fn rows_oh_fx_cannot_list_are_classified_again_and_excluded_rows_stay_hidden() {
     let sessions = Sessions::new();
     sessions.seed("alpha", 1);
@@ -439,7 +458,7 @@ fn rows_oh_fx_cannot_list_are_classified_again_and_excluded_rows_stay_hidden() {
             let summary = row.summary.as_mut().unwrap();
             summary.title = Some("Cached title".to_owned());
             match row.id.as_str() {
-                "alpha" => summary.preview = Some("first prompt".to_owned()),
+                "alpha" => summary.flags |= MANAGED_CHILDREN_FLAG,
                 "beta" => summary.flags |= DISPLAY_METADATA_FLAG,
                 "gamma" => summary.workspace_root = None,
                 _ => row.summary = None,

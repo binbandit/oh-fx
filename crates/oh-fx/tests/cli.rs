@@ -234,7 +234,6 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
         (&["login", "vercel"], "login"),
         (&["replay", "tape"], "replay"),
         (&["balance"], "credits"),
-        (&["sessions"], "sessions"),
         (&["mcp", "list"], "mcp"),
     ] {
         let output = oh_fx(args, &[]);
@@ -392,7 +391,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
     for (args, kind) in [
         (&["models", "--json"][..], "models"),
         (&["balance", "--json"], "credits"),
-        (&["sessions", "--json"], "sessions"),
         (&["session", "last", "--json"], "session"),
         (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),

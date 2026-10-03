@@ -2,6 +2,8 @@ use crate::session_event::{ConversationEvent, UserEvent};
 use crate::session_log::{SavedHistory, SavedTurn};
 
 const MAX_TITLE_WORDS: usize = 8;
+const MAX_PREVIEW_LINES: usize = 2;
+const MAX_PREVIEW_BYTES: usize = 240;
 pub const MAX_TITLE_BYTES: usize = 240;
 const FALLBACK_TITLE: &str = "Untitled session";
 const PROMPT_TRIM: &[char] = &[' ', '\t', '\r', '\n'];
@@ -17,6 +19,28 @@ pub(crate) fn derive_display_title(history: &SavedHistory) -> String {
         })
         .and_then(first_line_title)
         .unwrap_or_else(|| FALLBACK_TITLE.to_owned())
+}
+
+pub(crate) fn prompt_preview(prompt: &str) -> Option<String> {
+    let prompt = titled_prompt(prompt)?;
+    let mut preview = String::new();
+    for line in prompt
+        .split('\n')
+        .map(|line| line.trim_matches(LINE_TRIM))
+        .filter(|line| !line.is_empty())
+        .take(MAX_PREVIEW_LINES)
+    {
+        if !preview.is_empty() {
+            preview.push('\n');
+        }
+        let remaining = MAX_PREVIEW_BYTES.saturating_sub(preview.len());
+        let take = line.floor_char_boundary(remaining);
+        preview.push_str(&line[..take]);
+        if take < line.len() || preview.len() >= MAX_PREVIEW_BYTES {
+            break;
+        }
+    }
+    (!preview.is_empty()).then_some(preview)
 }
 
 pub(crate) fn prompt_title(prompt: &str) -> Option<String> {
@@ -75,6 +99,25 @@ pub fn prompt_display_title(prompt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preview_keeps_two_trimmed_lines_of_the_first_prompt_within_its_byte_budget() {
+        assert_eq!(
+            prompt_preview("\n  first line \n\n\tsecond\r\nthird"),
+            Some("first line\nsecond".to_owned())
+        );
+        assert_eq!(prompt_preview("/compact"), None);
+        assert_eq!(prompt_preview(" \n "), None);
+        let long = "é".repeat(200);
+        let preview = prompt_preview(&format!("{long}\nnext")).unwrap();
+        assert_eq!(preview.len(), 240);
+        assert!(!preview.contains('\n'));
+        let first = "a".repeat(239);
+        assert_eq!(
+            prompt_preview(&format!("{first}\nbc")),
+            Some(format!("{first}\n"))
+        );
+    }
     use crate::session_event::UserEvent;
     use crate::session_log::{CompactedHistory, SavedTurn};
 

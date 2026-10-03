@@ -47,7 +47,7 @@ impl RowSummary {
             workspace_root: Some(summary.workspace_root.clone()),
             origin_workspace_root: Some(summary.origin_workspace_root.clone()),
             title: summary.title.clone(),
-            preview: None,
+            preview: summary.preview.clone(),
             flags: if summary.has_checkpoint {
                 CHECKPOINT_FLAG
             } else {
@@ -76,7 +76,7 @@ impl RowSummary {
     }
 
     fn listed(&self, id: &str) -> Option<SessionSummary> {
-        if self.preview.is_some() || self.flags & !CHECKPOINT_FLAG != 0 {
+        if self.flags & !CHECKPOINT_FLAG != 0 {
             return None;
         }
         Some(SessionSummary {
@@ -84,6 +84,7 @@ impl RowSummary {
             workspace_root: self.workspace_root.clone()?,
             origin_workspace_root: self.origin_workspace_root.clone()?,
             title: self.title.clone(),
+            preview: self.preview.clone(),
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
             conversation_language: self.language.clone(),

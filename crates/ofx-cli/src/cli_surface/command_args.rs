@@ -1,8 +1,8 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
 use ofx_auth::parse_login_provider;
 use ofx_config::ProviderId;
-use ofx_session::is_valid_session_id;
+use ofx_session::{ListScope, ResumeContinuation, is_valid_session_id};
 use ofx_text::parse_unsigned;
 
 use super::arg_stream::{ArgStream, ValueForm, merge_toggle, non_blank, requests_json};
@@ -10,6 +10,7 @@ use super::failure::{ArgumentErrorCode, CliError};
 use crate::command_specs::TopLevelKind;
 
 const SESSION_LIST_MAX_LIMIT: usize = 100;
+const SESSION_LIST_DEFAULT_LIMIT: usize = 100;
 const SESSION_CURSOR_MAX_BYTES: usize = 320;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -112,7 +113,16 @@ pub(crate) fn parse_upgrade(args: &[OsString]) -> Result<OutputFormat, CliError>
     }
 }
 
-pub(crate) fn parse_session_list(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub struct SessionListArgs {
+    pub format: OutputFormat,
+    pub scope: ListScope,
+    pub limit: usize,
+    pub cursor: Option<ResumeContinuation>,
+}
+
+pub(crate) fn parse_session_list(args: Vec<OsString>) -> Result<SessionListArgs, CliError> {
     let error = argument_error(
         TopLevelKind::Sessions,
         ArgumentErrorCode::LocalSurface,
@@ -121,35 +131,42 @@ pub(crate) fn parse_session_list(args: Vec<OsString>) -> Result<OutputFormat, Cl
     let mut stream = ArgStream::new(args);
     let mut json = false;
     let mut all = false;
-    let mut limit = false;
-    let mut cursor = false;
+    let mut limit = None;
+    let mut cursor = None;
     while stream.peek().is_some() {
-        let seen = if stream.take_flag("--json") {
-            &mut json
+        let repeated = if stream.take_flag("--json") {
+            std::mem::replace(&mut json, true)
         } else if stream.take_flag("--all") {
-            &mut all
+            std::mem::replace(&mut all, true)
         } else if let Some(value) = stream.take_option("limit", ValueForm::Separate) {
-            if !value.is_ok_and(|value| text_matches(&value, is_valid_session_limit)) {
-                return Err(error());
-            }
-            &mut limit
+            let parsed = value
+                .ok()
+                .and_then(|value| value.to_str().and_then(session_limit))
+                .ok_or_else(&error)?;
+            limit.replace(parsed).is_some()
         } else if let Some(value) = stream.take_option("cursor", ValueForm::Separate) {
-            if !value.is_ok_and(|value| text_matches(&value, is_valid_session_cursor)) {
-                return Err(error());
-            }
-            &mut cursor
+            let parsed = value
+                .ok()
+                .and_then(|value| value.to_str().and_then(session_cursor))
+                .ok_or_else(&error)?;
+            cursor.replace(parsed).is_some()
         } else {
             return Err(error());
         };
-        if std::mem::replace(seen, true) {
+        if repeated {
             return Err(error());
         }
     }
-    Ok(format_for(json))
-}
-
-fn text_matches(value: &OsStr, valid: impl FnOnce(&str) -> bool) -> bool {
-    value.to_str().is_some_and(valid)
+    Ok(SessionListArgs {
+        format: format_for(json),
+        scope: if all {
+            ListScope::AllWorkspaces
+        } else {
+            ListScope::CurrentWorkspace
+        },
+        limit: limit.unwrap_or(SESSION_LIST_DEFAULT_LIMIT),
+        cursor,
+    })
 }
 
 fn format_for(json: bool) -> OutputFormat {
@@ -160,22 +177,25 @@ fn format_for(json: bool) -> OutputFormat {
     }
 }
 
-fn is_valid_session_limit(raw: &str) -> bool {
-    parse_unsigned(raw).is_some_and(|limit: usize| (1..=SESSION_LIST_MAX_LIMIT).contains(&limit))
+fn session_limit(raw: &str) -> Option<usize> {
+    parse_unsigned(raw).filter(|limit: &usize| (1..=SESSION_LIST_MAX_LIMIT).contains(limit))
 }
 
-fn is_valid_session_cursor(raw: &str) -> bool {
+fn session_cursor(raw: &str) -> Option<ResumeContinuation> {
     if raw.is_empty() || raw.len() > SESSION_CURSOR_MAX_BYTES {
-        return false;
+        return None;
     }
     let fields: Vec<&str> = raw.split(':').collect();
     let ["v1", updated, id] = fields.as_slice() else {
-        return false;
+        return None;
     };
-    is_valid_session_id(id)
-        && updated
-            .parse::<i64>()
-            .is_ok_and(|updated_at_ms| format!("v1:{updated_at_ms}:{id}") == raw)
+    let updated_at_ms = updated.parse::<i64>().ok()?;
+    (is_valid_session_id(id) && format!("v1:{updated_at_ms}:{id}") == raw).then(|| {
+        ResumeContinuation {
+            updated_at_ms,
+            id: (*id).to_owned(),
+        }
+    })
 }
 
 pub(crate) fn parse_usage(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
