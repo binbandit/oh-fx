@@ -1,6 +1,6 @@
 merge_queue:
   mode: serial
-  max_parallel_checks: 2
+  max_parallel_checks: 3
 
 queue_rules:
   - name: main
@@ -18,7 +18,8 @@ queue_rules:
       - check-success = @github-actions/Repository checks
     merge_method: squash
     update_method: rebase
-    batch_size: 1
+    batch_size: 3
+    batch_max_wait_time: 2 min
     max_checks_retries: 2
     checks_timeout: 45 min
 
