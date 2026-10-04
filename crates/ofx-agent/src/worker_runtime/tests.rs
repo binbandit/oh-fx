@@ -416,3 +416,16 @@ fn waiting_prompts_are_listed_in_admission_order_without_leaving_the_queue() {
     assert_eq!(worker.take_next().map(|prompt| prompt.id), Some(1));
     assert_eq!(worker.waiting_texts(), ["second"]);
 }
+
+#[test]
+fn a_cleared_conversation_keeps_only_prompts_submitted_after_it() {
+    let runtime = WorkerRuntime::default();
+    runtime.admit(prompt(3, "before"));
+    runtime.admit(prompt(4, "also before"));
+    runtime.admit(prompt(5, "after"));
+    runtime.discard_before(5);
+    assert_eq!(runtime.waiting_texts(), ["after"]);
+    assert!(runtime.has_waiting_prompts());
+    runtime.discard_before(6);
+    assert!(!runtime.has_waiting_prompts());
+}

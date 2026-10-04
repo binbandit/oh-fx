@@ -320,6 +320,9 @@ impl Shell<'_> {
             self.interrupt();
             return;
         }
+        if self.drop_held_prompt() {
+            return;
+        }
         self.composer.clear();
     }
 

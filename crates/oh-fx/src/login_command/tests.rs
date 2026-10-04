@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::io::Read;
 use std::net::TcpStream;
@@ -250,6 +251,7 @@ async fn saved_codex_request() {
                         models: format!("{}/backend-api/codex/models", models.base_url()),
                         client_version: format!("{}/@openai/codex/latest", models.base_url()),
                     },
+                    grok: ofx_auth::GrokEndpoints::default(),
                 },
             },
             &cancel,

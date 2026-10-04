@@ -42,7 +42,8 @@ use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
-    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
+    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, SubscriptionLogin,
+    SubscriptionProvider, codex_subscription,
 };
 use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
@@ -144,6 +145,7 @@ pub struct Launch<'a> {
 
 pub struct AgentSetup {
     provider: Arc<dyn ModelProvider>,
+    login: Login,
     title_model: Option<&'static str>,
     session_titles: bool,
     prompt_history: bool,
@@ -152,6 +154,7 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     account_id: Option<String>,
+    subscription: Option<Arc<SubscriptionLogin>>,
     tools: Vec<Arc<dyn Tool>>,
     delegation: Delegation,
     mcp: Option<Arc<McpRuntime>>,
@@ -190,7 +193,15 @@ pub(crate) struct Route {
     configured_model: Option<String>,
     source: CredentialSource,
     account_id: Option<String>,
+    subscription: Option<Arc<SubscriptionLogin>>,
     uses_tls: bool,
+    login: Login,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Login {
+    Ready,
+    Missing,
 }
 
 impl Profile {
@@ -300,11 +311,8 @@ impl Profile {
         let refreshes = interactive.then(Arc::default);
         let switchboard = interactive.then(|| self.switchboard(launch.endpoints.clone()));
         let route = self
-            .route(launch.model, launch.endpoints, refreshes.clone(), cancel)
+            .launch_route(&launch, refreshes.clone(), interactive, cancel)
             .await?;
-        if route.uses_tls {
-            ofx_http::warm_tls_roots();
-        }
         let mut limits = self.settings.context_limits();
         limits.apply_command_line(launch.context_limits);
         let skills = self.load_skills(&limits, interactive);
@@ -363,9 +371,11 @@ impl Profile {
             prompt_history: self.settings.prompt_history_enabled(),
             configured_model: route.configured_model,
             models: route.models,
+            login: route.login,
             connection: route.connection,
             source: route.source,
             account_id: route.account_id,
+            subscription: route.subscription,
             tools,
             delegation: Delegation::new(children),
             mcp,
@@ -452,6 +462,26 @@ impl Profile {
         )
     }
 
+    async fn launch_route(
+        &self,
+        launch: &Launch<'_>,
+        refreshes: Option<Arc<DetachedRefreshes>>,
+        interactive: bool,
+        cancel: &CancellationToken,
+    ) -> Result<Route, ConnectError> {
+        let endpoints = launch.endpoints.clone();
+        let route = match self.route(launch.model, endpoints, refreshes, cancel).await {
+            Err(ConnectError::Codex(CodexUnavailable::MissingLogin)) if interactive => {
+                self.signed_out_route(launch.model)
+            }
+            route => route,
+        }?;
+        if route.uses_tls {
+            ofx_http::warm_tls_roots();
+        }
+        Ok(route)
+    }
+
     async fn route(
         &self,
         requested: Option<&OsStr>,
@@ -490,6 +520,18 @@ impl Profile {
             .await
     }
 
+    fn signed_out_route(&self, requested: Option<&OsStr>) -> Result<Route, ConnectError> {
+        let lookup = |name: &str| env::var(name).ok();
+        let model = select_model(requested, |model| {
+            self.settings.selected_codex_model(model, &lookup)
+        })?
+        .map_err(ConnectError::InvalidModel)?;
+        Ok(Route::signed_out(
+            model,
+            self.settings.selected_codex_model(None, &lookup).ok(),
+        ))
+    }
+
     async fn subscription_route(
         &self,
         model: String,
@@ -507,7 +549,10 @@ impl Profile {
             cancel,
         )
         .await?;
-        let provider: Arc<dyn ModelProvider> = Arc::new(subscription.provider);
+        let provider: Arc<dyn ModelProvider> = Arc::new(SubscriptionProvider::new(
+            subscription.provider,
+            Arc::clone(&subscription.login),
+        ));
         Ok(Route {
             reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
             title_model: Some(CODEX_TITLE_MODEL),
@@ -518,7 +563,9 @@ impl Profile {
             configured_model,
             source: CredentialSource::Codex,
             account_id: Some(subscription.account_id),
+            subscription: Some(subscription.login),
             uses_tls,
+            login: Login::Ready,
         })
     }
 
@@ -609,7 +656,9 @@ fn connection_route(
         configured_model,
         source: CredentialSource::Configured,
         account_id: None,
+        subscription: None,
         uses_tls,
+        login: Login::Ready,
     })
 }
 
@@ -631,6 +680,10 @@ fn uses_tls(url: &str) -> bool {
 impl AgentSetup {
     pub fn model(&self) -> &str {
         &self.config.model
+    }
+
+    pub(crate) fn login(&self) -> Login {
+        self.login
     }
 
     pub fn source(&self) -> CredentialSource {
