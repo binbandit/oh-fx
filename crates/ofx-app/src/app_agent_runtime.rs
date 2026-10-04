@@ -5469,6 +5469,90 @@ mod tests {
         assert!(request.to_string().contains("hello"), "{request}");
     }
 
+    fn codex_message(call: &str, agent: &str, message: &str) -> Reply {
+        let arguments = json!({
+            "request": {
+                "action": "message",
+                "agent": agent,
+                "instructions": "Answer briefly.",
+                "message": message,
+            }
+        })
+        .to_string();
+        let events = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":call,"name":"subagent","arguments":""}}),
+            json!({"type":"response.function_call_arguments.done","output_index":0,"arguments":arguments}),
+            json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+        ]
+        .map(|event| event.to_string());
+        Reply::sse(&events)
+    }
+
+    #[tokio::test]
+    async fn a_child_started_before_a_logout_runs_on_the_login_the_shell_signs_in_with() {
+        let auth = FakeServer::start([granted_tokens()]);
+        let codex = FakeServer::start([
+            codex_message("call_1", "helper", "first errand"),
+            codex_text("child one"),
+            codex_text("parent one"),
+            codex_message("call_2", "helper", "second errand"),
+            codex_text("child two"),
+            codex_text("parent two"),
+        ]);
+        let catalog = codex_catalog(false, 4);
+        let home = codex_home();
+        let settings = json!({
+            "provider": "codex",
+            "models": {"codex": CODEX_MODEL},
+            "session_titles": false
+        });
+        let setup = agent_setup_with(
+            &home,
+            &settings,
+            signing_in_endpoints(&auth, &codex, &catalog),
+        )
+        .await;
+        let mut harness = Harness::saved(home, setup);
+        harness.submit("start the helper");
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        notices_of(&mut harness, "/logout codex").await;
+        harness.send(select_provider("codex"));
+        let started = within(harness.until(sign_in_started)).await;
+        let url = sign_in_url(started);
+        let browser = std::thread::spawn(move || authorize_in_browser(&url));
+        within(harness.until(provider_notice)).await;
+        browser.join().unwrap();
+        harness.submit("ask the helper again");
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        let requests = codex.requests();
+        let child_asked = |errand: &str| {
+            requests.iter().find(|request| {
+                let body = request.json();
+                body["instructions"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Answer briefly."))
+                    && body["input"].to_string().contains(errand)
+            })
+        };
+        let first = child_asked("first errand").expect("the child's first request");
+        assert_eq!(
+            first.header("authorization"),
+            Some(
+                format!(
+                    "Bearer {}",
+                    "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl"
+                )
+                .as_str()
+            )
+        );
+        let second = child_asked("second errand").expect("the child's request after the sign-in");
+        assert_eq!(
+            second.header("authorization"),
+            Some(format!("Bearer {SIGNED_IN_TOKEN}").as_str())
+        );
+        assert_eq!(requests.len(), 6);
+    }
+
     #[tokio::test]
     async fn a_cancelled_sign_in_drops_the_held_prompt() {
         let auth = FakeServer::start([]);

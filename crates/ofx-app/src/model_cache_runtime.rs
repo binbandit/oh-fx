@@ -8,12 +8,12 @@ use ofx_contract::{
 use ofx_gateway::{CatalogFailure, CodexModel};
 use tokio_util::sync::CancellationToken;
 
-use crate::codex_provider::CatalogCapabilities;
+use crate::codex_provider::{CatalogCapabilities, CodexLogin};
 
 #[derive(Clone)]
 pub(crate) enum ModelSource {
     Connection(Arc<ProviderDefinition>),
-    Codex(Arc<CatalogCapabilities>),
+    Codex(Arc<CodexLogin>),
     Unavailable,
 }
 
@@ -21,7 +21,9 @@ impl ModelSource {
     pub(crate) fn cached(&self) -> Option<ModelCatalog> {
         match self {
             Self::Connection(connection) => Some(connection_catalog(connection)),
-            Self::Codex(catalog) => catalog.cached().map(codex_catalog),
+            Self::Codex(login) => login
+                .current()
+                .and_then(|subscription| subscription.capabilities.cached().map(codex_catalog)),
             Self::Unavailable => Some(ModelCatalog::Failed { retry: None }),
         }
     }
@@ -36,14 +38,21 @@ impl ModelSource {
     pub(crate) async fn catalog(&self) -> ModelCatalog {
         match self {
             Self::Connection(connection) => connection_catalog(connection),
-            Self::Codex(catalog) => match catalog.listed(&CancellationToken::new()).await {
-                Ok(listed) => codex_catalog(listed),
-                Err(failure) => ModelCatalog::Failed {
-                    retry: catalog_retry(failure),
-                },
+            Self::Codex(login) => match login.current() {
+                Some(subscription) => subscription_catalog(&subscription.capabilities).await,
+                None => ModelCatalog::Failed { retry: None },
             },
             Self::Unavailable => ModelCatalog::Failed { retry: None },
         }
+    }
+}
+
+pub(crate) async fn subscription_catalog(capabilities: &CatalogCapabilities) -> ModelCatalog {
+    match capabilities.listed(&CancellationToken::new()).await {
+        Ok(listed) => codex_catalog(listed),
+        Err(failure) => ModelCatalog::Failed {
+            retry: catalog_retry(failure),
+        },
     }
 }
 
@@ -87,7 +96,12 @@ impl CapabilityResolver for ModelSource {
                 let capabilities = connection_capabilities(connection, model);
                 Box::pin(async move { CapabilityLookup::Resolved(capabilities) })
             }
-            Self::Codex(catalog) => catalog.resolve(model, cancel),
+            Self::Codex(login) => match login.current() {
+                Some(subscription) => {
+                    Box::pin(async move { subscription.capabilities.resolve(model, cancel).await })
+                }
+                None => Box::pin(async { CapabilityLookup::CatalogUnavailable }),
+            },
             Self::Unavailable => Box::pin(async { CapabilityLookup::CatalogUnavailable }),
         }
     }

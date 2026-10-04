@@ -14,7 +14,7 @@ use super::{
 };
 use crate::app_subagent_runtime::ChildRoute;
 use crate::codex_provider::{CodexUnavailable, SignedOutProvider, SubscriptionEndpoints};
-use crate::model_cache_runtime::ModelSource;
+use crate::model_cache_runtime::{ModelSource, subscription_catalog};
 
 const PROVIDER_TOPIC: &str = "provider";
 const AUTH_TOPIC: &str = "auth";
@@ -171,6 +171,7 @@ impl AgentSetup {
                 preferred.clone(),
                 self.endpoints(),
                 self.refreshes.clone(),
+                &self.codex_login,
                 cancel,
             )
             .await
@@ -188,7 +189,7 @@ impl AgentSetup {
         let pick = |manual: &str, signed: &str| {
             Refusal::Notice(refused(if signed_in { signed } else { manual }))
         };
-        let ModelCatalog::Listed { models, .. } = route.models.catalog().await else {
+        let ModelCatalog::Listed { models, .. } = route.catalog().await else {
             return Err(pick(CATALOG_UNAVAILABLE, SIGNED_IN_CATALOG));
         };
         let ids: Vec<String> = models.into_iter().map(|option| option.id).collect();
@@ -199,9 +200,7 @@ impl AgentSetup {
     }
 
     pub(crate) fn sign_out(&self, model: &str) -> Route {
-        if let Some(login) = &self.subscription {
-            login.sign_out();
-        }
+        self.codex_login.sign_out();
         Route::signed_out(model.to_owned(), self.configured_model.clone())
     }
 
@@ -219,7 +218,9 @@ impl AgentSetup {
         self.connection = route.connection;
         self.source = route.source;
         self.account_id = route.account_id;
-        self.subscription = route.subscription;
+        if let Some(subscription) = route.subscription {
+            self.codex_login.sign_in(subscription);
+        }
         self.configured_model = route.configured_model;
         self.config.model = route.model;
         (Arc::clone(&self.provider), self.models.clone())
@@ -227,6 +228,13 @@ impl AgentSetup {
 }
 
 impl Route {
+    async fn catalog(&self) -> ModelCatalog {
+        match &self.subscription {
+            Some(subscription) => subscription_catalog(&subscription.capabilities).await,
+            None => self.models.catalog().await,
+        }
+    }
+
     pub(super) fn signed_out(model: String, configured_model: Option<String>) -> Self {
         let provider: Arc<dyn ModelProvider> = Arc::new(SignedOutProvider);
         Self {

@@ -43,7 +43,7 @@ use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
 use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
-    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, SubscriptionLogin,
+    CodexLogin, CodexSubscription, CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints,
     SubscriptionProvider, codex_subscription,
 };
 use crate::context::{
@@ -158,7 +158,7 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     account_id: Option<String>,
-    subscription: Option<Arc<SubscriptionLogin>>,
+    codex_login: Arc<CodexLogin>,
     tools: Vec<Arc<dyn Tool>>,
     delegation: Delegation,
     mcp: Option<Arc<McpRuntime>>,
@@ -200,7 +200,7 @@ pub(crate) struct Route {
     configured_model: Option<String>,
     source: CredentialSource,
     account_id: Option<String>,
-    subscription: Option<Arc<SubscriptionLogin>>,
+    subscription: Option<Arc<CodexSubscription>>,
     uses_tls: bool,
     login: Login,
 }
@@ -318,7 +318,7 @@ impl Profile {
         let refreshes = interactive.then(Arc::default);
         let switchboard =
             interactive.then(|| self.switchboard(launch.endpoints.clone(), launch.open_browser));
-        let route = self
+        let (route, codex_login) = self
             .launch_route(&launch, refreshes.clone(), interactive, cancel)
             .await?;
         let mut limits = self.settings.context_limits();
@@ -385,7 +385,7 @@ impl Profile {
             connection: route.connection,
             source: route.source,
             account_id: route.account_id,
-            subscription: route.subscription,
+            codex_login,
             tools,
             delegation: Delegation::new(children),
             mcp,
@@ -491,9 +491,13 @@ impl Profile {
         refreshes: Option<Arc<DetachedRefreshes>>,
         interactive: bool,
         cancel: &CancellationToken,
-    ) -> Result<Route, ConnectError> {
+    ) -> Result<(Route, Arc<CodexLogin>), ConnectError> {
         let endpoints = launch.endpoints.clone();
-        let route = match self.route(launch.model, endpoints, refreshes, cancel).await {
+        let codex_login = Arc::<CodexLogin>::default();
+        let routed = self
+            .route(launch.model, endpoints, refreshes, &codex_login, cancel)
+            .await;
+        let mut route = match routed {
             Err(ConnectError::Codex(CodexUnavailable::MissingLogin)) if interactive => {
                 self.signed_out_route(launch.model)
             }
@@ -502,7 +506,10 @@ impl Profile {
         if route.uses_tls {
             ofx_http::warm_tls_roots();
         }
-        Ok(route)
+        if let Some(subscription) = route.subscription.take() {
+            codex_login.sign_in(subscription);
+        }
+        Ok((route, codex_login))
     }
 
     async fn route(
@@ -510,12 +517,20 @@ impl Profile {
         requested: Option<&OsStr>,
         endpoints: SubscriptionEndpoints,
         refreshes: Option<Arc<DetachedRefreshes>>,
+        codex_login: &Arc<CodexLogin>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let lookup = |name: &str| env::var(name).ok();
         if self.settings.codex_selected(&lookup)? {
             return self
-                .codex_route(requested, endpoints, &lookup, refreshes, cancel)
+                .codex_route(
+                    requested,
+                    endpoints,
+                    &lookup,
+                    refreshes,
+                    codex_login,
+                    cancel,
+                )
                 .await;
         }
         let connection = self.settings.selected_connection(&lookup)?;
@@ -532,6 +547,7 @@ impl Profile {
         endpoints: SubscriptionEndpoints,
         lookup: &dyn Fn(&str) -> Option<String>,
         refreshes: Option<Arc<DetachedRefreshes>>,
+        codex_login: &Arc<CodexLogin>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let model = select_model(requested, |model| {
@@ -539,8 +555,15 @@ impl Profile {
         })?
         .map_err(ConnectError::InvalidModel)?;
         let configured_model = self.settings.selected_codex_model(None, lookup).ok();
-        self.subscription_route(model, configured_model, endpoints, refreshes, cancel)
-            .await
+        self.subscription_route(
+            model,
+            configured_model,
+            endpoints,
+            refreshes,
+            codex_login,
+            cancel,
+        )
+        .await
     }
 
     fn signed_out_route(&self, requested: Option<&OsStr>) -> Result<Route, ConnectError> {
@@ -561,6 +584,7 @@ impl Profile {
         configured_model: Option<String>,
         endpoints: SubscriptionEndpoints,
         refreshes: Option<Arc<DetachedRefreshes>>,
+        codex_login: &Arc<CodexLogin>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let uses_tls = uses_tls(&endpoints.codex.responses);
@@ -572,21 +596,19 @@ impl Profile {
             cancel,
         )
         .await?;
-        let provider: Arc<dyn ModelProvider> = Arc::new(SubscriptionProvider::new(
-            subscription.provider,
-            Arc::clone(&subscription.login),
-        ));
+        let provider: Arc<dyn ModelProvider> =
+            Arc::new(SubscriptionProvider::new(Arc::clone(codex_login)));
         Ok(Route {
             reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
             title_model: Some(CODEX_TITLE_MODEL),
             provider,
-            models: ModelSource::Codex(Arc::new(subscription.capabilities)),
+            models: ModelSource::Codex(Arc::clone(codex_login)),
             connection: None,
             model,
             configured_model,
             source: CredentialSource::Codex,
-            account_id: Some(subscription.account_id),
-            subscription: Some(subscription.login),
+            account_id: Some(subscription.account_id.clone()),
+            subscription: Some(Arc::new(subscription)),
             uses_tls,
             login: Login::Ready,
         })
