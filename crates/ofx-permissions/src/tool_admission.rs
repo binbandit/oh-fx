@@ -146,7 +146,7 @@ impl PermissionGate for PermissionPolicy {
         let grant = SessionGrant::McpTool(call.name.clone());
         match self.mode.get() {
             PermissionMode::Yolo => Admission::Allowed(PathAccess::WorkspaceOrExternal),
-            _ if self.session_grants.contains(&grant) => {
+            _ if self.grant_sets().any(|grants| grants.contains(&grant)) => {
                 Admission::Allowed(PathAccess::WorkspaceOrExternal)
             }
             PermissionMode::Ask => Admission::ApprovalRequired,
@@ -1097,6 +1097,23 @@ mod tests {
         assert_ne!(policy.admit(&read("../a.txt")), Admission::ApprovalRequired);
         assert_eq!(policy.admit_command(&command), Admission::ApprovalRequired);
         assert_eq!(child.admit_command(&command), Admission::ApprovalRequired);
+    }
+
+    #[test]
+    fn a_child_policy_admits_the_mcp_tools_its_parent_allowed_for_the_session() {
+        let parent = PermissionPolicy::new(PermissionMode::Ask, "/ws");
+        let child = PermissionPolicy::new(PermissionMode::Ask, "/ws").inheriting_grants_of(&parent);
+        let send = ToolCall::new("call-1", "mcp_mail_send", "{}");
+        let delete = ToolCall::new("call-2", "mcp_mail_delete", "{}");
+        assert_eq!(child.admit_mcp_tool(&send), Admission::ApprovalRequired);
+        approve_always(&parent, GatedAction::McpTool(&send));
+        approve_always(&child, GatedAction::McpTool(&delete));
+        let allowed = Admission::Allowed(PathAccess::WorkspaceOrExternal);
+        assert_eq!(child.admit_mcp_tool(&send), allowed);
+        assert_eq!(child.admit_mcp_tool(&delete), allowed);
+        assert_eq!(parent.admit_mcp_tool(&delete), Admission::ApprovalRequired);
+        parent.forget_approvals();
+        assert_eq!(child.admit_mcp_tool(&send), Admission::ApprovalRequired);
     }
 
     #[test]
