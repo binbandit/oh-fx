@@ -503,16 +503,15 @@ fn a_separate_runtime_shares_only_the_supervisor() {
         let child = parent.separate();
         let started = child
             .start_captured(
-                run(
-                    "printf 'child\\n'; exec sleep 60",
-                    Duration::from_millis(300),
-                ),
+                run("printf 'child\\n'; exec sleep 60", Duration::ZERO),
                 &cancel,
             )
             .await
             .expect("the test step succeeds");
         assert_eq!(started.execution_id, own.execution_id);
-        assert_eq!(text(&started), "child\n");
+        let (_, seen) =
+            observe_until(&child, &started.execution_id, |_, seen| seen == "child\n").await;
+        assert_eq!(seen, "child\n");
         child.shutdown().await;
         let stopped = child
             .wait(&started.execution_id, Duration::ZERO, &cancel)
