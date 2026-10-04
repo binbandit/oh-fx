@@ -9,6 +9,7 @@ mod legacy_sse;
 mod legacy_streamable_http;
 mod local_inspection;
 mod mcp_contract;
+mod mcp_json;
 mod mcp_runtime;
 mod native_config;
 mod profile_store;

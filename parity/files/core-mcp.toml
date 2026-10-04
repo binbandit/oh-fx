@@ -5,8 +5,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/atomic_value.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "A wasm32 shim for 64-bit atomics; oh-fx builds no wasm32 target, and its native builds use the standard atomics."
 
 [[file]]
 upstream = "src/core/mcp/catalog_freshness.zig"
@@ -177,8 +178,9 @@ note = "Configuration, admission types and response-envelope validation exist; t
 
 [[file]]
 upstream = "src/core/mcp/mcp_json.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-mcp/src/mcp_json.rs"]
+note = "tools/call sends the arguments as the model wrote them, without insignificant whitespace and with raw control bytes in strings escaped, so number tokens and key order reach the server unchanged."
 
 [[file]]
 upstream = "src/core/mcp/mcp_runtime.zig"
@@ -282,8 +284,9 @@ note = "Server health views for the listing and summary exist; menu rows and fea
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "The `mcp add slack` preset relies on fx's own Slack app and fx.sh OAuth bridge, which oh-fx omits as docs/differences/cli.md records."
 
 [[file]]
 upstream = "src/core/mcp/startup_admission.zig"

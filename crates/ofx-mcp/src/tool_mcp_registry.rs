@@ -8,7 +8,7 @@ use ofx_contract::{
     non_object_tool_arguments_json,
 };
 use ofx_text::write_scalar;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::features::tools::{Tool as CatalogTool, ToolCatalog};
 use crate::server_lifecycle::{Advertised, CallFailure, Server};
@@ -190,7 +190,7 @@ impl Tool for McpTool {
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
-        let Ok(Value::Object(arguments)) = serde_json::from_str::<Value>(arguments) else {
+        let Ok(Value::Object(_)) = serde_json::from_str::<Value>(arguments) else {
             return Err(ToolOutput::failure(non_object_tool_arguments_json(
                 &self.spec.name,
             )));
@@ -199,7 +199,7 @@ impl Tool for McpTool {
             spec: Arc::clone(&self.spec),
             server: Arc::clone(&self.server),
             advertised: Arc::clone(&self.advertised),
-            arguments,
+            arguments: arguments.to_owned(),
         }))
     }
 }
@@ -208,7 +208,7 @@ struct McpCall {
     spec: Arc<ToolSpec>,
     server: Arc<Server>,
     advertised: Arc<Advertised>,
-    arguments: Map<String, Value>,
+    arguments: String,
 }
 
 impl PreparedCall for McpCall {
@@ -236,10 +236,9 @@ impl PreparedCall for McpCall {
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         Box::pin(async move {
-            let arguments = Value::Object(self.arguments);
             let call = self.server.call(
                 &self.advertised,
-                &arguments,
+                &self.arguments,
                 CallOptions {
                     max_tool_result_bytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
                     progress: None,

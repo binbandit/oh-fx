@@ -867,7 +867,7 @@ mod tests {
         let outcome = client
             .call_tool(
                 "remote_tool",
-                &json!({"q": 1}),
+                r#"{"q": 1}"#,
                 CallOptions {
                     progress: Some(Arc::new(move |_| {
                         counter.fetch_add(1, Ordering::Relaxed);
@@ -993,7 +993,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             client
-                .call_tool("remote_tool", &json!({}), CallOptions::default())
+                .call_tool("remote_tool", "{}", CallOptions::default())
                 .await,
             Err(McpError::McpSessionExpired)
         );
@@ -1025,7 +1025,7 @@ mod tests {
             .await
             .unwrap();
         let outcome = client
-            .call_tool("remote_tool", &json!({}), CallOptions::default())
+            .call_tool("remote_tool", "{}", CallOptions::default())
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -1051,7 +1051,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             client
-                .call_tool("remote_tool", &json!({}), CallOptions::default())
+                .call_tool("remote_tool", "{}", CallOptions::default())
                 .await,
             Err(McpError::MissingFinalResponse)
         );
@@ -1076,7 +1076,7 @@ mod tests {
             .await
             .unwrap();
         client
-            .call_tool("remote_tool", &json!({}), CallOptions::default())
+            .call_tool("remote_tool", "{}", CallOptions::default())
             .await
             .unwrap();
         let answer = server
@@ -1154,7 +1154,7 @@ mod tests {
             .await
             .unwrap();
         let outcome = client
-            .call_tool("before", &json!({}), CallOptions::default())
+            .call_tool("before", "{}", CallOptions::default())
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -1184,7 +1184,7 @@ mod tests {
             .await
             .unwrap();
         let outcome = client
-            .call_tool("remote_tool", &json!({}), CallOptions::default())
+            .call_tool("remote_tool", "{}", CallOptions::default())
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -1217,7 +1217,7 @@ mod tests {
             .unwrap();
         assert!(
             client
-                .call_tool("remote_tool", &json!({}), CallOptions::default())
+                .call_tool("remote_tool", "{}", CallOptions::default())
                 .await
                 .is_err()
         );
