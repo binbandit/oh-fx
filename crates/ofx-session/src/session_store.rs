@@ -9,7 +9,7 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
-use crate::session_catalog_cache::{CatalogScan, scan_catalog};
+use crate::session_catalog_cache::{CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
 use crate::session_error::SessionError;
@@ -231,6 +231,21 @@ impl SessionStore {
             .as_ref()
             .ok_or(SessionError::SessionNotFound)?;
         load_session(sessions, id)
+    }
+
+    pub fn try_clone(&self) -> Result<Self, SessionError> {
+        let clone = |dir: &Option<PrivateDir>| dir.as_ref().map(PrivateDir::try_clone).transpose();
+        Ok(Self {
+            data: clone(&self.data)?,
+            sessions: clone(&self.sessions)?,
+            workspace_root: self.workspace_root.clone(),
+            writable: self.writable,
+            lock_deadline: self.lock_deadline,
+        })
+    }
+
+    pub fn has_catalog_index(&self) -> bool {
+        self.sessions.as_ref().is_some_and(catalog_file_exists)
     }
 
     pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
