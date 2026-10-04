@@ -252,3 +252,21 @@ fn the_session_picker_keeps_the_footer_from_the_provider_column() {
     press(&mut test, RIGHT);
     assert!(chosen(&test).is_empty());
 }
+
+#[test]
+fn the_help_menu_keeps_the_footer_from_the_provider_column() {
+    let mut test = TestShell::start();
+    test.deliver(UiEvent::HelpRequested);
+    press(&mut test, b"/provider ");
+    test.deliver(UiEvent::ProviderPicker {
+        prefix: "/login ".to_owned(),
+        providers: vec!["codex".to_owned()],
+    });
+    assert!(test.shell.help_menu.is_some());
+    assert_eq!(test.shell.composer.text(), "/provider ");
+    let screen = test.screen();
+    assert!(!screen.contains("portkey"), "{screen}");
+    assert!(!screen.contains("current"), "{screen}");
+    press(&mut test, RIGHT);
+    assert!(chosen(&test).is_empty());
+}

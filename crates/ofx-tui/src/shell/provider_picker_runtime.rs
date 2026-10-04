@@ -39,6 +39,7 @@ impl Shell<'_> {
     fn provider_query(&self) -> Option<ProviderQuery<'_>> {
         if self.provider_column.dismissed
             || self.skills_menu.is_some()
+            || self.help_menu.is_some()
             || self.model_menu.is_some()
             || self.picker.is_some()
             || self.model_query().is_some()
@@ -87,7 +88,11 @@ impl Shell<'_> {
 
     fn open_provider_column(&mut self, prefix: &str, providers: Vec<String>) {
         self.options.providers = providers;
-        if self.model_menu.is_some() || self.model_draft.is_some() || self.picker.is_some() {
+        if self.model_menu.is_some()
+            || self.model_draft.is_some()
+            || self.picker.is_some()
+            || self.help_menu.is_some()
+        {
             return;
         }
         self.skills_menu = None;
