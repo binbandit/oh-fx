@@ -901,7 +901,7 @@ impl Agent {
                     partial: restart.into_partial(),
                 });
             };
-            let output = restart.output();
+            let output = restart.output(&turn.language.stage);
             let decision = recovery.decide(cause, &error, streamed_bytes, output);
             let Some(action) = decision.strategy.action() else {
                 events(UiEvent::Recovery {
@@ -925,7 +925,7 @@ impl Agent {
                 restart.resend(self.request_messages(turn));
             }
             let mut status = retry_status(attempt, cause, action, &decision, &error);
-            self.record_wait(turn, cause, action, consumed)?;
+            self.record_wait(turn, cause, action, consumed, restart.partial())?;
             events(UiEvent::Recovery {
                 turn_id,
                 status: status.clone(),
@@ -939,7 +939,7 @@ impl Agent {
                 }
                 () = tokio::time::sleep(decision.delay) => {}
             }
-            if spoke {
+            if restart.restarted(&turn.language.stage) {
                 events(restarted(turn_id));
             }
             turn.language.stage.restart();

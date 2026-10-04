@@ -656,6 +656,43 @@ fn an_interrupted_reply_restarts_with_the_upstream_notice_in_each_output_mode() 
     assert_eq!(notes, [false, true, false, true, false, true]);
 }
 
+fn commentary_and_read(path: &str) -> Vec<String> {
+    let mut events =
+        chat_tool_call_events("call-1", "read_file", &json!({"path": path}).to_string());
+    let commentary = json!({
+        "id": "chatcmpl-testkit",
+        "object": "chat.completion.chunk",
+        "model": "testkit-model",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Looking."}, "finish_reason": null}],
+    });
+    events.insert(0, commentary.to_string());
+    events
+}
+
+#[test]
+fn a_restart_that_showed_nothing_keeps_the_commentary_before_it() {
+    let server = FakeServer::start([
+        Reply::sse(&commentary_and_read("notes.txt")),
+        cut_off_after("Hel"),
+        Reply::sse(&chat_text_events(&["Hello."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("notes.txt"), "notes\n").unwrap();
+    let key = [("PORTKEY_API_KEY", PORTKEY_KEY)];
+    let output = home.ask(
+        &["ask", "--json", "--no-save", "Please read the notes."],
+        &key,
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["output"], "Looking.\n\nHello.", "{result}");
+    assert!(
+        !stderr(&output).contains("Restarting"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(server.requests().len(), 3);
+}
+
 #[test]
 fn sign_in_redirects_are_not_followed_and_explain_the_base_url() {
     let identity_provider = FakeServer::start([]);

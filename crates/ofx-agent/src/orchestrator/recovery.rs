@@ -1,7 +1,9 @@
 use std::borrow::Cow;
+use std::mem;
 
 use ofx_contract::{ChatMessage, RecoveryStrategy, ToolChoice, TurnId, UiEvent};
 
+use crate::assistant_stream::LanguageStage;
 use crate::model_response_recovery::{Output, Strategy};
 
 const RESPONSE_RESTARTED: &str = "\n\n[Response interrupted. Restarting.]\n\n";
@@ -52,24 +54,46 @@ pub(super) fn recovery_tool_choice(recovery: Option<RecoveryStrategy>) -> ToolCh
 #[derive(Debug, Default)]
 pub(super) struct Restart<'a> {
     interrupted: String,
+    latest: String,
     messages: Option<Cow<'a, [ChatMessage]>>,
 }
 
 impl<'a> Restart<'a> {
     pub(super) fn observe(&mut self, partial: String) -> bool {
-        if partial.is_empty() {
-            return false;
-        }
-        self.interrupted = partial;
-        true
+        self.latest = partial;
+        !self.latest.is_empty()
     }
 
-    pub(super) fn output(&self) -> Output {
-        if self.interrupted.is_empty() {
+    pub(super) fn output(&self, stage: &LanguageStage) -> Output {
+        if self.source(stage).is_empty() {
             Output::None
         } else {
             Output::Partial
         }
+    }
+
+    fn source(&self, stage: &LanguageStage) -> &str {
+        match stage.interruption_source(&self.latest) {
+            "" => &self.interrupted,
+            checked => checked,
+        }
+    }
+
+    pub(super) fn partial(&self) -> &str {
+        if self.latest.is_empty() {
+            &self.interrupted
+        } else {
+            &self.latest
+        }
+    }
+
+    pub(super) fn restarted(&mut self, stage: &LanguageStage) -> bool {
+        if self.latest.is_empty() || stage.holds_candidate() {
+            self.latest.clear();
+            return false;
+        }
+        self.interrupted = mem::take(&mut self.latest);
+        true
     }
 
     pub(super) fn messages<'b>(&'b self, sent: &'b [ChatMessage]) -> &'b [ChatMessage] {
@@ -81,7 +105,11 @@ impl<'a> Restart<'a> {
     }
 
     pub(super) fn into_partial(self) -> String {
-        self.interrupted
+        if self.latest.is_empty() {
+            self.interrupted
+        } else {
+            self.latest
+        }
     }
 }
 

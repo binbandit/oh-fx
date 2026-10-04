@@ -1,3 +1,4 @@
+use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
@@ -189,4 +190,53 @@ async fn steering_that_interrupts_a_restarted_reply_drops_the_restart_note() {
     worker.finish_processing();
     assert_eq!(report.final_text, "Steered.");
     assert_eq!(notes(&provider.requests()), [false, true, false]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reply_still_held_by_the_language_check_restarts_without_a_notice() {
+    let provider = FakeProvider::new(vec![interrupted_after("Hel"), text_reply("Hello there.")]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, "The lockfile is broken again.").await;
+    assert_eq!(report.final_text, "Hello there.");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::AssistantRestarted { .. })),
+        "{events:?}"
+    );
+    assert_eq!(assistant_text(&events), "Hello there.");
+    assert_eq!(notes(&provider.requests()), [false, true]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkpoint_that_cannot_be_written_keeps_the_text_already_shown() {
+    let provider = FakeProvider::new(vec![
+        interrupted_after("Already visible partial answer."),
+        text_reply("must not be requested"),
+    ]);
+    let (mut log, entries) = MemoryLog::shared();
+    log.refused_recovery = Some("RecoveryWriteFailed");
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let (report, _) = run(&mut agent, "hi").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(agent.history_turns(), 1);
+    assert_eq!(
+        agent.history.last(),
+        Some(&ChatMessage::Assistant {
+            content: Some("Already visible partial answer.".to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        })
+    );
+    assert_eq!(
+        entries.lock().unwrap().last(),
+        Some(&Logged::Turn {
+            user: "hi".to_owned(),
+            steps: Vec::new(),
+            steering: Vec::new(),
+            files: Vec::new(),
+            end: r#"Failed "Already visible partial answer.""#.to_owned(),
+        })
+    );
 }

@@ -55,6 +55,10 @@ impl LanguageStage {
         Some(mem::take(&mut self.staged)).filter(|text| !text.is_empty())
     }
 
+    pub(crate) fn holds_candidate(&self) -> bool {
+        self.staging()
+    }
+
     pub(crate) fn restart(&mut self) {
         self.accepted = false;
         self.next_probe_bytes = FIRST_LANGUAGE_PROBE_BYTES;
