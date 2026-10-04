@@ -1,4 +1,6 @@
 mod continuation;
+mod encode;
+mod route_credential;
 
 use std::cmp::Ordering;
 
@@ -17,7 +19,9 @@ use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
 use crate::session_event::{FileEvidence, WireTag, are_valid_files, saved_replay};
 
-pub use continuation::CredentialAuthority;
+pub(crate) use encode::{CheckpointSource, SavedOutput, encode_recovery_file};
+use route_credential::CREDENTIAL_IDENTITY_BYTES;
+pub use route_credential::RouteCredential;
 
 pub(crate) const MAX_RECOVERY_FILE_BYTES: usize = EMERGENCY_CEILING_BYTES + 128;
 const CHECKPOINT_VERSION: u64 = 2;
@@ -55,7 +59,6 @@ const CREDENTIAL_SOURCES: [&str; 8] = [
     "host_managed",
     "configured",
 ];
-const CREDENTIAL_IDENTITY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryCheckpoint {
@@ -70,16 +73,10 @@ pub(crate) struct RecoveryCheckpoint {
 struct RecoveryRoute {
     provider: SavedProvider,
     model: String,
-    credential: Option<SavedCredential>,
+    credential: Option<RouteCredential>,
     requested_fast_mode: bool,
     fast_mode: bool,
     may_have_sent: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SavedCredential {
-    source: &'static str,
-    identity: Option<[u8; CREDENTIAL_IDENTITY_BYTES]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,7 +389,7 @@ fn steering_entry(value: Json<'_>) -> Option<SavedSteering> {
     fields.finish(entry)
 }
 
-fn authority(value: Json<'_>) -> Option<(SavedProvider, String, Option<SavedCredential>)> {
+fn authority(value: Json<'_>) -> Option<(SavedProvider, String, Option<RouteCredential>)> {
     let mut fields = Fields::new(value)?;
     let provider = parse_saved_provider(&fields.required("provider")?)?;
     let model = durable_text(fields.required("model")?)?;
@@ -408,7 +405,7 @@ fn authority(value: Json<'_>) -> Option<(SavedProvider, String, Option<SavedCred
     let credential = match (source, identity) {
         (None, Some(_)) => return None,
         (None, None) => None,
-        (Some(source), identity) => Some(SavedCredential { source, identity }),
+        (Some(source), identity) => Some(RouteCredential::saved(source, identity)),
     };
     fields.finish((provider, model, credential))
 }

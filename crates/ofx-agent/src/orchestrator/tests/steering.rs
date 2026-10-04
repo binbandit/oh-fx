@@ -258,7 +258,7 @@ async fn an_explicit_cancel_stops_the_turn_and_leaves_the_steer_for_a_continuati
         .iter()
         .filter_map(|entry| match entry {
             Logged::Turn { user, .. } => Some(user.clone()),
-            Logged::Compaction { .. } => None,
+            Logged::Compaction { .. } | Logged::Recovery { .. } | Logged::RecoveryCleared => None,
         })
         .collect();
     assert_eq!(users, ["go", "keep going"]);
