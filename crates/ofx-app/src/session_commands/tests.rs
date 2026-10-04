@@ -599,19 +599,40 @@ fn run_statusline(
             UiEvent::StatuslineChanged { item, enabled } => {
                 format!("changed|{}|{}", item.label(), on_off(enabled))
             }
+            UiEvent::StatuslineMenuOpened => "menu".to_owned(),
+            other => panic!("unexpected event {other:?}"),
+        })
+        .collect()
+}
+
+fn run_statusline_menu(
+    access: &SettingsAccess<'_>,
+    toggles: &mut StatuslineToggles,
+    item: StatuslineItem,
+    enabled: bool,
+) -> Vec<String> {
+    set_statusline(access, toggles, item, enabled)
+        .into_iter()
+        .map(|event| match event {
+            UiEvent::Notice { notice } => {
+                format!("{:?}|{}|{}", notice.tone, notice.topic, notice.body)
+            }
+            UiEvent::StatuslineChanged { item, enabled } => {
+                format!("changed|{}|{}", item.label(), on_off(enabled))
+            }
             other => panic!("unexpected event {other:?}"),
         })
         .collect()
 }
 
 #[test]
-fn statusline_lists_the_segments_and_rejects_unknown_items() {
+fn statusline_opens_its_menu_and_rejects_unknown_items() {
     let fixture = Fixture::new();
     let mut toggles = StatuslineToggles::default();
     toggles.set(StatuslineItem::Session, true);
     assert_eq!(
         run_statusline(&fixture.access(), &mut toggles, " \t"),
-        ["Neutral|statusline|context: off\nsession: on\nworkspace: off"]
+        ["menu"]
     );
     for rest in ["bogus", "Context", "context on", "--context", "contexts"] {
         assert_eq!(
@@ -695,6 +716,58 @@ fn statusline_moves_workspace_copies_of_the_item_into_user_settings() {
         })
     );
     assert!(recovery.exists());
+}
+
+#[test]
+fn the_statusline_menu_saves_a_segment_without_announcing_it() {
+    let fixture = Fixture::new();
+    let mut toggles = StatuslineToggles::default();
+    assert_eq!(
+        run_statusline_menu(
+            &fixture.access(),
+            &mut toggles,
+            StatuslineItem::Session,
+            true
+        ),
+        ["changed|session|on"]
+    );
+    assert!(toggles.enabled(StatuslineItem::Session));
+    assert_eq!(fixture.saved(), json!({"statusLine": {"session": true}}));
+    fixture.write_settings(&json!({"providers": 5}));
+    assert_eq!(
+        run_statusline_menu(
+            &fixture.access(),
+            &mut toggles,
+            StatuslineItem::Context,
+            true
+        ),
+        ["changed|context|on"]
+    );
+    fixture.write_settings(&json!({"permission": 5}));
+    assert_eq!(
+        run_statusline_menu(
+            &fixture.access(),
+            &mut toggles,
+            StatuslineItem::Context,
+            false
+        ),
+        [
+            "changed|context|off",
+            "Error|statusline|active for this process but not saved to user settings (InvalidSettingsFormat)",
+        ]
+    );
+    let homeless = SettingsAccess {
+        paths: None,
+        workspace_root: &fixture.workspace,
+        tool_names: Vec::new(),
+    };
+    assert_eq!(
+        run_statusline_menu(&homeless, &mut toggles, StatuslineItem::Workspace, true),
+        [
+            "changed|workspace|on",
+            "Error|statusline|active for this process but not saved to user settings (HomeNotSet)",
+        ]
+    );
 }
 
 #[test]

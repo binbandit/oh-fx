@@ -21,6 +21,16 @@ pub(crate) struct ComposerView {
     pub(crate) review: Option<Review>,
 }
 
+impl ComposerView {
+    pub(crate) fn hidden() -> Self {
+        Self {
+            rows: Vec::new(),
+            cursor: None,
+            review: None,
+        }
+    }
+}
+
 pub(crate) fn input_row_limit(content_bottom: usize) -> usize {
     (if content_bottom > 4 {
         content_bottom / 2
