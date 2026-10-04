@@ -112,12 +112,16 @@ impl Fixture {
     }
 
     fn agent_with(&self, provider: CodexProvider, config: AgentConfig) -> Agent {
+        self.agent_on(Arc::new(provider), config)
+    }
+
+    fn agent_on(&self, provider: Arc<dyn ModelProvider>, config: AgentConfig) -> Agent {
         let workspace = self.canonical_workspace();
         let tools = ask_tools(&workspace);
         let permissions = PermissionPolicy::new(PermissionMode::Auto, workspace.clone());
         let context = HostRuntimeContext::new(workspace, PermissionMode::Auto, false);
         Agent::new(
-            Arc::new(provider),
+            provider,
             tools,
             Arc::new(context),
             Arc::new(permissions),
@@ -416,6 +420,39 @@ async fn codex_turns_carry_the_web_search_guidance_and_answer_its_calls_as_unava
             "output": "web_search is unavailable: no local runtime with a configured Gateway transport policy is installed"
         }))
     );
+}
+
+#[tokio::test]
+async fn a_subscription_signed_out_sends_nothing_with_its_login() {
+    let fixture = Fixture::new();
+    fixture.write_session(FAR_FUTURE_MS, 0o600);
+    let auth = FakeServer::start([]);
+    let codex = FakeServer::start([Reply::sse(&text_events("Never sent."))]);
+    let catalog = FakeServer::start([]);
+    let endpoints = SubscriptionEndpoints {
+        models: CodexModelsEndpoints {
+            models: format!("{}/backend-api/codex/models", catalog.base_url()),
+            client_version: format!("{}/@openai/codex/latest", catalog.base_url()),
+        },
+        ..subscription_endpoints(&auth, &codex)
+    };
+    let subscription = fixture.subscription(endpoints).await.expect("subscription");
+    let login = Arc::clone(&subscription.login);
+    let provider = SubscriptionProvider::new(subscription.provider, Arc::clone(&login));
+    let mut agent = fixture.agent_on(Arc::new(provider), agent_config(MODEL, None, false));
+    login.sign_out();
+    let (report, _) = run(&mut agent, "Hello").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed, "{report:?}");
+    assert!(
+        subscription
+            .capabilities
+            .listed(&CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert!(codex.requests().is_empty());
+    assert!(catalog.requests().is_empty());
+    assert!(auth.requests().is_empty());
 }
 
 #[tokio::test]

@@ -14,6 +14,7 @@ use crate::codex_provider::CatalogCapabilities;
 pub(crate) enum ModelSource {
     Connection(Arc<ProviderDefinition>),
     Codex(Arc<CatalogCapabilities>),
+    Unavailable,
 }
 
 impl ModelSource {
@@ -21,6 +22,7 @@ impl ModelSource {
         match self {
             Self::Connection(connection) => Some(connection_catalog(connection)),
             Self::Codex(catalog) => catalog.cached().map(codex_catalog),
+            Self::Unavailable => Some(ModelCatalog::Failed { retry: None }),
         }
     }
 
@@ -33,6 +35,7 @@ impl ModelSource {
                     retry: catalog_retry(failure),
                 },
             },
+            Self::Unavailable => ModelCatalog::Failed { retry: None },
         }
     }
 }
@@ -78,6 +81,7 @@ impl CapabilityResolver for ModelSource {
                 Box::pin(async move { CapabilityLookup::Resolved(capabilities) })
             }
             Self::Codex(catalog) => catalog.resolve(model, cancel),
+            Self::Unavailable => Box::pin(async { CapabilityLookup::CatalogUnavailable }),
         }
     }
 }

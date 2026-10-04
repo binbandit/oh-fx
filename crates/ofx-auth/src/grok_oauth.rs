@@ -164,6 +164,10 @@ impl GrokOAuth {
         GrokSignIn::new(self.clone()).await
     }
 
+    pub fn has_saved_login(&self) -> bool {
+        self.store.presence() == crate::session_presence::Presence::Present
+    }
+
     pub async fn logout(&self) -> Result<GrokLogoutResult, GrokError> {
         let Some(mutation) = self.store.begin_existing_mutation().await? else {
             return Ok(GrokLogoutResult {
