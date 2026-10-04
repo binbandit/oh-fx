@@ -9,9 +9,10 @@ use ofx_markdown::ReviewOp;
 use ofx_text::visible_width;
 
 use super::approval_content::{remember_label, requester};
+use super::approval_draft::push_amending_label;
 use super::approval_panel::{
-    Choice, HINTS, PanelFrame, PanelView, RESIZE_TO_REVIEW, Review, SCREEN_HINTS, SCROLL_TO_REVIEW,
-    hint_for, requested_title,
+    Choice, Choosing, PanelFrame, PanelView, RESIZE_TO_REVIEW, Review, SCROLL_TO_REVIEW, hint_for,
+    requested_title,
 };
 use super::command_text::{prefix_terminal_safe_by_width, suffix_terminal_safe_by_width};
 use super::phrase::{PathText, Phrase};
@@ -297,8 +298,7 @@ fn chrome(screen_rows: usize, choice_count: usize) -> Vec<Chrome> {
 struct Controls<'a> {
     file: &'a FileApproval,
     header: Header,
-    choices: &'a [Choice],
-    selected: usize,
+    choosing: Choosing<'a>,
     blocked: Option<&'static str>,
     scrollable: bool,
     cols: usize,
@@ -308,11 +308,11 @@ pub(crate) fn file_approval_rows(
     theme: &Theme,
     file: &FileApproval,
     layout: &ReviewLayout,
-    choices: &[Choice],
-    selected: usize,
+    choosing: Choosing<'_>,
     frame: PanelFrame<'_>,
     change_seen: bool,
 ) -> PanelView {
+    let choices = choosing.choices;
     let cols = frame.cols;
     let header = project_header(file, cols);
     let labels_fit = cols >= CHOICE_PREFIX_WIDTH
@@ -352,8 +352,7 @@ pub(crate) fn file_approval_rows(
     let controls = Controls {
         file,
         header,
-        choices,
-        selected,
+        choosing,
         blocked,
         scrollable: window.len() < review_rows,
         cols,
@@ -688,8 +687,8 @@ impl Controls<'_> {
     }
 
     fn choice_row(&self, theme: &Theme, index: usize) -> Row {
-        let choice = &self.choices[index];
-        let selected = index == self.selected;
+        let choice = &self.choosing.choices[index];
+        let selected = index == self.choosing.selected;
         let blocked = self
             .blocked
             .filter(|_| choice.decision != ApprovalDecision::Deny);
@@ -721,6 +720,10 @@ impl Controls<'_> {
         );
         push_within(&mut row, "  ", paint, &mut remaining);
         let (label, _) = choice.label.fit(remaining);
+        if let Some(amending) = self.choosing.amending.filter(|_| selected) {
+            push_amending_label(&mut row, theme, &label, amending, remaining);
+            return row;
+        }
         push_within(&mut row, &label, paint, &mut remaining);
         if let Some(reason) = blocked.filter(|_| selected) {
             push_within(&mut row, reason, paint, &mut remaining);
@@ -729,11 +732,7 @@ impl Controls<'_> {
     }
 
     fn hint_row(&self, theme: &Theme) -> Row {
-        let hints: &[&'static str] = if self.scrollable {
-            &SCREEN_HINTS
-        } else {
-            &HINTS
-        };
+        let hints = self.choosing.hints(self.scrollable);
         let width = self.cols.saturating_sub(INSET);
         let mut row = Row::new();
         row.push_spaces(INSET.min(self.cols));

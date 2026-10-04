@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_contract::{ApprovalDecision, RequestId};
+use ofx_contract::{ApprovalAnswer, ApprovalDecision, RequestId};
 use tokio::sync::oneshot;
 
 type WithdrawnListener = Arc<dyn Fn(RequestId) + Send + Sync>;
@@ -14,20 +14,20 @@ pub struct Approvals {
 #[derive(Default)]
 struct State {
     issued: u64,
-    pending: HashMap<RequestId, oneshot::Sender<ApprovalDecision>>,
+    pending: HashMap<RequestId, oneshot::Sender<ApprovalAnswer>>,
     withdrawn: Option<WithdrawnListener>,
 }
 
 pub(crate) struct PendingApproval {
     id: RequestId,
-    decision: oneshot::Receiver<ApprovalDecision>,
+    answer: oneshot::Receiver<ApprovalAnswer>,
     approvals: Approvals,
 }
 
 impl Approvals {
-    pub fn resolve(&self, id: RequestId, decision: ApprovalDecision) -> bool {
+    pub fn resolve(&self, id: RequestId, answer: impl Into<ApprovalAnswer>) -> bool {
         let sender = self.lock().pending.remove(&id);
-        sender.is_some_and(|sender| sender.send(decision).is_ok())
+        sender.is_some_and(|sender| sender.send(answer.into()).is_ok())
     }
 
     pub fn on_withdrawn(&self, listener: impl Fn(RequestId) + Send + Sync + 'static) {
@@ -35,7 +35,7 @@ impl Approvals {
     }
 
     pub(crate) fn open(&self) -> PendingApproval {
-        let (sender, decision) = oneshot::channel();
+        let (sender, answer) = oneshot::channel();
         let mut state = self.lock();
         state.issued += 1;
         let id = RequestId::new(state.issued);
@@ -43,7 +43,7 @@ impl Approvals {
         drop(state);
         PendingApproval {
             id,
-            decision,
+            answer,
             approvals: self.clone(),
         }
     }
@@ -58,13 +58,15 @@ impl PendingApproval {
         self.id
     }
 
-    pub(crate) async fn decision(&mut self) -> ApprovalDecision {
-        (&mut self.decision).await.unwrap_or(ApprovalDecision::Deny)
+    pub(crate) async fn answer(&mut self) -> ApprovalAnswer {
+        (&mut self.answer)
+            .await
+            .unwrap_or_else(|_| ApprovalDecision::Deny.into())
     }
 
-    pub(crate) fn withdraw(&mut self) -> Option<ApprovalDecision> {
-        self.decision.close();
-        self.decision.try_recv().ok()
+    pub(crate) fn withdraw(&mut self) -> Option<ApprovalAnswer> {
+        self.answer.close();
+        self.answer.try_recv().ok()
     }
 }
 
@@ -85,14 +87,18 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn each_request_gets_its_own_id_and_takes_one_decision() {
+    async fn each_request_gets_its_own_id_and_takes_one_answer_with_its_feedback() {
         let approvals = Approvals::default();
         let mut first = approvals.open();
         let second = approvals.open();
         assert_ne!(first.id(), second.id());
-        assert!(approvals.resolve(first.id(), ApprovalDecision::Always));
+        let answer = ApprovalAnswer {
+            decision: ApprovalDecision::Always,
+            feedback: Some("read the tests next".to_owned()),
+        };
+        assert!(approvals.resolve(first.id(), answer.clone()));
         assert!(!approvals.resolve(first.id(), ApprovalDecision::Once));
-        assert_eq!(first.decision().await, ApprovalDecision::Always);
+        assert_eq!(first.answer().await, answer);
     }
 
     #[test]
@@ -103,7 +109,7 @@ mod tests {
         assert!(!approvals.resolve(unanswered.id(), ApprovalDecision::Always));
         let mut answered = approvals.open();
         assert!(approvals.resolve(answered.id(), ApprovalDecision::Always));
-        assert_eq!(answered.withdraw(), Some(ApprovalDecision::Always));
+        assert_eq!(answered.withdraw(), Some(ApprovalDecision::Always.into()));
         assert!(!approvals.resolve(answered.id(), ApprovalDecision::Once));
     }
 
@@ -134,6 +140,6 @@ mod tests {
         assert!(!approvals.resolve(id, ApprovalDecision::Once));
         let mut orphaned = approvals.open();
         approvals.lock().pending.clear();
-        assert_eq!(orphaned.decision().await, ApprovalDecision::Deny);
+        assert_eq!(orphaned.answer().await, ApprovalDecision::Deny.into());
     }
 }
