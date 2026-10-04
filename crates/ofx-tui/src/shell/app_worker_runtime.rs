@@ -138,18 +138,14 @@ impl Shell<'_> {
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
             | UiEvent::ToolDeferred { .. }
-            | UiEvent::SubagentStatus { .. }) => self.tool_event(event),
+            | UiEvent::SubagentStatus { .. }
+            | UiEvent::ApprovalFeedback { .. }) => self.tool_event(event),
             UiEvent::SteeringApplied {
                 turn_id,
                 prompt,
                 text,
             } => self.steering_applied(turn_id, prompt, text),
             UiEvent::ContextNotice { .. } => {}
-            UiEvent::ApprovalFeedback { turn_id, text } => {
-                if self.is_visible_turn(turn_id) {
-                    self.push_entry(Entry::UserTurn { text });
-                }
-            }
             UiEvent::Recovery { turn_id, status } => self.recovery_reported(turn_id, status),
             UiEvent::UsageReported {
                 turn_id,
@@ -458,6 +454,9 @@ impl Shell<'_> {
                 {
                     row.defer(deferral);
                 }
+            }
+            UiEvent::ApprovalFeedback { turn_id, text } if self.is_visible_turn(turn_id) => {
+                self.push_entry(Entry::UserTurn { text });
             }
             _ => {}
         }
