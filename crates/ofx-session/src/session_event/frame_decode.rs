@@ -7,8 +7,8 @@ use super::{
     UserEvent, WireTag,
 };
 use crate::json_fields::{Fields, Json, string};
-use crate::process_presentation;
 use crate::session_codec::parse_saved_provider;
+use crate::{process_presentation, turn_summary};
 
 pub(super) fn envelope_from(document: Json<'_>) -> Option<ConversationEnvelope> {
     let mut fields = Fields::new(document)?;
@@ -43,7 +43,9 @@ fn event_from(value: Json<'_>) -> Option<ConversationEvent> {
         }),
         "turn_completed" => ConversationEvent::TurnCompleted(TurnCompletedEvent {
             files: fields.or("files", Vec::new(), files)?,
-            turn_summary: fields.fixed("turn_summary")?,
+            turn_summary: fields.nullable("turn_summary", |value| {
+                turn_summary::read_frame(value).map(Some)
+            })?,
         }),
         "interrupted" => ConversationEvent::Interrupted(interrupted(&mut fields)?),
         "context_checkpoint" => ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
@@ -142,7 +144,9 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
         command_replay_bytes: fields.fixed("command_replay_bytes")?,
         command_artifact_ref: fields.fixed("command_artifact_ref")?,
         files: fields.or("files", Vec::new(), files)?,
-        turn_summary: fields.fixed("turn_summary")?,
+        turn_summary: fields.nullable("turn_summary", |value| {
+            turn_summary::read_frame(value).map(Some)
+        })?,
         cancellation_origin: fields.fixed("cancellation_origin")?,
     })
 }
