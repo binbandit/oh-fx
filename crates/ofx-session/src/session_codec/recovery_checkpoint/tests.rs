@@ -2,7 +2,7 @@ use ofx_config::ProviderId;
 use ofx_contract::{
     ChatMessage, HistorySteering, HistoryStep, HistoryTurn, ModelRecoveryAction,
     ModelRecoveryCause, RecordedOutput, RecoveryPoint, RecoveryProgress, ReplaySource, StepResult,
-    ToolCallId, TurnId,
+    ToolCallId, TurnId, TurnSummary, TurnTokenProgress,
 };
 
 use super::*;
@@ -47,6 +47,7 @@ fn checkpoint() -> RecoveryCheckpoint {
                 assistant_prefix: None,
                 after_tool_step_count: 1,
             }],
+            turn_summary: None,
         },
         strategy: RecoveryStrategy::ContinueAfterTool,
         route: RecoveryRoute {
@@ -199,6 +200,42 @@ fn the_interrupted_turn_carries_the_partial_reply_steps_and_steering() {
         }]
     );
     assert_eq!(checkpoint.into_files().len(), 1);
+}
+
+const SUMMARY: &str = "\"turn_summary\":{\"started_at_ms\":1000,\"completed_at_ms\":4500,\"thinking_duration_ms\":1200,\"turn_duration_ms\":3500,\"token_progress\":{\"input_tokens\":1234,\"output_tokens\":340,\"input_exact\":true,\"output_exact\":false}}";
+
+#[test]
+fn a_checkpoints_turn_summary_is_read_as_upstream_writes_it() {
+    let text = upstream_checkpoint().replace("\"turn_summary\":null", SUMMARY);
+    assert_eq!(
+        decoded(&text).turn_summary(),
+        Some(TurnSummary {
+            started_at_ms: 1000,
+            completed_at_ms: 4500,
+            thinking_duration_ms: 1200,
+            turn_duration_ms: 3500,
+            token_progress: TurnTokenProgress {
+                input_tokens: 1234,
+                output_tokens: 340,
+                input_exact: true,
+                output_exact: false,
+            },
+        })
+    );
+    assert_eq!(decoded(&upstream_checkpoint()).turn_summary(), None);
+    for summary in [
+        SUMMARY.replace("1000", "-1"),
+        SUMMARY.replace("4500", "999"),
+        SUMMARY.replace("\"output_exact\":false", "\"output_exact\":0"),
+        SUMMARY.replace(",\"output_exact\":false", ""),
+    ] {
+        let text = upstream_checkpoint().replace("\"turn_summary\":null", &summary);
+        assert_eq!(
+            decode_recovery_file(&file_with(&text, 1), 1),
+            Err(SessionError::InvalidRecoveryCheckpoint),
+            "{summary}"
+        );
+    }
 }
 
 #[test]

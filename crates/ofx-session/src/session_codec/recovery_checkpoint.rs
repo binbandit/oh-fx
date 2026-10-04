@@ -10,16 +10,16 @@ use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
     CommandProcessPresentation, HistoryEntry, HistorySteering, HistoryStep, HistoryTurn,
     ProviderReplay, RecoveryStrategy, StepResult, ToolArgumentIntegrity, ToolCall,
-    ToolResultStatus, TurnEnd, TurnStop,
+    ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
 use crate::json_fields::{Fields, Json, parse_json};
-use crate::process_presentation;
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
 use crate::session_event::{FileEvidence, WireTag, are_valid_files, saved_replay};
+use crate::{process_presentation, turn_summary};
 
 pub(crate) use encode::{CheckpointSource, SavedOutput, encode_recovery_file};
 use route_credential::CREDENTIAL_IDENTITY_BYTES;
@@ -88,6 +88,7 @@ struct SavedExecution {
     tool_steps: Vec<SavedToolStep>,
     files: Vec<FileEvidence>,
     steering: Vec<SavedSteering>,
+    turn_summary: Option<TurnSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +181,10 @@ impl RecoveryCheckpoint {
             entries,
             uncertain_tool: self.uncertain_tool,
         }
+    }
+
+    pub(crate) fn turn_summary(&self) -> Option<TurnSummary> {
+        self.execution.turn_summary
     }
 
     pub(crate) fn into_files(self) -> Vec<FileEvidence> {
@@ -334,7 +339,9 @@ fn execution(value: Json<'_>) -> Option<SavedExecution> {
     let files =
         list(fields.required("files")?, file_evidence).filter(|files| are_valid_files(files))?;
     let steering = list(fields.required("steering")?, steering_entry)?;
-    fixed::<Null>(&mut fields, "turn_summary")?;
+    let turn_summary = fields.present_or_null("turn_summary", |value| {
+        turn_summary::read_checkpoint(value).map(Some)
+    })?;
     let ordered = steering
         .windows(2)
         .all(|pair| pair[0].after_tool_step_count <= pair[1].after_tool_step_count);
@@ -348,6 +355,7 @@ fn execution(value: Json<'_>) -> Option<SavedExecution> {
         tool_steps,
         files,
         steering,
+        turn_summary,
     })
 }
 

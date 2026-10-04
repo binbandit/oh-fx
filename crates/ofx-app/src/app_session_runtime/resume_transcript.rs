@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use ofx_contract::{
     CallDescription, HistoryEntry, Notice, NoticeTone, SavedToolCall, ToolCallId, ToolResultStatus,
+    TurnSummary,
 };
 use ofx_session::{
     ConversationEvent, InterruptReason, SavedTurn, SessionError, ToolResultEvent, WritableSession,
@@ -87,6 +88,10 @@ impl TurnReplay<'_, '_> {
                             FAILED_TURN,
                         )),
                     });
+                    self.show_summary(interrupted.turn_summary);
+                }
+                ConversationEvent::TurnCompleted(completed) => {
+                    self.show_summary(completed.turn_summary);
                 }
                 _ => {}
             }
@@ -96,6 +101,12 @@ impl TurnReplay<'_, '_> {
 
     fn show(&mut self, entry: HistoryEntry) {
         self.shown.push(Some(entry));
+    }
+
+    fn show_summary(&mut self, summary: Option<TurnSummary>) {
+        if let Some(summary) = summary {
+            self.show(HistoryEntry::TurnSummary(summary));
+        }
     }
 
     fn finish(&mut self, result: ToolResultEvent) {

@@ -5,7 +5,7 @@ use ofx_config::EMERGENCY_CEILING_BYTES;
 pub(crate) use ofx_contract::FileEvidenceAction;
 use ofx_contract::{
     CommandProcessPresentation, ProviderReplay, ReplaySource, ToolArgumentIntegrity,
-    ToolExecutionProvenance, ToolResultStatus,
+    ToolExecutionProvenance, ToolResultStatus, TurnSummary,
 };
 use serde::Serialize;
 
@@ -292,8 +292,8 @@ fn succeeded() -> ToolResultStatus {
 pub struct TurnCompletedEvent {
     #[serde(default)]
     pub(crate) files: Vec<FileEvidence>,
-    #[serde(default)]
-    turn_summary: Null,
+    #[serde(default, with = "crate::turn_summary")]
+    pub turn_summary: Option<TurnSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -319,8 +319,8 @@ pub struct InterruptedEvent {
     command_artifact_ref: Null,
     #[serde(default)]
     pub(crate) files: Vec<FileEvidence>,
-    #[serde(default)]
-    turn_summary: Null,
+    #[serde(default, with = "crate::turn_summary")]
+    pub turn_summary: Option<TurnSummary>,
     #[serde(default, skip_serializing)]
     cancellation_origin: TurnOrigin,
 }
@@ -334,7 +334,7 @@ impl InterruptedEvent {
             command_replay_bytes: Null,
             command_artifact_ref: Null,
             files: Vec::new(),
-            turn_summary: Null,
+            turn_summary: None,
             cancellation_origin: TurnOrigin,
         }
     }

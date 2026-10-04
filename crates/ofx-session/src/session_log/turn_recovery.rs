@@ -98,6 +98,7 @@ pub(crate) fn commit_checkpoint(
     };
     let mut events = turn_events(&artifacts, &checkpoint.interrupted_turn(), written)?;
     if let Some(ConversationEvent::Interrupted(interrupted)) = events.last_mut() {
+        interrupted.turn_summary = checkpoint.turn_summary();
         interrupted.files = checkpoint.into_files();
     }
     writer.append(timestamp_ms, &events[usize::from(open)..])?;

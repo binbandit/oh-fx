@@ -71,9 +71,10 @@ pub(crate) fn turn_events(
                     standalone_response: false,
                 }));
             }
-            let mut completed = TurnCompletedEvent::default();
-            completed.files = turn.files.iter().map(FileEvidence::from).collect();
-            events.push(ConversationEvent::TurnCompleted(completed));
+            events.push(ConversationEvent::TurnCompleted(TurnCompletedEvent {
+                files: turn.files.iter().map(FileEvidence::from).collect(),
+                ..TurnCompletedEvent::default()
+            }));
         }
         TurnEnd::Stopped { reason, partial } => {
             let reason = match reason {

@@ -1,6 +1,7 @@
 use ofx_config::ProviderId;
 use ofx_contract::{
     CommandProcessPresentation, ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus,
+    TurnSummary, TurnTokenProgress,
 };
 
 use super::{
@@ -91,6 +92,20 @@ impl Encoder<'_> {
         self.byte(0);
     }
 
+    fn summary(&mut self, summary: Option<TurnSummary>) {
+        self.flag(summary.is_some());
+        if let Some(summary) = summary {
+            self.signed(summary.started_at_ms);
+            self.signed(summary.completed_at_ms);
+            self.int(summary.thinking_duration_ms);
+            self.int(summary.turn_duration_ms);
+            self.int(summary.token_progress.input_tokens);
+            self.int(summary.token_progress.output_tokens);
+            self.flag(summary.token_progress.input_exact);
+            self.flag(summary.token_progress.output_exact);
+        }
+    }
+
     fn empty(&mut self) {
         self.int(0);
     }
@@ -124,7 +139,7 @@ impl Encoder<'_> {
             ConversationEvent::TurnCompleted(completed) => {
                 self.byte(5);
                 self.files(&completed.files)?;
-                self.absent();
+                self.summary(completed.turn_summary);
                 Some(())
             }
             ConversationEvent::Interrupted(interrupted) => {
@@ -135,7 +150,7 @@ impl Encoder<'_> {
                 self.absent();
                 self.absent();
                 self.files(&interrupted.files)?;
-                self.absent();
+                self.summary(interrupted.turn_summary);
                 self.byte(0);
                 Some(())
             }
@@ -316,6 +331,21 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    fn summary(&mut self) -> Option<TurnSummary> {
+        Some(TurnSummary {
+            started_at_ms: self.signed()?,
+            completed_at_ms: self.signed()?,
+            thinking_duration_ms: self.int()?,
+            turn_duration_ms: self.int()?,
+            token_progress: TurnTokenProgress {
+                input_tokens: self.int()?,
+                output_tokens: self.int()?,
+                input_exact: self.flag()?,
+                output_exact: self.flag()?,
+            },
+        })
+    }
+
     fn fixed<T: Default>(&mut self) -> Option<T> {
         (self.byte()? == 0).then(T::default)
     }
@@ -337,7 +367,7 @@ impl<'a> Decoder<'a> {
             4 => ConversationEvent::Steering(SteeringEvent { text: self.text()? }),
             5 => ConversationEvent::TurnCompleted(TurnCompletedEvent {
                 files: self.files()?,
-                turn_summary: self.fixed::<Null>()?,
+                turn_summary: self.optional(Self::summary).ok()?,
             }),
             6 => ConversationEvent::Interrupted(self.interrupted()?),
             7 => ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
@@ -433,7 +463,7 @@ impl<'a> Decoder<'a> {
             command_replay_bytes: self.fixed::<Null>()?,
             command_artifact_ref: self.fixed::<Null>()?,
             files: self.files()?,
-            turn_summary: self.fixed::<Null>()?,
+            turn_summary: self.optional(Self::summary).ok()?,
             cancellation_origin: self.fixed::<TurnOrigin>()?,
         })
     }

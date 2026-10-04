@@ -1,4 +1,5 @@
 use ofx_config::ProviderId;
+use ofx_contract::{TurnSummary, TurnTokenProgress};
 
 use super::*;
 
@@ -281,6 +282,100 @@ fn file_evidence_takes_upstream_defaults_and_rejects_what_upstream_rejects() {
     }
 }
 
+const SUMMARY: &str = "{\"started_at_ms\":1000,\"completed_at_ms\":4500,\"thinking_duration_ms\":1200,\"turn_duration_ms\":3500,\"token_progress\":{\"input_tokens\":1234,\"output_tokens\":340,\"input_exact\":true,\"output_exact\":false}}";
+
+fn summary_frame(event: &str) -> String {
+    format!("{{\"schema_version\":3,\"seq\":4,\"timestamp_ms\":2,\"event\":{event}}}\n")
+}
+
+#[test]
+fn turn_summaries_from_upstream_frames_round_trip_byte_for_byte() {
+    for event in [
+        format!("{{\"turn_completed\":{{\"files\":[],\"turn_summary\":{SUMMARY}}}}}"),
+        format!(
+            "{{\"interrupted\":{{\"reason\":\"cancelled\",\"partial_text\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_artifact_ref\":null,\"files\":[],\"turn_summary\":{SUMMARY}}}}}"
+        ),
+    ] {
+        let frame = summary_frame(&event);
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(4, 2, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+    }
+    let ConversationEvent::TurnCompleted(completed) = decode(&summary_frame(&format!(
+        "{{\"turn_completed\":{{\"turn_summary\":{SUMMARY}}}}}"
+    )))
+    .unwrap() else {
+        panic!("a completed turn");
+    };
+    assert_eq!(
+        completed.turn_summary,
+        Some(TurnSummary {
+            started_at_ms: 1000,
+            completed_at_ms: 4500,
+            thinking_duration_ms: 1200,
+            turn_duration_ms: 3500,
+            token_progress: TurnTokenProgress {
+                input_tokens: 1234,
+                output_tokens: 340,
+                input_exact: true,
+                output_exact: false,
+            },
+        })
+    );
+}
+
+#[test]
+fn turn_summaries_take_upstream_defaults_and_reject_what_upstream_rejects() {
+    for (summary, expected) in [
+        (
+            "{\"started_at_ms\":-5}",
+            TurnSummary {
+                started_at_ms: -5,
+                ..TurnSummary::default()
+            },
+        ),
+        ("{}", TurnSummary::default()),
+        (
+            "{\"token_progress\":{\"output_tokens\":7}}",
+            TurnSummary {
+                token_progress: TurnTokenProgress {
+                    output_tokens: 7,
+                    ..TurnTokenProgress::default()
+                },
+                ..TurnSummary::default()
+            },
+        ),
+    ] {
+        let ConversationEvent::TurnCompleted(completed) = decode(&summary_frame(&format!(
+            "{{\"turn_completed\":{{\"turn_summary\":{summary}}}}}"
+        )))
+        .unwrap() else {
+            panic!("a completed turn");
+        };
+        assert_eq!(completed.turn_summary, Some(expected), "{summary}");
+    }
+    assert!(TurnTokenProgress::default().input_exact);
+    assert!(TurnTokenProgress::default().output_exact);
+    for summary in [
+        "[]",
+        "1",
+        "{\"turn_duration_ms\":-1}",
+        "{\"turn_duration_ms\":\"1\"}",
+        "{\"started_at_ms\":1,\"elapsed\":2}",
+        "{\"token_progress\":{\"input_exact\":1}}",
+        "{\"token_progress\":{\"cached_tokens\":1}}",
+        "{\"token_progress\":null}",
+    ] {
+        assert_eq!(
+            decode(&summary_frame(&format!(
+                "{{\"turn_completed\":{{\"turn_summary\":{summary}}}}}"
+            ))),
+            Err(SessionError::InvalidConversationFrame),
+            "{summary}"
+        );
+    }
+}
+
 #[test]
 fn review_feedback_defaults_old_records_and_is_never_written() {
     let frame = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"tool_result\":{\"call_id\":\"call-review\",\"tool_name\":\"shell\",\"status\":\"failure\",\"artifact_ref\":\"result.txt\",\"stored_bytes\":0,\"completeness\":\"complete\",\"preview\":\"Security review held this action.\"}}}\n";
@@ -376,7 +471,6 @@ fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
         "{\"interrupted\":{\"reason\":\"failed\",\"cancellation_origin\":0}}",
         "{\"interrupted\":{\"reason\":\"stopped\"}}",
         "{\"turn_completed\":{\"files\":[{\"path\":\"a\",\"tool_call_id\":\"c\"}]}}",
-        "{\"turn_completed\":{\"turn_summary\":{\"started_at_ms\":1}}}",
         "{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",\"permission_feedback\":[\"no\"]}}",
     ] {
         let frame = format!("{base}{event}}}\n");
