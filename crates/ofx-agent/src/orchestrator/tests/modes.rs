@@ -72,11 +72,7 @@ async fn a_call_the_mode_blocks_is_rejected_with_its_policy_message_and_never_ru
             Vec::new(),
             completion(
                 None,
-                vec![ToolCall {
-                    id: ToolCallId::new("call-1"),
-                    name: "mutate".to_owned(),
-                    arguments: r#"{"text":"x"}"#.to_owned(),
-                }],
+                vec![ToolCall::new("call-1", "mutate", r#"{"text":"x"}"#)],
                 FinishReason::ToolCalls,
             ),
         ),
@@ -163,11 +159,7 @@ async fn work_tools_given_to_a_child_keep_its_modes_projection_and_denials() {
             Vec::new(),
             completion(
                 None,
-                vec![ToolCall {
-                    id: ToolCallId::new("call-1"),
-                    name: "mutate".to_owned(),
-                    arguments: r#"{"text":"x"}"#.to_owned(),
-                }],
+                vec![ToolCall::new("call-1", "mutate", r#"{"text":"x"}"#)],
                 FinishReason::ToolCalls,
             ),
         ),

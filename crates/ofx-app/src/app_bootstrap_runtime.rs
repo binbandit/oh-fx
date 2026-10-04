@@ -273,14 +273,7 @@ impl Profile {
         }
         let mut limits = self.settings.context_limits();
         limits.apply_command_line(launch.context_limits);
-        let skills = Arc::new(HostSkills::load(
-            &self.workspace_root,
-            self.home.as_deref(),
-            self.paths.as_ref(),
-            &self.settings,
-            &limits,
-            interactive,
-        ));
+        let skills = self.load_skills(&limits, interactive);
         let mut project = self.project_context(&limits);
         let context_notices = project
             .as_mut()
@@ -363,6 +356,17 @@ impl Profile {
             mode: launch.mode,
             config,
         })
+    }
+
+    fn load_skills(&self, limits: &ContextLimits, interactive: bool) -> Arc<HostSkills> {
+        Arc::new(HostSkills::load(
+            &self.workspace_root,
+            self.home.as_deref(),
+            self.paths.as_ref(),
+            &self.settings,
+            limits,
+            interactive,
+        ))
     }
 
     fn agent_config(
