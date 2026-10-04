@@ -276,7 +276,7 @@ fn logged_results_carry_the_raw_length_their_tool_returned() {
         result("a", ToolResultStatus::Success),
     ];
     let turn = history_turn(&history, 0, history.len());
-    let lengths = |raw: &[(ToolCallId, usize)]| -> Vec<(String, usize, usize)> {
+    let lengths = |raw: &[RawOutput]| -> Vec<(String, usize, usize)> {
         logged_steps(&turn.steps, raw)
             .iter()
             .flat_map(|step| step.tool_results.clone())
@@ -289,11 +289,16 @@ fn logged_results_carry_the_raw_length_their_tool_returned() {
             })
             .collect()
     };
+    let raw = |call_id: &str, bytes| RawOutput {
+        call_id: ToolCallId::new(call_id),
+        bytes,
+        whole_file: false,
+    };
     let recorded = [
-        (ToolCallId::new("dropped"), 1),
-        (ToolCallId::new("a"), 70_000),
-        (ToolCallId::new("b"), 11),
-        (ToolCallId::new("a"), 90_000),
+        raw("dropped", 1),
+        raw("a", 70_000),
+        raw("b", 11),
+        raw("a", 90_000),
     ];
     assert_eq!(
         lengths(&recorded),
@@ -325,7 +330,7 @@ fn logged_results_carry_the_raw_length_their_tool_returned() {
         ]
     );
     assert_eq!(
-        lengths(&[(ToolCallId::new("other"), 5)]),
+        lengths(&[raw("other", 5)]),
         [
             ("a".to_owned(), 11, 11),
             ("b".to_owned(), 11, 11),

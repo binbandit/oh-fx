@@ -14,7 +14,7 @@ note = "Top-level commands/help and active subset of slash commands exist; full 
 upstream = "src/builtins/context.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/context.rs", "crates/ofx-agent/src/project_context.rs"]
-note = "Project/global instructions and delivery budgets exist; model prompt overlays and reconstruction of file-evidence context are absent."
+note = "Project/global instructions and delivery budgets exist; model prompt overlays and the bounded reconstruction of delivered rule files are absent."
 
 [[file]]
 upstream = "src/builtins/gateway.zig"

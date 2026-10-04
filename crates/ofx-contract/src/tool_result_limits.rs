@@ -3,9 +3,13 @@ use ofx_text::sanitize_model_text_owned;
 pub const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 
 pub fn prepare_model_output(tool_name: &str, raw: String, max_bytes: usize) -> String {
+    bound_model_output(tool_name, raw, max_bytes).0
+}
+
+pub fn bound_model_output(tool_name: &str, raw: String, max_bytes: usize) -> (String, bool) {
     let sanitized = sanitize_model_text_owned(raw.into_bytes());
     if sanitized.len() <= max_bytes {
-        return sanitized;
+        return (sanitized, false);
     }
     let marker = format!(
         "\n... [tool result truncated for {tool_name}: original {} bytes; cap is {max_bytes} bytes]\n",
@@ -13,9 +17,9 @@ pub fn prepare_model_output(tool_name: &str, raw: String, max_bytes: usize) -> S
     );
     let prefix_len = sanitized.floor_char_boundary(max_bytes.saturating_sub(marker.len()));
     if prefix_len == 0 {
-        return marker;
+        return (marker, true);
     }
-    format!("{}{marker}", &sanitized[..prefix_len])
+    (format!("{}{marker}", &sanitized[..prefix_len]), true)
 }
 
 #[cfg(test)]

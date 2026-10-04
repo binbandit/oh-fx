@@ -13,6 +13,7 @@ pub struct StepResult<'a> {
     pub output: &'a str,
     pub output_bytes: usize,
     pub status: ToolResultStatus,
+    pub model_view_covers_full_file: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
