@@ -125,6 +125,8 @@ Without any of these, `oh-fx ask` stops with `no model is selected for this conn
 
 A `provider` of `codex` selects a ChatGPT subscription instead of a connection; see [ChatGPT subscription](#chatgpt-subscription).
 
+In the interactive session, `/provider` or `/login` lists `codex` and every connection under `providers`. Choosing one moves the running conversation to it and saves `provider` and that provider's model to the user settings.
+
 ## TLS and corporate certificate authorities
 
 On Linux, oh-fx trusts the roots in the system's CA bundle, as upstream fx does. It reads them only when a TLS handshake first needs them, so a plain `http://` connection never opens a certificate file.
