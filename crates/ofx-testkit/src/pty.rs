@@ -18,6 +18,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const READ_CHUNK_BYTES: usize = 4096;
 const SCROLLBACK_ROWS: usize = 1000;
 const FULL_OUTPUT_ROUNDS: usize = 5;
+const OPEN_ATTEMPTS: usize = 50;
+const OPEN_RETRY: Duration = Duration::from_millis(10);
 
 type Terminal = Arc<Mutex<Display>>;
 
@@ -103,7 +105,7 @@ pub struct PtyPair {
 
 impl PtyPair {
     pub fn open(rows: u16, cols: u16) -> io::Result<Self> {
-        let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+        let master = open_master()?;
         rustix::pty::grantpt(&master)?;
         rustix::pty::unlockpt(&master)?;
         let slave = open_slave(&master)?;
@@ -540,6 +542,23 @@ impl vt100::Callbacks for CursorReplies {
             self.0.extend_from_slice(reply.as_bytes());
         }
     }
+}
+
+fn open_master() -> io::Result<OwnedFd> {
+    let mut attempt = 1;
+    loop {
+        match rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY) {
+            Err(error) if attempt < OPEN_ATTEMPTS && released_by_another_terminal(error) => {
+                attempt += 1;
+                thread::sleep(OPEN_RETRY);
+            }
+            opened => return Ok(opened?),
+        }
+    }
+}
+
+fn released_by_another_terminal(error: Errno) -> bool {
+    error.raw_os_error().abs() == Errno::NXIO.raw_os_error()
 }
 
 fn open_slave(master: &OwnedFd) -> io::Result<OwnedFd> {
