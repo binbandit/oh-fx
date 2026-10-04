@@ -339,3 +339,22 @@ async fn an_outage_after_reply_text_restarts_the_reply_on_the_same_route() {
     assert_eq!(report.final_text, "restarted");
     assert_eq!(sent_options(&provider), [(None, true), (None, true)]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_outage_after_a_tool_start_keeps_the_fast_route() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call-1"),
+                tool_name: "echo".to_owned(),
+            }],
+            failure(ProviderErrorKind::ServerError, "ProviderError"),
+        ),
+        text_reply("done"),
+    ]);
+    let resolver = FakeResolver::new(vec![supporting(&[], true)]);
+    let mut agent = agent_with(&provider, Some(&resolver), requesting(None, true));
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.final_text, "done");
+    assert_eq!(sent_options(&provider), [(None, true), (None, true)]);
+}
