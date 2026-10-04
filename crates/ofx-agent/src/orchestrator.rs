@@ -406,6 +406,8 @@ impl Agent {
         self.provider = provider;
         self.capability_resolver = resolver;
         self.capabilities = None;
+        self.calibration = None;
+        self.request_fixed_tokens = None;
     }
 
     pub fn clear_history(&mut self) {
