@@ -62,6 +62,8 @@ pub(crate) enum ModelChange {
     Query(String),
     Pick(ModelPick),
     ToggleFast,
+    StepEffort(isize),
+    FromSettings(String),
 }
 
 pub(crate) enum Outcome {
@@ -229,7 +231,23 @@ pub(crate) fn change_model(
         ModelChange::Pick(pick) => pick_model(state, pick, models, work),
         ModelChange::ToggleFast if toggle_fast(state, models) => Outcome::Changed { effort: None },
         ModelChange::ToggleFast => Outcome::Unchanged,
+        ModelChange::StepEffort(delta) => state.step_effort(delta, models),
+        ModelChange::FromSettings(model) => select_model_from_settings(state, model, models, work),
     }
+}
+
+fn select_model_from_settings(
+    state: &mut ControllerState,
+    model: String,
+    models: &[ModelOption],
+    work: Work,
+) -> Outcome {
+    let capabilities = capabilities_of(models, &model);
+    let effort = (!capabilities.reasoning_efforts.is_empty()).then(|| state.effort().clone());
+    let fast_mode = capabilities.supports_fast_mode && state.fast_mode();
+    state.notice(NoticeTone::Neutral, "", &model_switch_notice(&model, work));
+    state.apply_pick(model, effort.as_ref(), fast_mode);
+    Outcome::Changed { effort }
 }
 
 fn switch_model(state: &mut ControllerState, query: &str, models: &[ModelOption], work: Work) {

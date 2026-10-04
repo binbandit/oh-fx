@@ -492,7 +492,7 @@ fn the_settings_menu_searches_and_changes_settings_and_saves_startup_scrollback(
         "↑↓ navigate     tab category     ←→ change     esc close",
     );
     for row in [
-        "Settings 9  [All]  Interface  Agent  Notifications  Advanced",
+        "Settings 10  [All]  Interface  Agent  Notifications  Advanced",
         "  Status line context      off  on",
         "  Model                    model-a",
         "  Permission mode          ask  auto  full access",

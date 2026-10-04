@@ -83,6 +83,11 @@ impl ModelMenu {
         }
     }
 
+    pub(crate) fn restart(&mut self) {
+        self.tab = 0;
+        self.reset_selection();
+    }
+
     pub(crate) fn reset_selection(&mut self) {
         self.selected = 0;
         self.window_start = 0;
@@ -170,6 +175,19 @@ pub(crate) mod tests {
         assert_eq!(menu.selected_id(&models), Some("openai/gpt-4o"));
         menu.set_query("none");
         assert_eq!(menu.selected_id(&models), None);
+    }
+
+    #[test]
+    fn a_restart_keeps_the_query_and_resets_the_tab_and_selection() {
+        let models = catalog(&["anthropic/a", "openai/b", "openai/c"]);
+        let mut menu = ModelMenu::default();
+        menu.set_query("openai");
+        menu.move_selection(&models, 1, 1);
+        menu.tab = 2;
+        assert_eq!((menu.selected, menu.window_start), (1, 1));
+        menu.restart();
+        assert_eq!((menu.tab, menu.selected, menu.window_start), (0, 0, 0));
+        assert_eq!(ids(&menu, &models), ["openai/b", "openai/c"]);
     }
 
     #[test]

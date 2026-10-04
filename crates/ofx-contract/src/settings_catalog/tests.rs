@@ -5,6 +5,8 @@ fn snapshot() -> SettingsSnapshot {
     statusline.set(StatuslineItem::Context, true);
     SettingsSnapshot {
         model: "zai/glm-5.2".to_owned(),
+        effort: "default".to_owned(),
+        reasoning_efforts: Vec::new(),
         fast_mode: FastModeSetting::On,
         permission_mode: PermissionMode::Ask,
         statusline,
@@ -17,9 +19,9 @@ fn snapshot() -> SettingsSnapshot {
 #[test]
 fn the_catalog_groups_searchable_settings_by_category() {
     let snapshot = snapshot();
-    assert_eq!(snapshot.filtered_count(SettingCategory::All, ""), 9);
+    assert_eq!(snapshot.filtered_count(SettingCategory::All, ""), 10);
     assert_eq!(snapshot.filtered_count(SettingCategory::Interface, ""), 3);
-    assert_eq!(snapshot.filtered_count(SettingCategory::Agent, ""), 4);
+    assert_eq!(snapshot.filtered_count(SettingCategory::Agent, ""), 5);
     assert_eq!(
         snapshot.filtered_count(SettingCategory::Notifications, ""),
         0
@@ -105,6 +107,41 @@ fn choices_are_typed_and_the_model_and_an_unsupported_fast_mode_offer_none() {
         Some(false)
     );
     assert_eq!(snapshot.cycle_change(SettingId::SessionTitles, 0), None);
+}
+
+#[test]
+fn the_effort_row_offers_default_and_the_model_s_efforts() {
+    let offered = SettingsSnapshot {
+        effort: "future-tier".to_owned(),
+        reasoning_efforts: vec!["future-tier".to_owned(), "high".to_owned()],
+        ..snapshot()
+    };
+    assert_eq!(offered.option_count(SettingId::Effort), 3);
+    assert_eq!(offered.option_at(SettingId::Effort, 0), Some("default"));
+    assert_eq!(offered.option_at(SettingId::Effort, 1), Some("future-tier"));
+    assert_eq!(offered.option_at(SettingId::Effort, 2), Some("high"));
+    assert_eq!(offered.option_at(SettingId::Effort, 3), None);
+    assert_eq!(offered.selected_option_index(SettingId::Effort), Some(1));
+    assert_eq!(
+        offered.cycle_change(SettingId::Effort, 1).unwrap().value,
+        "high"
+    );
+    let item = offered
+        .item_at(SettingCategory::Agent, "reasoning", 0)
+        .unwrap();
+    assert_eq!(item.id, SettingId::Effort);
+    assert_eq!(item.label, "Reasoning effort");
+    assert_eq!(item.value, "future-tier");
+    assert_eq!(snapshot().option_count(SettingId::Effort), 0);
+    let kept = SettingsSnapshot {
+        effort: "high".to_owned(),
+        ..snapshot()
+    };
+    assert_eq!(kept.option_count(SettingId::Effort), 1);
+    assert_eq!(
+        kept.cycle_change(SettingId::Effort, 1).unwrap().value,
+        "default"
+    );
 }
 
 #[test]
