@@ -23,6 +23,10 @@ const NO_REPLY_TO_COPY: &str = "No assistant reply to copy.";
 const COPIED: &str = "Copied to clipboard.";
 const COPY_FAILED: &str = "Failed to copy to clipboard.";
 const FAST_TOPIC: &str = "fast";
+const ULTRAFAST_TOPIC: &str = "ultrafast";
+const ULTRAFAST_USAGE: &str = "usage: /ultrafast [on|off|status]";
+const ULTRAFAST_UNAVAILABLE: &str =
+    "Ultra mode is unavailable for this model and may increase cost.";
 const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
 const USAGE_TOPIC: &str = "usage";
@@ -199,6 +203,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
             state.notice(NoticeTone::Neutral, UNDO_TOPIC, &undo_message(&result));
         }
         SlashKind::Copy => copy_last_reply(state),
+        SlashKind::Ultrafast => ultrafast(state, payload),
         SlashKind::Statusline => state.toggle_statusline(payload),
         SlashKind::Workspace => state.notice(
             NoticeTone::Error,
@@ -333,6 +338,25 @@ fn toggle_fast(state: &mut ControllerState, models: &[ModelOption]) -> bool {
     true
 }
 
+fn ultrafast(state: &mut ControllerState, payload: &str) {
+    let command = payload.trim_matches([' ', '\t']);
+    if command.is_empty() || command.eq_ignore_ascii_case("status") {
+        let body = if state.ultrafast_requested() {
+            "requested: on"
+        } else {
+            "requested: off"
+        };
+        state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, body);
+    } else if command.eq_ignore_ascii_case("on") {
+        state.notice(NoticeTone::Warning, ULTRAFAST_TOPIC, ULTRAFAST_UNAVAILABLE);
+    } else if command.eq_ignore_ascii_case("off") {
+        state.withdraw_ultrafast_request();
+        state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested off");
+    } else {
+        state.notice(NoticeTone::Error, "", ULTRAFAST_USAGE);
+    }
+}
+
 fn undo_message(result: &UndoResult) -> String {
     match result {
         UndoResult::Restored(path) => format!("Restored {}", display_path(path)),
@@ -456,6 +480,10 @@ mod tests {
             "manage local and remote MCP servers, resources, prompts, and project trust"
         );
         assert_eq!(listed("/skills").description, "browse and manage skills");
+        assert_eq!(
+            listed("/ultrafast").description,
+            "request Ultra mode when supported"
+        );
         assert_eq!(
             listed("/shell").description,
             "reload shell startup files for commands"
