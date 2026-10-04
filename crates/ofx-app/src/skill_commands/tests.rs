@@ -27,13 +27,46 @@ fn skills_commands_parse_as_upstream_parses_them() {
         ("unknown", Command::Usage),
         (
             "add vercel-labs/agent-skills --skill review",
-            Command::Install("vercel-labs/agent-skills"),
+            Command::Install {
+                source: "vercel-labs/agent-skills",
+                filter: Some("review"),
+            },
         ),
         (
             "install vercel-labs/agent-skills --skill=workflow",
-            Command::Install("vercel-labs/agent-skills"),
+            Command::Install {
+                source: "vercel-labs/agent-skills",
+                filter: Some("workflow"),
+            },
         ),
-        ("install ./pack", Command::Install("./pack")),
+        (
+            "install ./pack",
+            Command::Install {
+                source: "./pack",
+                filter: None,
+            },
+        ),
+        (
+            "install pack --skill=",
+            Command::Install {
+                source: "pack",
+                filter: Some(""),
+            },
+        ),
+        (
+            "add pack --skill=first --skill second",
+            Command::Install {
+                source: "pack --skill=first",
+                filter: Some("second"),
+            },
+        ),
+        (
+            "add pack --skill  review\t",
+            Command::Install {
+                source: "pack",
+                filter: Some("review"),
+            },
+        ),
     ] {
         assert_eq!(parse(rest), expected, "{rest:?}");
     }
@@ -192,4 +225,26 @@ fn creation_never_follows_a_link_out_of_the_managed_root() {
     std::os::unix::fs::symlink(&outside, &linked_root).unwrap();
     assert!(create_template(&linked_root, "fresh").is_err());
     assert_eq!(listing(&outside), before);
+}
+
+#[test]
+fn only_parsed_skill_install_commands_wait_for_the_active_operation() {
+    for text in [
+        "/skills add ./pack",
+        "/skills install ./pack --skill=review",
+        "/skills  install ./pack",
+    ] {
+        assert!(is_install_command(text), "{text}");
+    }
+    for text in [
+        "/skills",
+        "/skills install",
+        "/skills show install",
+        "/skills create add",
+        "/skills path",
+        "/unknown install",
+        "skills install ./pack",
+    ] {
+        assert!(!is_install_command(text), "{text}");
+    }
 }

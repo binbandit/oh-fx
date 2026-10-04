@@ -1,6 +1,7 @@
 mod byte_trim;
 mod encoded_scalar;
 mod file_picker_path;
+mod install;
 mod io;
 mod skill_contract;
 mod skill_invocation;
@@ -24,3 +25,5 @@ pub use skill_runtime::{
 };
 
 pub use skill_search::{SkillSearchError, SkillSearchResult, search_skills};
+
+pub use install::{InstallResult, install_local};
