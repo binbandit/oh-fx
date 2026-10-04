@@ -9,7 +9,7 @@ mod workspace_files;
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask <style | lint | test | ci | attribution <file> | commit-msg <file> | subjects <file> | title <file> | hooks | parity [--upstream PATH] | footprint [--base <commit>] [--summary <file>] [--pr-body <file>]>";
+const USAGE: &str = "usage: cargo xtask <style | lint | test | ci | attribution <file> | commit-msg <file> | subjects <file> | title <file> | hooks | parity [goldens] [--upstream PATH] | footprint [--base <commit>] [--summary <file>] [--pr-body <file>]>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
