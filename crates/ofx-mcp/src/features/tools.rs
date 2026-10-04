@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::fmt;
 
 use ofx_jsonrpc::RpcError;
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use crate::error::McpError;
@@ -345,10 +347,103 @@ pub(crate) fn validate_arguments(arguments_json: &str, limits: Limits) -> Result
     if arguments_json.len() > limits.argument_bytes {
         return Err(McpError::InstanceLimitExceeded);
     }
-    let Ok(arguments @ Value::Object(_)) = serde_json::from_str::<Value>(arguments_json) else {
+    let mut shape = ArgumentShape::default();
+    let mut deserializer = serde_json::Deserializer::from_str(arguments_json);
+    ArgumentNode {
+        shape: &mut shape,
+        depth: 0,
+    }
+    .deserialize(&mut deserializer)
+    .and_then(|()| deserializer.end())
+    .map_err(|_| McpError::InvalidJson)?;
+    if !arguments_json.trim_start().starts_with('{') {
         return Err(McpError::InvalidJson);
-    };
-    check_value_bounds(&arguments).map_err(|()| McpError::InstanceLimitExceeded)
+    }
+    if shape.too_deep || shape.nodes > MAX_VALUE_NODES {
+        return Err(McpError::InstanceLimitExceeded);
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ArgumentShape {
+    nodes: usize,
+    too_deep: bool,
+}
+
+struct ArgumentNode<'a> {
+    shape: &'a mut ArgumentShape,
+    depth: usize,
+}
+
+impl ArgumentNode<'_> {
+    fn child(&mut self) -> ArgumentNode<'_> {
+        ArgumentNode {
+            shape: self.shape,
+            depth: self.depth + 1,
+        }
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for ArgumentNode<'_> {
+    type Value = ();
+
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        if self.depth > MAX_SCHEMA_DEPTH {
+            self.shape.too_deep = true;
+            return deserializer.deserialize_ignored_any(IgnoredAny).map(drop);
+        }
+        self.shape.nodes += 1;
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for ArgumentNode<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut items: A) -> Result<(), A::Error> {
+        while items.next_element_seed(self.child())?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(mut self, mut entries: A) -> Result<(), A::Error> {
+        let mut keys = HashSet::new();
+        while let Some(key) = entries.next_key::<String>()? {
+            if !keys.insert(key) {
+                return Err(de::Error::custom("duplicate key"));
+            }
+            entries.next_value_seed(self.child())?;
+        }
+        Ok(())
+    }
 }
 
 fn validate_icons(value: &Value, limits: Limits) -> Result<(), McpError> {
@@ -1033,6 +1128,65 @@ mod tests {
         assert_eq!(
             validate_arguments("{ }", exact),
             Err(McpError::InstanceLimitExceeded)
+        );
+    }
+
+    fn nested_arrays(depth: usize) -> String {
+        format!("{}0{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    fn zeros(count: usize) -> String {
+        vec!["0"; count].join(",")
+    }
+
+    #[test]
+    fn tool_arguments_with_a_duplicate_key_are_rejected_as_upstream_parses_them() {
+        let limits = Limits::default();
+        for arguments in [
+            "{\"a\":1,\"a\":2}".to_owned(),
+            "{\"x\":1,\"\\u0078\":2}".to_owned(),
+            "{\"a\":{\"b\":1,\"b\":2}}".to_owned(),
+            format!("{{\"x\":{},\"x\":0}}", nested_arrays(64)),
+            format!("{{\"x\":[{}],\"x\":0}}", zeros(5000)),
+        ] {
+            assert_eq!(
+                validate_arguments(&arguments, limits),
+                Err(McpError::InvalidJson),
+                "{arguments}"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_argument_bounds_count_every_value_written() {
+        let limits = Limits::default();
+        assert_eq!(
+            validate_arguments(&format!("{{\"x\":{}}}", nested_arrays(63)), limits),
+            Ok(())
+        );
+        assert_eq!(
+            validate_arguments(&format!("{{\"x\":{}}}", nested_arrays(64)), limits),
+            Err(McpError::InstanceLimitExceeded)
+        );
+        assert_eq!(
+            validate_arguments(&format!("{{\"x\":{}}}", nested_arrays(300)), limits),
+            Err(McpError::InstanceLimitExceeded)
+        );
+        assert_eq!(
+            validate_arguments(&format!("{{\"x\":[{}]}}", zeros(4094)), limits),
+            Ok(())
+        );
+        assert_eq!(
+            validate_arguments(&format!("{{\"x\":[{}]}}", zeros(4095)), limits),
+            Err(McpError::InstanceLimitExceeded)
+        );
+        assert_eq!(
+            validate_arguments(&format!("[{}]", nested_arrays(300)), limits),
+            Err(McpError::InvalidJson)
+        );
+        assert_eq!(
+            validate_arguments(&format!("{{\"x\":{}}} 0", nested_arrays(300)), limits),
+            Err(McpError::InvalidJson)
         );
     }
 
