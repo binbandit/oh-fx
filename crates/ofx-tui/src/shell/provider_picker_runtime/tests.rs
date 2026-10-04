@@ -270,3 +270,40 @@ fn the_help_menu_keeps_the_footer_from_the_provider_column() {
     press(&mut test, RIGHT);
     assert!(chosen(&test).is_empty());
 }
+
+fn offer(test: &mut TestShell, providers: &[&str]) {
+    test.deliver(UiEvent::ProviderPicker {
+        prefix: "/provider ".to_owned(),
+        providers: providers.iter().map(|name| (*name).to_owned()).collect(),
+    });
+}
+
+#[test]
+fn the_highlighted_provider_wins_over_an_exact_typed_name() {
+    for (keys, expected) in [
+        (&b"\r"[..], None),
+        (b"\t", Some("/provider local-alt")),
+        (RIGHT, None),
+    ] {
+        let mut test = TestShell::start();
+        offer(&mut test, &["local", "local-alt"]);
+        press(&mut test, b"local");
+        let screen = test.screen();
+        assert_eq!(column_rows(&screen), ["local · current", "local-alt"]);
+        press(&mut test, DOWN);
+        press(&mut test, keys);
+        match expected {
+            Some(completed) => assert_eq!(test.shell.composer.text(), completed),
+            None => assert_eq!(chosen(&test), ["local-alt"]),
+        }
+    }
+}
+
+#[test]
+fn an_exact_typed_name_is_highlighted_wherever_it_sorts() {
+    let mut test = TestShell::start();
+    offer(&mut test, &["local-alt", "local"]);
+    press(&mut test, b"local");
+    press(&mut test, b"\r");
+    assert_eq!(chosen(&test), ["local"]);
+}

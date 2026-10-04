@@ -4,7 +4,7 @@ use super::Shell;
 use super::picker_state::{Cursor, matches_query, strip_prefix_ignore_case};
 use crate::composer::projected_anchor_column;
 use crate::footer::picker_presentation::{OptionList, list_picker_rows, option_picker_band};
-use crate::list_window::advance_selection;
+use crate::list_window::{DEFAULT_MAX_PICKER_ROWS, advance_selection, update_edge_start};
 use crate::row_text::{Row, terminal_safe};
 
 const PROVIDER_PREFIXES: [&str; 3] = ["/provider ", "/login ", "/setup "];
@@ -65,12 +65,21 @@ impl Shell<'_> {
     fn selected_provider(&self) -> Option<String> {
         let query = self.provider_query()?;
         let options = self.provider_options(query.query);
-        let wanted = query.query.trim_matches([' ', '\t']);
-        let exact = options
-            .iter()
-            .find(|name| !wanted.is_empty() && name.eq_ignore_ascii_case(wanted));
         let index = self.provider_column.cursor.index % options.len().max(1);
-        exact.or(options.get(index)).map(|name| (*name).to_owned())
+        options.get(index).map(|name| (*name).to_owned())
+    }
+
+    fn exact_provider(&self) -> (usize, usize) {
+        let Some(query) = self.provider_query() else {
+            return (0, 0);
+        };
+        let wanted = query.query.trim_matches([' ', '\t']);
+        let options = self.provider_options(query.query);
+        let index = options
+            .iter()
+            .position(|name| !wanted.is_empty() && name.eq_ignore_ascii_case(wanted))
+            .unwrap_or(0);
+        (index, options.len())
     }
 
     pub(super) fn provider_event(&mut self, event: UiEvent) {
@@ -102,8 +111,12 @@ impl Shell<'_> {
     }
 
     pub(super) fn provider_column_after_edit(&mut self) {
+        let (index, count) = self.exact_provider();
         let column = &mut self.provider_column;
-        column.cursor = Cursor::default();
+        column.cursor = Cursor {
+            index,
+            window_start: update_edge_start(0, count, index, DEFAULT_MAX_PICKER_ROWS),
+        };
         if column.dismissed && raw_provider_query(self.composer.text()).is_none() {
             column.dismissed = false;
         }
