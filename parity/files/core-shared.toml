@@ -134,7 +134,7 @@ note = "Both implementations saturate byte counters, split spans on ASCII whites
 upstream = "src/core/shared/types.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/types.rs", "crates/ofx-contract/src/ui.rs"]
-note = "Core messages, permission/review/events and usage contracts exist; image attachments, provider executed tools, rich persisted presentations and diagnostic metrics are absent."
+note = "Core messages, permission/review/events and usage contracts exist, and tool calls carry upstream's provider result and execution provenance; image attachments, rich persisted presentations and diagnostic metrics are absent."
 
 [[file]]
 upstream = "src/core/shared/unicode_display_data.zig"

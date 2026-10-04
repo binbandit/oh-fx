@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use ofx_config::ProviderId;
 use ofx_contract::{
     HistoryCut, HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, ReasoningEffort,
-    ReplaySource, StepResult, TurnEnd, TurnStop,
+    ReplaySource, StepResult, ToolArgumentIntegrity, ToolExecutionProvenance, TurnEnd, TurnStop,
 };
 use serde_json::Value;
 
@@ -695,7 +695,7 @@ fn saved_call(id: &str) -> ConversationEvent {
         id,
         "shell",
         "{}",
-        ofx_contract::ToolArgumentIntegrity::Valid,
+        ToolArgumentIntegrity::Valid,
     ))
 }
 
@@ -783,6 +783,82 @@ fn saved_turns_written_by_upstream_restore_as_upstream_projects_them() {
             ChatMessage::user("aborted"),
             assistant(Some("p"), &[shell("c2")]),
             tool(&shell("c2"), ABORTED_TOOL_OUTPUT, ToolResultStatus::Failure),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+        ]
+    );
+}
+
+fn provider_search(id: &str, arguments: &str, provider_result: &str) -> ToolCall {
+    ToolCall {
+        provider_result: Some(provider_result.to_owned()),
+        provenance: ToolExecutionProvenance::ProviderExecuted,
+        ..ToolCall::new(id, "exa_search", arguments)
+    }
+}
+
+#[test]
+fn provider_executed_calls_are_saved_and_restored_with_their_provenance() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let found = r#"{"results":[]}"#;
+    let search = [provider_search("call_exa", r#"{"query":"zig"}"#, found)];
+    let turn = HistoryTurn {
+        user: "search",
+        steps: vec![step(
+            "",
+            &search,
+            vec![result(&search[0], found, ToolResultStatus::Success)],
+        )],
+        steering: Vec::new(),
+        end: replied("found"),
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
+
+    let log = fs::read_to_string(fixture.dir().join("events.jsonl")).unwrap();
+    let call_frame = log.lines().nth(1).unwrap();
+    assert!(
+        call_frame.ends_with(r#""event":{"tool_call":{"call_id":"call_exa","tool_name":"exa_search","arguments_json":"{\"query\":\"zig\"}","argument_integrity":"valid","provisional_id":null,"provider_result":"{\"results\":[]}","final_identity":"valid","provenance":"provider_executed"}}}"#),
+        "{call_frame}"
+    );
+    assert_eq!(
+        fixture.frames()[2]["event"]["tool_result"]["provider_native"],
+        false
+    );
+    assert_eq!(
+        fixture.resumed().messages,
+        [
+            ChatMessage::user("search"),
+            assistant(None, &search),
+            tool(&search[0], found, ToolResultStatus::Success),
+            assistant(Some("found"), &[]),
+        ]
+    );
+}
+
+#[test]
+fn an_interrupted_provider_call_restores_with_its_provenance() {
+    let mut pending = ToolCallEvent::new(
+        "call_exa",
+        "exa_search",
+        "[]",
+        ToolArgumentIntegrity::NonObjectJson,
+    );
+    pending.provider_result = Some("{}".to_owned());
+    pending.provenance = ToolExecutionProvenance::ProviderExecuted;
+    let restored = restore(vec![saved_turn(vec![
+        user("stop"),
+        ConversationEvent::ToolCall(pending),
+        stopped(None),
+    ])])
+    .unwrap();
+    let call = provider_search("call_exa", "[]", "{}");
+    assert_eq!(
+        restored.messages,
+        [
+            ChatMessage::user("stop"),
+            assistant(None, std::slice::from_ref(&call)),
+            tool(&call, ABORTED_TOOL_OUTPUT, ToolResultStatus::Failure),
             ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
         ]
     );
