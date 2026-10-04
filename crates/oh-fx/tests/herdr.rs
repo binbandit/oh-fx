@@ -208,7 +208,7 @@ fn disabled_foreground_and_noninteractive_commands_do_not_contact_herdr() {
     let home = fs::canonicalize(root.path()).expect("Herdr fixture operation succeeds");
     let config = home.join("config/oh-fx");
     fs::create_dir_all(&config).expect("Herdr fixture operation succeeds");
-    let server = FakeServer::start([]);
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Noninteractive complete."]))]);
     fs::write(config.join("settings.json"), json!({"provider":"local","providers":{"local":{"protocol":"openai-chat-completions","base_url":server.base_url(),"auth":{"type":"none"},"models":["model-a"]}}}).to_string()).expect("Herdr fixture operation succeeds");
     let socket = Socket::start(home.join("herdr.sock"));
     let command = || {
@@ -236,6 +236,21 @@ fn disabled_foreground_and_noninteractive_commands_do_not_contact_herdr() {
             .status
             .success()
     );
+    let output = command()
+        .args(["ask", "--no-save", "hello"])
+        .output()
+        .expect("ask completes");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"Noninteractive complete.");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/v1/chat/completions");
+    assert_eq!(requests[0].json()["model"], "model-a");
+    assert!(socket.lines.lock().expect("reports mutex").is_empty());
     let mut disabled = command();
     disabled.env("OH_FX_HERDR", "FaLsE").process_group(0);
     let mut session =
