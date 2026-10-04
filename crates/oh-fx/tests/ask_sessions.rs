@@ -979,3 +979,67 @@ fn a_new_prompt_leaves_a_paused_turn_out_and_clears_it_once_saved() {
         ]
     );
 }
+
+fn sent_shell_arguments(request: &RecordedRequest) -> Vec<String> {
+    request.json()["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter(|message| message["role"] == "assistant")
+        .flat_map(|message| {
+            message["tool_calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .map(|call| {
+            call["function"]["arguments"]
+                .as_str()
+                .expect("arguments")
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn shell_calls_are_saved_as_upstream_saves_them_and_sent_back_in_the_request_form() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "shell",
+            r#"{ "request" : { "action" : "run" } }"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "shell",
+            r#"{"action":"run","timeout_ms":5E3}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Done."])),
+        Reply::sse(&chat_text_events(&["Again."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let first = home.ask_json(&["run it"], &[]);
+    let id = session_id(&first);
+    let saved: Vec<String> = home
+        .frames(&id)
+        .iter()
+        .filter_map(|frame| frame["event"]["tool_call"]["arguments_json"].as_str())
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        saved,
+        [
+            r#"{"action":"run"}"#,
+            r#"{"action":"run","timeout_ms":5E3}"#
+        ]
+    );
+    let resumed = home.ask_json(&["--resume-id", &id, "again"], &[]);
+    assert_eq!(resumed["final_output"], "Again.");
+    let requests = server.requests();
+    let sent = [
+        r#"{"request":{"action":"run"}}"#,
+        r#"{"request":{"action":"run","timeout_ms":5000}}"#,
+    ];
+    assert_eq!(sent_shell_arguments(&requests[2]), sent);
+    assert_eq!(sent_shell_arguments(&requests[3]), sent);
+}

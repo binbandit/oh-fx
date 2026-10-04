@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
@@ -1086,7 +1087,12 @@ impl Agent {
             };
             let status = output.status;
             if executed {
-                turn.shell_failures.observe(call, status);
+                let saved = self.saved_arguments(call);
+                turn.shell_failures.observe(
+                    &call.name,
+                    saved.as_deref().unwrap_or(&call.arguments),
+                    status,
+                );
             }
             turn.raw_outputs
                 .push((call.id.clone(), output.content.len()));
@@ -1219,14 +1225,36 @@ impl Agent {
         self.offer_tools();
     }
 
+    fn saved_arguments(&self, call: &ToolCall) -> Option<String> {
+        self.tool(&call.name)
+            .and_then(|tool| contained(|| tool.saved_arguments(&call.arguments)).flatten())
+    }
+
     fn history_call(&self, call: ToolCall) -> ToolCall {
-        let rewritten = self
-            .tool(&call.name)
-            .and_then(|tool| contained(|| tool.history_arguments(&call.arguments)).flatten());
-        match rewritten {
+        match self.saved_arguments(&call) {
             Some(arguments) => ToolCall { arguments, ..call },
             None => call,
         }
+    }
+
+    fn request_history(&self) -> Cow<'_, [ChatMessage]> {
+        let mut history = Cow::Borrowed(self.history.as_slice());
+        for (index, message) in self.history.iter().enumerate() {
+            let ChatMessage::Assistant { tool_calls, .. } = message else {
+                continue;
+            };
+            for (position, call) in tool_calls.iter().enumerate() {
+                let sent = self.tool(&call.name).and_then(|tool| {
+                    contained(|| tool.request_arguments(&call.arguments)).flatten()
+                });
+                if let Some(arguments) = sent
+                    && let ChatMessage::Assistant { tool_calls, .. } = &mut history.to_mut()[index]
+                {
+                    tool_calls[position].arguments = arguments;
+                }
+            }
+        }
+        history
     }
 
     fn lazy_group<'c>(

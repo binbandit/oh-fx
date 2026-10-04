@@ -1,3 +1,5 @@
+use ofx_contract::ToolCall;
+
 use super::*;
 
 fn shell(id: &str, arguments: &str) -> ToolCall {
@@ -11,22 +13,22 @@ fn shell_execution_failures_retain_independent_batch_identities() {
     let mut state = ShellExecutionFailureRetry::default();
 
     state.begin_batch();
-    state.observe(&first, ToolResultStatus::Failure);
-    state.observe(&second, ToolResultStatus::Failure);
+    state.observe(&first.name, &first.arguments, ToolResultStatus::Failure);
+    state.observe(&second.name, &second.arguments, ToolResultStatus::Failure);
     assert!(!state.finish_batch());
     state.begin_batch();
-    state.observe(&first, ToolResultStatus::Failure);
-    state.observe(&second, ToolResultStatus::Failure);
+    state.observe(&first.name, &first.arguments, ToolResultStatus::Failure);
+    state.observe(&second.name, &second.arguments, ToolResultStatus::Failure);
     assert!(state.finish_batch());
 
     let mut state = ShellExecutionFailureRetry::default();
     state.begin_batch();
-    state.observe(&first, ToolResultStatus::Failure);
-    state.observe(&second, ToolResultStatus::Success);
+    state.observe(&first.name, &first.arguments, ToolResultStatus::Failure);
+    state.observe(&second.name, &second.arguments, ToolResultStatus::Success);
     assert!(!state.finish_batch());
     state.begin_batch();
-    state.observe(&first, ToolResultStatus::Failure);
-    state.observe(&second, ToolResultStatus::Success);
+    state.observe(&first.name, &first.arguments, ToolResultStatus::Failure);
+    state.observe(&second.name, &second.arguments, ToolResultStatus::Success);
     assert!(state.finish_batch());
 }
 
@@ -48,7 +50,7 @@ fn only_failed_shell_calls_count_and_a_batch_without_them_starts_over() {
     ] {
         state.begin_batch();
         for (call, status) in calls {
-            state.observe(call, status);
+            state.observe(&call.name, &call.arguments, status);
         }
         assert_eq!(state.finish_batch(), stops);
     }
@@ -59,13 +61,15 @@ fn arguments_are_compared_exactly_as_the_model_sent_them() {
     let mut state = ShellExecutionFailureRetry::default();
     state.begin_batch();
     state.observe(
-        &shell("a", r#"{"command":"x","cwd":"y"}"#),
+        SHELL_TOOL,
+        r#"{"command":"x","cwd":"y"}"#,
         ToolResultStatus::Failure,
     );
     assert!(!state.finish_batch());
     state.begin_batch();
     state.observe(
-        &shell("b", r#"{"cwd":"y","command":"x"}"#),
+        SHELL_TOOL,
+        r#"{"cwd":"y","command":"x"}"#,
         ToolResultStatus::Failure,
     );
     assert!(!state.finish_batch());

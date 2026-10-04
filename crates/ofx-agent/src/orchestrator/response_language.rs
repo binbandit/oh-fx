@@ -86,13 +86,13 @@ impl Agent {
             .language
             .correction_attempted
             .then_some(RESPONSE_LANGUAGE_CORRECTION_CONTROL);
-        if note.is_none() && correction.is_none() {
-            return Cow::Borrowed(&self.history);
+        let mut messages = self.request_history();
+        if note.is_some() || correction.is_some() {
+            messages
+                .to_mut()
+                .extend(note.into_iter().chain(correction).map(ChatMessage::user));
         }
-        let mut messages = Vec::with_capacity(self.history.len() + 2);
-        messages.extend_from_slice(&self.history);
-        messages.extend(note.into_iter().chain(correction).map(ChatMessage::user));
-        Cow::Owned(messages)
+        messages
     }
 
     pub(super) fn begin_language_request(&self, turn: &mut Turn, instructions: &[&str]) {
