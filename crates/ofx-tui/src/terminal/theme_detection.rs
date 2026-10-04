@@ -9,6 +9,13 @@ pub(crate) struct ThemeDetection {
     pub(crate) pinned: bool,
 }
 
+pub(crate) fn configured_theme<'a>(
+    environment: Option<&'a str>,
+    setting: Option<&'a str>,
+) -> Option<&'a str> {
+    environment.filter(|value| !value.is_empty()).or(setting)
+}
+
 fn explicit_theme_override(value: Option<&str>) -> Option<bool> {
     let value = value?;
     if value.eq_ignore_ascii_case("light") {
@@ -70,6 +77,20 @@ mod tests {
                 pinned: true
             }
         );
+    }
+
+    #[test]
+    fn a_non_empty_environment_choice_wins_over_the_setting() {
+        assert_eq!(configured_theme(Some("dark"), Some("light")), Some("dark"));
+        assert_eq!(configured_theme(Some(""), Some("light")), Some("light"));
+        assert_eq!(configured_theme(None, Some("light")), Some("light"));
+        assert_eq!(configured_theme(None, None), None);
+        let detection = detect_theme_with(
+            configured_theme(Some(""), Some("Light")),
+            || unreachable!(),
+            None,
+        );
+        assert!(detection.light && detection.pinned);
     }
 
     #[test]

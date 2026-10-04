@@ -106,6 +106,7 @@ pub struct ShellOptions {
     pub opening: Opening,
     pub statusline: StatuslineToggles,
     pub workspace_identity: Option<Box<dyn WorkspaceIdentitySource>>,
+    pub theme: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,7 +288,7 @@ impl<'a> Shell<'a> {
     ) -> Result<Self, TerminalError> {
         let (signals, mut terminal) = claim_terminal()?;
         let layout = terminal.query_layout(FOOTER_ROWS)?;
-        let detection = terminal.detect_theme();
+        let detection = terminal.detect_theme(options.theme.as_deref());
         let theme_pinned = detection.pinned;
         let capabilities = terminal.capabilities();
         let theme = Theme::builtin(
@@ -1133,6 +1134,7 @@ mod tests {
             opening: Opening::Welcome,
             statusline: StatuslineToggles::default(),
             workspace_identity: None,
+            theme: None,
         }
     }
 

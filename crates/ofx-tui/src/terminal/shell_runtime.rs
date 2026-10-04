@@ -14,7 +14,7 @@ use rustix::termios::{
 
 use super::app_lifecycle;
 use super::cursor_probe::{CursorPosition, find_position_response, find_position_span};
-use super::theme_detection::{THEME_ENV, ThemeDetection, detect_theme_with};
+use super::theme_detection::{THEME_ENV, ThemeDetection, configured_theme, detect_theme_with};
 use super::theme_protocol::{
     TerminalBackground, find_osc11_reply, parse_osc11_response, truecolor_supported_for_values,
 };
@@ -225,11 +225,11 @@ impl Terminal {
         std::mem::take(&mut self.typeahead)
     }
 
-    pub(crate) fn detect_theme(&mut self) -> ThemeDetection {
-        let theme_override = env::var(THEME_ENV).ok();
+    pub(crate) fn detect_theme(&mut self, setting: Option<&str>) -> ThemeDetection {
+        let environment = env::var(THEME_ENV).ok();
         let colorfgbg = env::var("COLORFGBG").ok();
         detect_theme_with(
-            theme_override.as_deref(),
+            configured_theme(environment.as_deref(), setting),
             || self.query_background(),
             colorfgbg.as_deref(),
         )
@@ -1447,7 +1447,7 @@ mod tests {
         if test_pty::in_child() {
             let mut terminal = Terminal::open().unwrap();
             terminal.enable_raw_mode().unwrap();
-            let detection = terminal.detect_theme();
+            let detection = terminal.detect_theme(None);
             terminal.disable_raw_mode();
             println!("detected {detection:?}");
             return;
