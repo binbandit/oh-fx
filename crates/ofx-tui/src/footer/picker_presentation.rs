@@ -1,10 +1,8 @@
-use std::borrow::Cow;
-
-use ofx_text::{display_unit_at, prefix_by_width, suffix_by_width, visible_width};
+use ofx_text::{prefix_by_width, visible_width};
 
 use crate::composer::file_completion_state::{FileMatch, MentionKind};
 use crate::list_window::{DEFAULT_MAX_PICKER_ROWS, edge_from_start, update_edge_start};
-use crate::row_text::{Paint, Row};
+use crate::row_text::{EllipsisPlacement, Paint, Row, display_safe_suffix};
 use crate::theme::Theme;
 
 const FIXED_FOOTER_ROWS: usize = 5;
@@ -31,12 +29,6 @@ pub(crate) struct FilePickerFrame<'a> {
     pub(crate) start_col: usize,
     pub(crate) cols: usize,
     pub(crate) rows: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Placement {
-    Middle,
-    PrefixBiased,
 }
 
 pub(crate) fn list_picker_rows(
@@ -112,36 +104,6 @@ pub(crate) fn inline_menu_band(rows: Vec<Row>) -> Vec<Row> {
     band.extend(rows);
     band.push(Row::new());
     band
-}
-
-pub(crate) fn single_line_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
-    ellipsized(text, width, false)
-}
-
-pub(crate) fn middle_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
-    ellipsized(text, width, true)
-}
-
-fn ellipsized(text: &str, width: usize, middle: bool) -> Cow<'_, str> {
-    let text = if text.contains(['\n', '\r']) {
-        Cow::Owned(text.replace(['\n', '\r'], " "))
-    } else {
-        Cow::Borrowed(text)
-    };
-    if visible_width(&text) <= width {
-        return text;
-    }
-    match width {
-        0 => Cow::Borrowed(""),
-        1 => Cow::Borrowed(ELLIPSIS),
-        _ if middle => {
-            let content = width - 1;
-            let prefix = prefix_by_width(&text, content.div_ceil(2));
-            let suffix = display_safe_suffix(&text, content / 2);
-            Cow::Owned(format!("{prefix}{ELLIPSIS}{suffix}"))
-        }
-        _ => Cow::Owned(format!("{}{ELLIPSIS}", prefix_by_width(&text, width - 1))),
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -336,13 +298,13 @@ impl FileLabel<'_> {
         let dirname = path.get(..dirname_len).unwrap_or_default();
         let directory_budget = visible_width(dirname).min((width / 3).clamp(3, 12));
         let basename_budget = width - directory_budget - 1 - slash_width;
-        self.ellipsized(0, dirname_len, directory_budget, Placement::Middle);
+        self.ellipsized(0, dirname_len, directory_budget, EllipsisPlacement::Middle);
         self.styled(dirname_len, basename_start);
         self.ellipsized(
             basename_start,
             path.len(),
             basename_budget,
-            Placement::PrefixBiased,
+            EllipsisPlacement::PrefixBiased,
         );
         if directory {
             self.row.push("/", self.base);
@@ -356,15 +318,20 @@ impl FileLabel<'_> {
                 return;
             }
             if width > 1 {
-                self.ellipsized(basename_start, end, width - 1, Placement::PrefixBiased);
+                self.ellipsized(
+                    basename_start,
+                    end,
+                    width - 1,
+                    EllipsisPlacement::PrefixBiased,
+                );
             }
             self.row.push("/", self.base);
             return;
         }
-        self.ellipsized(basename_start, end, width, Placement::PrefixBiased);
+        self.ellipsized(basename_start, end, width, EllipsisPlacement::PrefixBiased);
     }
 
-    fn ellipsized(&mut self, start: usize, end: usize, width: usize, placement: Placement) {
+    fn ellipsized(&mut self, start: usize, end: usize, width: usize, placement: EllipsisPlacement) {
         if width == 0 || start >= end {
             return;
         }
@@ -378,10 +345,7 @@ impl FileLabel<'_> {
             return;
         }
         let content = width - 1;
-        let (prefix_width, suffix_width) = match placement {
-            Placement::Middle => (content.div_ceil(2), content / 2),
-            Placement::PrefixBiased => (content - content / 4, content / 4),
-        };
+        let (prefix_width, suffix_width) = placement.split(content);
         let prefix = prefix_by_width(source, prefix_width);
         let suffix = display_safe_suffix(source, suffix_width);
         self.styled(start, start + prefix.len());
@@ -418,22 +382,6 @@ impl FileLabel<'_> {
                 .push(path.get(cursor..end).unwrap_or_default(), self.base);
         }
     }
-}
-
-pub(crate) fn display_safe_suffix(source: &str, width: usize) -> &str {
-    let suffix = suffix_by_width(source, width);
-    if suffix.is_empty() || suffix.len() == source.len() {
-        return suffix;
-    }
-    let mut start = 0;
-    while start < suffix.len() {
-        let unit = display_unit_at(suffix, start);
-        if unit.cell_width != 0 {
-            break;
-        }
-        start += unit.byte_len;
-    }
-    suffix.get(start..).unwrap_or_default()
 }
 
 #[cfg(test)]
