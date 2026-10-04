@@ -192,7 +192,7 @@ pub(crate) fn compose_hint_row(
     if !danger.is_empty() {
         let tag_col = width - visible_width(danger);
         let mut row = base.clipped(tag_col);
-        row.push_spaces(tag_col - row.width());
+        row.pad_to_column(tag_col);
         row.push(danger, theme.red);
         return row;
     }
