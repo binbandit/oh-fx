@@ -1,6 +1,6 @@
 use ofx_contract::{
-    FastModeSetting, PermissionMode, SettingChange, SettingId, SettingsSnapshot, StatuslineToggles,
-    UiCommand, UiEvent,
+    FastModeSetting, PermissionMode, SettingId, SettingsSnapshot, StatuslineItem,
+    StatuslineToggles, UiCommand, UiEvent,
 };
 
 use crate::shell::test_shell::TestShell;
@@ -33,10 +33,16 @@ fn press(test: &mut TestShell, bytes: &[u8]) -> String {
     test.screen()
 }
 
-fn change(setting: SettingId, value: &'static str) -> UiCommand {
-    UiCommand::ChangeSetting {
-        change: SettingChange { setting, value },
-    }
+fn step(setting: SettingId, delta: isize) -> UiCommand {
+    UiCommand::StepSetting { setting, delta }
+}
+
+fn shown(test: &TestShell) -> SettingsSnapshot {
+    test.shell
+        .settings_menu
+        .as_ref()
+        .map(|menu| menu.snapshot.clone())
+        .unwrap()
 }
 
 #[test]
@@ -60,17 +66,17 @@ fn the_menu_lists_every_setting_under_the_composer_in_place_of_the_status_line()
 }
 
 #[test]
-fn left_and_right_send_the_next_value_and_the_row_follows_the_new_snapshot() {
+fn left_and_right_send_a_step_and_the_row_follows_the_controller_s_snapshot() {
     let mut test = opened();
     press(&mut test, b"\x1b[C");
     assert_eq!(
         test.sent().last(),
-        Some(&change(SettingId::StatuslineContext, "on"))
+        Some(&step(SettingId::StatuslineContext, 1))
     );
     press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[D");
     assert_eq!(
         test.sent().last(),
-        Some(&change(SettingId::PermissionMode, "ask"))
+        Some(&step(SettingId::PermissionMode, -1))
     );
     test.deliver(UiEvent::SettingsChanged {
         snapshot: SettingsSnapshot {
@@ -78,11 +84,33 @@ fn left_and_right_send_the_next_value_and_the_row_follows_the_new_snapshot() {
             ..snapshot()
         },
     });
-    press(&mut test, b"\x1b[D");
+    assert_eq!(shown(&test).permission_mode, PermissionMode::Ask);
+}
+
+#[test]
+fn two_quick_presses_on_one_row_each_step_the_value_the_controller_holds() {
+    let mut test = opened();
+    press(&mut test, b"\x1b[C\x1b[C");
     assert_eq!(
-        test.sent().last(),
-        Some(&change(SettingId::PermissionMode, "full access"))
+        test.sent(),
+        [
+            step(SettingId::StatuslineContext, 1),
+            step(SettingId::StatuslineContext, 1),
+        ]
     );
+    let context = |enabled| {
+        let mut statusline = StatuslineToggles::default();
+        statusline.set(StatuslineItem::Context, enabled);
+        UiEvent::SettingsChanged {
+            snapshot: SettingsSnapshot {
+                statusline,
+                ..snapshot()
+            },
+        }
+    };
+    test.deliver(context(true));
+    test.deliver(context(false));
+    assert!(!shown(&test).statusline.enabled(StatuslineItem::Context));
 }
 
 #[test]
@@ -105,7 +133,7 @@ fn tab_and_shift_tab_cycle_the_categories_and_reset_the_selection() {
     press(&mut test, b"\x1b[C");
     assert!(test.sent().is_empty(), "{:?}", test.sent());
     press(&mut test, b"\x1b[B\x1b[C");
-    assert_eq!(test.sent().last(), Some(&change(SettingId::FastMode, "on")));
+    assert_eq!(test.sent().last(), Some(&step(SettingId::FastMode, 1)));
     let screen = press(&mut test, b"\x1b[Z\x1b[Z\x1b[Z");
     assert!(screen.contains("[Advanced]"), "{screen}");
     assert!(
@@ -126,12 +154,12 @@ fn typing_filters_the_rows_and_moves_wrap_within_the_matches() {
     press(&mut test, b"\x1b[A\x1b[C");
     assert_eq!(
         test.sent().last(),
-        Some(&change(SettingId::StatuslineWorkspace, "on"))
+        Some(&step(SettingId::StatuslineWorkspace, 1))
     );
     press(&mut test, b"\x1b[B\x1b[C");
     assert_eq!(
         test.sent().last(),
-        Some(&change(SettingId::StatuslineContext, "on"))
+        Some(&step(SettingId::StatuslineContext, 1))
     );
     assert_eq!(test.shell.composer.text(), "status");
 }

@@ -39,11 +39,11 @@ impl Controller {
         }
     }
 
-    pub(super) async fn change_setting(&mut self, change: SettingChange) {
-        if self.state.wants_fast_toggle(change) {
+    pub(super) async fn step_setting(&mut self, setting: SettingId, delta: isize) {
+        if setting == SettingId::FastMode {
             self.change_model(ModelChange::ToggleFast).await;
         } else {
-            self.state.change_setting(change);
+            self.state.step_setting(setting, delta);
         }
         self.show_settings(SettingsUpdate::Changed).await;
     }
@@ -65,17 +65,18 @@ impl CatalogFetch {
         }
     }
 
-    pub(super) fn change_setting(
+    pub(super) fn step_setting(
         &mut self,
         state: &mut ControllerState,
         persistence: &mut Option<Persistence>,
-        change: SettingChange,
+        setting: SettingId,
+        delta: isize,
         work: Work,
     ) {
-        if state.wants_fast_toggle(change) {
+        if setting == SettingId::FastMode {
             self.change(state, persistence, ModelChange::ToggleFast, work);
         } else {
-            state.change_setting(change);
+            state.step_setting(setting, delta);
         }
         self.show_settings(state, SettingsUpdate::Changed);
     }
@@ -118,11 +119,10 @@ impl ControllerState {
         });
     }
 
-    fn wants_fast_toggle(&self, change: SettingChange) -> bool {
-        change.setting == SettingId::FastMode
-            && change
-                .enabled()
-                .is_some_and(|enabled| enabled != self.fast_mode)
+    fn step_setting(&mut self, setting: SettingId, delta: isize) {
+        if let Some(change) = self.settings_snapshot(&[]).cycle_change(setting, delta) {
+            self.change_setting(change);
+        }
     }
 
     fn change_setting(&mut self, change: SettingChange) {

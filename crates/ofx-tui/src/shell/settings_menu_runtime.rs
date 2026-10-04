@@ -165,14 +165,14 @@ impl Shell<'_> {
 
     fn change_selected_setting(&mut self, delta: isize) -> bool {
         let query = self.composer.text();
-        let change = self.settings_menu.as_ref().and_then(|menu| {
+        let setting = self.settings_menu.as_ref().and_then(|menu| {
             let count = menu.snapshot.filtered_count(menu.category, query);
             let index = menu.selected.checked_rem(count)?;
             let item = menu.snapshot.item_at(menu.category, query, index)?;
-            menu.snapshot.cycle_change(item.id, delta)
+            (menu.snapshot.option_count(item.id) > 0).then_some(item.id)
         });
-        if let Some(change) = change {
-            self.send(UiCommand::ChangeSetting { change });
+        if let Some(setting) = setting {
+            self.send(UiCommand::StepSetting { setting, delta });
         }
         true
     }

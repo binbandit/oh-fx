@@ -533,7 +533,9 @@ impl Controller {
                 }
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
                 UiCommand::ToggleStatusline { item } => self.state.flip_statusline(item),
-                UiCommand::ChangeSetting { change } => self.change_setting(change).await,
+                UiCommand::StepSetting { setting, delta } => {
+                    self.step_setting(setting, delta).await;
+                }
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
                 }
@@ -1065,8 +1067,8 @@ fn run_deferred(
         UiCommand::ListModels => return catalog.request(),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
-        UiCommand::ChangeSetting { change } => {
-            return catalog.change_setting(state, persistence, change, work);
+        UiCommand::StepSetting { setting, delta } => {
+            return catalog.step_setting(state, persistence, setting, delta, work);
         }
         UiCommand::FullAccessWarningShown => {
             return state.permissions.full_access_warning_shown();
@@ -1217,8 +1219,8 @@ mod tests {
     use ofx_config::{ProfilePaths, Settings};
     use ofx_contract::{
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, PermissionMode,
-        ProviderErrorKind, SettingChange, SettingId, SettingsSnapshot, SkillMenuFocus,
-        StatuslineItem, StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome,
+        ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus, StatuslineItem,
+        StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -2593,14 +2595,8 @@ mod tests {
             .unwrap()
     }
 
-    async fn change_setting(
-        harness: &mut Harness,
-        setting: SettingId,
-        value: &'static str,
-    ) -> Vec<UiEvent> {
-        harness.send(UiCommand::ChangeSetting {
-            change: SettingChange { setting, value },
-        });
+    async fn step_setting(harness: &mut Harness, setting: SettingId, delta: isize) -> Vec<UiEvent> {
+        harness.send(UiCommand::StepSetting { setting, delta });
         harness.until(settings_changed).await.to_vec()
     }
 
@@ -2650,10 +2646,10 @@ mod tests {
         let mut harness = Harness::start(&server).await;
         harness.command("/settings");
         harness.until(settings_opened).await;
-        let shown = change_setting(&mut harness, SettingId::PermissionMode, "ask").await;
+        let shown = step_setting(&mut harness, SettingId::PermissionMode, -1).await;
         assert_eq!(notice_body(&shown), ["permissions|mode set to ask"]);
         assert_eq!(last_settings(&shown).permission_mode, PermissionMode::Ask);
-        let shown = change_setting(&mut harness, SettingId::StatuslineWorkspace, "on").await;
+        let shown = step_setting(&mut harness, SettingId::StatuslineWorkspace, 1).await;
         assert!(shown.contains(&UiEvent::StatuslineChanged {
             item: StatuslineItem::Workspace,
             enabled: true,
@@ -2670,28 +2666,26 @@ mod tests {
                 .statusline
                 .enabled(StatuslineItem::Workspace)
         );
-        let shown = change_setting(&mut harness, SettingId::StatuslineWorkspace, "on").await;
-        assert_eq!(notice_body(&shown), Vec::<String>::new());
-        let shown = change_setting(&mut harness, SettingId::SessionTitles, "off").await;
+        let shown = step_setting(&mut harness, SettingId::SessionTitles, 1).await;
         assert_eq!(
             notice_body(&shown),
             ["session titles|saved to user settings (scope=user)"]
         );
         assert!(!last_settings(&shown).session_titles);
-        let shown = change_setting(&mut harness, SettingId::StartupScrollback, "off").await;
+        let shown = step_setting(&mut harness, SettingId::StartupScrollback, 1).await;
         assert_eq!(
             notice_body(&shown),
             ["settings|startup_scrollback: off (applies on next launch)"]
         );
         assert!(!last_settings(&shown).startup_scrollback);
-        let shown = change_setting(&mut harness, SettingId::PromptHistory, "off").await;
+        let shown = step_setting(&mut harness, SettingId::PromptHistory, 1).await;
         assert!(shown.contains(&UiEvent::PromptHistoryChanged { enabled: false }));
         assert_eq!(
             notice_body(&shown),
             ["history|saved to user settings (scope=user)"]
         );
         assert!(!last_settings(&shown).prompt_history);
-        let shown = change_setting(&mut harness, SettingId::FastMode, "on").await;
+        let shown = step_setting(&mut harness, SettingId::FastMode, 1).await;
         assert_eq!(
             notice_body(&shown),
             ["fast|This model does not come with a fast mode."]
@@ -2709,6 +2703,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn steps_sent_before_a_reply_each_move_the_value_the_controller_holds() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/settings");
+        harness.until(settings_opened).await;
+        for _ in 0..2 {
+            harness.send(UiCommand::StepSetting {
+                setting: SettingId::StatuslineWorkspace,
+                delta: 1,
+            });
+        }
+        let mut shown = Vec::new();
+        for _ in 0..2 {
+            shown.extend(harness.until(settings_changed).await.iter().cloned());
+        }
+        let workspace: Vec<bool> = shown
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::SettingsChanged { snapshot } => {
+                    Some(snapshot.statusline.enabled(StatuslineItem::Workspace))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(workspace, [true, false]);
+        assert_eq!(
+            saved_settings(&harness)["statusLine"],
+            json!({"workspace": false})
+        );
+    }
+
+    #[tokio::test]
     async fn fast_mode_changed_in_the_settings_menu_reaches_the_next_request() {
         let codex = FakeServer::start([codex_text("fast")]);
         let catalog = codex_catalog(true, 8);
@@ -2716,7 +2742,7 @@ mod tests {
         harness.command("/settings");
         let shown = harness.until(settings_opened).await;
         assert_eq!(last_settings(shown).fast_mode, FastModeSetting::Off);
-        let shown = change_setting(&mut harness, SettingId::FastMode, "on").await;
+        let shown = step_setting(&mut harness, SettingId::FastMode, 1).await;
         assert_eq!(notice_body(&shown), ["fast|on"]);
         assert_eq!(last_settings(&shown).fast_mode, FastModeSetting::On);
         harness.submit("hurry");
@@ -2735,7 +2761,7 @@ mod tests {
             .await;
         harness.command("/settings");
         harness.until(settings_opened).await;
-        let shown = change_setting(&mut harness, SettingId::SessionTitles, "off").await;
+        let shown = step_setting(&mut harness, SettingId::SessionTitles, 1).await;
         assert!(!last_settings(&shown).session_titles);
         assert!(
             !shown

@@ -4,7 +4,7 @@ use crate::permission_gate::{
     ApprovalDecision, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
 };
 use crate::session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionScope};
-use crate::settings_catalog::{SettingChange, SettingsSnapshot};
+use crate::settings_catalog::{SettingId, SettingsSnapshot};
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::subagent::SubagentStatus;
 use crate::tool_dispatch::CallDescription;
@@ -391,8 +391,9 @@ pub enum UiCommand {
     ToggleStatusline {
         item: StatuslineItem,
     },
-    ChangeSetting {
-        change: SettingChange,
+    StepSetting {
+        setting: SettingId,
+        delta: isize,
     },
     RunCommand {
         text: String,
