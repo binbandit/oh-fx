@@ -60,6 +60,8 @@ fn checkpoint() -> RecoveryCheckpoint {
             fast_mode: true,
             may_have_sent: true,
         },
+        compaction_prepared: false,
+        uncertain_tool: false,
     }
 }
 

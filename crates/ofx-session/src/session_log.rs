@@ -19,7 +19,7 @@ use ofx_text::lowercase_hex;
 
 use crate::session::infer_conversation_language;
 use crate::session_children::CONTROL_DIR;
-use crate::session_codec::recovery_checkpoint::RouteCredential;
+use crate::session_codec::recovery_checkpoint::{RecoveryTranscript, RouteCredential};
 use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
@@ -41,7 +41,8 @@ use managed_file::{
 use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
 use turn_recovery::{
-    Recovery, clear_recovery, commit_checkpoint, open_unfinished_turn, save_checkpoint,
+    Recovery, clear_recovery, commit_checkpoint, mark_recovery_asked, open_unfinished_turn,
+    recovery_was_asked, save_checkpoint,
 };
 use turn_restore::{complete_result_output, restored_history};
 
@@ -286,6 +287,21 @@ impl WritableSession {
             clear_recovery(&self.owned.dir);
             self.recovery = Recovery::Absent;
         }
+    }
+
+    pub fn recovery_transcript(&self) -> Option<RecoveryTranscript> {
+        match &self.recovery {
+            Recovery::Pending(checkpoint) => Some(checkpoint.transcript()),
+            Recovery::Absent | Recovery::Continuing | Recovery::Saved => None,
+        }
+    }
+
+    pub fn recovery_was_asked(&self) -> bool {
+        recovery_was_asked(&self.owned.dir)
+    }
+
+    pub fn mark_recovery_asked(&self) {
+        mark_recovery_asked(&self.owned.dir);
     }
 
     pub fn settle_open_recovery(&mut self) -> Result<(), SessionError> {
@@ -557,7 +573,7 @@ pub(crate) fn resume_session(
     let mut replay = ReplayScan::default();
     let mut writer = ConversationWriter::open(file, &mut replay)?;
     let closed_from = writer.committed_bytes();
-    let recovery = open_unfinished_turn(&owned.dir, &mut writer)?;
+    let recovery = open_unfinished_turn(&owned.dir, &mut writer, &metadata.preferences.provider)?;
     let end = writer.committed_bytes();
     replay.observe_range(writer.file(), closed_from, end)?;
     let window = replay.finish(writer.file(), end)?;
