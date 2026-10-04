@@ -56,7 +56,7 @@ note = "Native system prompt selection exists; embedded-host prompt variants and
 upstream = "src/core/config/settings_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/settings_catalog.rs", "crates/ofx-tui/src/shell/settings_menu_runtime.rs", "crates/ofx-tui/src/shell/statusline_menu_runtime.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation.rs"]
-note = "Categories, search, option cycling, the menu's selection window and the status line menu exist for the status line, model, fast mode, permission mode, session title, startup scrollback and prompt history rows; the reasoning effort, slash menu category, tool collapse, sound level and ultra mode rows and the model row's choices are absent as documented."
+note = "Categories, search, option cycling, the menu's selection window and the status line menu exist for the status line, model, reasoning effort, fast mode, permission mode, session title, startup scrollback and prompt history rows, the reasoning effort row offering default and the model's efforts; the slash menu category, tool collapse, sound level and ultra mode rows are absent as documented."
 
 [[file]]
 upstream = "src/core/config/settings_store.zig"

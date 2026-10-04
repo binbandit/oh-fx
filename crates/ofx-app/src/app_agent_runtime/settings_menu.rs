@@ -1,9 +1,10 @@
 use ofx_contract::{
-    FastModeSetting, ModelCatalog, ModelOption, SettingChange, SettingId, SettingsSnapshot, UiEvent,
+    FastModeSetting, ModelOption, NoticeTone, ReasoningEffort, SettingChange, SettingId,
+    SettingsSnapshot, UiEvent,
 };
 
 use super::{CatalogFetch, Controller, ControllerState};
-use crate::app_commands::{ModelChange, Work, capabilities_of, listed};
+use crate::app_commands::{ModelChange, Outcome, Work, capabilities_of, listed};
 use crate::app_session_runtime::Persistence;
 use crate::session_commands::{
     handle_history, handle_settings, save_session_titles_setting, startup_scrollback_setting,
@@ -11,6 +12,7 @@ use crate::session_commands::{
 
 const STARTUP_SCROLLBACK_ON: &str = "startup-scrollback on";
 const STARTUP_SCROLLBACK_OFF: &str = "startup-scrollback off";
+const EFFORT_TOPIC: &str = "effort";
 
 pub(super) struct MenuSettings {
     startup_scrollback: bool,
@@ -40,20 +42,20 @@ impl Controller {
     }
 
     pub(super) async fn step_setting(&mut self, setting: SettingId, delta: isize) {
-        if setting == SettingId::FastMode {
-            self.change_model(ModelChange::ToggleFast).await;
-        } else {
-            self.state.step_setting(setting, delta);
+        match setting_change(setting, delta) {
+            Some(change) => self.change_model(change).await,
+            None => self.state.step_setting(setting, delta),
         }
         self.show_settings(SettingsUpdate::Changed).await;
     }
 
+    pub(super) async fn select_model_from_settings(&mut self, model: String) {
+        self.change_model(ModelChange::FromSettings(model)).await;
+        self.show_settings(SettingsUpdate::Changed).await;
+    }
+
     async fn show_settings(&mut self, update: SettingsUpdate) {
-        let catalog = if self.state.fast_mode {
-            ModelCatalog::Failed { retry: None }
-        } else {
-            self.catalog.source.catalog().await
-        };
+        let catalog = self.catalog.source.catalog().await;
         self.state.show_settings(update, listed(&catalog));
     }
 }
@@ -73,21 +75,26 @@ impl CatalogFetch {
         delta: isize,
         work: Work,
     ) {
-        if setting == SettingId::FastMode {
-            self.change(state, persistence, ModelChange::ToggleFast, work);
-        } else {
-            state.step_setting(setting, delta);
+        match setting_change(setting, delta) {
+            Some(change) => self.change(state, persistence, change, work),
+            None => state.step_setting(setting, delta),
         }
         self.show_settings(state, SettingsUpdate::Changed);
     }
 
+    pub(super) fn select_model_from_settings(
+        &mut self,
+        state: &mut ControllerState,
+        persistence: &mut Option<Persistence>,
+        model: String,
+        work: Work,
+    ) {
+        self.change(state, persistence, ModelChange::FromSettings(model), work);
+        self.show_settings(state, SettingsUpdate::Changed);
+    }
+
     fn show_settings(&mut self, state: &ControllerState, update: SettingsUpdate) {
-        let catalog = if state.fast_mode {
-            Some(ModelCatalog::Failed { retry: None })
-        } else {
-            self.source.cached()
-        };
-        match catalog {
+        match self.source.cached() {
             Some(catalog) if self.waiting.is_empty() => {
                 state.show_settings(update, listed(&catalog));
             }
@@ -121,17 +128,45 @@ impl ControllerState {
 
     fn step_setting(&mut self, setting: SettingId, delta: isize) {
         if let Some(change) = self.settings_snapshot(&[]).cycle_change(setting, delta) {
-            self.change_setting(change);
+            self.change_setting(&change);
         }
     }
 
-    fn change_setting(&mut self, change: SettingChange) {
+    pub(crate) fn step_effort(&mut self, delta: isize, models: &[ModelOption]) -> Outcome {
+        let snapshot = self.settings_snapshot(models);
+        let Some(effort) = snapshot
+            .cycle_change(SettingId::Effort, delta)
+            .and_then(|change| ReasoningEffort::parse(&change.value))
+        else {
+            return Outcome::Unchanged;
+        };
+        let offered = match &effort {
+            ReasoningEffort::Auto => true,
+            ReasoningEffort::Named(name) => snapshot.reasoning_efforts.contains(name),
+        };
+        if !offered {
+            let body = format!(
+                "{} is not available for {}",
+                effort.display_label(),
+                self.model
+            );
+            self.notice(NoticeTone::Neutral, EFFORT_TOPIC, &body);
+            return Outcome::Unchanged;
+        }
+        effort.clone_into(&mut self.effort);
+        self.save_model_preference(EFFORT_TOPIC, Some(&effort));
+        Outcome::Changed {
+            effort: Some(effort),
+        }
+    }
+
+    fn change_setting(&mut self, change: &SettingChange) {
         if change.setting == SettingId::PermissionMode {
-            self.permissions.handle_command(change.value);
+            self.permissions.handle_command(&change.value);
             return;
         }
         if change.setting == SettingId::PromptHistory {
-            self.change_prompt_history(change.value);
+            self.change_prompt_history(&change.value);
             return;
         }
         let Some(enabled) = change.enabled() else {
@@ -154,6 +189,8 @@ impl ControllerState {
         let supports_fast_mode = capabilities_of(models, &self.model).supports_fast_mode;
         SettingsSnapshot {
             model: self.model.clone(),
+            effort: self.effort.display_label().to_owned(),
+            reasoning_efforts: capabilities_of(models, &self.model).reasoning_efforts,
             fast_mode: FastModeSetting::new(self.fast_mode, supports_fast_mode),
             permission_mode: self.permissions.mode(),
             statusline: self.statusline,
@@ -200,5 +237,13 @@ impl ControllerState {
         for notice in notices {
             self.emit(UiEvent::Notice { notice });
         }
+    }
+}
+
+fn setting_change(setting: SettingId, delta: isize) -> Option<ModelChange> {
+    match setting {
+        SettingId::FastMode => Some(ModelChange::ToggleFast),
+        SettingId::Effort => Some(ModelChange::StepEffort(delta)),
+        _ => None,
     }
 }

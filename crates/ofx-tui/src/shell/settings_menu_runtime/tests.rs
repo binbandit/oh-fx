@@ -1,12 +1,13 @@
 use ofx_contract::{
-    FastModeSetting, PermissionMode, SettingId, SettingsSnapshot, StatuslineItem,
-    StatuslineToggles, UiCommand, UiEvent,
+    FastModeSetting, ModelCatalog, ModelCatalogSource, PermissionMode, SettingId, SettingsSnapshot,
+    StatuslineItem, StatuslineToggles, UiCommand, UiEvent,
 };
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::shell::PromptHistory;
+use crate::shell::model_menu::tests::option;
 use crate::shell::test_shell::TestShell;
 
 const HINT: &str = "↑↓ navigate     tab category     ←→ change     esc close";
@@ -14,6 +15,8 @@ const HINT: &str = "↑↓ navigate     tab category     ←→ change     esc c
 fn snapshot() -> SettingsSnapshot {
     SettingsSnapshot {
         model: "model-a".to_owned(),
+        effort: "default".to_owned(),
+        reasoning_efforts: Vec::new(),
         fast_mode: FastModeSetting::Off,
         permission_mode: PermissionMode::Auto,
         statusline: StatuslineToggles::default(),
@@ -41,6 +44,21 @@ fn step(setting: SettingId, delta: isize) -> UiCommand {
     UiCommand::StepSetting { setting, delta }
 }
 
+fn listed(test: &mut TestShell, ids: &[&str]) {
+    test.deliver(UiEvent::ModelCatalog {
+        catalog: ModelCatalog::Listed {
+            models: ids.iter().map(|id| option(id)).collect(),
+            source: ModelCatalogSource::ProfileSettings,
+        },
+    });
+}
+
+fn picked(model: &str) -> UiCommand {
+    UiCommand::SelectModelFromSettings {
+        model: model.to_owned(),
+    }
+}
+
 fn shown(test: &TestShell) -> SettingsSnapshot {
     test.shell
         .settings_menu
@@ -55,7 +73,7 @@ fn the_menu_lists_every_setting_under_the_composer_in_place_of_the_status_line()
     let screen = test.screen();
     let composer = screen.find("┃ ").unwrap();
     let header = screen
-        .find("Settings 9  [All]  Interface  Agent  Notifications  Advanced")
+        .find("Settings 10  [All]  Interface  Agent  Notifications  Advanced")
         .unwrap();
     let first = screen.find("  Status line context      off  on").unwrap();
     let model = screen.find("  Model                    model-a").unwrap();
@@ -77,7 +95,7 @@ fn left_and_right_send_a_step_and_the_row_follows_the_controller_s_snapshot() {
         test.sent().last(),
         Some(&step(SettingId::StatuslineContext, 1))
     );
-    press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[D");
+    press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[D");
     assert_eq!(
         test.sent().last(),
         Some(&step(SettingId::PermissionMode, -1))
@@ -118,11 +136,100 @@ fn two_quick_presses_on_one_row_each_step_the_value_the_controller_holds() {
 }
 
 #[test]
-fn the_model_row_and_enter_send_nothing() {
+fn enter_on_the_model_row_lists_the_models_under_it() {
     let mut test = opened();
-    press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[C\x1b[D\r");
-    assert!(test.sent().is_empty(), "{:?}", test.sent());
+    let screen = press(&mut test, b"\r\x1b[B\x1b[B\x1b[B\r");
+    assert_eq!(test.sent(), [UiCommand::ListModels]);
     assert!(test.shell.settings_menu.is_some());
+    let model = screen.find("  Model                    model-a").unwrap();
+    let loading = screen.find("\n    Loading models…").unwrap();
+    assert!(model < loading, "{screen}");
+    listed(&mut test, &["vendor/one", "vendor/two"]);
+    let screen = test.screen();
+    assert!(
+        screen.contains(
+            "  Model                    model-a\n                           vendor/one\n                           vendor/two\n  Reasoning effort         default"
+        ),
+        "{screen}"
+    );
+}
+
+#[test]
+fn enter_picks_the_highlighted_model_and_returns_to_the_settings_search() {
+    let mut test = opened();
+    press(&mut test, b"model\r");
+    listed(&mut test, &["vendor/one", "vendor/two", "vendor/three"]);
+    let screen = press(&mut test, b"\x1b[H\x1b[B");
+    assert!(screen.contains("vendor/three"), "{screen}");
+    press(&mut test, b"\r");
+    assert_eq!(test.sent(), [UiCommand::ListModels, picked("vendor/two")]);
+    assert!(test.shell.model_menu.is_none());
+    assert!(test.shell.settings_menu.is_some());
+    assert_eq!(test.shell.composer.text(), "model");
+    let screen = test.screen();
+    assert!(!screen.contains("vendor/"), "{screen}");
+    assert!(screen.contains("  Model "), "{screen}");
+}
+
+#[test]
+fn right_opens_the_models_left_picks_one_and_tab_closes_them() {
+    let mut test = opened();
+    press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[C");
+    assert!(test.shell.model_menu.is_some());
+    listed(&mut test, &["vendor/one", "vendor/two"]);
+    press(&mut test, b"\x1b[A\x1b[C");
+    assert!(test.shell.model_menu.is_some());
+    press(&mut test, b"\x1b[D");
+    assert_eq!(test.sent(), [UiCommand::ListModels, picked("vendor/two")]);
+    assert!(test.shell.model_menu.is_none());
+    press(&mut test, b"\x1b[C");
+    assert!(test.shell.model_menu.is_some());
+    let screen = press(&mut test, b"\t");
+    assert!(test.shell.model_menu.is_none());
+    assert!(screen.contains("[Interface]"), "{screen}");
+    assert_eq!(test.sent().len(), 2, "{:?}", test.sent());
+}
+
+#[test]
+fn the_effort_row_steps_through_the_model_s_efforts() {
+    let mut test = opened();
+    test.deliver(UiEvent::SettingsChanged {
+        snapshot: SettingsSnapshot {
+            reasoning_efforts: vec!["low".to_owned(), "high".to_owned()],
+            ..snapshot()
+        },
+    });
+    let screen = press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[C");
+    assert!(
+        screen.contains("  Reasoning effort         default  low  high"),
+        "{screen}"
+    );
+    assert_eq!(test.sent(), [step(SettingId::Effort, 1)]);
+    let mut test = opened();
+    press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[C");
+    assert!(test.sent().is_empty(), "{:?}", test.sent());
+}
+
+#[test]
+fn escape_closes_the_settings_before_the_inline_models() {
+    let mut test = opened();
+    press(&mut test, b"model\r");
+    press(&mut test, b"\x1b");
+    test.advance(100);
+    test.settle();
+    assert!(test.shell.settings_menu.is_none());
+    assert!(test.shell.model_menu.is_some());
+    assert!(test.shell.composer.is_empty());
+}
+
+#[test]
+fn ctrl_p_closes_the_inline_models_and_clears_the_search() {
+    let mut test = opened();
+    press(&mut test, b"model\r");
+    press(&mut test, b"\x10");
+    assert!(test.shell.model_menu.is_none());
+    assert!(test.shell.settings_menu.is_some());
+    assert!(test.shell.composer.is_empty());
 }
 
 #[test]
@@ -131,10 +238,10 @@ fn tab_and_shift_tab_cycle_the_categories_and_reset_the_selection() {
     press(&mut test, b"\x1b[B");
     let screen = press(&mut test, b"\t\t");
     assert!(
-        screen.contains("Settings 4  All  Interface  [Agent]"),
+        screen.contains("Settings 5  All  Interface  [Agent]"),
         "{screen}"
     );
-    press(&mut test, b"\x1b[C");
+    press(&mut test, b"\x1b[B\x1b[C");
     assert!(test.sent().is_empty(), "{:?}", test.sent());
     press(&mut test, b"\x1b[B\x1b[C");
     assert_eq!(test.sent().last(), Some(&step(SettingId::FastMode, 1)));

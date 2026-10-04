@@ -59,7 +59,7 @@ impl Shell<'_> {
         }
     }
 
-    fn request_catalog(&mut self, after_failure: bool) {
+    pub(super) fn request_catalog(&mut self, after_failure: bool) {
         let wanted = match self.catalog {
             CatalogLoad::Idle => true,
             CatalogLoad::Failed(_) => after_failure,
@@ -77,8 +77,7 @@ impl Shell<'_> {
             ModelCatalog::Failed { retry } => CatalogLoad::Failed(retry),
         };
         if let Some(menu) = &mut self.model_menu {
-            *menu = ModelMenu::default();
-            menu.set_query(self.composer.text());
+            menu.restart();
         }
     }
 
@@ -153,8 +152,8 @@ impl Shell<'_> {
         true
     }
 
-    pub(super) fn sync_model_menu(&mut self) {
-        if let Some(menu) = &mut self.model_menu {
+    pub(super) fn sync_model_menu(&mut self, edited: bool) {
+        if edited && let Some(menu) = &mut self.model_menu {
             menu.set_query(self.composer.text());
         }
     }

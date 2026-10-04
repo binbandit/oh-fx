@@ -126,9 +126,9 @@ note = "Composer and question footer rows are arranged; upstream surface measure
 
 [[file]]
 upstream = "src/ui/footer/settings_menu_presentation.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tui/src/footer/settings_menu_presentation.rs"]
-note = "The header tabs and their narrow fallbacks, aligned rows, highlighted choices, empty search, row budget and hint ladder exist; the inline model menu rows are absent until the model menu lands."
+note = "The header tabs and their narrow fallbacks, aligned rows, highlighted choices, empty search, row budget, hint ladder and the inline model rows under the Model row, with their loading, empty and failed states, the model-only row of a one-row body and the visible model count for navigation, exist."
 
 [[file]]
 upstream = "src/ui/footer/skills_menu_presentation.zig"

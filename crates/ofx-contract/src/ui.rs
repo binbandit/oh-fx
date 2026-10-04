@@ -391,6 +391,9 @@ pub enum UiCommand {
     ToggleStatusline {
         item: StatuslineItem,
     },
+    SelectModelFromSettings {
+        model: String,
+    },
     StepSetting {
         setting: SettingId,
         delta: isize,
