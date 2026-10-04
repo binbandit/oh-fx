@@ -30,6 +30,8 @@ const CLIPBOARD_TEST: &str =
     "app_lifecycle::tests::leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight";
 const UPGRADE_TEST: &str =
     "app_lifecycle::tests::a_signal_exit_restores_the_terminal_then_waits_out_an_admitted_install";
+const SECOND_SIGNAL_TEST: &str =
+    "app_lifecycle::tests::a_second_signal_during_the_install_wait_ends_the_process_at_once";
 const PANIC_TEST: &str =
     "app_lifecycle::tests::a_worker_panic_ends_the_shell_and_a_contained_one_does_not";
 const REFRESH_TEST: &str = "app_lifecycle::tests::an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rotated_login";
@@ -588,21 +590,8 @@ fn a_signal_exit_restores_the_terminal_then_waits_out_an_admitted_install() {
     if let Some(directory) = env::var_os(CHILD_UPGRADE) {
         run_a_shell_while_an_install_is_held(Path::new(&directory));
     }
-    let directory = tempfile::tempdir().unwrap();
-    let installing = directory.path().join("installing");
+    let (directory, mut session) = signalled_during_a_held_install(UPGRADE_TEST);
     let installed = directory.path().join("installed");
-    let mut command = Command::new(env::current_exe().unwrap());
-    command
-        .args([UPGRADE_TEST, "--exact", "--nocapture", "--test-threads=1"])
-        .env(CHILD_UPGRADE, directory.path())
-        .env("TERM", "xterm-256color");
-    let mut session = PtySession::spawn(command, 24, 80).unwrap();
-    session
-        .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
-        .unwrap_or_else(|screen| panic!("the shell never started:\n{screen}"));
-    wait_until(|| installing.exists());
-    session.terminate().unwrap();
-    wait_until(|| session.cooked().unwrap());
     assert!(
         session.wait_exit(INSTALL_HELD).is_none(),
         "the signal ended the process during the install"
@@ -614,6 +603,43 @@ fn a_signal_exit_restores_the_terminal_then_waits_out_an_admitted_install() {
         .expect("the signal ends the process once the install settles");
     assert_eq!(status.signal(), Some(SIGTERM), "{status:?}");
     assert!(installed.exists());
+}
+
+#[test]
+fn a_second_signal_during_the_install_wait_ends_the_process_at_once() {
+    if let Some(directory) = env::var_os(CHILD_UPGRADE) {
+        run_a_shell_while_an_install_is_held(Path::new(&directory));
+    }
+    let (directory, mut session) = signalled_during_a_held_install(SECOND_SIGNAL_TEST);
+    assert!(
+        session.wait_exit(INSTALL_HELD).is_none(),
+        "the first signal ended the process during the install"
+    );
+    session.terminate().unwrap();
+    let status = session
+        .wait_exit(WAIT)
+        .expect("a second signal ends the process without waiting");
+    assert_eq!(status.signal(), Some(SIGTERM), "{status:?}");
+    assert!(!directory.path().join("installed").exists());
+    fs::write(directory.path().join("released"), "").unwrap();
+}
+
+fn signalled_during_a_held_install(test: &str) -> (tempfile::TempDir, PtySession) {
+    let directory = tempfile::tempdir().unwrap();
+    let installing = directory.path().join("installing");
+    let mut command = Command::new(env::current_exe().unwrap());
+    command
+        .args([test, "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD_UPGRADE, directory.path())
+        .env("TERM", "xterm-256color");
+    let session = PtySession::spawn(command, 24, 80).unwrap();
+    session
+        .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
+        .unwrap_or_else(|screen| panic!("the shell never started:\n{screen}"));
+    wait_until(|| installing.exists());
+    session.terminate().unwrap();
+    wait_until(|| session.cooked().unwrap());
+    (directory, session)
 }
 
 struct HeldInstall {
