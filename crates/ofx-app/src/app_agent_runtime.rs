@@ -31,6 +31,7 @@ use crate::app_session_runtime::{
     Listed, NOT_CONTINUED, PageRequest, Persistence, RECOVERY_TOPIC, RestoredPreferences,
     SessionListing, SessionTitle,
 };
+use crate::app_upgrade_runtime::{ResumeHandoff, UpgradeShortcut};
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
@@ -339,6 +340,7 @@ pub(crate) struct Controller {
     state: ControllerState,
     persistence: Option<Persistence>,
     questions: Option<QuestionRequests>,
+    upgrade: UpgradeShortcut,
     pick_at_start: bool,
     catalog: CatalogFetch,
     herdr: Option<Arc<crate::herdr::Herdr>>,
@@ -496,6 +498,7 @@ impl Controller {
             state,
             persistence,
             questions,
+            upgrade: UpgradeShortcut::default(),
             pick_at_start,
             herdr: None,
             installation: None,
@@ -512,6 +515,11 @@ impl Controller {
         if requested {
             self.state.speed = Speed::UltraRequested;
         }
+        self
+    }
+
+    pub(crate) fn with_upgrade(mut self, upgrade: UpgradeShortcut) -> Self {
+        self.upgrade = upgrade;
         self
     }
 
@@ -629,6 +637,11 @@ impl Controller {
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
                 }
+                UiCommand::ApplyReadyUpgrade => {
+                    if self.apply_ready_upgrade() {
+                        return;
+                    }
+                }
                 UiCommand::ListSessions {
                     scope,
                     after,
@@ -727,6 +740,15 @@ impl Controller {
         self.state.compaction(compaction_activity(result));
         self.settle_deferred_commands(open).await;
         open
+    }
+
+    fn apply_ready_upgrade(&mut self) -> bool {
+        let handoff = self
+            .persistence
+            .as_mut()
+            .map(|persistence| persistence as &mut dyn ResumeHandoff);
+        self.upgrade
+            .apply(handoff, &*self.state.emit, self.state.ultrafast_requested())
     }
 
     fn open_picker(&self, scope: SessionScope) {
@@ -1233,7 +1255,8 @@ fn run_deferred(
         | UiCommand::PauseRecovery { .. }
         | UiCommand::Approval { .. }
         | UiCommand::QuestionAnswered { .. }
-        | UiCommand::CancelCompaction => return,
+        | UiCommand::CancelCompaction
+        | UiCommand::ApplyReadyUpgrade => return,
     };
     catalog.change(state, persistence, change, work);
 }
@@ -1616,7 +1639,22 @@ mod tests {
             Self::saved(home, setup)
         }
 
+        async fn upgrading(server: &FakeServer, upgrade: UpgradeShortcut, ultrafast: bool) -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let setup = agent_setup(&home, server).await;
+            Self::saved_with(home, setup, upgrade, ultrafast)
+        }
+
         fn saved(home: tempfile::TempDir, setup: AgentSetup) -> Self {
+            Self::saved_with(home, setup, UpgradeShortcut::default(), false)
+        }
+
+        fn saved_with(
+            home: tempfile::TempDir,
+            setup: AgentSetup,
+            upgrade: UpgradeShortcut,
+            ultrafast: bool,
+        ) -> Self {
             let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
             let store =
                 SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
@@ -1633,11 +1671,11 @@ mod tests {
                 fast_mode: None,
             };
             let persistence = Persistence::new(store, route, preferences, overrides, None);
-            Self::spawn(home, setup, Some(persistence))
+            Self::spawn(home, setup, Some(persistence), upgrade, ultrafast)
         }
 
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
-            Self::spawn(home, setup, None)
+            Self::spawn(home, setup, None, UpgradeShortcut::default(), false)
         }
 
         fn with_setup_observer(
@@ -1645,19 +1683,28 @@ mod tests {
             setup: AgentSetup,
             observe: impl Fn(&UiEvent) + Send + Sync + 'static,
         ) -> Self {
-            Self::spawn_observer(home, setup, None, false, observe)
+            Self::spawn_observer(
+                home,
+                setup,
+                None,
+                false,
+                UpgradeShortcut::default(),
+                observe,
+            )
         }
 
         fn requesting_ultrafast(home: tempfile::TempDir, setup: AgentSetup) -> Self {
-            Self::spawn_observer(home, setup, None, true, |_| {})
+            Self::spawn_observer(home, setup, None, true, UpgradeShortcut::default(), |_| {})
         }
 
         fn spawn(
             home: tempfile::TempDir,
             setup: AgentSetup,
             persistence: Option<Persistence>,
+            upgrade: UpgradeShortcut,
+            ultrafast: bool,
         ) -> Self {
-            Self::spawn_observer(home, setup, persistence, false, |_| {})
+            Self::spawn_observer(home, setup, persistence, ultrafast, upgrade, |_| {})
         }
 
         fn spawn_observer(
@@ -1665,6 +1712,7 @@ mod tests {
             setup: AgentSetup,
             persistence: Option<Persistence>,
             ultrafast: bool,
+            upgrade: UpgradeShortcut,
             observe: impl Fn(&UiEvent) + Send + Sync + 'static,
         ) -> Self {
             let (events_sender, events) = unbounded_channel();
@@ -1680,6 +1728,7 @@ mod tests {
                 Controller::new(setup, emit, persistence, false, Arc::clone(&worker))
                     .requesting_ultrafast(ultrafast)
                     .with_clipboard(shared)
+                    .with_upgrade(upgrade)
                     .run(receiver),
             );
             Self {
@@ -2461,6 +2510,72 @@ mod tests {
         assert_eq!(requests[1].json().get("service_tier"), None);
         assert_eq!(requests[2].json()["service_tier"], "priority");
         assert_eq!(catalog.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_ready_upgrade_keeps_the_new_session_for_the_relaunch_and_stops_serving() {
+        use crate::app_upgrade_runtime::{Readiness, Relaunch, UpgradeState};
+
+        let server = FakeServer::start(Vec::new());
+        let relaunch = Relaunch::default();
+        let upgrade = UpgradeShortcut::new(
+            Some(Readiness::settled(UpgradeState::Ready)),
+            relaunch.clone(),
+        );
+        let mut harness = Harness::upgrading(&server, upgrade, false).await;
+        harness.send(UiCommand::ApplyReadyUpgrade);
+        harness
+            .until(|event| *event == UiEvent::ExitRequested)
+            .await;
+        timeout(Duration::from_secs(10), harness.until(|_| false))
+            .await
+            .expect("the controller stops after requesting the relaunch");
+        let sessions = saved_sessions(&harness.home);
+        assert_eq!(sessions.len(), 1);
+        let mut argv = Vec::new();
+        let _ = relaunch.run_with(|command| {
+            argv.push(command.get_program().to_owned());
+            argv.extend(command.get_args().map(ToOwned::to_owned));
+            std::io::Error::from(std::io::ErrorKind::NotFound)
+        });
+        assert_eq!(
+            argv,
+            [
+                ofx_upgrade::installed_executable()
+                    .unwrap()
+                    .into_os_string(),
+                "resume".into(),
+                sessions[0]["id"].as_str().unwrap().into(),
+                "--upgrade-relaunch".into(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ready_upgrade_relaunches_with_the_launchs_ultra_request() {
+        use crate::app_upgrade_runtime::{Readiness, Relaunch, UpgradeState};
+
+        let server = FakeServer::start(Vec::new());
+        let relaunch = Relaunch::default();
+        let upgrade = UpgradeShortcut::new(
+            Some(Readiness::settled(UpgradeState::Ready)),
+            relaunch.clone(),
+        );
+        let mut harness = Harness::upgrading(&server, upgrade, true).await;
+        harness.send(UiCommand::ApplyReadyUpgrade);
+        harness
+            .until(|event| *event == UiEvent::ExitRequested)
+            .await;
+        timeout(Duration::from_secs(10), harness.until(|_| false))
+            .await
+            .expect("the controller stops after requesting the relaunch");
+        let mut argv = Vec::new();
+        let _ = relaunch.run_with(|command| {
+            argv.extend(command.get_args().map(ToOwned::to_owned));
+            std::io::Error::from(std::io::ErrorKind::NotFound)
+        });
+        assert_eq!(argv[0], "--ultrafast");
+        assert_eq!(argv[1], "resume");
     }
 
     fn saved_sessions(home: &tempfile::TempDir) -> Vec<Value> {
