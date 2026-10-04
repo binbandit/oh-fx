@@ -1,9 +1,10 @@
 [[file]]
 upstream = "src/core/modes/mode_contract.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-contract/src/modes/mode_contract.rs"]
 
 [[file]]
 upstream = "src/core/modes/mode_registry.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-agent/src/orchestrator/mode_policy.rs", "crates/ofx-contract/src/modes/mode_registry.rs", "crates/ofx-contract/src/tool_set.rs"]
+note = "The agent applies a mode's tool policy to the specs it read when it was built or was given for a child's work, offering only allowed tools and refusing blocked calls with the pre-tool-use denial."
