@@ -13,7 +13,7 @@ use ofx_contract::{
     ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor, SessionScope,
     SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
-use ofx_session::{SessionError, prompt_display_title};
+use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -26,7 +26,9 @@ use crate::app_commands::{
 };
 use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
+use crate::app_session_runtime::{
+    Listed, PageRequest, Persistence, RestoredPreferences, SessionListing, SessionTitle,
+};
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
@@ -304,6 +306,7 @@ pub(crate) struct Controller {
     catalog: CatalogFetch,
     herdr: Option<Arc<crate::herdr::Herdr>>,
     installation: Option<InstallTask>,
+    listing: SessionListing,
 }
 
 struct CatalogFetch {
@@ -455,6 +458,7 @@ impl Controller {
             pick_at_start,
             herdr: None,
             installation: None,
+            listing: SessionListing::default(),
         }
     }
 
@@ -485,6 +489,9 @@ impl Controller {
             }
             self.bind_children();
             self.session_notice(opened);
+        }
+        if let Some(persistence) = &self.persistence {
+            persistence.preload(&mut self.listing);
         }
         if let Some(herdr) = &self.herdr {
             herdr.initialize(self.persistence.as_ref().and_then(Persistence::active_id));
@@ -517,6 +524,10 @@ impl Controller {
                 result = wait_install(&mut self.installation) => {
                     complete_install(&self.state, &mut self.installation, result);
                     self.settle_deferred_commands(true).await;
+                    continue;
+                }
+                scanned = self.listing.scanned() => {
+                    self.sessions_scanned(scanned);
                     continue;
                 }
                 command = next => command,
@@ -657,26 +668,47 @@ impl Controller {
     }
 
     fn list_sessions(&mut self, scope: SessionScope, after: Option<SessionCursor>, limit: usize) {
-        let more = after.is_some();
+        let request = PageRequest {
+            scope,
+            after,
+            limit,
+        };
         let listed = self
             .persistence
-            .as_mut()
+            .as_ref()
             .map_or(Err(SessionError::SessionStoreUnavailable), |persistence| {
-                persistence.page(scope, after, limit)
+                persistence.list(&mut self.listing, request.clone())
             });
         match listed {
-            Ok(page) => self.state.emit(UiEvent::SessionsListed { page }),
-            Err(error) => {
-                let action = if more {
-                    "unable to load more saved sessions"
-                } else {
-                    "unable to list saved sessions"
-                };
-                self.state
-                    .notice(NoticeTone::Error, "session", &format!("{action}: {error}"));
-                self.state.emit(UiEvent::SessionsUnavailable { scope });
+            Ok(Listed::Ready(page)) => self.state.emit(UiEvent::SessionsListed { page }),
+            Ok(Listed::Waiting) => {}
+            Err(error) => self.sessions_unlisted(&request, error),
+        }
+    }
+
+    fn sessions_scanned(&mut self, scanned: Result<SessionCatalog, SessionError>) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        for answer in persistence.finish_listing(&mut self.listing, scanned) {
+            match answer.page {
+                Ok(page) => self.state.emit(UiEvent::SessionsListed { page }),
+                Err(error) => self.sessions_unlisted(&answer.request, error),
             }
         }
+    }
+
+    fn sessions_unlisted(&self, request: &PageRequest, error: SessionError) {
+        let action = if request.after.is_some() {
+            "unable to load more saved sessions"
+        } else {
+            "unable to list saved sessions"
+        };
+        self.state
+            .notice(NoticeTone::Error, "session", &format!("{action}: {error}"));
+        self.state.emit(UiEvent::SessionsUnavailable {
+            scope: request.scope,
+        });
     }
 
     fn resume_session(&mut self, id: &str) {
@@ -2424,6 +2456,45 @@ mod tests {
         assert_eq!(
             title_changes(&harness.seen[start..]),
             [Some("Release prep".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_picker_lists_saved_sessions_from_a_background_scan_shared_by_both_scopes() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        chat(&mut harness, &["first question"]).await;
+        let saved = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        for scope in [SessionScope::CurrentWorkspace, SessionScope::AllWorkspaces] {
+            harness.send(UiCommand::ListSessions {
+                scope,
+                after: None,
+                limit: 10,
+            });
+        }
+        let mut listed = Vec::new();
+        while listed.len() < 2 {
+            let events = harness
+                .until(|event| matches!(event, UiEvent::SessionsListed { .. }))
+                .await;
+            if let Some(UiEvent::SessionsListed { page }) = events.last() {
+                let ids: Vec<String> = page.rows.iter().map(|row| row.id.clone()).collect();
+                listed.push((page.scope, ids));
+            }
+        }
+        assert_eq!(
+            listed,
+            [
+                (SessionScope::CurrentWorkspace, vec![saved.clone()]),
+                (SessionScope::AllWorkspaces, vec![saved]),
+            ]
         );
     }
 

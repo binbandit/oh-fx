@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ofx_agent::{Agent, ChildStore, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, ReasoningEffort, TurnOutcome};
-use ofx_session::{SessionCatalog, SessionError, SessionPreferences, SessionStore};
+use ofx_session::{SessionError, SessionPreferences, SessionStore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -25,7 +25,6 @@ pub(crate) struct Persistence {
     preferences: SessionPreferences,
     pub(super) live: Option<LiveSession>,
     pub(super) overrides: LaunchOverrides,
-    pub(super) catalog: Option<SessionCatalog>,
     resumption: Option<Resumption>,
     remember_fresh: bool,
     degraded: bool,
@@ -46,7 +45,6 @@ impl Persistence {
             preferences,
             live: None,
             overrides,
-            catalog: None,
             resumption,
             remember_fresh: false,
             degraded: false,
