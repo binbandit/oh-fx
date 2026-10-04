@@ -87,10 +87,7 @@ fn a_found_release_reports_upgrading_then_ready_and_stops_checking() {
         QUICK,
     );
     assert_eq!(next_label(&started.labels), "upgrading to 0.3.0...");
-    assert_eq!(
-        next_label(&started.labels),
-        "update ready: ctrl+g to reload"
-    );
+    assert_eq!(next_label(&started.labels), "update ready: restart oh-fx");
     thread::sleep(Duration::from_millis(20));
     assert_eq!(started.checks.try_iter().count(), 2);
 }

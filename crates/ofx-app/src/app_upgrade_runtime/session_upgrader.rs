@@ -51,7 +51,7 @@ impl Status {
     fn label(&self) -> String {
         match self.state {
             UpgradeState::Downloading => format!("upgrading to {}...", self.latest),
-            UpgradeState::Ready => "update ready: ctrl+g to reload".to_owned(),
+            UpgradeState::Ready => "update ready: restart oh-fx".to_owned(),
             UpgradeState::Failed => "upgrade failed".to_owned(),
             UpgradeState::Idle | UpgradeState::Checking | UpgradeState::Waiting => String::new(),
         }
