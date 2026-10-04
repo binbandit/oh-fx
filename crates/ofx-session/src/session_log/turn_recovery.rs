@@ -107,6 +107,7 @@ pub(crate) fn save_checkpoint(
     point: &RecoveryPoint<'_>,
     provider: &SavedProvider,
     credential: RouteCredential,
+    earlier: &EarlierEvidence,
 ) -> Result<(), SessionError> {
     let steps = &point.turn.steps;
     let source = CheckpointSource {
@@ -129,6 +130,7 @@ pub(crate) fn save_checkpoint(
                     .collect()
             })
             .collect(),
+        files: earlier.turn_files(steps),
         created_at_ms: now_ms(),
     };
     let Some(bytes) = encode_recovery_file(conversation_seq, &source)? else {

@@ -267,6 +267,7 @@ impl WritableSession {
             point,
             provider,
             credential,
+            &self.earlier,
         )?;
         if !matches!(self.recovery, Recovery::Continuing) {
             self.recovery = Recovery::Saved;

@@ -982,6 +982,15 @@ fn continued_files(end: TurnEnd<'_>, kind: &str, compact: bool) -> serde_json::V
             &saved,
         ),
     );
+    finish_continued(&fixture, end, kind, compact)
+}
+
+fn finish_continued(
+    fixture: &Fixture,
+    end: TurnEnd<'_>,
+    kind: &str,
+    compact: bool,
+) -> serde_json::Value {
     let mut resumed = fixture.resume().unwrap();
     let provider = metadata().preferences.provider;
     let continued = resumed
@@ -1063,4 +1072,61 @@ fn a_continued_turn_keeps_the_checkpoints_file_evidence_and_adds_its_own() {
             "compact={compact}"
         );
     }
+}
+
+#[test]
+fn a_recorded_checkpoint_saves_the_turns_file_evidence_for_its_continuation() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let provider = metadata().preferences.provider;
+    let read = [ToolCall::new("r1", "read_file", r#"{"path":"a.rs"}"#)];
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn: HistoryTurn {
+            user: "fix the build",
+            steps: vec![HistoryStep {
+                assistant: "",
+                provider_replay: None,
+                tool_calls: &read,
+                tool_results: vec![StepResult {
+                    call_id: "r1",
+                    tool_name: "read_file",
+                    output: "text",
+                    output_bytes: 4,
+                    status: ToolResultStatus::Success,
+                    model_view_covers_full_file: true,
+                }],
+            }],
+            steering: Vec::new(),
+            end: replied(""),
+        },
+        cause: ModelRecoveryCause::ProviderUnavailable,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 10,
+    };
+    let mut session = fixture.resume().unwrap();
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    drop(session);
+    let read_whole = evidence_json("a.rs", "r1", "read_file", "read", [true, false]);
+    let saved = fs::read_to_string(fixture.path(RECOVERY_FILE)).unwrap();
+    assert!(
+        saved.contains(&format!("\"files\":[{read_whole}]")),
+        "{saved}"
+    );
+    let expected: serde_json::Value = serde_json::from_str(&format!(
+        "[{},{}]",
+        evidence_json("a.rs", "r1", "read_file", "read", [true, true]),
+        evidence_json("a.rs", "w1", "write_file", "write", [false, false]),
+    ))
+    .unwrap();
+    assert_eq!(
+        finish_continued(&fixture, replied("fixed"), "turn_completed", false),
+        expected
+    );
 }
