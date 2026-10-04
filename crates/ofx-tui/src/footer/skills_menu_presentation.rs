@@ -2,9 +2,9 @@ use std::borrow::Cow;
 
 use ofx_text::visible_width;
 
-use crate::footer::picker_presentation::{inline_menu_band, single_line_ellipsized};
+use crate::footer::picker_presentation::inline_menu_band;
 use crate::list_window::update_edge_start;
-use crate::row_text::{Paint, Row, terminal_safe};
+use crate::row_text::{Paint, Row, single_line_ellipsized, terminal_safe};
 use crate::shell::skills_menu::{SOURCE_FILTERS, SkillsMenu, filter_label};
 use crate::theme::Theme;
 
