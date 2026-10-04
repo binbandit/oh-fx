@@ -3480,6 +3480,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_child_started_after_a_switch_runs_on_the_new_provider() {
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([
+            delegate("read the notes"),
+            Reply::sse(&chat_text_events(&["child done"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let home = tempfile::tempdir().unwrap();
+        let settings = switching_settings("local", &local, &other);
+        let setup = agent_setup_with(&home, &settings, SubscriptionEndpoints::default()).await;
+        let mut harness = Harness::saved(home, setup);
+        assert_eq!(
+            switched(&mut harness, "other").await,
+            [
+                "provider|Preparing other.",
+                "provider|Switched to other with other-model."
+            ]
+        );
+        harness.submit("delegate the reading");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(local.requests().is_empty());
+        let requests = other.requests();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.json()["model"] == "other-model")
+        );
+        assert!(requests[1].body_text().contains("read the notes"));
+    }
+
+    #[tokio::test]
     async fn a_settings_failure_is_reported_before_preparing_and_changes_nothing() {
         let local = FakeServer::start([]);
         let other = FakeServer::start([]);

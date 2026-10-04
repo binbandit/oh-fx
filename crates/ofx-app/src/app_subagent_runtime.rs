@@ -24,13 +24,18 @@ use crate::context::{HostProjectContext, HostRuntimeContext};
 use crate::skills::HostSkills;
 use crate::tool_set::{self, ToolHooks};
 
-pub(crate) struct ChildFactory {
+#[derive(Clone)]
+pub(crate) struct ChildRoute {
     pub(crate) provider: Arc<dyn ModelProvider>,
-    pub(crate) executions: ManagedExecutions,
-    pub(crate) command_timeout: Option<Duration>,
-    pub(crate) capabilities: Option<Arc<dyn CapabilityResolver>>,
+    pub(crate) capabilities: Arc<dyn CapabilityResolver>,
     pub(crate) connection: Option<ProviderDefinition>,
     pub(crate) reviewer: Arc<dyn ReviewTransport>,
+}
+
+pub(crate) struct ChildFactory {
+    pub(crate) route: Mutex<ChildRoute>,
+    pub(crate) executions: ManagedExecutions,
+    pub(crate) command_timeout: Option<Duration>,
     pub(crate) parent_permissions: Arc<PermissionPolicy>,
     pub(crate) approvals: Option<Arc<ApprovalQueue>>,
     pub(crate) project: Option<(Arc<HostProjectContext>, ProjectContext)>,
@@ -92,6 +97,17 @@ impl ChildFactory {
         *self.parent_config() = config.clone();
     }
 
+    pub(crate) fn reroute(&self, route: ChildRoute) {
+        *self.route.lock().unwrap_or_else(PoisonError::into_inner) = route;
+    }
+
+    fn route(&self) -> ChildRoute {
+        self.route
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn parent_config(&self) -> MutexGuard<'_, AgentConfig> {
         self.parent.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -115,9 +131,10 @@ impl ChildAgents for ChildFactory {
     }
 
     fn agent(&self, settings: &ChildSettings, permission_mode: LivePermissionMode) -> Agent {
+        let route = self.route();
         let config = AgentConfig {
             model: settings.model.clone(),
-            max_output_tokens: output_tokens(self.connection.as_ref(), &settings.model),
+            max_output_tokens: output_tokens(route.connection.as_ref(), &settings.model),
             reasoning_effort: settings.effort.clone().into_named(),
             fast_mode: settings.fast_mode,
             ..self.parent_config().clone()
@@ -125,13 +142,10 @@ impl ChildAgents for ChildFactory {
         let permissions =
             PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
                 .with_additional_roots(self.additional_roots.clone())
-                .with_reviewer(Reviewer::new(
-                    Arc::clone(&self.reviewer),
-                    DEFAULT_REVIEW_TIMEOUT,
-                ))
+                .with_reviewer(Reviewer::new(route.reviewer, DEFAULT_REVIEW_TIMEOUT))
                 .inheriting_grants_of(&self.parent_permissions);
         let mut agent = Agent::new(
-            Arc::clone(&self.provider),
+            route.provider,
             Vec::new(),
             Arc::new(
                 HostRuntimeContext::new(self.workspace_root.clone(), permission_mode, false)
@@ -140,10 +154,8 @@ impl ChildAgents for ChildFactory {
             Arc::new(permissions),
             config,
         )
-        .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>);
-        if let Some(capabilities) = &self.capabilities {
-            agent = agent.with_capability_resolver(Arc::clone(capabilities));
-        }
+        .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>)
+        .with_capability_resolver(route.capabilities);
         if let Some(mcp) = &self.mcp {
             agent = agent.with_dynamic_tools(Arc::clone(mcp));
         }

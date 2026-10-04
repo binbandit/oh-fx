@@ -341,12 +341,9 @@ impl Profile {
         let approvals = interactive.then(ApprovalQueue::shared);
         let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
         let children = ChildFactory {
-            provider: Arc::clone(&route.provider),
+            route: Mutex::new(route.children()),
             executions: launch.executions.clone(),
             command_timeout: launch.command_timeout,
-            capabilities: Some(Arc::new(route.models.clone()) as Arc<dyn CapabilityResolver>),
-            connection: route.connection.clone(),
-            reviewer: Arc::clone(&route.reviewer),
             parent_permissions: Arc::clone(&permissions),
             approvals: approvals.clone(),
             project: project.clone(),

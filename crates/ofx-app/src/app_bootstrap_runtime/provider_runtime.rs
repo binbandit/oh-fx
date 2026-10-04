@@ -7,6 +7,7 @@ use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, Reviewer};
 use tokio_util::sync::CancellationToken;
 
 use super::{AgentSetup, ConnectError, Profile, Route, Switchboard, connection_route};
+use crate::app_subagent_runtime::ChildRoute;
 use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 use crate::model_cache_runtime::ModelSource;
 
@@ -121,6 +122,7 @@ impl AgentSetup {
         if route.uses_tls {
             ofx_http::warm_tls_roots();
         }
+        self.delegation.children.reroute(route.children());
         self.permissions
             .set_reviewer(Reviewer::new(route.reviewer, DEFAULT_REVIEW_TIMEOUT));
         self.provider = route.provider;
@@ -132,6 +134,17 @@ impl AgentSetup {
         self.configured_model = route.configured_model;
         self.config.model = route.model;
         (Arc::clone(&self.provider), self.models.clone())
+    }
+}
+
+impl Route {
+    pub(super) fn children(&self) -> ChildRoute {
+        ChildRoute {
+            provider: Arc::clone(&self.provider),
+            capabilities: Arc::new(self.models.clone()),
+            connection: self.connection.clone(),
+            reviewer: Arc::clone(&self.reviewer),
+        }
     }
 }
 
