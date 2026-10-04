@@ -27,6 +27,7 @@ impl RecoveryCheckpoint {
             && self.route.requested_fast_mode == fast_mode;
         RecoveredTurn {
             messages: messages(self.execution.tool_steps, self.execution.steering),
+            files: self.execution.files.into_iter().map(Into::into).collect(),
             prompt: self.user,
             strategy: self.strategy,
             fast_mode: if unchanged {

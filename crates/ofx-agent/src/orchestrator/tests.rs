@@ -2868,6 +2868,7 @@ async fn an_interrupted_summary_keeps_the_replay_only_answer() {
 mod approvals;
 mod capabilities;
 mod compaction;
+mod file_evidence;
 mod malformed_arguments;
 mod modes;
 mod project_context;

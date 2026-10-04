@@ -28,6 +28,7 @@ fn recovered(strategy: RecoveryStrategy) -> RecoveredTurn {
     RecoveredTurn {
         prompt: "fix it".to_owned(),
         messages: saved_step(),
+        files: Vec::new(),
         strategy,
         fast_mode: false,
     }
@@ -82,6 +83,7 @@ async fn a_continued_turn_resends_its_saved_steps_without_running_them_again() {
                     .to_owned()
             ],
             steering: Vec::new(),
+            files: Vec::new(),
             end: r#"replied "done" replay=false"#.to_owned(),
         }]
     );
@@ -187,6 +189,7 @@ fn checkpoint(steps: &[&str], progress: RecoveryProgress, consumed_attempts: usi
     Logged::Recovery {
         user: "go".to_owned(),
         steps: steps.iter().map(|step| (*step).to_owned()).collect(),
+        files: Vec::new(),
         progress,
         consumed_attempts,
         fast_mode: false,

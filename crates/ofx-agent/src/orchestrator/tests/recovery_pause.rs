@@ -7,6 +7,7 @@ fn checkpoint(progress: RecoveryProgress, consumed_attempts: usize) -> Logged {
     Logged::Recovery {
         user: "go".to_owned(),
         steps: Vec::new(),
+        files: Vec::new(),
         progress,
         consumed_attempts,
         fast_mode: false,
@@ -98,6 +99,7 @@ async fn a_paused_turn_is_saved_as_failed_and_stays_in_the_history() {
                 user: "go".to_owned(),
                 steps: Vec::new(),
                 steering: Vec::new(),
+                files: Vec::new(),
                 end: r#"Failed """#.to_owned(),
             }
         ]
@@ -156,6 +158,7 @@ async fn a_paused_turn_keeps_the_text_its_retried_request_streamed() {
                         user: "go".to_owned(),
                         steps: Vec::new(),
                         steering: Vec::new(),
+                        files: Vec::new(),
                         end: r#"Failed "Half an answer""#.to_owned(),
                     }
                 ]

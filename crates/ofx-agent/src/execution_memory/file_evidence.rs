@@ -1,9 +1,11 @@
-use ofx_contract::{HistoryStep, StepResult, ToolCall};
+use std::borrow::Cow;
+
+use ofx_contract::{
+    FileEvidence, FileEvidenceAction, HistoryStep, StepResult, ToolCall, ToolResultStatus,
+};
 use ofx_text::{lowercase_hex, mask_secrets};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-
-use crate::session_event::{FileEvidence, FileEvidenceAction};
 
 const REDACTED_DIGEST_BYTES: usize = 12;
 
@@ -64,7 +66,7 @@ fn file_evidence(call: &ToolCall, result: &StepResult<'_>) -> Option<FileEvidenc
             .unwrap_or("."),
         _ => non_empty(arguments, "path")?,
     };
-    let succeeded = result.status == ofx_contract::ToolResultStatus::Success;
+    let succeeded = result.status == ToolResultStatus::Success;
     Some(FileEvidence {
         path: path.to_owned(),
         new_path: None,
@@ -82,7 +84,7 @@ fn file_evidence(call: &ToolCall, result: &StepResult<'_>) -> Option<FileEvidenc
 fn mark_stale(files: &mut [FileEvidence]) {
     for index in 0..files.len() {
         let changed = &files[index];
-        if changed.status != ofx_contract::ToolResultStatus::Success
+        if changed.status != ToolResultStatus::Success
             || !matches!(
                 changed.action,
                 FileEvidenceAction::Write | FileEvidenceAction::Edit
@@ -117,7 +119,7 @@ fn non_empty<'a>(arguments: &'a Map<String, Value>, name: &str) -> Option<&'a st
 }
 
 fn durable_identifier(value: &str) -> String {
-    if matches!(mask_secrets(value), std::borrow::Cow::Borrowed(_)) {
+    if matches!(mask_secrets(value), Cow::Borrowed(_)) {
         return value.to_owned();
     }
     let digest = Sha256::digest(value.as_bytes());
@@ -126,3 +128,6 @@ fn durable_identifier(value: &str) -> String {
         lowercase_hex(&digest[..REDACTED_DIGEST_BYTES])
     )
 }
+
+#[cfg(test)]
+mod tests;

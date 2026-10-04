@@ -10,10 +10,9 @@ use crate::session_codec::recovery_checkpoint::{
     decode_recovery_file, encode_recovery_file,
 };
 use crate::session_error::SessionError;
-use crate::session_event::{ConversationEvent, InterruptReason, InterruptedEvent};
+use crate::session_event::{ConversationEvent, FileEvidence, InterruptReason, InterruptedEvent};
 use crate::session_log::conversation_progress::ProgressPoint;
 use crate::session_log::conversation_writer::ConversationWriter;
-use crate::session_log::file_evidence::EarlierEvidence;
 use crate::session_log::managed_file::read_managed_file;
 use crate::session_log::now_ms;
 use crate::session_log::turn_events::{TurnArtifacts, saved_replay, turn_events};
@@ -90,7 +89,6 @@ pub(crate) fn commit_checkpoint(
         dir,
         provider,
         timestamp_ms,
-        earlier: &EarlierEvidence::default(),
         work_id: None,
     };
     let mut events = turn_events(&artifacts, &checkpoint.interrupted_turn(), written)?;
@@ -108,7 +106,6 @@ pub(crate) fn save_checkpoint(
     point: &RecoveryPoint<'_>,
     provider: &SavedProvider,
     credential: RouteCredential,
-    earlier: &EarlierEvidence,
 ) -> Result<(), SessionError> {
     let steps = &point.turn.steps;
     let source = CheckpointSource {
@@ -131,7 +128,7 @@ pub(crate) fn save_checkpoint(
                     .collect()
             })
             .collect(),
-        files: earlier.turn_files(steps),
+        files: point.turn.files.iter().map(FileEvidence::from).collect(),
         created_at_ms: now_ms(),
     };
     let Some(bytes) = encode_recovery_file(conversation_seq, &source)? else {

@@ -1,6 +1,7 @@
 mod applicable_target;
 mod auto_classifier;
 mod compactor_settings;
+mod file_evidence;
 mod history_turn;
 mod ids;
 mod model_capabilities;
@@ -24,6 +25,7 @@ mod ui;
 pub use applicable_target::{ApplicableTarget, TargetKind};
 pub use auto_classifier::{ReviewFailure, ReviewTransport, ReviewTransportOutcome};
 pub use compactor_settings::AutoCompactPercent;
+pub use file_evidence::{FileEvidence, FileEvidenceAction, file_evidence_context};
 pub use history_turn::{
     ConversationLog, HistoryCut, HistorySteering, HistoryStep, HistoryTurn, LogFailure,
     RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy, RestoredHistory, StepResult,
