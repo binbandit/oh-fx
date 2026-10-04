@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::Approvals;
-use ofx_contract::{ApprovalDecision, ApprovalRequest, RequestId, TurnId, UiEvent};
+use ofx_contract::{ApprovalAnswer, ApprovalDecision, ApprovalRequest, RequestId, TurnId, UiEvent};
 
 use crate::app_agent_runtime::Emit;
 
@@ -89,8 +89,8 @@ impl ApprovalQueue {
         shown.emit();
     }
 
-    pub(crate) fn resolve(&self, id: RequestId, decision: ApprovalDecision) {
-        self.approvals.resolve(id, decision);
+    pub(crate) fn resolve(&self, id: RequestId, answer: impl Into<ApprovalAnswer>) {
+        self.approvals.resolve(id, answer);
         self.retire(id);
     }
 

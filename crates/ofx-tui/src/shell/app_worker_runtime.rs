@@ -145,6 +145,11 @@ impl Shell<'_> {
                 text,
             } => self.steering_applied(turn_id, prompt, text),
             UiEvent::ContextNotice { .. } => {}
+            UiEvent::ApprovalFeedback { turn_id, text } => {
+                if self.is_visible_turn(turn_id) {
+                    self.push_entry(Entry::UserTurn { text });
+                }
+            }
             UiEvent::Recovery { turn_id, status } => self.recovery_reported(turn_id, status),
             UiEvent::UsageReported {
                 turn_id,

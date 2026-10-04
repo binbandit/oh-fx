@@ -206,7 +206,7 @@ impl Shell<'_> {
         if !self.is_visible_turn(turn_id) {
             self.send(UiCommand::Approval {
                 request_id: request.id,
-                decision: ApprovalDecision::Deny,
+                answer: ApprovalDecision::Deny.into(),
             });
             return;
         }
@@ -222,7 +222,7 @@ impl Shell<'_> {
         if let Some(displaced) = self.approval.replace(ApprovalPrompt::new(request, file)) {
             self.send(UiCommand::Approval {
                 request_id: displaced.request.id,
-                decision: ApprovalDecision::Deny,
+                answer: ApprovalDecision::Deny.into(),
             });
         }
         self.foreground(super::ForegroundState::Blocked, Some(b"permission"));
@@ -396,7 +396,7 @@ impl Shell<'_> {
             self.invalidate();
             self.send(UiCommand::Approval {
                 request_id: prompt.request.id,
-                decision,
+                answer: decision.into(),
             });
         }
     }
@@ -479,7 +479,7 @@ mod tests {
     fn decision(id: u64, decision: ApprovalDecision) -> UiCommand {
         UiCommand::Approval {
             request_id: RequestId::new(id),
-            decision,
+            answer: decision.into(),
         }
     }
 

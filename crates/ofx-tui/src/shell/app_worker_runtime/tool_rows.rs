@@ -558,6 +558,38 @@ fn a_cancelled_subagent_row_names_the_child() {
 }
 
 #[test]
+fn feedback_given_with_an_approval_follows_its_tool_as_a_user_turn() {
+    let mut test = running("go");
+    test.deliver(read("a", "../notes.txt"));
+    test.deliver(finished(
+        "a",
+        "read_file",
+        failure(&tool_permission_denied_json("read_file")),
+    ));
+    test.deliver(UiEvent::ApprovalFeedback {
+        turn_id: turn(),
+        text: "use the copy in the workspace".to_owned(),
+    });
+    test.deliver(read("b", "notes.txt"));
+    test.deliver(finished("b", "read_file", success()));
+    test.deliver(turn_finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    assert_eq!(
+        block(&screen, "● 1 tool call · 1 read · 1 denied", 7),
+        [
+            "● 1 tool call · 1 read · 1 denied",
+            "└ Denied ../notes.txt",
+            "",
+            "┃ use the copy in the workspace",
+            "",
+            "● 1 tool call · 1 read",
+            "└ Read notes.txt",
+        ],
+        "{screen}"
+    );
+}
+
+#[test]
 fn a_childs_pending_approval_adds_no_row_to_the_parents_transcript() {
     let mut test = running("go");
     test.deliver(from_child(approval(

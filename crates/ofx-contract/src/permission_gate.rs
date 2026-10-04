@@ -181,6 +181,21 @@ pub enum ApprovalDecision {
     Deny,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalAnswer {
+    pub decision: ApprovalDecision,
+    pub feedback: Option<String>,
+}
+
+impl From<ApprovalDecision> for ApprovalAnswer {
+    fn from(decision: ApprovalDecision) -> Self {
+        Self {
+            decision,
+            feedback: None,
+        }
+    }
+}
+
 pub trait PermissionGate: Send + Sync {
     fn admit(&self, call: &ToolCall) -> Admission;
 

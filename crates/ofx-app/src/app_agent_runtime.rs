@@ -947,8 +947,8 @@ impl Controller {
                                 cancel.cancel();
                             }
                         }
-                        Some(UiCommand::Approval { request_id, decision }) => {
-                            state.setup.answer_approval(request_id, decision);
+                        Some(UiCommand::Approval { request_id, answer }) => {
+                            state.setup.answer_approval(request_id, answer);
                         }
                         Some(UiCommand::QuestionAnswered { request_id, answers }) => {
                             if let Some(questions) = state.setup.questions() {
@@ -1923,7 +1923,7 @@ mod tests {
         assert_eq!(status_notice(&mut harness).await, expected(0, 0));
         harness.send(UiCommand::Approval {
             request_id: request.id,
-            decision: ApprovalDecision::Always,
+            answer: ApprovalDecision::Always.into(),
         });
         harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(status_notice(&mut harness).await, expected(1, 1));
@@ -4235,7 +4235,7 @@ mod tests {
             assert_eq!(request.description.title, "Reading ../outside.txt");
             harness.send(UiCommand::Approval {
                 request_id: request.id,
-                decision,
+                answer: decision.into(),
             });
             let events = harness.until(finished(TurnOutcome::Completed)).await;
             assert!(events.iter().any(|event| matches!(
@@ -4334,7 +4334,7 @@ mod tests {
         );
         harness.send(UiCommand::Approval {
             request_id: request.id,
-            decision: ApprovalDecision::Once,
+            answer: ApprovalDecision::Once.into(),
         });
         let rest = harness.until(finished(TurnOutcome::Completed)).await;
         assert!(!rest.iter().any(approval_requested), "{rest:?}");
@@ -4371,7 +4371,7 @@ mod tests {
         };
         harness.send(UiCommand::Approval {
             request_id: request.id,
-            decision: ApprovalDecision::Always,
+            answer: ApprovalDecision::Always.into(),
         });
         harness.command("/permissions reset");
         let asked = harness
@@ -4412,7 +4412,7 @@ mod tests {
         assert!(request.scope.always.is_some());
         harness.send(UiCommand::Approval {
             request_id: request.id,
-            decision: ApprovalDecision::Always,
+            answer: ApprovalDecision::Always.into(),
         });
         harness.until(finished(TurnOutcome::Completed)).await;
         harness.submit("read it again");
@@ -5766,7 +5766,7 @@ mod tests {
         let [(_, request)] = approval_requests(&requested).try_into().unwrap();
         harness.send(UiCommand::Approval {
             request_id: request.id,
-            decision,
+            answer: decision.into(),
         });
         request
     }
@@ -5899,7 +5899,7 @@ mod tests {
         assert_eq!(registry["children"][0]["phase"], "awaiting_approval");
         harness.send(UiCommand::Approval {
             request_id: request.id,
-            decision: ApprovalDecision::Always,
+            answer: ApprovalDecision::Always.into(),
         });
         harness.until(finished(TurnOutcome::Completed)).await;
         let requests = server.requests();
@@ -5940,7 +5940,7 @@ mod tests {
         assert_eq!(request.origin, ApprovalOrigin::ActiveSession);
         harness.send(UiCommand::Approval {
             request_id: request.id,
-            decision: ApprovalDecision::Always,
+            answer: ApprovalDecision::Always.into(),
         });
         let rest = harness.until(finished(TurnOutcome::Completed)).await;
         assert!(approval_requests(rest).is_empty());
