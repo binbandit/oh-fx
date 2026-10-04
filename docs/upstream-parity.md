@@ -193,3 +193,5 @@ Port `src/gateway/xai_grok_models.zig` as of #1110 or later with the next OH-9 r
 4. Add the rows under a new `<old>..<new>` heading. Move the sync point to the last merge reviewed, update the date and `parity/UPSTREAM` to its full commit, and reconcile every file-map row against the new tree. The checker requires the documented Sync point to match that pin.
 
 When a deferred area is ported, move its rows to `ported` and update its file-map statuses in the same pull request. Partial implementations must retain concrete missing-behavior notes.
+
+Unread resize signals now disarm affirmative approval input before the prompt can be accepted, including numeric choices and Enter. The final decision also checks for a pending signal; denial remains available. The atomic resize admission claim and release from `src/ui/resize_runtime.zig` remain unported, so this slice does not complete the renderer or resize-runtime rows. These source behaviors are identical at `34f1ed1` and `6bdd497`.
