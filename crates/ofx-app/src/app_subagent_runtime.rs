@@ -8,8 +8,9 @@ use ofx_agent::{
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
-    ActiveMode, ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider,
-    ReasoningEffort, ReviewTransport, RootUserRequests, SubagentProvider, Tool, TurnId,
+    ActiveMode, ApprovalRequest, CapabilityResolver, DynamicTools, LivePermissionMode,
+    ModelProvider, ReasoningEffort, ReviewTransport, RootUserRequests, SubagentProvider, Tool,
+    TurnId,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{
@@ -34,10 +35,33 @@ pub(crate) struct ChildFactory {
     pub(crate) approvals: Option<Arc<ApprovalQueue>>,
     pub(crate) project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     pub(crate) skills: Arc<HostSkills>,
+    pub(crate) mcp: Option<Arc<dyn DynamicTools>>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) permission_mode: LivePermissionMode,
     pub(crate) parent: Mutex<AgentConfig>,
     pub(crate) mode: Option<ActiveMode>,
+}
+
+pub(crate) struct ParentCatalog(Arc<dyn DynamicTools>);
+
+impl ParentCatalog {
+    pub(crate) fn shared(source: Option<Arc<dyn DynamicTools>>) -> Option<Arc<dyn DynamicTools>> {
+        source.map(|source| Arc::new(Self(source)) as Arc<dyn DynamicTools>)
+    }
+}
+
+impl DynamicTools for ParentCatalog {
+    fn generation(&self) -> u64 {
+        self.0.generation()
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.0.tools()
+    }
+
+    fn take_notices(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub(crate) struct Delegation {
@@ -119,6 +143,9 @@ impl ChildAgents for ChildFactory {
         if let Some(capabilities) = &self.capabilities {
             agent = agent.with_capability_resolver(Arc::clone(capabilities));
         }
+        if let Some(mcp) = &self.mcp {
+            agent = agent.with_dynamic_tools(Arc::clone(mcp));
+        }
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.approvals().clone());
         }
@@ -160,3 +187,6 @@ impl ChildAgents for ChildFactory {
         canonical_root_user_context(requests)
     }
 }
+
+#[cfg(test)]
+mod tests;
