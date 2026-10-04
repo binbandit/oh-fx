@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 const WAIT: Duration = Duration::from_secs(15);
 const WELCOME: &str = "Run /help for commands";
 const CANCELLATION: &str = "■ Cancelled · What can oh-fx do differently?";
+const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -209,6 +210,18 @@ fn chat(request: &RecordedRequest) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+fn without_steering_wrapper(mut chat: Vec<(String, String)>) -> Vec<(String, String)> {
+    for (_, text) in &mut chat {
+        if let Some(inner) = text
+            .strip_prefix(STEERING_OPEN)
+            .and_then(|rest| rest.strip_suffix("\n</user_steering>"))
+        {
+            *text = inner.to_owned();
+        }
+    }
+    chat
 }
 
 fn frame(seq: u64, event: &Value) -> Vec<u8> {
@@ -848,7 +861,7 @@ fn a_manual_compaction_is_saved_and_a_resumed_session_continues_from_its_checkpo
         frames[15]["event"]["context_checkpoint"]["covers_through_seq"],
         3
     );
-    let live = chat(&server.requests()[5]);
+    let live = without_steering_wrapper(chat(&server.requests()[5]));
     assert!(
         live[0].1.starts_with("<compacted_conversation>\n"),
         "{live:?}"
@@ -945,6 +958,7 @@ fn a_manual_compaction_after_an_unsaved_turn_covers_only_the_saved_turns_it_summ
         "{live:?}"
     );
     assert_eq!(live[1], ("user".to_owned(), "question 3".to_owned()));
+    let live = without_steering_wrapper(live);
 
     let session = home.shell(&["-c"], "session resumed");
     session.send(b"question 8\r");

@@ -434,6 +434,9 @@ impl Shell<'_> {
         let outcome =
             self.composer
                 .move_vertical(direction, extend_selection, page_rows, self.layout.cols);
+        if outcome == VerticalOutcome::ReachedTop && self.retract_waiting_steer() {
+            return;
+        }
         if matches!(
             outcome,
             VerticalOutcome::ReachedTop | VerticalOutcome::ReachedBottom

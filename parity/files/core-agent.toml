@@ -271,5 +271,5 @@ note = "Built-in call preparation and panic containment exist; dynamic host tool
 [[file]]
 upstream = "src/core/agent/worker_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/app_agent_runtime.rs"]
-note = "Worker commands drive turn execution, cancellation and recovery pauses; active-turn steering and subagent worker origin handling are absent."
+modules = ["crates/ofx-agent/src/worker_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/app_steering_runtime.rs"]
+note = "Worker commands drive turn execution, cancellation and recovery pauses, and prompts typed during a turn queue as steering for its model, cancel and final-answer boundaries; subagent worker origin handling is absent."

@@ -406,3 +406,13 @@ fn steering_typed_behind_a_waiting_prompt_waits_without_interrupting_the_turn() 
         ]
     );
 }
+
+#[test]
+fn waiting_prompts_are_listed_in_admission_order_without_leaving_the_queue() {
+    let worker = WorkerRuntime::default();
+    worker.admit(QueuedPrompt::new(1, "first".to_owned(), Vec::new()));
+    worker.admit(QueuedPrompt::new(2, "second".to_owned(), Vec::new()));
+    assert_eq!(worker.waiting_texts(), ["first", "second"]);
+    assert_eq!(worker.take_next().map(|prompt| prompt.id), Some(1));
+    assert_eq!(worker.waiting_texts(), ["second"]);
+}

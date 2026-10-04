@@ -156,6 +156,18 @@ impl Composer {
         HistoryNavigation::Moved
     }
 
+    pub(crate) fn browsing_history(&self) -> bool {
+        self.prompt_history.index.is_some()
+    }
+
+    pub(crate) fn restore_text(&mut self, text: String) {
+        self.replace_active_composer(Snapshot {
+            text,
+            ..Snapshot::default()
+        });
+        self.edit_history.reset();
+    }
+
     pub(crate) fn install_history(&mut self, entries: Vec<String>) {
         self.prompt_history.install_text_entries(entries);
     }
