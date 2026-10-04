@@ -48,7 +48,7 @@ modules = []
 upstream = "src/core/terminal/shell_resolver.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/shell_resolver.rs"]
-note = "Captured invocation, login-shell fallback and clean/user environment selection exist; interactive resolve and bootstrap/source command construction are missing. #1137's configured login shell lookup and startup snapshot routing are not yet synced."
+note = "Captured invocation, login-shell fallback and clean/user environment selection exist; interactive resolve and bootstrap/source command construction are missing. #1137's snapshot invocation, capture scripts and replay arrive with the startup snapshot."
 
 [[file]]
 upstream = "src/core/terminal/shell_snapshot.zig"

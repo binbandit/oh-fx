@@ -424,3 +424,31 @@ fn history_arguments_reencode_shell_requests_as_upstream_replays_them() {
         assert_eq!(history_arguments(unchanged), unchanged, "{unchanged:?}");
     }
 }
+
+#[test]
+fn a_run_may_ask_to_reload_the_users_startup_files() {
+    assert!(decoded(r#"{"action":"run","command":"true","reload":true}"#).reload);
+    for arguments in [
+        r#"{"action":"run","command":"true","reload":false}"#,
+        r#"{"action":"run","command":"true","reload":null}"#,
+        r#"{"action":"run","command":"true","reload":"null"}"#,
+        r#"{"action":"run","command":"true"}"#,
+    ] {
+        assert!(!decoded(arguments).reload, "{arguments}");
+    }
+    let problems = |arguments: &str| correction(arguments)["error"]["problems"].clone();
+    assert_eq!(
+        problems(r#"{"action":"run","command":"true","reload":"yes"}"#),
+        serde_json::json!(["request.reload must be a boolean."])
+    );
+    assert_eq!(
+        problems(r#"{"action":"interact","session_id":"shell-3","reload":true}"#),
+        serde_json::json!(["request.reload is not accepted for interact."])
+    );
+    assert_eq!(
+        correction(r#"{"command":"true","reload":true,"timeout_ms":"5"}"#)["error"]["retry_with"]
+            ["request"]
+            .to_string(),
+        r#"{"action":"run","command":"true","timeout_ms":5,"reload":true}"#
+    );
+}

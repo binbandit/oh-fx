@@ -14,7 +14,7 @@ const MAX_WRITE_BYTES: usize = 64 * 1024;
 const MAX_CORRECTION_SOURCE_BYTES: usize = 16 * 1024;
 const MAX_CORRECTION_FIELDS: usize = 32;
 const MAX_REPORTED_NAME_BYTES: usize = 64;
-const FIELD_NAMES: [&str; 11] = [
+const FIELD_NAMES: [&str; 12] = [
     "action",
     "command",
     "cwd",
@@ -23,6 +23,7 @@ const FIELD_NAMES: [&str; 11] = [
     "tty",
     "yield_time_ms",
     "timeout_ms",
+    "reload",
     "session_id",
     "chars",
     "force",
@@ -65,6 +66,7 @@ impl Action {
                 "tty",
                 "yield_time_ms",
                 "timeout_ms",
+                "reload",
             ],
             Self::Interact => &["action", "session_id", "chars", "yield_time_ms"],
             Self::Stop => &["action", "session_id", "force"],
@@ -110,6 +112,7 @@ pub(super) struct ShellRequest {
     pub(super) tty: bool,
     pub(super) yield_time_ms: u32,
     pub(super) timeout_ms: Option<u64>,
+    pub(super) reload: bool,
     pub(super) session_id: Option<String>,
     pub(super) chars: Option<String>,
     pub(super) force: bool,
@@ -299,6 +302,7 @@ fn parse_request(fields: &Map<String, Value>) -> Result<ShellRequest, ()> {
         })?
         .unwrap_or(DEFAULT_YIELD_TIME_MS),
         timeout_ms: optional(fields, "timeout_ms", |value| unsigned(value, u64::MAX))?,
+        reload: optional(fields, "reload", boolean)?.unwrap_or(false),
         session_id: optional(fields, "session_id", string)?,
         chars: optional(fields, "chars", string)?,
         force: optional(fields, "force", boolean)?.unwrap_or(false),
@@ -589,7 +593,7 @@ fn canonical_field(name: &str, original: &Value, problems: &mut Vec<String>) -> 
         "command" | "cwd" | "session_id" | "chars" => value.is_string(),
         "profile" => profile(&value).is_some(),
         "shell" => shell(&value).is_some(),
-        "tty" | "force" => value.is_boolean(),
+        "tty" | "force" | "reload" => value.is_boolean(),
         _ => integer_maximum.is_some_and(|maximum| unsigned(&value, maximum).is_some()),
     };
     if valid {
@@ -611,7 +615,7 @@ fn canonical_field(name: &str, original: &Value, problems: &mut Vec<String>) -> 
                 "request.{name} must be {}.",
                 match name {
                     "yield_time_ms" | "timeout_ms" => "an integer",
-                    "tty" | "force" => "a boolean",
+                    "tty" | "force" | "reload" => "a boolean",
                     "command" | "cwd" | "session_id" | "chars" => "a string",
                     "action" | "profile" => "an advertised value",
                     _ => "an object matching its schema",

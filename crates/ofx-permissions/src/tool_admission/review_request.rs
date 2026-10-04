@@ -80,6 +80,7 @@ fn command_target(request: &CommandRequest) -> Option<Target> {
         profile,
         shell,
         terminal,
+        ..
     } = request
     else {
         return None;
@@ -270,6 +271,7 @@ mod tests {
             profile,
             shell: shell.map(Into::into),
             terminal,
+            reload: false,
         }
     }
 

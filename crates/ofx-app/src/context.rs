@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ofx_agent::{DeliveryState, ProjectContext, ProjectContextProvider, RuntimeContext};
 use ofx_contract::{ApplicableTarget, BoxFuture, LivePermissionMode, PermissionMode};
+use ofx_exec::{Environment, Profile, configured_login_shell};
 use ofx_text::write_scalar;
 
 mod project_instructions;
@@ -122,9 +123,7 @@ fn build_turn_context_fragment(workspace_root: &Path, git_read_budget: Duration)
         |_| "(unavailable)".to_owned(),
         |path| path.to_string_lossy().into_owned(),
     );
-    let shell = env::var("SHELL")
-        .or_else(|_| env::var("COMSPEC"))
-        .unwrap_or_else(|_| "(unknown)".to_owned());
+    let shell = reported_shell(configured_login_shell().as_deref());
     let home = env::var("HOME")
         .or_else(|_| env::var("USERPROFILE"))
         .unwrap_or_else(|_| "(unknown)".to_owned());
@@ -143,6 +142,17 @@ fn build_turn_context_fragment(workspace_root: &Path, git_read_budget: Duration)
         git: &collect_git_info(workspace_root, git_read_budget),
     };
     fragment.render()
+}
+
+fn reported_shell(login_shell: Option<&Path>) -> String {
+    match ofx_exec::environment(login_shell, Some(Profile::User)) {
+        Ok(Environment::User(path) | Environment::Clean(path)) => {
+            path.to_string_lossy().into_owned()
+        }
+        Err(_) => env::var("SHELL")
+            .or_else(|_| env::var("COMSPEC"))
+            .unwrap_or_else(|_| "(unknown)".to_owned()),
+    }
 }
 
 struct TurnFragment<'a> {

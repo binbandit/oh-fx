@@ -71,6 +71,7 @@ impl ApprovalContent {
                 profile,
                 shell,
                 terminal,
+                ..
             }) => Self {
                 kind: COMMAND_KIND,
                 question: COMMAND_QUESTION,
@@ -428,6 +429,7 @@ mod tests {
             profile,
             shell: None,
             terminal,
+            reload: false,
         }
     }
 
@@ -616,6 +618,7 @@ mod tests {
                     profile: CommandProfile::User,
                     shell: shell.map(PathBuf::from),
                     terminal: shell.is_some(),
+                    reload: false,
                 },
                 None,
             );
@@ -670,6 +673,7 @@ mod tests {
             profile: CommandProfile::User,
             shell: Some(PathBuf::from("/opt/fish\x1b")),
             terminal: true,
+            reload: false,
         };
         let named_grant = SessionGrant::Command {
             command: "top".to_owned(),
