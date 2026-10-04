@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ofx_contract::{LivePermissionMode, QuestionAsker, Tool};
+use ofx_contract::{LiveAdditionalRoots, LivePermissionMode, QuestionAsker, Tool};
 use ofx_exec::ManagedExecutions;
 use ofx_tools::{
     AskUserQuestion, CapabilitySearch, EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool,
@@ -17,7 +17,7 @@ pub(crate) struct ToolHooks<'a> {
     pub(crate) questions: Option<Arc<dyn QuestionAsker>>,
     pub(crate) web_fetch_progress: Option<WebFetchProgress>,
     pub(crate) change_tracker: Option<&'a ChangeTracker>,
-    pub(crate) additional_roots: Vec<PathBuf>,
+    pub(crate) additional_roots: LiveAdditionalRoots,
 }
 
 pub(crate) fn ask_tools(

@@ -1,3 +1,4 @@
+mod additional_roots;
 mod applicable_target;
 mod auto_classifier;
 mod compactor_settings;
@@ -22,6 +23,7 @@ mod tool_set;
 mod types;
 mod ui;
 
+pub use additional_roots::LiveAdditionalRoots;
 pub use applicable_target::{ApplicableTarget, TargetKind};
 pub use auto_classifier::{ReviewFailure, ReviewTransport, ReviewTransportOutcome};
 pub use compactor_settings::AutoCompactPercent;

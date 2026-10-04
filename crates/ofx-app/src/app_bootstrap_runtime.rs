@@ -19,9 +19,9 @@ use ofx_config::{
 };
 use ofx_contract::{
     ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools,
-    LivePermissionMode, ModelControls, ModelProvider, PermissionMode, QuestionAsker,
-    ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias,
-    parse_tool_args_object, provider_search_description,
+    LiveAdditionalRoots, LivePermissionMode, ModelControls, ModelProvider, PermissionMode,
+    QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool,
+    is_provider_search_alias, parse_tool_args_object, provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -328,6 +328,7 @@ impl Profile {
             launch.fast_mode,
         );
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
+        let additional_roots = LiveAdditionalRoots::from(self.additional_roots());
         let change_tracker = interactive.then(ChangeTracker::default);
         let (questions, question_requests) = interactive.then(Questions::new).unzip();
         let tools = tool_set::ask_tools(
@@ -343,10 +344,11 @@ impl Profile {
                     .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
                 web_fetch_progress: launch.web_fetch_progress,
                 change_tracker: change_tracker.as_ref(),
-                additional_roots: self.additional_roots(),
+                additional_roots: additional_roots.clone(),
             },
         );
-        let permissions = self.reviewed_policy(&permission_mode, &route.reviewer);
+        let permissions =
+            self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
         let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
         let children = ChildFactory {
@@ -359,7 +361,7 @@ impl Profile {
             skills: Arc::clone(&skills),
             mcp: ParentCatalog::shared(mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>)),
             workspace_root: self.workspace_root.clone(),
-            additional_roots: self.additional_roots(),
+            additional_roots: additional_roots.clone(),
             permission_mode: permission_mode.clone(),
             parent: Mutex::new(config.clone()),
             mode: launch.mode,
@@ -379,7 +381,7 @@ impl Profile {
             tools,
             delegation: Delegation::new(children),
             mcp,
-            context: self.runtime_context(&permission_mode, interactive),
+            context: self.runtime_context(&permission_mode, interactive, additional_roots),
             permissions,
             permission_mode,
             preferences: self.paths.clone(),
@@ -404,6 +406,7 @@ impl Profile {
         &self,
         permission_mode: &LivePermissionMode,
         interactive: bool,
+        additional_roots: LiveAdditionalRoots,
     ) -> Arc<HostRuntimeContext> {
         Arc::new(
             HostRuntimeContext::new(
@@ -411,7 +414,7 @@ impl Profile {
                 permission_mode.clone(),
                 interactive,
             )
-            .with_additional_roots(self.additional_roots()),
+            .with_additional_roots(additional_roots),
         )
     }
 
@@ -454,10 +457,11 @@ impl Profile {
         &self,
         permission_mode: &LivePermissionMode,
         reviewer: &Arc<dyn ReviewTransport>,
+        additional_roots: LiveAdditionalRoots,
     ) -> Arc<PermissionPolicy> {
         Arc::new(
             PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
-                .with_additional_roots(self.additional_roots())
+                .with_additional_roots(additional_roots)
                 .with_reviewer(Reviewer::new(Arc::clone(reviewer), DEFAULT_REVIEW_TIMEOUT)),
         )
     }
