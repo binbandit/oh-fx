@@ -1450,11 +1450,9 @@ fn json_results_name_a_full_disk_like_upstream() {
 #[test]
 fn json_results_name_a_closed_pipe_like_upstream() {
     let home = Home::with_settings(&json!({}));
-    let (reader, writer) = io::pipe().expect("create a pipe");
-    drop(reader);
     let output = home
         .command(&["ask", "--json", "--bogus"])
-        .stdout(writer)
+        .stdout(closed_pipe())
         .output()
         .expect("run oh-fx");
     assert_eq!(output.status.code(), Some(1));
