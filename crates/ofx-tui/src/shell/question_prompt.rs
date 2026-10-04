@@ -264,17 +264,11 @@ impl QuestionPrompt {
         let Some(draft) = self.selected_draft_mut() else {
             return Insertion::Inactive;
         };
-        if text.is_empty() {
-            return Insertion::Inserted;
+        let inserted = draft.insert(text, max_len);
+        if inserted == Insertion::Inserted {
+            self.limit_rejected = false;
         }
-        if draft.text.len() > max_len || text.len() > max_len - draft.text.len() {
-            return Insertion::LimitExceeded;
-        }
-        draft.text.insert_str(draft.cursor, text);
-        draft.cursor += text.len();
-        draft.preferred_column = None;
-        self.limit_rejected = false;
-        Insertion::Inserted
+        inserted
     }
 
     pub(crate) fn note_limit_rejection(&mut self) -> bool {
@@ -286,9 +280,7 @@ impl QuestionPrompt {
         let Some(draft) = self.selected_draft_mut() else {
             return false;
         };
-        draft.preferred_column = None;
-        let start = previous_character_start(&draft.text, draft.cursor);
-        draft.delete(start, draft.cursor);
+        draft.backspace();
         true
     }
 
@@ -297,47 +289,7 @@ impl QuestionPrompt {
         let Some(draft) = self.selected_draft_mut() else {
             return false;
         };
-        draft.preferred_column = None;
-        let text = draft.text.as_str();
-        let cursor = draft.cursor;
-        match edit {
-            FreeformEdit::CursorLeft => draft.cursor = previous_character_start(text, cursor),
-            FreeformEdit::CursorRight => draft.cursor = next_character_end(text, cursor),
-            FreeformEdit::CursorHome => draft.cursor = 0,
-            FreeformEdit::CursorEnd => draft.cursor = text.len(),
-            FreeformEdit::CursorWordLeft => draft.cursor = previous_word_start(text, cursor),
-            FreeformEdit::CursorWordRight => draft.cursor = next_word_end(text, cursor),
-            FreeformEdit::DeleteNext => {
-                let end = next_character_end(text, cursor);
-                draft.delete(cursor, end);
-            }
-            FreeformEdit::DeleteWordLeft => {
-                let start = previous_word_start(text, cursor);
-                draft.delete(start, cursor);
-            }
-            FreeformEdit::DeleteWhitespaceWordLeft => {
-                let line_start = logical_line_start(text, cursor);
-                let start = previous_whitespace_delimited_token_start(text, cursor, line_start);
-                draft.delete(start, cursor);
-            }
-            FreeformEdit::DeleteWordRight => {
-                let end = next_word_delete_end(text, cursor);
-                draft.delete(cursor, end);
-            }
-            FreeformEdit::DeleteToLineStart => {
-                let start = logical_line_start(text, cursor);
-                draft.delete(start, cursor);
-            }
-            FreeformEdit::DeleteToLineEnd => {
-                let line_end = logical_line_end(text, cursor);
-                let end = if cursor == line_end && line_end < text.len() {
-                    line_end + 1
-                } else {
-                    line_end
-                };
-                draft.delete(cursor, end);
-            }
-        }
+        draft.edit(edit);
         true
     }
 
@@ -385,6 +337,69 @@ impl QuestionPrompt {
 }
 
 impl Draft {
+    pub(crate) fn insert(&mut self, text: &str, max_len: usize) -> Insertion {
+        if text.is_empty() {
+            return Insertion::Inserted;
+        }
+        if self.text.len() > max_len || text.len() > max_len - self.text.len() {
+            return Insertion::LimitExceeded;
+        }
+        self.text.insert_str(self.cursor, text);
+        self.cursor += text.len();
+        self.preferred_column = None;
+        Insertion::Inserted
+    }
+
+    pub(crate) fn backspace(&mut self) {
+        self.preferred_column = None;
+        let start = previous_character_start(&self.text, self.cursor);
+        self.delete(start, self.cursor);
+    }
+
+    pub(crate) fn edit(&mut self, edit: FreeformEdit) {
+        self.preferred_column = None;
+        let text = self.text.as_str();
+        let cursor = self.cursor;
+        match edit {
+            FreeformEdit::CursorLeft => self.cursor = previous_character_start(text, cursor),
+            FreeformEdit::CursorRight => self.cursor = next_character_end(text, cursor),
+            FreeformEdit::CursorHome => self.cursor = 0,
+            FreeformEdit::CursorEnd => self.cursor = text.len(),
+            FreeformEdit::CursorWordLeft => self.cursor = previous_word_start(text, cursor),
+            FreeformEdit::CursorWordRight => self.cursor = next_word_end(text, cursor),
+            FreeformEdit::DeleteNext => {
+                let end = next_character_end(text, cursor);
+                self.delete(cursor, end);
+            }
+            FreeformEdit::DeleteWordLeft => {
+                let start = previous_word_start(text, cursor);
+                self.delete(start, cursor);
+            }
+            FreeformEdit::DeleteWhitespaceWordLeft => {
+                let line_start = logical_line_start(text, cursor);
+                let start = previous_whitespace_delimited_token_start(text, cursor, line_start);
+                self.delete(start, cursor);
+            }
+            FreeformEdit::DeleteWordRight => {
+                let end = next_word_delete_end(text, cursor);
+                self.delete(cursor, end);
+            }
+            FreeformEdit::DeleteToLineStart => {
+                let start = logical_line_start(text, cursor);
+                self.delete(start, cursor);
+            }
+            FreeformEdit::DeleteToLineEnd => {
+                let line_end = logical_line_end(text, cursor);
+                let end = if cursor == line_end && line_end < text.len() {
+                    line_end + 1
+                } else {
+                    line_end
+                };
+                self.delete(cursor, end);
+            }
+        }
+    }
+
     fn delete(&mut self, start: usize, end: usize) {
         let start = start.min(self.text.len());
         let end = end.clamp(start, self.text.len());

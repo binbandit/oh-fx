@@ -1,5 +1,5 @@
 use ofx_contract::{
-    ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope, GatedAction,
+    ApprovalAnswer, ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope, GatedAction,
     ProposedFileChange, RequestId, SessionGrant,
 };
 
@@ -71,10 +71,10 @@ impl PermissionGate for RememberingGate {
     fn forget_approvals(&self) {}
 }
 
-async fn run_approving(
+async fn run_approving<A: Into<ApprovalAnswer>>(
     provider: Arc<FakeProvider>,
     gate: Arc<RememberingGate>,
-    decide: impl Fn(&ApprovalRequest) -> Option<ApprovalDecision> + Sync,
+    decide: impl Fn(&ApprovalRequest) -> Option<A> + Sync,
 ) -> (TurnReport, Vec<UiEvent>, Approvals) {
     let approvals = Approvals::default();
     let mut agent = Agent::new(
@@ -185,6 +185,66 @@ async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remem
         assert_eq!(gate.scopes.load(Ordering::SeqCst), 1);
         assert_eq!(*gate.remembered.lock().unwrap(), remembered);
     }
+}
+
+#[tokio::test]
+async fn feedback_given_with_an_answer_follows_every_result_of_its_step() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"access":"outside","serial":true}"#),
+            ("call-2", r#"{"access":"workspace","serial":true}"#),
+            ("call-3", r#"{"path":"outside","serial":true}"#),
+            ("call-4", r#"{"path":"outside again","serial":true}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let gate = Arc::new(RememberingGate::default());
+    let (report, events, _) = run_approving(Arc::clone(&provider), gate, |request| {
+        let (decision, feedback) = match request.call_id.as_str() {
+            "call-1" => (ApprovalDecision::Once, "read the tests next"),
+            "call-3" => (ApprovalDecision::Deny, "use the copy in the workspace"),
+            _ => (ApprovalDecision::Once, ""),
+        };
+        Some(ApprovalAnswer {
+            decision,
+            feedback: Some(feedback.to_owned()),
+        })
+    })
+    .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let order: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolFinished { call_id, .. } => Some(format!("finish {call_id}")),
+            UiEvent::ApprovalFeedback { text, .. } => Some(format!("feedback {text}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "finish call-1",
+            "feedback read the tests next",
+            "finish call-2",
+            "finish call-3",
+            "feedback use the copy in the workspace",
+            "finish call-4",
+        ]
+    );
+    let messages = &provider.requests()[1].messages[2..];
+    assert_eq!(
+        messages[4..],
+        [
+            ChatMessage::user("read the tests next"),
+            ChatMessage::user("use the copy in the workspace"),
+        ]
+    );
+    assert!(
+        messages[..4]
+            .iter()
+            .all(|message| matches!(message, ChatMessage::Tool { .. })),
+        "{messages:?}"
+    );
 }
 
 #[tokio::test]
@@ -335,7 +395,10 @@ async fn cancelling_while_an_approval_is_pending_interrupts_without_running_the_
         ("call-2", r#"{"path":"outside"}"#),
     ])]);
     let (report, events, approvals) =
-        run_approving(provider, Arc::new(RememberingGate::default()), |_| None).await;
+        run_approving(provider, Arc::new(RememberingGate::default()), |_| {
+            None::<ApprovalDecision>
+        })
+        .await;
     assert_eq!(report.outcome, TurnOutcome::Interrupted);
     assert_eq!(dispatch_order(&events), ["start call-1", "finish call-1"]);
     let request = approval_requests(&events).remove(0);

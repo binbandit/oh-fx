@@ -15,7 +15,7 @@ use crate::row_text::Row;
 use crate::terminal::TerminalError;
 use crate::theme::Theme;
 
-const LIMIT_REJECTED: &str = "That edit exceeds the input limit and was not applied.";
+pub(super) const LIMIT_REJECTED: &str = "That edit exceeds the input limit and was not applied.";
 
 impl QuestionPrompt {
     pub(super) fn composer_view(&self, theme: &Theme, cols: u16) -> ComposerView {
@@ -265,7 +265,7 @@ impl Shell<'_> {
     }
 }
 
-fn focused_editor_edit(shortcut: ShortcutAction) -> Option<FreeformEdit> {
+pub(super) fn focused_editor_edit(shortcut: ShortcutAction) -> Option<FreeformEdit> {
     match shortcut {
         ShortcutAction::Move(_)
         | ShortcutAction::DeleteWhitespaceWordLeft
@@ -275,7 +275,7 @@ fn focused_editor_edit(shortcut: ShortcutAction) -> Option<FreeformEdit> {
     }
 }
 
-fn freeform_edit(shortcut: ShortcutAction) -> Option<FreeformEdit> {
+pub(super) fn freeform_edit(shortcut: ShortcutAction) -> Option<FreeformEdit> {
     Some(match shortcut {
         ShortcutAction::Move(intent) => match intent.kind {
             MoveKind::CharacterLeft => FreeformEdit::CursorLeft,

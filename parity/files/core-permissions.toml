@@ -1,14 +1,14 @@
 [[file]]
 upstream = "src/core/permissions/approval_amendment.zig"
-status = "todo"
-modules = []
-note = "Independent permission feedback drafts and amendment editing are unimplemented."
+status = "ported"
+modules = ["crates/ofx-tui/src/shell/approval_amendment.rs", "crates/ofx-tui/src/shell/question_prompt.rs"]
+note = "Independent Yes and No feedback drafts with their cursors, the one open draft, the editing actions, and discarding on Ctrl+C exist; a draft keeps one line."
 
 [[file]]
 upstream = "src/core/permissions/approval_decision.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/approval_runtime.rs"]
-note = "Approval choices, denial and guarded submission exist; independent amendment drafts and tab-to-feedback actions are absent."
+note = "Approval choices, denial, guarded submission, Tab to open a feedback draft, and the selected draft sent as feedback exist; confirmation-only prompts are absent."
 
 [[file]]
 upstream = "src/core/permissions/approval_prompt.zig"

@@ -37,8 +37,8 @@ note = "A file approval's yes waits for a committed frame at the current size th
 [[file]]
 upstream = "src/ui/footer/approval_ui.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/approval_panel.rs", "crates/ofx-tui/src/footer/approval_content.rs", "crates/ofx-tui/src/footer/file_approval.rs"]
-note = "Inline approval copy and the file approval rows (the Review change header with the action and counts, the path kept to its whole basename, the question, the Apply and Reveal choices and the hints) exist; amendment drafts and canonical cell-grid geometry are absent."
+modules = ["crates/ofx-tui/src/footer/approval_panel.rs", "crates/ofx-tui/src/footer/approval_content.rs", "crates/ofx-tui/src/footer/file_approval.rs", "crates/ofx-tui/src/footer/approval_draft.rs"]
+note = "Inline approval copy and the file approval rows (the Review change header with the action and counts, the path kept to its whole basename, the question, the Apply and Reveal choices and the hints), the feedback draft rows with their placeholder and cursor window, and the tab amend hints exist; canonical cell-grid geometry is absent."
 
 [[file]]
 upstream = "src/ui/footer/compact_command_menu_presentation.zig"

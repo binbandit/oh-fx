@@ -45,6 +45,7 @@ pub(crate) enum PasteOwner {
     Composer,
     DecisionPrompt,
     QuestionFreeform,
+    ApprovalDraft,
     AuthCode,
 }
 
@@ -194,7 +195,11 @@ impl PasteFraming {
             self.end_candidate_buffer_len = self.buffer.len();
             self.end_candidate_overflow_bytes = self.overflow_bytes;
         }
-        let captured = if owner == PasteOwner::QuestionFreeform && byte == b'\t' {
+        let freeform = matches!(
+            owner,
+            PasteOwner::QuestionFreeform | PasteOwner::ApprovalDraft
+        );
+        let captured = if freeform && byte == b'\t' {
             b' '
         } else {
             byte
@@ -202,7 +207,9 @@ impl PasteFraming {
         let printable = captured >= 32 && captured != 127;
         let accepted = match owner {
             PasteOwner::Composer => matches!(captured, b'\r' | b'\n' | b'\t') || printable,
-            PasteOwner::QuestionFreeform => matches!(captured, b'\r' | b'\n') || printable,
+            PasteOwner::QuestionFreeform | PasteOwner::ApprovalDraft => {
+                matches!(captured, b'\r' | b'\n') || printable
+            }
             PasteOwner::AuthCode => printable,
             PasteOwner::DecisionPrompt => false,
         };
@@ -303,7 +310,7 @@ impl Drop for PasteFraming {
 
 fn normalize_for_owner(owner: PasteOwner, bytes: &mut Vec<u8>) {
     match owner {
-        PasteOwner::Composer | PasteOwner::QuestionFreeform => {
+        PasteOwner::Composer | PasteOwner::QuestionFreeform | PasteOwner::ApprovalDraft => {
             normalize_line_endings_in_place(bytes);
         }
         PasteOwner::AuthCode | PasteOwner::DecisionPrompt => {}
