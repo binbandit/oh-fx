@@ -29,6 +29,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent_steps::allows_step;
 use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
@@ -682,7 +683,7 @@ impl Agent {
                 return Err(Stop::failed(failure));
             }
             step += 1;
-            let more_steps = self.config.step_limit == 0 || step < self.config.step_limit;
+            let more_steps = allows_step(self.config.step_limit, step);
             if let Some(text) = self
                 .settle_completion(turn, completion, more_steps, events, cancel)
                 .await?
@@ -1312,7 +1313,7 @@ impl Agent {
         step: u64,
         events: EventSink<'_>,
     ) -> Result<(), Stop> {
-        if self.config.step_limit != 0 && step >= self.config.step_limit {
+        if !allows_step(self.config.step_limit, step) {
             return Err(self.stop_with_notice(
                 turn_id,
                 events,

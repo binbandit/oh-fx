@@ -9,6 +9,7 @@ use ofx_contract::{
 };
 use serde_json::{Map, Value};
 
+use crate::agent_steps::{DEFAULT_MAX_AGENT_STEPS, resolve_max_agent_steps_with_override};
 use crate::configured_provider::{
     ConfiguredProviderError, ProviderDefinition, ProviderRegistry, validate_model_id,
 };
@@ -731,12 +732,16 @@ impl Settings {
     }
 
     pub fn max_agent_steps(&self, lookup: EnvironmentLookup<'_>) -> u64 {
-        lookup(MAX_AGENT_STEPS_VARIABLE)
-            .and_then(|value| value.trim().parse().ok())
-            .or(self.workspace.max_agent_steps)
+        let configured = self
+            .workspace
+            .max_agent_steps
             .or(self.global.max_agent_steps)
-            .or(self.project_max_agent_steps)
-            .unwrap_or(0)
+            .or(self.project_max_agent_steps);
+        resolve_max_agent_steps_with_override(
+            configured,
+            DEFAULT_MAX_AGENT_STEPS,
+            lookup(MAX_AGENT_STEPS_VARIABLE).as_deref(),
+        )
     }
 
     pub fn auto_compact_percent(&self, lookup: EnvironmentLookup<'_>) -> AutoCompactPercent {
