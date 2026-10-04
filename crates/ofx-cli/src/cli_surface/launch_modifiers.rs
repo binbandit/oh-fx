@@ -30,7 +30,7 @@ struct ModelModifiers {
 
 #[derive(Debug, Default)]
 struct WorkspaceModifiers {
-    additional_directories: bool,
+    additional_directories: Vec<OsString>,
     saved_directories_suppressed: bool,
 }
 
@@ -39,8 +39,12 @@ impl LaunchModifiers {
         &self.context_limits
     }
 
-    pub fn adds_directories(&self) -> bool {
-        self.workspace.additional_directories
+    pub fn additional_directories(&self) -> &[OsString] {
+        &self.workspace.additional_directories
+    }
+
+    pub fn saved_directories_suppressed(&self) -> bool {
+        self.workspace.saved_directories_suppressed
     }
 
     pub fn selects_sessions_v2(&self) -> bool {
@@ -64,7 +68,8 @@ impl LaunchModifiers {
     }
 
     pub(crate) fn has_workspace_modifiers(&self) -> bool {
-        self.workspace.additional_directories || self.workspace.saved_directories_suppressed
+        !self.workspace.additional_directories.is_empty()
+            || self.workspace.saved_directories_suppressed
     }
 
     pub(crate) fn has_model_overrides(&self) -> bool {
@@ -147,7 +152,7 @@ impl LaunchModifiers {
             if value.is_empty() {
                 return Err(GlobalLaunchError::MissingAddDirectoryValue);
             }
-            self.workspace.additional_directories = true;
+            self.workspace.additional_directories.push(value.clone());
         } else if args.take_flag("--no-additional-dirs") {
             if self.workspace.saved_directories_suppressed {
                 return Err(GlobalLaunchError::DuplicateAdditionalDirectorySuppression);
@@ -249,13 +254,16 @@ mod tests {
             "inspect",
         ])
         .unwrap();
-        assert!(modifiers.adds_directories());
-        assert!(modifiers.workspace.saved_directories_suppressed);
+        assert_eq!(
+            modifiers.additional_directories(),
+            ["/tmp/shared one", "/tmp/shared-two"]
+        );
+        assert!(modifiers.saved_directories_suppressed());
         assert!(modifiers.has_workspace_modifiers());
         assert_eq!(remaining[0], "ask");
 
         let (suppressed, _) = parse(&["--no-additional-dirs"]).unwrap();
-        assert!(!suppressed.adds_directories());
+        assert!(suppressed.additional_directories().is_empty());
         assert!(suppressed.has_workspace_modifiers());
     }
 
@@ -275,7 +283,7 @@ mod tests {
         assert!(modifiers.has_model_overrides());
         assert!(modifiers.overrides_provider());
         assert_eq!(modifiers.model(), Some(OsStr::new("provider/launch-model")));
-        assert!(modifiers.adds_directories());
+        assert_eq!(modifiers.additional_directories(), ["/tmp/shared"]);
         assert!(remaining.is_empty());
 
         for args in [
@@ -467,7 +475,7 @@ mod tests {
         ])
         .unwrap();
         assert!(modifiers.selects_sessions_v2());
-        assert!(modifiers.adds_directories());
+        assert_eq!(modifiers.additional_directories(), ["/tmp"]);
         assert!(!modifiers.has_model_overrides());
         assert_eq!(remaining, vec![OsString::from("ask"), OsString::from("hi")]);
 

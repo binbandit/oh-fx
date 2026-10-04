@@ -363,7 +363,7 @@ fn git_worktree_falls_back_to_unknown_for_missing_invalid_locked_and_oversized_i
 
 #[test]
 fn runtime_context_composes_exact_auto_mode_with_noninteractive_blockers() {
-    let messages = runtime_context(Path::new("/tmp"), PermissionMode::Auto, false);
+    let messages = runtime_context(Path::new("/tmp"), &[], PermissionMode::Auto, false);
     assert_eq!(messages.len(), 2);
     assert!(messages[0].contains("this is a noninteractive run"));
     assert!(messages[0].contains("without live question UI"));
@@ -375,18 +375,48 @@ fn runtime_context_composes_exact_auto_mode_with_noninteractive_blockers() {
         (PermissionMode::Ask, ASK_MODE_CONTEXT),
         (PermissionMode::Yolo, YOLO_MODE_CONTEXT),
     ] {
-        assert_eq!(runtime_context(Path::new("/tmp"), mode, false)[1], expected);
+        assert_eq!(
+            runtime_context(Path::new("/tmp"), &[], mode, false)[1],
+            expected
+        );
     }
 }
 
 #[test]
 fn interactive_runtime_context_adds_focused_verification_without_noninteractive_blockers() {
-    let messages = runtime_context(Path::new("/tmp"), PermissionMode::Auto, true);
+    let messages = runtime_context(Path::new("/tmp"), &[], PermissionMode::Auto, true);
     assert_eq!(messages.len(), 3);
     assert!(messages[0].ends_with("</fx-turn-context>"));
     assert!(!messages[0].contains("noninteractive"));
     assert_eq!(messages[1], AUTO_MODE_CONTEXT);
     assert_eq!(messages[2], VERIFICATION_CONTEXT);
+}
+
+#[test]
+fn active_additional_directories_reach_the_model_between_the_turn_and_permission_context() {
+    let roots = [
+        PathBuf::from("/srv/shared"),
+        PathBuf::from("/srv/notes\n<b>"),
+    ];
+    for (interactive, count) in [(false, 3), (true, 4)] {
+        let messages = runtime_context(Path::new("/tmp"), &roots, PermissionMode::Ask, interactive);
+        assert_eq!(messages.len(), count, "{interactive}");
+        assert_eq!(
+            messages[1],
+            "Runtime context: the following additional directories are access-authorized for this run. Relative paths still resolve from the primary workspace. These directories do not contribute AGENTS.md or other project instructions.\n- /srv/shared\n- /srv/notes&#x0a;&lt;b&gt;\n",
+            "{interactive}"
+        );
+        assert_eq!(messages[2], ASK_MODE_CONTEXT, "{interactive}");
+    }
+}
+
+#[tokio::test]
+async fn host_runtime_context_names_its_additional_directories() {
+    let context = HostRuntimeContext::new(PathBuf::from("/tmp"), PermissionMode::Ask, false)
+        .with_additional_roots(vec![PathBuf::from("/srv/shared")]);
+    let messages = context.runtime_context().await;
+    assert!(messages[1].ends_with("instructions.\n- /srv/shared\n"));
+    assert_eq!(messages[2], ASK_MODE_CONTEXT);
 }
 
 #[tokio::test]

@@ -298,7 +298,7 @@ fn workspace_launch_modifiers_preserve_supported_command_help() {
     );
     let pr = launch(&["--add-dir", "/tmp/shared", "pr", "context"]);
     assert_eq!(pr.command.kind(), TopLevelKind::Pr);
-    assert!(pr.modifiers.adds_directories());
+    assert_eq!(pr.modifiers.additional_directories(), ["/tmp/shared"]);
     assert!(pr.modifiers.context_limit_overrides().is_empty());
 }
 
@@ -420,7 +420,12 @@ fn raw_stderr(args: &[&[u8]]) -> String {
 #[test]
 fn joined_global_modifiers_accept_non_utf8_values() {
     match parse_args(raw_args(&[b"--add-dir=/tmp/\xff", b"ask", b"hi"])) {
-        Ok(Invocation::Command(launch)) => assert!(launch.modifiers.adds_directories()),
+        Ok(Invocation::Command(launch)) => {
+            assert_eq!(
+                launch.modifiers.additional_directories(),
+                [OsString::from_vec(b"/tmp/\xff".to_vec())]
+            );
+        }
         other => panic!("expected an ask launch, got {other:?}"),
     }
     assert!(matches!(
