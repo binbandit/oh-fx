@@ -4,6 +4,7 @@ use ofx_contract::{ChatMessage, Completion, UiEvent};
 use ofx_text::Script;
 use tokio_util::sync::CancellationToken;
 
+use super::recovery::recovery_note;
 use super::{Agent, EventSink, Stop, Turn, TurnFailure};
 use crate::assistant_stream::LanguageStage;
 use crate::execution_memory::steering_text;
@@ -80,12 +81,17 @@ impl Agent {
     }
 
     pub(super) fn request_messages(&self, turn: &Turn) -> Cow<'_, [ChatMessage]> {
-        if !turn.language.correction_attempted {
+        let note = turn.recovery.and_then(recovery_note);
+        let correction = turn
+            .language
+            .correction_attempted
+            .then_some(RESPONSE_LANGUAGE_CORRECTION_CONTROL);
+        if note.is_none() && correction.is_none() {
             return Cow::Borrowed(&self.history);
         }
-        let mut messages = Vec::with_capacity(self.history.len() + 1);
+        let mut messages = Vec::with_capacity(self.history.len() + 2);
         messages.extend_from_slice(&self.history);
-        messages.push(ChatMessage::user(RESPONSE_LANGUAGE_CORRECTION_CONTROL));
+        messages.extend(note.into_iter().chain(correction).map(ChatMessage::user));
         Cow::Owned(messages)
     }
 

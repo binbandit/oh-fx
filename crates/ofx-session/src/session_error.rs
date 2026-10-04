@@ -34,6 +34,10 @@ pub enum SessionError {
     InvalidCheckpointCoverage,
     #[error("InvalidRecoveryCheckpoint")]
     InvalidRecoveryCheckpoint,
+    #[error("NoPendingRecovery")]
+    NoPendingRecovery,
+    #[error("RecoveryCredentialAuthorityChanged")]
+    RecoveryCredentialAuthorityChanged,
     #[error("InvalidContextHistoryStart")]
     InvalidContextHistoryStart,
     #[error("UnresolvedToolCall")]

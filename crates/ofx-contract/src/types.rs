@@ -88,6 +88,7 @@ impl ToolStatusDetail {
 pub struct ReplaySource {
     pub provider: String,
     pub model: String,
+    pub binding: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +99,7 @@ pub struct ProviderReplay {
 
 impl ProviderReplay {
     pub fn matches(&self, source: &ReplaySource) -> bool {
-        self.source == *source
+        self.source.provider == source.provider && self.source.model == source.model
     }
 }
 
@@ -588,6 +589,7 @@ mod tests {
         let source = |provider: &str, model: &str| ReplaySource {
             provider: provider.to_owned(),
             model: model.to_owned(),
+            binding: None,
         };
         let replay = ProviderReplay {
             source: source("codex", "model"),

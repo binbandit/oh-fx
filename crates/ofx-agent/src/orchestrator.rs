@@ -12,12 +12,12 @@ use ofx_contract::{
     DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure, FileChange, FileMutation,
     FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRequest, PathAccess,
-    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId,
-    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
-    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus,
-    SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection,
-    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RecoveredTurn,
+    RecoveryStrategy, RequestId, ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed,
+    RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent,
+    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput,
+    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
     malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
     tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
@@ -42,6 +42,7 @@ use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
 mod project_gate;
+mod recovery;
 mod response_language;
 mod steering;
 mod turn_ledger;
@@ -50,6 +51,7 @@ mod turn_log;
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
+use recovery::recovery_tool_choice;
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -173,6 +175,7 @@ struct Turn {
     raw_outputs: Vec<(ToolCallId, usize)>,
     reviews: TurnReviews,
     language: TurnLanguage,
+    recovery: Option<RecoveryStrategy>,
 }
 
 struct ProjectInstructions {
@@ -397,6 +400,28 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> TurnReport {
+        self.run_prompt(prompt, skills, None, events, cancel).await
+    }
+
+    pub async fn continue_turn(
+        &mut self,
+        recovered: RecoveredTurn,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> TurnReport {
+        let prompt = recovered.prompt.clone();
+        self.run_prompt(&prompt, &[], Some(recovered), events, cancel)
+            .await
+    }
+
+    async fn run_prompt(
+        &mut self,
+        prompt: &str,
+        skills: &[SkillBinding],
+        recovered: Option<RecoveredTurn>,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> TurnReport {
         self.turns += 1;
         self.recovery_pause.reset();
         let id = TurnId::new(self.turns);
@@ -427,9 +452,15 @@ impl Agent {
             raw_outputs: Vec::new(),
             reviews: TurnReviews::default(),
             language: self.turn_language(prompt),
+            recovery: None,
         };
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
+        if let Some(recovered) = recovered {
+            self.history.extend(recovered.messages);
+            turn.fast_mode = recovered.fast_mode;
+            turn.recovery = Some(recovered.strategy);
+        }
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
         let (outcome, final_text, mut failure, ending) = match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
@@ -532,16 +563,7 @@ impl Agent {
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
             let messages = self.request_messages(turn);
-            let request = ModelRequest {
-                model: &self.config.model,
-                instructions: &instructions,
-                messages: &messages,
-                tools: &self.offered_specs,
-                tool_choice: ToolChoice::Auto,
-                max_output_tokens: self.config.max_output_tokens,
-                provider_options: self.provider_options(turn, events),
-                session_id: self.session_id.as_deref(),
-            };
+            let request = self.turn_request(turn, &instructions, &messages, events);
             let (measured, body) = self.measure(turn, &request).unzip();
             match self
                 .preflight(turn, request, measured.as_ref(), events, cancel)
@@ -562,6 +584,7 @@ impl Agent {
             let completion = match outcome {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
+                    turn.recovery = None;
                     completion
                 }
                 Err(Stop::Failed {
@@ -698,6 +721,25 @@ impl Agent {
             CapabilityLookup::Cancelled => return Err(Stop::interrupted()),
         });
         Ok(())
+    }
+
+    fn turn_request<'a>(
+        &'a self,
+        turn: &mut Turn,
+        instructions: &'a [&'a str],
+        messages: &'a [ChatMessage],
+        events: EventSink<'_>,
+    ) -> ModelRequest<'a> {
+        ModelRequest {
+            model: &self.config.model,
+            instructions,
+            messages,
+            tools: &self.offered_specs,
+            tool_choice: recovery_tool_choice(turn.recovery),
+            max_output_tokens: self.config.max_output_tokens,
+            provider_options: self.provider_options(turn, events),
+            session_id: self.session_id.as_deref(),
+        }
     }
 
     fn provider_options(&self, turn: &mut Turn, events: EventSink<'_>) -> ProviderOptions<'_> {

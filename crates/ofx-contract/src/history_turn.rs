@@ -52,6 +52,23 @@ pub struct HistoryTurn<'a> {
     pub end: TurnEnd<'a>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryStrategy {
+    RetryRequest,
+    ContinueResponse,
+    RegenerateTool,
+    ContinueAfterTool,
+    ReconcileTool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredTurn {
+    pub prompt: String,
+    pub messages: Vec<ChatMessage>,
+    pub strategy: RecoveryStrategy,
+    pub fast_mode: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HistoryCut {
     pub turns: usize,
