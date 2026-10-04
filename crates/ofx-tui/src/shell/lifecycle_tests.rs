@@ -16,6 +16,8 @@ type Report = (String, Option<Vec<u8>>);
 struct Reports(Arc<Mutex<Vec<Report>>>);
 
 impl ForegroundLifecycle for Reports {
+    fn shutdown(&self) {}
+
     fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
         let state = match state {
             ForegroundState::Idle => "idle",

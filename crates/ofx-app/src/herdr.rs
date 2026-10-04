@@ -15,6 +15,7 @@ struct Connection {
     socket: PathBuf,
     pane: Vec<u8>,
     next_id: u64,
+    closed: bool,
 }
 
 enum Request<'a> {
@@ -42,6 +43,7 @@ impl Herdr {
                 socket: socket?.into(),
                 pane: pane?.as_encoded_bytes().to_vec(),
                 next_id: 1,
+                closed: false,
             }),
         })
     }
@@ -59,13 +61,32 @@ impl Herdr {
             .connection
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        for request in requests {
-            let _ = connection.send(request);
+        if !connection.closed {
+            for request in requests {
+                let _ = connection.send(request);
+            }
+        }
+    }
+
+    fn release(&self) {
+        let mut connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !connection.closed {
+            connection.closed = true;
+            for request in [Request::Agent(None), Request::Clear, Request::Pane(None)] {
+                let _ = connection.send(&request);
+            }
         }
     }
 }
 
 impl ForegroundLifecycle for Herdr {
+    fn shutdown(&self) {
+        self.release();
+    }
+
     fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
         let status = status
             .filter(|value| !value.is_empty())
@@ -77,6 +98,10 @@ impl ForegroundLifecycle for Herdr {
 pub(crate) struct HerdrObserver(pub(crate) std::sync::Arc<Herdr>);
 
 impl ForegroundLifecycle for HerdrObserver {
+    fn shutdown(&self) {
+        self.0.shutdown();
+    }
+
     fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
         self.0.report(state, status);
     }
@@ -84,7 +109,7 @@ impl ForegroundLifecycle for HerdrObserver {
 
 impl Drop for Herdr {
     fn drop(&mut self) {
-        self.send(&[Request::Agent(None), Request::Clear, Request::Pane(None)]);
+        self.release();
     }
 }
 
@@ -241,10 +266,12 @@ mod tests {
             .join("herdr.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         listener.set_nonblocking(true).unwrap();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = std::sync::Arc::clone(&finished);
         let worker = std::thread::spawn(move || {
             let started = std::time::Instant::now();
             let mut lines = Vec::new();
-            while lines.len() < count && started.elapsed() < Duration::from_secs(5) {
+            while started.elapsed() < Duration::from_secs(5) {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
                         socket.set_nonblocking(false).unwrap();
@@ -263,6 +290,9 @@ mod tests {
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        if done.load(std::sync::atomic::Ordering::Acquire) {
+                            break;
+                        }
                         std::thread::sleep(Duration::from_millis(1));
                     }
                     Err(error) => panic!("accept failed: {error}"),
@@ -274,6 +304,7 @@ mod tests {
             Herdr::new(None, Some(path.as_os_str()), Some(OsStr::new("pane\"x"))).unwrap();
         run(&mut client);
         drop(client);
+        finished.store(true, std::sync::atomic::Ordering::Release);
         let lines = worker.join().unwrap();
         assert_eq!(lines.len(), count);
         lines
@@ -315,6 +346,30 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_releases_once_and_suppresses_later_reports_and_initialization() {
+        let lines = capture(true, 4, |client| {
+            client.report(ForegroundState::Working, None);
+            client.shutdown();
+            client.shutdown();
+            client.report(ForegroundState::Idle, None);
+            client.report(ForegroundState::Working, Some(b"late"));
+            client.report(ForegroundState::Blocked, Some(b"permission"));
+            client.initialize(Some("late-session"));
+        });
+        let parsed: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(parsed[0]["params"]["state"], "working");
+        assert_eq!(parsed[1]["method"], "agent.rename");
+        assert!(parsed[1]["params"]["name"].is_null());
+        assert_eq!(parsed[2]["method"], "pane.clear_agent_authority");
+        assert_eq!(parsed[3]["method"], "pane.rename");
+        assert!(parsed[3]["params"]["label"].is_null());
+        assert_eq!(parsed[3]["id"], "4");
+    }
+
+    #[test]
     fn socket_status_clamps_to_raw_bytes_inside_utf8() {
         let text = format!("{}é", "x".repeat(31));
         let lines = capture(true, 4, |client| {
@@ -347,6 +402,7 @@ mod tests {
             socket: root.path().join("missing"),
             pane: b"pane".to_vec(),
             next_id: 1,
+            closed: false,
         };
         assert!(
             connection

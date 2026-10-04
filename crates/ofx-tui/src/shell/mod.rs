@@ -276,6 +276,9 @@ pub fn run_shell(
     let mut shell = Shell::bootstrap(options, events, Arc::new(clipboard), Box::new(send))?;
     let result = shell.run();
     let fatal = shell.shutdown(result.as_ref().ok().copied().flatten());
+    if let Some(lifecycle) = &shell.options.lifecycle {
+        lifecycle.shutdown();
+    }
     if let Some(signal) = fatal {
         crate::terminal::signal_pipe::raise_default(signal);
     }

@@ -273,3 +273,86 @@ fn disabled_foreground_and_noninteractive_commands_do_not_contact_herdr() {
             .is_empty()
     );
 }
+
+fn assert_signal_release(signal: rustix::process::Signal) {
+    use std::os::unix::process::ExitStatusExt;
+
+    let root = tempfile::tempdir().expect("temporary signal home");
+    let home = fs::canonicalize(root.path()).expect("canonical signal home");
+    let config = home.join("config/oh-fx");
+    fs::create_dir_all(&config).expect("create signal configuration");
+    let server = FakeServer::start([]);
+    fs::write(config.join("settings.json"), json!({"provider":"local","providers":{"local":{"protocol":"openai-chat-completions","base_url":server.base_url(),"auth":{"type":"none"},"models":["model-a"]}}}).to_string()).expect("write signal configuration");
+    let socket = Socket::start(home.join("herdr.sock"));
+    let pid_file = home.join("pid");
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; exec \"$2\"",
+            "herdr-signal",
+        ])
+        .arg(&pid_file)
+        .arg(env!("CARGO_BIN_EXE_oh-fx"))
+        .current_dir(&home)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("SHELL", "/bin/sh")
+        .env("TERM", "xterm-256color")
+        .env("OH_FX_AUTO_UPGRADE", "0")
+        .env("HERDR_SOCKET_PATH", &socket.path)
+        .env("HERDR_PANE_ID", "signal-pane")
+        .process_group(0);
+    let mut session = PtySession::spawn(command, 30, 100).expect("spawn signal session");
+    session
+        .wait_for(WAIT, |screen| screen.contains("Run /help for commands"))
+        .expect("signal session ready");
+    assert_eq!(socket.wait(4).len(), 4);
+    assert!(!session.cooked().expect("read active terminal modes"));
+    let started = session.output().len();
+    let pid = fs::read_to_string(pid_file)
+        .expect("read owned process ID")
+        .parse()
+        .expect("parse owned process ID");
+    rustix::process::kill_process(
+        rustix::process::Pid::from_raw(pid).expect("valid owned process ID"),
+        signal,
+    )
+    .expect("signal owned process");
+    assert_eq!(
+        session
+            .wait_exit(WAIT)
+            .expect("handled signal ends process")
+            .signal(),
+        Some(signal.as_raw())
+    );
+    assert!(session.cooked().expect("read restored terminal modes"));
+    let restore = b"\x1b[<u\x1b[>4;0m\x1b[?2004l\x1b[?2031l\x1b[?25h";
+    assert!(
+        session.output()[started..]
+            .windows(restore.len())
+            .any(|bytes| bytes == restore)
+    );
+    let reports = socket.lines.lock().expect("reports mutex").clone();
+    assert_eq!(reports.len(), 7, "{reports:?}");
+    assert_eq!(reports[4]["method"], "agent.rename");
+    assert!(reports[4]["params"]["name"].is_null());
+    assert_eq!(reports[5]["method"], "pane.clear_agent_authority");
+    assert_eq!(reports[5]["params"]["source"], "custom:fx");
+    assert_eq!(reports[6]["method"], "pane.rename");
+    assert!(reports[6]["params"]["label"].is_null());
+}
+
+#[test]
+fn sigterm_releases_herdr_and_restores_the_terminal_before_signal_exit() {
+    assert_signal_release(rustix::process::Signal::TERM);
+}
+
+#[test]
+fn sighup_releases_herdr_and_restores_the_terminal_before_signal_exit() {
+    assert_signal_release(rustix::process::Signal::HUP);
+}
