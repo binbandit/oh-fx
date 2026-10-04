@@ -945,6 +945,13 @@ impl Controller {
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
         self.bind_children();
         self.state.session_title.set(None);
+        self.state.worker.discard_before(first_kept_prompt);
+        self.state
+            .pending_install_inputs
+            .retain(|input| match input {
+                InstallInput::Prompt(prompt) => prompt.id >= first_kept_prompt,
+                InstallInput::Skills { .. } | InstallInput::Clear(_) => true,
+            });
         for prompt in self.state.worker.waiting_texts() {
             observe_prompt(self.persistence.as_ref(), &prompt);
         }
@@ -5061,6 +5068,27 @@ mod tests {
         );
         assert_eq!(catalog.requests().len(), asked);
         assert!(codex.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn clearing_the_conversation_drops_prompts_held_while_signed_out() {
+        for command in ["/clear", "/new", "/reset"] {
+            let codex = FakeServer::start([codex_text("only the next one")]);
+            let catalog = codex_catalog(false, 2);
+            let mut harness = signed_out(&codex, &catalog).await;
+            held(&mut harness, "discard me").await;
+            harness.command(command);
+            within(harness.until(|event| matches!(event, UiEvent::ConversationCleared { .. })))
+                .await;
+            save_login(&harness);
+            harness.send(UiCommand::RetryHeldPrompt);
+            within(harness.until(|event| *event == UiEvent::LoginChanged { missing: false })).await;
+            harness.submit("next");
+            within(harness.until(finished(TurnOutcome::Completed))).await;
+            let request = codex.requests()[0].json().to_string();
+            assert!(request.contains("next"), "{command}: {request}");
+            assert!(!request.contains("discard me"), "{command}: {request}");
+        }
     }
 
     #[tokio::test]
