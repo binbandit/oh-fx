@@ -47,7 +47,7 @@ note = "Excluded JavaScript host FFI entrypoint; this ledger targets the native 
 upstream = "src/gateway/openai_codex.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/openai_codex.rs"]
-note = "Responses transport, admission once its credential headers are built, and replay are implemented; provisional tool-start delivery is tracked separately by OH-6 and must be verified against the merged base."
+note = "Responses transport, admission once its credential headers are built, replay, and tool-start and streamed tool input events are implemented; provisional tool status rows are tracked separately by OH-6."
 
 [[file]]
 upstream = "src/gateway/openai_codex_models.zig"
@@ -77,7 +77,7 @@ note = "Codex permission-review transport is implemented; shared reviewer routin
 upstream = "src/gateway/responses_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/responses_protocol.rs"]
-note = "Responses argument, text and reasoning reconciliation exists; provisional tool-start delivery is tracked by OH-6 and is not established by this baseline."
+note = "Responses argument, text and reasoning reconciliation exists, and function call starts and streamed argument chunks are reported where upstream calls on_tool_start and on_tool_input; provisional tool status rows are tracked by OH-6."
 
 [[file]]
 upstream = "src/gateway/sse.zig"

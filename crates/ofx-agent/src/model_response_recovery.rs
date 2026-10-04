@@ -87,9 +87,20 @@ pub(crate) enum Output {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolEvidence {
+    None,
+    ProvenUnexecuted,
+    Confirmed,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Strategy {
     RetryRequest,
     ContinueResponse,
+    RegenerateTool,
+    ContinueAfterTool,
+    ReconcileTool,
     WaitForConnectivity,
     ProbeLiveness,
     Stop,
@@ -100,6 +111,9 @@ impl Strategy {
         match self {
             Self::RetryRequest => Some(ModelRecoveryAction::RetryingRequest),
             Self::ContinueResponse => Some(ModelRecoveryAction::ContinuingResponse),
+            Self::RegenerateTool => Some(ModelRecoveryAction::RegeneratingTool),
+            Self::ContinueAfterTool => Some(ModelRecoveryAction::ContinuingAfterTool),
+            Self::ReconcileTool => Some(ModelRecoveryAction::ReconcilingTool),
             Self::WaitForConnectivity => Some(ModelRecoveryAction::WaitingForConnectivity),
             Self::ProbeLiveness => Some(ModelRecoveryAction::CheckingLiveness),
             Self::Stop => None,
@@ -114,6 +128,7 @@ pub(crate) struct Evidence {
     pub(crate) pacing: RetryPacing,
     pub(crate) progress: Progress,
     pub(crate) output: Output,
+    pub(crate) tool: ToolEvidence,
     pub(crate) recovery_elapsed: Option<Duration>,
 }
 
@@ -181,9 +196,12 @@ pub(crate) fn decide(evidence: Evidence) -> Decision {
         _ if throttled => THROTTLED_RETRY_DELAY,
         _ => retry_delay(next_pacing.attempt()),
     };
-    let strategy = match evidence.output {
-        Output::None => Strategy::RetryRequest,
-        Output::Partial => Strategy::ContinueResponse,
+    let strategy = match (evidence.tool, evidence.output) {
+        (ToolEvidence::ProvenUnexecuted, _) => Strategy::RegenerateTool,
+        (ToolEvidence::Confirmed, _) => Strategy::ContinueAfterTool,
+        (ToolEvidence::Uncertain, _) => Strategy::ReconcileTool,
+        (ToolEvidence::None, Output::Partial) => Strategy::ContinueResponse,
+        (ToolEvidence::None, Output::None) => Strategy::RetryRequest,
     };
     Decision::paced(strategy, delay, next_pacing)
 }
@@ -201,7 +219,7 @@ impl Recovery {
         cause: ModelRecoveryCause,
         error: &ProviderError,
         streamed_bytes: usize,
-        output: Output,
+        (output, tool): (Output, ToolEvidence),
     ) -> Decision {
         let started = *self.started.get_or_insert_with(Instant::now);
         let decision = decide(Evidence {
@@ -214,11 +232,20 @@ impl Recovery {
                 Progress::Unknown
             },
             output,
+            tool,
             recovery_elapsed: Some(started.elapsed()),
         });
         self.pacing = decision.next_pacing;
         decision
     }
+}
+
+pub(crate) fn failed_in_stream(cause: ModelRecoveryCause, error: &ProviderError) -> bool {
+    error.status.is_none()
+        && matches!(
+            cause,
+            ModelRecoveryCause::ProviderUnavailable | ModelRecoveryCause::RateLimited
+        )
 }
 
 fn tracks_progress(cause: ModelRecoveryCause, error: &ProviderError) -> bool {

@@ -2881,6 +2881,7 @@ mod reviews;
 mod shell_retries;
 mod skills;
 mod steering;
+mod tool_regeneration;
 mod turn_log;
 
 fn unconfigured_hold(tool_name: &str) -> String {
