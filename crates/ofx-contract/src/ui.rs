@@ -395,6 +395,10 @@ pub enum UiEvent {
     SessionResumed {
         history: Vec<HistoryEntry>,
     },
+    RecoveryContinuing {
+        prompt: String,
+        id: u64,
+    },
     ExitRequested,
 }
 

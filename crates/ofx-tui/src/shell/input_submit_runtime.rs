@@ -128,6 +128,7 @@ impl Shell<'_> {
                     state: SubmissionState::Queued,
                     turn_id: None,
                     sequence: self.submitted_prompts,
+                    presented: false,
                 });
                 self.submitted_prompts += 1;
                 self.send(UiCommand::Submit { prompt, skills });
