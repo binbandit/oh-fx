@@ -15,7 +15,7 @@ pub use ask_user_question::{AskUserQuestion, answered_questions};
 pub use capability_search::CapabilitySearch;
 pub use filesystem::{EditFile, GlobFiles, GrepFiles, ReadFile, WriteFile};
 pub use shell::Shell;
-pub use skill::SkillTool;
+pub use skill::{SkillTool, resumed_skill_description};
 pub use subagent::SubagentTool;
 pub use web::{WebFetch, WebFetchProgress, WebSearch};
 
