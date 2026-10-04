@@ -7,6 +7,7 @@ mod session_picker;
 mod session_titles;
 mod shell_recovery;
 
+use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{Agent, ChildStore};
@@ -66,10 +67,10 @@ impl ResumedSession {
         Ok(resumed)
     }
 
-    pub(crate) fn take_pending_recovery(&mut self) -> Option<PendingRecovery> {
+    pub(crate) fn take_continuation(&mut self) -> bool {
         self.recovery
             .as_mut()
-            .and_then(|recovery| recovery.pending.take())
+            .is_some_and(|recovery| mem::take(&mut recovery.continues))
     }
 
     pub fn open_for_ask(
@@ -143,19 +144,10 @@ pub fn recovered_turn(
     pending: PendingRecovery,
     setup: &AgentSetup,
 ) -> Result<RecoveredTurn, SessionError> {
-    continued_turn(pending, setup, setup.model(), setup.fast_mode())
-}
-
-pub(crate) fn continued_turn(
-    pending: PendingRecovery,
-    setup: &AgentSetup,
-    model: &str,
-    fast_mode: bool,
-) -> Result<RecoveredTurn, SessionError> {
     if !pending.authorizes(setup.route_credential()) {
         return Err(SessionError::RecoveryCredentialAuthorityChanged);
     }
-    Ok(pending.into_turn(&running_provider(setup)?, model, fast_mode))
+    Ok(pending.into_turn(&running_provider(setup)?, setup.model(), setup.fast_mode()))
 }
 
 pub struct LiveSession {
@@ -213,6 +205,19 @@ impl LiveSession {
 
     pub fn observe_prompt(&self, prompt: &str) {
         self.session().observe_prompt(prompt);
+    }
+
+    pub(crate) fn continue_recovery(
+        &self,
+        setup: &AgentSetup,
+        model: &str,
+        fast_mode: bool,
+    ) -> Result<RecoveredTurn, SessionError> {
+        let provider = running_provider(setup)?;
+        let pending = self
+            .session()
+            .take_authorized_recovery(setup.route_credential())?;
+        Ok(pending.into_turn(&provider, model, fast_mode))
     }
 
     pub(crate) fn settle_open_recovery(&self, agent: &mut Agent) -> Result<(), SessionError> {

@@ -312,6 +312,18 @@ impl WritableSession {
         }
     }
 
+    pub fn take_authorized_recovery(
+        &mut self,
+        credential: RouteCredential,
+    ) -> Result<PendingRecovery, SessionError> {
+        match &self.recovery {
+            Recovery::Pending(checkpoint) if !checkpoint.authorizes(credential) => {
+                Err(SessionError::RecoveryCredentialAuthorityChanged)
+            }
+            _ => self.take_recovery().ok_or(SessionError::NoPendingRecovery),
+        }
+    }
+
     pub fn take_recovery(&mut self) -> Option<PendingRecovery> {
         match mem::take(&mut self.recovery) {
             Recovery::Pending(checkpoint) => {

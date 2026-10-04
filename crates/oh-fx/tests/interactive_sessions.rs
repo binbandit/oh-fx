@@ -1970,6 +1970,10 @@ const CONFIGURED_IDENTITY: &str =
     "40122b758656199048961e6e8369383c25ebcdeddced75b64ad736e527014da8";
 
 fn pause_a_response(home: &Home, id: &str) {
+    pause_a_response_under(home, id, CONFIGURED_IDENTITY);
+}
+
+fn pause_a_response_under(home: &Home, id: &str, credential: &str) {
     let checkpoint = json!({
         "version": 2,
         "turn_id": 2,
@@ -1989,7 +1993,7 @@ fn pause_a_response(home: &Home, id: &str) {
             "provider": home.metadata(id)["provider"],
             "model": "model-a",
             "credential_source": "configured",
-            "credential_identity": CONFIGURED_IDENTITY
+            "credential_identity": credential
         },
         "requested_fast_mode": false,
         "fast_mode": false,
@@ -2131,6 +2135,59 @@ fn a_paused_turn_a_compaction_left_open_is_committed_when_the_next_prompt_arrive
             "turn_completed"
         ]
     );
+    let sent = chat(&server.requests()[1]);
+    assert!(
+        sent.iter()
+            .any(|(role, content)| role == "user" && content == "fix the build"),
+        "{sent:?}"
+    );
+    assert_eq!(
+        sent.last(),
+        Some(&("user".to_owned(), "next question".to_owned()))
+    );
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+}
+
+#[test]
+fn a_refused_continuation_leaves_the_paused_turn_for_the_next_prompt_to_commit() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    home.append(&id, &frame(4, &json!({"user": {"text": "fix the build"}})));
+    home.append(
+        &id,
+        &frame(
+            5,
+            &json!({"context_checkpoint": {"covers_through_seq": 3, "summary": "<summary>first question answered</summary>"}}),
+        ),
+    );
+    pause_a_response_under(&home, &id, &"ab".repeat(32));
+
+    let session = home.shell(&["-c"], "could not continue automatically");
+    assert_eq!(kinds(&home.frames(&id)).len(), 5);
+    session.send(b"next question\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    let frames = home.frames(&id);
+    assert_eq!(
+        kinds(&frames)[4..],
+        [
+            "context_checkpoint",
+            "interrupted",
+            "user",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+    assert_eq!(frames[6]["event"]["user"]["text"], "next question");
+    assert_eq!(server.requests().len(), 2);
     let sent = chat(&server.requests()[1]);
     assert!(
         sent.iter()
