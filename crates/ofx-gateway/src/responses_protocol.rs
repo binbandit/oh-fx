@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use ofx_contract::{
-    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolSpec, Usage,
+    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance,
+    ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
 use serde_json::Value;
@@ -389,8 +390,9 @@ fn validate_replay_message(
         if call.arguments.len() > limits.tool_arguments_bytes {
             return Err(ResponsesError::ToolArgumentsTooLarge);
         }
-        if ToolArgumentIntegrity::classify_function_input(&call.arguments)
-            != ToolArgumentIntegrity::Valid
+        if call.provenance != ToolExecutionProvenance::ProviderExecuted
+            && ToolArgumentIntegrity::classify_function_input(&call.arguments)
+                != ToolArgumentIntegrity::Valid
         {
             return Err(ResponsesError::InvalidToolArguments);
         }
