@@ -2,12 +2,15 @@ use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::thread;
+use std::time::Duration;
 
 use ofx_config::ProfilePaths;
 use ofx_upgrade::{UpgradeControl, UpgradeError, UpgradeLock, UpgradeOutcome, UpgradeProgress};
 use serde_json::json;
 
 const CLEAR_LINE: &str = "\r\x1b[K";
+const FOUND_HOLD: Duration = Duration::from_millis(150);
 
 pub(crate) fn run_in_background() -> ExitCode {
     if let Some(lock) = UpgradeLock::try_acquire(&state_directory()) {
@@ -57,7 +60,7 @@ async fn upgrade(show_progress: bool, lock: &UpgradeLock) -> Result<UpgradeOutco
         ..ofx_http::ConnectionOptions::default()
     })
     .map_err(|_| UpgradeError::FetchFailed)?;
-    let mut progress = ProgressLine::new(show_progress);
+    let mut progress = ProgressLine::new(show_progress, io::stderr());
     let control = UpgradeControl::new();
     let outcome =
         ofx_upgrade::upgrade(&client, lock, &control, |update| progress.show(update)).await;
@@ -94,18 +97,20 @@ fn text_report(outcome: &Result<UpgradeOutcome, UpgradeError>) -> String {
     }
 }
 
-struct ProgressLine {
+struct ProgressLine<W> {
     enabled: bool,
-    drawn: bool,
-    last_percent: Option<u64>,
+    total_known: bool,
+    shown: Option<String>,
+    output: W,
 }
 
-impl ProgressLine {
-    fn new(enabled: bool) -> Self {
+impl<W: Write> ProgressLine<W> {
+    fn new(enabled: bool, output: W) -> Self {
         Self {
             enabled,
-            drawn: false,
-            last_percent: None,
+            total_known: false,
+            shown: None,
+            output,
         }
     }
 
@@ -119,30 +124,98 @@ impl ProgressLine {
                 received,
                 total: Some(total),
             } if total > 0 => {
-                let percent = received * 100 / total;
-                if self.last_percent == Some(percent) {
-                    return;
-                }
-                self.last_percent = Some(percent);
-                format!("{percent}%")
+                self.total_known = true;
+                format!("{}%", received.min(total) * 100 / total)
             }
-            UpgradeProgress::Downloading { .. } => "upgrading...".to_owned(),
-            UpgradeProgress::Installing if self.last_percent == Some(100) => return,
-            UpgradeProgress::Installing => "100%".to_owned(),
+            UpgradeProgress::Installing if self.total_known => "100%".to_owned(),
+            UpgradeProgress::Downloading { .. } | UpgradeProgress::Installing => {
+                "upgrading...".to_owned()
+            }
         };
+        if self.shown.as_ref() == Some(&text) {
+            return;
+        }
         self.draw(&text);
+        self.shown = Some(text);
+        if matches!(progress, UpgradeProgress::Found { .. }) {
+            thread::sleep(FOUND_HOLD);
+        }
     }
 
     fn clear(&mut self) {
-        if self.drawn {
+        if self.shown.take().is_some() {
             self.draw("");
         }
     }
 
     fn draw(&mut self, text: &str) {
-        let mut stderr = io::stderr().lock();
-        let _ = write!(stderr, "{CLEAR_LINE}{text}");
-        let _ = stderr.flush();
-        self.drawn = true;
+        let _ = write!(self.output, "{CLEAR_LINE}{text}");
+        let _ = self.output.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use semver::Version;
+
+    use super::*;
+
+    #[test]
+    fn the_found_line_stays_up_before_the_download_replaces_it_as_upstream_does() {
+        let (current, latest) = (Version::new(0, 1, 0), Version::new(0, 2, 0));
+        let found = UpgradeProgress::Found {
+            current: &current,
+            latest: &latest,
+        };
+        let mut shown = ProgressLine::new(true, Vec::new());
+        let started = Instant::now();
+        shown.show(found);
+        assert!(started.elapsed() >= FOUND_HOLD, "{:?}", started.elapsed());
+        assert_eq!(shown.output, b"\r\x1b[Koh-fx 0.1.0 -> 0.2.0");
+        let mut quiet = ProgressLine::new(false, Vec::new());
+        let started = Instant::now();
+        quiet.show(found);
+        assert!(started.elapsed() < FOUND_HOLD);
+        assert!(quiet.output.is_empty());
+    }
+
+    fn drawn(events: &[UpgradeProgress<'_>]) -> String {
+        let mut line = ProgressLine::new(true, Vec::new());
+        for event in events {
+            line.show(*event);
+        }
+        String::from_utf8(line.output)
+            .unwrap()
+            .replace(CLEAR_LINE, "|")
+    }
+
+    #[test]
+    fn download_progress_clamps_to_100_and_unknown_lengths_stay_plain_as_upstream_does() {
+        assert_eq!(
+            drawn(&[
+                UpgradeProgress::Downloading {
+                    received: 50,
+                    total: Some(200),
+                },
+                UpgradeProgress::Downloading {
+                    received: 300,
+                    total: Some(200),
+                },
+                UpgradeProgress::Installing,
+            ]),
+            "|25%|100%"
+        );
+        assert_eq!(
+            drawn(&[
+                UpgradeProgress::Downloading {
+                    received: 50,
+                    total: None,
+                },
+                UpgradeProgress::Installing,
+            ]),
+            "|upgrading..."
+        );
     }
 }

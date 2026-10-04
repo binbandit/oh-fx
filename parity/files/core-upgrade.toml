@@ -24,6 +24,6 @@ note = "Downloads stay in memory and stage next to the executable, so the stale 
 
 [[file]]
 upstream = "src/core/upgrade/upgrade_runtime.zig"
-status = "partial"
-modules = ["crates/ofx-upgrade/src/upgrade.rs"]
-note = "Checksum-verified upgrade flow exists; stable/development channel targets and revision comparison are missing; one GitHub release stream is documented."
+status = "ported"
+modules = ["crates/ofx-upgrade/src/upgrade.rs", "crates/oh-fx/src/upgrade_command.rs"]
+note = "The stable flow, the text and JSON reports, and the progress line with its found-line pause and clamped percentages are ported; upstream's channel targets and revision comparison serve its two channels, and the command checks more before installing, as docs/differences/upgrade.md records."

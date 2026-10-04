@@ -29,6 +29,7 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 ofx-testkit.workspace = true
+semver.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 tempfile.workspace = true
 
