@@ -88,6 +88,10 @@ impl ControllerState {
         &self.permissions
     }
 
+    pub(crate) fn effort(&self) -> &ReasoningEffort {
+        &self.effort
+    }
+
     pub(crate) fn fast_mode(&self) -> bool {
         self.fast_mode
     }
@@ -537,6 +541,9 @@ impl Controller {
                 UiCommand::ToggleStatusline { item } => self.state.flip_statusline(item),
                 UiCommand::StepSetting { setting, delta } => {
                     self.step_setting(setting, delta).await;
+                }
+                UiCommand::SelectModelFromSettings { model } => {
+                    self.select_model_from_settings(model).await;
                 }
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
@@ -1077,6 +1084,9 @@ fn run_deferred(
         UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
         UiCommand::StepSetting { setting, delta } => {
             return catalog.step_setting(state, persistence, setting, delta, work);
+        }
+        UiCommand::SelectModelFromSettings { model } => {
+            return catalog.select_model_from_settings(state, persistence, model, work);
         }
         UiCommand::FullAccessWarningShown => {
             return state.permissions.full_access_warning_shown();
@@ -2600,6 +2610,8 @@ mod tests {
             last_settings(shown),
             SettingsSnapshot {
                 model: "model-a".to_owned(),
+                effort: "default".to_owned(),
+                reasoning_efforts: Vec::new(),
                 fast_mode: FastModeSetting::Unavailable,
                 permission_mode: PermissionMode::Auto,
                 statusline: StatuslineToggles::default(),
@@ -2754,6 +2766,94 @@ mod tests {
             saved_settings(&harness)["prompt_history"],
             json!({"enabled": false})
         );
+    }
+
+    #[tokio::test]
+    async fn the_effort_row_steps_through_the_model_s_efforts_and_saves_the_choice() {
+        let codex = FakeServer::start([codex_text("thought")]);
+        let catalog = codex_catalog(false, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.command("/settings");
+        let opened = last_settings(harness.until(settings_opened).await);
+        assert_eq!(opened.effort, "default");
+        assert_eq!(opened.reasoning_efforts, ["low"]);
+        let shown = step_setting(&mut harness, SettingId::Effort, 1).await;
+        assert_eq!(notice_body(&shown), Vec::<String>::new());
+        assert_eq!(last_settings(&shown).effort, "low");
+        harness.submit("think");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(codex.requests()[0].json()["reasoning"]["effort"], "low");
+        assert_eq!(saved_settings(&harness)["effort"], "low");
+        let shown = step_setting(&mut harness, SettingId::Effort, 1).await;
+        assert_eq!(last_settings(&shown).effort, "default");
+        assert_eq!(saved_settings(&harness)["effort"], "auto");
+    }
+
+    #[tokio::test]
+    async fn a_model_picked_from_the_settings_menu_keeps_the_effort_and_fast_mode() {
+        let codex = FakeServer::start([codex_text("picked")]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.command("/settings");
+        harness.until(settings_opened).await;
+        step_setting(&mut harness, SettingId::Effort, 1).await;
+        step_setting(&mut harness, SettingId::FastMode, 1).await;
+        harness.send(UiCommand::SelectModelFromSettings {
+            model: OTHER_CODEX_MODEL.to_owned(),
+        });
+        let shown = harness.until(settings_changed).await.to_vec();
+        assert_eq!(
+            notice_body(&shown),
+            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+        );
+        assert!(shown.contains(&UiEvent::ModelSelected {
+            model: OTHER_CODEX_MODEL.to_owned(),
+        }));
+        let snapshot = last_settings(&shown);
+        assert_eq!(snapshot.model, OTHER_CODEX_MODEL);
+        assert_eq!(snapshot.effort, "low");
+        assert_eq!(snapshot.fast_mode, FastModeSetting::On);
+        harness.submit("go");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let request = codex.requests()[0].json();
+        assert_eq!(request["model"], OTHER_CODEX_MODEL);
+        assert_eq!(request["reasoning"]["effort"], "low");
+        assert_eq!(request["service_tier"], "priority");
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["models"]["codex"], OTHER_CODEX_MODEL);
+        assert_eq!(saved["effort"], "low");
+        assert_eq!(saved["fast_mode"], true);
+    }
+
+    #[tokio::test]
+    async fn a_model_picked_from_the_settings_menu_during_a_turn_serves_the_next_turn() {
+        let gate = Gate::default();
+        let codex = FakeServer::start([codex_text("first").after(&gate), codex_text("second")]);
+        let catalog = codex_catalog(false, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.submit("work");
+        harness
+            .until(|event| matches!(event, UiEvent::TurnStarted { .. }))
+            .await;
+        harness.command("/settings");
+        within(harness.until(settings_opened)).await;
+        harness.send(UiCommand::SelectModelFromSettings {
+            model: OTHER_CODEX_MODEL.to_owned(),
+        });
+        let shown = within(harness.until(settings_changed)).await.to_vec();
+        assert_eq!(last_settings(&shown).model, OTHER_CODEX_MODEL);
+        assert!(
+            !shown
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnFinished { .. }))
+        );
+        gate.open();
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.submit("next");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        assert_ne!(requests[0].json()["model"], OTHER_CODEX_MODEL);
+        assert_eq!(requests[1].json()["model"], OTHER_CODEX_MODEL);
     }
 
     #[tokio::test]

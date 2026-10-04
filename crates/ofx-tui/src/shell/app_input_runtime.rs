@@ -114,7 +114,7 @@ impl Shell<'_> {
         self.sync_settings_menu(edited);
         self.sync_skills_menu();
         self.sync_picker_query();
-        self.sync_model_menu();
+        self.sync_model_menu(edited);
         self.settle_model_draft();
         self.ensure_catalog();
         Ok(())

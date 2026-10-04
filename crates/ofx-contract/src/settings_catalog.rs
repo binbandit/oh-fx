@@ -47,6 +47,7 @@ pub enum SettingId {
     StatuslineSession,
     StatuslineWorkspace,
     Model,
+    Effort,
     FastMode,
     PermissionMode,
     SessionTitles,
@@ -61,6 +62,7 @@ impl SettingId {
             Self::StatuslineSession => "statusline_session",
             Self::StatuslineWorkspace => "statusline_workspace",
             Self::Model => "model",
+            Self::Effort => "effort",
             Self::FastMode => "fast_mode",
             Self::PermissionMode => "permission_mode",
             Self::SessionTitles => "session_titles",
@@ -99,6 +101,8 @@ impl FastModeSetting {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsSnapshot {
     pub model: String,
+    pub effort: String,
+    pub reasoning_efforts: Vec<String>,
     pub fast_mode: FastModeSetting,
     pub permission_mode: PermissionMode,
     pub statusline: StatuslineToggles,
@@ -114,6 +118,7 @@ impl SettingsSnapshot {
         }
         match id {
             SettingId::Model => &self.model,
+            SettingId::Effort => &self.effort,
             SettingId::FastMode => on_off(self.fast_mode == FastModeSetting::On),
             SettingId::PermissionMode => self.permission_mode.display_label(),
             SettingId::SessionTitles => on_off(self.session_titles),
@@ -125,15 +130,28 @@ impl SettingsSnapshot {
     pub fn option_count(&self, id: SettingId) -> usize {
         match id {
             SettingId::Model => 0,
+            SettingId::Effort
+                if self.reasoning_efforts.is_empty()
+                    && self.effort.eq_ignore_ascii_case(DEFAULT_EFFORT) =>
+            {
+                0
+            }
+            SettingId::Effort => self.reasoning_efforts.len() + 1,
             SettingId::FastMode if self.fast_mode == FastModeSetting::Unavailable => 0,
             SettingId::PermissionMode => PERMISSION_OPTIONS.len(),
             _ => ON_OFF_OPTIONS.len(),
         }
     }
 
-    pub fn option_at(&self, id: SettingId, index: usize) -> Option<&'static str> {
+    pub fn option_at(&self, id: SettingId, index: usize) -> Option<&str> {
         if index >= self.option_count(id) {
             return None;
+        }
+        if id == SettingId::Effort {
+            return match index {
+                0 => Some(DEFAULT_EFFORT),
+                _ => self.reasoning_efforts.get(index - 1).map(String::as_str),
+            };
         }
         let options: &[&'static str] = if id == SettingId::PermissionMode {
             &PERMISSION_OPTIONS
@@ -164,7 +182,7 @@ impl SettingsSnapshot {
     pub fn change_at(&self, id: SettingId, index: usize) -> Option<SettingChange> {
         Some(SettingChange {
             setting: id,
-            value: self.option_at(id, index)?,
+            value: self.option_at(id, index)?.to_owned(),
         })
     }
 
@@ -218,15 +236,15 @@ pub struct SettingItem<'a> {
     pub value: &'a str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingChange {
     pub setting: SettingId,
-    pub value: &'static str,
+    pub value: String,
 }
 
 impl SettingChange {
-    pub fn enabled(self) -> Option<bool> {
-        match self.value {
+    pub fn enabled(&self) -> Option<bool> {
+        match self.value.as_str() {
             "on" => Some(true),
             "off" => Some(false),
             _ => None,
@@ -241,7 +259,7 @@ struct Spec {
     description: &'static str,
 }
 
-const SPECS: [Spec; 9] = [
+const SPECS: [Spec; 10] = [
     Spec {
         id: SettingId::StatuslineContext,
         category: SettingCategory::Interface,
@@ -265,6 +283,12 @@ const SPECS: [Spec; 9] = [
         category: SettingCategory::Agent,
         label: "Model",
         description: "Choose the model used for new turns",
+    },
+    Spec {
+        id: SettingId::Effort,
+        category: SettingCategory::Agent,
+        label: "Reasoning effort",
+        description: "Control how much reasoning the model applies",
     },
     Spec {
         id: SettingId::FastMode,
@@ -299,6 +323,7 @@ const SPECS: [Spec; 9] = [
 ];
 
 const ON_OFF_OPTIONS: [&str; 2] = ["off", "on"];
+const DEFAULT_EFFORT: &str = "default";
 const PERMISSION_OPTIONS: [&str; 3] = ["ask", "auto", "full access"];
 
 const fn on_off(enabled: bool) -> &'static str {

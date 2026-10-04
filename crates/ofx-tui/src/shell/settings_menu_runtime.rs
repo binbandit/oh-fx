@@ -1,9 +1,10 @@
 use ofx_contract::{SettingCategory, SettingId, SettingsSnapshot, UiCommand};
 
 use super::Shell;
+use super::model_menu::ModelMenu;
 use crate::footer::settings_menu_presentation::{
-    MAX_INLINE_ROWS, SettingsView, settings_menu_hint_row, settings_menu_rows,
-    visible_items_for_budget,
+    InlineModels, MAX_INLINE_ROWS, SettingsView, settings_menu_hint_row, settings_menu_rows,
+    visible_items_for_budget, visible_model_items_for_budget,
 };
 use crate::input::{Action, InputEvent};
 use crate::row_text::Row;
@@ -26,14 +27,21 @@ impl SettingsMenu {
         }
     }
 
-    fn view<'a>(&'a self, query: &'a str) -> SettingsView<'a> {
+    fn view<'a>(&'a self, query: &'a str, models: Option<InlineModels<'a>>) -> SettingsView<'a> {
         SettingsView {
             snapshot: &self.snapshot,
             category: self.category,
             query,
             selected: self.selected,
             window_start: self.window_start,
+            models,
         }
+    }
+
+    fn selected_setting(&self, query: &str) -> Option<SettingId> {
+        let count = self.snapshot.filtered_count(self.category, query);
+        let index = self.selected.checked_rem(count)?;
+        Some(self.snapshot.item_at(self.category, query, index)?.id)
     }
 
     fn reset_for_query(&mut self) {
@@ -92,7 +100,7 @@ impl Shell<'_> {
         let query = self.composer.text();
         let rows = settings_menu_rows(
             &self.theme,
-            menu.view(query),
+            menu.view(query, self.inline_models()),
             self.menu_budget(MAX_INLINE_ROWS),
             self.cols(),
         );
@@ -119,7 +127,7 @@ impl Shell<'_> {
     fn route_settings_menu_key(&mut self, event: &InputEvent) -> bool {
         match event {
             InputEvent::Raw(raw) => match raw.byte {
-                b'\r' => true,
+                b'\r' => self.submit_settings_menu_selection(),
                 b'\t' => self.cycle_settings_category(1),
                 10 => self.move_settings_menu(1),
                 11 => self.move_settings_menu(-1),
@@ -154,9 +162,17 @@ impl Shell<'_> {
         }
     }
 
+    fn inline_models(&self) -> Option<InlineModels<'_>> {
+        self.model_menu.as_ref().map(|menu| InlineModels {
+            menu,
+            catalog: &self.catalog,
+        })
+    }
+
     fn cycle_settings_category(&mut self, delta: isize) -> bool {
         if let Some(menu) = &mut self.settings_menu {
             menu.cycle_category(delta);
+            self.model_menu = None;
         }
         true
     }
@@ -164,28 +180,86 @@ impl Shell<'_> {
     fn move_settings_menu(&mut self, delta: isize) -> bool {
         let budget = self.menu_budget(MAX_INLINE_ROWS);
         let query = self.composer.text();
+        let Some(menu) = &self.settings_menu else {
+            return true;
+        };
+        let view = menu.view(query, self.inline_models());
+        if self.model_menu.is_some() {
+            let visible = visible_model_items_for_budget(view, budget).max(1);
+            if let Some(models) = &mut self.model_menu {
+                models.move_selection(self.catalog.models(), delta, visible);
+            }
+            return true;
+        }
+        let visible = visible_items_for_budget(view, budget);
         if let Some(menu) = &mut self.settings_menu {
-            let visible = visible_items_for_budget(menu.view(query), budget);
             menu.moved(query, delta, visible);
         }
         true
     }
 
     fn change_selected_setting(&mut self, delta: isize) -> bool {
-        let query = self.composer.text();
-        let setting = self.settings_menu.as_ref().and_then(|menu| {
-            let count = menu.snapshot.filtered_count(menu.category, query);
-            let index = menu.selected.checked_rem(count)?;
-            let item = menu.snapshot.item_at(menu.category, query, index)?;
-            (menu.snapshot.option_count(item.id) > 0).then_some(item.id)
-        });
-        if let Some(setting) = setting {
-            if setting == SettingId::PromptHistory {
-                self.prompt_history_stepped();
+        if self.model_menu.is_some() {
+            if delta < 0 {
+                self.apply_inline_settings_model_selection();
             }
-            self.send(UiCommand::StepSetting { setting, delta });
+            return true;
+        }
+        let query = self.composer.text();
+        let Some(menu) = &self.settings_menu else {
+            return true;
+        };
+        let Some(setting) = menu.selected_setting(query) else {
+            return true;
+        };
+        if setting == SettingId::Model {
+            if delta > 0 {
+                self.open_inline_settings_models();
+            }
+            return true;
+        }
+        if menu.snapshot.option_count(setting) == 0 {
+            return true;
+        }
+        if setting == SettingId::PromptHistory {
+            self.prompt_history_stepped();
+        }
+        self.send(UiCommand::StepSetting { setting, delta });
+        true
+    }
+
+    fn submit_settings_menu_selection(&mut self) -> bool {
+        if self.model_menu.is_some() {
+            self.apply_inline_settings_model_selection();
+            return true;
+        }
+        let query = self.composer.text();
+        let selected = self
+            .settings_menu
+            .as_ref()
+            .and_then(|menu| menu.selected_setting(query));
+        if selected == Some(SettingId::Model) {
+            self.open_inline_settings_models();
         }
         true
+    }
+
+    fn open_inline_settings_models(&mut self) {
+        self.model_menu = Some(ModelMenu::default());
+        self.request_catalog(true);
+    }
+
+    fn apply_inline_settings_model_selection(&mut self) {
+        let Some(model) = self
+            .model_menu
+            .as_ref()
+            .and_then(|menu| menu.selected_id(self.catalog.models()))
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        self.send(UiCommand::SelectModelFromSettings { model });
+        self.model_menu = None;
     }
 }
 
