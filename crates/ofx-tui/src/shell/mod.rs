@@ -19,6 +19,7 @@ pub(crate) mod question_prompt;
 mod session_picker_runtime;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
+mod statusline_menu_runtime;
 #[cfg(test)]
 mod test_shell;
 
@@ -51,6 +52,7 @@ use picker_state::ModelFlow;
 use question_prompt::QuestionPrompt;
 use session_picker_runtime::SessionPicker;
 use skills_menu::SkillsMenu;
+use statusline_menu_runtime::StatuslineMenu;
 
 use crate::composer::{Composer, ComposerStash};
 use crate::footer::help_menu_presentation::HELP_MENU_HINTS;
@@ -228,6 +230,7 @@ pub(crate) struct Shell<'a> {
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
     help_menu: Option<HelpMenu>,
+    statusline_menu: Option<StatuslineMenu>,
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     kept_recovery: Option<RecoveryStatus>,
     session_title: Option<String>,
@@ -417,6 +420,7 @@ impl<'a> Shell<'a> {
             question: None,
             skills_menu: None,
             help_menu: None,
+            statusline_menu: None,
             skill_catalog,
             kept_recovery: None,
             session_title: None,
@@ -587,9 +591,8 @@ impl<'a> Shell<'a> {
         self.frame.stale = false;
         self.frame.drawn_activity = self.activity_phase(now_ms);
         let appended = self.transcript.take_new_rows(&self.theme);
-        let catalog_menu = self.catalog_menu_band();
         self.statusline.refresh();
-        let (hint, warning_included) = self.hint_row(catalog_menu.as_ref().map(|(_, hint)| *hint));
+        let (menu_band, hint, warning_included) = self.menu_band_and_hint();
         let activity = if self.question.is_some() {
             Vec::new()
         } else {
@@ -615,7 +618,7 @@ impl<'a> Shell<'a> {
             }
         });
         let input_extra = composer.rows.len().saturating_sub(1);
-        let column = if catalog_menu.is_none() {
+        let column = if menu_band.is_none() {
             self.inline_column_band(input_extra, banner_rows)
         } else {
             Vec::new()
@@ -625,8 +628,8 @@ impl<'a> Shell<'a> {
         } else {
             PickerBand::default()
         };
-        let menu = match catalog_menu {
-            Some((rows, _)) => rows,
+        let menu = match menu_band {
+            Some(rows) => rows,
             None if column.is_empty() => picker.rows,
             None => column,
         };
@@ -676,6 +679,15 @@ impl<'a> Shell<'a> {
             self.acknowledge_file_picker(receipt);
         }
         Ok(())
+    }
+
+    fn menu_band_and_hint(&self) -> (Option<Vec<Row>>, Row, bool) {
+        if let Some((band, hint)) = self.statusline_menu_band() {
+            return (Some(band), hint, false);
+        }
+        let catalog_menu = self.catalog_menu_band();
+        let (hint, warning_included) = self.hint_row(catalog_menu.as_ref().map(|(_, hint)| *hint));
+        (catalog_menu.map(|(rows, _)| rows), hint, warning_included)
     }
 
     fn catalog_menu_band(&self) -> Option<(Vec<Row>, MenuHint)> {

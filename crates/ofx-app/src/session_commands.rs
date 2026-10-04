@@ -223,7 +223,7 @@ pub(crate) fn handle_statusline(
 ) -> Vec<UiEvent> {
     let requested = rest.trim_matches(SEPARATORS);
     if requested.is_empty() {
-        return vec![notice_event(statusline_status(*toggles))];
+        return vec![UiEvent::StatuslineMenuOpened];
     }
     let Some(item) = StatuslineItem::ALL
         .into_iter()
@@ -265,11 +265,22 @@ pub(crate) fn handle_statusline(
     events
 }
 
-fn statusline_status(toggles: StatuslineToggles) -> Notice {
-    let body = StatuslineItem::ALL
-        .map(|item| format!("{}: {}", item.label(), on_off(toggles.enabled(item))))
-        .join("\n");
-    Notice::new(NoticeTone::Neutral, STATUSLINE_TOPIC, body)
+pub(crate) fn set_statusline(
+    access: &SettingsAccess<'_>,
+    toggles: &mut StatuslineToggles,
+    item: StatuslineItem,
+    enabled: bool,
+) -> Vec<UiEvent> {
+    toggles.set(item, enabled);
+    let mut events = vec![UiEvent::StatuslineChanged { item, enabled }];
+    let saved = match access.paths {
+        Some(paths) => save_statusline_item(paths, item, enabled).map_err(Unsaved::Failed),
+        None => Err(Unsaved::HomeNotSet),
+    };
+    if let Err(unsaved) = saved {
+        events.push(notice_event(unsaved_notice(STATUSLINE_TOPIC, &unsaved)));
+    }
+    events
 }
 
 const fn statusline_field(item: StatuslineItem) -> &'static str {

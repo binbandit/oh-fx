@@ -6,7 +6,7 @@ use ofx_config::save_model_preference;
 use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelOption, Notice, NoticeTone,
     ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor, SessionScope,
-    SkillBinding, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
+    SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -24,7 +24,7 @@ use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle}
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
-use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline};
+use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline, set_statusline};
 use crate::skills::HostSkills;
 use crate::user_settings::{self, unsaved_notice};
 
@@ -137,6 +137,17 @@ impl ControllerState {
             tool_names: Vec::new(),
         };
         for event in handle_statusline(&access, &mut self.statusline, payload) {
+            self.emit(event);
+        }
+    }
+
+    pub(crate) fn set_statusline(&mut self, item: StatuslineItem, enabled: bool) {
+        let access = SettingsAccess {
+            paths: self.setup.preferences(),
+            workspace_root: self.setup.workspace_root(),
+            tool_names: Vec::new(),
+        };
+        for event in set_statusline(&access, &mut self.statusline, item, enabled) {
             self.emit(event);
         }
     }
@@ -456,6 +467,9 @@ impl Controller {
                     self.change_model(ModelChange::Pick(pick)).await;
                 }
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
+                UiCommand::SetStatusline { item, enabled } => {
+                    self.state.set_statusline(item, enabled);
+                }
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
                 }
@@ -874,6 +888,9 @@ fn run_deferred(
         }),
         UiCommand::ListModels => return catalog.request(),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
+        UiCommand::SetStatusline { item, enabled } => {
+            return state.set_statusline(item, enabled);
+        }
         UiCommand::FullAccessWarningShown => {
             return state.permissions.full_access_warning_shown();
         }
@@ -2877,9 +2894,26 @@ mod tests {
         assert!(setup.statusline().enabled(StatuslineItem::Context));
         let mut harness = Harness::with_setup(home, setup);
         harness.command("/statusline");
+        harness
+            .until(|event| matches!(event, UiEvent::StatuslineMenuOpened))
+            .await;
+        harness.send(UiCommand::SetStatusline {
+            item: StatuslineItem::Session,
+            enabled: true,
+        });
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::StatuslineChanged { .. }))
+            .await;
         assert_eq!(
-            notices_until(&mut harness, "statusline").await,
-            ["statusline|context: on\nsession: off\nworkspace: off"]
+            shown,
+            [UiEvent::StatuslineChanged {
+                item: StatuslineItem::Session,
+                enabled: true,
+            }]
+        );
+        assert_eq!(
+            saved_settings(&harness)["statusLine"],
+            json!({"context": true, "session": true})
         );
         harness.command("/statusline context");
         let shown = harness
@@ -2903,7 +2937,7 @@ mod tests {
         );
         assert_eq!(
             saved_settings(&harness)["statusLine"],
-            json!({"context": false})
+            json!({"context": false, "session": true})
         );
         harness.command("/statusline workspace");
         notices_until(&mut harness, "statusline").await;
@@ -2917,7 +2951,7 @@ mod tests {
         );
         assert_eq!(
             saved_settings(&harness)["statusLine"],
-            json!({"context": false, "workspace": true})
+            json!({"context": false, "session": true, "workspace": true})
         );
     }
 

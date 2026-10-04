@@ -512,6 +512,34 @@ fn a_terminal_theme_switch_redraws_in_the_light_palette_with_no_key_pressed() {
 }
 
 #[test]
+fn the_statusline_menu_toggles_a_segment_in_place_and_saves_it_silently() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    fs::create_dir_all(home.workspace.join(".git")).expect("create the git directory");
+    fs::write(home.workspace.join(".git/HEAD"), "ref: refs/heads/menu\n").expect("write HEAD");
+    let mut session = home.shell(30, 120);
+    session.send(b"/statusline\r");
+    let screen = wait(&session, "↑↓ navigate     ←→ change     esc close");
+    for row in [
+        "Status line",
+        "  Context      off  on",
+        "  Session      off  on",
+        "  Workspace    off  on",
+    ] {
+        assert!(screen.contains(row), "{row}\n{screen}");
+    }
+    assert!(!screen.contains("auto · model-a"), "{screen}");
+    session.send(b"\x1b[B\x1b[B\r");
+    wait_saved(&home, "statusLine", &json!({"workspace": true}));
+    session.send(b"\x1b");
+    let screen = wait(&session, "workspace (menu)");
+    assert!(!screen.contains("Status line"), "{screen}");
+    assert!(!screen.contains("* statusline"), "{screen}");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
 fn statusline_toggles_the_context_and_workspace_segments() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["Noted."])),
@@ -528,10 +556,6 @@ fn statusline_toggles_the_context_and_workspace_segments() {
     )
     .expect("write HEAD");
     let mut session = home.shell(30, 120);
-    session.send(b"/statusline\r");
-    let screen = wait(&session, "* statusline: context: off");
-    assert!(screen.contains("session: off"), "{screen}");
-    assert!(screen.contains("workspace: off"), "{screen}");
     session.send(b"/statusline workspace\r");
     let screen = wait(&session, "* statusline: workspace: on");
     assert!(
