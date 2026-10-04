@@ -1,11 +1,12 @@
 use std::env;
+use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
-use ofx_config::ProfilePaths;
+use ofx_config::{ProfilePaths, Settings};
 use ofx_upgrade::{UpgradeControl, UpgradeError, UpgradeLock, UpgradeOutcome, UpgradeProgress};
 use serde_json::json;
 
@@ -13,6 +14,9 @@ const CLEAR_LINE: &str = "\r\x1b[K";
 const FOUND_HOLD: Duration = Duration::from_millis(150);
 
 pub(crate) fn run_in_background() -> ExitCode {
+    if !automatic_upgrades_enabled() {
+        return ExitCode::SUCCESS;
+    }
     if let Some(lock) = UpgradeLock::try_acquire(&state_directory()) {
         let _ = block_on_upgrade(false, &lock);
     }
@@ -36,6 +40,15 @@ pub(crate) fn run(json: bool) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn automatic_upgrades_enabled() -> bool {
+    let workspace = env::current_dir()
+        .and_then(fs::canonicalize)
+        .unwrap_or_else(|_| PathBuf::from("/"));
+    ProfilePaths::from_environment()
+        .and_then(|paths| Settings::load(&paths, &workspace).ok())
+        .is_none_or(|settings| settings.auto_upgrade_enabled())
 }
 
 fn state_directory() -> PathBuf {

@@ -59,6 +59,37 @@ fn oh_fx<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)]) -> Output {
     run(args, environment, Stdio::piped())
 }
 
+#[test]
+fn the_background_upgrade_leaves_the_install_lock_alone_when_settings_turn_auto_upgrade_off() {
+    for (settings, locked) in [
+        (r#"{"auto_upgrade":false}"#, false),
+        (r#"{"auto_upgrade":true}"#, true),
+    ] {
+        let home = tempfile::tempdir().expect("create a temporary home");
+        let config = home.path().join(".config/oh-fx");
+        std::fs::create_dir_all(&config).expect("create the config directory");
+        std::fs::write(config.join("settings.json"), settings).expect("write settings.json");
+        let status = spawn(
+            Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+                .args(["upgrade", "--background"])
+                .current_dir(home.path())
+                .env_clear()
+                .env("HOME", home.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .wait()
+        .expect("wait for oh-fx");
+        assert!(status.success(), "{settings}");
+        assert_eq!(
+            home.path().join(".local/state/oh-fx/upgrade.lock").exists(),
+            locked,
+            "{settings}"
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn into_full_device(args: &[&str]) -> Output {
     let full = File::create("/dev/full").expect("open /dev/full");
