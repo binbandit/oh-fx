@@ -30,7 +30,7 @@ mod user_settings;
 pub use app_bootstrap_runtime::{
     AgentSetup, ConnectError, CredentialSource, Launch, Profile, ProfileError, user_agent,
 };
-pub use app_lifecycle::run_interactive;
+pub use app_lifecycle::{StartupStatus, StartupStatusError, run_interactive};
 pub use app_session_runtime::{
     LiveSession, ResumeFailure, ResumedSession, SessionRoute, TitleGeneration,
     configured_preferences, open_store, recovered_turn, running_provider, session_route,

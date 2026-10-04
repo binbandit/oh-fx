@@ -7,6 +7,8 @@ use ofx_contract::PermissionMode;
 
 use crate::app_bootstrap_runtime::CredentialSource;
 
+pub(crate) mod status;
+
 const CODEX_CONNECTION: &str = "Codex";
 
 pub(crate) struct StatusSnapshot<'a> {
