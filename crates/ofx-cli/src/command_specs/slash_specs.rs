@@ -205,80 +205,53 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_registry_keeps_upstream_order_and_aliases() {
-        let commands: Vec<&str> = SLASH_REGISTRY
-            .commands()
+    const UPSTREAM_REGISTRY: &[&str] = &[
+        "/help · General · show available slash commands",
+        "/clear · General · start a fresh conversation while keeping managed processes",
+        "/new · Session · start a fresh session",
+        "/reset · Session · reset the current session context",
+        "/resume · Session · resume a saved session",
+        "/rename · Session · rename the current session",
+        "/stats · Account · show token and turn statistics",
+        "/usage (/cost) · Account · show local oh-fx tokens, models, and spend",
+        "/status · General · show runtime configuration",
+        "/model · Model · choose what model and reasoning effort to use",
+        "/permissions · Security · choose what oh-fx is allowed to do",
+        "/allowlist · Security · manage trusted commands, tools, and URLs",
+        "/undo · Session · undo the latest tracked file operation",
+        "/mcp · Extensions · manage local and remote MCP servers, resources, prompts, and project trust",
+        "/skills · Extensions · browse and manage skills",
+        "/copy · Session · copy the last assistant response",
+        "/compact · Session · summarize context into a fresh window",
+        "/settings · Appearance · browse and update settings",
+        "/alias · Extensions · show alias availability",
+        "/fast · Model · toggle Fast mode when supported",
+        "/statusline · Appearance · toggle status line segments",
+        "/workspace · Workspace · manage additional workspace directories",
+        "/shell · Workspace · reload shell startup files for commands",
+        "/version · General · show the oh-fx version",
+        "/quit (/exit) · General · exit the interactive shell",
+    ];
+
+    fn registry_row(spec: &SlashSpec) -> String {
+        let aliases: Vec<String> = spec
+            .aliases
             .iter()
-            .map(|spec| spec.command)
+            .map(|alias| format!(" ({alias})"))
             .collect();
-        assert_eq!(
-            commands,
-            [
-                "/help",
-                "/clear",
-                "/new",
-                "/reset",
-                "/resume",
-                "/rename",
-                "/stats",
-                "/usage",
-                "/status",
-                "/model",
-                "/permissions",
-                "/allowlist",
-                "/undo",
-                "/mcp",
-                "/skills",
-                "/copy",
-                "/compact",
-                "/settings",
-                "/alias",
-                "/fast",
-                "/statusline",
-                "/workspace",
-                "/shell",
-                "/version",
-                "/quit",
-            ]
-        );
-        assert_eq!(spec(SlashKind::Quit).aliases, ["/exit"]);
-        assert_eq!(spec(SlashKind::Usage).aliases, ["/cost"]);
-        assert!(spec(SlashKind::Alias).aliases.is_empty());
-        for (kind, description) in [
-            (SlashKind::Settings, "browse and update settings"),
-            (SlashKind::Alias, "show alias availability"),
-            (
-                SlashKind::Workspace,
-                "manage additional workspace directories",
-            ),
-            (
-                SlashKind::Usage,
-                "show local oh-fx tokens, models, and spend",
-            ),
-            (SlashKind::Permissions, "choose what oh-fx is allowed to do"),
-            (
-                SlashKind::ClearScreen,
-                "start a fresh conversation while keeping managed processes",
-            ),
-            (SlashKind::ResetSession, "reset the current session context"),
-            (SlashKind::RenameSession, "rename the current session"),
-            (SlashKind::Version, "show the oh-fx version"),
-            (SlashKind::Stats, "show token and turn statistics"),
-            (SlashKind::Copy, "copy the last assistant response"),
-            (SlashKind::Fast, "toggle Fast mode when supported"),
-            (SlashKind::Status, "show runtime configuration"),
-            (SlashKind::Compact, "summarize context into a fresh window"),
-            (
-                SlashKind::Allowlist,
-                "manage trusted commands, tools, and URLs",
-            ),
-            (SlashKind::Undo, "undo the latest tracked file operation"),
-            (SlashKind::Statusline, "toggle status line segments"),
-            (SlashKind::Shell, "reload shell startup files for commands"),
-        ] {
-            assert_eq!(spec(kind).completion_description, description, "{kind:?}");
-        }
+        format!(
+            "{}{} · {} · {}",
+            spec.command,
+            aliases.concat(),
+            spec.presentation_category.label(),
+            spec.completion_description
+        )
+    }
+
+    #[test]
+    fn the_registry_keeps_upstreams_order_aliases_categories_and_descriptions() {
+        let rows: Vec<String> = SLASH_REGISTRY.commands().iter().map(registry_row).collect();
+        assert_eq!(rows, UPSTREAM_REGISTRY);
         assert!(spec(SlashKind::Statusline).accepts_payload());
         assert!(spec(SlashKind::Shell).accepts_payload());
     }
@@ -338,53 +311,6 @@ mod tests {
                 .iter()
                 .filter(|spec| spec.help_entry == spec.command)
                 .all(|spec| !spec.accepts_payload())
-        );
-    }
-
-    #[test]
-    fn mcp_keeps_upstreams_description() {
-        assert_eq!(
-            spec(SlashKind::Mcp).completion_description,
-            "manage local and remote MCP servers, resources, prompts, and project trust"
-        );
-    }
-
-    #[test]
-    fn every_command_carries_upstreams_presentation_category() {
-        let categories: Vec<(&str, &str)> = SLASH_REGISTRY
-            .commands()
-            .iter()
-            .map(|spec| (spec.command, spec.presentation_category.label()))
-            .collect();
-        assert_eq!(
-            categories,
-            [
-                ("/help", "General"),
-                ("/clear", "General"),
-                ("/new", "Session"),
-                ("/reset", "Session"),
-                ("/resume", "Session"),
-                ("/rename", "Session"),
-                ("/stats", "Account"),
-                ("/usage", "Account"),
-                ("/status", "General"),
-                ("/model", "Model"),
-                ("/permissions", "Security"),
-                ("/allowlist", "Security"),
-                ("/undo", "Session"),
-                ("/mcp", "Extensions"),
-                ("/skills", "Extensions"),
-                ("/copy", "Session"),
-                ("/compact", "Session"),
-                ("/settings", "Appearance"),
-                ("/alias", "Extensions"),
-                ("/fast", "Model"),
-                ("/statusline", "Appearance"),
-                ("/workspace", "Workspace"),
-                ("/shell", "Workspace"),
-                ("/version", "General"),
-                ("/quit", "General"),
-            ]
         );
     }
 
