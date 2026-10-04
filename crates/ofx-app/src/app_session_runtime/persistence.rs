@@ -1,4 +1,6 @@
-use ofx_agent::{Agent, TurnFailure, TurnReport};
+use std::sync::Arc;
+
+use ofx_agent::{Agent, ChildStore, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, ReasoningEffort, TurnOutcome};
 use ofx_session::{SessionCatalog, SessionError, SessionPreferences, SessionStore};
 use tokio::task::JoinHandle;
@@ -123,6 +125,10 @@ impl Persistence {
         }
         self.remember_fresh = false;
         self.remember(live.id())
+    }
+
+    pub(crate) fn children(&self) -> Option<Arc<dyn ChildStore>> {
+        self.live.as_ref()?.children(&self.store)
     }
 
     pub(crate) fn observe_prompt(&self, prompt: &str) {

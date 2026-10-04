@@ -9,10 +9,12 @@ use ofx_agent::{
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
     ActiveMode, ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider,
-    ReasoningEffort, ReviewTransport, SubagentProvider, Tool, TurnId,
+    ReasoningEffort, ReviewTransport, RootUserRequests, SubagentProvider, Tool, TurnId,
 };
 use ofx_exec::ManagedExecutions;
-use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
+use ofx_permissions::{
+    DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer, canonical_root_user_context,
+};
 use ofx_tools::SubagentTool;
 
 use crate::app_bootstrap_runtime::output_tokens;
@@ -152,5 +154,9 @@ impl ChildAgents for ChildFactory {
         if let Some(approvals) = &self.approvals {
             approvals.child(turn_id, request);
         }
+    }
+
+    fn root_user_context(&self, requests: &RootUserRequests) -> String {
+        canonical_root_user_context(requests)
     }
 }

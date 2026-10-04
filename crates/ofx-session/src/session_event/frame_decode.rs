@@ -58,7 +58,7 @@ fn user(fields: &mut Fields<'_>) -> Option<UserEvent> {
     Some(UserEvent {
         text: fields.string("text")?,
         images: fields.fixed("images")?,
-        work_id: fields.fixed("work_id")?,
+        work_id: fields.nullable("work_id", |value| string(value).map(Some))?,
     })
 }
 

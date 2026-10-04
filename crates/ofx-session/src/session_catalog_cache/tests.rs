@@ -32,6 +32,10 @@ impl Sessions {
     }
 
     fn seed(&self, id: &str, turns: usize) {
+        self.seed_session(id, turns, false);
+    }
+
+    fn seed_session(&self, id: &str, turns: usize, subagent_child: bool) {
         let metadata = SessionMetadata {
             id: id.to_owned(),
             origin_workspace_root: "/workspace".to_owned(),
@@ -46,6 +50,7 @@ impl Sessions {
                 fast_mode: false,
             },
             title: None,
+            subagent_child,
         };
         let mut session = start_session(&self.dir, metadata).unwrap();
         for index in 0..turns {
@@ -456,6 +461,20 @@ fn rows_oh_fx_cannot_list_are_classified_again_and_excluded_rows_stay_hidden() {
             .as_ref()
             .is_none_or(|summary| summary.title.is_none())
     }));
+}
+
+#[test]
+fn child_sessions_stay_out_of_the_listing_as_excluded_rows() {
+    let sessions = Sessions::new();
+    sessions.seed("alpha", 1);
+    sessions.seed_session("child", 1, true);
+    assert_eq!(Sessions::titles(&sessions.scan(true)), [("alpha", None)]);
+    let child = fingerprint(&sessions.dir, "child").unwrap();
+    assert_eq!(
+        sessions.cached().reuse("child", &child),
+        Some(Reuse::Excluded)
+    );
+    assert_eq!(Sessions::titles(&sessions.scan(true)), [("alpha", None)]);
 }
 
 fn inode(sessions: &Sessions) -> u64 {

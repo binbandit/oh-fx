@@ -17,6 +17,7 @@ fn metadata(id: &str) -> SessionMetadata {
             fast_mode: false,
         },
         title: None,
+        subagent_child: false,
     }
 }
 
@@ -36,6 +37,24 @@ fn metadata_is_written_in_upstream_field_order() {
     assert_eq!(
         decode_session_metadata(&encoded).unwrap(),
         metadata("session")
+    );
+}
+
+#[test]
+fn a_child_session_says_so_as_upstream_writes_it() {
+    let mut child = metadata("child");
+    child.subagent_child = true;
+    let encoded = encode_session_metadata(&child).unwrap();
+    assert!(
+        String::from_utf8(encoded.clone())
+            .unwrap()
+            .ends_with(",\"title\":null,\"subagent_child\":true}")
+    );
+    assert_eq!(decode_session_metadata(&encoded).unwrap(), child);
+    assert!(
+        !decode_session_metadata(document("").as_bytes())
+            .unwrap()
+            .subagent_child
     );
 }
 
@@ -134,7 +153,8 @@ fn metadata_rejects_invalid_fields_before_returning() {
             ",\"title\":\"{}\"",
             "t".repeat(MAX_SESSION_TITLE_BYTES + 1)
         )),
-        document(",\"subagent_child\":true"),
+        document(",\"subagent_child\":1"),
+        document(",\"subagent_child\":null"),
         document(",\"unknown\":1"),
         document(",\"model\":\"twice\""),
     ];
@@ -249,8 +269,8 @@ struct SerdeRecord {
     fast_mode: bool,
     #[serde(default)]
     title: Option<String>,
-    #[serde(default, rename = "subagent_child")]
-    _subagent_child: False,
+    #[serde(default)]
+    subagent_child: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -297,6 +317,7 @@ fn serde_decode_session_metadata(bytes: &[u8]) -> Result<SessionMetadata, Sessio
             fast_mode: record.fast_mode,
         },
         title: record.title,
+        subagent_child: record.subagent_child,
     };
     validate_session_metadata(&metadata).map_err(|_| SessionError::InvalidSessionMetadata)?;
     Ok(metadata)

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, ProjectContext, QuestionRequests, Questions, RuntimeContext,
+    Agent, AgentConfig, ChildStore, ProjectContext, QuestionRequests, Questions, RuntimeContext,
     SkillContextProvider,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
@@ -757,6 +757,10 @@ impl AgentSetup {
             .chain([&self.delegation.tool])
             .find(|tool| tool.spec().name == tool_name)?
             .describe_saved(arguments)
+    }
+
+    pub fn bind_children(&self, store: Option<Arc<dyn ChildStore>>) {
+        self.delegation.host.bind(store);
     }
 
     pub fn agent(&self, delegation: bool) -> Agent {
