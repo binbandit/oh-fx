@@ -132,7 +132,9 @@ pub(crate) fn inspect_skill_file(file: &File, fallback_name: &[u8]) -> Inspectio
     let content = match read_metadata_prefix(file, file_size) {
         Ok(content) => content,
         Err(MetadataPrefixError::StreamTooLong) => return Inspection::Oversized,
-        Err(MetadataPrefixError::Unreadable) => return Inspection::Unreadable,
+        Err(MetadataPrefixError::Unreadable | MetadataPrefixError::Operational(_)) => {
+            return Inspection::Unreadable;
+        }
     };
     match resolve_metadata(&parse_skill_file(&content), fallback_name) {
         Ok(metadata) => Inspection::Valid(metadata, freshness),
