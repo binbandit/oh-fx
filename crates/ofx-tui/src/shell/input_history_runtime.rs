@@ -48,6 +48,7 @@ impl PromptHistory {
 pub(super) struct HistoryRecorder {
     saver: Option<PromptSaver>,
     recording: bool,
+    unanswered_steps: usize,
     warning_active: bool,
 }
 
@@ -57,6 +58,7 @@ impl HistoryRecorder {
         Self {
             saver: history.saver,
             recording: history.recording,
+            unanswered_steps: 0,
             warning_active: false,
         }
     }
@@ -68,7 +70,14 @@ impl HistoryRecorder {
 
 impl Shell<'_> {
     pub(super) fn prompt_history_changed(&mut self, enabled: bool) {
-        self.history.recording = enabled;
+        let history = &mut self.history;
+        history.unanswered_steps = history.unanswered_steps.saturating_sub(1);
+        history.recording = enabled && history.unanswered_steps == 0;
+    }
+
+    pub(super) fn prompt_history_stepped(&mut self) {
+        self.history.unanswered_steps += 1;
+        self.history.recording = false;
     }
 
     pub(super) fn record_prompt_history(&mut self) {

@@ -3,6 +3,10 @@ use ofx_contract::{
     StatuslineToggles, UiCommand, UiEvent,
 };
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::shell::PromptHistory;
 use crate::shell::test_shell::TestShell;
 
 const HINT: &str = "↑↓ navigate     tab category     ←→ change     esc close";
@@ -205,4 +209,91 @@ fn a_short_terminal_keeps_the_selected_setting_in_view() {
     let screen = press(&mut test, b"\x1b[A");
     assert!(screen.contains("  Prompt history"), "{screen}");
     assert!(!screen.contains("  Status line context"), "{screen}");
+}
+
+fn recorded() -> (TestShell, Rc<RefCell<Vec<String>>>) {
+    let saved = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&saved);
+    let history = PromptHistory::enabled(Vec::new(), move |text| {
+        sink.borrow_mut().push(text.to_owned());
+        Ok(())
+    });
+    let mut test = TestShell::start_with(|options| options.prompt_history = history);
+    test.deliver(UiEvent::SettingsMenuOpened {
+        snapshot: snapshot(),
+    });
+    press(&mut test, b"history");
+    (test, saved)
+}
+
+fn history_changed(test: &mut TestShell, enabled: bool) {
+    test.deliver(UiEvent::PromptHistoryChanged { enabled });
+}
+
+#[test]
+fn switching_prompt_history_off_stops_recording_before_the_controller_answers() {
+    let (mut test, saved) = recorded();
+    press(&mut test, b"\x1b[C\x1b");
+    test.advance(100);
+    test.settle();
+    test.submit("private");
+    assert!(saved.borrow().is_empty());
+    assert_eq!(
+        test.sent().first(),
+        Some(&step(SettingId::PromptHistory, 1))
+    );
+    history_changed(&mut test, false);
+    test.submit("still private");
+    assert!(saved.borrow().is_empty());
+}
+
+#[test]
+fn quick_prompt_history_steps_record_only_once_the_last_answer_arrives() {
+    let (mut test, saved) = recorded();
+    press(&mut test, b"\x1b[C\x1b[C\x1b[C");
+    history_changed(&mut test, false);
+    history_changed(&mut test, true);
+    press(&mut test, b"\x1b");
+    test.advance(100);
+    test.settle();
+    test.submit("between");
+    history_changed(&mut test, false);
+    test.submit("after");
+    assert!(saved.borrow().is_empty());
+    let (mut test, saved) = recorded();
+    press(&mut test, b"\x1b[C\x1b[C");
+    history_changed(&mut test, false);
+    press(&mut test, b"\x1b");
+    test.advance(100);
+    test.settle();
+    test.submit("waiting");
+    history_changed(&mut test, true);
+    test.submit("kept");
+    assert_eq!(*saved.borrow(), ["kept"]);
+}
+
+#[test]
+fn super_r_leaves_the_menu_in_charge() {
+    let mut test = opened();
+    press(&mut test, b"\x1b[114;9u");
+    assert!(test.shell.settings_menu.is_some());
+    assert!(test.shell.picker.is_none());
+    assert!(test.sent().is_empty(), "{:?}", test.sent());
+}
+
+#[test]
+fn a_menu_key_after_ctrl_c_disarms_the_exit() {
+    let mut test = opened();
+    press(&mut test, b"\x03");
+    assert!(test.shell.gestures.ctrl_c_exit_armed());
+    press(&mut test, b"\x1b[B");
+    assert!(!test.shell.gestures.ctrl_c_exit_armed());
+    press(&mut test, b"\x03\x1b[C");
+    assert!(!test.shell.gestures.ctrl_c_exit_armed());
+    press(&mut test, b"\x03\t");
+    assert!(!test.shell.gestures.ctrl_c_exit_armed());
+    press(&mut test, b"\x03\x1b");
+    test.advance(100);
+    test.settle();
+    assert!(!test.shell.gestures.ctrl_c_exit_armed());
 }

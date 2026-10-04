@@ -1,4 +1,4 @@
-use ofx_contract::{SettingCategory, SettingsSnapshot, UiCommand};
+use ofx_contract::{SettingCategory, SettingId, SettingsSnapshot, UiCommand};
 
 use super::Shell;
 use crate::footer::settings_menu_presentation::{
@@ -109,6 +109,14 @@ impl Shell<'_> {
         if self.settings_menu.is_none() {
             return false;
         }
+        let owned = self.route_settings_menu_key(event);
+        if owned {
+            self.gestures.disarm_ctrl_c_exit();
+        }
+        owned
+    }
+
+    fn route_settings_menu_key(&mut self, event: &InputEvent) -> bool {
         match event {
             InputEvent::Raw(raw) => match raw.byte {
                 b'\r' => true,
@@ -172,6 +180,9 @@ impl Shell<'_> {
             (menu.snapshot.option_count(item.id) > 0).then_some(item.id)
         });
         if let Some(setting) = setting {
+            if setting == SettingId::PromptHistory {
+                self.prompt_history_stepped();
+            }
             self.send(UiCommand::StepSetting { setting, delta });
         }
         true

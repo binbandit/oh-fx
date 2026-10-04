@@ -187,8 +187,13 @@ impl ControllerState {
     }
 
     fn change_prompt_history(&mut self, value: &str) {
+        let switching_off = value.eq_ignore_ascii_case("off");
+        if switching_off {
+            self.menu_settings.prompt_history = false;
+            self.emit(UiEvent::PromptHistoryChanged { enabled: false });
+        }
         let (enabled, notices) = handle_history(&self.settings_access(), value);
-        if let Some(enabled) = enabled {
+        if let Some(enabled) = enabled.filter(|_| !switching_off) {
             self.menu_settings.prompt_history = enabled;
             self.emit(UiEvent::PromptHistoryChanged { enabled });
         }

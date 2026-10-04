@@ -1216,7 +1216,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use ofx_config::{ProfilePaths, Settings};
+    use ofx_config::{PrivateDir, ProfilePaths, Settings};
     use ofx_contract::{
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, PermissionMode,
         ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus, StatuslineItem,
@@ -2731,6 +2731,39 @@ mod tests {
         assert_eq!(
             saved_settings(&harness)["statusLine"],
             json!({"workspace": false})
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_history_switched_off_stops_recording_before_its_save_waits() {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        let config = PrivateDir::open_existing(&home.path().join("config"))
+            .unwrap()
+            .unwrap();
+        let held = Arc::new(Mutex::new(config.try_lock("settings.lock").unwrap()));
+        let release = Arc::clone(&held);
+        let mut harness = Harness::with_setup_observer(home, setup, move |event| {
+            if matches!(event, UiEvent::PromptHistoryChanged { enabled: false }) {
+                release.lock().unwrap().take();
+            }
+        });
+        harness.command("/settings");
+        harness.until(settings_opened).await;
+        harness.send(UiCommand::StepSetting {
+            setting: SettingId::PromptHistory,
+            delta: 1,
+        });
+        let shown = harness.until(settings_changed).await;
+        assert_eq!(
+            notice_body(shown),
+            ["history|saved to user settings (scope=user)"]
+        );
+        assert!(held.lock().unwrap().is_none());
+        assert_eq!(
+            saved_settings(&harness)["prompt_history"],
+            json!({"enabled": false})
         );
     }
 
