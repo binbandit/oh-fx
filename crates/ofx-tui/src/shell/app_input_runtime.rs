@@ -77,6 +77,7 @@ impl Shell<'_> {
         if self.composer.edit_revision() != revision {
             self.file_picker_after_edit();
             self.model_column_after_edit(preserved);
+            self.help_menu_edited();
         }
         self.sync_skills_menu();
         self.sync_picker_query();
@@ -168,7 +169,10 @@ impl Shell<'_> {
         self.gestures.disarm_escape_interrupt();
         self.gestures.disarm_escape_clear();
         if decoded.action == Action::TogglePermissionMode {
-            if !self.cycle_model_menu_vendor(-1) && !self.cycle_skills_menu_source(-1) {
+            if !self.cycle_help_menu_category(-1)
+                && !self.cycle_model_menu_vendor(-1)
+                && !self.cycle_skills_menu_source(-1)
+            {
                 self.send(UiCommand::TogglePermissionMode);
             }
             return;
@@ -227,7 +231,8 @@ impl Shell<'_> {
     }
 
     fn resolve_escape(&mut self, cancel_pending: bool) {
-        if self.cancel_model_menu()
+        if self.cancel_help_menu()
+            || self.cancel_model_menu()
             || self.cancel_skills_menu()
             || self.dismiss_model_column()
             || self.dismiss_file_picker()
@@ -410,7 +415,10 @@ impl Shell<'_> {
     }
 
     fn handle_enter(&mut self) {
-        if self.submit_model_menu() || self.submit_skills_menu_selection() {
+        if self.submit_help_menu_selection()
+            || self.submit_model_menu()
+            || self.submit_skills_menu_selection()
+        {
             return;
         }
         if let Some(result) = self.submit_file_picker_on_enter() {
@@ -434,7 +442,10 @@ impl Shell<'_> {
     }
 
     fn handle_tab(&mut self) {
-        if self.cycle_model_menu_vendor(1) || self.cycle_skills_menu_source(1) {
+        if self.cycle_help_menu_category(1)
+            || self.cycle_model_menu_vendor(1)
+            || self.cycle_skills_menu_source(1)
+        {
             return;
         }
         if self.bare_model_command() {
@@ -454,7 +465,8 @@ impl Shell<'_> {
             self.move_picker(rows);
             return true;
         }
-        self.move_model_menu(rows)
+        self.move_help_menu(rows)
+            || self.move_model_menu(rows)
             || self.move_skills_menu(rows)
             || self.navigate_file_picker(delta)
             || self.navigate_model_column(delta)

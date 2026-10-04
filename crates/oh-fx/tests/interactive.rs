@@ -758,15 +758,14 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/help\r");
     let menu = [
         "Commands 24  [All]  General  Session  Account  Model",
-        "  /permissions    choose what oh-fx is allowed to do",
-        "  /skills         browse and manage skills",
+        "  /help           show available slash commands",
         "  /quit           exit the interactive shell",
         "  /reset          reset the current session context",
         "  /new            start a fresh session",
         "  /resume         resume a saved session",
         "  /rename         rename the current session",
         "  /undo           undo the latest tracked file operation",
-        "  /allowlist      manage trusted commands, tools, and URLs",
+        "  /statusline     toggle status line segments",
     ];
     session
         .wait_for(WAIT, |screen| menu.iter().all(|line| screen.contains(line)))
@@ -841,6 +840,52 @@ fn the_model_picker_chooses_the_model_for_the_next_turn_and_saves_it() {
     session.send(b"\x15go\r");
     wait(&session, "Picked reply.");
     assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
+}
+
+#[test]
+fn help_opens_a_footer_menu_that_filters_switches_category_and_opens_commands() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = home.shell(30, 100);
+    session.send(b"/help\r");
+    let screen = wait(
+        &session,
+        "↑↓ navigate     tab category     enter open     esc close",
+    );
+    assert!(screen.contains("Commands 24  [All]  General"), "{screen}");
+    assert!(!screen.contains("auto · model-a"), "{screen}");
+    session.send(b"perm");
+    let screen = wait(&session, "Commands 1  [All]");
+    assert!(
+        screen.contains("  /permissions    choose what oh-fx is allowed to do"),
+        "{screen}"
+    );
+    session.send(b"\r");
+    wait(&session, "┃ /permissions");
+    wait(&session, "auto · model-a");
+    session.send(b"ask\r");
+    wait(&session, "ask · model-a");
+    session.send(b"/help\r");
+    wait(&session, "Commands 24  [All]");
+    session.send(b"\t");
+    wait(&session, "Commands 5  All  [General]");
+    session.send(b"/version\r");
+    wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
+    session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("Commands") && screen.contains("ask · model-a")
+        })
+        .unwrap_or_else(|screen| panic!("the menu stayed open:\n{screen}"));
+    session.send(b"/help\r");
+    wait(&session, "Commands 24  [All]");
+    session.send(b"st\x1b");
+    session
+        .wait_for(WAIT, |screen| {
+            !screen.contains("Commands") && screen.contains("ask · model-a")
+        })
+        .unwrap_or_else(|screen| panic!("escape left the menu open:\n{screen}"));
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
 #[test]

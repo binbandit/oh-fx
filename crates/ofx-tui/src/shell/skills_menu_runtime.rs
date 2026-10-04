@@ -143,6 +143,7 @@ impl Shell<'_> {
         let mentions = self.skill_catalog.is_some()
             && self.model_menu.is_none()
             && self.model_draft.is_none()
+            && self.help_menu.is_none()
             && !self.command_skills_menu_open()
             && !self.picker_active()
             && !contains_position(self.composer.text(), start);
@@ -169,6 +170,7 @@ impl Shell<'_> {
 
     pub(super) fn open_pasted_skill_mention(&mut self, start: usize, pasted: &str) {
         if self.skills_menu.is_some()
+            || self.help_menu.is_some()
             || self.model_menu.is_some()
             || self.model_draft.is_some()
             || self.skill_catalog.is_none()

@@ -164,6 +164,8 @@ mod tests {
                 .map(|alias: &&str| (*alias).to_owned())
                 .collect(),
             description: String::new(),
+            help_entry: command.to_owned(),
+            takes_arguments: false,
             category: 0,
             compacts: command == "/compact",
         })

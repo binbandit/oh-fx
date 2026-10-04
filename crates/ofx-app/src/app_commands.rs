@@ -96,6 +96,8 @@ pub(crate) fn slash_command_specs() -> Vec<SlashCommandSpec> {
                 .map(|alias| (*alias).to_owned())
                 .collect(),
             description: spec.completion_description.to_owned(),
+            help_entry: spec.help_entry.to_owned(),
+            takes_arguments: spec.accepts_payload(),
             category: spec.presentation_category as usize,
             compacts: spec.kind == SlashKind::Compact,
         })

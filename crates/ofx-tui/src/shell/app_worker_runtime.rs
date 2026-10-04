@@ -16,7 +16,7 @@ use crate::footer::file_approval::FileApproval;
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
 use crate::output::recovery_status::RecoveryStatus;
-use crate::render_engine::transcript_blocks::{Entry, HelpEntry};
+use crate::render_engine::transcript_blocks::Entry;
 use crate::transcript::tool_presentation::{Finished, Rejected, ToolActivityRow};
 
 const PARAGRAPH_BREAK: &str = "\n\n";
@@ -188,7 +188,7 @@ impl Shell<'_> {
                 mode,
                 full_access_warning,
             } => self.permission_mode_changed(mode, full_access_warning),
-            UiEvent::HelpRequested => self.help_requested(),
+            UiEvent::HelpRequested => self.open_help_menu(),
             UiEvent::StatsRequested => self.stats_requested(),
             UiEvent::CompactionActivity { activity } => self.compaction_activity(activity),
             UiEvent::TurnCompaction { turn_id, activity } => {
@@ -209,22 +209,6 @@ impl Shell<'_> {
             UiEvent::SessionResumed { history } => self.session_resumed(history),
             UiEvent::ExitRequested => self.should_exit = true,
         }
-    }
-
-    fn help_requested(&mut self) {
-        let mut specs: Vec<_> = self.options.commands.iter().collect();
-        specs.sort_by_key(|spec| spec.category);
-        let commands = specs
-            .into_iter()
-            .map(|spec| HelpEntry {
-                command: spec.command.clone(),
-                description: spec.description.clone(),
-            })
-            .collect();
-        self.push_entry(Entry::HelpCatalog {
-            categories: self.options.command_categories.clone(),
-            commands,
-        });
     }
 
     fn stats_requested(&mut self) {
@@ -734,26 +718,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn help_lists_commands_grouped_by_category_under_the_category_tabs() {
-        let mut test = TestShell::start();
-        test.submit("/help");
-        assert_eq!(
-            test.sent(),
-            [UiCommand::RunCommand {
-                text: "/help".to_owned()
-            }]
-        );
-        test.deliver(UiEvent::HelpRequested);
-        let screen = test.screen();
-        assert!(
-            screen.contains(
-                "Commands 4  [All]  General  Model\n\n  /help     \n  /clear    \n  /quit     \n  /model"
-            ),
-            "{screen}"
-        );
-    }
-
     fn compaction(activity: CompactionActivity) -> UiEvent {
         UiEvent::CompactionActivity { activity }
     }
@@ -1005,6 +969,8 @@ mod tests {
                 command: "/compact".to_owned(),
                 aliases: Vec::new(),
                 description: String::new(),
+                help_entry: "/compact".to_owned(),
+                takes_arguments: false,
                 category: 0,
                 compacts: true,
             });

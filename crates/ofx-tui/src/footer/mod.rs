@@ -2,6 +2,7 @@ pub(crate) mod approval_content;
 pub(crate) mod approval_panel;
 mod command_text;
 pub(crate) mod file_approval;
+pub(crate) mod help_menu_presentation;
 pub(crate) mod input_presentation;
 pub(crate) mod model_menu_presentation;
 mod phrase;

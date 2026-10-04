@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use ofx_text::visible_width;
 
-use crate::footer::picker_presentation::single_line_ellipsized;
+use crate::footer::picker_presentation::{inline_menu_band, single_line_ellipsized};
 use crate::list_window::update_edge_start;
 use crate::row_text::{Paint, Row, terminal_safe};
 use crate::shell::skills_menu::{SOURCE_FILTERS, SkillsMenu, filter_label};
@@ -63,15 +63,7 @@ pub(crate) fn skills_menu_band(
     width: usize,
     theme: &Theme,
 ) -> Vec<Row> {
-    let rows = skills_menu_rows(menu, budget, width, theme);
-    if rows.is_empty() {
-        return rows;
-    }
-    let mut band = Vec::with_capacity(rows.len() + 2);
-    band.push(Row::new());
-    band.extend(rows);
-    band.push(Row::new());
-    band
+    inline_menu_band(skills_menu_rows(menu, budget, width, theme))
 }
 
 fn skills_menu_rows(menu: &SkillsMenu, budget: usize, width: usize, theme: &Theme) -> Vec<Row> {
