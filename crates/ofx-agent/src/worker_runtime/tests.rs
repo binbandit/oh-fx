@@ -67,6 +67,29 @@ fn a_prompt_submitted_while_idle_waits_in_the_ordinary_queue() {
 }
 
 #[test]
+fn a_queued_recovery_runs_as_its_own_turn_ahead_of_later_prompts() {
+    let recovered = RecoveredTurn {
+        prompt: "fix the build".to_owned(),
+        messages: Vec::new(),
+        outputs: Vec::new(),
+        files: Vec::new(),
+        strategy: ofx_contract::RecoveryStrategy::RetryRequest,
+        fast_mode: false,
+    };
+    let runtime = WorkerRuntime::default();
+    runtime.admit(QueuedPrompt::recovery(1, recovered.clone()));
+    runtime.admit(prompt(2, "typed ahead"));
+    assert!(runtime.holds_recovery());
+    assert!(!runtime.interrupt_requested());
+    let next = runtime.take_next().unwrap();
+    assert_eq!(next.recovered(), Some(&recovered));
+    assert_eq!(next.text, "fix the build");
+    assert!(!runtime.holds_recovery());
+    assert_eq!(queued(&runtime), [("typed ahead".to_owned(), false)]);
+    assert_eq!(runtime.take_next().unwrap().recovered(), None);
+}
+
+#[test]
 fn a_prompt_during_a_manual_compaction_waits_and_runs_next_as_a_continuation() {
     let runtime = WorkerRuntime::default();
     runtime.begin_compaction();
