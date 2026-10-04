@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
+use ofx_contract::UiEvent::{AssistantBoundary, ContextNotice, ToolProvisional};
 use ofx_contract::{
     CallDescription, CompactionActivity, CompactionEnd, Notice, NoticeTone, RouteRecoveryStatus,
     ToolActivity, TurnId, TurnOutcome, UiCommand, UiEvent, Usage,
@@ -188,9 +189,9 @@ impl Shell<'_> {
                 prompt,
                 text,
             } => self.steering_applied(turn_id, prompt, text),
-            UiEvent::AssistantBoundary { .. }
-            | UiEvent::ToolProvisional { .. }
-            | UiEvent::ContextNotice { .. }
+            AssistantBoundary { .. }
+            | ToolProvisional { .. }
+            | ContextNotice { .. }
             | UiEvent::AssistantText { .. }
             | UiEvent::ReasoningText { .. } => {}
             UiEvent::Recovery { turn_id, status } => self.recovery_reported(turn_id, status),
