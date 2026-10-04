@@ -94,8 +94,14 @@ opt-level = 3
 [profile.release.package.ofx-gateway]
 opt-level = 3
 
+[profile.release.package.ofx-http]
+opt-level = 3
+
 [profile.release.package.ofx-markdown]
 opt-level = 3
 
 [profile.release.package.ofx-tui]
+opt-level = 3
+
+[profile.release.package.serde_json]
 opt-level = 3
