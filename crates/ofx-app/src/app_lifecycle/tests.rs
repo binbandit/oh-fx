@@ -574,6 +574,7 @@ fn shell_options() -> ShellOptions {
         providers: Vec::new(),
         permission_mode: PermissionMode::Auto,
         full_access_warning: false,
+        login_missing: false,
         workspace_label: "workspace".to_owned(),
         startup_scrollback: true,
         commands: Vec::new(),

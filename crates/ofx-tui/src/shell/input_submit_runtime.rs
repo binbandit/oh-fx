@@ -102,6 +102,8 @@ impl Shell<'_> {
         self.dismiss_compaction_feedback();
         let text = self.composer.expanded_text().into_owned();
         match classify(&text, &self.options.commands) {
+            Submit::Empty if self.holds_prompt() => self.send(UiCommand::RetryHeldPrompt),
+            Submit::Prompt(_) if self.holds_prompt() => {}
             Submit::Empty => self.composer.clear(),
             Submit::Command(command)
                 if command == MODEL_PREFIX.trim_end()

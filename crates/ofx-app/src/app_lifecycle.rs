@@ -26,7 +26,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Controller;
-use crate::app_bootstrap_runtime::{AgentSetup, Launch, Profile, ProfileError, provider_names};
+use crate::app_bootstrap_runtime::{
+    AgentSetup, Launch, Login, Profile, ProfileError, provider_names,
+};
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_mcp_runtime;
 use crate::app_panic_runtime::PanicCapture;
@@ -280,6 +282,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         permission_mode: session.permission_mode,
         full_access_warning: session.permission_mode == PermissionMode::Yolo
             && !session.profile.settings().yolo_acknowledged(),
+        login_missing: session.setup.login() == Login::Missing,
         workspace_label: session
             .profile
             .workspace_root()

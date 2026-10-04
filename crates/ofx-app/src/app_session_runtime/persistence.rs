@@ -59,6 +59,10 @@ impl Persistence {
         self.live.as_ref().map(LiveSession::id)
     }
 
+    pub(crate) fn resuming(&self) -> bool {
+        self.resumption.is_some()
+    }
+
     pub(crate) fn resumed_title(&self) -> Option<String> {
         self.resumption
             .as_ref()
