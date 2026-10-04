@@ -5164,6 +5164,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signing_out_drops_the_catalog_that_carried_the_login() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        notices_of(&mut harness, "/logout codex").await;
+        let asked = catalog.requests().len();
+        assert_eq!(
+            listed_catalog(&mut harness).await,
+            ModelCatalog::Failed { retry: None }
+        );
+        assert_eq!(catalog.requests().len(), asked);
+        assert!(codex.requests().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_codex_launch_without_a_login_opens_signed_out() {
         let codex = FakeServer::start([]);
         let catalog = FakeServer::start([]);

@@ -4,12 +4,16 @@ use std::sync::Arc;
 use ofx_auth::{ChatGptOAuth, GrokOAuth};
 use ofx_config::{ProviderDefinition, ProviderId, Settings};
 use ofx_contract::{ModelCatalog, ModelProvider, Notice, NoticeTone};
+use ofx_gateway::{CODEX_TITLE_MODEL, CodexReviewTransport};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, Reviewer};
 use tokio_util::sync::CancellationToken;
 
-use super::{AgentSetup, ConnectError, Profile, Route, Switchboard, connection_route, user_agent};
+use super::{
+    AgentSetup, ConnectError, CredentialSource, Login, Profile, Route, Switchboard,
+    connection_route, user_agent,
+};
 use crate::app_subagent_runtime::ChildRoute;
-use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints};
+use crate::codex_provider::{CodexUnavailable, SignedOutProvider, SubscriptionEndpoints};
 use crate::model_cache_runtime::ModelSource;
 
 const PROVIDER_TOPIC: &str = "provider";
@@ -142,6 +146,10 @@ impl AgentSetup {
         connection_route(connection, Ok(model), preferred).map_err(|error| failure(&error))
     }
 
+    pub(crate) fn signed_out_route(&self, model: &str) -> Route {
+        Route::signed_out(model.to_owned(), self.configured_model.clone())
+    }
+
     pub(crate) fn adopt(&mut self, route: Route) -> (Arc<dyn ModelProvider>, ModelSource) {
         if route.uses_tls {
             ofx_http::warm_tls_roots();
@@ -163,6 +171,23 @@ impl AgentSetup {
 }
 
 impl Route {
+    pub(super) fn signed_out(model: String, configured_model: Option<String>) -> Self {
+        let provider: Arc<dyn ModelProvider> = Arc::new(SignedOutProvider);
+        Self {
+            reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
+            title_model: Some(CODEX_TITLE_MODEL),
+            provider,
+            models: ModelSource::Unavailable,
+            connection: None,
+            model,
+            configured_model,
+            source: CredentialSource::Codex,
+            account_id: None,
+            uses_tls: false,
+            login: Login::Missing,
+        }
+    }
+
     pub(super) fn children(&self) -> ChildRoute {
         ChildRoute {
             provider: Arc::clone(&self.provider),
