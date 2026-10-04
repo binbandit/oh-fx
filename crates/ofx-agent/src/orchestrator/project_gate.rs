@@ -7,6 +7,7 @@ use ofx_contract::{
 };
 use tokio_util::sync::CancellationToken;
 
+use super::provider_tools::{joins_parallel_groups, provider_executed};
 use super::{
     Agent, EventSink, ParallelGroup, Prepared, Rejection, Stop, ToolOutput, TurnFailure, completed,
     contained, discard, parallel_group,
@@ -80,7 +81,13 @@ impl Agent {
             calls: calls
                 .iter()
                 .zip(malformed)
-                .map(|(call, malformed)| self.gated_call(call, malformed.take()))
+                .map(|(call, malformed)| {
+                    if provider_executed(call) {
+                        GatedCall::Released
+                    } else {
+                        self.gated_call(call, malformed.take())
+                    }
+                })
                 .collect(),
             delta: false,
         };
@@ -177,9 +184,13 @@ impl Agent {
     ) -> GatedGroup<'c> {
         let mut end = start + 1;
         if !gate.delta
+            && joins_parallel_groups(&calls[start])
             && let Some(group) = gate.calls[start].parallel_group()
         {
-            while end < calls.len() && gate.calls[end].parallel_group() == Some(group) {
+            while end < calls.len()
+                && joins_parallel_groups(&calls[end])
+                && gate.calls[end].parallel_group() == Some(group)
+            {
                 end += 1;
             }
         }
