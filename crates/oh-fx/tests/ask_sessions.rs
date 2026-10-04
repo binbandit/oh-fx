@@ -1012,7 +1012,7 @@ fn shell_calls_are_saved_as_upstream_saves_them_and_sent_back_in_the_request_for
         Reply::sse(&chat_tool_call_events(
             "call_2",
             "shell",
-            r#"{"action":"run","timeout_ms":5E3}"#,
+            r#"{"action":"run","command":"","timeout_ms":5E3}"#,
         )),
         Reply::sse(&chat_text_events(&["Done."])),
         Reply::sse(&chat_text_events(&["Again."])),
@@ -1030,7 +1030,7 @@ fn shell_calls_are_saved_as_upstream_saves_them_and_sent_back_in_the_request_for
         saved,
         [
             r#"{"action":"run"}"#,
-            r#"{"action":"run","timeout_ms":5E3}"#
+            r#"{"action":"run","command":"","timeout_ms":5E3}"#
         ]
     );
     let resumed = home.ask_json(&["--resume-id", &id, "again"], &[]);
@@ -1038,7 +1038,7 @@ fn shell_calls_are_saved_as_upstream_saves_them_and_sent_back_in_the_request_for
     let requests = server.requests();
     let sent = [
         r#"{"request":{"action":"run"}}"#,
-        r#"{"request":{"action":"run","timeout_ms":5000}}"#,
+        r#"{"request":{"action":"run","command":"","timeout_ms":5000}}"#,
     ];
     assert_eq!(sent_shell_arguments(&requests[2]), sent);
     assert_eq!(sent_shell_arguments(&requests[3]), sent);
