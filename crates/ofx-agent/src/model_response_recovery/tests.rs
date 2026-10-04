@@ -281,8 +281,12 @@ fn network_and_stream_failures_carry_progress_evidence_and_http_status_failures_
         ]
     );
     assert_eq!(
-        recovery_cause(ProviderErrorKind::Timeout),
+        recovery_cause(ProviderErrorKind::StreamStalled),
         Some(STREAM_TIMEOUT)
+    );
+    assert_eq!(
+        recovery_cause(ProviderErrorKind::Timeout),
+        Some(INTERRUPTED)
     );
     assert_eq!(
         recovery_cause(ProviderErrorKind::TransportInterrupted),
