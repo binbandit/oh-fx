@@ -10,8 +10,8 @@ use ofx_agent::Agent;
 use ofx_config::SelectionError;
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
 use ofx_session::{
-    PendingRecovery, ResumeTarget, SavedProvider, SessionDisposal, SessionError, SessionLog,
-    SessionPreferences, SessionStore, TitleGate, WritableSession, prompt_excerpt,
+    PendingRecovery, ResumeTarget, RouteCredential, SavedProvider, SessionDisposal, SessionError,
+    SessionLog, SessionPreferences, SessionStore, TitleGate, WritableSession, prompt_excerpt,
 };
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
@@ -117,7 +117,7 @@ pub fn recovered_turn(
     pending: PendingRecovery,
     setup: &AgentSetup,
 ) -> Result<RecoveredTurn, SessionError> {
-    if !pending.authorizes(setup.credential_authority()) {
+    if !pending.authorizes(setup.route_credential()) {
         return Err(SessionError::RecoveryCredentialAuthorityChanged);
     }
     Ok(pending.into_turn(&running_provider(setup)?, setup.model(), setup.fast_mode()))
@@ -125,7 +125,7 @@ pub fn recovered_turn(
 
 pub struct LiveSession {
     session: Arc<Mutex<WritableSession>>,
-    provider: SavedProvider,
+    route: SessionRoute,
     id: String,
 }
 
@@ -133,21 +133,21 @@ impl LiveSession {
     pub fn start(
         store: &SessionStore,
         preferences: SessionPreferences,
-        provider: SavedProvider,
+        route: SessionRoute,
     ) -> Result<Self, SessionError> {
-        Ok(Self::new(store.start(preferences)?, provider))
+        Ok(Self::new(store.start(preferences)?, route))
     }
 
-    pub fn resume(resumed: ResumedSession, provider: SavedProvider, agent: &mut Agent) -> Self {
+    pub fn resume(resumed: ResumedSession, route: SessionRoute, agent: &mut Agent) -> Self {
         agent.restore(resumed.history);
-        Self::new(resumed.session, provider)
+        Self::new(resumed.session, route)
     }
 
-    fn new(session: WritableSession, provider: SavedProvider) -> Self {
+    fn new(session: WritableSession, route: SessionRoute) -> Self {
         Self {
             id: session.id().to_owned(),
             session: Arc::new(Mutex::new(session)),
-            provider,
+            route,
         }
     }
 
@@ -160,7 +160,8 @@ impl LiveSession {
             self.id.clone(),
             Box::new(SessionLog::new(
                 Arc::clone(&self.session),
-                self.provider.clone(),
+                self.route.provider.clone(),
+                self.route.credential,
             )),
         );
     }
@@ -226,6 +227,25 @@ pub fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {
         .to_str()
         .ok_or(SessionError::InvalidWorkspaceRoot)?;
     SessionStore::open(data, workspace)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRoute {
+    pub(crate) provider: SavedProvider,
+    credential: RouteCredential,
+}
+
+impl SessionRoute {
+    pub fn provider(&self) -> &SavedProvider {
+        &self.provider
+    }
+}
+
+pub fn session_route(setup: &AgentSetup) -> Result<SessionRoute, SessionError> {
+    Ok(SessionRoute {
+        provider: running_provider(setup)?,
+        credential: setup.route_credential(),
+    })
 }
 
 pub fn running_provider(setup: &AgentSetup) -> Result<SavedProvider, SessionError> {

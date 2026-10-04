@@ -1,4 +1,4 @@
-use ofx_contract::{RecoveredTurn, RecoveryStrategy};
+use ofx_contract::{RecoveredTurn, RecoveryProgress, RecoveryStrategy};
 
 use super::compaction::{spoken_tool_reply, unmetered, windowed};
 use super::turn_log::{Logged, MemoryLog, logged};
@@ -170,4 +170,126 @@ fn user_note(request: &SeenRequest) -> &str {
         ChatMessage::User { content, .. } => content,
         other => panic!("expected a user message, got {other:?}"),
     }
+}
+
+fn unavailable() -> Script {
+    Script::Fail(
+        Vec::new(),
+        failure(ProviderErrorKind::ServerError, "server_error"),
+    )
+}
+
+fn checkpoint(steps: &[&str], progress: RecoveryProgress, consumed_attempts: usize) -> Logged {
+    Logged::Recovery {
+        user: "go".to_owned(),
+        steps: steps.iter().map(|step| (*step).to_owned()).collect(),
+        progress,
+        consumed_attempts,
+        fast_mode: false,
+    }
+}
+
+fn checkpoints(entries: &[Logged]) -> Vec<Logged> {
+    entries
+        .iter()
+        .filter(|entry| matches!(entry, Logged::Recovery { .. } | Logged::RecoveryCleared))
+        .cloned()
+        .collect()
+}
+
+const RETRYING: RecoveryProgress = RecoveryProgress::Waiting(ModelRecoveryAction::RetryingRequest);
+const READ_STEP: &str = r#""" replay=false calls=["call-1"] results=["call-1=echo {}:Success"]"#;
+
+#[tokio::test(start_paused = true)]
+async fn each_retry_saves_the_turn_so_far_before_it_waits() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", "{}")]),
+        unavailable(),
+        unavailable(),
+        text_reply("done"),
+    ]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), vec![echo_tool()]), log);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let entries = entries.lock().unwrap();
+    assert_eq!(
+        entries[..2],
+        [
+            checkpoint(&[READ_STEP], RETRYING, 1),
+            checkpoint(&[READ_STEP], RETRYING, 2),
+        ]
+    );
+    assert!(matches!(entries[2], Logged::Turn { .. }));
+    assert_eq!(entries.len(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_spent_retry_budget_pauses_the_turn_for_a_later_continuation() {
+    let provider = FakeProvider::new(
+        (0..DEFAULT_MAX_PROVIDER_ATTEMPTS)
+            .map(|_| unavailable())
+            .collect(),
+    );
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.failure.unwrap().code(), "server_error");
+    let entries = checkpoints(&entries.lock().unwrap());
+    assert_eq!(entries.len(), DEFAULT_MAX_PROVIDER_ATTEMPTS);
+    assert_eq!(entries[0], checkpoint(&[], RETRYING, 1));
+    assert_eq!(
+        entries[DEFAULT_MAX_PROVIDER_ATTEMPTS - 1],
+        checkpoint(&[], RecoveryProgress::Paused, DEFAULT_MAX_PROVIDER_ATTEMPTS)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failure_that_is_not_retried_saves_no_checkpoint() {
+    let provider = FakeProvider::new(vec![Script::Fail(
+        Vec::new(),
+        failure(ProviderErrorKind::InvalidRequest, "invalid_request"),
+    )]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    run(&mut agent, "go").await;
+    assert!(checkpoints(&entries.lock().unwrap()).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_retry_wait_discards_its_checkpoint() {
+    let provider = FakeProvider::new(vec![unavailable(), unavailable()]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let cancel = CancellationToken::new();
+    let mut events = Vec::new();
+    let report = agent
+        .run_turn(
+            "go",
+            &mut |event| {
+                if matches!(event, UiEvent::Recovery { .. }) {
+                    cancel.cancel();
+                }
+                events.push(event);
+            },
+            &cancel,
+        )
+        .await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    let entries = entries.lock().unwrap();
+    assert_eq!(entries[0], checkpoint(&[], RETRYING, 1));
+    assert_eq!(entries[1], Logged::RecoveryCleared);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkpoint_that_cannot_be_saved_fails_the_turn() {
+    let provider = FakeProvider::new(vec![unavailable(), text_reply("never")]);
+    let mut agent = logged(
+        new_agent(Arc::clone(&provider), Vec::new()),
+        Box::new(MemoryLog::failing("RecoveryWriteFailed")),
+    );
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(report.failure.unwrap().code(), "RecoveryWriteFailed");
+    assert_eq!(provider.requests().len(), 1);
 }

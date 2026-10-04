@@ -543,7 +543,7 @@ fn transient_failures_retry_with_upstream_notices_and_recovery_json() {
         stderr(&output),
         format!("{notice}{notice}[notice] ✓ recovered · succeeded on attempt 2\n")
     );
-    let output = home.ask(&["ask", "--json", "hi"], &key);
+    let output = home.ask(&["ask", "--json", "--no-save", "hi"], &key);
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         result["recovery"],
