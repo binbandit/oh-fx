@@ -255,6 +255,13 @@ async fn openai_codex_sse_maps_text_reasoning_tools_and_usage() {
             StreamEvent::TextDelta {
                 text: "hello".to_owned()
             },
+            StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call_1"),
+                tool_name: "read_file".to_owned(),
+            },
+            StreamEvent::ToolInputDelta {
+                text: r#"{"path":"README.md"}"#.to_owned()
+            },
         ]
     );
     assert_eq!(completion.tool_calls.len(), 1);
