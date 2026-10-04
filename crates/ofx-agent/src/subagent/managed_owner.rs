@@ -11,7 +11,7 @@ use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
 use super::child_state::{ActiveWork, Child, Outcome, Registry};
-use super::execution::{ChildRuntime, WorkOutcome};
+use super::execution::{ChildRelay, ChildRuntime, WorkOutcome};
 use super::tool_host::{
     ChildAgents, ChildDefaults, ChildSettings, ChildStore, ResumedChild, effective_settings,
 };
@@ -377,10 +377,15 @@ impl Owner {
                     );
                     Ok(())
                 };
+                let feedback = |text: String| agents.approval_feedback(turn_id, text);
+                let relay = ChildRelay {
+                    approvals: &forward,
+                    feedback: &feedback,
+                };
                 let mut runtime = runtime.lock_owned().await;
                 let tools = agents.work_tools();
                 runtime
-                    .run(&active, &instructions, tools, &forward, &cancel)
+                    .run(&active, &instructions, tools, &relay, &cancel)
                     .await
             });
             let outcome = run.await.unwrap_or_else(|_| WorkOutcome::panicked());

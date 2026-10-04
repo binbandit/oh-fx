@@ -1052,6 +1052,7 @@ impl Presenter {
             | UiEvent::UsageReported { .. }
             | UiEvent::TurnFinished { .. }
             | UiEvent::ApprovalRequested { .. }
+            | UiEvent::ApprovalFeedback { .. }
             | UiEvent::QuestionRequested { .. }
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }

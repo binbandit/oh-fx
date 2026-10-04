@@ -138,7 +138,8 @@ impl Shell<'_> {
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
             | UiEvent::ToolDeferred { .. }
-            | UiEvent::SubagentStatus { .. }) => self.tool_event(event),
+            | UiEvent::SubagentStatus { .. }
+            | UiEvent::ApprovalFeedback { .. }) => self.tool_event(event),
             UiEvent::SteeringApplied {
                 turn_id,
                 prompt,
@@ -454,6 +455,9 @@ impl Shell<'_> {
                 {
                     row.defer(deferral);
                 }
+            }
+            UiEvent::ApprovalFeedback { turn_id, text } if self.is_visible_turn(turn_id) => {
+                self.push_entry(Entry::UserTurn { text });
             }
             _ => {}
         }

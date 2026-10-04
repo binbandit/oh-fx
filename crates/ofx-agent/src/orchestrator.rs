@@ -1069,59 +1069,13 @@ impl Agent {
         };
         let (calls, mut malformed) = self.record_tool_step(completion);
         let all_malformed = !malformed.is_empty() && malformed.iter().all(Option::is_some);
-        let mut gate = match self.project {
-            Some(_) => Some(self.open_gate(turn.id, &calls, &mut malformed, events, cancel)?),
-            None => None,
-        };
-        let mut next = 0;
-        let mut carried = Deferred(None);
-        while next < calls.len() {
-            if cancel.is_cancelled() {
-                return Err(Stop::interrupted());
-            }
-            if provider_executed(&calls[next]) {
-                self.publish_provider_result(turn, &calls[next], events);
-                next += 1;
-                continue;
-            }
-            let group = match &mut gate {
-                Some(gate) => match self.gated_group(gate, &calls, next) {
-                    GatedGroup::Run(group) => group,
-                    GatedGroup::Unexecuted(description, output) => {
-                        turn.raw_outputs
-                            .push(partial_view(calls[next].id.clone(), output.len()));
-                        self.settle_unexecuted(turn.id, &calls[next], description, output, events);
-                        next += 1;
-                        continue;
-                    }
-                },
-                None => self.lazy_group(&calls, next, &mut malformed, &mut carried),
-            };
-            next += group.len();
-            let gate = Gate {
-                permissions: &*self.permissions,
-                approvals: self.approvals.as_ref(),
-            };
-            let mut reviewing = Reviewing {
-                model: &self.config.model,
-                history: &self.history,
-                turn_starts: &self.turn_starts,
-                compacted_turns: self.compacted.as_ref().map(|payload| payload.turn_count),
-                inherited_requests: self.inherited_requests.as_ref(),
-                turn_start: turn.start,
-                batch: &calls,
-                reviews: &mut turn.reviews,
-                usage: &mut turn.usage,
-            };
-            let settled = run_group(turn.id, group, gate, &mut reviewing, events, cancel).await;
-            self.record_settled(turn, settled.outcomes);
-            if let Some(blocked) = settled.blocked {
-                return Err(Stop::failed(TurnFailure::PermissionRequired(blocked)));
-            }
-        }
-        if cancel.is_cancelled() {
-            return Err(Stop::interrupted());
-        }
+        let mut feedback = Vec::new();
+        let ran = self
+            .run_groups(turn, &calls, &mut malformed, &mut feedback, events, cancel)
+            .await;
+        self.history
+            .extend(feedback.into_iter().map(ChatMessage::user));
+        ran?;
         self.settle_batch_retries(turn, all_malformed, more_steps, events)
     }
 
@@ -1186,15 +1140,87 @@ impl Agent {
         true
     }
 
-    fn record_settled(&mut self, turn: &mut Turn, outcomes: Vec<Settled<'_>>) {
+    async fn run_groups(
+        &mut self,
+        turn: &mut Turn,
+        calls: &[ToolCall],
+        malformed: &mut [Option<ToolOutput>],
+        feedback: &mut Vec<String>,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<(), Stop> {
+        let mut gate = match self.project {
+            Some(_) => Some(self.open_gate(turn.id, calls, malformed, events, cancel)?),
+            None => None,
+        };
+        let mut next = 0;
+        let mut carried = Deferred(None);
+        while next < calls.len() {
+            if cancel.is_cancelled() {
+                return Err(Stop::interrupted());
+            }
+            if provider_executed(&calls[next]) {
+                self.publish_provider_result(turn, &calls[next], events);
+                next += 1;
+                continue;
+            }
+            let group = match &mut gate {
+                Some(gate) => match self.gated_group(gate, calls, next) {
+                    GatedGroup::Run(group) => group,
+                    GatedGroup::Unexecuted(description, output) => {
+                        turn.raw_outputs
+                            .push(partial_view(calls[next].id.clone(), output.len()));
+                        self.settle_unexecuted(turn.id, &calls[next], description, output, events);
+                        next += 1;
+                        continue;
+                    }
+                },
+                None => self.lazy_group(calls, next, malformed, &mut carried),
+            };
+            next += group.len();
+            let gate = Gate {
+                permissions: &*self.permissions,
+                approvals: self.approvals.as_ref(),
+            };
+            let mut reviewing = Reviewing {
+                model: &self.config.model,
+                history: &self.history,
+                turn_starts: &self.turn_starts,
+                compacted_turns: self.compacted.as_ref().map(|payload| payload.turn_count),
+                inherited_requests: self.inherited_requests.as_ref(),
+                turn_start: turn.start,
+                batch: calls,
+                reviews: &mut turn.reviews,
+                usage: &mut turn.usage,
+            };
+            let settled = run_group(turn.id, group, gate, &mut reviewing, events, cancel).await;
+            self.record_settled(turn, settled.outcomes, feedback);
+            if let Some(blocked) = settled.blocked {
+                return Err(Stop::failed(TurnFailure::PermissionRequired(blocked)));
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(Stop::interrupted());
+        }
+        Ok(())
+    }
+
+    fn record_settled(
+        &mut self,
+        turn: &mut Turn,
+        outcomes: Vec<Settled<'_>>,
+        feedback: &mut Vec<String>,
+    ) {
         for Settled {
             call,
             output,
             escalates,
             executed,
             review_hold,
+            feedback: given,
         } in outcomes
         {
+            feedback.extend(given);
             let Some(output) = output else {
                 continue;
             };
@@ -1785,6 +1811,7 @@ struct Settled<'c> {
     escalates: bool,
     executed: bool,
     review_hold: bool,
+    feedback: Option<String>,
 }
 
 struct SettledGroup<'c> {
@@ -1900,13 +1927,15 @@ async fn judge(
     judged: Judged<'_>,
     events: EventSink<'_>,
     cancel: &CancellationToken,
-) -> Verdict {
-    match admission {
+) -> (Verdict, Option<String>) {
+    let verdict = match admission {
         Admission::Allowed(path_access) => Verdict::Run(path_access),
-        Admission::ApprovalRequired => ask_approval(gate, turn_id, &judged, events, cancel).await,
+        Admission::ApprovalRequired => {
+            return ask_approval(gate, turn_id, &judged, events, cancel).await;
+        }
         Admission::ReviewRequired => {
             let Some(verdict) = review(gate, reviewing, &judged, cancel).await else {
-                return Verdict::Interrupted;
+                return (Verdict::Interrupted, None);
             };
             let call = judged.call;
             match verdict {
@@ -1918,7 +1947,7 @@ async fn judge(
                     ReviewHold::Caution(&advice),
                 )),
                 _ if gate.approvals.is_some() => {
-                    ask_approval(gate, turn_id, &judged, events, cancel).await
+                    return ask_approval(gate, turn_id, &judged, events, cancel).await;
                 }
                 ReviewVerdict::EvidenceIncomplete => Verdict::Held(tool_review_held_json(
                     &call.name,
@@ -1930,7 +1959,8 @@ async fn judge(
                 )),
             }
         }
-    }
+    };
+    (verdict, None)
 }
 
 async fn review(
@@ -2042,9 +2072,9 @@ async fn ask_approval(
     judged: &Judged<'_>,
     events: EventSink<'_>,
     cancel: &CancellationToken,
-) -> Verdict {
+) -> (Verdict, Option<String>) {
     let Some(approvals) = gate.approvals else {
-        return Verdict::Blocked;
+        return (Verdict::Blocked, None);
     };
     let scope = gate.permissions.approval_scope(judged.action);
     let mut pending = approvals.open();
@@ -2055,16 +2085,21 @@ async fn ask_approval(
     let answer = tokio::select! {
         biased;
         () = cancel.cancelled() => pending.withdraw(),
-        decision = pending.decision() => Some(decision),
+        answer = pending.answer() => Some(answer),
     };
-    if let (Some(ApprovalDecision::Always), Some(grant)) = (answer, &scope.always) {
+    let decision = answer.as_ref().map(|answer| answer.decision);
+    if let (Some(ApprovalDecision::Always), Some(grant)) = (decision, &scope.always) {
         gate.permissions.remember_approval(grant);
     }
-    match answer {
+    let verdict = match decision {
         _ if cancel.is_cancelled() => Verdict::Interrupted,
         None | Some(ApprovalDecision::Deny) => Verdict::Denied,
         Some(ApprovalDecision::Once | ApprovalDecision::Always) => Verdict::Run(scope.access),
-    }
+    };
+    let feedback = answer
+        .and_then(|answer| answer.feedback)
+        .filter(|text| !text.is_empty());
+    (verdict, feedback)
 }
 
 fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -> ApprovalRequest {
@@ -2114,7 +2149,7 @@ async fn run_group<'c>(
                 output,
             }) => {
                 events(tool_rejected(turn_id, call, reason, description, &output));
-                dispatched.push((call, Dispatched::Rejected(output, reason)));
+                dispatched.push((call, Dispatched::Rejected(output, reason), None));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);
@@ -2131,7 +2166,7 @@ async fn run_group<'c>(
                     description: &description,
                     evidence: &evidence,
                 };
-                let verdict = judge(
+                let (verdict, feedback) = judge(
                     gate,
                     reviewing,
                     turn_id,
@@ -2166,7 +2201,7 @@ async fn run_group<'c>(
                         let context =
                             reviewing.tool_context(turn_id, call, delegation, path_access, cancel);
                         let task = tokio::spawn(async move { prepared.execute(context).await });
-                        dispatched.push((call, Dispatched::Running(task)));
+                        dispatched.push((call, Dispatched::Running(task), feedback));
                         continue;
                     }
                     Verdict::Held(output) => (output, true),
@@ -2183,6 +2218,7 @@ async fn run_group<'c>(
                 dispatched.push((
                     call,
                     Dispatched::Held(ToolOutput::failure(held), review_hold),
+                    feedback,
                 ));
             }
         }
@@ -2199,14 +2235,14 @@ async fn run_group<'c>(
 
 async fn settle_group<'c>(
     turn_id: TurnId,
-    dispatched: Vec<(&'c ToolCall, Dispatched)>,
+    dispatched: Vec<(&'c ToolCall, Dispatched, Option<String>)>,
     reported: &mut UnboundedReceiver<ChildStatus>,
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> Vec<Settled<'c>> {
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
-    for (call, dispatched) in dispatched {
+    for (call, dispatched, feedback) in dispatched {
         let (output, escalates, executed, review_hold) = match dispatched {
             Dispatched::Rejected(output, reason) => {
                 report_context_notices(turn_id, &output, events);
@@ -2231,12 +2267,19 @@ async fn settle_group<'c>(
                 (output, true, true, false)
             }
         };
+        if let Some(text) = &feedback {
+            events(UiEvent::ApprovalFeedback {
+                turn_id,
+                text: text.clone(),
+            });
+        }
         outcomes.push(Settled {
             call,
             output,
             escalates,
             executed,
             review_hold,
+            feedback,
         });
     }
     outcomes
