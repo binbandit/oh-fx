@@ -120,7 +120,22 @@ pub(crate) fn parse_color_fg_bg_light(colorfgbg: &str) -> bool {
     let Some((_, background)) = colorfgbg.rsplit_once(';') else {
         return false;
     };
-    background.parse::<u8>().is_ok_and(|index| index >= 8)
+    parse_unsigned_byte(background).is_some_and(|index| index >= 8)
+}
+
+fn parse_unsigned_byte(digits: &str) -> Option<u8> {
+    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') {
+        return None;
+    }
+    digits
+        .bytes()
+        .filter(|byte| *byte != b'_')
+        .try_fold(0_u8, |value, byte| {
+            let digit = char::from(byte).to_digit(10)?;
+            value
+                .checked_mul(10)?
+                .checked_add(u8::try_from(digit).ok()?)
+        })
 }
 
 fn normalize_osc11_component(part: &[u8]) -> Option<u32> {
@@ -230,6 +245,20 @@ mod tests {
         assert!(!parse_color_fg_bg_light("0;7"));
         assert!(!parse_color_fg_bg_light(""));
         assert!(!parse_color_fg_bg_light("garbage"));
+    }
+
+    #[test]
+    fn colorfgbg_parser_reads_the_background_as_upstream_parses_an_unsigned_byte() {
+        assert!(parse_color_fg_bg_light("0;1_5"));
+        assert!(parse_color_fg_bg_light("0;1__5"));
+        assert!(parse_color_fg_bg_light("0;0015"));
+        assert!(parse_color_fg_bg_light("0;255"));
+        assert!(!parse_color_fg_bg_light("0;+15"));
+        assert!(!parse_color_fg_bg_light("0;_15"));
+        assert!(!parse_color_fg_bg_light("0;15_"));
+        assert!(!parse_color_fg_bg_light("0;256"));
+        assert!(!parse_color_fg_bg_light("0;"));
+        assert!(!parse_color_fg_bg_light("0;1 5"));
     }
 
     #[test]
