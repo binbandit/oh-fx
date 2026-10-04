@@ -40,6 +40,7 @@ impl Shell<'_> {
         if let Some(displaced) = self.question.replace(QuestionPrompt::new(request)) {
             self.answer_question(displaced.request_id, None);
         }
+        self.foreground(super::ForegroundState::Blocked, Some(b"question"));
         self.invalidate();
     }
 

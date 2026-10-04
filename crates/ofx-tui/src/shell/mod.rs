@@ -12,6 +12,8 @@ mod input_question_runtime;
 mod input_selection_runtime;
 mod input_submit_runtime;
 mod leading_whitespace;
+#[cfg(test)]
+mod lifecycle_tests;
 pub(crate) mod model_menu;
 mod model_picker_runtime;
 mod picker_state;
@@ -63,7 +65,7 @@ use crate::footer::picker_presentation::{catalog_menu_hint_row, menu_hint_row, m
 use crate::footer::question_ui::question_hint_row;
 use crate::footer::skills_menu_presentation::{MAX_MENU_ROWS, skills_menu_band};
 use crate::footer::statusline::Statusline;
-use crate::host::Clipboard;
+use crate::host::{Clipboard, ForegroundLifecycle, ForegroundState};
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
 use crate::output::activity_status::{
@@ -116,6 +118,7 @@ pub struct ShellOptions {
     pub prompt_history: PromptHistory,
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
     pub skill_catalog: Option<Box<dyn SkillCatalogSource>>,
+    pub lifecycle: Option<Box<dyn ForegroundLifecycle>>,
     pub opening: Opening,
     pub statusline: StatuslineToggles,
     pub workspace_identity: Option<Box<dyn WorkspaceIdentitySource>>,
@@ -286,6 +289,9 @@ pub fn run_shell(
     let mut shell = Shell::bootstrap(options, events, Arc::new(clipboard), Box::new(send))?;
     let result = shell.run();
     let fatal = shell.shutdown(result.as_ref().ok().copied().flatten());
+    if let Some(lifecycle) = &shell.options.lifecycle {
+        lifecycle.shutdown();
+    }
     if let Some(signal) = fatal {
         crate::terminal::signal_pipe::raise_default(signal);
     }
@@ -304,6 +310,12 @@ struct Setup {
 }
 
 impl<'a> Shell<'a> {
+    fn foreground(&self, state: ForegroundState, status: Option<&[u8]>) {
+        if let Some(observer) = &self.options.lifecycle {
+            observer.report(state, status);
+        }
+    }
+
     fn bootstrap(
         options: ShellOptions,
         events: UiEventReceiver,
@@ -1221,6 +1233,7 @@ mod tests {
             prompt_history: PromptHistory::disabled(),
             file_mentions: None,
             skill_catalog: None,
+            lifecycle: None,
             opening: Opening::Welcome,
             statusline: StatuslineToggles::default(),
             workspace_identity: None,

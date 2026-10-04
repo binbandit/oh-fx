@@ -33,6 +33,7 @@ use crate::app_session_runtime::{
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
+use crate::herdr::{Herdr, HerdrObserver};
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
 use crate::skill_mention_runtime::SkillMentions;
@@ -247,6 +248,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     if let Some(notice) = update {
         sender.send(UiEvent::Notice { notice });
     }
+    let lifecycle = Herdr::from_env().map(Arc::new);
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
@@ -268,6 +270,9 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.cache_dir(),
         ))),
         skill_catalog: Some(Box::new(SkillMentions::new(session.setup.skills().clone()))),
+        lifecycle: lifecycle.as_ref().map(|client| {
+            Box::new(HerdrObserver(Arc::clone(client))) as Box<dyn ofx_tui::ForegroundLifecycle>
+        }),
         opening: session.opening,
         statusline: session.setup.statusline(),
         workspace_identity: Some(Box::new(StatuslineIdentity::new(
@@ -282,6 +287,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         (session.persistence, picking),
         session.executions,
         runtime,
+        lifecycle,
     );
     host(options, sender, receiver, refreshes.as_deref(), agent)
 }
@@ -291,6 +297,7 @@ fn agent_work(
     (persistence, pick_at_start): (Option<Persistence>, bool),
     executions: ManagedExecutions,
     runtime: Runtime,
+    herdr: Option<Arc<Herdr>>,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
     let refreshes = setup.refreshes();
     let mcp = setup.mcp().cloned();
@@ -301,7 +308,8 @@ fn agent_work(
             Arc::new(move |event| events.send(event)),
             persistence,
             pick_at_start,
-        );
+        )
+        .with_herdr(herdr);
         runtime.block_on(async {
             let discovery = mcp.clone().map(|mcp| {
                 tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))
