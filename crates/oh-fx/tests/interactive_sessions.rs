@@ -1772,6 +1772,47 @@ fn a_resumed_shell_labels_saved_tool_results_and_drops_the_call_an_interruption_
 }
 
 #[test]
+fn a_resumed_skill_row_names_the_skill_its_saved_result_loaded() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let loaded = "<skill_content name=\"workflow\" location=\"/skills/workflow\" resource=\"SKILL.md\" complete=\"true\">\nFollow the workflow.\n</skill_content>";
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "use the skill"}})),
+            saved_call(5, "c1", "skill", &json!({"location": "/skills/workflow"})),
+            saved_result(6, "c1", "skill", "success", loaded),
+            saved_call(7, "c2", "skill", &json!({"location": "/skills/missing"})),
+            saved_result(8, "c2", "skill", "failure", "skill failed: missing"),
+            frame(9, &json!({"assistant": {"text": "Used it."}})),
+            frame(10, &json!({"turn_completed": {}})),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "Used it.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ use the skill",
+                "├ Loaded skill workflow",
+                "└ Failed skill",
+                "Used it.",
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+}
+
+#[test]
 fn a_resumed_provider_search_keeps_its_search_row() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
     let home = Home::new(&server.base_url());

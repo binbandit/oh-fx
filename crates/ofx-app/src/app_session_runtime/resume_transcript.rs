@@ -6,7 +6,7 @@ use ofx_contract::{
 use ofx_session::{
     ConversationEvent, InterruptReason, SavedTurn, SessionError, ToolResultEvent, WritableSession,
 };
-use ofx_tools::answered_questions;
+use ofx_tools::{answered_questions, resumed_skill_description};
 
 const RESUMED_TOPIC: &str = "session resumed";
 const SYSTEM_TOPIC: &str = "system";
@@ -109,13 +109,17 @@ impl TurnReplay<'_, '_> {
         let answers = (result.status == ToolResultStatus::Success)
             .then(|| answered_questions(&result.tool_name, || Some(output.clone())))
             .flatten();
+        let description = (result.status == ToolResultStatus::Success)
+            .then(|| resumed_skill_description(&call.tool_name, &call.arguments, &output))
+            .flatten()
+            .or(call.description);
         let entry = match answers {
             Some(answers) => HistoryEntry::QuestionsAnswered(answers),
             None => HistoryEntry::Tool(SavedToolCall {
                 call_id: ToolCallId::new(result.call_id),
                 tool_name: call.tool_name,
                 arguments: call.arguments,
-                description: call.description,
+                description,
                 status: result.status,
                 output,
             }),
