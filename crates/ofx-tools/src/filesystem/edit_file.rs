@@ -35,6 +35,7 @@ impl EditFile {
                 tool_name: TOOL_NAME,
                 presentation: PRESENTATION,
                 workspace_root: workspace_root.into(),
+                additional_roots: Vec::new(),
                 permission_mode: None,
                 change_tracker: None,
             },
@@ -44,6 +45,12 @@ impl EditFile {
     #[must_use]
     pub fn with_permission_mode(mut self, permission_mode: LivePermissionMode) -> Self {
         self.request.permission_mode = Some(permission_mode);
+        self
+    }
+
+    #[must_use]
+    pub fn with_additional_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.request.additional_roots = roots;
         self
     }
 

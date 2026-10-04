@@ -37,6 +37,7 @@ pub(crate) struct ChildFactory {
     pub(crate) skills: Arc<HostSkills>,
     pub(crate) mcp: Option<Arc<dyn DynamicTools>>,
     pub(crate) workspace_root: PathBuf,
+    pub(crate) additional_roots: Vec<PathBuf>,
     pub(crate) permission_mode: LivePermissionMode,
     pub(crate) parent: Mutex<AgentConfig>,
     pub(crate) mode: Option<ActiveMode>,
@@ -123,6 +124,7 @@ impl ChildAgents for ChildFactory {
         };
         let permissions =
             PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
+                .with_additional_roots(self.additional_roots.clone())
                 .with_reviewer(Reviewer::new(
                     Arc::clone(&self.reviewer),
                     DEFAULT_REVIEW_TIMEOUT,
@@ -131,11 +133,10 @@ impl ChildAgents for ChildFactory {
         let mut agent = Agent::new(
             Arc::clone(&self.provider),
             Vec::new(),
-            Arc::new(HostRuntimeContext::new(
-                self.workspace_root.clone(),
-                permission_mode,
-                false,
-            )),
+            Arc::new(
+                HostRuntimeContext::new(self.workspace_root.clone(), permission_mode, false)
+                    .with_additional_roots(self.additional_roots.clone()),
+            ),
             Arc::new(permissions),
             config,
         )
@@ -169,7 +170,10 @@ impl ChildAgents for ChildFactory {
             &self.permission_mode,
             self.skills.tool(),
             self.skills.search(),
-            ToolHooks::default(),
+            ToolHooks {
+                additional_roots: self.additional_roots.clone(),
+                ..ToolHooks::default()
+            },
         );
         WorkTools {
             tools,

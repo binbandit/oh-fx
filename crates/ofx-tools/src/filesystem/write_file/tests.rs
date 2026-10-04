@@ -301,6 +301,50 @@ fn an_unchanged_file_that_changes_before_execution_is_reported_stale_and_left_al
 }
 
 #[test]
+fn files_in_an_additional_directory_are_read_before_the_write_is_admitted() {
+    let workspace = Fixture::new();
+    let shared = workspace.root.join("shared");
+    fs::create_dir_all(&shared).unwrap();
+    let existing = shared.join("notes.txt");
+    fs::write(&existing, "old\n").unwrap();
+    let outside = workspace.root.join("outside.txt");
+    fs::write(&outside, "old\n").unwrap();
+    let tool = workspace.tool().with_additional_roots(vec![shared.clone()]);
+    let changed = run(
+        &tool,
+        &arguments(&existing, "new\n"),
+        PathAccess::Within(shared.clone()),
+    );
+    assert_eq!(
+        changed.mutation,
+        Some(FileMutation {
+            target: existing.clone(),
+            state: FileMutationState::Changes,
+        })
+    );
+    assert_eq!(changed.output.status, ToolResultStatus::Success);
+    assert_eq!(fs::read_to_string(&existing).unwrap(), "new\n");
+    let unchanged = run(
+        &tool,
+        &arguments(&existing, "new\n"),
+        PathAccess::Within(shared.clone()),
+    );
+    assert_eq!(
+        unchanged.mutation.map(|mutation| mutation.state),
+        Some(FileMutationState::Unchanged)
+    );
+    let elsewhere = run(
+        &tool,
+        &arguments(&outside, "new\n"),
+        PathAccess::WorkspaceOnly,
+    );
+    assert_eq!(
+        elsewhere.mutation.map(|mutation| mutation.state),
+        Some(FileMutationState::Unread)
+    );
+}
+
+#[test]
 fn external_files_are_not_read_until_the_write_is_admitted() {
     let workspace = Fixture::new();
     let existing = workspace.root.join("outside/notes.txt");
