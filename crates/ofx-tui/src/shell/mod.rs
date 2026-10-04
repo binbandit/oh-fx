@@ -609,6 +609,7 @@ impl<'a> Shell<'a> {
             match (&mut self.approval, &self.question) {
                 (Some(prompt), _) => prompt.view(&self.theme, self.layout, banner_rows),
                 (None, Some(prompt)) => prompt.composer_view(&self.theme, self.layout.cols),
+                (None, None) if self.statusline_menu.is_some() => ComposerView::hidden(),
                 (None, None) => composer_view(
                     &self.composer,
                     self.layout.cols,

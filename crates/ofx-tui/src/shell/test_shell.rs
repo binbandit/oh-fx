@@ -218,6 +218,11 @@ impl TestShell {
         self.written();
         self.screen.screen().contents()
     }
+
+    pub(super) fn cursor_hidden(&mut self) -> bool {
+        self.written();
+        self.screen.screen().hide_cursor()
+    }
 }
 
 fn winsize(rows: u16, cols: u16) -> Winsize {

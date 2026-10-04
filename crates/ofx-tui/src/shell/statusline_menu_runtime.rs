@@ -75,6 +75,7 @@ impl Shell<'_> {
                     self.gestures.disarm_escape_clear();
                     self.gestures.disarm_escape_interrupt();
                     self.statusline_menu = None;
+                    self.invalidate();
                 }
                 Action::CursorUp => self.move_statusline_menu(-1),
                 Action::CursorDown => self.move_statusline_menu(1),
@@ -99,6 +100,7 @@ impl Shell<'_> {
         };
         let (item, _) = STATUSLINE_CHOICES[menu.selected];
         let enabled = !self.statusline.toggles().enabled(item);
+        self.statusline.set(item, enabled);
         self.send(UiCommand::SetStatusline { item, enabled });
     }
 }

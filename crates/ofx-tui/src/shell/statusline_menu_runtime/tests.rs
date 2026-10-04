@@ -21,21 +21,48 @@ fn set(item: StatuslineItem, enabled: bool) -> UiCommand {
 }
 
 #[test]
-fn the_menu_lists_the_three_segments_under_the_composer_with_their_values() {
+fn the_menu_takes_the_composer_s_place_and_lists_the_three_segments_with_their_values() {
     let mut test = opened();
     let screen = test.screen();
-    let composer = screen.find("┃ ").unwrap();
     let title = screen.find("Status line\n\n").unwrap();
     let context = screen.find("  Context      off  on\n").unwrap();
     let session = screen.find("  Session      off  on\n").unwrap();
     let workspace = screen.find("  Workspace    off  on\n").unwrap();
     let hint = screen.find(HINT).unwrap();
-    assert!(
-        composer < title && title < context && context < session,
-        "{screen}"
-    );
+    assert!(title < context && context < session, "{screen}");
     assert!(session < workspace && workspace < hint, "{screen}");
     assert!(!screen.contains("auto · model-a"), "{screen}");
+    assert!(!screen.contains('┃'), "{screen}");
+    assert!(test.cursor_hidden());
+}
+
+#[test]
+fn toggles_in_one_batch_each_flip_the_value_the_last_one_left() {
+    let mut test = opened();
+    press(&mut test, b"\r\r\x1b[B\x1b[C");
+    assert_eq!(
+        test.sent(),
+        [
+            set(StatuslineItem::Context, true),
+            set(StatuslineItem::Context, false),
+            set(StatuslineItem::Session, true),
+        ]
+    );
+    let screen = test.screen();
+    assert!(screen.contains("  Session      off  on"), "{screen}");
+    assert!(
+        test.shell
+            .statusline
+            .toggles()
+            .enabled(StatuslineItem::Session)
+    );
+    assert!(
+        !test
+            .shell
+            .statusline
+            .toggles()
+            .enabled(StatuslineItem::Context)
+    );
 }
 
 #[test]
@@ -95,6 +122,8 @@ fn escape_closes_the_menu_and_the_status_line_returns() {
     assert!(test.shell.statusline_menu.is_none());
     assert!(!screen.contains("Status line"), "{screen}");
     assert!(screen.contains("auto · model-a"), "{screen}");
+    assert!(screen.contains("┃ "), "{screen}");
+    assert!(!test.cursor_hidden());
 }
 
 #[test]
