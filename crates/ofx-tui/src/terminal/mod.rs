@@ -10,6 +10,9 @@ mod theme_protocol;
 use thiserror::Error;
 
 pub(crate) use app_lifecycle::{ExitCleanup, StartupViewport};
+pub(crate) use cursor_probe::{
+    CONFIRMATION_TAG_COLUMN, ProbeFeed, ProbePoll, TAGGED_CURSOR_QUERY, TaggedCursorProbe,
+};
 #[cfg(test)]
 pub(crate) use shell_runtime::test_pty;
 pub(crate) use shell_runtime::{ColorSupport, HistoryReset, Terminal};

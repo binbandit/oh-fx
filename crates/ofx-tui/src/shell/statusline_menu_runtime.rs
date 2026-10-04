@@ -83,7 +83,10 @@ impl Shell<'_> {
                 _ => {}
             },
             InputEvent::Paste(outcome) => self.handle_paste(outcome.clone()),
-            InputEvent::Text(_) | InputEvent::TextDropped(_) => {}
+            InputEvent::Text(_)
+            | InputEvent::TextDropped(_)
+            | InputEvent::NativeClearProbe
+            | InputEvent::NativeClearDetected => {}
         }
         Ok(())
     }

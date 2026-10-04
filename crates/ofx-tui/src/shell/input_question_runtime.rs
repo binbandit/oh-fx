@@ -71,7 +71,9 @@ impl Shell<'_> {
             }
             InputEvent::Action(decoded) => self.question_action(decoded),
             InputEvent::Paste(outcome) => self.question_paste(outcome),
-            InputEvent::TextDropped(_) => {}
+            InputEvent::TextDropped(_)
+            | InputEvent::NativeClearProbe
+            | InputEvent::NativeClearDetected => {}
         }
         Ok(())
     }

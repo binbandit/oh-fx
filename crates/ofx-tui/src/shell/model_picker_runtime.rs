@@ -193,7 +193,10 @@ impl Shell<'_> {
             InputEvent::Text(_) => true,
             InputEvent::Raw(raw) => (33..127).contains(&raw.byte) || deletes(raw.composer_shortcut),
             InputEvent::Action(decoded) => deletes(decoded.composer_shortcut),
-            InputEvent::TextDropped(_) | InputEvent::Paste(_) => false,
+            InputEvent::TextDropped(_)
+            | InputEvent::Paste(_)
+            | InputEvent::NativeClearProbe
+            | InputEvent::NativeClearDetected => false,
         }
     }
 
