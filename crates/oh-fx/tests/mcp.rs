@@ -497,6 +497,54 @@ fn a_schema_over_its_context_limit_is_reported_with_its_override() {
     assert!(!tools.to_string().contains("mcp_fixture_echo"), "{tools}");
 }
 
+fn tool_names(request: &RecordedRequest) -> Vec<String> {
+    request.json()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn a_subagent_child_advertises_and_calls_its_parents_mcp_tools() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_0",
+            "subagent",
+            &json!({"request": {"action": "run", "task": "echo hi"}}).to_string(),
+        )),
+        echo_call(),
+        Reply::sse(&chat_text_events(&["child echoed"])),
+        Reply::sse(&chat_text_events(&["parent done"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&["ask", "--full-access", "delegate the echo"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let child_tools = tool_names(&requests[1]);
+    assert!(
+        child_tools.contains(&"mcp_fixture_echo".to_owned()),
+        "{child_tools:?}"
+    );
+    assert!(
+        !child_tools.contains(&"subagent".to_owned()),
+        "{child_tools:?}"
+    );
+    assert_eq!(
+        tool_result(&requests[2]),
+        r#"{"server":"fixture","tool":"echo","result":{"content":[{"type":"text","text":"echoed"}]}}"#
+    );
+    let calls = fs::read_to_string(home.state.join("calls")).unwrap();
+    assert!(
+        calls.contains(r#""name":"echo","arguments":{"text":"hi"}"#),
+        "{calls}"
+    );
+    assert!(tool_result(&requests[3]).contains("child echoed"));
+}
+
 #[test]
 fn an_exited_unreaped_process_does_not_count_as_running() {
     let mut live = Command::new("/bin/sleep")
