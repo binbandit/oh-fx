@@ -4,6 +4,8 @@ mod app_worker_runtime;
 mod approval_runtime;
 mod directory_completion_job;
 mod event_loop;
+pub(crate) mod help_menu;
+mod help_menu_runtime;
 mod input_completion_runtime;
 mod input_history_runtime;
 mod input_question_runtime;
@@ -39,6 +41,7 @@ pub use skills_menu_runtime::SkillCatalogSource;
 
 use app_permission_runtime::YoloWarning;
 use approval_runtime::ApprovalPrompt;
+use help_menu::HelpMenu;
 use input_completion_runtime::{FilePicker, PickerBand};
 use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
@@ -50,12 +53,13 @@ use session_picker_runtime::SessionPicker;
 use skills_menu::SkillsMenu;
 
 use crate::composer::{Composer, ComposerStash};
+use crate::footer::help_menu_presentation::HELP_MENU_HINTS;
 use crate::footer::input_presentation::ComposerView;
 use crate::footer::input_presentation::{
     DangerStatus, HintState, compose_hint_row, composer_view, danger_status_text, input_row_limit,
 };
 use crate::footer::model_menu_presentation::{MAX_INLINE_ROWS, model_menu_band};
-use crate::footer::picker_presentation::{catalog_menu_hint_row, menu_row_budget};
+use crate::footer::picker_presentation::{catalog_menu_hint_row, menu_hint_row, menu_row_budget};
 use crate::footer::question_ui::question_hint_row;
 use crate::footer::skills_menu_presentation::{MAX_MENU_ROWS, skills_menu_band};
 use crate::footer::statusline::Statusline;
@@ -94,6 +98,8 @@ pub struct SlashCommandSpec {
     pub command: String,
     pub aliases: Vec<String>,
     pub description: String,
+    pub help_entry: String,
+    pub takes_arguments: bool,
     pub category: usize,
     pub compacts: bool,
 }
@@ -221,6 +227,7 @@ pub(crate) struct Shell<'a> {
     approval: Option<ApprovalPrompt>,
     question: Option<QuestionPrompt>,
     skills_menu: Option<SkillsMenu>,
+    help_menu: Option<HelpMenu>,
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     kept_recovery: Option<RecoveryStatus>,
     session_title: Option<String>,
@@ -242,6 +249,12 @@ pub(crate) struct Shell<'a> {
     should_exit: bool,
     frame: FrameCache,
     metrics: Metrics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuHint {
+    Catalog(&'static str),
+    Help,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -403,6 +416,7 @@ impl<'a> Shell<'a> {
             approval: None,
             question: None,
             skills_menu: None,
+            help_menu: None,
             skill_catalog,
             kept_recovery: None,
             session_title: None,
@@ -575,7 +589,7 @@ impl<'a> Shell<'a> {
         let appended = self.transcript.take_new_rows(&self.theme);
         let catalog_menu = self.catalog_menu_band();
         self.statusline.refresh();
-        let (hint, warning_included) = self.hint_row(catalog_menu.as_ref().map(|(_, tab)| *tab));
+        let (hint, warning_included) = self.hint_row(catalog_menu.as_ref().map(|(_, hint)| *hint));
         let activity = if self.question.is_some() {
             Vec::new()
         } else {
@@ -664,20 +678,23 @@ impl<'a> Shell<'a> {
         Ok(())
     }
 
-    fn catalog_menu_band(&self) -> Option<(Vec<Row>, &'static str)> {
+    fn catalog_menu_band(&self) -> Option<(Vec<Row>, MenuHint)> {
         if self.approval.is_some() || self.question.is_some() {
             return None;
+        }
+        if let Some(rows) = self.help_menu_band() {
+            return Some((rows, MenuHint::Help));
         }
         if let Some(menu) = &self.model_menu {
             let budget = self.menu_budget(MAX_INLINE_ROWS);
             let rows = model_menu_band(menu, &self.catalog, budget, self.cols(), &self.theme);
-            return Some((rows, "provider"));
+            return Some((rows, MenuHint::Catalog("provider")));
         }
         let menu = self.skills_menu.as_ref().filter(|menu| menu.is_visible())?;
         let budget = self.menu_budget(MAX_MENU_ROWS);
         Some((
             skills_menu_band(menu, budget, self.cols(), &self.theme),
-            "source",
+            MenuHint::Catalog("source"),
         ))
     }
 
@@ -703,7 +720,7 @@ impl<'a> Shell<'a> {
         )
     }
 
-    fn hint_row(&self, catalog_tab: Option<&str>) -> (Row, bool) {
+    fn hint_row(&self, menu_hint: Option<MenuHint>) -> (Row, bool) {
         let hint_state = HintState {
             ctrl_c_pending: self.gestures.ctrl_c_exit_armed() && self.question.is_none(),
             esc_clear_armed: self.gestures.escape_clear_armed(),
@@ -717,9 +734,16 @@ impl<'a> Shell<'a> {
                 DangerStatus::None
             },
         };
-        if let Some(tab) = catalog_tab {
-            let hint =
-                catalog_menu_hint_row(&self.theme, self.cols(), hint_state.ctrl_c_pending, tab);
+        if let Some(menu_hint) = menu_hint {
+            let ctrl_c_pending = hint_state.ctrl_c_pending;
+            let hint = match menu_hint {
+                MenuHint::Catalog(tab) => {
+                    catalog_menu_hint_row(&self.theme, self.cols(), ctrl_c_pending, tab)
+                }
+                MenuHint::Help => {
+                    menu_hint_row(&self.theme, self.cols(), ctrl_c_pending, &HELP_MENU_HINTS)
+                }
+            };
             return (hint, false);
         }
         let base_hint = match &self.question {

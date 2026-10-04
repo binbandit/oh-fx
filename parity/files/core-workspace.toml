@@ -139,4 +139,4 @@ note = "Bounded git/fallback file and directory discovery, sorting and path filt
 upstream = "src/core/workspace/workspace_menu.zig"
 status = "todo"
 modules = []
-note = "Additional-root workspace picker/menu are unimplemented."
+note = "The additional-root workspace menu waits on additional workspace directories (`--add-dir`), which it lists and edits."
