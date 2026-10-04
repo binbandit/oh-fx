@@ -561,6 +561,14 @@ impl Settings {
             .or(self.global.theme.as_deref())
     }
 
+    pub fn session_titles_source(&self) -> ConfigSource {
+        self.layer_source(|layer| layer.session_titles.is_some())
+    }
+
+    pub fn prompt_history_source(&self) -> ConfigSource {
+        self.layer_source(|layer| layer.prompt_history.is_some())
+    }
+
     pub fn context_limits(&self) -> ContextLimits {
         let mut limits = ContextLimits::default();
         limits.apply(

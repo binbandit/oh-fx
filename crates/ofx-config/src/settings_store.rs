@@ -44,6 +44,20 @@ const STARTUP_SCROLLBACK_MIGRATION: Migration = Migration {
     binding: None,
     snapshot: "settings.json.preference-migration.startup_scrollback.json",
 };
+const SESSION_TITLES: &str = "session_titles";
+const SESSION_TITLES_MIGRATION: Migration = Migration {
+    container: None,
+    field: SESSION_TITLES,
+    binding: None,
+    snapshot: "settings.json.preference-migration.session_titles.json",
+};
+const PROMPT_HISTORY: &str = "prompt_history";
+const PROMPT_HISTORY_MIGRATION: Migration = Migration {
+    container: Some(PROMPT_HISTORY),
+    field: "enabled",
+    binding: None,
+    snapshot: "settings.json.preference-migration.prompt_history_enabled.json",
+};
 const STATUSLINE: &str = "statusLine";
 const STATUSLINE_CONTEXT_MIGRATION: Migration = Migration {
     container: Some(STATUSLINE),
@@ -217,6 +231,8 @@ enum Patch<'a> {
     PermissionMode(PermissionMode),
     YoloAcknowledged,
     StartupScrollback(bool),
+    SessionTitles(bool),
+    PromptHistoryEnabled(bool),
     StatuslineItem {
         item: StatuslineItem,
         enabled: bool,
@@ -289,6 +305,20 @@ pub fn save_startup_scrollback(
     enabled: bool,
 ) -> Result<CommitOutcome, SettingsWriteFailure> {
     commit(paths, Patch::StartupScrollback(enabled), &mut || {})
+}
+
+pub fn save_session_titles(
+    paths: &ProfilePaths,
+    enabled: bool,
+) -> Result<CommitOutcome, SettingsWriteFailure> {
+    commit(paths, Patch::SessionTitles(enabled), &mut || {})
+}
+
+pub fn save_prompt_history_enabled(
+    paths: &ProfilePaths,
+    enabled: bool,
+) -> Result<CommitOutcome, SettingsWriteFailure> {
+    commit(paths, Patch::PromptHistoryEnabled(enabled), &mut || {})
 }
 
 pub fn save_statusline_item(
@@ -583,6 +613,20 @@ fn apply(
         Patch::StartupScrollback(enabled) => {
             application.changed |= put_bool(root, STARTUP_SCROLLBACK, enabled);
             migrate_workspace_preference(root, &STARTUP_SCROLLBACK_MIGRATION, &mut application);
+        }
+        Patch::SessionTitles(enabled) => {
+            application.changed |= put_bool(root, SESSION_TITLES, enabled);
+            migrate_workspace_preference(root, &SESSION_TITLES_MIGRATION, &mut application);
+        }
+        Patch::PromptHistoryEnabled(enabled) => {
+            let Value::Object(history) = root
+                .entry(PROMPT_HISTORY)
+                .or_insert_with(|| Value::Object(Map::new()))
+            else {
+                return Err(SettingsWriteError::InvalidFormat);
+            };
+            application.changed |= put_bool(history, "enabled", enabled);
+            migrate_workspace_preference(root, &PROMPT_HISTORY_MIGRATION, &mut application);
         }
         Patch::Permission { workspace, patch } => {
             let target = match workspace {

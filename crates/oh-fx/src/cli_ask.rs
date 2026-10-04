@@ -1045,6 +1045,9 @@ impl Presenter {
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
             | UiEvent::StatuslineMenuOpened
+            | UiEvent::SettingsMenuOpened { .. }
+            | UiEvent::SettingsChanged { .. }
+            | UiEvent::PromptHistoryChanged { .. }
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested
             | UiEvent::CompactionActivity { .. }

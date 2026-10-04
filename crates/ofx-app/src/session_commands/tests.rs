@@ -807,3 +807,79 @@ fn statusline_keeps_the_runtime_change_when_it_cannot_be_saved() {
         ]
     );
 }
+
+fn rendered(notices: Vec<Notice>) -> Vec<String> {
+    notices
+        .into_iter()
+        .map(|notice| format!("{:?}|{}|{}", notice.tone, notice.topic, notice.body))
+        .collect()
+}
+
+#[test]
+fn session_titles_are_saved_to_user_settings_as_upstream_reports_them() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        rendered(save_session_titles_setting(&fixture.access(), false, true)),
+        ["Neutral|session titles|saved to user settings (scope=user)"]
+    );
+    assert_eq!(fixture.saved(), json!({"session_titles": false}));
+    let homeless = SettingsAccess {
+        paths: None,
+        workspace_root: &fixture.workspace,
+        tool_names: Vec::new(),
+    };
+    assert_eq!(
+        rendered(save_session_titles_setting(&homeless, true, true)),
+        [
+            "Error|session titles|active for this process but not saved to user settings (HomeNotSet)"
+        ]
+    );
+    assert_eq!(
+        rendered(save_session_titles_setting(&homeless, true, false)),
+        ["Error|session titles|not saved to user settings (HomeNotSet)"]
+    );
+}
+
+#[test]
+fn prompt_history_turns_off_at_once_and_on_only_once_it_is_saved() {
+    let fixture = Fixture::new();
+    let (enabled, notices) = handle_history(&fixture.access(), "off");
+    assert_eq!(enabled, Some(false));
+    assert_eq!(
+        rendered(notices),
+        ["Neutral|history|saved to user settings (scope=user)"]
+    );
+    assert_eq!(
+        fixture.saved(),
+        json!({"prompt_history": {"enabled": false}})
+    );
+    let (enabled, notices) = handle_history(&fixture.access(), " ON ");
+    assert_eq!(enabled, Some(true));
+    assert_eq!(
+        rendered(notices),
+        ["Neutral|history|saved to user settings (scope=user)"]
+    );
+    let homeless = SettingsAccess {
+        paths: None,
+        workspace_root: &fixture.workspace,
+        tool_names: Vec::new(),
+    };
+    let (enabled, notices) = handle_history(&homeless, "on");
+    assert_eq!(enabled, Some(false));
+    assert_eq!(
+        rendered(notices),
+        ["Error|history|not saved to user settings (HomeNotSet)"]
+    );
+    let (enabled, notices) = handle_history(&homeless, "off");
+    assert_eq!(enabled, Some(false));
+    assert_eq!(
+        rendered(notices),
+        ["Error|history|active for this process but not saved to user settings (HomeNotSet)"]
+    );
+    let (enabled, notices) = handle_history(&fixture.access(), "maybe");
+    assert_eq!(enabled, None);
+    assert_eq!(
+        rendered(notices),
+        ["Error|history|prompt history options: on, off"]
+    );
+}

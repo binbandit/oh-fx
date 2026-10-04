@@ -51,6 +51,10 @@ impl PermissionRuntime {
         }
     }
 
+    pub(crate) fn mode(&self) -> PermissionMode {
+        self.mode.get()
+    }
+
     pub(crate) fn toggle_mode(&self) {
         self.select_mode(match self.mode.get() {
             PermissionMode::Ask => PermissionMode::Auto,
