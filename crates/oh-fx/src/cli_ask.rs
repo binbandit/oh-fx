@@ -2961,7 +2961,7 @@ mod tests {
             spec: ofx_contract::ToolSpec {
                 name: tool_name.to_owned(),
                 description: "Read a test file".to_owned(),
-                input_schema: r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
+                input_schema: r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#.into(),
             },
             root: canonical,
             executions: Arc::clone(&executions),

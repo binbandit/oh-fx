@@ -355,3 +355,81 @@ async fn english_steering_keeps_the_expectation() {
     assert_eq!(provider.requests().len(), 3);
     assert_eq!(count_text(&provider.requests()[2], CORRECTION), 1);
 }
+
+#[tokio::test]
+async fn provisional_starts_do_not_flush_withheld_language_or_add_display_boundaries() {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            vec![
+                StreamEvent::TextDelta {
+                    text: CHINESE_REPLY.to_owned(),
+                },
+                streamed_start("call-1", "echo"),
+            ],
+            completion(
+                Some(CHINESE_REPLY),
+                vec![echo_call("call-1", r#"{"text":"read"}"#)],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply(ENGLISH_REPLY),
+    ]);
+    let mut agent = new_agent(
+        provider,
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (report, events) = run(&mut agent, ENGLISH_PROMPT).await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let provisional = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+        .unwrap();
+    assert!(!events[..provisional].iter().any(|event| matches!(
+        event,
+        UiEvent::AssistantText { .. } | UiEvent::AssistantBoundary { .. }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+    );
+    assert_eq!(streamed(&events), [ENGLISH_REPLY]);
+    assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
+}
+
+#[tokio::test]
+async fn failed_withheld_prose_still_prevents_retries_after_a_provisional_start() {
+    let provider = FakeProvider::new(vec![Script::Fail(
+        vec![
+            StreamEvent::TextDelta {
+                text: CHINESE_REPLY.to_owned(),
+            },
+            streamed_start("call-1", "echo"),
+        ],
+        failure(ProviderErrorKind::Unavailable, "Unavailable"),
+    )]);
+    let mut agent = new_agent(
+        Arc::clone(&provider),
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (report, events) = run(&mut agent, ENGLISH_PROMPT).await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(provider.requests().len(), 1);
+    assert!(streamed(&events).is_empty());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+    );
+}
