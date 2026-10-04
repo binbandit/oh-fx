@@ -42,6 +42,7 @@ impl Shell<'_> {
             || self.help_menu.is_some()
             || self.model_menu.is_some()
             || self.picker.is_some()
+            || self.settings_menu.is_some()
         {
             return None;
         }
@@ -95,6 +96,7 @@ impl Shell<'_> {
             || self.skills_menu_visible()
             || self.help_menu.is_some()
             || self.picker.is_some()
+            || self.settings_menu.is_some()
         {
             return;
         }

@@ -4,7 +4,8 @@ use std::path::Path;
 
 use ofx_config::{
     AllowlistResetScope, CommitOutcome, ConfigSource, PermissionPatch, PermissionSources,
-    ProfilePaths, Settings, save_permission_patch, save_startup_scrollback, save_statusline_item,
+    ProfilePaths, Settings, save_permission_patch, save_prompt_history_enabled,
+    save_session_titles, save_startup_scrollback, save_statusline_item,
 };
 use ofx_contract::{
     Notice, NoticeTone, PermissionAction, PermissionMode, PermissionRule, StatuslineItem,
@@ -40,6 +41,9 @@ const SETTINGS_USAGE: &str = "usage: /settings [startup-scrollback [on|off]]";
 const STARTUP_SCROLLBACK_LABEL: &str = "startup-scrollback";
 const SAVED_TO_USER_SETTINGS: &str = "saved to user settings (scope=user)";
 const STATUSLINE_TOPIC: &str = "statusline";
+const SESSION_TITLES_TOPIC: &str = "session titles";
+const HISTORY_TOPIC: &str = "history";
+const HISTORY_OPTIONS: &str = "prompt history options: on, off";
 const STATUSLINE_USAGE: &str = "usage: /statusline [context|session|workspace]";
 
 pub(crate) struct SettingsAccess<'a> {
@@ -164,6 +168,12 @@ pub(crate) fn handle_settings(
     save_startup_scrollback_setting(access, enabled)
 }
 
+pub(crate) fn startup_scrollback_setting(access: &SettingsAccess<'_>) -> Option<bool> {
+    load(access)
+        .ok()
+        .map(|settings| settings.startup_scrollback())
+}
+
 fn settings_status(access: &SettingsAccess<'_>, facts: &SessionFacts<'_>) -> Notice {
     let settings = match load(access) {
         Ok(settings) => settings,
@@ -263,6 +273,76 @@ pub(crate) fn handle_statusline(
     ));
     events.extend(notices.into_iter().map(notice_event));
     events
+}
+
+pub(crate) fn save_session_titles_setting(
+    access: &SettingsAccess<'_>,
+    enabled: bool,
+    runtime_changed: bool,
+) -> Vec<Notice> {
+    let saved = match access.paths {
+        Some(paths) => save_session_titles(paths, enabled).map_err(Unsaved::Failed),
+        None => Err(Unsaved::HomeNotSet),
+    };
+    let outcome = match saved {
+        Ok(outcome) => outcome,
+        Err(unsaved) if runtime_changed => {
+            return vec![unsaved_notice(SESSION_TITLES_TOPIC, &unsaved)];
+        }
+        Err(unsaved) => return vec![not_saved_notice(SESSION_TITLES_TOPIC, &unsaved)],
+    };
+    let mut notices = Vec::new();
+    report_user_settings_commit(
+        access,
+        SESSION_TITLES_TOPIC,
+        &outcome,
+        |settings| Some(("session_titles", settings.session_titles_source())),
+        true,
+        &mut notices,
+    );
+    notices
+}
+
+pub(crate) fn handle_history(
+    access: &SettingsAccess<'_>,
+    rest: &str,
+) -> (Option<bool>, Vec<Notice>) {
+    let requested = rest.trim_matches(SEPARATORS);
+    let enabled = if requested.eq_ignore_ascii_case("on") {
+        true
+    } else if requested.eq_ignore_ascii_case("off") {
+        false
+    } else {
+        return (
+            None,
+            vec![Notice::new(
+                NoticeTone::Error,
+                HISTORY_TOPIC,
+                HISTORY_OPTIONS,
+            )],
+        );
+    };
+    let saved = match access.paths {
+        Some(paths) => save_prompt_history_enabled(paths, enabled).map_err(Unsaved::Failed),
+        None => Err(Unsaved::HomeNotSet),
+    };
+    let outcome = match saved {
+        Ok(outcome) => outcome,
+        Err(unsaved) if enabled => {
+            return (Some(false), vec![not_saved_notice(HISTORY_TOPIC, &unsaved)]);
+        }
+        Err(unsaved) => return (Some(false), vec![unsaved_notice(HISTORY_TOPIC, &unsaved)]),
+    };
+    let mut notices = Vec::new();
+    report_user_settings_commit(
+        access,
+        HISTORY_TOPIC,
+        &outcome,
+        |settings| Some(("prompt_history.enabled", settings.prompt_history_source())),
+        true,
+        &mut notices,
+    );
+    (Some(enabled), notices)
 }
 
 pub(crate) fn set_statusline(

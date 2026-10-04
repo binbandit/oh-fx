@@ -9,6 +9,7 @@ type PromptSaver = Box<dyn FnMut(&str) -> Result<(), String>>;
 pub struct PromptHistory {
     entries: Vec<String>,
     saver: Option<PromptSaver>,
+    recording: bool,
 }
 
 impl PromptHistory {
@@ -16,6 +17,7 @@ impl PromptHistory {
         Self {
             entries: Vec::new(),
             saver: None,
+            recording: false,
         }
     }
 
@@ -26,6 +28,15 @@ impl PromptHistory {
         Self {
             entries,
             saver: Some(Box::new(saver)),
+            recording: true,
+        }
+    }
+
+    pub fn paused(saver: impl FnMut(&str) -> Result<(), String> + 'static) -> Self {
+        Self {
+            entries: Vec::new(),
+            saver: Some(Box::new(saver)),
+            recording: false,
         }
     }
 
@@ -36,6 +47,7 @@ impl PromptHistory {
 
 pub(super) struct HistoryRecorder {
     saver: Option<PromptSaver>,
+    recording: bool,
     warning_active: bool,
 }
 
@@ -44,20 +56,29 @@ impl HistoryRecorder {
         composer.install_history(history.entries);
         Self {
             saver: history.saver,
+            recording: history.recording,
             warning_active: false,
         }
+    }
+
+    fn records(&self) -> bool {
+        self.recording && self.saver.is_some()
     }
 }
 
 impl Shell<'_> {
+    pub(super) fn prompt_history_changed(&mut self, enabled: bool) {
+        self.history.recording = enabled;
+    }
+
     pub(super) fn record_prompt_history(&mut self) {
-        if self.history.saver.is_some() {
+        if self.history.records() {
             self.composer.record_history(MAX_PROMPT_HISTORY);
         }
     }
 
     pub(super) fn record_command_history(&mut self, command: &str) {
-        if self.history.saver.is_none() {
+        if !self.history.records() {
             return;
         }
         self.composer
@@ -66,6 +87,9 @@ impl Shell<'_> {
     }
 
     pub(super) fn save_accepted_input(&mut self, text: &str) {
+        if !self.history.recording {
+            return;
+        }
         let Some(saver) = &mut self.history.saver else {
             return;
         };
@@ -90,7 +114,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
 
-    use ofx_contract::UiCommand;
+    use ofx_contract::{UiCommand, UiEvent};
 
     use super::*;
     use crate::shell::test_shell::TestShell;
@@ -201,6 +225,40 @@ mod tests {
             1,
             "{screen}"
         );
+    }
+
+    #[test]
+    fn history_switched_off_stops_saving_and_switched_on_resumes() {
+        let (history, saved) = recording(&["older"], &[]);
+        let mut test = TestShell::start_with(|options| options.prompt_history = history);
+        test.deliver(UiEvent::PromptHistoryChanged { enabled: false });
+        test.submit("private");
+        test.submit("/help");
+        assert!(saved.borrow().is_empty());
+        assert_eq!(press(&mut test, UP), "older");
+        press(&mut test, DOWN);
+        test.deliver(UiEvent::PromptHistoryChanged { enabled: true });
+        test.submit("kept");
+        assert_eq!(*saved.borrow(), ["kept"]);
+        assert_eq!(press(&mut test, UP), "kept");
+    }
+
+    #[test]
+    fn history_that_starts_paused_saves_once_switched_on() {
+        let saved = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&saved);
+        let history = PromptHistory::paused(move |text| {
+            sink.borrow_mut().push(text.to_owned());
+            Ok(())
+        });
+        let mut test = TestShell::start_with(|options| options.prompt_history = history);
+        test.submit("before");
+        assert!(saved.borrow().is_empty());
+        test.deliver(UiEvent::PromptHistoryChanged { enabled: true });
+        test.submit("after");
+        assert_eq!(*saved.borrow(), ["after"]);
+        assert_eq!(press(&mut test, UP), "after");
+        assert_eq!(press(&mut test, UP), "after");
     }
 
     #[test]

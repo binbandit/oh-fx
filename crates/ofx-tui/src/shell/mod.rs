@@ -19,6 +19,7 @@ mod model_picker_runtime;
 mod picker_state;
 pub(crate) mod question_prompt;
 mod session_picker_runtime;
+mod settings_menu_runtime;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
 mod statusline_menu_runtime;
@@ -53,6 +54,7 @@ use model_menu::{CatalogLoad, ModelMenu};
 use picker_state::ModelFlow;
 use question_prompt::QuestionPrompt;
 use session_picker_runtime::SessionPicker;
+use settings_menu_runtime::SettingsMenu;
 use skills_menu::SkillsMenu;
 use statusline_menu_runtime::StatuslineMenu;
 
@@ -234,6 +236,7 @@ pub(crate) struct Shell<'a> {
     skills_menu: Option<SkillsMenu>,
     help_menu: Option<HelpMenu>,
     statusline_menu: Option<StatuslineMenu>,
+    settings_menu: Option<SettingsMenu>,
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     kept_recovery: Option<RecoveryStatus>,
     session_title: Option<String>,
@@ -436,6 +439,7 @@ impl<'a> Shell<'a> {
             skills_menu: None,
             help_menu: None,
             statusline_menu: None,
+            settings_menu: None,
             skill_catalog,
             kept_recovery: None,
             session_title: None,
@@ -705,7 +709,10 @@ impl<'a> Shell<'a> {
     }
 
     fn menu_band_and_hint(&self) -> (Option<Vec<Row>>, Row, bool) {
-        if let Some((band, hint)) = self.statusline_menu_band() {
+        if let Some((band, hint)) = self
+            .statusline_menu_band()
+            .or_else(|| self.settings_menu_band())
+        {
             return (Some(band), hint, false);
         }
         let catalog_menu = self.catalog_menu_band();

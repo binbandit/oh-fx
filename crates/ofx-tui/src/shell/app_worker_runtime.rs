@@ -185,6 +185,9 @@ impl Shell<'_> {
             UiEvent::StatuslineChanged { item, enabled } => self.statusline.set(item, enabled),
             UiEvent::ModelCatalog { catalog } => self.catalog_received(catalog),
             UiEvent::StatuslineMenuOpened => self.open_statusline_menu(),
+            UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
+            UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
+            UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,

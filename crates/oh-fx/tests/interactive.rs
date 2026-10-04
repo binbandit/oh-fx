@@ -469,24 +469,43 @@ fn allowlist_saves_workspace_and_user_rules_and_lists_them() {
 }
 
 #[test]
-fn settings_shows_the_session_and_saves_startup_scrollback() {
+fn the_settings_menu_searches_and_changes_settings_and_saves_startup_scrollback() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&settings(&server.base_url()));
     let mut session = home.shell(30, 120);
     session.send(b"/settings\r");
-    let screen = wait(&session, "* settings: model: model-a");
-    assert!(
-        screen.contains("model_config_source: compiled_default"),
-        "{screen}"
+    let screen = wait(
+        &session,
+        "↑↓ navigate     tab category     ←→ change     esc close",
     );
-    assert!(screen.contains("permission_mode: auto"), "{screen}");
-    assert!(screen.contains("startup_scrollback: on"), "{screen}");
-    session.send(b"/settings startup-scrollback\r");
+    for row in [
+        "Settings 9  [All]  Interface  Agent  Notifications  Advanced",
+        "  Status line context      off  on",
+        "  Model                    model-a",
+        "  Permission mode          ask  auto  full access",
+        "  Prompt history           off  on",
+    ] {
+        assert!(screen.contains(row), "{row}\n{screen}");
+    }
+    assert!(!screen.contains("auto · model-a"), "{screen}");
+    session.send(b"scroll");
+    wait(&session, "Settings 1  [All]");
+    session.send(b"\x1b[C");
     wait(
         &session,
         "* settings: startup_scrollback: off (applies on next launch)",
     );
     assert_eq!(saved_settings(&home)["startup_scrollback"], json!(false));
+    session.send(b"\x1b");
+    let screen = wait(&session, "auto · model-a");
+    assert!(!screen.contains("Settings 1"), "{screen}");
+    assert!(!screen.contains("┃ scroll"), "{screen}");
+    session.send(b"/settings startup-scrollback\r");
+    wait(
+        &session,
+        "* settings: startup_scrollback: on (applies on next launch)",
+    );
+    assert_eq!(saved_settings(&home)["startup_scrollback"], json!(true));
     session.send(b"/settings scrollback\r");
     wait(&session, "usage: /settings [startup-scrollback [on|off]]");
     session.send(b"\x04");

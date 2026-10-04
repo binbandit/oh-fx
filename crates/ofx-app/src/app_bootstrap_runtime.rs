@@ -139,6 +139,7 @@ pub struct AgentSetup {
     provider: Arc<dyn ModelProvider>,
     title_model: Option<&'static str>,
     session_titles: bool,
+    prompt_history: bool,
     configured_model: Option<String>,
     models: ModelSource,
     connection: Option<ProviderDefinition>,
@@ -324,6 +325,7 @@ impl Profile {
             provider: route.provider,
             title_model: route.title_model,
             session_titles: self.settings.session_titles_enabled(),
+            prompt_history: self.settings.prompt_history_enabled(),
             configured_model: route.configured_model,
             models: route.models,
             connection: route.connection,
@@ -605,6 +607,14 @@ impl AgentSetup {
 
     pub(crate) fn session_titles_enabled(&self) -> bool {
         self.session_titles
+    }
+
+    pub(crate) fn set_session_titles(&mut self, enabled: bool) {
+        self.session_titles = enabled;
+    }
+
+    pub(crate) fn prompt_history_enabled(&self) -> bool {
+        self.prompt_history
     }
 
     pub(crate) fn title_model(&self) -> Option<&'static str> {

@@ -7,6 +7,7 @@ mod model_capabilities;
 mod modes;
 mod permission_gate;
 mod session_picker;
+mod settings_catalog;
 mod skill_menu;
 mod stream_provider;
 mod strict_json;
@@ -37,6 +38,9 @@ pub use permission_gate::{
     ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
 };
 pub use session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope};
+pub use settings_catalog::{
+    FastModeSetting, SettingCategory, SettingChange, SettingId, SettingItem, SettingsSnapshot,
+};
 pub use skill_menu::{
     SkillBinding, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
 };
