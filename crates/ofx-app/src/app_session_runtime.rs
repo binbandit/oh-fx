@@ -162,7 +162,7 @@ impl LiveSession {
         let language = self.session().metadata().conversation_language.clone();
         Some(Arc::new(SessionChildren::new(
             sessions,
-            self.provider.clone(),
+            self.route.clone(),
             language,
         )))
     }
@@ -244,7 +244,7 @@ pub fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRoute {
     pub(crate) provider: SavedProvider,
-    credential: RouteCredential,
+    pub(crate) credential: RouteCredential,
 }
 
 impl SessionRoute {

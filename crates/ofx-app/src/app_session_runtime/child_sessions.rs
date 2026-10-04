@@ -2,26 +2,26 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_agent::{ChildRecord, ChildSettings, ChildStore};
 use ofx_contract::{ConversationLog, LogFailure};
-use ofx_session::{
-    ChildSessions, SavedProvider, SessionError, SessionLog, SessionPreferences, WritableSession,
-};
+use ofx_session::{ChildSessions, SessionError, SessionLog, SessionPreferences, WritableSession};
+
+use super::SessionRoute;
 
 pub(super) struct SessionChildren {
     sessions: ChildSessions,
-    provider: SavedProvider,
+    route: SessionRoute,
     language: String,
 }
 
 struct ChildSession {
     session: Arc<Mutex<WritableSession>>,
-    provider: SavedProvider,
+    route: SessionRoute,
 }
 
 impl SessionChildren {
-    pub(super) fn new(sessions: ChildSessions, provider: SavedProvider, language: String) -> Self {
+    pub(super) fn new(sessions: ChildSessions, route: SessionRoute, language: String) -> Self {
         Self {
             sessions,
-            provider,
+            route,
             language,
         }
     }
@@ -46,7 +46,7 @@ impl ChildStore for SessionChildren {
         settings: &ChildSettings,
     ) -> Result<Arc<dyn ChildRecord>, LogFailure> {
         let preferences = SessionPreferences {
-            provider: self.provider.clone(),
+            provider: self.route.provider.clone(),
             model: settings.model.clone(),
             effort: settings.effort.clone(),
             fast_mode: settings.fast_mode,
@@ -57,7 +57,7 @@ impl ChildStore for SessionChildren {
             .map_err(failure)?;
         Ok(Arc::new(ChildSession {
             session: Arc::new(Mutex::new(session)),
-            provider: self.provider.clone(),
+            route: self.route.clone(),
         }))
     }
 }
@@ -73,7 +73,8 @@ impl ChildRecord for ChildSession {
     fn log(&self) -> Box<dyn ConversationLog> {
         Box::new(SessionLog::new(
             Arc::clone(&self.session),
-            self.provider.clone(),
+            self.route.provider.clone(),
+            self.route.credential,
         ))
     }
 }

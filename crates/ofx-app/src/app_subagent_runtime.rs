@@ -8,7 +8,8 @@ use ofx_agent::{
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
-    ActiveMode, ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider, ReasoningEffort, ReviewTransport, SubagentProvider, Tool, TurnId, RootUserRequests,
+    ActiveMode, ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider,
+    ReasoningEffort, ReviewTransport, RootUserRequests, SubagentProvider, Tool, TurnId,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{

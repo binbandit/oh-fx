@@ -1,8 +1,8 @@
 use std::sync::Mutex;
 
 use ofx_contract::{
-    ChatMessage, ConversationLog, HistoryCut, HistoryTurn, LogFailure, SubagentRequest, ToolCallId,
-    ToolContext, ToolOutput, format_tool_execution_error_json,
+    ChatMessage, ConversationLog, HistoryCut, HistoryTurn, LogFailure, RecoveryPoint,
+    SubagentRequest, ToolCallId, ToolContext, ToolOutput, format_tool_execution_error_json,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -128,6 +128,14 @@ impl ConversationLog for Log {
         _cut: HistoryCut,
         _active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn record_recovery(&self, _point: &RecoveryPoint<'_>) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn clear_recovery(&self) -> Result<(), LogFailure> {
         Ok(())
     }
 }
