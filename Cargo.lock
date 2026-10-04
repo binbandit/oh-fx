@@ -1035,6 +1035,7 @@ dependencies = [
  "ofx-text",
  "ofx-upgrade",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
  "signal-hook",
