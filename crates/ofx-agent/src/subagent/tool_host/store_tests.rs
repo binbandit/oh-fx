@@ -2,7 +2,8 @@ use std::sync::Mutex;
 
 use ofx_contract::{
     ChatMessage, ConversationLog, HistoryCut, HistoryTurn, LogFailure, RecoveryPoint,
-    SubagentRequest, ToolCallId, ToolContext, ToolOutput, format_tool_execution_error_json,
+    RestoredHistory, SubagentRequest, ToolCallId, ToolContext, ToolOutput, TurnEnd,
+    format_tool_execution_error_json,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -21,6 +22,8 @@ struct Store {
     attempts: Mutex<usize>,
     refused_attempt: Mutex<Option<usize>>,
     unsaved_turns: Mutex<bool>,
+    resumed: Mutex<Vec<String>>,
+    unreadable: Mutex<bool>,
 }
 
 #[derive(Default)]
@@ -28,11 +31,13 @@ struct Record {
     works: Mutex<Vec<String>>,
     turns: Arc<Mutex<Vec<String>>>,
     unsaved: bool,
+    replies: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 struct Log {
     turns: Arc<Mutex<Vec<String>>>,
     unsaved: bool,
+    replies: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 fn commit_failed() -> LogFailure {
@@ -52,6 +57,17 @@ impl Store {
     fn last_saved(&self) -> Value {
         serde_json::from_slice(self.saved.lock().unwrap().last().unwrap()).unwrap()
     }
+
+    fn record(&self, child_id: &str) -> Arc<Record> {
+        let index = self
+            .started
+            .lock()
+            .unwrap()
+            .iter()
+            .position(|(id, _)| id == child_id)
+            .unwrap();
+        Arc::clone(&self.records.lock().unwrap()[index])
+    }
 }
 
 impl ChildStore for Store {
@@ -64,6 +80,56 @@ impl ChildStore for Store {
         let id = format!("{}-child-{}", self.parent, issued.len() + 1);
         issued.push(id.clone());
         Ok(id)
+    }
+
+    fn load_registry(&self) -> Result<Option<Vec<u8>>, LogFailure> {
+        if *self.unreadable.lock().unwrap() {
+            return Ok(Some(b"{".to_vec()));
+        }
+        Ok(self.saved.lock().unwrap().last().cloned())
+    }
+
+    fn resume_child(&self, child_id: &str) -> Result<ResumedChild, LogFailure> {
+        self.resumed.lock().unwrap().push(child_id.to_owned());
+        let settings = self
+            .started
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, _)| id == child_id)
+            .map(|(_, settings)| settings.clone())
+            .unwrap();
+        let record = self.record(child_id);
+        let mut messages = Vec::new();
+        let mut turn_starts = Vec::new();
+        for (user, reply) in record.replies.lock().unwrap().iter() {
+            turn_starts.push(messages.len());
+            messages.push(ChatMessage::user(user.clone()));
+            messages.push(ChatMessage::Assistant {
+                content: Some(reply.clone()),
+                tool_calls: Vec::new(),
+                provider_replay: None,
+            });
+        }
+        Ok(ResumedChild {
+            record,
+            settings,
+            history: RestoredHistory {
+                checkpoint: None,
+                messages,
+                turn_starts,
+            },
+        })
+    }
+
+    fn reply_for_work(&self, child_id: &str, work_id: &str) -> Result<Option<String>, LogFailure> {
+        let record = self.record(child_id);
+        let works = record.works.lock().unwrap();
+        let replies = record.replies.lock().unwrap();
+        Ok(works
+            .iter()
+            .position(|work| work == work_id)
+            .map(|index| replies[index].1.clone()))
     }
 
     fn save_registry(&self, registry: &[u8]) -> Result<(), LogFailure> {
@@ -105,6 +171,7 @@ impl ChildRecord for Record {
         Box::new(Log {
             turns: Arc::clone(&self.turns),
             unsaved: self.unsaved,
+            replies: Arc::clone(&self.replies),
         })
     }
 }
@@ -119,6 +186,12 @@ impl ConversationLog for Log {
             return Err(commit_failed());
         }
         self.turns.lock().unwrap().push(turn.user.to_owned());
+        if let TurnEnd::Replied { text, .. } = turn.end {
+            self.replies
+                .lock()
+                .unwrap()
+                .push((turn.user.to_owned(), text.to_owned()));
+        }
         Ok(())
     }
 
@@ -386,4 +459,105 @@ async fn a_new_child_whose_admission_cannot_be_saved_starts_no_session() {
         .await;
     harness.run("call-2", run("inspect")).await;
     assert!(store.started.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_resumed_parent_continues_its_named_children_and_interrupts_unfinished_work() {
+    let store = Store::new("parent");
+    let earlier = Harness::new(vec![Script::Reply("a looks fine"), Script::Hold]);
+    earlier
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    assert_eq!(
+        earlier
+            .run("call-1", message("reviewer", None, "review a"))
+            .await,
+        succeeded("a looks fine")
+    );
+    let cancel = CancellationToken::new();
+    let held = tokio::spawn(earlier.call("call-2", run("never finishes"), &cancel));
+    earlier.provider.holding.notified().await;
+    held.abort();
+    let saved = store.last_saved();
+    assert_eq!(saved["children"][1]["phase"], "running");
+    let resumed = Harness::new(vec![Script::Reply("b has a bug")]);
+    resumed
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    let recovered = store.last_saved();
+    assert_eq!(
+        recovered["generation"],
+        saved["generation"].as_u64().unwrap() + 1
+    );
+    assert_eq!(recovered["children"][1]["phase"], "interrupted");
+    assert_eq!(recovered["children"][1]["last_outcome"], "interrupted");
+    assert_eq!(recovered["children"][1]["active"], Value::Null);
+    assert_eq!(
+        resumed
+            .run("call-3", message("reviewer", None, "review b"))
+            .await,
+        succeeded("b has a bug")
+    );
+    assert_eq!(*store.resumed.lock().unwrap(), ["parent-child-1"]);
+    assert_eq!(
+        resumed.provider.seen()[0].messages,
+        [
+            ChatMessage::user("review a"),
+            ChatMessage::Assistant {
+                content: Some("a looks fine".to_owned()),
+                tool_calls: Vec::new(),
+                provider_replay: None,
+            },
+            ChatMessage::user("review b"),
+        ]
+    );
+    let finished = store.last_saved();
+    assert_eq!(finished["children"][0]["phase"], "idle");
+    assert_eq!(finished["children"][0]["work_generation"], 2);
+    assert_eq!(store.started.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_repeated_operation_after_a_resume_replays_the_childs_saved_reply() {
+    let store = Store::new("parent");
+    let earlier = Harness::new(vec![Script::Reply("done once")]);
+    earlier
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    assert_eq!(
+        earlier.run("call-1", run("inspect")).await,
+        succeeded("done once")
+    );
+    let resumed = Harness::new(Vec::new());
+    resumed
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    assert_eq!(
+        resumed.run("call-1", run("inspect")).await,
+        succeeded("done once")
+    );
+    assert!(resumed.provider.seen().is_empty());
+}
+
+#[tokio::test]
+async fn an_unreadable_registry_leaves_delegation_unavailable() {
+    let store = Store::new("parent");
+    *store.unreadable.lock().unwrap() = true;
+    let harness = Harness::new(vec![Script::Reply("fresh")]);
+    harness
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    assert_eq!(
+        harness.run("call-1", run("inspect")).await,
+        rejected("host_unavailable")
+    );
+    assert!(store.saved.lock().unwrap().is_empty());
+    let readable = Store::new("other");
+    harness
+        .host
+        .bind(Some(Arc::clone(&readable) as Arc<dyn ChildStore>));
+    assert_eq!(
+        harness.run("call-2", run("inspect")).await,
+        succeeded("fresh")
+    );
 }

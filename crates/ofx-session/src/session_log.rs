@@ -581,6 +581,31 @@ pub(crate) fn load_session(sessions: &PrivateDir, id: &str) -> Result<SavedSessi
     Ok(SavedSession { metadata, history })
 }
 
+pub(crate) fn work_reply(
+    sessions: &PrivateDir,
+    id: &str,
+    work_id: &str,
+) -> Result<Option<String>, SessionError> {
+    if !is_valid_session_id(id) {
+        return Err(SessionError::InvalidSessionId);
+    }
+    let dir = sessions
+        .open_child(id)?
+        .ok_or(SessionError::SessionNotFound)?;
+    read_metadata(&dir, id)?;
+    let file = open_managed_file(&dir, EVENTS_FILE, Access::ReadOnly)?
+        .ok_or(SessionError::InvalidSessionFormat)?;
+    let length = file.metadata()?.len();
+    let scan = scan_log(&file, length, &mut ReplayScan::default())?;
+    let mut reply = None;
+    visit_turns(&file, scan.complete_bytes, |turn| {
+        if let Some(text) = turn.reply_for_work(work_id) {
+            reply = Some(text);
+        }
+    })?;
+    Ok(reply)
+}
+
 pub(crate) fn delete_session(sessions: &PrivateDir, session: WritableSession) -> SessionDisposal {
     let id = session.metadata.id.clone();
     let named = match sessions.open_child(&id) {

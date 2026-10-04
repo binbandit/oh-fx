@@ -4,15 +4,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
     ApprovalOrigin, ApprovalRequest, ChildKind, ChildPhase, ChildSnapshot, LivePermissionMode,
-    LogFailure, ModelFailureDiagnostic, RootUserRequests, SubagentPlan, SubagentRequest,
-    SubagentStatus, TurnId,
+    LogFailure, ModelFailureDiagnostic, PermissionMode, RootUserRequests, SubagentPlan,
+    SubagentRequest, SubagentStatus, TurnId,
 };
 use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
 use super::child_state::{ActiveWork, Child, Outcome, Registry};
 use super::execution::{ChildRuntime, WorkOutcome};
-use super::tool_host::{ChildAgents, ChildDefaults, ChildSettings, ChildStore, effective_settings};
+use super::tool_host::{
+    ChildAgents, ChildDefaults, ChildSettings, ChildStore, ResumedChild, effective_settings,
+};
 
 type SharedRuntime = Arc<tokio::sync::Mutex<ChildRuntime>>;
 
@@ -93,6 +95,7 @@ struct State {
     texts: HashMap<String, Option<String>>,
     issued: u64,
     store: Option<Arc<dyn ChildStore>>,
+    unavailable: bool,
 }
 
 impl State {
@@ -101,6 +104,38 @@ impl State {
             Some(store) => store.save_registry(&self.registry.render(store.parent_id())),
             None => Ok(()),
         }
+    }
+
+    fn restore(&mut self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let restored = store.load_registry().ok().map(|saved| {
+            saved.map_or(Ok(Registry::default()), |bytes| {
+                Registry::parse(&bytes, store.parent_id())
+            })
+        });
+        match restored {
+            Some(Ok(mut registry)) => {
+                let interrupted = registry.interrupt_active();
+                self.registry = registry;
+                if interrupted {
+                    let _ = self.save();
+                }
+            }
+            _ => self.unavailable = true,
+        }
+    }
+
+    fn saved_reply(&self, child_id: &str, work_id: &str) -> Option<String> {
+        if let Some(text) = self.texts.get(child_id) {
+            return text.clone();
+        }
+        self.store
+            .as_ref()?
+            .reply_for_work(child_id, work_id)
+            .ok()
+            .flatten()
     }
 }
 
@@ -155,6 +190,9 @@ impl Owner {
         let fingerprint = request.fingerprint();
         let mut guard = self.lock();
         let state = &mut *guard;
+        if state.unavailable {
+            return Admitted::Rejected("host_unavailable");
+        }
         if let Some(existing) = state.registry.find_by_operation(operation_id) {
             if existing.operation_fingerprint(operation_id) != Some(fingerprint) {
                 return Admitted::Rejected("operation_conflict");
@@ -162,7 +200,7 @@ impl Owner {
             if existing.last_work_id.as_deref() == Some(operation_id) {
                 return Admitted::Completed(Finished {
                     observation: observation(existing),
-                    text: state.texts.get(&existing.id).cloned().flatten(),
+                    text: state.saved_reply(&existing.id, operation_id),
                 });
             }
             return state
@@ -189,9 +227,13 @@ impl Owner {
                 .find_persistent(agent)
                 .map(|child| (child.id.clone(), child.phase))
             {
-                Some((child_id, phase)) => {
-                    continue_persistent(state, request, agent, (&child_id, phase), work)
-                }
+                Some((child_id, phase)) => continue_persistent(
+                    state,
+                    self.agents.as_ref(),
+                    request,
+                    (agent, &child_id, phase),
+                    work,
+                ),
                 None => self.create(state, request, &defaults, work),
             },
         };
@@ -218,7 +260,10 @@ impl Owner {
             return;
         }
         self.clear();
-        self.lock().store = store;
+        let mut state = self.lock();
+        state.store = store;
+        state.unavailable = false;
+        state.restore();
     }
 
     pub(crate) fn clear(&self) {
@@ -229,6 +274,7 @@ impl Owner {
         *state = State {
             issued: state.issued,
             store: state.store.take(),
+            unavailable: state.unavailable,
             ..State::default()
         };
     }
@@ -378,9 +424,9 @@ impl Owner {
 
 fn continue_persistent(
     state: &mut State,
+    agents: &dyn ChildAgents,
     request: &SubagentRequest,
-    agent: &str,
-    (child_id, phase): (&str, ChildPhase),
+    (agent, child_id, phase): (&str, &str, ChildPhase),
     work: ActiveWork,
 ) -> Result<Planned, Refusal> {
     if request.overrides().is_present() {
@@ -396,6 +442,10 @@ fn continue_persistent(
         SubagentPlan::CreateOneOff | SubagentPlan::CreatePersistent => {
             return Err("host_failure".into());
         }
+    }
+    if !state.named.contains_key(child_id) {
+        let named = resume_named(state, agents, child_id, work.permission_mode)?;
+        state.named.insert(child_id.to_owned(), named);
     }
     let (runtime, status) = state
         .named
@@ -470,6 +520,36 @@ fn open(state: &mut State, planned: Planned) -> Result<Start, Refusal> {
         instructions,
         runtime,
         status,
+    })
+}
+
+fn resume_named(
+    state: &State,
+    agents: &dyn ChildAgents,
+    child_id: &str,
+    permission_mode: PermissionMode,
+) -> Result<NamedChild, Refusal> {
+    let store = state.store.as_ref().ok_or("state_unavailable")?;
+    let ResumedChild {
+        record,
+        settings,
+        history,
+    } = store
+        .resume_child(child_id)
+        .map_err(|failure| Refusal::Store(failure.code))?;
+    let permission_mode = LivePermissionMode::from(permission_mode);
+    let runtime = ChildRuntime::new(
+        agents.agent(&settings, permission_mode.clone()),
+        permission_mode,
+    )
+    .restored(history)
+    .saved(child_id, record);
+    Ok(NamedChild {
+        runtime: Arc::new(tokio::sync::Mutex::new(runtime)),
+        status: SubagentStatus {
+            model: settings.model,
+            effort: settings.effort,
+        },
     })
 }
 

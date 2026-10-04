@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ofx_agent::{ChildRecord, ChildSettings, ChildStore};
+use ofx_agent::{ChildRecord, ChildSettings, ChildStore, ResumedChild};
 use ofx_contract::{ConversationLog, LogFailure};
 use ofx_session::{ChildSessions, SessionError, SessionLog, SessionPreferences, WritableSession};
 
@@ -36,6 +36,10 @@ impl ChildStore for SessionChildren {
         self.sessions.new_child_id().map_err(failure)
     }
 
+    fn load_registry(&self) -> Result<Option<Vec<u8>>, LogFailure> {
+        self.sessions.load_registry().map_err(failure)
+    }
+
     fn save_registry(&self, registry: &[u8]) -> Result<(), LogFailure> {
         self.sessions.save_registry(registry).map_err(failure)
     }
@@ -59,6 +63,31 @@ impl ChildStore for SessionChildren {
             session: Arc::new(Mutex::new(session)),
             route: self.route.clone(),
         }))
+    }
+
+    fn resume_child(&self, child_id: &str) -> Result<ResumedChild, LogFailure> {
+        let mut session = self.sessions.resume(child_id).map_err(failure)?;
+        let history = session.restored_history().map_err(failure)?;
+        let preferences = &session.metadata().preferences;
+        let settings = ChildSettings {
+            model: preferences.model.clone(),
+            effort: preferences.effort.clone(),
+            fast_mode: preferences.fast_mode,
+        };
+        Ok(ResumedChild {
+            record: Arc::new(ChildSession {
+                session: Arc::new(Mutex::new(session)),
+                route: self.route.clone(),
+            }),
+            settings,
+            history,
+        })
+    }
+
+    fn reply_for_work(&self, child_id: &str, work_id: &str) -> Result<Option<String>, LogFailure> {
+        self.sessions
+            .reply_for_work(child_id, work_id)
+            .map_err(failure)
     }
 }
 

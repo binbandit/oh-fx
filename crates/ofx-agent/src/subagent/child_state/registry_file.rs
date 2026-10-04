@@ -1,8 +1,14 @@
-use ofx_contract::ChildPhase;
+use std::sync::Arc;
+
+use ofx_contract::{
+    ChildPhase, ModelFailureDiagnostic, PermissionMode, valid_agent_name, valid_instructions,
+    valid_session_id,
+};
 use ofx_text::lowercase_hex;
 use serde::Serialize;
+use serde_json::Value;
 
-use super::{ActiveWork, Child, Kind, Outcome, Registry};
+use super::{ActiveWork, Child, Kind, MAX_CHILDREN, Outcome, Registry, RegistryError};
 
 const SCHEMA_VERSION: u8 = 2;
 
@@ -85,7 +91,7 @@ fn child(child: &Child) -> ChildWire<'_> {
         last_failure: child
             .last_failure
             .as_ref()
-            .map(ofx_contract::ModelFailureDiagnostic::as_str),
+            .map(ModelFailureDiagnostic::as_str),
     }
 }
 
@@ -119,4 +125,253 @@ fn outcome(outcome: Outcome) -> &'static str {
         Outcome::Cancelled => "cancelled",
         Outcome::Interrupted => "interrupted",
     }
+}
+
+type Object = serde_json::Map<String, Value>;
+
+const REGISTRY_FIELDS: [&str; 4] = ["schema_version", "parent_id", "generation", "children"];
+const CHILD_FIELDS: [&str; 10] = [
+    "id",
+    "kind",
+    "persistent",
+    "phase",
+    "work_generation",
+    "active",
+    "last_work_id",
+    "last_request_fingerprint",
+    "last_outcome",
+    "last_failure",
+];
+const ACTIVE_FIELDS: [&str; 8] = [
+    "id",
+    "request_fingerprint",
+    "message",
+    "root_user_intent_context",
+    "root_user_messages",
+    "root_user_evidence_complete",
+    "permission_mode",
+    "created_at_ms",
+];
+const MAX_ADMISSION_ITEMS: usize = 64;
+
+pub(super) fn parse(bytes: &[u8], parent_id: &str) -> Result<Registry, RegistryError> {
+    let root: Value = serde_json::from_slice(bytes).map_err(|_| RegistryError::InvalidState)?;
+    let root = object(&root)?;
+    exact_fields(root, &REGISTRY_FIELDS)?;
+    let version = unsigned(root, "schema_version")?;
+    if version != 1 && version != u64::from(SCHEMA_VERSION) {
+        return Err(RegistryError::UnsupportedSchema);
+    }
+    if string(root, "parent_id")? != parent_id {
+        return Err(RegistryError::InvalidParentId);
+    }
+    let values = root
+        .get("children")
+        .and_then(Value::as_array)
+        .filter(|values| values.len() <= MAX_CHILDREN)
+        .ok_or(RegistryError::InvalidState)?;
+    let registry = Registry {
+        generation: unsigned(root, "generation")?,
+        children: values
+            .iter()
+            .map(|value| parse_child(value, version))
+            .collect::<Result<_, _>>()?,
+    };
+    validate(&registry)?;
+    Ok(registry)
+}
+
+fn parse_child(value: &Value, version: u64) -> Result<Child, RegistryError> {
+    let source = object(value)?;
+    let fields = if version == 1 {
+        &CHILD_FIELDS[..CHILD_FIELDS.len() - 1]
+    } else {
+        &CHILD_FIELDS[..]
+    };
+    exact_fields(source, fields)?;
+    let last_failure = if version == 1 {
+        None
+    } else {
+        optional_string(source, "last_failure")?
+            .map(|raw| ModelFailureDiagnostic::restored(raw).ok_or(RegistryError::InvalidState))
+            .transpose()?
+    };
+    let id = string(source, "id")?;
+    if !valid_session_id(id) {
+        return Err(RegistryError::InvalidState);
+    }
+    let persistent = source
+        .get("persistent")
+        .ok_or(RegistryError::InvalidState)?;
+    let kind = match string(source, "kind")? {
+        "one_off" if persistent.is_null() => Kind::OneOff,
+        "persistent" => parse_persistent(persistent)?,
+        _ => return Err(RegistryError::InvalidState),
+    };
+    let active = match source.get("active") {
+        Some(Value::Null) => None,
+        Some(value) => Some(parse_active(value)?),
+        None => return Err(RegistryError::InvalidState),
+    };
+    Ok(Child {
+        id: id.to_owned(),
+        kind,
+        phase: parse_phase(string(source, "phase")?)?,
+        work_generation: unsigned(source, "work_generation")?,
+        active,
+        last_work_id: optional_string(source, "last_work_id")?.map(str::to_owned),
+        last_request_fingerprint: optional_string(source, "last_request_fingerprint")?
+            .map(fingerprint)
+            .transpose()?,
+        last_outcome: optional_string(source, "last_outcome")?
+            .map(parse_outcome)
+            .transpose()?,
+        last_failure,
+    })
+}
+
+fn parse_persistent(value: &Value) -> Result<Kind, RegistryError> {
+    let source = object(value)?;
+    exact_fields(source, &["agent", "instructions"])?;
+    let agent = string(source, "agent")?;
+    let instructions = string(source, "instructions")?;
+    if !valid_agent_name(agent) || !valid_instructions(instructions) {
+        return Err(RegistryError::InvalidState);
+    }
+    Ok(Kind::Persistent {
+        agent: agent.to_owned(),
+        instructions: instructions.to_owned(),
+    })
+}
+
+fn parse_active(value: &Value) -> Result<ActiveWork, RegistryError> {
+    let source = object(value)?;
+    exact_fields(source, &ACTIVE_FIELDS)?;
+    let messages = source
+        .get("root_user_messages")
+        .and_then(Value::as_array)
+        .filter(|messages| messages.len() <= MAX_ADMISSION_ITEMS)
+        .ok_or(RegistryError::InvalidState)?;
+    if !messages.iter().all(Value::is_string)
+        || !source
+            .get("root_user_evidence_complete")
+            .is_some_and(Value::is_boolean)
+    {
+        return Err(RegistryError::InvalidState);
+    }
+    Ok(ActiveWork {
+        id: string(source, "id")?.to_owned(),
+        request_fingerprint: fingerprint(string(source, "request_fingerprint")?)?,
+        message: string(source, "message")?.to_owned(),
+        root_user_requests: Arc::default(),
+        root_user_context: string(source, "root_user_intent_context")?.to_owned(),
+        permission_mode: permission_mode(string(source, "permission_mode")?)?,
+        created_at_ms: source
+            .get("created_at_ms")
+            .and_then(Value::as_i64)
+            .ok_or(RegistryError::InvalidState)?,
+    })
+}
+
+fn validate(registry: &Registry) -> Result<(), RegistryError> {
+    for (index, child) in registry.children.iter().enumerate() {
+        let working = matches!(
+            child.phase,
+            ChildPhase::Running | ChildPhase::AwaitingApproval
+        );
+        let failure_fits = child.last_failure.is_none()
+            || (child.last_outcome == Some(Outcome::Failed) && child.last_work_id.is_some());
+        let unique = registry.children[..index].iter().all(|prior| {
+            prior.id != child.id
+                && (child.agent_name().is_none() || prior.agent_name() != child.agent_name())
+        });
+        if working != child.active.is_some() || !failure_fits || !unique {
+            return Err(RegistryError::InvalidState);
+        }
+    }
+    Ok(())
+}
+
+fn parse_phase(raw: &str) -> Result<ChildPhase, RegistryError> {
+    [
+        ChildPhase::Idle,
+        ChildPhase::Running,
+        ChildPhase::AwaitingApproval,
+        ChildPhase::Interrupted,
+        ChildPhase::Finished,
+    ]
+    .into_iter()
+    .find(|candidate| phase(*candidate) == raw)
+    .ok_or(RegistryError::InvalidState)
+}
+
+fn permission_mode(raw: &str) -> Result<PermissionMode, RegistryError> {
+    [
+        PermissionMode::Ask,
+        PermissionMode::Auto,
+        PermissionMode::Yolo,
+    ]
+    .into_iter()
+    .find(|mode| mode.label() == raw)
+    .ok_or(RegistryError::InvalidState)
+}
+
+fn parse_outcome(raw: &str) -> Result<Outcome, RegistryError> {
+    [
+        Outcome::Completed,
+        Outcome::Failed,
+        Outcome::Cancelled,
+        Outcome::Interrupted,
+    ]
+    .into_iter()
+    .find(|candidate| outcome(*candidate) == raw)
+    .ok_or(RegistryError::InvalidState)
+}
+
+fn fingerprint(raw: &str) -> Result<[u8; 32], RegistryError> {
+    let bytes = raw.as_bytes();
+    if bytes.len() != 64 {
+        return Err(RegistryError::InvalidState);
+    }
+    let mut result = [0_u8; 32];
+    for (index, byte) in result.iter_mut().enumerate() {
+        let pair = std::str::from_utf8(&bytes[index * 2..index * 2 + 2])
+            .map_err(|_| RegistryError::InvalidState)?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| RegistryError::InvalidState)?;
+    }
+    Ok(result)
+}
+
+fn object(value: &Value) -> Result<&Object, RegistryError> {
+    value.as_object().ok_or(RegistryError::InvalidState)
+}
+
+fn exact_fields(source: &Object, allowed: &[&str]) -> Result<(), RegistryError> {
+    if source.len() == allowed.len() && source.keys().all(|key| allowed.contains(&key.as_str())) {
+        Ok(())
+    } else {
+        Err(RegistryError::InvalidState)
+    }
+}
+
+fn string<'a>(source: &'a Object, name: &str) -> Result<&'a str, RegistryError> {
+    source
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or(RegistryError::InvalidState)
+}
+
+fn optional_string<'a>(source: &'a Object, name: &str) -> Result<Option<&'a str>, RegistryError> {
+    match source.get(name) {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value)),
+        _ => Err(RegistryError::InvalidState),
+    }
+}
+
+fn unsigned(source: &Object, name: &str) -> Result<u64, RegistryError> {
+    source
+        .get(name)
+        .and_then(Value::as_u64)
+        .ok_or(RegistryError::InvalidState)
 }

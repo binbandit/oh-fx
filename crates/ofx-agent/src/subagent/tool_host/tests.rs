@@ -49,7 +49,7 @@ pub(super) struct Seen {
 pub(super) struct Provider {
     scripts: Mutex<VecDeque<Script>>,
     seen: Mutex<Vec<Seen>>,
-    holding: Notify,
+    pub(super) holding: Notify,
     released: Notify,
 }
 
@@ -329,7 +329,7 @@ impl Harness {
         }
     }
 
-    fn call(
+    pub(super) fn call(
         &self,
         call_id: &str,
         input: SubagentRequestInput<'_>,

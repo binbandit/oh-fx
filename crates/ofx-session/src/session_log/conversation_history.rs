@@ -22,6 +22,28 @@ pub struct SavedTurn {
     pub events: Vec<ConversationEvent>,
 }
 
+impl SavedTurn {
+    pub(crate) fn reply_for_work(&self, work_id: &str) -> Option<String> {
+        let ConversationEvent::User(user) = self.events.first()? else {
+            return None;
+        };
+        if user.work_id.as_deref() != Some(work_id) {
+            return None;
+        }
+        let mut reply = String::new();
+        for event in &self.events {
+            match event {
+                ConversationEvent::Assistant(assistant) => reply.clone_from(&assistant.text),
+                ConversationEvent::Interrupted(interrupted) => {
+                    return Some(interrupted.partial_text.clone().unwrap_or_default());
+                }
+                _ => {}
+            }
+        }
+        Some(reply)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ReplayWindow {
     offset: u64,
