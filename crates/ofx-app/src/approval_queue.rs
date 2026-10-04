@@ -89,6 +89,18 @@ impl ApprovalQueue {
         shown.emit();
     }
 
+    pub(crate) fn child_feedback(&self, origin: Option<TurnId>, text: String) {
+        let state = self.lock();
+        let Some(turn_id) = state.turn.filter(|turn| origin == Some(*turn)) else {
+            return;
+        };
+        let emit = state.emit.clone();
+        drop(state);
+        if let Some(emit) = emit {
+            emit(UiEvent::ApprovalFeedback { turn_id, text });
+        }
+    }
+
     pub(crate) fn resolve(&self, id: RequestId, answer: impl Into<ApprovalAnswer>) {
         self.approvals.resolve(id, answer);
         self.retire(id);
