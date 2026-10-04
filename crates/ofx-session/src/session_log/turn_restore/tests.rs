@@ -1391,10 +1391,6 @@ fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
     }
 }
 
-fn with_arguments(id: &str, name: &str, arguments: &str) -> ToolCall {
-    ToolCall::new(id, name, arguments)
-}
-
 fn whole(result: StepResult<'_>) -> StepResult<'_> {
     StepResult {
         model_view_covers_full_file: true,
@@ -1418,27 +1414,27 @@ fn evidence(
 
 fn tidying_calls() -> [ToolCall; 9] {
     [
-        with_arguments("call_read", "read_file", r#"{"path":"src/lib.rs"}"#),
-        with_arguments(
+        ToolCall::new("call_read", "read_file", r#"{"path":"src/lib.rs"}"#),
+        ToolCall::new(
             "call_part",
             "read_file",
             r#"{"path":"README.md","start_line":5}"#,
         ),
-        with_arguments(
+        ToolCall::new(
             "call_grep",
             "grep_files",
             r#"{"pattern":"fn","path":"src"}"#,
         ),
-        with_arguments("call_glob", "glob_files", r#"{"pattern":"*.rs","path":""}"#),
-        with_arguments("call_shell", "shell", r#"{"command":"ls"}"#),
-        with_arguments("call_missing", "read_file", r#"{"path":"gone.rs"}"#),
-        with_arguments("call_bad", "read_file", "not json"),
-        with_arguments(
+        ToolCall::new("call_glob", "glob_files", r#"{"pattern":"*.rs","path":""}"#),
+        ToolCall::new("call_shell", "shell", r#"{"command":"ls"}"#),
+        ToolCall::new("call_missing", "read_file", r#"{"path":"gone.rs"}"#),
+        ToolCall::new("call_bad", "read_file", "not json"),
+        ToolCall::new(
             "call_edit",
             "edit_file",
             r#"{"path":"src/lib.rs","old_string":"a","new_string":"b"}"#,
         ),
-        with_arguments(
+        ToolCall::new(
             "sk-proj-0123456789abcdefghij",
             "write_file",
             r#"{"path":"README.md","content":"x"}"#,
@@ -1562,7 +1558,7 @@ fn a_saved_turn_keeps_upstreams_file_evidence_for_its_file_tools() {
 fn an_interrupted_turn_keeps_the_file_evidence_it_gathered() {
     let fixture = Fixture::new();
     let mut session = fixture.start();
-    let calls = [with_arguments(
+    let calls = [ToolCall::new(
         "call_read",
         "read_file",
         r#"{"path":"a.rs"}"#,
@@ -1619,9 +1615,9 @@ fn compacted_reads(end: TurnEnd<'static>, kind: &str) -> Vec<(String, String, bo
     session
         .record_turn(&simple_turn("first", "one"), &gateway())
         .unwrap();
-    let first = [with_arguments("call-1", "read_file", r#"{"path":"a.rs"}"#)];
-    let second = [with_arguments("call-2", "read_file", r#"{"path":"b.rs"}"#)];
-    let third = [with_arguments(
+    let first = [ToolCall::new("call-1", "read_file", r#"{"path":"a.rs"}"#)];
+    let second = [ToolCall::new("call-2", "read_file", r#"{"path":"b.rs"}"#)];
+    let third = [ToolCall::new(
         "call-3",
         "write_file",
         r#"{"path":"a.rs","content":"x"}"#,
