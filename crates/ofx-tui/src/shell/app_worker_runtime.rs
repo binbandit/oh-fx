@@ -241,11 +241,17 @@ impl Shell<'_> {
                 self.compaction = None;
                 self.promote_next();
             }
+            CompactionActivity::Ended(_) if self.turn_compaction_running() => {}
             CompactionActivity::Ended(end) => {
                 self.compaction = Some(CompactionStatus::ended(end, now_ms));
                 self.promote_next();
             }
         }
+    }
+
+    fn turn_compaction_running(&self) -> bool {
+        self.compaction
+            .is_some_and(|status| status.running() && status.turn().is_some())
     }
 
     fn turn_compaction(&mut self, turn_id: TurnId, activity: CompactionActivity) {
@@ -801,6 +807,34 @@ mod tests {
         test.advance(50);
         test.step();
         assert!(!test.screen().contains("Compaction cancelled"));
+    }
+
+    #[test]
+    fn a_rejected_compact_command_leaves_a_running_automatic_compaction_alone() {
+        let mut test = compacting_turn();
+        test.deliver(turn_compaction(1, CompactionActivity::Summarizing));
+        test.submit("/compact");
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::RunCommand {
+                text: "/compact".to_owned()
+            })
+        );
+        test.deliver(compaction(CompactionActivity::Ended(CompactionEnd::Busy)));
+        let screen = test.screen();
+        assert!(screen.contains("• Compacting (3s)"), "{screen}");
+        assert!(!screen.contains("Wait for the active work"), "{screen}");
+        test.advance(1_500);
+        test.step();
+        let screen = test.screen();
+        assert!(screen.contains("• Compacting (5s)"), "{screen}");
+        assert!(!screen.contains("Thinking"), "{screen}");
+        test.deliver(finished(1, TurnOutcome::Interrupted));
+        let screen = test.screen();
+        assert!(
+            screen.contains("Compaction cancelled. Try /compact again when ready."),
+            "{screen}"
+        );
     }
 
     #[test]
