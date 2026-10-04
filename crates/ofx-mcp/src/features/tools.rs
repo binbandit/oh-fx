@@ -341,14 +341,14 @@ fn check_node(value: &Value, depth: usize, remaining: &mut usize) -> Result<(), 
     }
 }
 
-pub(crate) fn validate_arguments(arguments: &Value, limits: Limits) -> Result<(), McpError> {
-    if serialized_len(arguments) > limits.argument_bytes {
+pub(crate) fn validate_arguments(arguments_json: &str, limits: Limits) -> Result<(), McpError> {
+    if arguments_json.len() > limits.argument_bytes {
         return Err(McpError::InstanceLimitExceeded);
     }
-    if !arguments.is_object() {
+    let Ok(arguments @ Value::Object(_)) = serde_json::from_str::<Value>(arguments_json) else {
         return Err(McpError::InvalidJson);
-    }
-    check_value_bounds(arguments).map_err(|()| McpError::InstanceLimitExceeded)
+    };
+    check_value_bounds(&arguments).map_err(|()| McpError::InstanceLimitExceeded)
 }
 
 fn validate_icons(value: &Value, limits: Limits) -> Result<(), McpError> {
@@ -1012,19 +1012,26 @@ mod tests {
     fn tool_argument_boundary_leaves_semantic_validation_to_the_server() {
         let limits = Limits::default();
         assert_eq!(
-            validate_arguments(&json!({"email": 42, "optional_header": null}), limits),
+            validate_arguments("{\"email\":42,\"optional_header\":null}", limits),
             Ok(())
         );
-        assert_eq!(
-            validate_arguments(&json!([]), limits),
-            Err(McpError::InvalidJson)
-        );
+        assert_eq!(validate_arguments("[]", limits), Err(McpError::InvalidJson));
+        assert_eq!(validate_arguments("{", limits), Err(McpError::InvalidJson));
         let tight = Limits {
             argument_bytes: 1,
             ..limits
         };
         assert_eq!(
-            validate_arguments(&json!({}), tight),
+            validate_arguments("{}", tight),
+            Err(McpError::InstanceLimitExceeded)
+        );
+        let exact = Limits {
+            argument_bytes: 2,
+            ..limits
+        };
+        assert_eq!(validate_arguments("{}", exact), Ok(()));
+        assert_eq!(
+            validate_arguments("{ }", exact),
             Err(McpError::InstanceLimitExceeded)
         );
     }

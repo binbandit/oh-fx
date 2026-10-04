@@ -249,7 +249,7 @@ done
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let outcome = client
-            .call_tool("snapshot", &json!({}), CallOptions::default())
+            .call_tool("snapshot", "{}", CallOptions::default())
             .await
             .unwrap();
         let ToolCallOutcome::Complete(result) = outcome else {
@@ -289,7 +289,7 @@ done
         let outcome = client
             .call_tool(
                 "alpha",
-                &json!({"text": "hi\nthere"}),
+                r#"{"text": "hi\nthere"}"#,
                 CallOptions {
                     progress: Some(Arc::new(move |update| lock(&sink_progress).push(update))),
                     ..CallOptions::default()
@@ -330,7 +330,7 @@ done
             .await
             .unwrap();
         let outcome = client
-            .call_tool("roots", &json!({}), CallOptions::default())
+            .call_tool("roots", "{}", CallOptions::default())
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -588,7 +588,7 @@ printf '%s\n' "$3" > "$STATE/cidfile"
             })
         );
         client
-            .call_tool("alpha", &json!({}), CallOptions::default())
+            .call_tool("alpha", "{}", CallOptions::default())
             .await
             .unwrap();
         assert_eq!(
