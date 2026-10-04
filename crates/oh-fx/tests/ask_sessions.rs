@@ -1043,3 +1043,75 @@ fn shell_calls_are_saved_as_upstream_saves_them_and_sent_back_in_the_request_for
     assert_eq!(sent_shell_arguments(&requests[2]), sent);
     assert_eq!(sent_shell_arguments(&requests[3]), sent);
 }
+
+#[test]
+fn a_saved_turn_records_which_files_the_model_read_whole_and_which_went_stale() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"notes.txt"}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "read_file",
+            r#"{"path":"long.txt","line_count":1}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_3",
+            "write_file",
+            r#"{"path":"notes.txt","content":"beta\n"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Rewrote it."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    fs::write(home.root.join("workspace/notes.txt"), "alpha\n").expect("write the notes");
+    fs::write(home.root.join("workspace/long.txt"), "one\ntwo\n").expect("write the long file");
+    let result = home.ask_json(&["--full-access", "rewrite the notes"], &[]);
+    assert_eq!(result["final_output"], "Rewrote it.");
+    let frames = home.frames(&session_id(&result));
+    let completed = frames
+        .iter()
+        .find_map(|frame| frame["event"].get("turn_completed"))
+        .expect("a completed turn");
+    let files: Vec<(String, String, String, bool, bool)> = completed["files"]
+        .as_array()
+        .expect("file evidence")
+        .iter()
+        .map(|file| {
+            (
+                file["path"].as_str().unwrap().to_owned(),
+                file["action"].as_str().unwrap().to_owned(),
+                file["status"].as_str().unwrap().to_owned(),
+                file["model_view_covers_full_file"].as_bool().unwrap(),
+                file["stale"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        files,
+        [
+            (
+                "notes.txt".to_owned(),
+                "read".to_owned(),
+                "success".to_owned(),
+                true,
+                true
+            ),
+            (
+                "long.txt".to_owned(),
+                "read".to_owned(),
+                "success".to_owned(),
+                false,
+                false
+            ),
+            (
+                "notes.txt".to_owned(),
+                "write".to_owned(),
+                "success".to_owned(),
+                false,
+                false
+            ),
+        ]
+    );
+}

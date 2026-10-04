@@ -32,7 +32,7 @@ note = "Exit/stopped/error shell results are formatted; command result mapping l
 upstream = "src/core/tooling/file_mutation.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/file_mutation.rs"]
-note = "Canonical targets, preimages, no-op verification, transactional mutations and committed undo-operation capture exist; session ReadTracker full-file freshness authority is absent."
+note = "Canonical targets, preimages, no-op verification, transactional mutations and committed undo-operation capture exist, with the preimage check that refuses a file changed after preview; upstream's other content-proof bounds are absent."
 
 [[file]]
 upstream = "src/core/tooling/file_mutation_contract.zig"
@@ -44,7 +44,7 @@ note = "Typed mutation inputs, preimages and filesystem identities exist; proofC
 upstream = "src/core/tooling/file_mutation_execution.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/file_mutation_execution.rs"]
-note = "Prepared mutations revalidate approved filesystem identities, execute transactionally and publish committed operations to the session change tracker; upstream ReadTracker authority and result-commit publication tokens are absent."
+note = "Prepared mutations revalidate approved filesystem identities, execute transactionally and publish committed operations to the session change tracker; upstream's result-commit publication tokens are absent."
 
 [[file]]
 upstream = "src/core/tooling/host_tool_runtime.zig"

@@ -13,8 +13,8 @@ note = "Streaming Markdown presentation and completion payloads are implemented 
 [[file]]
 upstream = "src/core/agent/execution_memory.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/execution_memory.rs"]
-note = "Completed tool exchanges and replay are retained; file-evidence freshness records and image memory are absent."
+modules = ["crates/ofx-agent/src/execution_memory.rs", "crates/ofx-session/src/session_log/file_evidence.rs"]
+note = "Completed tool exchanges and replay are retained, and each saved turn records upstream's file evidence with its whole-file views and stale reads; image memory is absent."
 
 [[file]]
 upstream = "src/core/agent/presentation/ansi.zig"
@@ -116,7 +116,7 @@ note = "Narrow traits replace runtime dependencies; image executor, durable reco
 upstream = "src/core/agent/runtime/execution_memory.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/execution_memory.rs"]
-note = "Interrupted execution memory retains finished exchanges, steering typed after a tool result, and provider-executed calls with their provider results, whose status follows upstream's tool-failure classification; tool images and result memory are absent."
+note = "Interrupted execution memory retains finished exchanges, steering typed after a tool result, and provider-executed calls with their provider results, whose status follows upstream's tool-failure classification, and a result keeps its whole-file view only when the model saw it untruncated; tool images and result memory are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/finalization.zig"

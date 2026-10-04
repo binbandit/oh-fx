@@ -126,7 +126,7 @@ impl ReadFileArgs {
             return failure;
         }
         match self.read(context, path_access) {
-            Ok(text) => ToolOutput::success(text),
+            Ok((text, covered)) => ToolOutput::success(text).covering_full_file(covered),
             Err(failure) => failure,
         }
     }
@@ -135,7 +135,7 @@ impl ReadFileArgs {
         &self,
         context: &FilesystemContext,
         path_access: &PathAccess,
-    ) -> Result<String, ToolOutput> {
+    ) -> Result<(String, bool), ToolOutput> {
         let target = self.resolve(context, path_access)?;
         self.read_target(context, &target)
     }
@@ -161,7 +161,7 @@ impl ReadFileArgs {
         &self,
         context: &FilesystemContext,
         target: &Path,
-    ) -> Result<String, ToolOutput> {
+    ) -> Result<(String, bool), ToolOutput> {
         let target_text = target.to_string_lossy();
         let (file, metadata) = open_regular_file(target)
             .map_err(|failure| read_file_failure(failure, &target_text))?;
@@ -186,7 +186,7 @@ impl ReadFileArgs {
                 text,
                 "</path>\n<content>binary or non-utf8 file omitted ({size} bytes)</content>"
             );
-            return Ok(sanitize_model_text_owned(text));
+            return Ok((sanitize_model_text_owned(text), false));
         }
 
         let line_count = self.line_count.min(context.max_read_file_lines);
@@ -196,6 +196,7 @@ impl ReadFileArgs {
             line_count,
             context.max_read_file_line_len,
         );
+        let covered = snapshot_covers_full_file && scan.covers_full_file(self.start_line);
         let text = format_read_output(
             display_path,
             self.start_line,
@@ -203,7 +204,7 @@ impl ReadFileArgs {
             &scan,
             snapshot_covers_full_file,
         );
-        Ok(sanitize_model_text_owned(text))
+        Ok((sanitize_model_text_owned(text), covered))
     }
 }
 
@@ -464,7 +465,9 @@ mod tests {
     }
 
     fn read(context: &FilesystemContext, args_json: &str) -> Result<String, ToolOutput> {
-        ReadFileArgs::decode(args_json)?.read(context, &PathAccess::WorkspaceOrExternal)
+        ReadFileArgs::decode(args_json)?
+            .read(context, &PathAccess::WorkspaceOrExternal)
+            .map(|(text, _)| text)
     }
 
     fn text(context: &FilesystemContext, args_json: &str) -> String {
@@ -629,6 +632,7 @@ mod tests {
                 "<path>{}</path>\n<content>\n1\toutside secret\n</content>",
                 secret.display()
             ))
+            .covering_full_file(true)
         );
 
         fs::rename(
@@ -950,6 +954,36 @@ mod tests {
     }
 
     #[test]
+    fn read_file_reports_whether_the_model_saw_the_whole_file() {
+        let workspace = Workspace::new();
+        workspace.write("two.txt", "one\ntwo\n");
+        workspace.write("empty.txt", "");
+        workspace.write("binary.bin", [0_u8, 159, 146, 150]);
+        workspace.write("large.txt", vec![b'x'; MAX_SNAPSHOT_FILE_BYTES + 1]);
+        workspace.write("wide.txt", "x".repeat(DEFAULT_MAX_READ_FILE_LINE_LEN + 1));
+        let tool = ReadFile::with_context(workspace.context());
+        let coverage = |arguments: &str| {
+            run_tool_with(&tool, arguments, PathAccess::WorkspaceOrExternal)
+                .1
+                .model_view_covers_full_file
+        };
+        assert_eq!(coverage(r#"{"path":"two.txt"}"#), Some(true));
+        assert_eq!(coverage(r#"{"path":"empty.txt"}"#), Some(true));
+        assert_eq!(
+            coverage(r#"{"path":"two.txt","start_line":2}"#),
+            Some(false)
+        );
+        assert_eq!(
+            coverage(r#"{"path":"two.txt","line_count":1}"#),
+            Some(false)
+        );
+        assert_eq!(coverage(r#"{"path":"binary.bin"}"#), Some(false));
+        assert_eq!(coverage(r#"{"path":"large.txt"}"#), Some(false));
+        assert_eq!(coverage(r#"{"path":"wide.txt"}"#), Some(false));
+        assert_eq!(coverage(r#"{"path":"missing.txt"}"#), None);
+    }
+
+    #[test]
     fn read_file_reports_missing_paths_before_reading() {
         let workspace = Workspace::new();
         let tool = ReadFile::with_context(workspace.context());
@@ -999,6 +1033,7 @@ mod tests {
         assert_eq!(
             output,
             ToolOutput::success("<path>a.txt</path>\n<content>\n1\tone\n</content>")
+                .covering_full_file(true)
         );
     }
 }

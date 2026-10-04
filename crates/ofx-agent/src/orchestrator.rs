@@ -19,7 +19,7 @@ use ofx_contract::{
     SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool, ToolActivity,
     ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect,
     ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent,
-    Usage, malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
+    Usage, bound_model_output, malformed_tool_arguments_json, non_object_tool_arguments_json,
     tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
-use crate::execution_memory::steering_text;
+use crate::execution_memory::{RawOutput, steering_text};
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, RetryPacing, decide, recovery_cause,
 };
@@ -188,7 +188,7 @@ struct Turn {
     fast_mode: bool,
     fast_notice_shown: bool,
     compaction: TurnCompaction,
-    raw_outputs: Vec<(ToolCallId, usize)>,
+    raw_outputs: Vec<RawOutput>,
     reviews: TurnReviews,
     language: TurnLanguage,
     recovery: Option<RecoveryStrategy>,
@@ -1007,8 +1007,10 @@ impl Agent {
                 Some(gate) => match self.gated_group(gate, &calls, next) {
                     GatedGroup::Run(group) => group,
                     GatedGroup::Unexecuted(description, output) => {
-                        turn.raw_outputs
-                            .push((calls[next].id.clone(), output.len()));
+                        turn.raw_outputs.push(RawOutput::partial_view(
+                            calls[next].id.clone(),
+                            output.len(),
+                        ));
                         self.settle_unexecuted(turn.id, &calls[next], description, output, events);
                         next += 1;
                         continue;
@@ -1094,10 +1096,15 @@ impl Agent {
                     status,
                 );
             }
-            turn.raw_outputs
-                .push((call.id.clone(), output.content.len()));
-            let model_output =
-                prepare_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
+            let shown_whole = output.model_view_covers_full_file == Some(true);
+            let bytes = output.content.len();
+            let (model_output, truncated) =
+                bound_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
+            turn.raw_outputs.push(RawOutput {
+                call_id: call.id.clone(),
+                bytes,
+                whole_file: shown_whole && !truncated,
+            });
             let content = if escalates {
                 escalate_repeated_failure(turn, call, status, model_output)
             } else {

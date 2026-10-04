@@ -6,7 +6,7 @@ use super::{CHECKPOINT_VERSION, EXECUTION_SCHEMA_VERSION, RouteCredential};
 use crate::fixed_field::{False, NoItems, Null};
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
-use crate::session_event::{SavedReplay, WireTag};
+use crate::session_event::{FileEvidence, SavedReplay, WireTag};
 
 pub(crate) struct CheckpointSource<'a> {
     pub(crate) point: &'a RecoveryPoint<'a>,
@@ -14,6 +14,7 @@ pub(crate) struct CheckpointSource<'a> {
     pub(crate) credential: Option<RouteCredential>,
     pub(crate) replays: Vec<Option<SavedReplay>>,
     pub(crate) outputs: Vec<Vec<SavedOutput>>,
+    pub(crate) files: Vec<FileEvidence>,
     pub(crate) created_at_ms: i64,
 }
 
@@ -56,7 +57,7 @@ struct UserWire<'a> {
 struct ExecutionWire<'a> {
     schema_version: u64,
     tool_steps: Vec<StepWire<'a>>,
-    files: NoItems,
+    files: &'a [FileEvidence],
     steering: Vec<SteeringWire<'a>>,
     turn_summary: Null,
 }
@@ -135,7 +136,7 @@ pub(crate) fn encode_recovery_file(
                 .enumerate()
                 .map(|(index, step)| step_wire(source, index, step))
                 .collect(),
-            files: NoItems,
+            files: &source.files,
             steering: point
                 .turn
                 .steering

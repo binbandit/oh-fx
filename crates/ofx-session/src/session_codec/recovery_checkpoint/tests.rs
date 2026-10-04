@@ -517,6 +517,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                     output,
                     output_bytes: 12,
                     status: ToolResultStatus::Success,
+                    model_view_covers_full_file: false,
                 }],
             }],
             steering: vec![HistorySteering {
@@ -552,11 +553,20 @@ fn a_recovery_point_is_written_in_upstream_recovery_json_form() {
             handle: None,
             preview: None,
         }]],
+        files: vec![FileEvidence {
+            path: "a.rs".to_owned(),
+            new_path: None,
+            tool_call_id: "call_1".to_owned(),
+            tool_name: "read_file".to_owned(),
+            action: FileEvidenceAction::Read,
+            status: ToolResultStatus::Success,
+            model_view_covers_full_file: true,
+            stale: false,
+        }],
         created_at_ms: 5,
     };
     let written = encode_recovery_file(12, &source).unwrap().unwrap();
     let expected = upstream_checkpoint()
-        .replace("\"files\":[{\"path\":\"a.rs\",\"new_path\":null,\"tool_call_id\":\"call_1\",\"tool_name\":\"read_file\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":true,\"stale\":false}]", "\"files\":[]")
         .replace("\"cause\":\"response_interrupted\",\"action\":\"continuing_response\",\"tool_state\":\"confirmed\"", "\"cause\":\"rate_limited\",\"action\":\"retrying_request\",\"tool_state\":\"none\"")
         .replace("\"assistant_source\":\"Looking at\"", "\"assistant_source\":\"\"")
         .replace(IDENTITY, ACCOUNT_IDENTITY);
@@ -588,6 +598,7 @@ fn a_paused_point_and_a_spilled_output_are_written_as_upstream_writes_them() {
             handle: Some("result-read_file-1-2.txt".to_owned()),
             preview: Some("fn".to_owned()),
         }]],
+        files: Vec::new(),
         created_at_ms: 5,
     };
     let written = String::from_utf8(encode_recovery_file(3, &source).unwrap().unwrap()).unwrap();
