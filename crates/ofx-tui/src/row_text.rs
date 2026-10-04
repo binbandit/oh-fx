@@ -258,6 +258,10 @@ impl Row {
         &self.segments
     }
 
+    pub(crate) fn text_len(&self) -> usize {
+        self.segments.iter().map(|segment| segment.text.len()).sum()
+    }
+
     pub(crate) fn width(&self) -> usize {
         self.segments
             .iter()
