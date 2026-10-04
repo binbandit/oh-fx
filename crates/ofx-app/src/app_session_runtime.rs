@@ -60,7 +60,7 @@ impl ResumedSession {
     }
 
     fn for_shell(mut session: WritableSession) -> Result<Self, SessionError> {
-        let recovery = shell_recovery(&mut session)?;
+        let recovery = shell_recovery(&mut session);
         let mut resumed = Self::load(session)?;
         resumed.recovery = recovery;
         Ok(resumed)
@@ -213,6 +213,16 @@ impl LiveSession {
 
     pub fn observe_prompt(&self, prompt: &str) {
         self.session().observe_prompt(prompt);
+    }
+
+    pub(crate) fn settle_open_recovery(&self, agent: &mut Agent) -> Result<(), SessionError> {
+        let mut session = self.session();
+        if !session.turn_open() || session.recovery_transcript().is_none() {
+            return Ok(());
+        }
+        session.settle_open_recovery()?;
+        agent.restore(session.restored_history()?);
+        Ok(())
     }
 
     fn session(&self) -> MutexGuard<'_, WritableSession> {

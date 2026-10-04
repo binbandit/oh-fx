@@ -247,6 +247,15 @@ impl Persistence {
     }
 }
 
+impl Persistence {
+    pub(crate) fn settle_open_recovery(&mut self, agent: &mut Agent) -> Option<Notice> {
+        let live = self.live.as_ref()?;
+        live.settle_open_recovery(agent)
+            .err()
+            .map(|error| non_durable("paused turn could not be saved", error))
+    }
+}
+
 fn non_durable(label: &str, error: SessionError) -> Notice {
     Notice::new(
         NoticeTone::Warning,
