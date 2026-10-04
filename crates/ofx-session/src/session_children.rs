@@ -90,12 +90,12 @@ impl ChildSessions {
     }
 
     pub fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
-        let session = resume_session(&self.sessions, id, LOCK_DEADLINE)?;
-        if session.metadata().subagent_child {
-            Ok(session)
-        } else {
-            Err(SessionError::SessionNotFound)
+        let mut session = resume_session(&self.sessions, id, LOCK_DEADLINE)?;
+        if !session.metadata().subagent_child {
+            return Err(SessionError::SessionNotFound);
         }
+        session.settle_open_recovery()?;
+        Ok(session)
     }
 
     pub fn reply_for_work(&self, id: &str, work_id: &str) -> Result<Option<String>, SessionError> {

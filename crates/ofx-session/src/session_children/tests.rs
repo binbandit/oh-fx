@@ -3,8 +3,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use ofx_config::ProviderId;
-use ofx_contract::{HistoryTurn, ReasoningEffort, TurnEnd, TurnStop};
+use ofx_contract::{
+    HistoryCut, HistoryStep, HistoryTurn, ModelRecoveryCause, ReasoningEffort, RecoveryPoint,
+    RecoveryProgress, StepResult, ToolCall, ToolResultStatus, TurnEnd, TurnId, TurnStop,
+};
 
+use crate::session_codec::recovery_checkpoint::RouteCredential;
 use crate::session_codec::{SavedProvider, SessionPreferences, decode_session_metadata};
 use crate::session_error::SessionError;
 use crate::session_store::{ListScope, SessionStore};
@@ -251,6 +255,7 @@ fn a_childs_reply_is_found_by_the_work_it_answered() {
                 user: "second",
                 steps: Vec::new(),
                 steering: Vec::new(),
+                files: &[],
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "half an answer",
@@ -268,4 +273,86 @@ fn a_childs_reply_is_found_by_the_work_it_answered() {
         Ok(Some("half an answer".to_owned()))
     );
     assert_eq!(children.reply_for_work("child-1", "call_3"), Ok(None));
+}
+
+#[test]
+fn a_child_reopened_over_a_compacted_turn_and_its_checkpoint_closes_that_work_first() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let parent = store.start(preferences()).unwrap();
+    let children = store.children(parent.id()).unwrap();
+    let mut child = children.start("child-1", preferences(), "en").unwrap();
+    let provider = SavedProvider::new(ProviderId::Gateway, None).unwrap();
+    let calls = [ToolCall::new("call-1", "shell", r#"{"command":"ls"}"#)];
+    let active = HistoryTurn {
+        user: "old task",
+        steps: vec![HistoryStep {
+            assistant: "",
+            provider_replay: None,
+            tool_calls: &calls,
+            tool_results: vec![StepResult {
+                call_id: "call-1",
+                tool_name: "shell",
+                output: "listing",
+                output_bytes: 7,
+                status: ToolResultStatus::Success,
+                model_view_covers_full_file: false,
+            }],
+        }],
+        steering: Vec::new(),
+        files: &[],
+        end: TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        },
+    };
+    child.begin_work("old-work");
+    child
+        .record_compaction(
+            "<summary>listed</summary>",
+            HistoryCut {
+                turns: 0,
+                tool_steps: 1,
+                steering: 0,
+            },
+            Some(&active),
+            &provider,
+        )
+        .unwrap();
+    child
+        .record_recovery(
+            &RecoveryPoint {
+                turn_id: TurnId::new(1),
+                turn: active.clone(),
+                cause: ModelRecoveryCause::RateLimited,
+                progress: RecoveryProgress::Paused,
+                model: "openai/gpt-5",
+                requested_fast_mode: false,
+                fast_mode: false,
+                attempt_limit: 10,
+                consumed_attempts: 10,
+            },
+            &provider,
+            RouteCredential::configured(),
+        )
+        .unwrap();
+    drop(child);
+    let mut reopened = children.resume("child-1").unwrap();
+    reopened.restored_history().unwrap();
+    reopened.begin_work("new-work");
+    reopened
+        .record_turn(&replied("new task"), &provider)
+        .unwrap();
+    drop(reopened);
+    assert_eq!(
+        children.reply_for_work("child-1", "new-work"),
+        Ok(Some("done".to_owned()))
+    );
+    assert_eq!(
+        children.reply_for_work("child-1", "old-work"),
+        Ok(Some(String::new()))
+    );
+    let mut again = children.resume("child-1").unwrap();
+    let history = again.restored_history().unwrap();
+    assert_eq!(history.turn_starts.len(), 2);
 }
