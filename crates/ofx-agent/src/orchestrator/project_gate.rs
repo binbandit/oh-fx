@@ -1,8 +1,9 @@
 use std::mem;
 
 use ofx_contract::{
-    ApplicableTarget, CallDescription, ChatMessage, PreparedCall, TargetKind, ToolCall,
-    ToolDeferral, ToolEffect, ToolRejection, ToolResultStatus, TurnId, UiEvent,
+    ApplicableTarget, CONTEXT_DEFERRED_TOOL_OUTPUT, CallDescription, ChatMessage,
+    DEFERRED_TOOL_OUTPUT, PreparedCall, TargetKind, ToolCall, ToolDeferral, ToolEffect,
+    ToolRejection, ToolResultStatus, TurnId, UiEvent,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -10,9 +11,6 @@ use super::{
     Agent, EventSink, ParallelGroup, Prepared, Rejection, Stop, ToolOutput, TurnFailure, completed,
     contained, discard, parallel_group,
 };
-
-pub(super) const CONTEXT_DEFERRED_OUTPUT: &str = "Scoped project instructions were added before execution. Review them and reissue this tool call if it is still appropriate.";
-pub(super) const NOT_EXECUTED_OUTPUT: &str = "Not executed";
 
 pub(super) struct ProjectGate {
     calls: Vec<GatedCall>,
@@ -198,7 +196,7 @@ impl Agent {
             mut settled => return GatedGroup::Run(vec![(call, settled.release(&call.name))]),
         };
         let checked = if candidate.deferred {
-            Err((candidate.prepared, CONTEXT_DEFERRED_OUTPUT))
+            Err((candidate.prepared, CONTEXT_DEFERRED_TOOL_OUTPUT))
         } else if candidate.mutates {
             completed_mutation(call, candidate.prepared, candidate.target)
         } else {
@@ -206,7 +204,7 @@ impl Agent {
                 Ok(current) if current == candidate.target => {
                     Ok(completed(candidate.prepared, &call.name))
                 }
-                Ok(_) => Err((candidate.prepared, NOT_EXECUTED_OUTPUT)),
+                Ok(_) => Err((candidate.prepared, DEFERRED_TOOL_OUTPUT)),
                 Err(panicked) => {
                     discard(candidate.prepared);
                     Ok(Prepared::Rejected(panicked))
@@ -243,7 +241,7 @@ impl Agent {
             tool_name: call.name.clone(),
             description,
         });
-        let deferral = if output == CONTEXT_DEFERRED_OUTPUT {
+        let deferral = if output == CONTEXT_DEFERRED_TOOL_OUTPUT {
             ToolDeferral::ProjectInstructions
         } else {
             ToolDeferral::TargetChanged
@@ -268,7 +266,7 @@ fn completed_mutation(
     target: Option<ApplicableTarget>,
 ) -> Result<Prepared, (Box<dyn PreparedCall>, &'static str)> {
     let Some(target) = target else {
-        return Err((prepared, NOT_EXECUTED_OUTPUT));
+        return Err((prepared, DEFERRED_TOOL_OUTPUT));
     };
     let (prepared, description, mutation, command) = match completed(prepared, &call.name) {
         Prepared::Ready(prepared, description, mutation, command) => {
@@ -288,7 +286,7 @@ fn completed_mutation(
     if fresh {
         Ok(Prepared::Ready(prepared, description, mutation, command))
     } else {
-        Err((prepared, NOT_EXECUTED_OUTPUT))
+        Err((prepared, DEFERRED_TOOL_OUTPUT))
     }
 }
 

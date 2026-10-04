@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use memchr::{memchr, memchr_iter};
 use ofx_contract::{
-    CallPresentation, ExecutionFailure, PathAccess, PreparedCall, Tool, ToolActivity, ToolOutput,
-    ToolSpec, filesystem_access_denied_json, plain_description, tool_execution_failure_json,
+    CallDescription, CallPresentation, ExecutionFailure, PathAccess, PreparedCall, Tool,
+    ToolActivity, ToolEffect, ToolOutput, ToolSpec, filesystem_access_denied_json,
+    plain_description, tool_execution_failure_json,
 };
 use ofx_text::{is_model_safe_text, sanitize_model_text_owned};
 use ofx_workspace::{
@@ -73,6 +74,15 @@ impl Tool for ReadFile {
                 Ok(arguments) => arguments.run(&context, &path_access),
                 Err(failure) => failure,
             },
+        ))
+    }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        Some(plain_description(
+            TOOL_NAME,
+            &PRESENTATION,
+            arguments,
+            ToolEffect::None,
         ))
     }
 }

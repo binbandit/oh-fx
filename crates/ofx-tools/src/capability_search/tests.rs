@@ -335,3 +335,22 @@ async fn interactive_empty_host_reports_no_match_for_both_scopes() {
         );
     }
 }
+
+#[test]
+fn saved_searches_describe_themselves_as_their_calls_did() {
+    for (arguments, target) in [
+        (r#"{"query":"send email"}"#, "send email"),
+        (r#"{"query":"ignored","server":"clerk"}"#, "clerk"),
+        ("{}", "capabilities"),
+    ] {
+        let search = tool(16384);
+        let saved = search
+            .describe_saved(arguments)
+            .expect("a saved description");
+        assert_eq!(saved, search.prepare(arguments).unwrap().describe());
+        let label = saved.label.expect("a label");
+        assert_eq!(label.completed, "Searched capabilities");
+        assert_eq!(label.target, target);
+        assert_eq!(saved.activity, ToolActivity::Read);
+    }
+}

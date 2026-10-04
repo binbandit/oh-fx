@@ -76,8 +76,10 @@ impl ResumedSession {
         &self.session.metadata().preferences
     }
 
-    pub(crate) fn transcript(&self) -> Result<Vec<HistoryEntry>, SessionError> {
-        resume_transcript::transcript(&self.session, &self.title)
+    pub(crate) fn transcript(&self, setup: &AgentSetup) -> Result<Vec<HistoryEntry>, SessionError> {
+        resume_transcript::transcript(&self.session, &self.title, &|tool_name, arguments| {
+            setup.describe_saved_call(tool_name, arguments)
+        })
     }
 
     pub(crate) fn display_title(&self) -> Option<&str> {

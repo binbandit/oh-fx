@@ -1,55 +1,151 @@
-use ofx_contract::{HistoryEntry, Notice, NoticeTone, ToolResultStatus};
-use ofx_session::{ConversationEvent, InterruptReason, SavedTurn, SessionError, WritableSession};
+use std::collections::HashMap;
+
+use ofx_contract::{
+    CallDescription, HistoryEntry, Notice, NoticeTone, SavedToolCall, ToolCallId, ToolResultStatus,
+};
+use ofx_session::{
+    ConversationEvent, InterruptReason, SavedTurn, SessionError, ToolResultEvent, WritableSession,
+};
 use ofx_tools::answered_questions;
 
 const RESUMED_TOPIC: &str = "session resumed";
 const SYSTEM_TOPIC: &str = "system";
 const FAILED_TURN: &str = "failed";
+const WHOLE_RESULT_TOOLS: [&str; 2] = ["subagent", "ask_user_question"];
+
+pub(crate) type DescribeSaved<'a> = &'a dyn Fn(&str, &str) -> Option<CallDescription>;
 
 pub(super) fn transcript(
     session: &WritableSession,
     title: &str,
+    describe: DescribeSaved<'_>,
 ) -> Result<Vec<HistoryEntry>, SessionError> {
     let mut entries = vec![HistoryEntry::Notice(Notice::new(
         NoticeTone::Neutral,
         RESUMED_TOPIC,
         title,
     ))];
-    session.visit_transcript(|turn| replay_turn(session, turn, &mut entries))?;
+    session.visit_transcript(|turn| {
+        let replay = TurnReplay {
+            session,
+            describe,
+            shown: Vec::new(),
+            running: HashMap::new(),
+        };
+        entries.extend(replay.replay(turn));
+    })?;
     Ok(entries)
 }
 
-fn replay_turn(session: &WritableSession, turn: SavedTurn, entries: &mut Vec<HistoryEntry>) {
-    for event in turn.events {
-        match event {
-            ConversationEvent::ToolResult(result) if result.status == ToolResultStatus::Success => {
-                if let Some(answers) =
-                    answered_questions(&result.tool_name, || session.tool_result_output(&result))
-                {
-                    entries.push(HistoryEntry::QuestionsAnswered(answers));
+struct RunningCall {
+    slot: usize,
+    tool_name: String,
+    arguments: String,
+    description: Option<CallDescription>,
+}
+
+struct TurnReplay<'a, 'b> {
+    session: &'a WritableSession,
+    describe: DescribeSaved<'b>,
+    shown: Vec<Option<HistoryEntry>>,
+    running: HashMap<String, RunningCall>,
+}
+
+impl TurnReplay<'_, '_> {
+    fn replay(mut self, turn: SavedTurn) -> impl Iterator<Item = HistoryEntry> {
+        for event in turn.events {
+            match event {
+                ConversationEvent::ToolCall(call) => {
+                    let description = (self.describe)(&call.tool_name, &call.arguments_json);
+                    let running = RunningCall {
+                        slot: self.shown.len(),
+                        tool_name: call.tool_name,
+                        arguments: call.arguments_json,
+                        description,
+                    };
+                    self.running.insert(call.call_id, running);
+                    self.shown.push(None);
                 }
-            }
-            ConversationEvent::User(user) => entries.push(HistoryEntry::User(user.text)),
-            ConversationEvent::Steering(steering) if !steering.text.is_empty() => {
-                entries.push(HistoryEntry::User(steering.text));
-            }
-            ConversationEvent::Assistant(assistant) if !assistant.text.is_empty() => {
-                entries.push(HistoryEntry::Assistant(assistant.text));
-            }
-            ConversationEvent::Interrupted(interrupted) => {
-                if let Some(partial) = interrupted.partial_text.filter(|text| !text.is_empty()) {
-                    entries.push(HistoryEntry::Assistant(partial));
+                ConversationEvent::ToolResult(result) => self.finish(result),
+                ConversationEvent::User(user) => self.show(HistoryEntry::User(user.text)),
+                ConversationEvent::Steering(steering) if !steering.text.is_empty() => {
+                    self.show(HistoryEntry::User(steering.text));
                 }
-                entries.push(match interrupted.reason {
-                    InterruptReason::Cancelled => HistoryEntry::Cancelled,
-                    InterruptReason::Failed => HistoryEntry::Notice(Notice::new(
-                        NoticeTone::Error,
-                        SYSTEM_TOPIC,
-                        FAILED_TURN,
-                    )),
-                });
+                ConversationEvent::Assistant(assistant) if !assistant.text.is_empty() => {
+                    self.show(HistoryEntry::Assistant(assistant.text));
+                }
+                ConversationEvent::Interrupted(interrupted) => {
+                    if let Some(partial) = interrupted.partial_text.filter(|text| !text.is_empty())
+                    {
+                        self.show(HistoryEntry::Assistant(partial));
+                    }
+                    self.show(match interrupted.reason {
+                        InterruptReason::Cancelled => HistoryEntry::Cancelled,
+                        InterruptReason::Failed => HistoryEntry::Notice(Notice::new(
+                            NoticeTone::Error,
+                            SYSTEM_TOPIC,
+                            FAILED_TURN,
+                        )),
+                    });
+                }
+                _ => {}
             }
-            _ => {}
+        }
+        self.shown.into_iter().flatten()
+    }
+
+    fn show(&mut self, entry: HistoryEntry) {
+        self.shown.push(Some(entry));
+    }
+
+    fn finish(&mut self, result: ToolResultEvent) {
+        let Some(call) = self.running.remove(&result.call_id) else {
+            return;
+        };
+        let whole = reads_whole_result(&result.tool_name)
+            .then(|| self.session.tool_result_output(&result))
+            .flatten();
+        let output = whole.or(result.preview).unwrap_or_default();
+        let answers = (result.status == ToolResultStatus::Success)
+            .then(|| answered_questions(&result.tool_name, || Some(output.clone())))
+            .flatten();
+        let entry = match answers {
+            Some(answers) => HistoryEntry::QuestionsAnswered(answers),
+            None => HistoryEntry::Tool(SavedToolCall {
+                call_id: ToolCallId::new(result.call_id),
+                tool_name: call.tool_name,
+                arguments: call.arguments,
+                description: call.description,
+                status: result.status,
+                output,
+            }),
+        };
+        self.shown[call.slot] = Some(entry);
+    }
+}
+
+fn reads_whole_result(tool_name: &str) -> bool {
+    WHOLE_RESULT_TOOLS.contains(&tool_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_whole_result;
+
+    #[test]
+    fn only_results_with_a_structured_outcome_are_read_whole() {
+        for tool in ["subagent", "ask_user_question"] {
+            assert!(reads_whole_result(tool), "{tool}");
+        }
+        for tool in [
+            "read_file",
+            "write_file",
+            "shell",
+            "grep_files",
+            "web_fetch",
+            "skill",
+        ] {
+            assert!(!reads_whole_result(tool), "{tool}");
         }
     }
 }

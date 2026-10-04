@@ -1562,3 +1562,221 @@ fn a_launch_model_flag_outlasts_the_model_of_a_picked_session() {
     assert_eq!(models, ["vendor/model-b", "model-a"]);
     assert_eq!(home.metadata(&id)["model"], "vendor/model-b");
 }
+
+fn tool_group(screen: &str) -> Vec<&str> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("● "))
+        .unwrap_or_else(|| panic!("no tool group on screen:\n{screen}"));
+    lines[start..]
+        .iter()
+        .take_while(|line| !line.trim().is_empty())
+        .copied()
+        .collect()
+}
+
+#[test]
+fn a_resumed_shell_replays_its_tool_rows_without_the_unsaved_failure_detail() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "read_file",
+            r#"{"path":"notes.md"}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call-2",
+            "read_file",
+            r#"{"path":"missing.md"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Read them."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    fs::write(home.workspace.join("notes.md"), "hello\n").expect("write a note");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"read the notes\r");
+    let live = wait(&session, "Read them.");
+    let rows = [
+        "● 2 tool calls · 2 read · 1 failed",
+        "├ Read notes.md",
+        "└ Failed missing.md",
+    ];
+    assert_eq!(
+        tool_group(&live),
+        [
+            rows[0],
+            rows[1],
+            "└ Failed missing.md: Path not found: missing.md"
+        ],
+        "{live}"
+    );
+    exit(session);
+
+    let session = home.shell(&["-c"], "session resumed: read the notes");
+    let resumed = wait(&session, "Read them.");
+    assert_eq!(tool_group(&resumed), rows, "{resumed}");
+    assert!(
+        appears_in_order(&resumed, &["┃ read the notes", rows[0], "Read them."]),
+        "{resumed}"
+    );
+    exit(session);
+}
+
+fn saved_call(seq: u64, id: &str, tool: &str, arguments: &Value) -> Vec<u8> {
+    frame(
+        seq,
+        &json!({"tool_call": {"call_id": id, "tool_name": tool, "arguments_json": arguments.to_string()}}),
+    )
+}
+
+fn saved_result(seq: u64, id: &str, tool: &str, status: &str, output: &str) -> Vec<u8> {
+    frame(
+        seq,
+        &json!({"tool_result": {
+            "call_id": id,
+            "tool_name": tool,
+            "status": status,
+            "artifact_ref": format!("result-{id}.txt"),
+            "stored_bytes": output.len(),
+            "completeness": "complete",
+            "preview": output,
+        }}),
+    )
+}
+
+#[test]
+fn a_resumed_shell_labels_saved_tool_results_and_drops_the_call_an_interruption_left_open() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let denied = json!({"error": {
+        "type": "tool_permission_denied",
+        "tool_name": "read_file",
+        "message": "denied",
+        "reason": "user_denied",
+        "denied": true,
+        "suggestion": "ask",
+    }})
+    .to_string();
+    let deferred = "Scoped project instructions were added before execution. Review them and reissue this tool call if it is still appropriate.";
+    let question =
+        json!({"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]});
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "check the files"}})),
+            saved_call(5, "c1", "read_file", &json!({"path": "a.md"})),
+            saved_call(6, "c2", "read_file", &json!({"path": "b.md"})),
+            saved_call(7, "c3", "read_file", &json!({"path": "c.md"})),
+            saved_result(8, "c1", "read_file", "failure", &denied),
+            saved_result(9, "c2", "read_file", "failure", "Not executed"),
+            saved_result(10, "c3", "read_file", "failure", deferred),
+            saved_call(11, "c4", "ask_user_question", &question),
+            saved_result(
+                12,
+                "c4",
+                "ask_user_question",
+                "success",
+                "(user cancelled the question)",
+            ),
+            frame(13, &json!({"assistant": {"text": "Checked."}})),
+            frame(14, &json!({"turn_completed": {}})),
+            frame(15, &json!({"user": {"text": "stop now"}})),
+            saved_call(16, "c5", "read_file", &json!({"path": "d.md"})),
+            frame(17, &json!({"interrupted": {"reason": "cancelled"}})),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, CANCELLATION);
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ check the files",
+                "├ Denied a.md",
+                "├ Not executed b.md",
+                "├ Reading project instructions before continuing: c.md",
+                "└ Asked",
+                "Checked.",
+                "┃ stop now",
+                CANCELLATION,
+            ]
+        ),
+        "{screen}"
+    );
+    assert!(!screen.contains("d.md"), "{screen}");
+    assert!(!screen.contains("Tool cancelled"), "{screen}");
+    exit(session);
+}
+
+#[test]
+fn a_resumed_subagent_row_reads_its_outcome_from_the_whole_saved_result() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let partial = "partial work ".repeat(600);
+    let output =
+        json!({"ok": false, "result": partial, "error_code": "child_interrupted"}).to_string();
+    assert!(output.len() > 4096);
+    let handle = "result-subagent-0011223344556677-8899aabbccddeeff.txt";
+    let results = home.sessions().join(&id).join("tool-results");
+    fs::create_dir(&results).expect("create the result store");
+    fs::set_permissions(&results, fs::Permissions::from_mode(0o700))
+        .expect("make the result store private");
+    fs::write(results.join(handle), &output).expect("store the whole result");
+    fs::set_permissions(results.join(handle), fs::Permissions::from_mode(0o600))
+        .expect("make the result private");
+    let preview = &output[..4096];
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "delegate it"}})),
+            saved_call(
+                5,
+                "c1",
+                "subagent",
+                &json!({"request": {"action": "run", "task": "inspect auth"}}),
+            ),
+            frame(
+                6,
+                &json!({"tool_result": {
+                    "call_id": "c1",
+                    "tool_name": "subagent",
+                    "status": "failure",
+                    "artifact_ref": handle,
+                    "stored_bytes": output.len(),
+                    "completeness": "complete",
+                    "preview": preview,
+                }}),
+            ),
+            frame(7, &json!({"assistant": {"text": "Delegated."}})),
+            frame(8, &json!({"turn_completed": {}})),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "Delegated.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ delegate it",
+                "Subagent interrupted · inspect auth",
+                "Delegated."
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+}

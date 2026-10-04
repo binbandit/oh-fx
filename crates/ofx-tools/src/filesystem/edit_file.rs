@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    CallPresentation, LivePermissionMode, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec,
+    CallDescription, CallPresentation, LivePermissionMode, PreparedCall, Tool, ToolActivity,
+    ToolOutput, ToolSpec,
 };
 use ofx_workspace::ChangeTracker;
 
@@ -60,6 +61,10 @@ impl Tool for EditFile {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
         Ok(self.request.prepare(decode(arguments)))
+    }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        Some(self.request.saved_description(arguments))
     }
 }
 

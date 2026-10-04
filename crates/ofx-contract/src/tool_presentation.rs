@@ -142,6 +142,29 @@ pub fn format_subagent_plain_action(
     })
 }
 
+pub fn subagent_result_state(
+    tool_name: &str,
+    output: &str,
+) -> Option<SubagentActionState<'static>> {
+    if tool_name != SUBAGENT_TOOL_NAME {
+        return None;
+    }
+    let result = json_object(output)?;
+    let ok = result.get("ok").and_then(Value::as_bool);
+    if let Some(value) = result.get("delivery").and_then(Value::as_str) {
+        let delivery = [
+            SteeringDelivery::Queued,
+            SteeringDelivery::Applied,
+            SteeringDelivery::NotApplied,
+        ]
+        .into_iter()
+        .find(|delivery| delivery.label() == value)?;
+        return (ok? == (delivery != SteeringDelivery::NotApplied))
+            .then_some(SubagentActionState::Feedback(delivery));
+    }
+    (result.get("pending").and_then(Value::as_bool)? && ok?).then_some(SubagentActionState::Pending)
+}
+
 pub fn subagent_failure_label(tool_name: &str, output: &str) -> &'static str {
     if tool_name != SUBAGENT_TOOL_NAME {
         return "Failed";
@@ -344,6 +367,47 @@ mod tests {
             .as_deref(),
             Some("Subagent still running · work")
         );
+    }
+
+    #[test]
+    fn subagent_results_name_a_pending_child_or_a_delivered_message_only() {
+        let pending = r#"{"ok":true,"pending":true}"#;
+        assert_eq!(
+            subagent_result_state("subagent", pending),
+            Some(SubagentActionState::Pending)
+        );
+        assert_eq!(subagent_result_state("shell", pending), None);
+        for output in [
+            r#"{"ok":true,"result":"done"}"#,
+            r#"{"ok":false,"pending":true}"#,
+            r#"{"ok":true,"pending":false}"#,
+            r#"{"pending":true}"#,
+            r#"{"ok":true,"delivery":"queued","pending":false,"x":1"#,
+            r#"{"ok":false,"delivery":"queued","pending":true}"#,
+            r#"{"ok":true,"delivery":"not_applied"}"#,
+            r#"{"ok":true,"delivery":"lost"}"#,
+        ] {
+            assert_eq!(subagent_result_state("subagent", output), None, "{output}");
+        }
+        for (output, delivery) in [
+            (
+                r#"{"ok":true,"delivery":"queued"}"#,
+                SteeringDelivery::Queued,
+            ),
+            (
+                r#"{"ok":true,"delivery":"applied"}"#,
+                SteeringDelivery::Applied,
+            ),
+            (
+                r#"{"ok":false,"delivery":"not_applied"}"#,
+                SteeringDelivery::NotApplied,
+            ),
+        ] {
+            assert_eq!(
+                subagent_result_state("subagent", output),
+                Some(SubagentActionState::Feedback(delivery))
+            );
+        }
     }
 
     #[test]

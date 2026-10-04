@@ -144,7 +144,7 @@ async fn bootstrap(
         Some(resumed) => Opening::Transcript(
             resumed
                 .session
-                .transcript()
+                .transcript(&setup)
                 .map_err(|error| vec![failure_line(&error)])?,
         ),
         None if resume == Some(&RequestedResume::Pick) => Opening::SessionPicker,

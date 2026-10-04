@@ -477,7 +477,7 @@ impl Controller {
             self.refuse_resume(id, ResumeRefusal::Unavailable);
             return;
         };
-        match persistence.resume_selected(id, &mut self.agent) {
+        match persistence.resume_selected(id, &mut self.agent, &self.state.setup) {
             Ok(switched) => {
                 self.forget_tracked_changes();
                 self.state.setup.forget_children();

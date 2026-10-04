@@ -1,9 +1,10 @@
 use ofx_contract::{
-    ActionLabel, CallDescription, CommandProcessPresentation, FileChangeStats, ReasoningEffort,
-    SubagentActionState, SubagentStatus, ToolActivity, ToolArgsError, ToolCallId, ToolDeferral,
+    ActionLabel, CONTEXT_DEFERRED_TOOL_OUTPUT, CallDescription, CommandProcessPresentation,
+    DEFERRED_TOOL_OUTPUT, FileChangeStats, ReasoningEffort, SavedToolCall, SubagentActionState,
+    SubagentStatus, ToolActivity, ToolArgsError, ToolCallId, ToolDeferral,
     ToolPermissionDenialReason, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnOutcome,
-    parse_tool_args_object, shell_request_invalid_field_count, subagent_action,
-    subagent_failure_label, tool_permission_denial_reason,
+    format_unknown_action, parse_tool_args_object, shell_request_invalid_field_count,
+    subagent_action, subagent_failure_label, subagent_result_state, tool_permission_denial_reason,
 };
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_inline, mask_secrets};
 
@@ -107,6 +108,60 @@ impl ToolActivityRow {
                 process: None,
             },
             child_status: None,
+        }
+    }
+
+    pub(crate) fn saved(call: SavedToolCall) -> Self {
+        let mut row = Self::new(call.call_id, &call.tool_name, call.description);
+        if row.title.is_empty() {
+            row.title = encoded_target(&format_unknown_action(&call.tool_name));
+        }
+        let (outcome, label) = row.saved_outcome(call.status, &call.output);
+        row.status = row
+            .saved_subagent_status(&call.arguments, &call.output, outcome, label)
+            .unwrap_or_else(|| row.settled(outcome, label, None, None));
+        row
+    }
+
+    fn saved_subagent_status(
+        &self,
+        arguments: &str,
+        output: &str,
+        outcome: ToolOutcome,
+        label: &'static str,
+    ) -> Option<ToolStatus> {
+        if !self.delegates() {
+            return None;
+        }
+        let state = match outcome {
+            ToolOutcome::Denied | ToolOutcome::Deferred => SubagentActionState::Stopped(label),
+            _ => subagent_result_state(SUBAGENT_TOOL, output).unwrap_or(
+                if outcome == ToolOutcome::Completed {
+                    SubagentActionState::Completed
+                } else {
+                    SubagentActionState::Stopped(subagent_failure_label(SUBAGENT_TOOL, output))
+                },
+            ),
+        };
+        subagent_status(outcome, arguments, state)
+    }
+
+    fn saved_outcome(&self, status: ToolResultStatus, output: &str) -> (ToolOutcome, &'static str) {
+        let failed = status == ToolResultStatus::Failure;
+        if failed && output == CONTEXT_DEFERRED_TOOL_OUTPUT {
+            (ToolOutcome::Deferred, READING_INSTRUCTIONS)
+        } else if failed && output == DEFERRED_TOOL_OUTPUT {
+            (ToolOutcome::Denied, NOT_EXECUTED)
+        } else if let Some(reason) = tool_permission_denial_reason(output) {
+            (ToolOutcome::Denied, denial_label(reason))
+        } else if failed {
+            (ToolOutcome::Failed, FAILED)
+        } else {
+            let completed = self
+                .label
+                .as_ref()
+                .map_or("Completed", |label| label.completed);
+            (ToolOutcome::Completed, completed)
         }
     }
 
@@ -286,18 +341,7 @@ impl ToolActivityRow {
                 )),
             ),
         };
-        let action = subagent_action(SUBAGENT_TOOL, finished.arguments, state)?;
-        let phrase = if action.detail.is_empty() {
-            action.label.clone()
-        } else {
-            format!("{} {}", action.label, action.detail)
-        };
-        Some(ToolStatus {
-            outcome: Some(outcome),
-            phrase,
-            label_len: action.label.len(),
-            process: None,
-        })
+        subagent_status(outcome, finished.arguments, state)
     }
 
     fn subagent_identity(&self) -> Option<String> {
@@ -386,6 +430,25 @@ impl ToolActivityRow {
             if count == 1 { "" } else { "s" }
         ))
     }
+}
+
+fn subagent_status(
+    outcome: ToolOutcome,
+    arguments: &str,
+    state: SubagentActionState<'_>,
+) -> Option<ToolStatus> {
+    let action = subagent_action(SUBAGENT_TOOL, arguments, state)?;
+    let phrase = if action.detail.is_empty() {
+        action.label.clone()
+    } else {
+        format!("{} {}", action.label, action.detail)
+    };
+    Some(ToolStatus {
+        outcome: Some(outcome),
+        phrase,
+        label_len: action.label.len(),
+        process: None,
+    })
 }
 
 fn denial_label(reason: ToolPermissionDenialReason) -> &'static str {
@@ -1174,6 +1237,192 @@ mod tests {
             "Reading project instructions before continuing: runtime.zig"
         );
         assert_eq!(read.status.outcome, Some(ToolOutcome::Deferred));
+    }
+
+    fn saved(
+        tool: &str,
+        description: Option<CallDescription>,
+        status: ToolResultStatus,
+        output: &str,
+    ) -> ToolStatus {
+        ToolActivityRow::saved(SavedToolCall {
+            call_id: ToolCallId::new("call"),
+            tool_name: tool.to_owned(),
+            arguments: "{}".to_owned(),
+            description,
+            status,
+            output: output.to_owned(),
+        })
+        .status
+    }
+
+    #[test]
+    fn saved_calls_settle_with_upstream_resume_labels_and_no_details() {
+        let read = || {
+            Some(description(
+                ToolActivity::Read,
+                Some(("Reading", "Read", "a.md")),
+                "Reading a.md",
+            ))
+        };
+        let shell = Some(description(
+            ToolActivity::Command,
+            Some(("Running", "Ran", "ls")),
+            "Running ls",
+        ));
+        let invalid_fields =
+            r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["a"]}}"#;
+        let cases = [
+            (
+                saved("read_file", read(), ToolResultStatus::Success, "hello"),
+                "Read a.md",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    "Path not found: a.md",
+                ),
+                "Failed a.md",
+                ToolOutcome::Failed,
+            ),
+            (
+                saved("shell", shell, ToolResultStatus::Failure, invalid_fields),
+                "Failed ls",
+                ToolOutcome::Failed,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    &tool_permission_denied_json("read_file"),
+                ),
+                "Denied a.md",
+                ToolOutcome::Denied,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    DEFERRED_TOOL_OUTPUT,
+                ),
+                "Not executed a.md",
+                ToolOutcome::Denied,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Failure,
+                    CONTEXT_DEFERRED_TOOL_OUTPUT,
+                ),
+                "Reading project instructions before continuing: a.md",
+                ToolOutcome::Deferred,
+            ),
+            (
+                saved(
+                    "read_file",
+                    read(),
+                    ToolResultStatus::Success,
+                    DEFERRED_TOOL_OUTPUT,
+                ),
+                "Read a.md",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved("gone_tool", None, ToolResultStatus::Failure, "boom"),
+                "Failed tool call",
+                ToolOutcome::Failed,
+            ),
+        ];
+        for (status, phrase, outcome) in cases {
+            assert_eq!(status.phrase, phrase);
+            assert_eq!(status.outcome, Some(outcome));
+            assert_eq!(status.process, None);
+        }
+    }
+
+    #[test]
+    fn saved_subagent_calls_settle_as_upstream_resume_names_them() {
+        let saved_child = |arguments: &str, status: ToolResultStatus, output: &str| {
+            let started = subagent_row(arguments);
+            let description = CallDescription {
+                title: started.title.clone(),
+                label: None,
+                activity: ToolActivity::Subagent,
+                effect: ToolEffect::Mutating,
+                concurrency: Concurrency::Parallel,
+            };
+            ToolActivityRow::saved(SavedToolCall {
+                call_id: ToolCallId::new("call"),
+                tool_name: "subagent".to_owned(),
+                arguments: arguments.to_owned(),
+                description: Some(description),
+                status,
+                output: output.to_owned(),
+            })
+            .status
+        };
+        let cases = [
+            (
+                RUN_CHILD,
+                ToolResultStatus::Success,
+                r#"{"ok":true,"result":"done","error_code":null}"#.to_owned(),
+                "Subagent finished · inspect auth",
+                ToolOutcome::Completed,
+            ),
+            (
+                RUN_CHILD,
+                ToolResultStatus::Success,
+                r#"{"ok":true,"pending":true}"#.to_owned(),
+                "Subagent still running · inspect auth",
+                ToolOutcome::Completed,
+            ),
+            (
+                MESSAGE_CHILD,
+                ToolResultStatus::Success,
+                r#"{"ok":true,"delivery":"queued"}"#.to_owned(),
+                "reviewer feedback queued · check this",
+                ToolOutcome::Completed,
+            ),
+            (
+                MESSAGE_CHILD,
+                ToolResultStatus::Success,
+                r#"{"ok":true,"delivery":"not_applied"}"#.to_owned(),
+                "reviewer replied · check this",
+                ToolOutcome::Completed,
+            ),
+            (
+                MESSAGE_CHILD,
+                ToolResultStatus::Failure,
+                r#"{"ok":false,"error_code":"child_busy"}"#.to_owned(),
+                "reviewer busy; message not sent · check this",
+                ToolOutcome::Failed,
+            ),
+            (
+                RUN_CHILD,
+                ToolResultStatus::Failure,
+                tool_permission_denied_json("subagent"),
+                "Denied Subagent · inspect auth",
+                ToolOutcome::Denied,
+            ),
+            (
+                RUN_CHILD,
+                ToolResultStatus::Failure,
+                DEFERRED_TOOL_OUTPUT.to_owned(),
+                "Not executed Subagent · inspect auth",
+                ToolOutcome::Denied,
+            ),
+        ];
+        for (arguments, status, output, phrase, outcome) in cases {
+            let settled = saved_child(arguments, status, &output);
+            assert_eq!(settled.phrase, phrase, "{output}");
+            assert_eq!(settled.outcome, Some(outcome), "{output}");
+        }
     }
 
     #[test]
