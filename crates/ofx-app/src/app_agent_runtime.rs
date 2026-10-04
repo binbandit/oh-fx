@@ -9,10 +9,10 @@ use ofx_agent::{
 };
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelOption, Notice, NoticeTone,
-    ProviderError, QuestionRequest, ReasoningEffort, RecoveredTurn, ResumeRefusal, SessionCursor,
-    SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand,
-    UiEvent,
+    BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelControls, ModelOption, Notice,
+    NoticeTone, ProviderError, QuestionRequest, ReasoningEffort, RecoveredTurn, ResumeRefusal,
+    SessionCursor, SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, TurnId,
+    TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -33,7 +33,7 @@ use crate::app_session_runtime::{
 };
 use crate::app_upgrade_runtime::{ResumeHandoff, UpgradeShortcut};
 use crate::approval_queue::ApprovalQueue;
-use crate::model_cache_runtime::ModelSource;
+use crate::model_cache_runtime::{ModelSource, model_controls};
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline, set_statusline};
 use crate::skill_commands::{
@@ -76,6 +76,7 @@ pub(crate) struct ControllerState {
     statusline: StatuslineToggles,
     mcp: Option<McpHost>,
     menu_settings: MenuSettings,
+    shown_controls: ModelControls,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,23 @@ impl ControllerState {
 
     pub(crate) fn fast_mode(&self) -> bool {
         self.speed == Speed::Fast
+    }
+
+    fn model_controls(&self) -> ModelControls {
+        model_controls(
+            self.setup.models_source().cached().as_ref(),
+            &self.model,
+            &self.effort,
+            self.fast_mode(),
+        )
+    }
+
+    fn sync_model_controls(&mut self) {
+        let controls = self.model_controls();
+        if controls != self.shown_controls {
+            self.shown_controls = controls.clone();
+            self.emit(UiEvent::ModelControlsChanged { controls });
+        }
     }
 
     pub(crate) fn set_fast_mode(&mut self, enabled: bool) {
@@ -458,6 +476,7 @@ impl CatalogFetch {
         }
         let provider = self.provider.clone();
         state.emit(UiEvent::ModelCatalog { provider, catalog });
+        state.sync_model_controls();
     }
 }
 
@@ -475,6 +494,7 @@ impl Controller {
             claimed: HashSet::new(),
         };
         let mcp = setup.mcp_host(Arc::clone(&emit));
+        let setup_controls = setup.model_controls();
         let state = ControllerState {
             session_title: SessionTitle::new(Arc::clone(&emit)),
             model: setup.model().to_owned(),
@@ -500,6 +520,7 @@ impl Controller {
             history_turns: 0,
             context_to_compact: false,
             mcp,
+            shown_controls: setup_controls,
         };
         if let Some(approvals) = state.setup.approvals() {
             approvals.attach(Arc::clone(&state.emit));
@@ -606,6 +627,7 @@ impl Controller {
 
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
+            self.state.sync_model_controls();
             if let Some(prompt) = self.next_runnable_prompt() {
                 if !self.run_turn(&prompt, commands).await {
                     return;
@@ -766,7 +788,10 @@ impl Controller {
                             state.receive_prompt(prompt, skills, installation.is_some());
                         }
                         Some(UiCommand::CancelCompaction) => cancel.cancel(),
-                        Some(command) => run_deferred(state, persistence, catalog, command, installation, work, &cancel),
+                        Some(command) => {
+                            run_deferred(state, persistence, catalog, command, installation, work, &cancel);
+                            state.sync_model_controls();
+                        }
                     },
                 }
             }
@@ -1090,7 +1115,10 @@ impl Controller {
                                 questions.resolve(request_id, answers);
                             }
                         }
-                        Some(command) => run_deferred(state, persistence, catalog, command, installation, work, &cancel),
+                        Some(command) => {
+                            run_deferred(state, persistence, catalog, command, installation, work, &cancel);
+                            state.sync_model_controls();
+                        }
                     },
                     request = next_question(questions) => relay_question(state, running_turn(), request),
                     Some(()) = recoveries.recv() => {
@@ -4142,6 +4170,58 @@ mod tests {
         assert_eq!(
             notice_body(picked),
             [format!("|Switched to {OTHER_CODEX_MODEL}")]
+        );
+    }
+
+    fn controls_changed(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::ModelControlsChanged { .. })
+    }
+
+    fn last_controls(events: &[UiEvent]) -> ModelControls {
+        events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                UiEvent::ModelControlsChanged { controls } => Some(controls.clone()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_status_line_follows_the_session_s_effort_and_fast_mode() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 8);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        listed_catalog(&mut harness).await;
+        let listed = within(harness.until(controls_changed)).await;
+        assert_eq!(
+            last_controls(listed),
+            ModelControls {
+                effort: ReasoningEffort::Auto,
+                effort_supported: true,
+                fast: false,
+            }
+        );
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        let picked = within(harness.until(controls_changed)).await;
+        assert_eq!(
+            last_controls(picked),
+            ModelControls {
+                effort: low(),
+                effort_supported: true,
+                fast: true,
+            }
+        );
+        harness.command("/fast");
+        let toggled = within(harness.until(controls_changed)).await;
+        assert_eq!(
+            last_controls(toggled),
+            ModelControls {
+                effort: low(),
+                effort_supported: true,
+                fast: false,
+            }
         );
     }
 

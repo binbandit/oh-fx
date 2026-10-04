@@ -331,6 +331,7 @@ mod tests {
             statusline: ofx_contract::StatuslineToggles::default(),
             workspace_identity: None,
             theme: None,
+            model_controls: ofx_contract::ModelControls::default(),
         };
         let outcome = panics.contain_shell(|| {
             run_shell(

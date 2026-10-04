@@ -1,5 +1,8 @@
+use std::borrow::Cow;
+
 use ofx_contract::{
-    ModelCapabilities, ModelCatalog, Notice, NoticeTone, ReasoningEffort, UiCommand,
+    ModelCapabilities, ModelCatalog, ModelControls, Notice, NoticeTone, ReasoningEffort, UiCommand,
+    intrinsically_fast,
 };
 
 use super::Shell;
@@ -236,6 +239,38 @@ impl Shell<'_> {
         }
         self.model_flow.dismissed = true;
         true
+    }
+
+    pub(super) fn status_model(&self) -> (&str, Cow<'_, ModelControls>) {
+        let flow = &self.model_flow;
+        let Some(query) = self
+            .model_query()
+            .filter(|query| query.stage != ModelStage::Model && !flow.pending.is_empty())
+        else {
+            return (
+                &self.options.model,
+                Cow::Borrowed(&self.options.model_controls),
+            );
+        };
+        let capabilities = self.capabilities(&flow.pending);
+        let efforts = &capabilities.reasoning_efforts;
+        let typed = query.query.trim_matches([' ', '\t']);
+        let effort = ReasoningEffort::parse(typed)
+            .filter(|effort| {
+                query.stage == ModelStage::Effort && effort_options(efforts).contains(effort)
+            })
+            .unwrap_or_else(|| effort_at(efforts, flow.effort.index));
+        let speed = FAST_OPTIONS
+            .into_iter()
+            .find(|speed| query.stage == ModelStage::Fast && speed.eq_ignore_ascii_case(typed))
+            .unwrap_or(FAST_OPTIONS[flow.fast.index % FAST_OPTIONS.len()]);
+        let controls = ModelControls {
+            effort,
+            effort_supported: !efforts.is_empty(),
+            fast: intrinsically_fast(&flow.pending)
+                || (capabilities.supports_fast_mode && speed == "fast"),
+        };
+        (&flow.pending, Cow::Owned(controls))
     }
 
     fn capabilities(&self, model: &str) -> ModelCapabilities {

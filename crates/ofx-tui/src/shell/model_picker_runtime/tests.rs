@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    CatalogRetry, ModelCatalogSource, ModelOption, SessionScope, SkillMenuFocus, SkillMenuGroup,
-    SkillMenuItem, SkillMenuSource, TurnId, UiEvent,
+    CatalogRetry, ModelCatalogSource, ModelControls, ModelOption, SessionScope, SkillMenuFocus,
+    SkillMenuGroup, SkillMenuItem, SkillMenuSource, TurnId, UiEvent,
 };
 
 use super::*;
@@ -235,6 +235,65 @@ fn arrows_wrap_and_enter_applies_a_model_without_efforts_or_fast_mode_at_once() 
         picks(&test),
         [pick("openai/gpt-y", ReasoningEffort::Auto, None)]
     );
+}
+
+fn status_row(test: &mut TestShell) -> String {
+    test.screen().lines().last().unwrap_or_default().to_owned()
+}
+
+#[test]
+fn the_status_line_shows_the_controller_s_effort_and_fast_mode() {
+    let mut test = TestShell::start();
+    assert_eq!(status_row(&mut test), "auto · model-a");
+    test.deliver(UiEvent::ModelControlsChanged {
+        controls: ModelControls {
+            effort: named("high"),
+            effort_supported: true,
+            fast: true,
+        },
+    });
+    assert_eq!(status_row(&mut test), "auto · model-a · high · ⚡︎");
+    test.deliver(UiEvent::ModelControlsChanged {
+        controls: ModelControls {
+            effort: named("high"),
+            effort_supported: false,
+            fast: false,
+        },
+    });
+    assert_eq!(status_row(&mut test), "auto · model-a");
+}
+
+#[test]
+fn the_status_line_previews_the_pending_model_effort_and_mode() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\r");
+    assert_eq!(status_row(&mut test), "auto · x · ⚡︎");
+    press(&mut test, DOWN);
+    assert_eq!(status_row(&mut test), "auto · x · low · ⚡︎");
+    press(&mut test, b"\r");
+    assert_eq!(status_row(&mut test), "auto · x · low · ⚡︎");
+    press(&mut test, UP);
+    assert_eq!(status_row(&mut test), "auto · x · low");
+    press(&mut test, ESC);
+    test.advance(100);
+    test.settle();
+    assert_eq!(status_row(&mut test), "auto · model-a");
+}
+
+#[test]
+fn the_status_line_marks_a_pending_model_named_fast() {
+    let mut test = TestShell::start();
+    press(&mut test, b"/model\r");
+    listed(
+        &mut test,
+        ModelCatalog::Listed {
+            models: vec![option("zai/glm-5.2-fast", &["low"], false)],
+            source: ModelCatalogSource::ProfileSettings,
+        },
+    );
+    press(&mut test, b"\r");
+    assert_eq!(status_row(&mut test), "auto · glm-5.2-fast · ⚡︎");
 }
 
 #[test]

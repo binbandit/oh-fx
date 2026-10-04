@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, CatalogRetry, ModelCapabilities, ModelCatalog,
-    ModelCatalogSource, ModelOption,
+    ModelCatalogSource, ModelControls, ModelOption, ReasoningEffort, intrinsically_fast,
 };
 use ofx_gateway::{CatalogFailure, CodexModel};
 use tokio_util::sync::CancellationToken;
@@ -86,6 +86,41 @@ impl CapabilityResolver for ModelSource {
     }
 }
 
+pub(crate) fn model_controls(
+    catalog: Option<&ModelCatalog>,
+    model: &str,
+    effort: &ReasoningEffort,
+    fast: bool,
+) -> ModelControls {
+    let Some(catalog) = catalog else {
+        return ModelControls {
+            effort: effort.clone(),
+            effort_supported: *effort != ReasoningEffort::Auto,
+            fast: fast || intrinsically_fast(model),
+        };
+    };
+    let efforts = match catalog {
+        ModelCatalog::Listed { models, .. } => models
+            .iter()
+            .find(|option| option.id == model)
+            .map_or(&[][..], |option| &option.capabilities.reasoning_efforts),
+        ModelCatalog::Failed { .. } => &[],
+    };
+    let offered = match effort {
+        ReasoningEffort::Auto => true,
+        ReasoningEffort::Named(name) => efforts.contains(name),
+    };
+    ModelControls {
+        effort: if offered {
+            effort.clone()
+        } else {
+            ReasoningEffort::Auto
+        },
+        effort_supported: !efforts.is_empty(),
+        fast: fast || intrinsically_fast(model),
+    }
+}
+
 fn connection_capabilities(connection: &ProviderDefinition, model: &str) -> ModelCapabilities {
     ModelCapabilities {
         context_window: connection.capabilities(model).context_window,
@@ -102,7 +137,87 @@ fn catalog_retry(failure: CatalogFailure) -> Option<CatalogRetry> {
 
 #[cfg(test)]
 mod tests {
+    use ofx_contract::ReasoningEffort;
+
     use super::*;
+
+    fn named(effort: &str) -> ReasoningEffort {
+        ReasoningEffort::Named(effort.to_owned())
+    }
+
+    fn catalog_with(efforts: &[&str], fast: bool) -> ModelCatalog {
+        ModelCatalog::Listed {
+            models: vec![ModelOption {
+                id: "openai/gpt-5".to_owned(),
+                capabilities: ModelCapabilities {
+                    reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
+                    supports_fast_mode: fast,
+                    context_window: None,
+                },
+                max_output_tokens: None,
+            }],
+            source: ModelCatalogSource::Subscription,
+        }
+    }
+
+    #[test]
+    fn configured_controls_stay_visible_while_model_capabilities_load() {
+        assert_eq!(
+            model_controls(None, "anthropic/claude-opus-4.8", &named("xhigh"), true),
+            ModelControls {
+                effort: named("xhigh"),
+                effort_supported: true,
+                fast: true,
+            }
+        );
+        assert_eq!(
+            model_controls(None, "openai/gpt-5", &ReasoningEffort::Auto, false),
+            ModelControls::default()
+        );
+    }
+
+    #[test]
+    fn listed_capabilities_decide_the_effort_and_keep_a_bound_fast_preference() {
+        let low = catalog_with(&["low"], true);
+        assert_eq!(
+            model_controls(Some(&low), "openai/gpt-5", &named("low"), true),
+            ModelControls {
+                effort: named("low"),
+                effort_supported: true,
+                fast: true,
+            }
+        );
+        assert_eq!(
+            model_controls(Some(&low), "openai/gpt-5", &named("xhigh"), false),
+            ModelControls {
+                effort: ReasoningEffort::Auto,
+                effort_supported: true,
+                fast: false,
+            }
+        );
+        let plain = catalog_with(&[], false);
+        assert_eq!(
+            model_controls(Some(&plain), "openai/gpt-5", &named("low"), true),
+            ModelControls {
+                effort: ReasoningEffort::Auto,
+                effort_supported: false,
+                fast: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_model_named_fast_always_shows_the_fast_marker() {
+        let plain = catalog_with(&[], false);
+        for catalog in [None, Some(&plain)] {
+            assert!(
+                model_controls(catalog, "zai/glm-5.2-fast", &ReasoningEffort::Auto, false).fast
+            );
+            assert!(
+                !model_controls(catalog, "provider/breakfast", &ReasoningEffort::Auto, false).fast
+            );
+        }
+    }
 
     #[test]
     fn only_retryable_catalog_failures_offer_a_retry() {

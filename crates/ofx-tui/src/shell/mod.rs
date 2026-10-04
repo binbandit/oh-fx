@@ -37,8 +37,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ofx_contract::{
-    HistoryEntry, PermissionMode, SessionScope, StatuslineToggles, TurnId, UiCommand,
-    WorkspaceIdentitySource,
+    HistoryEntry, ModelControls, PermissionMode, SessionScope, StatuslineToggles, TurnId,
+    UiCommand, WorkspaceIdentitySource,
 };
 use ofx_markdown::{Completions, MarkdownProcessor};
 
@@ -137,6 +137,7 @@ pub struct ShellOptions {
     pub statusline: StatuslineToggles,
     pub workspace_identity: Option<Box<dyn WorkspaceIdentitySource>>,
     pub theme: Option<String>,
+    pub model_controls: ModelControls,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -836,16 +837,19 @@ impl<'a> Shell<'a> {
             };
             return (hint, false);
         }
-        let base_hint = match &self.question {
-            Some(prompt) => question_hint_row(&self.theme, &prompt.view(), self.cols()),
-            None => hint_line(
+        let base_hint = if let Some(prompt) = &self.question {
+            question_hint_row(&self.theme, &prompt.view(), self.cols())
+        } else {
+            let (model, controls) = self.status_model();
+            hint_line(
                 &self.theme,
-                &self.options.model,
+                model,
                 self.options.permission_mode,
+                &controls,
                 self.statusline.view(),
                 self.options.login_missing,
                 self.cols(),
-            ),
+            )
         };
         let warning_included = !danger_status_text(hint_state, self.cols()).is_empty();
         let hint = compose_hint_row(&self.theme, &base_hint, hint_state, self.cols());
@@ -1399,6 +1403,7 @@ mod tests {
             statusline: StatuslineToggles::default(),
             workspace_identity: None,
             theme: None,
+            model_controls: ModelControls::default(),
         }
     }
 

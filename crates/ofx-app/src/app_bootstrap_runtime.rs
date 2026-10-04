@@ -19,9 +19,9 @@ use ofx_config::{
 };
 use ofx_contract::{
     ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools,
-    LivePermissionMode, ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId,
-    ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias, parse_tool_args_object,
-    provider_search_description,
+    LivePermissionMode, ModelControls, ModelProvider, PermissionMode, QuestionAsker,
+    ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias,
+    parse_tool_args_object, provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -49,7 +49,7 @@ use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
     ProfileLocation, gather_project_context,
 };
-use crate::model_cache_runtime::ModelSource;
+use crate::model_cache_runtime::{ModelSource, model_controls};
 use crate::output_contracts::StatusSnapshot;
 use crate::skills::HostSkills;
 use crate::tool_set::{self, ToolHooks};
@@ -776,6 +776,15 @@ impl AgentSetup {
 
     pub(crate) fn models_source(&self) -> ModelSource {
         self.models.clone()
+    }
+
+    pub(crate) fn model_controls(&self) -> ModelControls {
+        model_controls(
+            self.models.cached().as_ref(),
+            self.model(),
+            &self.reasoning_effort(),
+            self.fast_mode(),
+        )
     }
 
     pub(crate) fn approvals(&self) -> Option<&Arc<ApprovalQueue>> {
