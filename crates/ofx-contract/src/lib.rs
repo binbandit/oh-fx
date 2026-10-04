@@ -22,6 +22,7 @@ mod tool_result_limits;
 mod tool_set;
 mod types;
 mod ui;
+mod workspace_menu;
 
 pub use additional_roots::LiveAdditionalRoots;
 pub use applicable_target::{ApplicableTarget, TargetKind};
@@ -103,3 +104,4 @@ pub use ui::{
     QuestionRequest, SavedToolCall, StatuslineItem, StatuslineToggles, ToolDeferral, ToolRejection,
     TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity, WorkspaceIdentitySource,
 };
+pub use workspace_menu::{DirectoryAccess, WorkspaceMenu, WorkspaceMenuEntry};

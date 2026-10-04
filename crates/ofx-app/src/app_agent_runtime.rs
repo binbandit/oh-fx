@@ -32,6 +32,7 @@ use crate::app_session_runtime::{
     SIGN_IN_TO_CONTINUE, SessionListing, SessionTitle,
 };
 use crate::app_upgrade_runtime::{ResumeHandoff, UpgradeShortcut};
+use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::{ModelSource, model_controls};
 use crate::native::NativeClipboard;
@@ -102,6 +103,14 @@ impl ControllerState {
 
     pub(crate) fn permissions(&self) -> &PermissionRuntime {
         &self.permissions
+    }
+
+    pub(crate) fn workspace(&self) -> &WorkspaceRuntime {
+        self.setup.workspace()
+    }
+
+    pub(crate) fn workspace_mut(&mut self) -> &mut WorkspaceRuntime {
+        self.setup.workspace_mut()
     }
 
     pub(crate) fn effort(&self) -> &ReasoningEffort {
@@ -1548,6 +1557,7 @@ mod tests {
     use crate::codex_provider::SubscriptionEndpoints;
 
     mod steering;
+    mod workspace;
 
     struct Harness {
         home: tempfile::TempDir,
@@ -4401,32 +4411,6 @@ mod tests {
                     "usage|Durable profile usage is unavailable in this host; active session usage remains in memory."
                 ]
             );
-        }
-    }
-
-    #[tokio::test]
-    async fn workspace_reports_that_workspace_access_is_unavailable_for_every_form() {
-        let server = FakeServer::start([]);
-        let mut harness = Harness::start(&server).await;
-        for command in [
-            "/workspace",
-            "/workspace list",
-            "/workspace add ../other",
-            "/workspace clear",
-        ] {
-            harness.command(command);
-            let shown = harness
-                .until(|event| matches!(event, UiEvent::Notice { .. }))
-                .await;
-            assert_eq!(
-                notice_body(shown),
-                ["workspace|Workspace access is unavailable in this runtime."],
-                "{command}"
-            );
-            let Some(UiEvent::Notice { notice }) = shown.last() else {
-                unreachable!()
-            };
-            assert_eq!(notice.tone, NoticeTone::Error);
         }
     }
 

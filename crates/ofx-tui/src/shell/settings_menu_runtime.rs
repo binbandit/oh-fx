@@ -80,6 +80,7 @@ impl Shell<'_> {
         self.skills_menu = None;
         self.help_menu = None;
         self.statusline_menu = None;
+        self.workspace_menu = None;
         self.close_picker();
         self.settings_menu = Some(SettingsMenu::new(snapshot));
         self.invalidate();

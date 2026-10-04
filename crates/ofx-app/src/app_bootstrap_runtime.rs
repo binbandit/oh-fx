@@ -40,6 +40,7 @@ use crate::app_agent_runtime::Emit;
 use crate::app_mcp_runtime::{McpHost, McpSources};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
+use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, SubscriptionLogin,
@@ -163,6 +164,7 @@ pub struct AgentSetup {
     workspace_root: PathBuf,
     permissions: Arc<PermissionPolicy>,
     preferences: Option<ProfilePaths>,
+    workspace: WorkspaceRuntime,
     yolo_acknowledged: bool,
     approvals: Option<Arc<ApprovalQueue>>,
     change_tracker: Option<ChangeTracker>,
@@ -381,10 +383,11 @@ impl Profile {
             tools,
             delegation: Delegation::new(children),
             mcp,
-            context: self.runtime_context(&permission_mode, interactive, additional_roots),
+            context: self.runtime_context(&permission_mode, interactive, additional_roots.clone()),
             permissions,
             permission_mode,
             preferences: self.paths.clone(),
+            workspace: self.workspace_runtime(additional_roots),
             yolo_acknowledged: self.settings.yolo_acknowledged(),
             workspace_root: self.workspace_root.clone(),
             approvals,
@@ -400,6 +403,14 @@ impl Profile {
             switchboard,
             config,
         })
+    }
+
+    fn workspace_runtime(&self, additional_roots: LiveAdditionalRoots) -> WorkspaceRuntime {
+        WorkspaceRuntime::new(
+            self.access.clone(),
+            additional_roots,
+            self.paths.clone().filter(|_| self.home.is_some()),
+        )
     }
 
     fn runtime_context(
@@ -845,6 +856,14 @@ impl AgentSetup {
 
     pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {
         self.preferences.as_ref()
+    }
+
+    pub(crate) fn workspace(&self) -> &WorkspaceRuntime {
+        &self.workspace
+    }
+
+    pub(crate) fn workspace_mut(&mut self) -> &mut WorkspaceRuntime {
+        &mut self.workspace
     }
 
     pub(crate) fn mcp_host(&self, emit: Emit) -> Option<McpHost> {

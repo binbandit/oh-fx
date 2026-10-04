@@ -139,7 +139,7 @@ impl WorkspaceAccess {
         self.saved_suppressed
     }
 
-    pub(crate) fn primary(&self) -> &Path {
+    pub fn primary(&self) -> &Path {
         &self.primary
     }
 
