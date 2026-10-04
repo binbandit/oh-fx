@@ -85,6 +85,7 @@ pub enum CompactionEnd {
     Cancelled,
     Failed,
     ContextTooLarge,
+    AuthenticationRejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,6 +343,11 @@ pub enum UiEvent {
     ProviderSelected {
         provider: String,
     },
+    LoginChanged {
+        missing: bool,
+    },
+    PromptHeld,
+    HeldPromptDropped,
     PermissionModeChanged {
         mode: PermissionMode,
         full_access_warning: bool,
@@ -418,6 +424,8 @@ pub enum UiCommand {
         text: String,
     },
     ListModels,
+    RetryHeldPrompt,
+    DropHeldPrompt,
     SelectProvider {
         provider: String,
     },

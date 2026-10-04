@@ -19,7 +19,6 @@ pub(crate) struct Profile {
     pub(crate) workspace: io::Result<PathBuf>,
     pub(crate) endpoints: SubscriptionEndpoints,
     pub(crate) lookup: fn(&str) -> Option<String>,
-    pub(crate) grok: ofx_auth::GrokEndpoints,
 }
 
 impl Profile {
@@ -29,7 +28,6 @@ impl Profile {
             workspace: env::current_dir().and_then(fs::canonicalize),
             endpoints: SubscriptionEndpoints::default(),
             lookup: |name| env::var(name).ok(),
-            grok: ofx_auth::GrokEndpoints::default(),
         }
     }
 
@@ -52,7 +50,7 @@ impl Profile {
         ofx_auth::GrokOAuth::new(
             paths.data.clone(),
             &ofx_app::user_agent(),
-            self.grok.clone(),
+            self.endpoints.grok.clone(),
         )
     }
 }

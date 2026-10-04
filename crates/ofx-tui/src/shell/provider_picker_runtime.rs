@@ -1,7 +1,7 @@
 use ofx_contract::{UiCommand, UiEvent};
 
-use super::Shell;
 use super::picker_state::{Cursor, matches_query, strip_prefix_ignore_case};
+use super::{Shell, SubmissionState};
 use crate::composer::projected_anchor_column;
 use crate::footer::picker_presentation::{OptionList, list_picker_rows, option_picker_band};
 use crate::list_window::{DEFAULT_MAX_PICKER_ROWS, advance_selection, update_edge_start};
@@ -52,7 +52,11 @@ impl Shell<'_> {
     }
 
     fn provider_busy(&self) -> bool {
-        self.working() || !self.outstanding.is_empty()
+        self.working()
+            || self
+                .outstanding
+                .iter()
+                .any(|submission| submission.state != SubmissionState::Held)
     }
 
     fn provider_options(&self, query: &str) -> Vec<&str> {
@@ -141,7 +145,7 @@ impl Shell<'_> {
         let annotations: Vec<&str> = options
             .iter()
             .map(|name| {
-                if *name == self.options.provider {
+                if *name == self.options.provider && !self.options.login_missing {
                     CURRENT
                 } else {
                     ""
