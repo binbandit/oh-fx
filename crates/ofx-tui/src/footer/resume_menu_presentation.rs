@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 
 use ofx_contract::{ResumeRefusal, SessionRow, SessionScope};
-use ofx_text::{prefix_by_width, suffix_by_width, visible_width};
+use ofx_text::{prefix_by_width, visible_width};
 
 use crate::list_window::update_edge_start;
-use crate::row_text::{Row, terminal_safe};
+use crate::row_text::{Row, single_line_ellipsized, single_line_middle_ellipsized, terminal_safe};
 use crate::theme::Theme;
 
 const HEADER_ROWS: usize = 1;
@@ -389,9 +389,9 @@ fn title_row(
     } else {
         width.saturating_sub(indent)
     };
-    row.push(&middle_ellipsized(&title, title_budget), paint);
+    row.push(&single_line_middle_ellipsized(&title, title_budget), paint);
     if show_metadata {
-        row.push_spaces((indent + title_budget + COLUMN_GAP_WIDTH).saturating_sub(row.width()));
+        row.pad_to_column(indent + title_budget + COLUMN_GAP_WIDTH);
         row.push(&workspace, paint);
         row.push(
             &" ".repeat(workspace_col - visible_width(&workspace)),
@@ -435,7 +435,7 @@ fn load_more_row(selected: bool, loading: bool, theme: &Theme, width: usize) -> 
     } else {
         theme.dim
     };
-    row.push(&trailing_ellipsized(label, width - indent), paint);
+    row.push(&single_line_ellipsized(label, width - indent), paint);
     row
 }
 
@@ -463,37 +463,8 @@ fn refusal_row(refusal: ResumeRefusal, theme: &Theme, width: usize) -> Row {
     };
     let mut row = Row::new();
     row.push_spaces(indent);
-    row.push(&trailing_ellipsized(message, width - indent), theme.red);
+    row.push(&single_line_ellipsized(message, width - indent), theme.red);
     row
-}
-
-fn trailing_ellipsized(text: &str, width: usize) -> String {
-    if visible_width(text) <= width {
-        return text.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    format!("{}…", prefix_by_width(text, width - 1))
-}
-
-fn middle_ellipsized(text: &str, width: usize) -> String {
-    if visible_width(text) <= width {
-        return text.to_owned();
-    }
-    match width {
-        0 => String::new(),
-        1 => "…".to_owned(),
-        _ => {
-            let content = width - 1;
-            let prefix = content.div_ceil(2);
-            format!(
-                "{}…{}",
-                prefix_by_width(text, prefix),
-                suffix_by_width(text, content - prefix)
-            )
-        }
-    }
 }
 
 #[cfg(test)]
