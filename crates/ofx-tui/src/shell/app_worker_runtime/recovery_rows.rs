@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use ofx_contract::{
-    ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause, RouteRecoveryKind,
-    RouteRecoveryStatus, TurnId, TurnOutcome, UiCommand, UiEvent,
+    ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction,
+    RouteRecoveryKind, RouteRecoveryStatus, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
 use super::super::test_shell::TestShell;
@@ -22,6 +22,7 @@ fn retrying(
         attempt_limit: 10,
         cause: Some(cause),
         action: Some(action),
+        required_action: ModelRecoveryRequiredAction::None,
         delay_seconds,
         diagnostic: (action == ModelRecoveryAction::RetryingRequest)
             .then(|| ModelFailureDiagnostic::new("HTTP 429 · slow")),
@@ -46,6 +47,7 @@ fn recovered(attempt: usize) -> RouteRecoveryStatus {
         attempt_limit: 10,
         cause: None,
         action: None,
+        required_action: ModelRecoveryRequiredAction::None,
         delay_seconds: 0,
         diagnostic: None,
         retry_wait: None,
@@ -60,6 +62,7 @@ fn stopped(failed_attempt: usize) -> RouteRecoveryStatus {
         attempt_limit: 10,
         cause: Some(ModelRecoveryCause::ProviderUnavailable),
         action: None,
+        required_action: ModelRecoveryRequiredAction::None,
         delay_seconds: 0,
         diagnostic: Some(ModelFailureDiagnostic::new("HTTP 503 · overloaded")),
         retry_wait: None,

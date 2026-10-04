@@ -14,7 +14,7 @@ note = "Function selection, request validation, provider-executed history refusa
 upstream = "src/gateway/client.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/client.rs"]
-note = "Request and HTTP failure helpers exist; Vercel-specific client endpoints and hosted-provider integration are absent."
+note = "Request and HTTP failure helpers exist; Vercel-specific client endpoints, hosted-provider integration and the connection, response-head and mid-stream stall timeouts are absent."
 
 [[file]]
 upstream = "src/gateway/generation_usage.zig"
