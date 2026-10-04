@@ -259,6 +259,50 @@ fn skill_presentation_distinguishes_the_initial_document_from_resource_reads() {
 }
 
 #[test]
+fn a_resumed_skill_row_takes_the_name_from_its_result_only_when_its_call_named_none() {
+    let header = "<skill_content name=\"workflow\" location=\"/skills/workflow\" resource=\"SKILL.md\" complete=\"true\">\nBODY";
+    let title = |tool_name: &str, arguments: &str, output: &str| {
+        resumed_skill_description(tool_name, arguments, output).map(|description| {
+            let label = description.label.unwrap();
+            (description.title, label.completed, label.target)
+        })
+    };
+    assert_eq!(
+        title(TOOL_NAME, r#"{"location":"/skills/workflow"}"#, header),
+        Some((
+            "Loading skill workflow".to_owned(),
+            "Loaded skill",
+            "workflow".to_owned()
+        ))
+    );
+    for (tool_name, arguments, output) in [
+        (
+            TOOL_NAME,
+            r#"{"name":"review","location":"/skills/workflow"}"#,
+            header,
+        ),
+        (
+            TOOL_NAME,
+            r#"{"location":"/skills/workflow","resource":"notes.md"}"#,
+            header,
+        ),
+        (
+            TOOL_NAME,
+            r#"{"location":"/skills/workflow"}"#,
+            "skill failed: missing",
+        ),
+        (TOOL_NAME, "not json", header),
+        ("read_file", r#"{"location":"/skills/workflow"}"#, header),
+    ] {
+        assert_eq!(
+            title(tool_name, arguments, output),
+            None,
+            "{tool_name} {arguments}"
+        );
+    }
+}
+
+#[test]
 fn skill_tool_does_not_rebind_an_advertised_location_to_a_renamed_skill() {
     let fixture = Fixture::new();
     fixture.write(

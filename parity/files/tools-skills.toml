@@ -8,7 +8,7 @@ note = "Skill installation tool are unimplemented."
 upstream = "src/tools/skills/skill.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/skill.rs"]
-note = "Whole skill/resource and legacy named offset reads, notices and resolved identities exist; complete_skill model-content-kind publication and diagnostic trace delivery are absent."
+note = "Whole skill/resource and legacy named offset reads, notices and resolved identities exist. The complete_skill content kind only keeps a complete skill whole where upstream would replace a large result with a stored-result handle, and oh-fx never makes that replacement in the live turn, so complete skill content already reaches the model whole; diagnostic trace delivery comes with the debug trace (OH-11)."
 
 [[file]]
 upstream = "src/tools/skills/skill_search.zig"

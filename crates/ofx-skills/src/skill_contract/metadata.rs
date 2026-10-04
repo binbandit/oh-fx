@@ -472,7 +472,7 @@ fn invalid_text_cause(value: &[u8]) -> Option<InvalidMetadataCause> {
         .then_some(InvalidMetadataCause::ControlByte)
 }
 
-fn invalid_skill_name_cause(name: &[u8]) -> Option<InvalidMetadataCause> {
+pub(crate) fn invalid_skill_name_cause(name: &[u8]) -> Option<InvalidMetadataCause> {
     if name.is_empty() {
         return Some(InvalidMetadataCause::MissingName);
     }
