@@ -1,3 +1,5 @@
+mod goldens;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -63,6 +65,9 @@ struct Ledger {
 }
 
 pub(crate) fn run(options: &[&str]) -> Result<(), String> {
+    if let ["goldens", rest @ ..] = options {
+        return goldens::run(rest);
+    }
     let upstream = upstream_path(
         options,
         std::env::var_os("OH_FX_UPSTREAM").map(PathBuf::from),
