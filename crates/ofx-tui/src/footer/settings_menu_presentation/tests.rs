@@ -263,6 +263,33 @@ fn the_inline_models_open_at_the_selected_row_and_follow_the_model_selection() {
 }
 
 #[test]
+fn a_short_inline_list_keeps_the_selected_model_in_view() {
+    let snapshot = snapshot();
+    let ids = ["v/0", "v/1", "v/2", "v/3", "v/4", "v/5", "v/6", "v/7"];
+    let catalog = listed(&ids);
+    let mut menu = ModelMenu::default();
+    menu.selected = 7;
+    let theme = theme();
+    let models = with_models(&snapshot, 3, &menu, &catalog);
+    let rows = settings_menu_rows(&theme, models, 5, 100);
+    let text = texts(&rows);
+    assert_eq!(text[2], "  Model                    zai/glm-5.2");
+    let shown: Vec<_> = text[3..].iter().map(|row| row.trim()).collect();
+    assert_eq!(shown, ["v/6", "v/7"]);
+    assert_eq!(rows[4].segments()[1].paint, theme.selected_completion);
+    menu.window_start = 6;
+    menu.selected = 6;
+    let rows = texts(&settings_menu_rows(
+        &theme,
+        with_models(&snapshot, 3, &menu, &catalog),
+        5,
+        100,
+    ));
+    let shown: Vec<_> = rows[3..].iter().map(|row| row.trim()).collect();
+    assert_eq!(shown, ["v/6", "v/7"]);
+}
+
+#[test]
 fn the_inline_models_say_when_they_are_loading_missing_or_unavailable() {
     let snapshot = snapshot();
     let menu = ModelMenu::default();

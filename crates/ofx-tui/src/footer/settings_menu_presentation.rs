@@ -51,6 +51,12 @@ struct Layout {
     model_only: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ModelWindow<'a> {
+    matches: &'a [usize],
+    visible_rows: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Measurement {
     visible_items: usize,
@@ -71,15 +77,7 @@ pub(crate) fn visible_items_for_budget(view: SettingsView<'_>, budget: usize) ->
 }
 
 pub(crate) fn visible_model_items_for_budget(view: SettingsView<'_>, budget: usize) -> usize {
-    let layout = Layout::build(view, budget);
-    (layout.body_start_row..layout.row_count)
-        .filter(|row| {
-            matches!(
-                layout.body_row_at(view, row - layout.body_start_row),
-                BodyRow::Model(_)
-            )
-        })
-        .count()
+    Layout::build(view, budget).visible_model_rows(view)
 }
 
 pub(crate) fn settings_menu_rows(
@@ -106,6 +104,10 @@ pub(crate) fn settings_menu_rows(
         .models
         .map(|models| models.menu.matches(models.catalog.models()))
         .unwrap_or_default();
+    let window = ModelWindow {
+        matches: &matches,
+        visible_rows: layout.visible_model_rows(view),
+    };
     for target in 0..layout.row_count - layout.body_start_row {
         rows.push(match layout.body_row_at(view, target) {
             BodyRow::None => Row::new(),
@@ -113,7 +115,7 @@ pub(crate) fn settings_menu_rows(
                 item_row(theme, view.snapshot, item, selected, width, value_column)
             }
             BodyRow::Model(offset) => view.models.map_or_else(Row::new, |models| {
-                model_row(theme, models, &matches, offset, width, value_column)
+                model_row(theme, models, window, offset, width, value_column)
             }),
         });
     }
@@ -173,6 +175,12 @@ impl Layout {
             model_rows,
             model_only: view.models.is_some() && body_budget == 1,
         }
+    }
+
+    fn visible_model_rows(&self, view: SettingsView<'_>) -> usize {
+        (0..self.row_count - self.body_start_row)
+            .filter(|target| matches!(self.body_row_at(view, *target), BodyRow::Model(_)))
+            .count()
     }
 
     fn body_row_at<'a>(&self, view: SettingsView<'a>, target: usize) -> BodyRow<'a> {
@@ -340,11 +348,12 @@ fn item_row(
 fn model_row(
     theme: &Theme,
     models: InlineModels<'_>,
-    matches: &[usize],
+    window: ModelWindow<'_>,
     visible_offset: usize,
     width: usize,
     value_column: usize,
 ) -> Row {
+    let matches = window.matches;
     let ready = matches!(models.catalog, CatalogLoad::Listed { .. });
     if !ready || matches.is_empty() {
         let label = match models.catalog {
@@ -356,7 +365,7 @@ fn model_row(
     }
     let match_count = matches.len();
     let selected = models.menu.selected % match_count;
-    let visible_count = match_count.min(INLINE_MODEL_ROWS);
+    let visible_count = match_count.min(window.visible_rows.max(1));
     let mut window_start = models.menu.window_start;
     if selected < window_start {
         window_start = selected;
