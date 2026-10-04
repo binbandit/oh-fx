@@ -110,7 +110,7 @@ for victim in victims:
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 28] = [
+const TESTS: [(&str, Test); 29] = [
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -122,6 +122,10 @@ const TESTS: [(&str, Test); 28] = [
     (
         "a_slow_command_yields_a_retained_session_that_stop_ends",
         a_slow_command_yields_a_retained_session_that_stop_ends,
+    ),
+    (
+        "a_stop_before_the_command_launches_leaves_it_lost_as_upstream_does",
+        a_stop_before_the_command_launches_leaves_it_lost_as_upstream_does,
     ),
     (
         "a_separate_runtime_shares_only_the_supervisor",
@@ -447,20 +451,28 @@ fn echoed_output_arrives_in_whole_lines_before_the_command_completes() {
 }
 
 fn a_slow_command_yields_a_retained_session_that_stop_ends() {
+    let directory = tempfile::tempdir().expect("the test step succeeds");
+    let ready = fifo(directory.path(), "ready");
+    let started = read_fifo_in_background(ready.clone());
+    let command = format!("printf up > {}; exec sleep 60", ready.display());
     block_on(async {
         let executions = executions();
         let cancel = CancellationToken::new();
         let first = executions
-            .start_captured(run("exec sleep 60", Duration::from_millis(300)), &cancel)
+            .start_captured(run(&command, Duration::from_millis(300)), &cancel)
             .await
             .expect("the test step succeeds");
         assert_eq!(first.state, SnapshotState::Running);
         assert!(first.retained);
         assert_eq!(
             executions.command(&first.execution_id).as_deref(),
-            Some("exec sleep 60")
+            Some(command.as_str())
         );
         assert_eq!(executions.tombstone_snapshot(&first.execution_id), None);
+        let text = tokio::task::spawn_blocking(move || started.recv_timeout(LONG))
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(text.as_deref(), Ok("up"));
         let stopped = executions
             .stop(&first.execution_id, false)
             .await
@@ -480,6 +492,24 @@ fn a_slow_command_yields_a_retained_session_that_stop_ends() {
             .tombstone_snapshot(&first.execution_id)
             .expect("the test step succeeds");
         assert_eq!(retained.state, stopped.state);
+    });
+}
+
+fn a_stop_before_the_command_launches_leaves_it_lost_as_upstream_does() {
+    block_on(async {
+        let executions = executions();
+        let cancel = CancellationToken::new();
+        let first = executions
+            .start_captured(run("exec sleep 60", Duration::ZERO), &cancel)
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(first.state, SnapshotState::Running);
+        let stopped = executions
+            .stop(&first.execution_id, false)
+            .await
+            .expect("the test step succeeds");
+        assert_eq!(stopped.state, SnapshotState::Lost);
+        assert_eq!(stopped.error_name, Some("CancelledBeforeExecution"));
     });
 }
 
