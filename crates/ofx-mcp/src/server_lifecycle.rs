@@ -1,7 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
@@ -160,7 +159,7 @@ impl Server {
     pub(crate) async fn call(
         self: &Arc<Self>,
         advertised: &Advertised,
-        arguments: &Value,
+        arguments_json: &str,
         options: CallOptions,
     ) -> Result<ToolCallOutcome, CallFailure> {
         let client = self.running_client().await?;
@@ -178,7 +177,7 @@ impl Server {
                 still_advertised: current.is_some(),
             });
         }
-        Ok(client.call_tool(name, arguments, options).await?)
+        Ok(client.call_tool(name, arguments_json, options).await?)
     }
 
     async fn running_client(self: &Arc<Self>) -> Result<Arc<McpClient>, CallFailure> {

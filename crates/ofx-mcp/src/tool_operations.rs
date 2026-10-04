@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use serde_json::Value;
 use tokio::time::Instant;
 
 use crate::error::McpError;
@@ -56,16 +55,15 @@ impl McpClient {
     pub(crate) async fn call_tool(
         &self,
         name: &str,
-        arguments: &Value,
+        arguments_json: &str,
         options: CallOptions,
     ) -> Result<ToolCallOutcome, McpError> {
         let limits = Limits::default();
-        validate_arguments(arguments, limits)?;
-        let arguments = arguments.as_object().ok_or(McpError::InvalidJson)?;
+        validate_arguments(arguments_json, limits)?;
         let deadline = Instant::now() + self.operation_timeout;
         let id = self.transport.next_request_id()?;
         let progress_token = options.progress.is_some().then_some(id);
-        let body = build_tool_call_request(id, name, arguments, progress_token);
+        let body = build_tool_call_request(id, name, arguments_json, progress_token);
         let frame_cap = response_frame_cap(options.max_tool_result_bytes);
         let request = TransportRequest {
             send_cancellation: true,

@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(client.server_info().protocol_version, "2024-11-05");
         assert_eq!(client.tool_catalog().tools[0].name, "echo");
         let outcome = client
-            .call_tool("echo", &json!({"text": "hi"}), CallOptions::default())
+            .call_tool("echo", r#"{"text": "hi"}"#, CallOptions::default())
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -568,9 +568,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            client
-                .call_tool("echo", &json!({}), CallOptions::default())
-                .await,
+            client.call_tool("echo", "{}", CallOptions::default()).await,
             Err(McpError::UnsupportedServerRequest)
         );
         assert!(!client.is_running());
