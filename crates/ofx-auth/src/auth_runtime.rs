@@ -121,20 +121,35 @@ pub(crate) fn preparation_failure_text(error: ChatGptError) -> String {
     }
 }
 
-pub fn login_failure_detail(error: ChatGptError) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInFailure {
+    Storage(String),
+    Denied,
+    Expired,
+    Failed,
+}
+
+pub fn sign_in_failure(error: ChatGptError) -> SignInFailure {
     match classify_credential_failure(error) {
         CredentialFailureReason::InvalidStorage | CredentialFailureReason::PersistenceUncertain => {
-            preparation_failure_text(error)
+            SignInFailure::Storage(preparation_failure_text(error))
         }
         _ => match error {
             ChatGptError::AccessDenied | ChatGptError::ChatGptAuthorizationFailed => {
-                "authorization denied".to_owned()
+                SignInFailure::Denied
             }
-            ChatGptError::LoginTimedOut => {
-                "authorization expired; run oh-fx login again".to_owned()
-            }
-            _ => "failed to sign in".to_owned(),
+            ChatGptError::LoginTimedOut => SignInFailure::Expired,
+            _ => SignInFailure::Failed,
         },
+    }
+}
+
+pub fn login_failure_detail(error: ChatGptError) -> String {
+    match sign_in_failure(error) {
+        SignInFailure::Storage(text) => text,
+        SignInFailure::Denied => "authorization denied".to_owned(),
+        SignInFailure::Expired => "authorization expired; run oh-fx login again".to_owned(),
+        SignInFailure::Failed => "failed to sign in".to_owned(),
     }
 }
 

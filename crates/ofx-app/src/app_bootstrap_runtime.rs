@@ -57,10 +57,11 @@ use crate::tool_set::{self, ToolHooks};
 
 mod provider_runtime;
 
-pub(crate) use provider_runtime::{provider_label, provider_names};
+pub(crate) use provider_runtime::{Intent, Refusal, provider_label, provider_names};
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
+const CODEX_SOURCE_REPAIR: &str = "Reconnect Codex through /login to repair this source.";
 
 #[derive(Clone)]
 pub struct Profile {
@@ -125,7 +126,7 @@ impl CredentialSource {
     pub(crate) const fn repair(self) -> &'static str {
         match self {
             Self::Configured => CONFIGURED_SOURCE_REPAIR,
-            Self::Codex => CHATGPT_RELOGIN_MESSAGE,
+            Self::Codex => CODEX_SOURCE_REPAIR,
         }
     }
 }
@@ -143,6 +144,7 @@ pub struct Launch<'a> {
     pub web_fetch_progress: Option<WebFetchProgress>,
     pub mode: Option<ActiveMode>,
     pub permission_prompts: bool,
+    pub open_browser: bool,
 }
 
 pub struct AgentSetup {
@@ -185,6 +187,7 @@ pub struct AgentSetup {
 struct Switchboard {
     profile: Profile,
     endpoints: SubscriptionEndpoints,
+    open_browser: bool,
 }
 
 pub(crate) struct Route {
@@ -313,7 +316,8 @@ impl Profile {
         cancel: &CancellationToken,
     ) -> Result<AgentSetup, ConnectError> {
         let refreshes = interactive.then(Arc::default);
-        let switchboard = interactive.then(|| self.switchboard(launch.endpoints.clone()));
+        let switchboard =
+            interactive.then(|| self.switchboard(launch.endpoints.clone(), launch.open_browser));
         let route = self
             .launch_route(&launch, refreshes.clone(), interactive, cancel)
             .await?;
@@ -1042,6 +1046,7 @@ mod tests {
                     web_fetch_progress: None,
                     mode: None,
                     permission_prompts: false,
+                    open_browser: false,
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -1096,6 +1101,7 @@ mod tests {
                     web_fetch_progress: None,
                     mode: None,
                     permission_prompts: false,
+                    open_browser: false,
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
@@ -1190,6 +1196,7 @@ mod tests {
                     web_fetch_progress: None,
                     permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
+                    open_browser: false,
                     mode: Some(ActiveMode {
                         registry: &INSPECTION,
                         id: "inspect",
@@ -1372,6 +1379,7 @@ mod tests {
                     permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
                     mode: None,
+                    open_browser: false,
                 },
                 &CancellationToken::new(),
             )

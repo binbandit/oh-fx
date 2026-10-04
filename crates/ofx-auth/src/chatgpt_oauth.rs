@@ -141,6 +141,23 @@ pub struct ChatGptEndpoints {
     pub callback_ports: Vec<u16>,
 }
 
+const ISSUER_OVERRIDE: &str = "OH_FX_E2E_CHATGPT_ISSUER_URL";
+const TOKEN_OVERRIDE: &str = "OH_FX_E2E_CHATGPT_TOKEN_URL";
+
+impl ChatGptEndpoints {
+    pub fn from_environment() -> Self {
+        let mut endpoints = Self::default();
+        if let Some(issuer) = oauth::loopback_override(ISSUER_OVERRIDE) {
+            endpoints.issuer = issuer;
+            endpoints.callback_ports = vec![0];
+        }
+        if let Some(token_url) = oauth::loopback_override(TOKEN_OVERRIDE) {
+            endpoints.token_url = token_url;
+        }
+        endpoints
+    }
+}
+
 impl Default for ChatGptEndpoints {
     fn default() -> Self {
         Self {

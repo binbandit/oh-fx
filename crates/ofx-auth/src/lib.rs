@@ -16,9 +16,9 @@ mod subscription_session;
 mod url_opener;
 
 pub use auth_runtime::{
-    PreparationError, StoredLogin, codex_login_saved, grok_login_failure_detail, grok_login_saved,
-    login_failure_detail, prepare_chatgpt_credential, refresh_chatgpt_credential,
-    stored_codex_login,
+    PreparationError, SignInFailure, StoredLogin, codex_login_saved, grok_login_failure_detail,
+    grok_login_saved, login_failure_detail, prepare_chatgpt_credential, refresh_chatgpt_credential,
+    sign_in_failure, stored_codex_login,
 };
 pub use chatgpt_oauth::{
     CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth,
@@ -29,6 +29,7 @@ pub use credentials::{
     HOST_MANAGED_AUTH_MESSAGE, MISSING_CHATGPT_CREDENTIAL_MESSAGE, host_managed_auth,
     is_valid_auth_mode, parse_auth_mode,
 };
+pub use oauth::loopback_override;
 pub use provider_catalog::{label as provider_route_name, parse as parse_login_provider};
 pub use subscription_session::DeleteOutcome;
 pub use url_opener::{browser_allowed, open_url, open_url_bounded};

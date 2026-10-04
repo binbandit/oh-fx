@@ -28,7 +28,20 @@ const CATALOG_UNAVAILABLE: &str =
     "Could not load the target provider catalog. The current provider is unchanged.";
 const NO_MODELS: &str =
     "The target provider returned no supported models. The current provider is unchanged.";
-const CODEX_LOGIN: &str = "Run oh-fx login codex, then try switching again.";
+const SIGNED_IN_UNAVAILABLE: &str = "Subscription sign-in completed, but its saved credential is unavailable. The current provider is unchanged.";
+const SIGNED_IN_CATALOG: &str = "Subscription sign-in completed, but its model catalog could not be loaded. The current provider is unchanged.";
+const SIGNED_IN_NO_MODELS: &str = "Subscription sign-in completed, but its model catalog returned no supported models. The current provider is unchanged.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Intent<'a> {
+    Manual,
+    AfterSignIn(Option<&'a str>),
+}
+
+pub(crate) enum Refusal {
+    Notice(Notice),
+    SignIn,
+}
 
 pub(crate) struct SwitchTarget {
     provider: ProviderId,
@@ -68,6 +81,12 @@ impl AgentSetup {
             endpoints,
         )
         .ok()
+    }
+
+    pub(crate) fn opens_browser(&self) -> bool {
+        self.switchboard
+            .as_ref()
+            .is_some_and(|switchboard| switchboard.open_browser)
     }
 
     fn endpoints(&self) -> SubscriptionEndpoints {
@@ -110,41 +129,73 @@ impl AgentSetup {
     pub(crate) async fn route_for(
         &self,
         target: &SwitchTarget,
-        keep: Option<&str>,
+        intent: Intent<'_>,
         cancel: &CancellationToken,
-    ) -> Result<Route, Notice> {
+    ) -> Result<Route, Refusal> {
         let lookup = |name: &str| env::var(name).ok();
         let settings = &target.profile.settings;
         let ProviderId::Configured(id) = &target.provider else {
-            let preferred = settings.selected_codex_model(None, &lookup).ok();
-            let endpoints = self.endpoints();
-            let mut route = target
-                .profile
-                .subscription_route(
-                    String::new(),
-                    preferred.clone(),
-                    endpoints,
-                    self.refreshes.clone(),
-                    cancel,
-                )
-                .await
-                .map_err(|error| failure(&error))?;
-            let ModelCatalog::Listed { models, .. } = route.models.catalog().await else {
-                return Err(refused(CATALOG_UNAVAILABLE));
-            };
-            let ids: Vec<String> = models.into_iter().map(|option| option.id).collect();
-            route.model = kept_model(&ids, keep, preferred.as_deref())
-                .filter(|_| !ids.is_empty())
-                .ok_or_else(|| refused(NO_MODELS))?;
-            return Ok(route);
+            return self.subscription_for(target, intent, cancel).await;
         };
         let connection = settings
             .connection(id)
-            .ok_or_else(|| refused(PROVIDER_MISSING))?;
+            .ok_or_else(|| Refusal::Notice(refused(PROVIDER_MISSING)))?;
         let preferred = settings.selected_model(connection, None, &lookup).ok();
-        let model = kept_model(connection.models(), keep, preferred.as_deref())
-            .ok_or_else(|| refused(NO_MODELS))?;
-        connection_route(connection, Ok(model), preferred).map_err(|error| failure(&error))
+        let model = listed_model(connection.models(), preferred.as_deref())
+            .ok_or_else(|| Refusal::Notice(refused(NO_MODELS)))?;
+        connection_route(connection, Ok(model), preferred)
+            .map_err(|error| Refusal::Notice(failure(&error)))
+    }
+
+    async fn subscription_for(
+        &self,
+        target: &SwitchTarget,
+        intent: Intent<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<Route, Refusal> {
+        let lookup = |name: &str| env::var(name).ok();
+        let settings = &target.profile.settings;
+        let signed_in = intent != Intent::Manual;
+        let (current, saved) = match intent {
+            Intent::Manual => (None, settings.selected_codex_model(None, &lookup).ok()),
+            Intent::AfterSignIn(current) => (
+                current,
+                settings.saved_model(&ProviderId::Codex).map(str::to_owned),
+            ),
+        };
+        let preferred = current.map(str::to_owned).or_else(|| saved.clone());
+        let mut route = target
+            .profile
+            .subscription_route(
+                String::new(),
+                preferred.clone(),
+                self.endpoints(),
+                self.refreshes.clone(),
+                cancel,
+            )
+            .await
+            .map_err(|error| match error {
+                ConnectError::Codex(CodexUnavailable::MissingLogin) if !signed_in => {
+                    Refusal::SignIn
+                }
+                ConnectError::Codex(_) if signed_in => Refusal::Notice(Notice::new(
+                    NoticeTone::Warning,
+                    PROVIDER_TOPIC,
+                    SIGNED_IN_UNAVAILABLE,
+                )),
+                error => Refusal::Notice(failure(&error)),
+            })?;
+        let pick = |manual: &str, signed: &str| {
+            Refusal::Notice(refused(if signed_in { signed } else { manual }))
+        };
+        let ModelCatalog::Listed { models, .. } = route.models.catalog().await else {
+            return Err(pick(CATALOG_UNAVAILABLE, SIGNED_IN_CATALOG));
+        };
+        let ids: Vec<String> = models.into_iter().map(|option| option.id).collect();
+        route.model = kept_model(&ids, current, saved.as_deref())
+            .filter(|_| !ids.is_empty())
+            .ok_or_else(|| pick(NO_MODELS, SIGNED_IN_NO_MODELS))?;
+        Ok(route)
     }
 
     pub(crate) fn sign_out(&self, model: &str) -> Route {
@@ -211,10 +262,15 @@ impl SwitchTarget {
 }
 
 impl Profile {
-    pub(super) fn switchboard(&self, endpoints: SubscriptionEndpoints) -> Switchboard {
+    pub(super) fn switchboard(
+        &self,
+        endpoints: SubscriptionEndpoints,
+        open_browser: bool,
+    ) -> Switchboard {
         Switchboard {
             profile: self.clone(),
             endpoints,
+            open_browser,
         }
     }
 
@@ -254,9 +310,6 @@ fn refused(body: &str) -> Notice {
 
 fn failure(error: &ConnectError) -> Notice {
     match error {
-        ConnectError::Codex(CodexUnavailable::MissingLogin) => {
-            Notice::new(NoticeTone::Warning, PROVIDER_TOPIC, CODEX_LOGIN)
-        }
         ConnectError::Codex(_) | ConnectError::Connection(_) => {
             Notice::new(NoticeTone::Error, AUTH_TOPIC, error.to_string())
         }
@@ -301,12 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_codex_login_names_its_repair_and_providers_name_themselves() {
-        let codex = failure(&ConnectError::Codex(CodexUnavailable::MissingLogin));
-        assert_eq!(
-            (codex.tone, codex.topic.as_str(), codex.body.as_str()),
-            (NoticeTone::Warning, "provider", CODEX_LOGIN)
-        );
+    fn providers_name_themselves() {
         assert_eq!(provider_label(&ProviderId::Codex), "Codex subscription");
         assert_eq!(
             provider_label(&ProviderId::Configured("portkey".to_owned())),

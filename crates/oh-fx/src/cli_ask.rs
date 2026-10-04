@@ -268,7 +268,7 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
             args,
             &prompt,
             modifiers,
-            SubscriptionEndpoints::default(),
+            SubscriptionEndpoints::from_environment(),
         )),
         Err(_) => Failure::code("RuntimeUnavailable").report(args.output.json),
     }
@@ -492,6 +492,7 @@ async fn prepare_agent(
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
         mode: Some(default_mode()),
         permission_prompts: permission_prompts_allowed(args),
+        open_browser: false,
     };
     let setup = profile.connect(launch, cancel).await?;
     let recovered = pending
@@ -1064,6 +1065,8 @@ impl Presenter {
             | UiEvent::ModelCatalog { .. }
             | UiEvent::ProviderPicker { .. }
             | UiEvent::ProviderSelected { .. }
+            | UiEvent::SignInStarted { .. }
+            | UiEvent::SignInEnded
             | UiEvent::LoginChanged { .. }
             | UiEvent::PromptHeld
             | UiEvent::HeldPromptDropped

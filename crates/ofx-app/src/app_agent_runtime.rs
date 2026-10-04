@@ -7,6 +7,7 @@ use ofx_agent::{
     Agent, Compaction, CompactionError, EventSink, QuestionRequests, QueuedPrompt, TurnFailure,
     TurnReport, WorkerRuntime,
 };
+use ofx_auth::ChatGptError;
 use ofx_config::save_model_preference;
 use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelControls, ModelOption, Notice,
@@ -46,6 +47,7 @@ use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
 
 mod provider_switch;
+use provider_switch::{PendingSignIn, signed_in};
 mod sign_out;
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
@@ -390,6 +392,13 @@ pub(crate) struct Controller {
     herdr: Option<Arc<crate::herdr::Herdr>>,
     installation: Option<InstallTask>,
     listing: SessionListing,
+    sign_in: Option<PendingSignIn>,
+}
+
+enum Wake {
+    Settled,
+    Command(Option<UiCommand>),
+    SignIn(Result<(), ChatGptError>),
 }
 
 struct CatalogFetch {
@@ -567,6 +576,7 @@ impl Controller {
             herdr: None,
             installation: None,
             listing: SessionListing::default(),
+            sign_in: None,
         }
     }
 
@@ -655,26 +665,14 @@ impl Controller {
                 }
                 continue;
             }
-            let next = self.catalog.next_command(
-                commands,
-                &mut self.state,
-                &mut self.persistence,
-                Work::Idle,
-            );
-            let command = tokio::select! {
-                result = wait_install(&mut self.installation) => {
-                    complete_install(&self.state, &mut self.installation, result);
-                    self.settle_deferred_commands(true).await;
+            let command = match self.next_wake(commands).await {
+                Wake::Settled => continue,
+                Wake::SignIn(result) => {
+                    self.finish_sign_in(result).await;
                     continue;
                 }
-                scanned = self.listing.scanned() => {
-                    self.sessions_scanned(scanned);
-                    continue;
-                }
-                command = next => command,
-            };
-            let Some(command) = command else {
-                return;
+                Wake::Command(None) => return,
+                Wake::Command(Some(command)) => command,
             };
             match command {
                 UiCommand::Submit { prompt, skills } => {
@@ -689,6 +687,8 @@ impl Controller {
                 }
                 UiCommand::ListModels => self.catalog.request(),
                 UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
+                UiCommand::ReopenSignIn => self.steer_sign_in(PendingSignIn::reopen),
+                UiCommand::CancelSignIn => self.steer_sign_in(PendingSignIn::cancel),
                 UiCommand::RetryHeldPrompt => self.retry_held_prompt().await,
                 UiCommand::DropHeldPrompt => self.drop_held_prompts(),
                 UiCommand::SelectModel {
@@ -738,6 +738,25 @@ impl Controller {
                 | UiCommand::QuestionAnswered { .. }
                 | UiCommand::CancelCompaction => {}
             }
+        }
+    }
+
+    async fn next_wake(&mut self, commands: &mut UnboundedReceiver<UiCommand>) -> Wake {
+        let next =
+            self.catalog
+                .next_command(commands, &mut self.state, &mut self.persistence, Work::Idle);
+        tokio::select! {
+            result = wait_install(&mut self.installation) => {
+                complete_install(&self.state, &mut self.installation, result);
+                self.settle_deferred_commands(true).await;
+                Wake::Settled
+            }
+            scanned = self.listing.scanned() => {
+                self.sessions_scanned(scanned);
+                Wake::Settled
+            }
+            command = next => Wake::Command(command),
+            result = signed_in(&mut self.sign_in) => Wake::SignIn(result),
         }
     }
 
@@ -1386,6 +1405,8 @@ fn run_deferred(
         | UiCommand::ResumeSession { .. }
         | UiCommand::CloseSessionPicker => return refuse_session_command(state, command),
         UiCommand::Submit { .. }
+        | UiCommand::ReopenSignIn
+        | UiCommand::CancelSignIn
         | UiCommand::RetryHeldPrompt
         | UiCommand::DropHeldPrompt
         | UiCommand::Cancel { .. }
@@ -1662,6 +1683,7 @@ mod tests {
                     web_fetch_progress: None,
                     mode: None,
                     permission_prompts: false,
+                    open_browser: false,
                 },
                 &CancellationToken::new(),
             )
@@ -4142,13 +4164,6 @@ mod tests {
                 "provider|The target provider catalog is unavailable. The current provider is unchanged."
             ]
         );
-        assert_eq!(
-            switched(&mut harness, "codex").await,
-            [
-                "provider|Preparing Codex subscription.",
-                "provider|Run oh-fx login codex, then try switching again."
-            ]
-        );
         assert!(
             harness
                 .seen
@@ -5285,6 +5300,188 @@ mod tests {
                 ),
             ]
         );
+        assert!(codex.requests().is_empty());
+    }
+
+    const SIGNED_IN_TOKEN: &str = "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9zaGVsbCJ9LCJleHAiOjQxMDI0NDQ4MDB9.signature";
+
+    fn signing_in_endpoints(
+        auth: &FakeServer,
+        codex: &FakeServer,
+        catalog: &FakeServer,
+    ) -> SubscriptionEndpoints {
+        SubscriptionEndpoints {
+            chatgpt: ofx_auth::ChatGptEndpoints {
+                issuer: auth.base_url(),
+                token_url: format!("{}/oauth/token", auth.base_url()),
+                callback_ports: vec![0],
+            },
+            ..codex_endpoints(codex, catalog)
+        }
+    }
+
+    fn granted_tokens() -> Reply {
+        let tokens = json!({
+            "access_token": SIGNED_IN_TOKEN,
+            "refresh_token": "rt-shell",
+            "expires_in": 3600,
+        });
+        Reply::status(200, tokens.to_string())
+    }
+
+    fn query_value(url: &str, key: &str) -> String {
+        let query = url.split_once('?').unwrap().1;
+        let raw = query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
+            .unwrap();
+        raw.replace("%3A", ":").replace("%2F", "/")
+    }
+
+    fn authorize_in_browser(url: &str) -> String {
+        let redirect = query_value(url, "redirect_uri");
+        let state = query_value(url, "state");
+        let address = redirect.strip_prefix("http://").unwrap();
+        let (host, path) = address.split_once('/').unwrap();
+        let port: u16 = host.split_once(':').unwrap().1.parse().unwrap();
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let request =
+            format!("GET /{path}?code=granted&state={state} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        std::io::Write::write_all(&mut stream, request.as_bytes()).unwrap();
+        let mut response = String::new();
+        let _ = std::io::Read::read_to_string(&mut stream, &mut response);
+        response
+    }
+
+    fn sign_in_url(events: &[UiEvent]) -> String {
+        events
+            .iter()
+            .find_map(|event| match event {
+                UiEvent::SignInStarted { url } => Some(url.clone()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn sign_in_started(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::SignInStarted { .. })
+    }
+
+    async fn signing_in(
+        settings: &Value,
+        auth: &FakeServer,
+        codex: &FakeServer,
+        catalog: &FakeServer,
+    ) -> Harness {
+        let home = tempfile::tempdir().unwrap();
+        let endpoints = signing_in_endpoints(auth, codex, catalog);
+        let setup = agent_setup_with(&home, settings, endpoints).await;
+        Harness::with_setup(home, setup)
+    }
+
+    #[tokio::test]
+    async fn choosing_codex_without_a_login_signs_in_from_the_shell_then_switches() {
+        let auth = FakeServer::start([granted_tokens()]);
+        let codex = FakeServer::start([codex_text("signed in")]);
+        let catalog = codex_catalog(false, 2);
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("local", &local, &other);
+        let mut harness = signing_in(&settings, &auth, &codex, &catalog).await;
+        harness.send(select_provider("codex"));
+        let started = within(harness.until(sign_in_started)).await;
+        assert_eq!(
+            notice_body(started),
+            ["provider|Preparing Codex subscription."]
+        );
+        let url = sign_in_url(started);
+        assert!(
+            url.starts_with(&format!("{}/oauth/authorize?", auth.base_url())),
+            "{url}"
+        );
+        let browser = std::thread::spawn(move || authorize_in_browser(&url));
+        let switched = within(harness.until(provider_notice)).await;
+        assert!(switched.contains(&UiEvent::SignInEnded));
+        assert_eq!(
+            notice_body(switched),
+            [
+                "provider|Preparing Codex subscription.",
+                &format!("provider|Switched to Codex subscription with {CODEX_MODEL}."),
+            ]
+        );
+        assert!(switched.contains(&UiEvent::ProviderSelected {
+            provider: "codex".to_owned()
+        }));
+        assert!(browser.join().unwrap().starts_with("HTTP/1.1 200"));
+        assert_eq!(saved_settings(&harness)["provider"], "codex");
+        harness.submit("hello");
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert_eq!(codex.requests()[0].json()["model"], CODEX_MODEL);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_shell_sign_in_saves_nothing_and_keeps_the_provider() {
+        let auth = FakeServer::start([]);
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([]);
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("local", &local, &other);
+        let mut harness = signing_in(&settings, &auth, &codex, &catalog).await;
+        harness.send(select_provider("codex"));
+        within(harness.until(sign_in_started)).await;
+        harness.send(UiCommand::CancelSignIn);
+        within(harness.until(|event| *event == UiEvent::SignInEnded)).await;
+        assert!(
+            notices_of(&mut harness, "/model")
+                .await
+                .iter()
+                .all(|(_, topic, _)| topic == "model")
+        );
+        assert!(!harness.home.path().join("data/chatgpt-auth.json").exists());
+        assert_eq!(saved_settings(&harness)["provider"], "local");
+        assert!(auth.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_held_while_signed_out_runs_once_the_shell_signs_in() {
+        let auth = FakeServer::start([granted_tokens()]);
+        let codex = FakeServer::start([codex_text("welcome back")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signing_in(&codex_settings(), &auth, &codex, &catalog).await;
+        held(&mut harness, "hello").await;
+        harness.send(select_provider("codex"));
+        let started = within(harness.until(sign_in_started)).await;
+        let url = sign_in_url(started);
+        let browser = std::thread::spawn(move || authorize_in_browser(&url));
+        let resumed = within(harness.until(finished(TurnOutcome::Completed))).await;
+        browser.join().unwrap();
+        assert_eq!(
+            notice_body(resumed),
+            [
+                "provider|Preparing Codex subscription.",
+                &format!("provider|Switched to Codex subscription with {CODEX_MODEL}."),
+            ]
+        );
+        assert!(resumed.contains(&UiEvent::LoginChanged { missing: false }));
+        let request = codex.requests()[0].json();
+        assert_eq!(request["model"], CODEX_MODEL);
+        assert!(request.to_string().contains("hello"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_sign_in_drops_the_held_prompt() {
+        let auth = FakeServer::start([]);
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([]);
+        let mut harness = signing_in(&codex_settings(), &auth, &codex, &catalog).await;
+        held(&mut harness, "hello").await;
+        harness.send(select_provider("codex"));
+        within(harness.until(sign_in_started)).await;
+        harness.send(UiCommand::CancelSignIn);
+        let dropped = within(harness.until(|event| *event == UiEvent::HeldPromptDropped)).await;
+        assert!(dropped.contains(&UiEvent::SignInEnded));
+        assert!(notices(dropped).is_empty());
         assert!(codex.requests().is_empty());
     }
 
@@ -7142,7 +7339,7 @@ mod tests {
                 CredentialSource::Codex
             )
             .unwrap(),
-            "⚠ Codex subscription authentication failed · HTTP 401 · Run oh-fx login codex to sign in again."
+            "⚠ Codex subscription authentication failed · HTTP 401 · Reconnect Codex through /login to repair this source."
         );
         assert_eq!(
             failure_status(&TurnFailure::InvalidCompletion, CredentialSource::Codex).unwrap(),

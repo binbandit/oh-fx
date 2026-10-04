@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use ofx_auth::{
     CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, GrokEndpoints,
-    MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, prepare_chatgpt_credential,
-    refresh_chatgpt_credential,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, loopback_override,
+    prepare_chatgpt_credential, refresh_chatgpt_credential,
 };
 use ofx_config::ProfilePaths;
 use ofx_contract::{
@@ -115,6 +115,29 @@ fn missing_credentials<'a>() -> BoxFuture<'a, Result<Completion, ProviderError>>
             "MissingCredentials",
         ))
     })
+}
+
+const RESPONSES_OVERRIDE: &str = "OH_FX_E2E_OPENAI_CODEX_RESPONSES_URL";
+const MODELS_OVERRIDE: &str = "OH_FX_E2E_OPENAI_CODEX_MODELS_URL";
+const VERSION_OVERRIDE: &str = "OH_FX_E2E_CODEX_VERSION_URL";
+
+impl SubscriptionEndpoints {
+    pub fn from_environment() -> Self {
+        let mut endpoints = Self {
+            chatgpt: ChatGptEndpoints::from_environment(),
+            ..Self::default()
+        };
+        if let Some(url) = loopback_override(RESPONSES_OVERRIDE) {
+            endpoints.codex.responses = url;
+        }
+        if let Some(url) = loopback_override(MODELS_OVERRIDE) {
+            endpoints.models.models = url;
+        }
+        if let Some(url) = loopback_override(VERSION_OVERRIDE) {
+            endpoints.models.client_version = url;
+        }
+        endpoints
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

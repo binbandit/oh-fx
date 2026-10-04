@@ -91,6 +91,10 @@ impl Shell<'_> {
         if self.question.is_some() {
             return self.handle_question_input(event);
         }
+        if self.sign_in.is_some() {
+            self.handle_sign_in_input(&event);
+            return Ok(());
+        }
         if self.statusline_menu.is_some() {
             return self.handle_statusline_menu_input(&event);
         }

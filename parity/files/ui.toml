@@ -85,8 +85,8 @@ note = "No Rust implementation of upstream FooterTranscriptState, FooterPlannerI
 [[file]]
 upstream = "src/ui/footer/picker_presentation.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/picker_presentation.rs"]
-note = "Basic file and command picker rows are implemented; model/provider/login/resume/MCP picker presentations are absent."
+modules = ["crates/ofx-tui/src/footer/picker_presentation.rs", "crates/ofx-tui/src/shell/sign_in_runtime.rs"]
+note = "File, command, model and provider picker rows and the Codex sign-in screen are implemented; the login method, team and API key stages, the setup hub and the resume and MCP picker presentations are absent."
 
 [[file]]
 upstream = "src/ui/footer/question_freeform_layout.zig"

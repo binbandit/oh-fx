@@ -378,6 +378,10 @@ pub enum UiEvent {
     ProviderSelected {
         provider: String,
     },
+    SignInStarted {
+        url: String,
+    },
+    SignInEnded,
     LoginChanged {
         missing: bool,
     },
@@ -466,6 +470,8 @@ pub enum UiCommand {
         text: String,
     },
     ListModels,
+    ReopenSignIn,
+    CancelSignIn,
     RetryHeldPrompt,
     DropHeldPrompt,
     SelectProvider {
