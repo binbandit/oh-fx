@@ -53,7 +53,8 @@ Rows marked `defer:compactor`, `defer:shell`, `defer:startup-probe` and `defer:u
 | #1135 | `463663f` | Fix false compaction check marks and close finished open entries | `defer:compactor` | `ofx-agent` | See [Compactor checks](#compactor-checks). |
 | #1139 | `be6d092` | Exit without waiting on MCP servers or the usage ledger | `defer:mcp` | MCP runtime | At exit, every stdio MCP server's process group gets SIGKILL in one pass after launches under way settle, for at most 1 s. A Docker-backed server, a launch that does not settle or a full kill list falls back to the full teardown. |
 | #1139 | `be6d092` | (same) | `defer:sessions` | future profile usage ledger and session picker catalog | The first usage publication's ledger parse checks the lock's abandon flag every 256 lines, so exit stops it, and process exit leaves the session picker catalog to the exiting process instead of freeing each cached session. oh-fx has neither yet. |
-| #1137 | `6bdd497` | Load shell startup files once per fx process | `defer:shell` | `ofx-tools`, `ofx-app`, `ofx-cli` | See [Shell tool](#shell-tool). |
+| #1137 | `6bdd497` | Load shell startup files once per fx process | `ported` | `ofx-tools`, `ofx-permissions`, `ofx-app` | The `shell` description says each call starts a new shell with the user's startup files applied, that `cd`, `export` and alias changes do not carry over, and how zsh treats unquoted globs and words that begin with `=`. `shell.run` accepts `reload`, which a remembered command approval never covers. Without the startup snapshot every command already runs the startup files, so `reload` changes nothing else; like upstream's process-only schema, oh-fx's schema does not advertise it. The turn context's `shell_path` names the login shell the shell tool resolves for the user profile. |
+| #1137 | `6bdd497` | (same) | `defer:shell` | `ofx-app`, `ofx-cli` | See [Shell tool](#shell-tool). |
 | #1137 | `6bdd497` | (same) | `defer:shell-snapshot` | future shell startup snapshot | `shell_snapshot.zig`: user-profile commands capture the login shell's PATH, environment, aliases, functions and options once per process and restore them, refresh after a watched startup file changes, and fall back to full startup with a one-time notice when a capture fails, passes 8 MiB or takes over 10 s. In auto mode, a routine command whose words a capture defines as an alias or function goes to review, as does every routine command while captures fail, and remembered approvals are bound to the snapshot. |
 | #1137 | `6bdd497` | (same) | `defer:tty` | future TTY sessions | The terminal host daemon, the tmux backend and the `FX_TERMINAL_HOST_*` variables are removed: tty terminals run inside the fx process and end when it exits. A resumed session's terminal answers with the new `TerminalEnded` code, and its tool row reads "ended when fx exited". Job-controlled commands end on exit. |
 | #1137 | `6bdd497` | (same) | `n/a` | none | The terminal host end-to-end suite, `terminal_client_fixture.zig`, the shell-path evals and the CI shard weights. |
@@ -151,14 +152,7 @@ The private result reader supports bounded raw pages, and storage no longer appl
 
 ### Shell tool
 
-#1137 changes surfaces oh-fx already ports:
-
-- The `shell` description adds that each call starts a new shell with the user's startup files applied, that `cd`, `export` and alias changes do not carry over, and how zsh treats unquoted globs and words that begin with `=`.
-- `shell.run` accepts `reload: true`.
-- The turn context's `shell_path` names the login shell the shell tool resolves for the user profile.
-- `/shell reload` makes the next command run the startup files again and resets remembered command approvals.
-
-Without the startup snapshot, every oh-fx command already runs the startup files, so `reload` changes nothing until the snapshot is ported.
+#1137 adds `/shell reload`, which makes the next command run the startup files again and resets remembered command approvals.
 
 ### Startup probe
 

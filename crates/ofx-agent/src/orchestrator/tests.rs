@@ -297,6 +297,7 @@ impl Tool for EchoTool {
                 profile: CommandProfile::User,
                 shell: None,
                 terminal: false,
+                reload: false,
             })
             .or_else(|| arguments.contains("stop").then_some(CommandRequest::Stop));
         Ok(Box::new(EchoCall {

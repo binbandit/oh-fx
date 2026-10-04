@@ -61,6 +61,7 @@ pub enum CommandRequest {
         profile: CommandProfile,
         shell: Option<PathBuf>,
         terminal: bool,
+        reload: bool,
     },
     Observe,
     SendInput {

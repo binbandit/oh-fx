@@ -80,6 +80,7 @@ fn touch() -> CommandRequest {
         profile: CommandProfile::User,
         shell: Some(PathBuf::from("/bin/sh")),
         terminal: false,
+        reload: false,
     }
 }
 

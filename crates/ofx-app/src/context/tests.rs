@@ -457,3 +457,28 @@ fn gateway_system_prompt_static_guidance_is_capability_neutral() {
     assert_prompt_contains("Persist until the task is handled");
     assert_prompt_contains("memory or general knowledge");
 }
+
+#[test]
+fn turn_context_reports_the_shell_the_shell_tool_runs_for_the_user_profile() {
+    let environment_shell = env::var("SHELL")
+        .or_else(|_| env::var("COMSPEC"))
+        .unwrap_or_else(|_| "(unknown)".to_owned());
+    let fallback = if cfg!(target_os = "macos") {
+        "/bin/zsh"
+    } else {
+        "/bin/bash"
+    };
+    for (login_shell, expected) in [
+        (Some("/opt/homebrew/bin/zsh"), "/opt/homebrew/bin/zsh"),
+        (Some("/usr/local/bin/bash"), "/usr/local/bin/bash"),
+        (Some("/usr/bin/fish"), fallback),
+        (Some("zsh"), environment_shell.as_str()),
+        (None, environment_shell.as_str()),
+    ] {
+        assert_eq!(
+            reported_shell(login_shell.map(Path::new)),
+            expected,
+            "{login_shell:?}"
+        );
+    }
+}

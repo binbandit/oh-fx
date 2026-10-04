@@ -1034,6 +1034,7 @@ fn a_call_under_review_shows_one_running_row_until_the_review_settles_it() {
         profile: CommandProfile::User,
         shell: None,
         terminal: false,
+        reload: false,
     });
     test.deliver(UiEvent::ApprovalRequested { turn_id, request });
     test.deliver(finished(

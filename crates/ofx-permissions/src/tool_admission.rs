@@ -485,6 +485,7 @@ mod tests {
             profile: CommandProfile::User,
             shell: None,
             terminal: false,
+            reload: false,
         };
         assert_eq!(policy.admit(&outside), Admission::ApprovalRequired);
         assert_eq!(policy.admit_command(&status), Admission::ApprovalRequired);
@@ -784,6 +785,7 @@ mod tests {
                 profile: CommandProfile::Clean,
                 shell: None,
                 terminal: true,
+                reload: false,
             })),
             ApprovalScope {
                 target: None,
@@ -935,6 +937,7 @@ mod tests {
             profile,
             shell: None,
             terminal,
+            reload: false,
         };
         let cargo_test = |cwd: PathBuf| run("cargo test", cwd, CommandProfile::Clean, false);
         let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
@@ -968,6 +971,7 @@ mod tests {
                 profile: CommandProfile::Clean,
                 shell: Some(PathBuf::from("/bin/zsh")),
                 terminal: false,
+                reload: false,
             },
         ] {
             assert_eq!(
@@ -976,6 +980,30 @@ mod tests {
                 "{different:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_remembered_command_does_not_cover_a_run_that_reloads_the_startup_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = fs::canonicalize(temp.path()).unwrap();
+        let run = |reload| CommandRequest::Run {
+            command: "npm test".to_owned(),
+            cwd: workspace.clone(),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+            reload,
+        };
+        let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        approve_always(&policy, GatedAction::Command(&run(true)));
+        assert_eq!(
+            policy.admit_command(&run(false)),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
+        assert_eq!(
+            policy.admit_command(&run(true)),
+            Admission::ApprovalRequired
+        );
     }
 
     #[test]
@@ -997,6 +1025,7 @@ mod tests {
             profile: CommandProfile::User,
             shell: None,
             terminal: false,
+            reload: false,
         };
         approve_always(&parent, GatedAction::Call(&read("../parent/a.txt")));
         approve_always(&parent, GatedAction::Command(&command));
@@ -1034,6 +1063,7 @@ mod tests {
             profile: CommandProfile::User,
             shell: None,
             terminal: false,
+            reload: false,
         };
         let change = FileMutation {
             target: workspace.join("a.txt"),

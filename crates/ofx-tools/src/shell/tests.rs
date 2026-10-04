@@ -143,35 +143,40 @@ fn shell_calls_describe_the_decoded_request_the_gate_decides() {
             .command_request()
             .cloned()
     };
-    let run = |profile, terminal| {
+    let run = |profile, terminal, reload| {
         Some(CommandRequest::Run {
             command: "git status".to_owned(),
             cwd: std::env::temp_dir(),
             profile,
             shell: None,
             terminal,
+            reload,
         })
     };
     for (arguments, expected) in [
         (
             r#"{"request":{"action":"run","command":"git status","cwd":"."}}"#,
-            run(CommandProfile::User, false),
+            run(CommandProfile::User, false, false),
         ),
         (
             r#"{"action":"run","command":"git status","profile":"user"}"#,
-            run(CommandProfile::User, false),
+            run(CommandProfile::User, false, false),
         ),
         (
             r#"{"action":"run","command":"git status","profile":"clean"}"#,
-            run(CommandProfile::Clean, false),
+            run(CommandProfile::Clean, false, false),
         ),
         (
             r#"{"action":"run","command":"git status","tty":true}"#,
-            run(CommandProfile::User, true),
+            run(CommandProfile::User, true, false),
         ),
         (
             r#"{"action":"run","command":"git status","tty":true,"profile":"clean"}"#,
-            run(CommandProfile::Clean, true),
+            run(CommandProfile::Clean, true, false),
+        ),
+        (
+            r#"{"action":"run","command":"git status","reload":true}"#,
+            run(CommandProfile::User, false, true),
         ),
     ] {
         assert_eq!(request(arguments), expected, "{arguments}");
@@ -187,6 +192,7 @@ fn shell_calls_describe_the_decoded_request_the_gate_decides() {
                 profile,
                 shell: Some(PathBuf::from("/opt/zsh")),
                 terminal: true,
+                reload: false,
             }),
         )
     };
@@ -307,6 +313,7 @@ fn unresolved_working_directories_outside_the_workspace_reach_the_gate_and_fail_
             profile: CommandProfile::User,
             shell: None,
             terminal: false,
+            reload: false,
         })
     );
     let output = execute(prepared, PathAccess::WorkspaceOrExternal);
