@@ -1,4 +1,3 @@
-use std::env;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
 use std::process::ExitCode;
@@ -10,7 +9,6 @@ use ofx_config::ProviderId;
 
 use crate::provider_activation::{ActivationFailure, Caller, Profile, activate_codex, sign_in};
 
-const NO_OPEN_BROWSER_VARIABLE: &str = "OH_FX_NO_OPEN_BROWSER";
 const LOGOUT_FAILURE: &str = "oh-fx logout: failed to durably remove saved Codex login\n";
 
 pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
@@ -28,9 +26,17 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
             runtime.block_on(async {
                 match provider {
                     Some(ProviderId::Grok) => {
-                        login_grok(&profile, &mut io::stdout(), open_browser(), &io::stdin()).await
+                        login_grok(
+                            &profile,
+                            &mut io::stdout(),
+                            ofx_auth::browser_allowed(),
+                            &io::stdin(),
+                        )
+                        .await
                     }
-                    _ => login_codex(&profile, &mut io::stdout(), open_browser()).await,
+                    _ => {
+                        login_codex(&profile, &mut io::stdout(), ofx_auth::browser_allowed()).await
+                    }
                 }
             })
         });
@@ -139,10 +145,6 @@ async fn logout_grok(
         let _ = errors.write_all(b"oh-fx: WriteFailed\n");
         ExitCode::FAILURE
     }
-}
-
-pub(crate) fn open_browser() -> bool {
-    env::var_os(NO_OPEN_BROWSER_VARIABLE).is_none()
 }
 
 fn unavailable(command: &str) -> ExitCode {

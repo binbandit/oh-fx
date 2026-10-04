@@ -30,5 +30,6 @@ pub use credentials::{
 };
 pub use provider_catalog::{label as provider_route_name, parse as parse_login_provider};
 pub use subscription_session::DeleteOutcome;
+pub use url_opener::{browser_allowed, open_url};
 
 pub use grok_oauth::{GrokEndpoints, GrokError, GrokLogoutResult, GrokOAuth};

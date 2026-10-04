@@ -5,7 +5,7 @@ use ofx_auth::login_failure_detail;
 use ofx_cli::Command;
 use ofx_config::ProviderId;
 
-use crate::login_command::{open_browser, runtime};
+use crate::login_command::runtime;
 use crate::provider_activation::{Activation, ActivationFailure, Caller, Profile, activate_codex};
 
 pub(crate) fn run(target: ProviderId) -> ExitCode {
@@ -21,7 +21,7 @@ pub(crate) fn run(target: ProviderId) -> ExitCode {
             runtime.block_on(select_codex(
                 &profile,
                 &mut stdout,
-                open_browser(),
+                ofx_auth::browser_allowed(),
                 ofx_auth::host_managed_auth(),
             ))
         });
