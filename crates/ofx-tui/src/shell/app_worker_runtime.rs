@@ -12,7 +12,7 @@ use ofx_contract::{
 use ofx_markdown::{Completions, MarkdownProcessor};
 
 use super::leading_whitespace::LeadingWhitespace;
-use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
+use super::{ActiveTurn, FreshScreen, Shell, Submission, SubmissionState};
 use crate::footer::file_approval::FileApproval;
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
@@ -202,6 +202,7 @@ impl Shell<'_> {
                 self.session_resume_failed(&id, refusal);
             }
             UiEvent::SessionResumed { history } => self.session_resumed(history),
+            UiEvent::RecoveryContinuing { prompt, id } => self.recovery_continuing(prompt, id),
             UiEvent::ExitRequested => self.should_exit = true,
         }
     }
@@ -653,9 +654,55 @@ impl Shell<'_> {
         let mut turn = ActiveTurn::new(&submission.prompt, now_ms);
         turn.turn_id = submission.turn_id;
         let text = submission.prompt.clone();
+        let presented = submission.presented;
         self.turn = Some(turn);
         self.kept_recovery = None;
-        self.push_entry(Entry::UserTurn { text });
+        if !presented {
+            self.push_entry(Entry::UserTurn { text });
+        }
+    }
+
+    fn recovery_continuing(&mut self, prompt: String, id: u64) {
+        let ahead = self
+            .outstanding
+            .iter()
+            .position(|submission| submission.turn_id.is_none())
+            .unwrap_or(self.outstanding.len());
+        self.displace_unstarted_turn();
+        let presented = self.submitted_prompts == self.prompts_before_resume;
+        for submission in &mut self.outstanding {
+            if submission.sequence >= id {
+                submission.sequence += 1;
+            }
+        }
+        self.outstanding.insert(
+            ahead,
+            Submission {
+                prompt,
+                state: SubmissionState::Queued,
+                turn_id: None,
+                sequence: id,
+                presented,
+            },
+        );
+        self.submitted_prompts += 1;
+        self.promote_next();
+    }
+
+    fn displace_unstarted_turn(&mut self) {
+        if self.turn.as_ref().is_none_or(|turn| turn.turn_id.is_some()) {
+            return;
+        }
+        let Some(submission) = self
+            .outstanding
+            .iter_mut()
+            .find(|submission| submission.state == SubmissionState::Active)
+        else {
+            return;
+        };
+        submission.state = SubmissionState::Queued;
+        submission.presented = false;
+        self.turn = None;
     }
 
     pub(super) fn cancel_visible_turn(&mut self) {
@@ -1324,6 +1371,164 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_continued_recovery_streams_under_its_already_shown_prompt() {
+        let mut test = TestShell::start();
+        test.deliver(UiEvent::SessionResumed {
+            history: vec![HistoryEntry::User("fix the build".to_owned())],
+        });
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+            id: 0,
+        });
+        test.deliver(started(1));
+        test.deliver(text(1, "Build fixed.\n"));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert_eq!(screen.matches("┃ fix the build").count(), 1, "{screen}");
+        assert!(screen.contains("Build fixed."), "{screen}");
+        assert!(test.sent().is_empty());
+        test.submit("next");
+        test.deliver(started(2));
+        test.deliver(text(2, "Next answer.\n"));
+        test.deliver(finished(2, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(screen.contains("┃ next"), "{screen}");
+        assert!(screen.contains("Next answer."), "{screen}");
+    }
+
+    fn in_order(screen: &str, pieces: &[&str]) -> bool {
+        let mut rest = screen;
+        pieces.iter().all(|piece| {
+            rest.find(piece)
+                .map(|at| rest = &rest[at + piece.len()..])
+                .is_some()
+        })
+    }
+
+    fn resumed_with_typeahead() -> TestShell {
+        let mut test = TestShell::start();
+        test.deliver(UiEvent::SessionResumed {
+            history: vec![HistoryEntry::User("fix the build".to_owned())],
+        });
+        test.submit("new prompt");
+        test
+    }
+
+    #[test]
+    fn typeahead_that_steers_a_continued_recovery_leaves_the_shell_idle_when_it_finishes() {
+        let mut test = resumed_with_typeahead();
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+            id: 0,
+        });
+        test.deliver(started(1));
+        test.deliver(UiEvent::SteeringApplied {
+            turn_id: TurnId::new(1),
+            prompt: 1,
+            text: "new prompt".to_owned(),
+        });
+        test.deliver(text(1, "Both done.\n"));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        assert!(
+            test.shell.outstanding.is_empty(),
+            "{:?}",
+            test.shell.outstanding
+        );
+        assert!(test.shell.turn.is_none());
+        assert!(!test.shell.working());
+        let screen = test.screen();
+        assert!(
+            in_order(&screen, &["┃ fix the build", "┃ new prompt", "Both done."]),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_recovery_that_starts_after_typeahead_runs_first_under_its_own_prompt() {
+        let mut test = resumed_with_typeahead();
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+            id: 0,
+        });
+        test.deliver(started(1));
+        test.deliver(text(1, "Build fixed.\n"));
+        test.type_bytes(b"\x03");
+        test.step();
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::Cancel {
+                turn_id: TurnId::new(1)
+            })
+        );
+        test.deliver(finished(1, TurnOutcome::Interrupted));
+        test.deliver(started(2));
+        test.deliver(text(2, "New answer.\n"));
+        test.deliver(finished(2, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(
+            in_order(
+                &screen,
+                &[
+                    "┃ fix the build",
+                    "┃ new prompt",
+                    "┃ fix the build",
+                    "Cancelled",
+                    "┃ new prompt",
+                    "New answer.",
+                ]
+            ),
+            "{screen}"
+        );
+        assert!(!test.sent().contains(&UiCommand::Cancel {
+            turn_id: TurnId::new(2)
+        }));
+    }
+
+    #[test]
+    fn typeahead_cancelled_before_a_recovery_starts_stays_cancelled_behind_it() {
+        let mut test = resumed_with_typeahead();
+        test.type_bytes(b"\x03");
+        test.step();
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+            id: 0,
+        });
+        test.deliver(started(1));
+        test.deliver(text(1, "Build fixed.\n"));
+        assert!(!test.sent().contains(&UiCommand::Cancel {
+            turn_id: TurnId::new(1)
+        }));
+        test.deliver(started(2));
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::Cancel {
+                turn_id: TurnId::new(2)
+            })
+        );
+        test.deliver(finished(2, TurnOutcome::Interrupted));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(
+            in_order(
+                &screen,
+                &[
+                    "┃ fix the build",
+                    "┃ new prompt",
+                    "Cancelled",
+                    "┃ fix the build",
+                    "Build fixed.",
+                ]
+            ),
+            "{screen}"
+        );
+        test.submit("after");
+        test.deliver(started(3));
+        test.deliver(text(3, "After answer.\n"));
+        test.deliver(finished(3, TurnOutcome::Completed));
+        assert!(test.screen().contains("After answer."));
     }
 
     #[test]
