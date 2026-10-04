@@ -84,7 +84,7 @@ fn choice_row(
     };
     let room = value_column.saturating_sub(indent + 2);
     row.push(&single_line_ellipsized(label, room), label_paint);
-    row.push_spaces(value_column.saturating_sub(row.width()));
+    row.pad_to_column(value_column);
     let current = if toggles.enabled(item) { "on" } else { "off" };
     for (option_index, option) in OPTIONS.into_iter().enumerate() {
         let before = row.width();
