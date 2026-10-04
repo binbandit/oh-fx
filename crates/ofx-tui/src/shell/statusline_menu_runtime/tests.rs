@@ -95,6 +95,35 @@ fn enter_toggles_the_selected_segment_and_the_row_follows_its_value() {
 }
 
 #[test]
+fn an_echo_of_an_older_toggle_never_undoes_a_newer_one_while_the_menu_is_open() {
+    let mut test = opened();
+    press(&mut test, b"\r\r");
+    test.deliver(UiEvent::StatuslineChanged {
+        item: StatuslineItem::Context,
+        enabled: true,
+    });
+    press(&mut test, b"\r");
+    assert_eq!(
+        test.sent(),
+        [
+            set(StatuslineItem::Context, true),
+            set(StatuslineItem::Context, false),
+            set(StatuslineItem::Context, true),
+        ]
+    );
+    test.deliver(UiEvent::StatuslineChanged {
+        item: StatuslineItem::Context,
+        enabled: false,
+    });
+    assert!(
+        test.shell
+            .statusline
+            .toggles()
+            .enabled(StatuslineItem::Context)
+    );
+}
+
+#[test]
 fn ctrl_j_and_ctrl_k_move_and_other_keys_never_reach_the_composer() {
     let mut test = opened();
     press(&mut test, b"\n\nx\x03\x04 \r");
