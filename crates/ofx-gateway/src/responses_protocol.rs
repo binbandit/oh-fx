@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use ofx_contract::{
-    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance,
-    ToolSpec, Usage,
+    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
+    ToolExecutionProvenance, ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
 use serde_json::Value;
@@ -474,6 +474,11 @@ impl ProviderFailure {
 pub(crate) enum Delta {
     Text(String),
     Reasoning(String),
+    ToolCallStarted {
+        call_id: ToolCallId,
+        tool_name: String,
+    },
+    ToolInput(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,7 +526,11 @@ impl ToolAccumulator {
         Ok(())
     }
 
-    fn finalize_arguments(&mut self, arguments: &str, limits: StreamLimits) -> Result<()> {
+    fn finalize_arguments(
+        &mut self,
+        arguments: &str,
+        limits: StreamLimits,
+    ) -> Result<Option<String>> {
         if arguments.len() > limits.tool_arguments_bytes {
             return Err(ResponsesError::ToolArgumentsTooLarge);
         }
@@ -529,15 +538,19 @@ impl ToolAccumulator {
             if !serialized_equal(&self.arguments, arguments) {
                 return Err(ResponsesError::ToolCallConflict);
             }
-            return Ok(());
+            return Ok(None);
         }
-        if let Some(suffix) = arguments.strip_prefix(self.arguments.as_str()) {
-            append_tool_arguments(&mut self.arguments, suffix, limits.tool_arguments_bytes)?;
-        } else {
-            arguments.clone_into(&mut self.arguments);
+        let suffix = arguments
+            .strip_prefix(self.arguments.as_str())
+            .map(str::to_owned);
+        match &suffix {
+            Some(suffix) => {
+                append_tool_arguments(&mut self.arguments, suffix, limits.tool_arguments_bytes)?;
+            }
+            None => arguments.clone_into(&mut self.arguments),
         }
         self.arguments_finalized = true;
-        Ok(())
+        Ok(suffix.filter(|suffix| !suffix.is_empty()))
     }
 }
 
@@ -934,6 +947,10 @@ impl Reducer {
                         limits.tool_arguments_bytes,
                     )?;
                 }
+                self.deltas.push(Delta::ToolCallStarted {
+                    call_id: ToolCallId::new(call_id),
+                    tool_name: name.to_owned(),
+                });
                 Ok(())
             }
             Some("reasoning") => self.reconcile_reasoning(output_index, item, Evidence::Identity),
@@ -966,7 +983,11 @@ impl Reducer {
         if tool.arguments_finalized && !delta.is_empty() {
             return Err(ResponsesError::ToolCallConflict);
         }
-        append_tool_arguments(&mut tool.arguments, delta, limits.tool_arguments_bytes)
+        append_tool_arguments(&mut tool.arguments, delta, limits.tool_arguments_bytes)?;
+        if !delta.is_empty() {
+            self.deltas.push(Delta::ToolInput(delta.to_owned()));
+        }
+        Ok(())
     }
 
     fn arguments_done(&mut self, event: &Object<'_>) -> Result<()> {
@@ -984,7 +1005,9 @@ impl Reducer {
         let limits = self.limits;
         let tool = &mut self.tools[index];
         tool.reconcile_identity(event, "item_id", limits)?;
-        tool.finalize_arguments(arguments, limits)
+        let suffix = tool.finalize_arguments(arguments, limits)?;
+        self.deltas.extend(suffix.map(Delta::ToolInput));
+        Ok(())
     }
 
     fn item_done(&mut self, event: &Object<'_>) -> Result<()> {
@@ -1333,7 +1356,8 @@ impl Reducer {
         tool.reconcile_identity(fields, "id", limits)?;
         if let Some(arguments) = fields.get("arguments") {
             let arguments = arguments.as_str().ok_or(ResponsesError::InvalidEvent)?;
-            tool.finalize_arguments(arguments, limits)?;
+            let suffix = tool.finalize_arguments(arguments, limits)?;
+            self.deltas.extend(suffix.map(Delta::ToolInput));
         }
         Ok(())
     }

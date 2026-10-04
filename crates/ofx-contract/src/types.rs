@@ -391,6 +391,9 @@ impl ModelRecoveryCause {
 pub enum ModelRecoveryAction {
     RetryingRequest,
     ContinuingResponse,
+    RegeneratingTool,
+    ContinuingAfterTool,
+    ReconcilingTool,
     WaitingForConnectivity,
     CheckingLiveness,
     Paused,
@@ -401,6 +404,9 @@ impl ModelRecoveryAction {
         match self {
             Self::RetryingRequest => "retrying_request",
             Self::ContinuingResponse => "continuing_response",
+            Self::RegeneratingTool => "regenerating_tool",
+            Self::ContinuingAfterTool => "continuing_after_tool",
+            Self::ReconcilingTool => "reconciling_tool",
             Self::WaitingForConnectivity => "waiting_for_connectivity",
             Self::CheckingLiveness => "checking_liveness",
             Self::Paused => "paused",
@@ -411,6 +417,9 @@ impl ModelRecoveryAction {
         match self {
             Self::RetryingRequest => "retrying request",
             Self::ContinuingResponse => "restarting response",
+            Self::RegeneratingTool => "regenerating unstarted tool",
+            Self::ContinuingAfterTool => "continuing after confirmed tool",
+            Self::ReconcilingTool => "checking uncertain tool state",
             Self::WaitingForConnectivity => "waiting for connection",
             Self::CheckingLiveness => "checking the connection",
             Self::Paused => "recovery paused",
@@ -999,6 +1008,48 @@ mod tests {
         assert_eq!(
             ModelRecoveryAction::ContinuingResponse.as_str(),
             "continuing_response"
+        );
+    }
+
+    #[test]
+    fn tool_recoveries_say_what_they_do_with_the_tool() {
+        let retrying = |action| {
+            RouteRecoveryStatus {
+                kind: RouteRecoveryKind::AutoRetry,
+                action: Some(action),
+                ..stopped(
+                    Some(ModelRecoveryCause::NetworkInterrupted),
+                    1,
+                    Some("ReadFailed"),
+                )
+            }
+            .label()
+        };
+        assert_eq!(
+            retrying(ModelRecoveryAction::RegeneratingTool),
+            "⚠ Network interrupted · connection dropped · regenerating unstarted tool"
+        );
+        assert_eq!(
+            retrying(ModelRecoveryAction::ContinuingAfterTool),
+            "⚠ Network interrupted · connection dropped · continuing after confirmed tool"
+        );
+        assert_eq!(
+            retrying(ModelRecoveryAction::ReconcilingTool),
+            "⚠ Network interrupted · connection dropped · checking uncertain tool state"
+        );
+        let names = [
+            ModelRecoveryAction::RegeneratingTool,
+            ModelRecoveryAction::ContinuingAfterTool,
+            ModelRecoveryAction::ReconcilingTool,
+        ]
+        .map(ModelRecoveryAction::as_str);
+        assert_eq!(
+            names,
+            [
+                "regenerating_tool",
+                "continuing_after_tool",
+                "reconciling_tool"
+            ]
         );
     }
 

@@ -325,6 +325,28 @@ async fn a_restart_saves_its_checkpoint_as_continuing_the_response() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_regenerated_tool_call_saves_its_checkpoint_as_regenerating_the_tool() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call-1"),
+                tool_name: "echo".to_owned(),
+            }],
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+        ),
+        text_reply("done"),
+    ]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), vec![echo_tool()]), log);
+    run(&mut agent, "go").await;
+    let regenerating = RecoveryProgress::Waiting(ModelRecoveryAction::RegeneratingTool);
+    assert_eq!(
+        checkpoints(&entries.lock().unwrap()).first(),
+        Some(&checkpoint(&[], regenerating, 1))
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failure_that_is_not_retried_saves_no_checkpoint() {
     let provider = FakeProvider::new(vec![Script::Fail(
         Vec::new(),

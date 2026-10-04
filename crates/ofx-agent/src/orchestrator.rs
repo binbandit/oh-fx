@@ -33,7 +33,7 @@ use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::{EarlierEvidence, RawOutput, steering_text};
 use crate::model_response_recovery::{
-    DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Output, Recovery, recovery_cause,
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, ToolEvidence, recovery_cause,
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
@@ -58,7 +58,8 @@ use compaction::{TurnCompaction, compaction_stop};
 use mode_policy::{Offer, denial, offer};
 use project_gate::GatedGroup;
 use provider_tools::{
-    ends_with_provider_results, joins_parallel_groups, malformed_provider_calls, provider_executed,
+    ends_with_provider_results, joins_parallel_groups, malformed_provider_calls,
+    may_run_at_provider, provider_executed,
 };
 use recovery::{Restart, recovery_tool_choice, restarted, retried_strategy};
 use response_language::{Reply, TurnLanguage};
@@ -857,7 +858,7 @@ impl Agent {
         let mut recovery = Recovery::default();
         let mut recovering_from = None;
         let mut pending = None;
-        let mut restart = Restart::default();
+        let mut restart = Restart::new(turn.recovery);
         loop {
             let sent = ModelRequest {
                 messages: restart.messages(request.messages),
@@ -868,6 +869,7 @@ impl Agent {
                 partial,
                 streamed_bytes,
                 admitted,
+                tool,
             } = self
                 .attempt(turn, &sent, body.take(), &mut pending, events, cancel)
                 .await;
@@ -901,8 +903,8 @@ impl Agent {
                     partial: restart.into_partial(),
                 });
             };
-            let output = restart.output(&turn.language.stage);
-            let decision = recovery.decide(cause, &error, streamed_bytes, output);
+            let evidence = restart.evidence(tool, cause, &error, &turn.language.stage);
+            let decision = recovery.decide(cause, &error, streamed_bytes, evidence);
             let Some(action) = decision.strategy.action() else {
                 events(UiEvent::Recovery {
                     turn_id,
@@ -914,7 +916,7 @@ impl Agent {
                     partial: restart.into_partial(),
                 });
             };
-            if cause == ModelRecoveryCause::ProviderUnavailable && output == Output::None {
+            if restart.replay_safe(cause, tool, &turn.language.stage) {
                 turn.fast_mode = false;
                 request.provider_options.fast = false;
             }
@@ -964,6 +966,7 @@ impl Agent {
         let mut partial = String::new();
         let mut streamed_bytes = 0;
         let mut admitted = false;
+        let mut tool = ToolEvidence::None;
         let mut sink = |event: StreamEvent| match event {
             StreamEvent::Admitted => {
                 admitted = true;
@@ -977,6 +980,18 @@ impl Agent {
                 if let Some(text) = turn.language.stage.admit(text) {
                     events(UiEvent::AssistantText { turn_id, text });
                 }
+            }
+            StreamEvent::ToolCallStarted { tool_name, .. } => {
+                self.enter_tool_phase();
+                if may_run_at_provider(&tool_name, &self.tool_specs, &self.provider_executed) {
+                    tool = ToolEvidence::Uncertain;
+                } else if tool == ToolEvidence::None {
+                    tool = ToolEvidence::ProvenUnexecuted;
+                }
+            }
+            StreamEvent::ToolInputDelta { text } => {
+                self.enter_tool_phase();
+                streamed_bytes += text.len();
             }
             StreamEvent::ReasoningDelta { text } => {
                 streamed_bytes += text.len();
@@ -996,6 +1011,7 @@ impl Agent {
             partial,
             streamed_bytes,
             admitted,
+            tool,
         }
     }
 
@@ -1617,6 +1633,7 @@ struct Attempt {
     partial: String,
     streamed_bytes: usize,
     admitted: bool,
+    tool: ToolEvidence,
 }
 
 fn stopped_status(

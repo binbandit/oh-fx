@@ -1,10 +1,12 @@
 use std::borrow::Cow;
 use std::mem;
 
-use ofx_contract::{ChatMessage, RecoveryStrategy, ToolChoice, TurnId, UiEvent};
+use ofx_contract::{
+    ChatMessage, ModelRecoveryCause, ProviderError, RecoveryStrategy, ToolChoice, TurnId, UiEvent,
+};
 
 use crate::assistant_stream::LanguageStage;
-use crate::model_response_recovery::{Output, Strategy};
+use crate::model_response_recovery::{Output, Strategy, ToolEvidence, failed_in_stream};
 
 const RESPONSE_RESTARTED: &str = "\n\n[Response interrupted. Restarting.]\n\n";
 
@@ -28,19 +30,17 @@ pub(super) fn retried_strategy(
     current: Option<RecoveryStrategy>,
     decided: Strategy,
 ) -> Option<RecoveryStrategy> {
-    match (current, decided) {
-        (
-            Some(
-                RecoveryStrategy::RegenerateTool
-                | RecoveryStrategy::ContinueAfterTool
-                | RecoveryStrategy::ReconcileTool,
-            ),
-            _,
-        ) => current,
-        (_, Strategy::ContinueResponse) => Some(RecoveryStrategy::ContinueResponse),
-        (Some(RecoveryStrategy::ContinueResponse), _) => Some(RecoveryStrategy::RetryRequest),
-        _ => current,
-    }
+    let strategy = match decided {
+        Strategy::ContinueResponse => RecoveryStrategy::ContinueResponse,
+        Strategy::RegenerateTool => RecoveryStrategy::RegenerateTool,
+        Strategy::ContinueAfterTool => RecoveryStrategy::ContinueAfterTool,
+        Strategy::ReconcileTool => RecoveryStrategy::ReconcileTool,
+        Strategy::RetryRequest
+        | Strategy::WaitForConnectivity
+        | Strategy::ProbeLiveness
+        | Strategy::Stop => RecoveryStrategy::RetryRequest,
+    };
+    (current.is_some() || strategy != RecoveryStrategy::RetryRequest).then_some(strategy)
 }
 
 pub(super) fn recovery_tool_choice(recovery: Option<RecoveryStrategy>) -> ToolChoice {
@@ -51,20 +51,65 @@ pub(super) fn recovery_tool_choice(recovery: Option<RecoveryStrategy>) -> ToolCh
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Restart<'a> {
     interrupted: String,
     latest: String,
     messages: Option<Cow<'a, [ChatMessage]>>,
+    tool: ToolEvidence,
 }
 
 impl<'a> Restart<'a> {
+    pub(super) fn new(saved: Option<RecoveryStrategy>) -> Self {
+        Self {
+            interrupted: String::new(),
+            latest: String::new(),
+            messages: None,
+            tool: match saved {
+                Some(RecoveryStrategy::RegenerateTool) => ToolEvidence::ProvenUnexecuted,
+                Some(RecoveryStrategy::ContinueAfterTool) => ToolEvidence::Confirmed,
+                Some(RecoveryStrategy::ReconcileTool) => ToolEvidence::Uncertain,
+                _ => ToolEvidence::None,
+            },
+        }
+    }
+
+    pub(super) fn evidence(
+        &mut self,
+        observed: ToolEvidence,
+        cause: ModelRecoveryCause,
+        error: &ProviderError,
+        stage: &LanguageStage,
+    ) -> (Output, ToolEvidence) {
+        let observed = match observed {
+            ToolEvidence::ProvenUnexecuted if failed_in_stream(cause, error) => {
+                ToolEvidence::Uncertain
+            }
+            observed => observed,
+        };
+        if observed != ToolEvidence::None {
+            self.tool = observed;
+        }
+        (self.output(stage), self.tool)
+    }
+
+    pub(super) fn replay_safe(
+        &self,
+        cause: ModelRecoveryCause,
+        observed: ToolEvidence,
+        stage: &LanguageStage,
+    ) -> bool {
+        cause == ModelRecoveryCause::ProviderUnavailable
+            && self.source(stage).is_empty()
+            && observed == ToolEvidence::None
+    }
+
     pub(super) fn observe(&mut self, partial: String) -> bool {
         self.latest = partial;
         !self.latest.is_empty()
     }
 
-    pub(super) fn output(&self, stage: &LanguageStage) -> Output {
+    fn output(&self, stage: &LanguageStage) -> Output {
         if self.source(stage).is_empty() {
             Output::None
         } else {
