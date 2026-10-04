@@ -16,6 +16,8 @@ struct SeenReview {
     batch: Vec<String>,
     command: bool,
     file: Option<(String, Option<Vec<u8>>, Vec<u8>)>,
+    mcp: bool,
+    schema: Option<String>,
     attempt_available: bool,
 }
 
@@ -60,6 +62,10 @@ impl PermissionGate for ReviewingGate {
         ArgumentGate.admit_command(request)
     }
 
+    fn admit_mcp_tool(&self, _call: &ToolCall) -> Admission {
+        Admission::ReviewRequired
+    }
+
     fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget> {
         ArgumentGate.applicable_target(call)
     }
@@ -95,6 +101,8 @@ impl PermissionGate for ReviewingGate {
                     file.after.to_vec(),
                 )
             }),
+            mcp: matches!(request.action, GatedAction::McpTool(_)),
+            schema: request.schema.map(str::to_owned),
             attempt_available: request.attempt_available,
         });
         let answer = self.answers.lock().unwrap().pop_front();
@@ -512,6 +520,50 @@ async fn a_file_change_asked_about_after_its_review_carries_the_prepared_change(
             before: Some(Arc::from(&b"before\n"[..])),
             after: Arc::from(&b"after\n"[..]),
         })]
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_reviews_carry_the_advertised_schema_and_show_the_call_meanwhile() {
+    let arguments = r#"{"mcp_call":1,"mcp_schema":1,"serial":1}"#;
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", arguments),
+            ("call-2", r#"{"mcp_call":2,"serial":1}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let gate = ReviewingGate::answering([ReviewVerdict::Clear, ReviewVerdict::EvidenceIncomplete]);
+    let (report, events) =
+        run_reviewed(Arc::clone(&provider), Arc::clone(&gate), None, &["go"]).await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let schemas: Vec<_> = gate
+        .seen()
+        .into_iter()
+        .map(|seen| (seen.mcp, seen.schema))
+        .collect();
+    assert_eq!(
+        schemas,
+        [(true, Some(format!("schema {arguments}"))), (true, None)]
+    );
+    assert_eq!(
+        dispatch_order(&events),
+        [
+            "start call-1",
+            "finish call-1",
+            "start call-2",
+            "finish call-2"
+        ]
+    );
+    assert_eq!(
+        tool_results(&provider, 1)
+            .iter()
+            .map(|message| match message {
+                ChatMessage::Tool { status, .. } => *status,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>(),
+        [ToolResultStatus::Success, ToolResultStatus::Failure]
     );
 }
 

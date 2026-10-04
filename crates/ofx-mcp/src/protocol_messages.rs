@@ -16,7 +16,7 @@ pub(crate) struct ElicitationCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ServerCapabilities {
+pub(crate) struct ServerCapabilities {
     pub tools_list_changed: bool,
     pub resources: Option<ResourceCapabilities>,
     pub prompts: Option<PromptCapabilities>,
@@ -24,13 +24,13 @@ pub struct ServerCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ResourceCapabilities {
+pub(crate) struct ResourceCapabilities {
     pub list_changed: bool,
     pub subscribe: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PromptCapabilities {
+pub(crate) struct PromptCapabilities {
     pub list_changed: bool,
 }
 
@@ -223,6 +223,10 @@ fn sanitize_model_text(text: &str) -> String {
     } else {
         text.to_owned()
     }
+}
+
+pub(crate) fn parse_json(bytes: &[u8]) -> Option<Value> {
+    serde_json::from_str(std::str::from_utf8(bytes).ok()?).ok()
 }
 
 #[cfg(test)]

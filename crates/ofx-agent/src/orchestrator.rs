@@ -9,17 +9,17 @@ use ofx_contract::{
     Admission, ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope,
     AutoCompactPercent, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver,
     ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
-    DEFAULT_MAX_TOOL_RESULT_BYTES, ExecutionFailure, FileChange, FileMutation, FinishReason,
-    GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
-    ModelRecoveryAction, ModelRecoveryCause, ModelRequest, PathAccess, PermissionGate,
-    PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId, ReviewFailure,
-    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
-    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolChoice,
-    ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId,
-    TurnOutcome, TurnStop, UiEvent, Usage, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, prepare_model_output, tool_execution_failure_json,
-    tool_permission_denied_json, tool_review_held_json,
+    DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure, FileChange, FileMutation,
+    FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
+    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RequestId,
+    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
+    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus,
+    SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
+    ToolCall, ToolCallId, ToolChoice, ToolContext, ToolEffect, ToolOutput, ToolRejection,
+    ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, prepare_model_output,
+    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -210,12 +210,19 @@ fn describe_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<ToolSpec>, Str
     (tool_specs, offered_specs, tool_guidance)
 }
 
+struct DynamicToolSet {
+    source: Arc<dyn DynamicTools>,
+    generation: Option<u64>,
+    tools: Vec<Arc<dyn Tool>>,
+}
+
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
     tool_specs: Vec<ToolSpec>,
     offered_specs: Vec<ToolSpec>,
     tool_guidance: String,
+    dynamic: Option<DynamicToolSet>,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
@@ -254,6 +261,7 @@ impl Agent {
             tool_specs,
             offered_specs,
             tool_guidance,
+            dynamic: None,
             context,
             permissions,
             approvals: None,
@@ -281,6 +289,16 @@ impl Agent {
     #[must_use]
     pub fn with_approvals(mut self, approvals: Approvals) -> Self {
         self.approvals = Some(approvals);
+        self
+    }
+
+    #[must_use]
+    pub fn with_dynamic_tools(mut self, source: Arc<dyn DynamicTools>) -> Self {
+        self.dynamic = Some(DynamicToolSet {
+            source,
+            generation: None,
+            tools: Vec::new(),
+        });
         self
     }
 
@@ -320,6 +338,9 @@ impl Agent {
     pub(crate) fn replace_tools(&mut self, tools: Vec<Arc<dyn Tool>>) {
         (self.tool_specs, self.offered_specs, self.tool_guidance) = describe_tools(&tools);
         self.tools = tools;
+        if let Some(set) = &mut self.dynamic {
+            set.generation = None;
+        }
     }
 
     pub(crate) fn inherit_root_user_requests(&mut self, requests: Arc<RootUserRequests>) {
@@ -504,18 +525,12 @@ impl Agent {
             .await?;
         let mut step = 0;
         loop {
-            if self.config.step_limit != 0 && step >= self.config.step_limit {
-                return Err(self.stop_with_notice(
-                    turn.id,
-                    events,
-                    STEP_LIMIT_NOTICE,
-                    TurnFailure::StepLimitReached,
-                ));
-            }
+            self.stop_at_step_limit(turn.id, step, events)?;
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
+            self.refresh_dynamic_tools(turn.id, events);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context);
             let messages = self.request_messages(turn);
@@ -1020,10 +1035,55 @@ impl Agent {
     }
 
     fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        let dynamic = self.dynamic.iter().flat_map(|set| &set.tools);
         self.tools
             .iter()
+            .chain(dynamic)
             .zip(&self.tool_specs)
             .find_map(|(tool, spec)| (spec.name == name).then_some(tool))
+    }
+
+    fn stop_at_step_limit(
+        &mut self,
+        turn_id: TurnId,
+        step: u64,
+        events: EventSink<'_>,
+    ) -> Result<(), Stop> {
+        if self.config.step_limit != 0 && step >= self.config.step_limit {
+            return Err(self.stop_with_notice(
+                turn_id,
+                events,
+                STEP_LIMIT_NOTICE,
+                TurnFailure::StepLimitReached,
+            ));
+        }
+        Ok(())
+    }
+
+    fn refresh_dynamic_tools(&mut self, turn_id: TurnId, events: EventSink<'_>) {
+        let Some(set) = &mut self.dynamic else {
+            return;
+        };
+        let generation = set.source.generation();
+        if set.generation == Some(generation) {
+            return;
+        }
+        set.generation = Some(generation);
+        set.tools = set.source.tools();
+        for text in set.source.take_notices() {
+            events(UiEvent::ContextNotice { turn_id, text });
+        }
+        self.tool_specs.truncate(self.tools.len());
+        self.tool_specs
+            .extend(set.tools.iter().map(|tool| tool.spec().clone()));
+        let offered = self.tools.iter().filter(|tool| !tool.provider_executed());
+        self.offered_specs.truncate(offered.count());
+        self.offered_specs.extend(
+            set.tools
+                .iter()
+                .filter(|tool| !tool.provider_executed())
+                .map(|tool| tool.spec().clone()),
+        );
     }
 
     fn history_call(&self, call: ToolCall) -> ToolCall {
@@ -1438,10 +1498,14 @@ fn gated_action<'a>(
     call: &'a ToolCall,
     mutation: Option<&'a FileMutation>,
     command: Option<&'a CommandRequest>,
+    prepared: &dyn PreparedCall,
 ) -> GatedAction<'a> {
     match (mutation, command) {
         (Some(mutation), _) => GatedAction::FileMutation(mutation),
         (None, Some(command)) => GatedAction::Command(command),
+        (None, None) if contained(|| prepared.mcp_tool()) == Some(true) => {
+            GatedAction::McpTool(call)
+        }
         (None, None) => GatedAction::Call(call),
     }
 }
@@ -1454,6 +1518,7 @@ fn admit(
     match action {
         GatedAction::FileMutation(mutation) => permissions.admit_file_mutation(mutation),
         GatedAction::Command(command) => permissions.admit_command(command),
+        GatedAction::McpTool(call) => permissions.admit_mcp_tool(call),
         GatedAction::Call(_) if description.effect == ToolEffect::None => {
             Admission::Allowed(PathAccess::WorkspaceOnly)
         }
@@ -1465,7 +1530,13 @@ struct Judged<'a> {
     call: &'a ToolCall,
     action: GatedAction<'a>,
     description: &'a CallDescription,
-    file: Option<&'a FileChange<'a>>,
+    evidence: &'a ReviewEvidence<'a>,
+}
+
+#[derive(Default)]
+struct ReviewEvidence<'p> {
+    file: Option<FileChange<'p>>,
+    schema: Option<String>,
 }
 
 fn admission<'p>(
@@ -1473,18 +1544,27 @@ fn admission<'p>(
     action: GatedAction<'_>,
     description: &CallDescription,
     prepared: &'p dyn PreparedCall,
-) -> (Admission, Option<FileChange<'p>>) {
+) -> (Admission, ReviewEvidence<'p>) {
     let admission = admit(gate.permissions, action, description);
     let shown = match admission {
         Admission::ReviewRequired => true,
         Admission::ApprovalRequired => gate.approvals.is_some(),
         Admission::Allowed(_) => false,
     };
-    let file = match action {
-        GatedAction::FileMutation(_) if shown => contained(|| prepared.file_change()).flatten(),
-        _ => None,
+    let evidence = match action {
+        GatedAction::FileMutation(_) if shown => ReviewEvidence {
+            file: contained(|| prepared.file_change()).flatten(),
+            schema: None,
+        },
+        GatedAction::McpTool(_) if matches!(admission, Admission::ReviewRequired) => {
+            ReviewEvidence {
+                file: None,
+                schema: contained(|| prepared.review_schema()).flatten(),
+            }
+        }
+        _ => ReviewEvidence::default(),
     };
-    (admission, file)
+    (admission, evidence)
 }
 
 async fn judge(
@@ -1550,7 +1630,8 @@ async fn review(
         batch: reviewing.batch,
         call,
         action: judged.action,
-        file: judged.file,
+        file: judged.evidence.file.as_ref(),
+        schema: judged.evidence.schema.as_deref(),
         attempt_available,
     };
     let reviewed = tokio::select! {
@@ -1664,7 +1745,7 @@ async fn ask_approval(
 fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -> ApprovalRequest {
     let call = judged.call;
     let (command, file) = match judged.action {
-        GatedAction::Call(_) => (None, None),
+        GatedAction::Call(_) | GatedAction::McpTool(_) => (None, None),
         GatedAction::FileMutation(mutation) => (None, Some(mutation.clone())),
         GatedAction::Command(command) => (Some(command.clone()), None),
     };
@@ -1680,7 +1761,7 @@ fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -
         command,
         file,
         origin: ApprovalOrigin::ActiveSession,
-        change: judged.file.map(FileChange::to_proposed),
+        change: judged.evidence.file.as_ref().map(FileChange::to_proposed),
     }
 }
 
@@ -1711,9 +1792,9 @@ async fn run_group<'c>(
                 dispatched.push((call, Dispatched::Rejected(output, reason)));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
-                let action = gated_action(call, mutation.as_ref(), command.as_ref());
+                let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);
                 let delegates = description.activity == ToolActivity::Subagent;
-                let (admission, file) = admission(gate, action, &description, &*prepared);
+                let (admission, evidence) = admission(gate, action, &description, &*prepared);
                 let shown_while_reviewed =
                     admission == Admission::ReviewRequired && mutation.is_none();
                 if shown_while_reviewed {
@@ -1723,7 +1804,7 @@ async fn run_group<'c>(
                     call,
                     action,
                     description: &description,
-                    file: file.as_ref(),
+                    evidence: &evidence,
                 };
                 let verdict = judge(
                     gate,

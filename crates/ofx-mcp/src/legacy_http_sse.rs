@@ -1,3 +1,4 @@
+use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -8,7 +9,7 @@ use reqwest::{Response, StatusCode, Url};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::legacy_sse::{Event, Parser};
@@ -16,7 +17,8 @@ use crate::legacy_streamable_http::HttpEndpoint;
 use crate::mcp_contract::HttpHeader;
 use crate::protocol_messages::build_cancellation_notification;
 use crate::streamable_http::{EndpointError, MediaType, parse_media_type, validate_endpoint};
-use crate::transport::{BoxFuture, McpTransport, ShutdownMode, TransportRequest};
+use crate::timing::{spawn, timeout_at};
+use crate::transport::{Cancellation, McpTransport, ShutdownMode, TransportRequest};
 
 pub(crate) const SSE_PROTOCOL_VERSION: &str = "2024-11-05";
 const CANCELLATION_TIMEOUT: Duration = Duration::from_millis(100);
@@ -30,7 +32,7 @@ enum ConnectionState {
     Stopped,
 }
 
-struct SseShared {
+pub(crate) struct SseShared {
     http: reqwest::Client,
     discovery_url: String,
     headers: Vec<HttpHeader>,
@@ -73,7 +75,7 @@ impl LegacySseClient {
             state,
             notifications: endpoint.notifications,
         });
-        let reader = tokio::spawn(reader_main(Arc::clone(&shared)));
+        let reader = spawn(reader_main(Arc::clone(&shared)));
         let client = Self {
             shared,
             next_request_id: AtomicU64::new(1),
@@ -190,25 +192,27 @@ impl McpTransport for LegacySseClient {
         Ok(id)
     }
 
-    fn request(&self, request: TransportRequest) -> BoxFuture<'_, Result<String, McpError>> {
-        Box::pin(self.run_request(request))
+    fn request(
+        &self,
+        request: TransportRequest,
+    ) -> impl Future<Output = Result<String, McpError>> + Send {
+        self.run_request(request)
     }
 
-    fn notify(&self, body: String, deadline: Instant) -> BoxFuture<'_, Result<(), McpError>> {
-        Box::pin(async move {
-            let endpoint = self.endpoint()?;
-            timeout_at(deadline, self.shared.post_message(&endpoint, &body, None))
-                .await
-                .map_err(|_| McpError::McpRequestTimedOut)?
-        })
+    async fn notify(&self, body: String, deadline: Instant) -> Result<(), McpError> {
+        let endpoint = self.endpoint()?;
+        timeout_at(deadline, self.shared.post_message(&endpoint, &body, None))
+            .await
+            .map_err(|_| McpError::McpRequestTimedOut)?
     }
 
     fn is_running(&self) -> bool {
         matches!(&*self.shared.state.borrow(), ConnectionState::Running(_))
     }
 
-    fn shutdown(self: Box<Self>, _: ShutdownMode) -> BoxFuture<'static, ()> {
-        Box::pin(async move { self.stop() })
+    fn shutdown(&self, _: ShutdownMode) -> impl Future<Output = ()> + Send {
+        self.stop();
+        ready(())
     }
 }
 
@@ -225,13 +229,8 @@ impl Drop for CancelOnDrop<'_> {
         if !self.armed || !self.committed.load(Ordering::Acquire) {
             return;
         }
-        let shared = Arc::clone(&self.shared);
-        let endpoint = std::mem::take(&mut self.endpoint);
-        let id = self.id;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime
-                .spawn(async move { shared.send_cancellation(&endpoint, id, "Cancelled").await });
-        }
+        Cancellation::Sse(Arc::clone(&self.shared), std::mem::take(&mut self.endpoint))
+            .send_in_background(self.id);
     }
 }
 
@@ -262,7 +261,7 @@ impl SseShared {
         }
     }
 
-    async fn send_cancellation(&self, endpoint: &str, request_id: u64, reason: &str) {
+    pub(crate) async fn send_cancellation(&self, endpoint: &str, request_id: u64, reason: &str) {
         let body = build_cancellation_notification(request_id, reason);
         let _ = timeout_at(
             Instant::now() + CANCELLATION_TIMEOUT,

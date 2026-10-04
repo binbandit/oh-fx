@@ -356,7 +356,7 @@ async fn a_checkpoint_lists_the_skills_the_compacted_turns_loaded() {
         spec: ToolSpec {
             name: "skill".to_owned(),
             description: "Load a skill.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
     });
     let mut agent = new_agent(Arc::clone(&provider), vec![tool]);
