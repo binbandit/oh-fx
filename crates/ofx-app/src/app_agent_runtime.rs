@@ -993,6 +993,7 @@ fn failure_status(failure: &TurnFailure, source: CredentialSource) -> Option<Str
         TurnFailure::Provider(error) => Some(provider_status(error, source)),
         TurnFailure::StepLimitReached
         | TurnFailure::RepeatedMalformedArguments
+        | TurnFailure::RepeatedShellExecutionFailure
         | TurnFailure::RecoveryPaused => None,
         _ => Some(format!("⚠ {}", failure.code())),
     }
@@ -4194,6 +4195,7 @@ mod tests {
             TurnFailure::StepLimitReached,
             TurnFailure::RepeatedMalformedArguments,
             TurnFailure::RecoveryPaused,
+            TurnFailure::RepeatedShellExecutionFailure,
         ] {
             assert_eq!(failure_status(&silent, CredentialSource::Configured), None);
         }

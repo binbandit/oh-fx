@@ -37,6 +37,7 @@ use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvid
 use crate::prompt_context::Calibration;
 use crate::recovery_pause::RecoveryPause;
 use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
+use crate::tool_admission::ShellExecutionFailureRetry;
 use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
 
@@ -62,6 +63,7 @@ const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
 const REPEATED_MALFORMED_ARGUMENTS_NOTICE: &str = "Repeated malformed tool arguments stopped the agent loop. The invalid calls were not executed. Continue with a follow-up prompt if needed.";
 const MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES: u32 = 3;
+const REPEATED_SHELL_EXECUTION_FAILURE_NOTICE: &str = "Repeated identical shell failures stopped the tool loop. The failed action was not retried again; inspect the environment or change the action before continuing.";
 const REPLAYED_MALFORMED_ARGUMENTS: &str = "{}";
 const FAST_UNAVAILABLE_NOTICE: &str =
     "Fast mode is unavailable for this model right now; continuing at standard speed.";
@@ -103,6 +105,7 @@ pub enum TurnFailure {
     StepLimitReached,
     RepeatedMalformedArguments,
     ResponseLanguageMismatch,
+    RepeatedShellExecutionFailure,
     InvalidCompletion,
     PermissionRequired(BlockedCall),
     ProjectContext,
@@ -119,6 +122,7 @@ impl TurnFailure {
             Self::StepLimitReached => "StepLimitReached",
             Self::RepeatedMalformedArguments => "RepeatedMalformedToolArguments",
             Self::ResponseLanguageMismatch => "ResponseLanguageMismatch",
+            Self::RepeatedShellExecutionFailure => "RepeatedShellExecutionFailure",
             Self::InvalidCompletion => "ModelError",
             Self::PermissionRequired(_) => "NonInteractivePermissionRequired",
             Self::ProjectContext => "ProjectContextFailed",
@@ -171,6 +175,7 @@ struct Turn {
     summary_requested: bool,
     failures: HashMap<(String, String), u32>,
     malformed_batches: u32,
+    shell_failures: ShellExecutionFailureRetry,
     fast_mode: bool,
     fast_notice_shown: bool,
     compaction: TurnCompaction,
@@ -434,6 +439,26 @@ impl Agent {
             .await
     }
 
+    fn new_turn(&self, id: TurnId, prompt: &str) -> Turn {
+        Turn {
+            id,
+            start: self.history.len(),
+            usage: Usage::default(),
+            silent_tool_steps: 0,
+            summary_requested: false,
+            failures: HashMap::new(),
+            malformed_batches: 0,
+            shell_failures: ShellExecutionFailureRetry::default(),
+            fast_mode: self.config.fast_mode,
+            fast_notice_shown: false,
+            compaction: TurnCompaction::default(),
+            raw_outputs: Vec::new(),
+            reviews: TurnReviews::default(),
+            language: self.turn_language(prompt),
+            recovery: None,
+        }
+    }
+
     async fn run_prompt(
         &mut self,
         prompt: &str,
@@ -458,22 +483,7 @@ impl Agent {
                 failure: Some(TurnFailure::Persistence(failure)),
             };
         }
-        let mut turn = Turn {
-            id,
-            start: self.history.len(),
-            usage: Usage::default(),
-            silent_tool_steps: 0,
-            summary_requested: false,
-            failures: HashMap::new(),
-            malformed_batches: 0,
-            fast_mode: self.config.fast_mode,
-            fast_notice_shown: false,
-            compaction: TurnCompaction::default(),
-            raw_outputs: Vec::new(),
-            reviews: TurnReviews::default(),
-            language: self.turn_language(prompt),
-            recovery: None,
-        };
+        let mut turn = self.new_turn(id, prompt);
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {
@@ -934,6 +944,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<(), Stop> {
         self.enter_tool_phase();
+        turn.shell_failures.begin_batch();
         turn.silent_tool_steps = if completion
             .content
             .as_deref()
@@ -1010,6 +1021,18 @@ impl Agent {
                 TurnFailure::RepeatedMalformedArguments,
             ));
         }
+        if turn.shell_failures.finish_batch() {
+            if more_steps && let Some(steering) = self.finalizing_steering() {
+                self.append_steering(turn.id, steering, events);
+                return Ok(());
+            }
+            return Err(self.stop_with_notice(
+                turn.id,
+                events,
+                REPEATED_SHELL_EXECUTION_FAILURE_NOTICE,
+                TurnFailure::RepeatedShellExecutionFailure,
+            ));
+        }
         Ok(())
     }
 
@@ -1018,6 +1041,7 @@ impl Agent {
             call,
             output,
             escalates,
+            executed,
             review_hold,
         } in outcomes
         {
@@ -1025,6 +1049,9 @@ impl Agent {
                 continue;
             };
             let status = output.status;
+            if executed {
+                turn.shell_failures.observe(call, status);
+            }
             turn.raw_outputs
                 .push((call.id.clone(), output.content.len()));
             let model_output =
@@ -1534,6 +1561,7 @@ struct Settled<'c> {
     call: &'c ToolCall,
     output: Option<ToolOutput>,
     escalates: bool,
+    executed: bool,
     review_hold: bool,
 }
 
@@ -1957,18 +1985,19 @@ async fn settle_group<'c>(
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched) in dispatched {
-        let (output, escalates, review_hold) = match dispatched {
+        let (output, escalates, executed, review_hold) = match dispatched {
             Dispatched::Rejected(output, reason) => {
                 report_context_notices(turn_id, &output, events);
                 (
                     Some(output),
                     reason != ToolRejection::MalformedArguments,
                     false,
+                    false,
                 )
             }
             Dispatched::Held(output, review_hold) => {
                 events(tool_finished(turn_id, call, Some(&output)));
-                (Some(output), true, review_hold)
+                (Some(output), true, false, review_hold)
             }
             Dispatched::Running(mut task) => {
                 let settling = settle(call, &mut task, cancel, &mut grace_deadline);
@@ -1977,13 +2006,14 @@ async fn settle_group<'c>(
                     report_context_notices(turn_id, output, events);
                 }
                 events(tool_finished(turn_id, call, output.as_ref()));
-                (output, true, false)
+                (output, true, true, false)
             }
         };
         outcomes.push(Settled {
             call,
             output,
             escalates,
+            executed,
             review_hold,
         });
     }
