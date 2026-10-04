@@ -2644,6 +2644,7 @@ mod compaction;
 mod malformed_arguments;
 mod modes;
 mod project_context;
+mod provider_executed;
 mod recovery;
 mod recovery_pause;
 mod response_language;

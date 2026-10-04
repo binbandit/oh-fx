@@ -1030,3 +1030,48 @@ async fn malformed_calls_never_reach_preparation_or_target_selection() {
             ))
     );
 }
+
+#[tokio::test]
+async fn provider_executed_calls_skip_preparation_and_split_parallel_groups() {
+    let provider_call = ToolCall {
+        provider_result: Some("provider found it".to_owned()),
+        provenance: ofx_contract::ToolExecutionProvenance::ProviderExecuted,
+        ..ToolCall::new("call-2", "scoped", r#"{"read":"/w/a"}"#)
+    };
+    let calls = vec![
+        ToolCall::new("call-1", "scoped", r#"{"read":"/w/c"}"#),
+        provider_call,
+        ToolCall::new("call-3", "scoped", r#"{"read":"/w/d"}"#),
+        ToolCall::new("call-4", "scoped", r#"{"read":"/w/e"}"#),
+    ];
+    let mut harness = harness(
+        vec![
+            Script::Reply(Vec::new(), completion(None, calls, FinishReason::ToolCalls)),
+            text_reply("done"),
+        ],
+        ProjectContext::default(),
+    );
+    let (report, events) = run(&mut harness.agent, "batch").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(harness.world.lock().unwrap().prepared, 3);
+    assert_eq!(
+        lifecycle(&events),
+        [
+            r#"start call-1 Scoping {"read":"/w/c"}"#,
+            "finish call-1",
+            r#"start call-3 Scoping {"read":"/w/d"}"#,
+            r#"start call-4 Scoping {"read":"/w/e"}"#,
+            "finish call-3",
+            "finish call-4",
+        ]
+    );
+    assert_eq!(
+        scoped_messages(&harness.provider.requests()[1].messages),
+        [
+            ("call-1", "scoped", ToolResultStatus::Success),
+            ("call-2", "provider found it", ToolResultStatus::Success),
+            ("call-3", "scoped", ToolResultStatus::Success),
+            ("call-4", "scoped", ToolResultStatus::Success),
+        ]
+    );
+}

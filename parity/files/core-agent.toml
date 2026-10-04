@@ -116,7 +116,7 @@ note = "Narrow traits replace runtime dependencies; image executor, durable reco
 upstream = "src/core/agent/runtime/execution_memory.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/execution_memory.rs"]
-note = "Interrupted execution memory retains finished exchanges and steering typed after a tool result; provider-executed tool history is absent."
+note = "Interrupted execution memory retains finished exchanges, steering typed after a tool result, and provider-executed calls with their provider results, whose status follows upstream's tool-failure classification; tool images and result memory are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/finalization.zig"
@@ -163,8 +163,8 @@ note = "Sequential tools, separate read/subagent parallel groups, root-user revi
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/project_gate.rs"]
-note = "Read-only and subagent leading groups execute separately in plain and project-gated paths; provider-executed publication evidence and upstream parallel attempt settlement remain incomplete."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/project_gate.rs", "crates/ofx-agent/src/orchestrator/provider_tools.rs"]
+note = "Read-only and subagent leading groups execute separately in plain and project-gated paths, and calls carrying a provider result stay out of them; observed provider search usage and upstream parallel attempt settlement remain incomplete."
 
 [[file]]
 upstream = "src/core/agent/runtime/prompt_context.zig"
@@ -229,8 +229,8 @@ note = "Turn review cache, admission, the malformed-argument stop, identical-fai
 [[file]]
 upstream = "src/core/agent/runtime/tool_batch.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Tool batches, argument validation and parallel execution exist; provider-executed tool batches and subagent-specific lifecycle settlement are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/provider_tools.rs"]
+note = "Tool batches, argument validation and parallel execution exist, and provider-executed calls publish their provider results in call order with the identical-failure escalation; subagent-specific lifecycle settlement is absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tool_contracts.zig"

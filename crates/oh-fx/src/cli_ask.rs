@@ -1276,6 +1276,8 @@ impl Presenter {
             }
             TurnFailure::InvalidCompletion
             | TurnFailure::ResponseLanguageMismatch
+            | TurnFailure::MalformedProviderResult
+            | TurnFailure::MalformedProviderArguments
             | TurnFailure::PermissionRequired(_)
             | TurnFailure::ProjectContext
             | TurnFailure::SkillContext(_)
