@@ -1,8 +1,12 @@
+use std::path::PathBuf;
+
 use ofx_config::ProviderId;
 use ofx_contract::valid_credential_account_id;
 use tokio_util::sync::CancellationToken;
 
 use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode};
+use crate::chatgpt_session::SessionStore;
+use crate::grok_session;
 use crate::provider_catalog;
 use crate::session_presence::Presence;
 use crate::subscription_access::now_ms;
@@ -203,6 +207,37 @@ pub fn grok_login_failure_detail(error: crate::grok_oauth::GrokError) -> String 
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredLogin {
+    Missing,
+    Saved { expired: bool },
+    Unusable(Option<PreparationError>),
+}
+
+pub fn codex_login_saved(data_directory: PathBuf) -> bool {
+    SessionStore::new(data_directory).presence() == Presence::Present
+}
+
+pub fn grok_login_saved(data_directory: PathBuf) -> bool {
+    grok_session::SessionStore::new(data_directory).presence() == Presence::Present
+}
+
+pub fn stored_codex_login(data_directory: PathBuf) -> StoredLogin {
+    let store = SessionStore::new(data_directory);
+    let loaded = if store.presence() == Presence::Unavailable {
+        Err(ChatGptError::CredentialStorageUnavailable)
+    } else {
+        store.load_unlocked()
+    };
+    match loaded {
+        Ok(None) => StoredLogin::Missing,
+        Ok(Some(session)) => StoredLogin::Saved {
+            expired: session.expired(now_ms()),
+        },
+        Err(error) => StoredLogin::Unusable(preparation_error(classify_credential_failure(error))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +278,45 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    fn write_login(directory: &std::path::Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let file = directory.join("chatgpt-auth.json");
+        std::fs::write(&file, contents).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn session(expires_at_ms: i64) -> String {
+        format!(
+            r#"{{"version":1,"access_token":"eyJhbGciOiJub25lIn0.c2F2ZWQ.c2ln","refresh_token":"rt-0123456789","expires_at_ms":{expires_at_ms},"account_id":"acct_test"}}"#
+        )
+    }
+
+    #[test]
+    fn a_stored_codex_login_is_read_without_refreshing_it() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("oh-fx");
+        assert_eq!(stored_codex_login(data.clone()), StoredLogin::Missing);
+        assert!(!codex_login_saved(data.clone()));
+        write_login(&data, &session(i64::MAX));
+        assert!(codex_login_saved(data.clone()));
+        assert_eq!(
+            stored_codex_login(data.clone()),
+            StoredLogin::Saved { expired: false }
+        );
+        write_login(&data, &session(1));
+        assert_eq!(
+            stored_codex_login(data.clone()),
+            StoredLogin::Saved { expired: true }
+        );
+        write_login(&data, "{");
+        assert_eq!(
+            stored_codex_login(data),
+            StoredLogin::Unusable(Some(PreparationError::CredentialStorageUnavailable))
+        );
     }
 
     #[test]
