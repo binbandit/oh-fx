@@ -36,15 +36,15 @@ note = "Jev typesafe decision transport and parser are unimplemented."
 
 [[file]]
 upstream = "src/builtins/hooks.zig"
-status = "todo"
-modules = []
-note = "Interactive lifecycle hook registration are unimplemented."
+status = "partial"
+modules = ["crates/ofx-app/src/app_lifecycle.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-tui/src/shell/app_worker_runtime.rs", "crates/ofx-tui/src/shell/approval_runtime.rs", "crates/ofx-tui/src/shell/input_question_runtime.rs"]
+note = "Native foreground startup, accepted turns and visible permission/question attention report Herdr state; later session selection, manual compaction and route-recovery decision reporting are missing. Working admission timing differs as recorded in architecture.md; configurable hooks and sounds remain unimplemented."
 
 [[file]]
 upstream = "src/builtins/hooks/herdr.zig"
-status = "todo"
-modules = []
-note = "Herdr interactive lifecycle socket delivery are unimplemented."
+status = "ported"
+modules = ["crates/ofx-app/src/herdr.rs"]
+note = "Byte-faithful socket requests, raw 32-byte status clamp, opt-out, serialized names/release and receive-only timeout; application opt-out prefix differs as recorded in architecture.md."
 
 [[file]]
 upstream = "src/builtins/hooks/notifications.zig"

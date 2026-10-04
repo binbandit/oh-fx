@@ -256,6 +256,7 @@ pub(crate) struct Controller {
     questions: Option<QuestionRequests>,
     pick_at_start: bool,
     catalog: CatalogFetch,
+    herdr: Option<Arc<crate::herdr::Herdr>>,
 }
 
 struct CatalogFetch {
@@ -383,7 +384,13 @@ impl Controller {
             persistence,
             questions,
             pick_at_start,
+            herdr: None,
         }
+    }
+
+    pub(crate) fn with_herdr(mut self, herdr: Option<Arc<crate::herdr::Herdr>>) -> Self {
+        self.herdr = herdr;
+        self
     }
 
     #[cfg(test)]
@@ -407,6 +414,9 @@ impl Controller {
                 self.state.session_title.set(Some(&title));
             }
             self.session_notice(opened);
+        }
+        if let Some(herdr) = &self.herdr {
+            herdr.initialize(self.persistence.as_ref().and_then(Persistence::active_id));
         }
         self.remember_agent_facts();
         self.serve(&mut commands).await;

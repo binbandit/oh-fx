@@ -27,6 +27,8 @@ The full checkout commit is read from `parity/UPSTREAM`. With that checkout avai
 
 The file map measures structural coverage. Re-audit entries and missing-behavior notes when main gains an implementation. The question tool and answer codec remain partial because ignored out-of-range JSON numbers and duplicate result keys differ from upstream. Byte-exact schema, help and prompt goldens remain a separate follow-up.
 
+The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `6bdd497`). Native foreground startup, accepted turns and visible permission/question attention use it. Lifecycle registration remains partial: later session selection, manual compaction and route-recovery decision reporting, configurable command hooks and sounds are pending. Working admission timing and the application environment prefix differ as recorded in [architecture.md](architecture.md).
+
 ## 34f1ed1..6bdd497
 
 Rows marked `defer:startup-probe` and `defer:ultrafast-cli` change behaviour oh-fx already ports. Each is synced by its own pull request in this pass, which moves its rows to `ported`.
