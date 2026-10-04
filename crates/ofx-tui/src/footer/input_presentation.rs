@@ -213,7 +213,7 @@ pub(crate) fn compose_hint_row(
         }
     } else if state.esc_clear_armed {
         right = ESC_CLEAR_HINT;
-    } else {
+    } else if !state.ctrl_c_pending || width > left.width() + visible_width(state.upgrade_status) {
         right = state.upgrade_status;
     }
     let right_width = visible_width(right);
@@ -490,6 +490,29 @@ mod tests {
             )
             .text(),
             "press ctrl+c again to exit                        update ready: ctrl+g to reload"
+        );
+    }
+
+    #[test]
+    fn the_upgrade_status_gives_way_to_the_whole_ctrl_c_exit_hint() {
+        let base = Row::styled("auto · gpt-5.1", Paint::fg(245));
+        let pending = HintState {
+            ctrl_c_pending: true,
+            esc_clear_armed: false,
+            esc_interrupt_armed: false,
+            danger: DangerStatus::None,
+            upgrade_status: "update ready: ctrl+g to reload",
+        };
+        for width in [31, 56] {
+            assert_eq!(
+                compose_hint_row(&theme(), &base, pending, width).text(),
+                "press ctrl+c again to exit",
+                "width {width}"
+            );
+        }
+        assert_eq!(
+            compose_hint_row(&theme(), &base, pending, 57).text(),
+            "press ctrl+c again to exit update ready: ctrl+g to reload"
         );
     }
 }
