@@ -170,3 +170,48 @@ fn a_late_reply_inside_a_paste_stays_out_of_the_pasted_text() {
     test.settle();
     assert_eq!(test.shell.composer.text(), "aleftright");
 }
+
+#[test]
+fn a_split_suffix_after_the_paste_end_rejects_the_paste_instead_of_submitting_it() {
+    let mut test = pasting_after_a_timed_out_probe();
+    test.type_bytes(b"safe\x1b[201~\x1b[");
+    test.step();
+    test.settle();
+    test.type_bytes(b"13u");
+    test.step();
+    test.settle();
+    assert!(test.sent().is_empty(), "{:?}", test.sent());
+    assert_eq!(test.shell.composer.text(), "a");
+}
+
+#[test]
+fn a_late_reply_split_across_reads_after_the_paste_end_leaves_the_paste_whole() {
+    let mut test = pasting_after_a_timed_out_probe();
+    test.type_bytes(b"safe\x1b[201~\x1b[5;");
+    test.step();
+    test.settle();
+    test.type_bytes(b"1R\x1b[5;2R");
+    test.step();
+    test.settle();
+    assert_eq!(test.shell.composer.text(), "asafe");
+    assert!(test.sent().is_empty());
+}
+
+#[test]
+fn a_suffix_that_never_completes_rejects_the_paste_after_the_idle_wait() {
+    let mut test = pasting_after_a_timed_out_probe();
+    test.type_bytes(b"safe\x1b[201~\x1b[");
+    test.step();
+    test.settle();
+    assert_eq!(test.shell.composer.text(), "a");
+    let now_ms = test.shell.now_ms();
+    let deadline_ms = test.shell.next_deadline_ms(now_ms).unwrap();
+    assert!(deadline_ms <= now_ms + 100, "{deadline_ms} {now_ms}");
+    test.advance(100);
+    test.step();
+    test.settle();
+    assert_eq!(test.shell.composer.text(), "a");
+    assert!(test.sent().is_empty());
+    let screen = test.screen();
+    assert!(screen.contains("✗ input:"), "{screen}");
+}

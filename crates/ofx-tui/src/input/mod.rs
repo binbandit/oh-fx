@@ -178,6 +178,11 @@ impl TerminalInput {
                 self.native_clear.finish_late_response();
                 self.released.push(unmatched.as_slice());
             }
+            ProbePoll::CandidateExpired(unmatched) => {
+                for byte in unmatched.as_slice() {
+                    self.paste.consume_byte(*byte);
+                }
+            }
         }
     }
 
@@ -223,7 +228,9 @@ impl TerminalInput {
     }
 
     fn has_unclassified_input(&self) -> bool {
-        self.has_queued_input() || self.theme_monitor.has_pending_input()
+        self.has_queued_input()
+            || self.theme_monitor.has_pending_input()
+            || self.cursor_probe.holds_candidate()
     }
 
     fn has_queued_input(&self) -> bool {
@@ -261,7 +268,7 @@ impl TerminalInput {
         match entry {
             Entry::Fresh => match self.owner() {
                 Owner::ThemeMonitor => self.feed_theme_monitor(byte, context),
-                Owner::Paste => self.capture_paste_byte(byte),
+                Owner::Paste => self.capture_paste_byte(byte, context.now_ms),
                 Owner::Input if self.theme_monitor.enabled => {
                     self.feed_theme_monitor(byte, context);
                 }
@@ -291,7 +298,7 @@ impl TerminalInput {
 
     fn after_theme_monitor(&mut self, byte: u8, context: InputContext) {
         if self.paste.active() {
-            self.capture_paste_byte(byte);
+            self.capture_paste_byte(byte, context.now_ms);
         } else if self.cursor_probe.intercepts_input() {
             self.feed_cursor_probe(byte, context.now_ms);
         } else if let Some(row) = self.native_clear_row(byte, context) {
@@ -317,11 +324,12 @@ impl TerminalInput {
         self.events.push_back(InputEvent::NativeClearProbe);
     }
 
-    fn capture_paste_byte(&mut self, byte: u8) {
+    fn capture_paste_byte(&mut self, byte: u8, now_ms: i64) {
         if !self.cursor_probe.discarding_late_reply() {
             self.paste.consume_byte(byte);
             return;
         }
+        self.cursor_probe.note_input_activity(now_ms);
         match self.cursor_probe.feed(byte) {
             ProbeFeed::Pending => {}
             ProbeFeed::Position(_) | ProbeFeed::LateResponse => {
@@ -651,6 +659,33 @@ mod tests {
         input.push_bytes(b"\x1b[9;1R\x1b[9;2R");
         assert!(drain_probing(&mut input, 1_050).is_empty());
         assert!(!input.native_clear_busy());
+    }
+
+    #[test]
+    fn a_late_reply_forwarded_by_the_theme_monitor_stays_out_of_the_paste() {
+        let mut input = probing_input();
+        input.start_theme_monitor();
+        input.push_bytes(b"\x1b[?997;1n");
+        assert!(drain(&mut input, 0).is_empty());
+        assert_eq!(input.take_theme_query(0), Some(ThemeQuery::ResponseFence));
+        input.push_bytes(b"a\x1b[200~");
+        assert_eq!(drain_probing(&mut input, 0), [InputEvent::NativeClearProbe]);
+        input.poll_native_clear_probe(100);
+        assert_eq!(
+            drain_probing(&mut input, 100),
+            [raw(b'a'), action(Action::PasteStart)]
+        );
+        input.begin_paste(PasteOwner::Composer, usize::MAX);
+        assert_eq!(input.owner(), Owner::ThemeMonitor);
+        input.push_bytes(b"left\x1b[5;1R\x1b[5;2Rright\x1b[201~");
+        assert!(drain_probing(&mut input, 110).is_empty());
+        assert_eq!(
+            input.settle_delivery_epoch(110),
+            Some(InputEvent::Paste(PasteOutcome::Text {
+                owner: PasteOwner::Composer,
+                text: "leftright".to_owned(),
+            }))
+        );
     }
 
     #[test]

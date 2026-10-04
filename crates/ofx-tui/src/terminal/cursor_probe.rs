@@ -69,6 +69,7 @@ pub(crate) enum ProbePoll {
     Quiet,
     TimedOut(ForwardedBytes),
     LateWindowExpired(ForwardedBytes),
+    CandidateExpired(ForwardedBytes),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -126,11 +127,19 @@ impl TaggedCursorProbe {
     }
 
     pub(crate) fn deadline_ms(&self) -> Option<i64> {
-        matches!(self.mode, Mode::Waiting | Mode::DiscardingLate).then_some(self.deadline_ms)
+        match self.mode {
+            Mode::Waiting | Mode::DiscardingLate => Some(self.deadline_ms),
+            Mode::DiscardingLateUntilPasteEnds if self.holds_candidate() => Some(self.deadline_ms),
+            Mode::Idle | Mode::DiscardingLateUntilPasteEnds => None,
+        }
+    }
+
+    pub(crate) fn holds_candidate(&self) -> bool {
+        !self.candidate.as_slice().is_empty() || self.first_position.is_some()
     }
 
     pub(crate) fn note_input_activity(&mut self, now_ms: i64) {
-        if matches!(self.mode, Mode::Waiting | Mode::DiscardingLate) {
+        if self.mode != Mode::Idle {
             self.deadline_ms = now_ms.saturating_add(RESPONSE_IDLE_TIMEOUT_MS);
         }
     }
@@ -151,6 +160,11 @@ impl TaggedCursorProbe {
 
     pub(crate) fn poll(&mut self, now_ms: i64) -> ProbePoll {
         match self.mode {
+            Mode::DiscardingLateUntilPasteEnds
+                if self.holds_candidate() && now_ms >= self.deadline_ms =>
+            {
+                ProbePoll::CandidateExpired(self.take_unmatched())
+            }
             Mode::Idle | Mode::DiscardingLateUntilPasteEnds => ProbePoll::Quiet,
             _ if now_ms < self.deadline_ms => ProbePoll::Quiet,
             Mode::Waiting => ProbePoll::TimedOut(self.expire(now_ms)),
@@ -476,6 +490,27 @@ mod tests {
             (Vec::new(), vec![ProbeFeed::LateResponse])
         );
         assert!(probe.can_begin());
+    }
+
+    #[test]
+    fn a_candidate_held_during_a_paste_gets_its_own_idle_deadline() {
+        let mut probe = waiting();
+        probe.poll(100);
+        probe.suspend_for_paste();
+        probe.note_input_activity(500);
+        assert!(!probe.holds_candidate());
+        assert_eq!(probe.deadline_ms(), None);
+        assert_eq!(feed_all(&mut probe, b"\x1b[5;1R").1, Vec::new());
+        assert!(probe.holds_candidate());
+        assert_eq!(probe.deadline_ms(), Some(600));
+        assert_eq!(probe.poll(599), ProbePoll::Quiet);
+        assert_eq!(
+            probe.poll(600),
+            ProbePoll::CandidateExpired(ForwardedBytes::from_slice(b"\x1b[5;1R"))
+        );
+        assert!(!probe.holds_candidate());
+        assert!(probe.discarding_late_reply());
+        assert_eq!(probe.poll(10_000), ProbePoll::Quiet);
     }
 
     #[test]
