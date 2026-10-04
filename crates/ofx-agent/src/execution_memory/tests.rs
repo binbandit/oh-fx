@@ -30,6 +30,7 @@ fn replayed() -> ChatMessage {
             source: ReplaySource {
                 provider: "codex".to_owned(),
                 model: "m".to_owned(),
+                binding: None,
             },
             parts_json: "[]".to_owned(),
         }),

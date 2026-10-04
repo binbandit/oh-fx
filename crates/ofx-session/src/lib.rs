@@ -22,6 +22,7 @@ mod session_title_generation;
 
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
+pub use session_codec::recovery_checkpoint::CredentialAuthority;
 pub use session_codec::{SavedProvider, SessionMetadata, SessionPreferences};
 pub use session_commands::resolve_model_query_from_ids;
 pub use session_conversation_log::SessionLog;
@@ -34,7 +35,8 @@ pub use session_event::{
 };
 pub use session_layout::is_valid_session_id;
 pub use session_log::{
-    CompactedHistory, SavedHistory, SavedSession, SavedTurn, SessionDisposal, WritableSession,
+    CompactedHistory, PendingRecovery, SavedHistory, SavedSession, SavedTurn, SessionDisposal,
+    WritableSession,
 };
 pub use session_store::{ListScope, ResumeTarget, SessionCatalog, SessionStore};
 pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSummary};

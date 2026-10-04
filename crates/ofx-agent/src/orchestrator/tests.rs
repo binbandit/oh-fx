@@ -8,7 +8,7 @@ use ofx_contract::{
     ActionLabel, ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile,
     CommandRequest, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
     PreparedCall, ProviderReplay, ReasoningEffort, ReplaySource, RootUserRequests, StreamSink,
-    SubagentStatus, ToolActivity, ToolCallId, ToolEffect,
+    SubagentStatus, ToolActivity, ToolCallId, ToolChoice, ToolEffect,
 };
 
 use super::*;
@@ -31,6 +31,7 @@ struct SeenRequest {
     instructions: Vec<String>,
     messages: Vec<ChatMessage>,
     tools: Vec<ToolSpec>,
+    tool_choice: ToolChoice,
     max_output_tokens: Option<u32>,
     reasoning_effort: Option<String>,
     fast: bool,
@@ -88,6 +89,7 @@ impl ModelProvider for FakeProvider {
                 .collect(),
             messages: request.messages.to_vec(),
             tools: request.tools.to_vec(),
+            tool_choice: request.tool_choice,
             max_output_tokens: request.max_output_tokens,
             reasoning_effort: request.provider_options.reasoning_effort.map(str::to_owned),
             fast: request.provider_options.fast,
@@ -554,6 +556,7 @@ fn replay(parts: &str) -> ProviderReplay {
         source: ReplaySource {
             provider: "fake".to_owned(),
             model: "test-model".to_owned(),
+            binding: None,
         },
         parts_json: parts.to_owned(),
     }
@@ -672,6 +675,7 @@ async fn final_answers_stream_raw_text_and_complete_the_turn() {
             ],
             messages: vec![ChatMessage::user("hi")],
             tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
             max_output_tokens: Some(64),
             reasoning_effort: None,
             fast: false,
@@ -2639,6 +2643,7 @@ mod capabilities;
 mod compaction;
 mod malformed_arguments;
 mod project_context;
+mod recovery;
 mod recovery_pause;
 mod response_language;
 mod reviews;

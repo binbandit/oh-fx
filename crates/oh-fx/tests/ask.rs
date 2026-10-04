@@ -1080,10 +1080,6 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
             &["ask", "--prompt-permissions", "hi"],
             "ask --prompt-permissions",
         ),
-        (
-            &["ask", "--resume", "last", "--continue-recovery"],
-            "ask --continue-recovery",
-        ),
         (&["--add-dir", "/tmp", "ask", "--fast", "hi"], "--add-dir"),
         (&["ask", "--sessions-v2", "hi"], "ask --sessions-v2"),
         (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),

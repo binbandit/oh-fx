@@ -74,6 +74,7 @@ impl Persistence {
             });
         }
         self.store.move_here(&mut session).map_err(refused)?;
+        session.settle_recovery().map_err(refused)?;
         let resumed = ResumedSession::load(session).map_err(refused)?;
         let history = resumed.transcript(setup).map_err(refused)?;
         let title = resumed.display_title().map(str::to_owned);

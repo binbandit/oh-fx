@@ -10,6 +10,7 @@ fn replay(model: &str) -> ProviderReplay {
         source: ReplaySource {
             provider: "codex".to_owned(),
             model: model.to_owned(),
+            binding: None,
         },
         parts_json: format!(
             "[{{\"type\":\"reasoning\",\"text\":\"\",\"encrypted_content\":\"{}\"}}]",
