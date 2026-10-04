@@ -151,6 +151,146 @@ fn resume_menu_clips_long_titles_in_the_middle_before_metadata() {
 }
 
 #[test]
+fn resume_menu_keeps_long_titles_on_one_narrow_row_without_a_workspace_spill_row() {
+    let mut row = session(
+        "one",
+        "Investigate a very long session catalog rendering issue",
+        "/Users/example/Developer/Fx/worktrees/a-very-long-session-catalog-worktree",
+        1,
+    );
+    row.updated_at_ms = 1;
+    let rows = [row];
+    let mut state = view(&rows);
+    state.now_ms = 0;
+    let frame = menu_frame(&state, &Theme::builtin(false, false, false), 32, 4);
+    let title = &frame.rows[2];
+    assert!(title.width() <= 32, "{:?}", title.text());
+    assert!(title.text().contains('…'), "{:?}", title.text());
+    assert!(!title.text().contains('\n'), "{:?}", title.text());
+    assert!(
+        frame.rows.get(3).is_none_or(|next| next.text().is_empty()),
+        "{:?}",
+        frame.rows.get(3).map(Row::text)
+    );
+}
+
+#[test]
+fn resume_menu_keeps_shared_prefix_session_titles_distinguishable_when_narrow() {
+    let mut alpha = session(
+        "alpha",
+        "Shared production composer regression investigation session alpha",
+        "/workspace",
+        1,
+    );
+    alpha.updated_at_ms = 1;
+    let mut beta = session(
+        "beta",
+        "Shared production composer regression investigation session beta",
+        "/workspace",
+        1,
+    );
+    beta.updated_at_ms = 1;
+    let theme = Theme::builtin(false, false, false);
+    let columns = Columns::default();
+
+    let alpha_row = title_row(&alpha, true, 1, &columns, &theme, 64);
+    assert!(
+        alpha_row.text().contains("Shared p"),
+        "{:?}",
+        alpha_row.text()
+    );
+    assert!(
+        alpha_row.text().contains("n alpha"),
+        "{:?}",
+        alpha_row.text()
+    );
+    assert!(alpha_row.width() <= 64);
+
+    let beta_row = title_row(&beta, false, 1, &columns, &theme, 64);
+    assert!(
+        beta_row.text().contains("Shared p"),
+        "{:?}",
+        beta_row.text()
+    );
+    assert!(beta_row.text().contains("on beta"), "{:?}", beta_row.text());
+    assert!(beta_row.width() <= 64);
+}
+
+#[test]
+fn resume_menu_metadata_follows_the_widest_matching_title_across_windows() {
+    let mut alpha = session("alpha", "A", "/workspace/alpha-worktree", 1);
+    alpha.updated_at_ms = MS_PER_MINUTE;
+    let mut long = session("long", "Longest title", "/workspace/long-worktree", 100);
+    long.updated_at_ms = MS_PER_MINUTE;
+    let rows = [alpha, long];
+    let mut state = view(&rows);
+    state.now_ms = 2 * MS_PER_MINUTE;
+    let first = &texts(&state, 100, 3)[2];
+    let first_workspace = first.find("alpha-worktree").unwrap();
+    let first_turns = first.find("1 turn").unwrap();
+
+    state.selected = 1;
+    let second = &texts(&state, 100, 3)[2];
+    let second_workspace = second.find("long-worktree").unwrap();
+    let second_turns = second.find("100 turns").unwrap();
+
+    assert_eq!(visible_width(&first[..first_workspace]), 19);
+    assert_eq!(
+        visible_width(&first[..first_workspace]),
+        visible_width(&second[..second_workspace])
+    );
+    assert_eq!(
+        visible_width(&first[..first_turns]),
+        visible_width(&second[..second_turns])
+    );
+}
+
+#[test]
+fn resume_menu_keeps_a_complete_compact_item_within_a_three_row_budget() {
+    let mut row = session("one", "Compact session", "/workspace", 1);
+    row.updated_at_ms = 1;
+    let rows = [row];
+    let state = view(&rows);
+
+    assert_eq!(texts(&state, 80, 3).len(), 3);
+    assert_eq!(MenuLayout::build(&state, 3).visible_session_items, 1);
+}
+
+#[test]
+fn resume_menu_clips_long_titles_before_metadata_across_vt_widths() {
+    const LONG_TITLE: &str = "Investigate an extremely long terminal rendering regression while preserving the session metadata columns at every supported width";
+    let mut row = session("one", LONG_TITLE, "/workspace/inline-core-menus", 100);
+    row.updated_at_ms = MS_PER_MINUTE;
+    let rows = [row];
+    let mut state = view(&rows);
+    state.now_ms = 2 * MS_PER_MINUTE;
+
+    for (width, expect_metadata, expect_full_title) in [
+        (40, false, false),
+        (80, true, false),
+        (120, true, false),
+        (220, true, true),
+    ] {
+        let rendered = texts(&state, width, 3);
+        let text = rendered[2].trim_end();
+        assert!(visible_width(text) <= width, "{width}: {text:?}");
+        assert_eq!(
+            text.contains("inline-core-menus"),
+            expect_metadata,
+            "{width}: {text:?}"
+        );
+        assert_eq!(
+            text.contains(LONG_TITLE),
+            expect_full_title,
+            "{width}: {text:?}"
+        );
+        if !expect_full_title {
+            assert!(text.contains('…'), "{width}: {text:?}");
+        }
+    }
+}
+
+#[test]
 fn resume_menu_renders_a_navigable_load_more_action() {
     let rows: Vec<SessionRow> = (0..3)
         .map(|index| session(&format!("s{index}"), &format!("Session {index}"), "/w", 1))
