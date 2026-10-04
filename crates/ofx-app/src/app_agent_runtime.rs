@@ -1,7 +1,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_agent::{Agent, Compaction, CompactionError, QuestionRequests, TurnFailure, TurnReport};
+use ofx_agent::{
+    Agent, Compaction, CompactionError, QuestionRequests, QueuedPrompt, TurnFailure, TurnReport,
+    WorkerRuntime,
+};
 use ofx_config::save_model_preference;
 use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelOption, Notice, NoticeTone,
@@ -50,7 +53,7 @@ pub(crate) struct ControllerState {
     pending_clear: Option<u64>,
     pending_install_inputs: VecDeque<InstallInput>,
     received_prompts: u64,
-    queue: VecDeque<Prompt>,
+    worker: Arc<WorkerRuntime>,
     permissions: PermissionRuntime,
     context_notices: Arc<Mutex<ContextNotices>>,
     emit: Emit,
@@ -69,12 +72,7 @@ enum InstallInput {
         accepted: Option<SkillInstall>,
     },
     Clear(u64),
-    Prompt(Prompt),
-}
-
-struct Prompt {
-    text: String,
-    skills: Vec<SkillBinding>,
+    Prompt(QueuedPrompt),
 }
 
 impl ControllerState {
@@ -239,13 +237,13 @@ impl ControllerState {
     }
 
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
+        let prompt = QueuedPrompt::new(self.received_prompts, text, skills);
         self.received_prompts += 1;
-        let prompt = Prompt { text, skills };
         if installing {
             self.pending_install_inputs
                 .push_back(InstallInput::Prompt(prompt));
         } else {
-            self.queue.push_back(prompt);
+            self.worker.admit(prompt);
         }
     }
 }
@@ -384,6 +382,7 @@ impl Controller {
         emit: Emit,
         persistence: Option<Persistence>,
         pick_at_start: bool,
+        worker: Arc<WorkerRuntime>,
     ) -> Self {
         let questions = setup.take_question_requests();
         let notices = ContextNotices {
@@ -403,7 +402,7 @@ impl Controller {
             pending_clear: None,
             pending_install_inputs: VecDeque::new(),
             received_prompts: 0,
-            queue: VecDeque::new(),
+            worker,
             context_notices: Arc::new(Mutex::new(notices)),
             emit,
             clipboard: Arc::new(NativeClipboard),
@@ -416,7 +415,10 @@ impl Controller {
             approvals.attach(Arc::clone(&state.emit));
         }
         Self {
-            agent: state.setup.agent(persistence.is_some()),
+            agent: state
+                .setup
+                .agent(persistence.is_some())
+                .with_steering(Arc::clone(&state.worker)),
             catalog: CatalogFetch {
                 source: state.setup.models_source(),
                 pending: None,
@@ -473,7 +475,7 @@ impl Controller {
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
             if self.installation.is_none()
-                && let Some(prompt) = self.state.queue.pop_front()
+                && let Some(prompt) = self.state.worker.take_next()
             {
                 if !self.run_turn(&prompt, commands).await {
                     return;
@@ -571,6 +573,7 @@ impl Controller {
     }
 
     async fn compact(&mut self, commands: &mut UnboundedReceiver<UiCommand>) -> bool {
+        self.state.worker.begin_compaction();
         self.state.compaction(CompactionActivity::Preparing);
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.state.emit);
@@ -610,6 +613,7 @@ impl Controller {
                 }
             }
         };
+        self.state.worker.finish_processing();
         self.state.compaction(compaction_activity(result));
         self.settle_deferred_commands(open).await;
         open
@@ -748,8 +752,8 @@ impl Controller {
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
         self.bind_children();
         self.state.session_title.set(None);
-        for prompt in &self.state.queue {
-            observe_prompt(self.persistence.as_ref(), &prompt.text);
+        for prompt in self.state.worker.waiting_texts() {
+            observe_prompt(self.persistence.as_ref(), &prompt);
         }
         for input in &self.state.pending_install_inputs {
             if let InstallInput::Prompt(prompt) = input {
@@ -786,7 +790,7 @@ impl Controller {
 
     async fn run_turn(
         &mut self,
-        prompt: &Prompt,
+        prompt: &QueuedPrompt,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
         self.state.skills().refresh();
@@ -832,6 +836,7 @@ impl Controller {
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {
+                                state.worker.request_cancel();
                                 cancel.cancel();
                             }
                         }
@@ -856,6 +861,7 @@ impl Controller {
             }
         };
         self.state.setup.end_turn_approvals();
+        self.state.worker.finish_processing();
         if let Some(turn_id) = running_turn() {
             self.announce_turn_end(turn_id, &report);
         }
@@ -867,7 +873,7 @@ impl Controller {
 
     async fn drain_installations(&mut self) {
         loop {
-            self.state.queue.clear();
+            self.state.worker.clear();
             self.state
                 .pending_install_inputs
                 .retain(|input| !matches!(input, InstallInput::Prompt(_)));
@@ -981,10 +987,11 @@ fn drain_install_inputs(
             }
             InstallInput::Clear(first_kept) => {
                 state.pending_clear = Some(first_kept);
-                state.queue.clear();
+                state.worker.clear();
+                state.worker.request_cancel();
                 cancel.cancel();
             }
-            InstallInput::Prompt(prompt) => state.queue.push_back(prompt),
+            InstallInput::Prompt(prompt) => state.worker.admit(prompt),
         }
     }
 }
@@ -1035,7 +1042,8 @@ fn run_deferred(
             }
             CommandEffect::Clear => {
                 state.pending_clear = Some(state.received_prompts);
-                state.queue.clear();
+                state.worker.clear();
+                state.worker.request_cancel();
                 cancel.cancel();
                 return;
             }
@@ -1218,12 +1226,15 @@ mod tests {
     use crate::app_session_runtime::{LaunchOverrides, session_route};
     use crate::codex_provider::SubscriptionEndpoints;
 
+    mod steering;
+
     struct Harness {
         home: tempfile::TempDir,
         commands: UnboundedSender<UiCommand>,
         events: UnboundedReceiver<UiEvent>,
         seen: Vec<UiEvent>,
         clipboard: Arc<TestClipboard>,
+        worker: Arc<WorkerRuntime>,
     }
 
     #[derive(Default)]
@@ -1481,8 +1492,9 @@ mod tests {
             let (commands, receiver) = unbounded_channel();
             let clipboard = Arc::new(TestClipboard::default());
             let shared: Arc<dyn Clipboard> = clipboard.clone();
+            let worker = Arc::new(WorkerRuntime::default());
             tokio::spawn(
-                Controller::new(setup, emit, persistence, false)
+                Controller::new(setup, emit, persistence, false, Arc::clone(&worker))
                     .with_clipboard(shared)
                     .run(receiver),
             );
@@ -1492,6 +1504,7 @@ mod tests {
                 events,
                 seen: Vec::new(),
                 clipboard,
+                worker,
             }
         }
 
@@ -1557,28 +1570,6 @@ mod tests {
             .iter()
             .filter(|message| message["role"] == "user")
             .count()
-    }
-
-    #[tokio::test]
-    async fn prompts_submitted_during_a_turn_run_next_in_order() {
-        let server = FakeServer::start([
-            Reply::sse(&chat_text_events(&["one"])),
-            Reply::sse(&chat_text_events(&["two"])),
-        ]);
-        let mut harness = Harness::start(&server).await;
-        harness.submit("first");
-        harness.submit("second");
-        harness.until(finished(TurnOutcome::Completed)).await;
-        harness.until(titled(Some("first"))).await;
-        let second = harness.until(finished(TurnOutcome::Completed)).await;
-        assert!(matches!(second[0], UiEvent::TurnStarted { .. }));
-        assert!(
-            second
-                .iter()
-                .any(|event| matches!(event, UiEvent::AssistantText { text, .. } if text == "two"))
-        );
-        let requests = server.requests();
-        assert_eq!(user_messages(&requests[1].json()), 2);
     }
 
     #[tokio::test]
@@ -1670,38 +1661,6 @@ mod tests {
         harness.submit("second");
         harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(user_messages(&server.requests()[1].json()), 1);
-    }
-
-    #[tokio::test]
-    async fn reset_during_a_turn_cancels_it_and_drops_the_prompts_queued_before_it() {
-        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
-        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["after"]))]);
-        let mut harness = Harness::start(&server).await;
-        harness.submit("slow");
-        harness
-            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
-            .await;
-        harness.submit("dropped");
-        harness.command("/reset");
-        harness.submit("kept");
-        harness.until(finished(TurnOutcome::Interrupted)).await;
-        harness
-            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
-            .await;
-        let next = timeout(
-            Duration::from_secs(10),
-            harness.until(finished(TurnOutcome::Completed)),
-        )
-        .await
-        .expect("the prompt sent after reset runs");
-        assert!(
-            next.iter().any(
-                |event| matches!(event, UiEvent::AssistantText { text, .. } if text == "after")
-            )
-        );
-        let requests = server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(user_messages(&requests[1].json()), 1);
     }
 
     #[tokio::test]
@@ -2078,6 +2037,19 @@ mod tests {
         let body = requests[7].json();
         assert_eq!(user_messages(&body), 6);
         assert_eq!(first_user_message(&body), "read the notes");
+        let sent_meanwhile = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap();
+        assert!(
+            sent_meanwhile.starts_with("<user_steering>\n")
+                && sent_meanwhile.ends_with("\n\nqueued\n</user_steering>"),
+            "{sent_meanwhile}"
+        );
     }
 
     #[tokio::test]
@@ -2894,6 +2866,10 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, UiEvent::SkillsMenu { .. }))
         );
+        harness.send(UiCommand::Cancel {
+            turn_id: harness.running_turn(),
+        });
+        within(harness.until(finished(TurnOutcome::Interrupted))).await;
         release.send(()).unwrap();
         worker.join().unwrap();
         let shown =
@@ -2906,10 +2882,6 @@ mod tests {
             ]
         );
         assert_eq!(codex.requests().len(), 1);
-        harness.send(UiCommand::Cancel {
-            turn_id: harness.running_turn(),
-        });
-        within(harness.until(finished(TurnOutcome::Interrupted))).await;
         within(harness.until(finished(TurnOutcome::Completed))).await;
         let requests = codex.requests();
         assert_eq!(requests.len(), 2);
@@ -3256,43 +3228,6 @@ mod tests {
             .await;
         assert_eq!(undo_notice(&mut harness).await, "undo|Nothing to undo.");
         assert_eq!(fs::read_to_string(&notes).unwrap(), "again\n");
-    }
-
-    #[tokio::test]
-    async fn prompts_submitted_after_a_mid_turn_clear_run_in_the_fresh_conversation() {
-        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
-        let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["after"]))]);
-        let mut harness = Harness::start(&server).await;
-        harness.submit("slow");
-        harness
-            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
-            .await;
-        harness.submit("dropped");
-        harness.command("/clear");
-        harness.submit("kept");
-        let cleared = harness
-            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
-            .await;
-        assert_eq!(
-            cleared.last(),
-            Some(&UiEvent::ConversationCleared {
-                first_kept_prompt: 2
-            })
-        );
-        let next = timeout(
-            Duration::from_secs(10),
-            harness.until(finished(TurnOutcome::Completed)),
-        )
-        .await
-        .expect("the prompt sent after clear runs");
-        assert!(
-            next.iter().any(
-                |event| matches!(event, UiEvent::AssistantText { text, .. } if text == "after")
-            )
-        );
-        let requests = server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(user_messages(&requests[1].json()), 1);
     }
 
     #[tokio::test]
@@ -4105,7 +4040,12 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&events);
         let emit: Emit = Arc::new(move |event| captured.lock().unwrap().push(event));
-        (home, Controller::new(setup, emit, None, false), events)
+        let worker = Arc::new(WorkerRuntime::default());
+        (
+            home,
+            Controller::new(setup, emit, None, false, worker),
+            events,
+        )
     }
 
     async fn direct_skill_install(controller: &mut Controller, text: &str) {
@@ -4392,16 +4332,15 @@ mod tests {
     #[tokio::test]
     async fn completed_install_reopens_skill_commands_and_clear_drops_earlier_prompts() {
         let server = FakeServer::start([
-            Reply::held_sse(&chat_text_events(&["active"])[..2]),
+            outside_read(),
             Reply::sse(&chat_text_events(&["queued prompt must not run"])),
         ]);
         let mut harness = Harness::start(&server).await;
         write_skill(&harness.home, "install-pack", "new-skill");
         let source = fs::canonicalize(harness.home.path().join("workspace/install-pack")).unwrap();
+        fs::write(harness.home.path().join("outside.txt"), "notes\n").unwrap();
         harness.submit("active");
-        harness
-            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
-            .await;
+        harness.until(approval_requested).await;
         harness.submit("queued prompt");
         harness.command(&format!("/skills install {}", source.display()));
         timeout(Duration::from_secs(10), harness.until(|event| matches!(event, UiEvent::Notice { notice } if notice.body == "Installed: new-skill"))).await.unwrap();
@@ -4437,7 +4376,7 @@ mod tests {
     async fn assert_install_completion_order(starts_idle: bool) {
         let mut replies = Vec::new();
         if !starts_idle {
-            replies.push(Reply::held_sse(&chat_text_events(&["active"])[..2]));
+            replies.push(outside_read());
         }
         replies.push(Reply::sse(&chat_text_events(&["after clear"])));
         let server = FakeServer::start(replies);
@@ -4451,10 +4390,9 @@ mod tests {
         fs::rename(&first, &first_locked).unwrap();
         let first_locked = fs::canonicalize(first_locked).unwrap();
         if !starts_idle {
+            fs::write(harness.home.path().join("outside.txt"), "notes\n").unwrap();
             harness.submit("active");
-            harness
-                .until(|event| matches!(event, UiEvent::AssistantText { .. }))
-                .await;
+            harness.until(approval_requested).await;
         }
         harness.command(&format!("/skills install {}", first_locked.display()));
         harness.submit("queued prompt");
