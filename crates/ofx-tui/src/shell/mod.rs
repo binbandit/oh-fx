@@ -503,7 +503,7 @@ impl<'a> Shell<'a> {
         self.metrics.full_redraws += 1;
         self.renderer.resize(self.layout.rows, self.layout.cols);
         self.renderer.reset_screen();
-        self.transcript.restart(self.cols());
+        self.transcript.replay(self.cols());
         self.invalidate();
     }
 
@@ -1058,6 +1058,23 @@ mod tests {
     use super::*;
     use crate::output::activity_status::ACTIVITY_BLINK_HALF_PERIOD_MS;
     use crate::terminal::test_pty;
+
+    #[test]
+    fn a_replay_rewrites_at_most_the_last_256_kib_of_the_transcript() {
+        let mut test = test_shell::TestShell::start();
+        for index in 0..4000 {
+            test.shell
+                .input_notice(&format!("notice {index:04} {}", "y".repeat(80)));
+        }
+        test.screen();
+        test.resize(24, 120);
+        let written = test.written();
+        assert!(written.contains("\x1b[3J"));
+        assert!(written.len() < 300 * 1024, "{}", written.len());
+        assert!(written.contains("notice 3999 "));
+        assert!(!written.contains("notice 0000 "));
+        assert!(test.screen().contains("notice 3999 "));
+    }
 
     #[test]
     fn resizing_back_from_a_too_small_terminal_replays_the_screen() {

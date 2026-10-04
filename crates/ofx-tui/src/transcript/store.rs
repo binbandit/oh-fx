@@ -9,6 +9,8 @@ use crate::render_engine::transcript_blocks::{
 use crate::row_text::Row;
 use crate::theme::Theme;
 
+const REPLAY_TAIL_BYTES: usize = 256 * 1024;
+
 #[derive(Debug, Default)]
 pub(crate) struct Transcript {
     entries: Vec<Entry>,
@@ -18,6 +20,7 @@ pub(crate) struct Transcript {
     cols: usize,
     open_group: Option<usize>,
     provisional: Option<Vec<Row>>,
+    replaying: bool,
 }
 
 impl Transcript {
@@ -134,6 +137,12 @@ impl Transcript {
         self.pending.clear();
         self.held_blanks.clear();
         self.provisional = None;
+        self.replaying = false;
+    }
+
+    pub(crate) fn replay(&mut self, cols: usize) {
+        self.restart(cols);
+        self.replaying = true;
     }
 
     pub(crate) fn take_new_rows(&mut self, theme: &Theme) -> Vec<Row> {
@@ -146,7 +155,11 @@ impl Transcript {
             self.rendered += 1;
             self.provisional = None;
         }
-        std::mem::take(&mut self.pending)
+        let mut rows = std::mem::take(&mut self.pending);
+        if std::mem::take(&mut self.replaying) {
+            keep_replay_tail(&mut rows);
+        }
+        rows
     }
 
     pub(crate) fn provisional_rows(&mut self, theme: &Theme) -> &[Row] {
@@ -187,6 +200,22 @@ impl Transcript {
             self.pending.push(Row::new());
         }
     }
+}
+
+fn keep_replay_tail(rows: &mut Vec<Row>) {
+    let mut budget = REPLAY_TAIL_BYTES;
+    let kept = rows
+        .iter()
+        .rev()
+        .take_while(|row| match budget.checked_sub(row.encode().len() + 1) {
+            Some(rest) => {
+                budget = rest;
+                true
+            }
+            None => false,
+        })
+        .count();
+    rows.drain(..rows.len() - kept);
 }
 
 #[cfg(test)]
@@ -285,5 +314,30 @@ mod tests {
         transcript.clear();
         assert!(transcript.take_new_rows(&theme()).is_empty());
         assert!(!transcript.tail_wants_footer_gap());
+    }
+
+    #[test]
+    fn a_replay_keeps_only_its_last_256_kib_while_appends_keep_everything() {
+        let lines: Vec<String> = (0..3000)
+            .map(|index| format!("{index:04} {}", "x".repeat(95)))
+            .collect();
+        let mut transcript = Transcript::default();
+        transcript.restart(120);
+        transcript.push(Entry::UserTurn {
+            text: "go".to_owned(),
+        });
+        transcript.append_assistant(lines.iter().map(|text| line(text)).collect(), &theme());
+        let appended = texts(&transcript.take_new_rows(&theme()));
+        assert_eq!(appended.len(), 3002);
+        assert_eq!(appended[2], format!("  {}", lines[0]));
+        transcript.replay(120);
+        let replayed = texts(&transcript.take_new_rows(&theme()));
+        let bytes: usize = replayed.iter().map(|row| row.len() + 1).sum();
+        assert!(bytes <= 256 * 1024, "{bytes}");
+        assert!(bytes > 256 * 1024 - 104, "{bytes}");
+        assert_eq!(replayed.last(), Some(&format!("  {}", lines[2999])));
+        assert!(!replayed.contains(&format!("  {}", lines[0])));
+        transcript.restart(120);
+        assert_eq!(transcript.take_new_rows(&theme()).len(), 3002);
     }
 }
