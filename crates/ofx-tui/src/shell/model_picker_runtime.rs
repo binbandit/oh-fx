@@ -38,7 +38,11 @@ impl Column {
 
 impl Shell<'_> {
     pub(super) fn model_query(&self) -> Option<ModelQuery<'_>> {
-        if self.skills_menu_visible() || self.model_menu.is_some() || self.picker.is_some() {
+        if self.skills_menu_visible()
+            || self.help_menu.is_some()
+            || self.model_menu.is_some()
+            || self.picker.is_some()
+        {
             return None;
         }
         self.model_flow.query(self.composer.text())

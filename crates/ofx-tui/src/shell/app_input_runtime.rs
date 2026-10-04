@@ -109,10 +109,7 @@ impl Shell<'_> {
             b'\r' => self.handle_enter(),
             b'\t' if self.picker_active() => {}
             b'\t' => self.handle_tab(),
-            b' ' if self.help_menu.is_none()
-                && self.model_query().is_some()
-                && self.composer.selection().is_none() =>
-            {
+            b' ' if self.model_query().is_some() && self.composer.selection().is_none() => {
                 self.advance_model_column_on_space();
             }
             7 | 22 | 24 => {}

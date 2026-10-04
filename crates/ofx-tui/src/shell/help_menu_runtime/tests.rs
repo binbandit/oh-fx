@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiCommand, UiEvent,
+    ModelCapabilities, ModelCatalog, ModelCatalogSource, ModelOption, SkillMenuFocus,
+    SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiCommand, UiEvent,
 };
 
 use crate::shell::SkillCatalogSource;
@@ -218,4 +219,46 @@ fn a_late_help_reply_leaves_an_open_model_menu_and_its_lent_draft() {
     let screen = test.screen();
     assert!(screen.contains("Models 0  [All]"), "{screen}");
     assert!(!screen.contains("Commands"), "{screen}");
+}
+
+#[test]
+fn model_shaped_search_text_leaves_the_arrows_to_the_composer() {
+    let mut test = open();
+    let screen = press(&mut test, b"\x1b[200~/model zzz\nsecond\x1b[201~");
+    assert!(screen.contains("No commands found."), "{screen}");
+    assert!(test.shell.model_query().is_none());
+    press(&mut test, b"\x1b[A");
+    assert!(test.shell.composer.cursor() <= "/model zzz".len());
+    assert_eq!(test.shell.composer.text(), "/model zzz\nsecond");
+}
+
+#[test]
+fn a_late_help_reply_over_an_effort_column_keeps_left_for_the_cursor() {
+    let mut test = TestShell::start();
+    press(&mut test, b"/model\r");
+    test.deliver(UiEvent::ModelCatalog {
+        catalog: ModelCatalog::Listed {
+            models: vec![ModelOption {
+                id: "vendor/model".to_owned(),
+                capabilities: ModelCapabilities {
+                    reasoning_efforts: vec!["low".to_owned(), "high".to_owned()],
+                    supports_fast_mode: false,
+                    context_window: None,
+                },
+                max_output_tokens: None,
+            }],
+            source: ModelCatalogSource::ProfileSettings,
+        },
+    });
+    press(&mut test, b"\r");
+    press(&mut test, b"high");
+    assert_eq!(test.shell.composer.text(), "/model vendor/model high");
+    test.deliver(UiEvent::HelpRequested);
+    assert!(test.shell.help_menu.is_some());
+    press(&mut test, b"\x1b[D");
+    assert_eq!(test.shell.composer.text(), "/model vendor/model high");
+    assert_eq!(
+        test.shell.composer.cursor(),
+        "/model vendor/model high".len() - 1
+    );
 }
