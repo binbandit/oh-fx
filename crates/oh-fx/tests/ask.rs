@@ -733,9 +733,14 @@ fn missing_credentials_explain_themselves_in_json_mode_too() {
 }
 
 fn closed_pipe() -> io::PipeWriter {
-    let (reader, writer) = io::pipe().expect("create a pipe");
-    drop(reader);
-    writer
+    loop {
+        let (reader, mut writer) = io::pipe().expect("create a pipe");
+        drop(reader);
+        let reader_leaked_into_a_sibling_child = writer.write_all(b"\n").is_ok();
+        if !reader_leaked_into_a_sibling_child {
+            return writer;
+        }
+    }
 }
 
 #[test]
