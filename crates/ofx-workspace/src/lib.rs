@@ -58,7 +58,9 @@ pub use workspace_access::{
     AdditionalDirectory, DirectorySource, MAX_ADDITIONAL_DIRECTORIES, WorkspaceAccess,
     WorkspaceAccessError,
 };
-pub use workspace_commands::{Action, CommandError, Mutation, Outcome, Reconciliation, execute};
+pub use workspace_commands::{
+    Action, CommandError, Failure, FailurePhase, Mutation, Outcome, Reconciliation, execute,
+};
 pub use workspace_files::{
     CandidatePaths, CandidateStats, DEFAULT_CANDIDATE_CAP, Discovery, DiscoveryOptions,
     GIT_REPOSITORY_VARIABLES, MAX_RELATIVE_PATH_BYTES, Source, UntrackedFiles, discover,
