@@ -104,6 +104,19 @@ fn wait(session: &PtySession, needle: &str) -> String {
         .unwrap_or_else(|screen| panic!("expected {needle:?} on screen:\n{screen}"))
 }
 
+fn help_title() -> String {
+    format!("Commands {}", ofx_cli::SLASH_REGISTRY.commands().len())
+}
+
+fn help_category_title(label: &str) -> String {
+    let count = ofx_cli::SLASH_REGISTRY
+        .commands()
+        .iter()
+        .filter(|spec| spec.presentation_category.label() == label)
+        .count();
+    format!("Commands {count}")
+}
+
 #[test]
 fn the_picker_alias_and_launch_models_open_the_shell() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Chosen."]))]);
@@ -835,8 +848,9 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/bogus\r");
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
+    let title = format!("{}  [All]  General  Session  Account  Model", help_title());
     let menu = [
-        "Commands 25  [All]  General  Session  Account  Model",
+        title.as_str(),
         "  /help           show available slash commands",
         "  /quit           exit the interactive shell",
         "  /reset          reset the current session context",
@@ -931,7 +945,10 @@ fn help_opens_a_footer_menu_that_filters_switches_category_and_opens_commands() 
         &session,
         "↑↓ navigate     tab category     enter open     esc close",
     );
-    assert!(screen.contains("Commands 25  [All]  General"), "{screen}");
+    assert!(
+        screen.contains(&format!("{}  [All]  General", help_title())),
+        "{screen}"
+    );
     assert!(!screen.contains("auto · model-a"), "{screen}");
     session.send(b"perm");
     let screen = wait(&session, "Commands 1  [All]");
@@ -945,9 +962,12 @@ fn help_opens_a_footer_menu_that_filters_switches_category_and_opens_commands() 
     session.send(b"ask\r");
     wait(&session, "ask · model-a");
     session.send(b"/help\r");
-    wait(&session, "Commands 25  [All]");
+    wait(&session, &format!("{}  [All]", help_title()));
     session.send(b"\t");
-    wait(&session, "Commands 5  All  [General]");
+    wait(
+        &session,
+        &format!("{}  All  [General]", help_category_title("General")),
+    );
     session.send(b"/version\r");
     wait(&session, &format!("* version: {}", ofx_upgrade::VERSION));
     session
@@ -956,7 +976,7 @@ fn help_opens_a_footer_menu_that_filters_switches_category_and_opens_commands() 
         })
         .unwrap_or_else(|screen| panic!("the menu stayed open:\n{screen}"));
     session.send(b"/help\r");
-    wait(&session, "Commands 25  [All]");
+    wait(&session, &format!("{}  [All]", help_title()));
     session.send(b"st\x1b");
     session
         .wait_for(WAIT, |screen| {
@@ -1607,7 +1627,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 25");
+    wait(&session, &help_title());
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 
