@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ofx_agent::{Agent, ChildStore, TurnFailure, TurnReport};
-use ofx_contract::{Notice, NoticeTone, ReasoningEffort, TurnOutcome};
+use ofx_contract::{Notice, NoticeTone, ReasoningEffort, RecoveredTurn, TurnOutcome};
 use ofx_session::{SessionCatalog, SessionError, SessionPreferences, SessionStore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -65,10 +65,15 @@ impl Persistence {
             .map(str::to_owned)
     }
 
-    pub(crate) fn open(&mut self, agent: &mut Agent) -> Option<Notice> {
-        let Some(Resumption { session, remember }) = self.resumption.take() else {
-            return self.begin_fresh(agent);
+    pub(crate) fn open(&mut self, agent: &mut Agent) -> (Option<Notice>, bool) {
+        let Some(Resumption {
+            mut session,
+            remember,
+        }) = self.resumption.take()
+        else {
+            return (self.begin_fresh(agent), false);
         };
+        let continues = session.take_continuation();
         let live = LiveSession::resume(session, self.route.clone(), agent);
         live.attach(agent);
         let notice = if remember {
@@ -77,7 +82,19 @@ impl Persistence {
             None
         };
         self.live = Some(live);
-        notice
+        (notice, continues)
+    }
+
+    pub(crate) fn continue_recovery(
+        &self,
+        setup: &AgentSetup,
+        model: &str,
+        fast_mode: bool,
+    ) -> Result<RecoveredTurn, SessionError> {
+        self.live
+            .as_ref()
+            .ok_or(SessionError::NoPendingRecovery)?
+            .continue_recovery(setup, model, fast_mode)
     }
 
     pub(crate) fn begin_fresh(&mut self, agent: &mut Agent) -> Option<Notice> {
@@ -241,6 +258,15 @@ impl Persistence {
                 "Session saved, but could not remember it for -c ({error}). Resume with oh-fx --resume {id}."
             ),
         ))
+    }
+}
+
+impl Persistence {
+    pub(crate) fn settle_open_recovery(&mut self, agent: &mut Agent) -> Option<Notice> {
+        let live = self.live.as_ref()?;
+        live.settle_open_recovery(agent)
+            .err()
+            .map(|error| non_durable("paused turn could not be saved", error))
     }
 }
 
