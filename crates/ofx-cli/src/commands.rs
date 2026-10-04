@@ -547,6 +547,14 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Account,
     ),
     SlashSpec::new(
+        SlashKind::Logout,
+        "/logout",
+        "sign out of a provider session",
+        SlashPresentationCategory::Account,
+    )
+    .with_payload()
+    .with_help("/logout [vercel|codex|grok]"),
+    SlashSpec::new(
         SlashKind::Provider,
         "/provider",
         "choose the model provider and how it signs in",

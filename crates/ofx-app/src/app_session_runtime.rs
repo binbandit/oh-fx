@@ -26,7 +26,7 @@ pub(crate) use persistence::{Persistence, Resumption};
 pub(crate) use session_listing::{Answer, Listed, PageRequest, SessionListing};
 pub use session_titles::TitleGeneration;
 pub(crate) use session_titles::{RenameError, SessionTitle, validate_session_title};
-pub(crate) use shell_recovery::{NOT_CONTINUED, RECOVERY_TOPIC};
+pub(crate) use shell_recovery::{NOT_CONTINUED, RECOVERY_TOPIC, SIGN_IN_TO_CONTINUE};
 use shell_recovery::{ShellRecovery, shell_recovery};
 
 #[derive(Debug)]
