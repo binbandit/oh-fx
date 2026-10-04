@@ -15,6 +15,7 @@ pub struct LaunchModifiers {
     workspace: WorkspaceModifiers,
     model: ModelModifiers,
     sessions_v2: bool,
+    relaunch: Vec<OsString>,
 }
 
 #[derive(Debug, Default)]
@@ -37,6 +38,10 @@ struct WorkspaceModifiers {
 impl LaunchModifiers {
     pub fn context_limit_overrides(&self) -> &[ContextLimitOverride] {
         &self.context_limits
+    }
+
+    pub fn relaunch_args(&self) -> &[OsString] {
+        &self.relaunch
     }
 
     pub fn additional_directories(&self) -> &[OsString] {
@@ -150,6 +155,8 @@ impl LaunchModifiers {
                 value.map_err(|MissingValue| GlobalLaunchError::MissingContextLimitValue)?;
             self.context_limits
                 .push(parse_context_limit_override(value.as_bytes())?);
+            self.relaunch
+                .extend([OsString::from("--context-limit"), value]);
         } else if let Some(value) = args.take_option("add-dir", joined) {
             let value =
                 value.map_err(|MissingValue| GlobalLaunchError::MissingAddDirectoryValue)?;
@@ -157,11 +164,13 @@ impl LaunchModifiers {
                 return Err(GlobalLaunchError::MissingAddDirectoryValue);
             }
             self.workspace.additional_directories.push(value.clone());
+            self.relaunch.extend([OsString::from("--add-dir"), value]);
         } else if args.take_flag("--no-additional-dirs") {
             if self.workspace.saved_directories_suppressed {
                 return Err(GlobalLaunchError::DuplicateAdditionalDirectorySuppression);
             }
             self.workspace.saved_directories_suppressed = true;
+            self.relaunch.push(OsString::from("--no-additional-dirs"));
         } else if let Some(value) = args.take_option("provider", joined) {
             let value = value.map_err(|MissingValue| GlobalLaunchError::MissingProviderValue)?;
             if !value.to_str().is_some_and(is_valid_provider_id) {
@@ -269,6 +278,42 @@ mod tests {
         let (suppressed, _) = parse(&["--no-additional-dirs"]).unwrap();
         assert!(suppressed.additional_directories().is_empty());
         assert!(suppressed.has_workspace_modifiers());
+    }
+
+    #[test]
+    fn relaunch_args_repeat_only_the_launch_flags_a_resumed_session_does_not_restore() {
+        let (modifiers, remaining) = parse_raw(vec![
+            OsString::from("--add-dir"),
+            OsString::from("/tmp/shared one"),
+            OsString::from("--context-limit=skill_chunk_bytes=4096"),
+            OsString::from("--model"),
+            OsString::from("vendor/model-b"),
+            OsString::from("--effort=high"),
+            OsString::from("--fast"),
+            OsString::from_vec(b"--add-dir=/tmp/\xff".to_vec()),
+            OsString::from("--no-additional-dirs"),
+            OsString::from("--context-limit"),
+            OsString::from("skill_file_bytes=off"),
+            OsString::from("resume"),
+        ])
+        .unwrap();
+        assert_eq!(
+            modifiers.relaunch_args(),
+            [
+                OsString::from("--add-dir"),
+                OsString::from("/tmp/shared one"),
+                OsString::from("--context-limit"),
+                OsString::from("skill_chunk_bytes=4096"),
+                OsString::from("--add-dir"),
+                OsString::from_vec(b"/tmp/\xff".to_vec()),
+                OsString::from("--no-additional-dirs"),
+                OsString::from("--context-limit"),
+                OsString::from("skill_file_bytes=off"),
+            ]
+        );
+        assert_eq!(remaining, [OsString::from("resume")]);
+        let (plain, _) = parse(&["--model", "m", "--effort", "low", "--no-fast"]).unwrap();
+        assert!(plain.relaunch_args().is_empty());
     }
 
     #[test]

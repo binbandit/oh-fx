@@ -1187,6 +1187,51 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn an_upgrade_relaunch_keeps_the_launchs_directory_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        for name in ["saved", "cli-only"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let saved = serde_json::to_string(&root.join("saved")).unwrap();
+        let settings =
+            workspace_entry(&root, &format!(r#"{{"additional_directories":[{saved}]}}"#));
+        let Ok(ofx_cli::Invocation::Interactive(launch)) =
+            ofx_cli::parse_args(["--add-dir", "../cli-only", "--no-additional-dirs"])
+        else {
+            panic!("the launch is interactive");
+        };
+        let relaunch =
+            crate::app_upgrade_runtime::Relaunch::carrying(launch.relaunch_args().to_vec());
+        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"), false);
+        relaunch.hand_off("session-123");
+        let mut argv = Vec::new();
+        let _ = relaunch.run_with(|command| {
+            argv.extend(command.get_args().map(OsStr::to_os_string));
+            std::io::Error::from(std::io::ErrorKind::NotFound)
+        });
+        let Ok(ofx_cli::Invocation::Resume(resumed, _)) = ofx_cli::parse_args(argv) else {
+            panic!("the relaunch resumes the session");
+        };
+        let mut launched = profile(&root, &settings);
+        launched
+            .apply_launch(
+                launch.additional_directories(),
+                launch.saved_directories_suppressed(),
+            )
+            .unwrap();
+        let mut relaunched = profile(&root, &settings);
+        relaunched
+            .apply_launch(
+                resumed.additional_directories(),
+                resumed.saved_directories_suppressed(),
+            )
+            .unwrap();
+        assert_eq!(launched.additional_roots(), [root.join("cli-only")]);
+        assert_eq!(relaunched.additional_roots(), launched.additional_roots());
+    }
+
     #[tokio::test]
     async fn children_share_the_launchs_additional_directories() {
         let server = FakeServer::start([

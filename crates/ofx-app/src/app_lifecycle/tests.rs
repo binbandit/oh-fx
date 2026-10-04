@@ -254,6 +254,7 @@ fn run_a_codex_session(home: &Path) -> ! {
         persistence: None,
         opening: Opening::Welcome,
         ultrafast_requested: false,
+        relaunch_args: Vec::new(),
     };
     process::exit(i32::from(run(session, None, runtime).is_err()));
 }
@@ -515,6 +516,7 @@ fn run_a_local_install_session(home: &Path) -> ! {
         persistence: None,
         opening: Opening::Welcome,
         ultrafast_requested: false,
+        relaunch_args: Vec::new(),
     };
     process::exit(i32::from(run(session, None, runtime).is_err()));
 }
