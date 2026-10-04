@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use ofx_contract::{
     ApprovalRequest, BoxFuture, ConversationLog, LivePermissionMode, LogFailure,
-    ModelFailureDiagnostic, PermissionMode, ReasoningEffort, RootUserRequests, SubagentOverride,
-    SubagentProvider, SubagentRequest, SubagentResult, Tool, ToolContext, ToolOutput, TurnId,
-    format_tool_execution_error_json,
+    ModelFailureDiagnostic, PermissionMode, ReasoningEffort, RestoredHistory, RootUserRequests,
+    SubagentOverride, SubagentProvider, SubagentRequest, SubagentResult, Tool, ToolContext,
+    ToolOutput, TurnId, format_tool_execution_error_json,
 };
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
@@ -48,6 +48,8 @@ pub trait ChildStore: Send + Sync {
 
     fn new_child_id(&self) -> Result<String, LogFailure>;
 
+    fn load_registry(&self) -> Result<Option<Vec<u8>>, LogFailure>;
+
     fn save_registry(&self, registry: &[u8]) -> Result<(), LogFailure>;
 
     fn start_child(
@@ -55,6 +57,16 @@ pub trait ChildStore: Send + Sync {
         child_id: &str,
         settings: &ChildSettings,
     ) -> Result<Arc<dyn ChildRecord>, LogFailure>;
+
+    fn resume_child(&self, child_id: &str) -> Result<ResumedChild, LogFailure>;
+
+    fn reply_for_work(&self, child_id: &str, work_id: &str) -> Result<Option<String>, LogFailure>;
+}
+
+pub struct ResumedChild {
+    pub record: Arc<dyn ChildRecord>,
+    pub settings: ChildSettings,
+    pub history: RestoredHistory,
 }
 
 pub trait ChildRecord: Send + Sync {

@@ -29,6 +29,7 @@ pub use questions::{QuestionRequests, Questions};
 pub use recovery_pause::RecoveryPause;
 pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 pub use subagent::{
-    ChildAgents, ChildDefaults, ChildRecord, ChildSettings, ChildStore, SubagentHost, WorkTools,
+    ChildAgents, ChildDefaults, ChildRecord, ChildSettings, ChildStore, ResumedChild, SubagentHost,
+    WorkTools,
 };
 pub use worker_runtime::{QueuedPrompt, WorkerRuntime};

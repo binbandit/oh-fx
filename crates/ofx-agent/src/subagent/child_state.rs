@@ -30,6 +30,8 @@ pub(crate) enum RegistryError {
     ChildNotFound,
     ChildBusy,
     StaleWork,
+    UnsupportedSchema,
+    InvalidParentId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +97,34 @@ pub(crate) struct Registry {
 impl Registry {
     pub(crate) fn render(&self, parent_id: &str) -> Vec<u8> {
         registry_file::render(self, parent_id)
+    }
+
+    pub(crate) fn parse(bytes: &[u8], parent_id: &str) -> Result<Self, RegistryError> {
+        registry_file::parse(bytes, parent_id)
+    }
+
+    pub(crate) fn interrupt_active(&mut self) -> bool {
+        let mut changed = false;
+        for child in &mut self.children {
+            if !matches!(
+                child.phase,
+                ChildPhase::Running | ChildPhase::AwaitingApproval
+            ) {
+                continue;
+            }
+            if let Some(active) = child.active.take() {
+                child.last_work_id = Some(active.id);
+                child.last_request_fingerprint = Some(active.request_fingerprint);
+                child.last_outcome = Some(Outcome::Interrupted);
+                child.last_failure = None;
+            }
+            child.phase = ChildPhase::Interrupted;
+            changed = true;
+        }
+        if changed {
+            self.advance();
+        }
+        changed
     }
 
     pub(crate) fn find_by_id(&self, child_id: &str) -> Option<&Child> {

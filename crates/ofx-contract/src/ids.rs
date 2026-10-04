@@ -1,5 +1,19 @@
 use std::fmt;
 
+const MAX_SESSION_ID_BYTES: usize = 255;
+const SESSIONS_V2_DIR: &str = "v2";
+
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_SESSION_ID_BYTES
+        && id != "."
+        && id != ".."
+        && !id.eq_ignore_ascii_case(SESSIONS_V2_DIR)
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ToolCallId(String);
 

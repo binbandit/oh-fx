@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
-use ofx_text::mask_secrets;
+use ofx_text::{is_terminal_safe, mask_secrets};
 
 use crate::ids::ToolCallId;
 
@@ -436,6 +436,11 @@ impl ModelFailureDiagnostic {
         }
         let prefix = text.floor_char_boundary(Self::MAX_BYTES - Self::MARKER.len());
         Self(format!("{}{}", &text[..prefix], Self::MARKER))
+    }
+
+    pub fn restored(text: &str) -> Option<Self> {
+        ((1..=Self::MAX_BYTES).contains(&text.len()) && is_terminal_safe(text.as_bytes()))
+            .then(|| Self(text.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {

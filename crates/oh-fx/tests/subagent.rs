@@ -695,9 +695,65 @@ fn a_child_whose_admission_cannot_be_saved_leaves_no_session_behind() {
     assert_eq!(session_dirs(&home), [parent]);
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
-    assert!(
-        tool_result(&requests[2]).contains("tool_execution_failed"),
-        "{}",
-        tool_result(&requests[2])
+    assert_eq!(
+        tool_result(&requests[2]),
+        r#"{"ok":false,"result":null,"error_code":"host_unavailable"}"#
     );
+}
+
+#[test]
+fn a_resumed_session_continues_its_named_agent_from_the_saved_conversation() {
+    let server = FakeServer::start([
+        delegate(
+            "call_1",
+            &json!({"action": "message", "agent": "reviewer", "instructions": "Be terse.", "message": "review a"}),
+        ),
+        text("a looks fine"),
+        text("parent done"),
+        delegate(
+            "call_2",
+            &json!({"action": "message", "agent": "reviewer", "message": "review b"}),
+        ),
+        text("b has a bug"),
+        text("parent done again"),
+    ]);
+    let home = Home::connected(&server);
+    let first = home.ask(&["ask", "review a"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let second = home.ask(&["ask", "--resume", "last", "now review b"]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert_eq!(stdout(&second), "parent done again");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 6);
+    let overlay = format!(
+        "{}\n\n<subagent_instructions>\nBe terse.\n</subagent_instructions>",
+        system_prompt(&requests[0])
+    );
+    assert_eq!(system_prompt(&requests[4]), overlay);
+    assert_eq!(
+        conversation(&requests[4]),
+        [
+            turn("user", "review a"),
+            turn("assistant", "a looks fine"),
+            turn("user", "review b"),
+        ]
+    );
+    assert_eq!(
+        tool_result(&requests[5]),
+        r#"{"ok":true,"result":"b has a bug","error_code":null}"#
+    );
+    let dirs = session_dirs(&home);
+    assert_eq!(dirs.len(), 2);
+    let parent = dirs
+        .iter()
+        .find(|dir| manifest(dir)["subagent_child"] != true)
+        .expect("the parent");
+    let registry: Value = serde_json::from_slice(
+        &fs::read(parent.join("subagent/children.json")).expect("the registry"),
+    )
+    .expect("a registry object");
+    assert_eq!(registry["generation"], 4);
+    assert_eq!(registry["children"].as_array().map(Vec::len), Some(1));
+    assert_eq!(registry["children"][0]["work_generation"], 2);
+    assert_eq!(registry["children"][0]["phase"], "idle");
 }

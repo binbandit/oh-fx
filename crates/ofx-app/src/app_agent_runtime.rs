@@ -5156,6 +5156,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_resumed_from_the_picker_continues_its_own_named_children() {
+        let server = FakeServer::start([
+            message_reader("call-first", "remember the number 7"),
+            Reply::sse(&chat_text_events(&["noted"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+            message_reader("call-again", "what was the number"),
+            Reply::sse(&chat_text_events(&["it was 7"])),
+            Reply::sse(&chat_text_events(&["parent done again"])),
+        ]);
+        let mut harness = Harness::start_saved(&server).await;
+        chat(&mut harness, &["ask the reader to remember"]).await;
+        let parent = saved_sessions(&harness.home)
+            .into_iter()
+            .find(|saved| saved["subagent_child"] != true)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        harness.send(UiCommand::ResumeSession { id: parent });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+        chat(&mut harness, &["ask the reader again"]).await;
+        let requests = server.requests();
+        assert_eq!(requests.len(), 6);
+        assert_eq!(user_messages(&requests[4].json()), 2);
+        assert!(requests[4].body_text().contains("remember the number 7"));
+        assert!(requests[4].body_text().contains("noted"));
+        assert_eq!(
+            last_tool_result(&requests[5].json()),
+            r#"{"ok":true,"result":"it was 7","error_code":null}"#
+        );
+    }
+
+    #[tokio::test]
     async fn a_resumed_session_never_reaches_the_children_of_the_session_it_left() {
         let server = FakeServer::start([
             Reply::sse(&chat_text_events(&["one"])),

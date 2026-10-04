@@ -214,3 +214,127 @@ fn appends_reject_duplicates_invalid_identities_and_a_full_registry() {
         Err(RegistryError::CapacityExceeded)
     );
 }
+
+fn sample() -> Registry {
+    let mut registry = Registry::default();
+    registry
+        .append_one_off("child-1", work("work-1", 1))
+        .unwrap();
+    registry
+        .finish(
+            "child-1",
+            "work-1",
+            Outcome::Failed,
+            Some(ModelFailureDiagnostic::new("agent_turn_failed: Boom")),
+        )
+        .unwrap();
+    let mut active = work("work-2", 0xab);
+    active.root_user_context = "current_request: review it\n".to_owned();
+    registry
+        .append_persistent("child-2", "reviewer", "Be terse.", active)
+        .unwrap();
+    registry
+}
+
+#[test]
+fn a_saved_registry_reads_back_as_it_was_written() {
+    let registry = sample();
+    let saved = registry.render("parent");
+    assert_eq!(Registry::parse(&saved, "parent"), Ok(registry));
+    assert_eq!(
+        Registry::parse(&saved, "other"),
+        Err(RegistryError::InvalidParentId)
+    );
+}
+
+#[test]
+fn a_schema_version_1_registry_reads_without_its_failure() {
+    let legacy = concat!(
+        "{\"schema_version\":1,\"parent_id\":\"01J00000000000000000000000\",\"generation\":1,\"children\":[",
+        "{\"id\":\"01J00000000000000000000001\",\"kind\":\"one_off\",\"persistent\":null,\"phase\":\"finished\",\"work_generation\":1,\"active\":null,\"last_work_id\":\"work-1\",\"last_request_fingerprint\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"last_outcome\":\"failed\"}",
+        "]}"
+    );
+    let registry = Registry::parse(legacy.as_bytes(), "01J00000000000000000000000").unwrap();
+    let child = registry.find_by_id("01J00000000000000000000001").unwrap();
+    assert_eq!(child.last_failure, None);
+    assert_eq!(child.last_outcome, Some(Outcome::Failed));
+    assert!(
+        String::from_utf8(registry.render("01J00000000000000000000000"))
+            .unwrap()
+            .contains("\"last_outcome\":\"failed\",\"last_failure\":null}")
+    );
+}
+
+#[test]
+fn registries_upstream_rejects_are_rejected() {
+    let saved = String::from_utf8(sample().render("parent")).unwrap();
+    let invalid = [
+        saved.replace("\"generation\":3,", "\"generation\":3,\"extra\":1,"),
+        saved.replace("\"generation\":3,", ""),
+        saved.replace("\"generation\":3,", "\"generation\":-1,"),
+        saved.replace("\"phase\":\"running\"", "\"phase\":\"idle\""),
+        saved.replace("\"phase\":\"finished\"", "\"phase\":\"done\""),
+        saved.replace("\"reviewer\"", "\"Reviewer\""),
+        saved.replace("\"child-2\"", "\"child-1\""),
+        saved.replace("\"child-2\"", "\"..\""),
+        saved.replace(
+            "\"last_outcome\":\"failed\"",
+            "\"last_outcome\":\"completed\"",
+        ),
+        saved.replace("agent_turn_failed: Boom", "unsafe\\u001b[31m"),
+        saved.replace(&"ab".repeat(32), &"ab".repeat(31)),
+        saved.replace(
+            "\"permission_mode\":\"auto\"",
+            "\"permission_mode\":\"full\"",
+        ),
+        saved.replace("\"created_at_ms\":1", "\"created_at_ms\":1.5"),
+        saved.replace(
+            "\"kind\":\"one_off\",\"persistent\":null",
+            "\"kind\":\"one_off\",\"persistent\":{\"agent\":\"a\",\"instructions\":\"\"}",
+        ),
+    ];
+    for document in invalid {
+        assert_eq!(
+            Registry::parse(document.as_bytes(), "parent"),
+            Err(RegistryError::InvalidState),
+            "{document}"
+        );
+    }
+    assert_eq!(
+        Registry::parse(
+            saved
+                .replace("\"schema_version\":2", "\"schema_version\":99")
+                .as_bytes(),
+            "parent"
+        ),
+        Err(RegistryError::UnsupportedSchema)
+    );
+    let crowded = format!(
+        "{{\"schema_version\":2,\"parent_id\":\"parent\",\"generation\":0,\"children\":[{}]}}",
+        vec!["{}"; 257].join(",")
+    );
+    assert_eq!(
+        Registry::parse(crowded.as_bytes(), "parent"),
+        Err(RegistryError::InvalidState)
+    );
+}
+
+#[test]
+fn work_left_running_by_an_earlier_process_is_interrupted() {
+    let mut registry = sample();
+    registry.interrupt_active();
+    let child = registry.find_by_id("child-2").unwrap();
+    assert_eq!(child.phase, ChildPhase::Interrupted);
+    assert_eq!(child.active, None);
+    assert_eq!(child.last_work_id.as_deref(), Some("work-2"));
+    assert_eq!(child.last_request_fingerprint, Some([0xab; 32]));
+    assert_eq!(child.last_outcome, Some(Outcome::Interrupted));
+    assert!(
+        String::from_utf8(registry.render("parent"))
+            .unwrap()
+            .contains("\"generation\":4,")
+    );
+    let mut settled = registry.clone();
+    settled.interrupt_active();
+    assert_eq!(settled, registry);
+}
