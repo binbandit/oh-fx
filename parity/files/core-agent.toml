@@ -230,7 +230,7 @@ note = "Turn review cache, admission, the malformed-argument stop, identical-fai
 upstream = "src/core/agent/runtime/tool_batch.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/provider_tools.rs"]
-note = "Tool batches, argument validation and parallel execution exist, and provider-executed calls publish their provider results in call order with the identical-failure escalation; subagent-specific lifecycle settlement is absent."
+note = "Tool batches, argument validation, parallel execution and approval feedback appended after every result of its step exist, and provider-executed calls publish their provider results in call order with the identical-failure escalation; subagent-specific lifecycle settlement is absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tool_contracts.zig"
