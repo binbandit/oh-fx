@@ -44,24 +44,29 @@
   [39mhelp[0m                           Show this help
 
 [1mFlags:[0m
-  [39m--context-limit <spec>[0m  Set name=bytes|off; repeatable
-  [39m--add-dir <path>[0m        Add a workspace directory; repeatable
-  [39m--no-additional-dirs[0m    Ignore saved additional directories
-  [39m--provider <name>[0m       Override the model provider for an interactive session
-                          (gateway, codex, grok, or a configured name)
-  [39m--model <id>[0m            Override the model for an interactive session
-  [39m--effort <level>[0m        Override the reasoning effort for an interactive
-                          session
-  [39m--fast, --no-fast[0m       Turn Fast mode on or off for an interactive session
-  [39m-c, --continue[0m          Resume the remembered workspace session
-  [39m-r[0m                      Open the saved-session picker
-  [39m--resume [last|<id>][0m    Resume the latest workspace session or an exact ID
-  [39m--resume-last[0m           Resume the latest workspace session
-  [39m--resume-<id>[0m           Resume a session by exact ID
-  [39m--sessions-v2[0m           Use the experimental v2 session store, also set by
-                          OH_FX_SESSIONS_V2=1
-  [39m-h, --help[0m              Display this help and exit
-  [39m-v, --version[0m           Print the oh-fx version and exit
+  [39m--context-limit <spec>[0m       Set name=bytes|off; repeatable
+  [39m--add-dir <path>[0m             Add a workspace directory; repeatable
+  [39m--no-additional-dirs[0m         Ignore saved additional directories
+  [39m--provider <name>[0m            Override the model provider for an interactive
+                               session (gateway, codex, grok, or a configured
+                               name)
+  [39m--model <id>[0m                 Override the model for an interactive session
+  [39m--effort <level>[0m             Override the reasoning effort for an interactive
+                               session
+  [39m--fast, --no-fast[0m            Turn Fast mode on or off for an interactive
+                               session
+  [39m--ultrafast, --no-ultrafast[0m  Request Ultra mode on or off for an interactive
+                               session
+  [39m-c, --continue[0m               Resume the remembered workspace session
+  [39m-r[0m                           Open the saved-session picker
+  [39m--resume [last|<id>][0m         Resume the latest workspace session or an exact
+                               ID
+  [39m--resume-last[0m                Resume the latest workspace session
+  [39m--resume-<id>[0m                Resume a session by exact ID
+  [39m--sessions-v2[0m                Use the experimental v2 session store, also set
+                               by OH_FX_SESSIONS_V2=1
+  [39m-h, --help[0m                   Display this help and exit
+  [39m-v, --version[0m                Print the oh-fx version and exit
 
 [1mExamples:[0m
   [39moh-fx[0m

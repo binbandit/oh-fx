@@ -205,6 +205,9 @@ fn parse_options_rejects_invalid_model_effort_and_fast_flag_forms() {
         &["--effort", "not an effort", "hello"],
         &["--fast", "--no-fast", "hello"],
         &["--no-fast", "--fast", "hello"],
+        &["--ultrafast", "--no-ultrafast", "hello"],
+        &["--fast", "--ultrafast", "hello"],
+        &["--ultrafast", "--fast", "hello"],
         &["--model=inline", "hello"],
     ] {
         assert_eq!(error(args), AskErrorKind::InvalidAskArgs, "{args:?}");
@@ -213,6 +216,23 @@ fn parse_options_rejects_invalid_model_effort_and_fast_flag_forms() {
     assert_eq!(literal.model, None);
     assert_eq!(literal.fast, None);
     assert_eq!(prompt(&literal), "--model --fast");
+}
+
+#[test]
+fn requesting_ultra_mode_turns_fast_mode_off_for_the_request() {
+    for (args, fast) in [
+        (&["--ultrafast", "hello"][..], Some(false)),
+        (
+            &["--ultrafast", "--ultrafast", "--no-fast", "hello"],
+            Some(false),
+        ),
+        (&["--no-ultrafast", "hello"], None),
+        (&["--fast", "--no-ultrafast", "hello"], Some(true)),
+    ] {
+        let options = parsed(args);
+        assert_eq!(options.fast, fast, "{args:?}");
+        assert_eq!(prompt(&options), "hello", "{args:?}");
+    }
 }
 
 #[test]

@@ -155,7 +155,7 @@ where
     match first.to_str().and_then(TopLevelKind::from_token) {
         Some(kind) if kind != TopLevelKind::Help && requests_command_help(&rest) => {
             let workspace = supports_workspace_modifiers(kind) || launches_session(kind, &rest);
-            check_noninteractive(&modifiers, workspace)?;
+            check_noninteractive(&modifiers, workspace, Some(kind))?;
             Ok(Invocation::CommandHelp(kind))
         }
         Some(kind) => parse_command(kind, &first, rest, modifiers),
@@ -170,11 +170,13 @@ fn requests_command_help(args: &[OsString]) -> bool {
 fn check_noninteractive(
     modifiers: &LaunchModifiers,
     supports_workspace_modifiers: bool,
+    kind: Option<TopLevelKind>,
 ) -> Result<(), CliError> {
     if modifiers.has_workspace_modifiers() && !supports_workspace_modifiers {
         return Err(CliError::WorkspaceModifiersUnsupported);
     }
-    if modifiers.has_model_overrides() {
+    let acp_ultrafast = kind == Some(TopLevelKind::Acp) && modifiers.has_only_ultrafast_override();
+    if modifiers.has_model_overrides() && !acp_ultrafast {
         return Err(CliError::ModelModifiersUnsupported);
     }
     Ok(())
@@ -214,7 +216,7 @@ fn parse_unclassified(
     {
         return launch_session(resume_alias_target(&first, rest), modifiers);
     }
-    check_noninteractive(&modifiers, false)?;
+    check_noninteractive(&modifiers, false, None)?;
     if first != "--version" && first != "-v" {
         return Err(CliError::UnknownSubcommand(first));
     }
@@ -233,7 +235,7 @@ fn parse_command(
 ) -> Result<Invocation, CliError> {
     let session = launches_session(kind, &rest);
     if !session {
-        check_noninteractive(&modifiers, supports_workspace_modifiers(kind))?;
+        check_noninteractive(&modifiers, supports_workspace_modifiers(kind), Some(kind))?;
     }
     let command = match kind {
         TopLevelKind::Help => return Ok(Invocation::TopLevelHelp(HelpLayout::Plain)),
