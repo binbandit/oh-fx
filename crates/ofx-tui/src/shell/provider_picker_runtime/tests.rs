@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ModelCatalog, ModelCatalogSource, SessionScope, SkillMenuFocus, SkillMenuGroup, SkillMenuItem,
-    SkillMenuSource, TurnId, UiEvent,
+    FastModeSetting, ModelCatalog, ModelCatalogSource, PermissionMode, SessionScope,
+    SettingsSnapshot, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
+    StatuslineToggles, TurnId, UiEvent,
 };
 
 use super::*;
@@ -269,6 +270,43 @@ fn the_help_menu_keeps_the_footer_from_the_provider_column() {
     assert!(!screen.contains("current"), "{screen}");
     press(&mut test, RIGHT);
     assert!(chosen(&test).is_empty());
+}
+
+#[test]
+fn an_open_settings_or_status_line_menu_keeps_a_late_provider_reply_out() {
+    let mut test = TestShell::start();
+    test.deliver(UiEvent::SettingsMenuOpened {
+        snapshot: SettingsSnapshot {
+            model: "model-a".to_owned(),
+            effort: "default".to_owned(),
+            reasoning_efforts: Vec::new(),
+            fast_mode: FastModeSetting::Off,
+            permission_mode: PermissionMode::Auto,
+            statusline: StatuslineToggles::default(),
+            session_titles: true,
+            startup_scrollback: true,
+            prompt_history: true,
+        },
+    });
+    press(&mut test, b"model");
+    offer(&mut test, &["codex", "portkey"]);
+    assert!(test.shell.settings_menu.is_some());
+    assert_eq!(test.shell.composer.text(), "model");
+    let screen = test.screen();
+    assert!(screen.contains("  Model "), "{screen}");
+    assert!(!screen.contains("portkey"), "{screen}");
+    press(&mut test, b"\x15/provider ");
+    let screen = test.screen();
+    assert!(!screen.contains("portkey"), "{screen}");
+    press(&mut test, RIGHT);
+    assert!(chosen(&test).is_empty());
+
+    let mut test = TestShell::start();
+    test.deliver(UiEvent::StatuslineMenuOpened);
+    offer(&mut test, &["codex", "portkey"]);
+    assert!(test.shell.statusline_menu.is_some());
+    assert!(test.shell.composer.is_empty());
+    assert!(!test.screen().contains("portkey"));
 }
 
 fn offer(test: &mut TestShell, providers: &[&str]) {

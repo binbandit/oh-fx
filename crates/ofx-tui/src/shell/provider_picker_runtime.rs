@@ -42,6 +42,8 @@ impl Shell<'_> {
             || self.help_menu.is_some()
             || self.model_menu.is_some()
             || self.picker.is_some()
+            || self.settings_menu.is_some()
+            || self.statusline_menu.is_some()
             || self.model_query().is_some()
         {
             return None;
@@ -101,6 +103,8 @@ impl Shell<'_> {
             || self.model_draft.is_some()
             || self.picker.is_some()
             || self.help_menu.is_some()
+            || self.settings_menu.is_some()
+            || self.statusline_menu.is_some()
         {
             return;
         }
