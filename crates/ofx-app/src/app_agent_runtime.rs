@@ -5271,6 +5271,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_restored_login_keeps_the_session_s_model() {
+        let codex = FakeServer::start([codex_text("kept")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signed_out(&codex, &catalog).await;
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        settings["models"]["codex"] = json!(OTHER_CODEX_MODEL);
+        fs::write(
+            harness.home.path().join("config/settings.json"),
+            settings.to_string(),
+        )
+        .unwrap();
+        held(&mut harness, "hello").await;
+        save_login(&harness);
+        harness.send(UiCommand::RetryHeldPrompt);
+        let ran = within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert!(
+            !ran.iter()
+                .any(|event| matches!(event, UiEvent::ModelSelected { .. })),
+            "{ran:?}"
+        );
+        assert_eq!(codex.requests()[0].json()["model"], CODEX_MODEL);
+    }
+
+    #[tokio::test]
     async fn a_codex_launch_without_a_login_opens_signed_out() {
         let codex = FakeServer::start([]);
         let catalog = FakeServer::start([]);
