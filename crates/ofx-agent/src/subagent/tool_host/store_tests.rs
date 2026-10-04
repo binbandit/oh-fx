@@ -588,3 +588,32 @@ async fn a_child_waiting_on_approval_is_saved_as_awaiting_it_until_its_work_ends
     assert_eq!(finished["children"][0]["phase"], "idle");
     assert_eq!(finished["generation"], 3);
 }
+
+#[tokio::test]
+async fn a_child_whose_approval_phase_cannot_be_saved_fails_without_asking() {
+    let harness = Harness::new(vec![Script::Probe, Script::Reply("probed it")]);
+    let store = Store::new("parent");
+    harness
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    *store.refused_attempt.lock().unwrap() = Some(2);
+    assert_eq!(
+        harness
+            .run("call-1", message("prober", None, "probe"))
+            .await,
+        ToolOutput::failure(
+            SubagentResult {
+                result: Some(
+                    "Subagent failed: agent_turn_failed: SessionCommitFailed. Earlier tool calls may have completed; their effects are not rolled back."
+                ),
+                ..SubagentResult::failure("child_failed")
+            }
+            .encode()
+        )
+    );
+    assert!(harness.agents.requested.lock().unwrap().is_empty());
+    assert_eq!(harness.provider.seen().len(), 1);
+    let finished = store.last_saved();
+    assert_eq!(finished["children"][0]["phase"], "idle");
+    assert_eq!(finished["children"][0]["last_outcome"], "failed");
+}
