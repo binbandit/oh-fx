@@ -180,12 +180,25 @@ pub(crate) fn panicking_install(state: &ControllerState, source: &str) -> Instal
     }
 }
 
+pub(crate) async fn wait_install(
+    task: &mut Option<InstallTask>,
+) -> Result<io::Result<InstallResult>, tokio::task::JoinError> {
+    match task.as_mut() {
+        Some(running) => (&mut running.task).await,
+        None => std::future::pending().await,
+    }
+}
+
 pub(crate) async fn finish_install(state: &ControllerState, task: &mut Option<InstallTask>) {
-    let Some(running) = task.as_mut() else {
-        std::future::pending::<()>().await;
-        return;
-    };
-    let result = (&mut running.task).await;
+    let result = wait_install(task).await;
+    complete_install(state, task, result);
+}
+
+pub(crate) fn complete_install(
+    state: &ControllerState,
+    task: &mut Option<InstallTask>,
+    result: Result<io::Result<InstallResult>, tokio::task::JoinError>,
+) {
     let completed = task
         .take()
         .expect("installation completed without its task");

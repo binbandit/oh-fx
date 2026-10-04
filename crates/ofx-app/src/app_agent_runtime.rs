@@ -26,7 +26,9 @@ use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline, set_statusline};
-use crate::skill_commands::{InstallTask, finish_install, handle_skills, is_install_command};
+use crate::skill_commands::{
+    InstallTask, complete_install, finish_install, handle_skills, is_install_command, wait_install,
+};
 use crate::skills::{HostSkills, SkillInstall};
 use crate::user_settings::{self, unsaved_notice};
 use ofx_cli::{SLASH_REGISTRY, SlashKind};
@@ -484,7 +486,8 @@ impl Controller {
                 Work::Idle,
             );
             let command = tokio::select! {
-                () = finish_install(&self.state, &mut self.installation) => {
+                result = wait_install(&mut self.installation) => {
+                    complete_install(&self.state, &mut self.installation, result);
                     self.settle_deferred_commands(true).await;
                     continue;
                 }
@@ -587,7 +590,10 @@ impl Controller {
             loop {
                 tokio::select! {
                     result = &mut compaction => break result,
-                    () = finish_install(state, installation) => drain_install_inputs(state, installation, &cancel),
+                    result = wait_install(installation) => {
+                        complete_install(state, installation, result);
+                        drain_install_inputs(state, installation, &cancel);
+                    },
                     command = catalog.next_command(commands, state, persistence, work), if open => match command {
                         None => {
                             open = false;
@@ -802,7 +808,10 @@ impl Controller {
                 tokio::select! {
                     biased;
                     report = &mut turn => break report,
-                    () = finish_install(state, installation) => drain_install_inputs(state, installation, &cancel),
+                    result = wait_install(installation) => {
+                        complete_install(state, installation, result);
+                        drain_install_inputs(state, installation, &cancel);
+                    },
                     command = catalog.next_command(commands, state, persistence, work), if open => match command {
                         None => {
                             open = false;
@@ -2847,6 +2856,56 @@ mod tests {
         let request = codex.requests()[1].json();
         assert_eq!(request["model"], CODEX_MODEL);
         assert_eq!(request["reasoning"]["effort"], "low");
+    }
+
+    #[tokio::test]
+    async fn catalog_changes_and_install_completion_keep_a_queued_prompt_in_order() {
+        let listed = Gate::default();
+        let codex = FakeServer::start([codex_partial(), codex_text("next")]);
+        let catalog = FakeServer::start([catalog_version(), catalog_listing(false).after(&listed)]);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        write_skill(&harness.home, "install-pack", "new-skill");
+        let source = fs::canonicalize(harness.home.path().join("workspace/install-pack")).unwrap();
+        let (release, worker) = held_install_lock(&harness.home);
+        harness.submit("active");
+        within(harness.until(|event| matches!(event, UiEvent::AssistantText { .. }))).await;
+        harness.command(&format!("/skills install {}", source.display()));
+        harness.submit("queued");
+        harness.command("/skills show new-skill");
+        harness.command("/model luna");
+        listed.open();
+        let applied = within(harness.until(catalog_event)).await;
+        assert_eq!(
+            notice_body(applied),
+            [format!("|Next turn will use {OTHER_CODEX_MODEL}")]
+        );
+        assert!(
+            !harness
+                .seen
+                .iter()
+                .any(|event| matches!(event, UiEvent::SkillsMenu { .. }))
+        );
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        let shown =
+            within(harness.until(|event| matches!(event, UiEvent::SkillsMenu { .. }))).await;
+        assert_eq!(
+            notice_body(shown),
+            [
+                format!("skills|Installing from {}...", source.display()),
+                "skills|Installed: new-skill".to_owned(),
+            ]
+        );
+        assert_eq!(codex.requests().len(), 1);
+        harness.send(UiCommand::Cancel {
+            turn_id: harness.running_turn(),
+        });
+        within(harness.until(finished(TurnOutcome::Interrupted))).await;
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        let requests = codex.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].json()["model"], OTHER_CODEX_MODEL);
+        assert!(requests[1].json().to_string().contains("queued"));
     }
 
     #[tokio::test]
