@@ -88,6 +88,9 @@ strip = true
 [profile.release.package.ofx-agent]
 opt-level = 3
 
+[profile.release.package.ofx-contract]
+opt-level = 3
+
 [profile.release.package.ofx-gateway]
 opt-level = 3
 
