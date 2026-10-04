@@ -769,7 +769,7 @@ fn a_prompt_streams_a_reply_and_a_second_ctrl_c_exits() {
 fn slash_commands_switch_models_show_help_and_exit() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Switched reply."]))]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    let mut session = home.shell(30, 100);
+    let mut session = home.shell(40, 100);
     session.send(b"/model\r");
     wait(&session, "Models 2  [All]");
     session.send(b"\x1b[27u");
@@ -781,7 +781,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
     wait(&session, "✗ command: Unknown command. Try /help.");
     session.send(b"/help\r");
     let menu = [
-        "Commands 24  [All]  General  Session  Account  Model",
+        "Commands 25  [All]  General  Session  Account  Model",
         "  /help           show available slash commands",
         "  /quit           exit the interactive shell",
         "  /reset          reset the current session context",
@@ -876,7 +876,7 @@ fn help_opens_a_footer_menu_that_filters_switches_category_and_opens_commands() 
         &session,
         "↑↓ navigate     tab category     enter open     esc close",
     );
-    assert!(screen.contains("Commands 24  [All]  General"), "{screen}");
+    assert!(screen.contains("Commands 25  [All]  General"), "{screen}");
     assert!(!screen.contains("auto · model-a"), "{screen}");
     session.send(b"perm");
     let screen = wait(&session, "Commands 1  [All]");
@@ -890,7 +890,7 @@ fn help_opens_a_footer_menu_that_filters_switches_category_and_opens_commands() 
     session.send(b"ask\r");
     wait(&session, "ask · model-a");
     session.send(b"/help\r");
-    wait(&session, "Commands 24  [All]");
+    wait(&session, "Commands 25  [All]");
     session.send(b"\t");
     wait(&session, "Commands 5  All  [General]");
     session.send(b"/version\r");
@@ -901,7 +901,7 @@ fn help_opens_a_footer_menu_that_filters_switches_category_and_opens_commands() 
         })
         .unwrap_or_else(|screen| panic!("the menu stayed open:\n{screen}"));
     session.send(b"/help\r");
-    wait(&session, "Commands 24  [All]");
+    wait(&session, "Commands 25  [All]");
     session.send(b"st\x1b");
     session
         .wait_for(WAIT, |screen| {
@@ -1403,7 +1403,7 @@ fn accepted_prompts_are_recalled_in_the_next_session_of_the_workspace() {
     session.send(b"remember this prompt\r");
     wait(&session, "Noted.");
     session.send(b"/he\r");
-    wait(&session, "Commands 24");
+    wait(&session, "Commands 25");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 
