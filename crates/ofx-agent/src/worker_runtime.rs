@@ -226,6 +226,14 @@ impl WorkerRuntime {
             .any(|prompt| prompt.recovered.is_some())
     }
 
+    pub fn discard_before(&self, first_kept: u64) {
+        self.lock().queue.retain(|prompt| prompt.id >= first_kept);
+    }
+
+    pub fn has_waiting_prompts(&self) -> bool {
+        !self.lock().queue.is_empty()
+    }
+
     pub fn waiting_texts(&self) -> Vec<String> {
         self.lock()
             .queue

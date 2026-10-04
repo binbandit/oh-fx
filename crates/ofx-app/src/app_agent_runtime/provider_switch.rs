@@ -5,7 +5,7 @@ use ofx_contract::{CapabilityResolver, Notice, NoticeTone, UiEvent};
 use tokio_util::sync::CancellationToken;
 
 use super::{Controller, ControllerState};
-use crate::app_bootstrap_runtime::provider_label;
+use crate::app_bootstrap_runtime::{Login, Route, provider_label};
 use crate::app_session_runtime::session_route;
 use crate::user_settings;
 
@@ -15,6 +15,8 @@ const PROVIDER_BUSY: &str =
 const PROVIDER_MISSING: &str =
     "The target provider catalog is unavailable. The current provider is unchanged.";
 const UNSAVED: &str = "Provider switched for this run, but the selection could not be saved.";
+const LOGIN_UNSAVED: &str =
+    "Signed in to Codex for this run, but the saved session could not record it.";
 
 impl ControllerState {
     pub(crate) fn provider_busy(&self) {
@@ -37,7 +39,7 @@ impl Controller {
                 .notice(NoticeTone::Error, PROVIDER_TOPIC, PROVIDER_MISSING);
         };
         let label = provider_label(&target).to_owned();
-        if target == self.state.setup.provider() {
+        if target == self.state.setup.provider() && self.state.setup.login() == Login::Ready {
             let body = format!("Already using {label}.");
             return self
                 .state
@@ -53,35 +55,89 @@ impl Controller {
         let route = match self
             .state
             .setup
-            .route_for(&switch, &CancellationToken::new())
+            .route_for(&switch, None, &CancellationToken::new())
             .await
         {
             Ok(route) => route,
             Err(notice) => return self.state.emit(UiEvent::Notice { notice }),
         };
-        let target = switch.provider().clone();
+        self.adopt(switch.provider(), route);
+    }
+
+    pub(super) fn drop_held_prompts(&mut self) {
+        if self.state.setup.login() == Login::Missing && self.state.worker.has_waiting_prompts() {
+            self.state.worker.clear();
+            self.state.emit(UiEvent::HeldPromptDropped);
+        }
+    }
+
+    pub(super) async fn retry_held_prompt(&mut self) {
+        if self.state.setup.login() == Login::Ready || !self.restore_login().await {
+            self.state.refuse_signed_out();
+        }
+    }
+
+    async fn restore_login(&mut self) -> bool {
+        let saved = self
+            .state
+            .setup
+            .chatgpt_oauth()
+            .is_some_and(|oauth| oauth.has_saved_login());
+        let Some(switch) = saved
+            .then(|| self.state.setup.switch_target(ProviderId::Codex).ok())
+            .flatten()
+        else {
+            return false;
+        };
+        let model = self.state.model.clone();
+        match self
+            .state
+            .setup
+            .route_for(&switch, Some(&model), &CancellationToken::new())
+            .await
+        {
+            Ok(route) => {
+                self.install(&ProviderId::Codex, route);
+                if self.state.model != model {
+                    self.state.emit(UiEvent::ModelSelected {
+                        model: self.state.model.clone(),
+                    });
+                }
+                if !self.bind_session() {
+                    self.state
+                        .notice(NoticeTone::Warning, PROVIDER_TOPIC, LOGIN_UNSAVED);
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    pub(super) fn install(&mut self, target: &ProviderId, route: Route) {
         let (provider, models) = self.state.setup.adopt(route);
         let resolver: Arc<dyn CapabilityResolver> = Arc::new(models.clone());
         self.agent.set_provider(provider, Some(resolver));
         self.catalog.retarget(models, target.label());
         self.state.setup.model().clone_into(&mut self.state.model);
         self.reconfigure();
+        self.state.emit(UiEvent::LoginChanged {
+            missing: self.state.login_missing(),
+        });
+    }
+
+    fn adopt(&mut self, target: &ProviderId, route: Route) {
+        let label = provider_label(target).to_owned();
+        self.install(target, route);
         self.state.emit(UiEvent::ProviderSelected {
             provider: target.label().to_owned(),
         });
         self.state.emit(UiEvent::ModelSelected {
             model: self.state.model.clone(),
         });
-        let session = match (&mut self.persistence, session_route(&self.state.setup)) {
-            (Some(persistence), Ok(route)) => persistence
-                .select_provider(&mut self.agent, route, &self.state.model)
-                .is_ok(),
-            (None, _) => true,
-            (Some(_), Err(_)) => false,
-        };
+        let session = self.bind_session();
         let state = &self.state;
         let settings = user_settings::save(state.setup.preferences(), |paths| {
-            save_provider_model(paths, &target, &state.model).map_err(Into::into)
+            save_provider_model(paths, target, &state.model).map_err(Into::into)
         });
         let notice = if session && settings.is_ok() {
             let body = format!("Switched to {label} with {}.", state.model);
@@ -90,5 +146,15 @@ impl Controller {
             Notice::new(NoticeTone::Warning, PROVIDER_TOPIC, UNSAVED)
         };
         state.emit(UiEvent::Notice { notice });
+    }
+
+    fn bind_session(&mut self) -> bool {
+        match (&mut self.persistence, session_route(&self.state.setup)) {
+            (Some(persistence), Ok(route)) => persistence
+                .select_provider(&mut self.agent, route, &self.state.model)
+                .is_ok(),
+            (None, _) => true,
+            (Some(_), Err(_)) => false,
+        }
     }
 }

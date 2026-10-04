@@ -135,6 +135,10 @@ fn feedback(end: CompactionEnd) -> (&'static str, Tone) {
             Tone::Neutral,
         ),
         CompactionEnd::Failed => ("Compaction failed. Try /compact again.", Tone::Danger),
+        CompactionEnd::AuthenticationRejected => (
+            "Compaction was not started. Check authentication and try /compact again.",
+            Tone::Danger,
+        ),
         CompactionEnd::ContextTooLarge => (
             "Context is too large to compact. Choose a model with a larger context window.",
             Tone::Danger,
