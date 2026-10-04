@@ -982,6 +982,7 @@ dependencies = [
  "ofx-http",
  "ofx-text",
  "reqwest",
+ "rustix",
  "semver",
  "sha2",
  "tar",

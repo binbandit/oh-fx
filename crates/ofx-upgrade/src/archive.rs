@@ -174,6 +174,8 @@ pub(crate) fn archive_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::CommandExt;
+
     use super::*;
 
     #[test]
@@ -330,23 +332,24 @@ mod tests {
         fs::write(&target, version_script("0.1.0-dev.1")).unwrap();
         fs::set_permissions(&target, Permissions::from_mode(EXECUTABLE_MODE)).unwrap();
         let verifying = root.join("verifying");
-        let finish = root.join("finish");
         fs::write(
             root.join("release"),
             format!(
-                "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\necho 0.1.0-dev.2\n",
+                "#!/bin/sh\ntouch '{}'\nwhile [ -d '{}' ]; do sleep 0.01; done\necho 0.1.0-dev.2\n",
                 verifying.display(),
-                finish.display()
+                root.display()
             ),
         )
         .unwrap();
         let mut installer = Command::new(std::env::current_exe().unwrap())
             .args([INTERRUPTED_TEST, "--exact", "--test-threads=1"])
             .env(INTERRUPTED_CHILD, &root)
+            .process_group(0)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
+        let group = rustix::process::Pid::from_child(&installer);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while !verifying.exists() {
             assert!(
@@ -355,22 +358,30 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(5));
         }
-        installer.kill().unwrap();
+        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).unwrap();
         installer.wait().unwrap();
-        fs::write(&finish, b"").unwrap();
+        while rustix::process::test_kill_process_group(group).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the staged verifier outlived the installer"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(fs::read(&target).unwrap(), version_script("0.1.0-dev.1"));
         assert_eq!(reported_version(&target).as_deref(), Some("0.1.0-dev.1"));
-        let leftovers: Vec<_> = fs::read_dir(&root)
+        let entries: Vec<_> = fs::read_dir(&root)
             .unwrap()
             .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .as_encoded_bytes()
+            .map(|entry| entry.file_name())
+            .collect();
+        let leftovers = entries
+            .iter()
+            .filter(|name| {
+                name.as_encoded_bytes()
                     .starts_with(STAGING_PREFIX.as_bytes())
             })
-            .collect();
-        assert_eq!(leftovers.len(), 1);
+            .count();
+        assert_eq!(leftovers, 1, "{entries:?}");
     }
 
     #[test]
