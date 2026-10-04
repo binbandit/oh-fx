@@ -42,7 +42,8 @@ use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
-    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
+    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, SubscriptionLogin,
+    SubscriptionProvider, codex_subscription,
 };
 use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
@@ -153,6 +154,7 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     account_id: Option<String>,
+    subscription: Option<Arc<SubscriptionLogin>>,
     tools: Vec<Arc<dyn Tool>>,
     delegation: Delegation,
     mcp: Option<Arc<McpRuntime>>,
@@ -191,6 +193,7 @@ pub(crate) struct Route {
     configured_model: Option<String>,
     source: CredentialSource,
     account_id: Option<String>,
+    subscription: Option<Arc<SubscriptionLogin>>,
     uses_tls: bool,
     login: Login,
 }
@@ -372,6 +375,7 @@ impl Profile {
             connection: route.connection,
             source: route.source,
             account_id: route.account_id,
+            subscription: route.subscription,
             tools,
             delegation: Delegation::new(children),
             mcp,
@@ -545,7 +549,10 @@ impl Profile {
             cancel,
         )
         .await?;
-        let provider: Arc<dyn ModelProvider> = Arc::new(subscription.provider);
+        let provider: Arc<dyn ModelProvider> = Arc::new(SubscriptionProvider::new(
+            subscription.provider,
+            Arc::clone(&subscription.login),
+        ));
         Ok(Route {
             reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
             title_model: Some(CODEX_TITLE_MODEL),
@@ -556,6 +563,7 @@ impl Profile {
             configured_model,
             source: CredentialSource::Codex,
             account_id: Some(subscription.account_id),
+            subscription: Some(subscription.login),
             uses_tls,
             login: Login::Ready,
         })
@@ -648,6 +656,7 @@ fn connection_route(
         configured_model,
         source: CredentialSource::Configured,
         account_id: None,
+        subscription: None,
         uses_tls,
         login: Login::Ready,
     })
