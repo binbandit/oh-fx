@@ -9,8 +9,8 @@ use base64::engine::general_purpose::STANDARD;
 use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
     CommandProcessPresentation, HistoryEntry, HistorySteering, HistoryStep, HistoryTurn,
-    ProviderReplay, RecoveryStrategy, RecoveryToolState, StepResult, ToolArgumentIntegrity,
-    ToolCall, ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
+    ModelRecoveryCause, ProviderReplay, RecoveryStrategy, RecoveryToolState, StepResult,
+    ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
@@ -72,6 +72,7 @@ pub(crate) struct RecoveryCheckpoint {
     user: String,
     assistant_source: String,
     execution: SavedExecution,
+    cause: Option<ModelRecoveryCause>,
     tool_state: RecoveryToolState,
     strategy: RecoveryStrategy,
     route: RecoveryRoute,
@@ -285,6 +286,15 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
         strategy: strategy(cause, tool_state, &assistant_source),
         compaction_prepared: cause == "compaction_prepared",
         uncertain_tool: tool_state == RecoveryToolState::Uncertain,
+        cause: [
+            ModelRecoveryCause::NetworkInterrupted,
+            ModelRecoveryCause::ConnectivityLost,
+            ModelRecoveryCause::ProviderStreamTimeout,
+            ModelRecoveryCause::ProviderUnavailable,
+            ModelRecoveryCause::RateLimited,
+        ]
+        .into_iter()
+        .find(|known| known.as_str() == cause),
         tool_state,
         user,
         assistant_source,

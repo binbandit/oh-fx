@@ -52,4 +52,4 @@ modules = []
 upstream = "src/core/output/worker_status.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/types.rs", "crates/oh-fx/src/cli_ask.rs", "crates/ofx-tui/src/output/recovery_status.rs"]
-note = "Route-recovery labels, the interactive retry countdown, recovered-state expiry, the activity-row projection, sticky terminal stop labels, the connectivity pause suffix and the continue-later paused label exist; the remaining paused required-action labels and the API status projection are absent."
+note = "Route-recovery labels, the interactive retry countdown, recovered-state expiry, the activity-row projection, sticky terminal stop labels, the connectivity pause suffix and the paused hints for each required action exist; the API status projection is absent."

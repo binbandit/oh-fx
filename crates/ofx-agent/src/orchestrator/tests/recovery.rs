@@ -33,6 +33,7 @@ fn recovered(strategy: RecoveryStrategy) -> RecoveredTurn {
         outputs: Vec::new(),
         source: String::new(),
         source_presented: false,
+        cause: None,
         tool_state: match strategy {
             RecoveryStrategy::RegenerateTool => RecoveryToolState::ProvenUnexecuted,
             RecoveryStrategy::ContinueAfterTool => RecoveryToolState::Confirmed,
@@ -140,10 +141,11 @@ async fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_pro
 
 #[tokio::test]
 async fn a_reconciling_turn_offers_no_tools_on_its_first_request_only() {
-    let provider = FakeProvider::new(vec![tool_reply(&[("call-2", "{}")]), text_reply("ok")]);
+    let provider = FakeProvider::new(vec![text_reply("reconciled"), text_reply("ok")]);
     let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
     let (report, _) = continue_turn(&mut agent, recovered(RecoveryStrategy::ReconcileTool)).await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
+    run(&mut agent, "next").await;
     let requests = provider.requests();
     assert_eq!(requests[0].tool_choice, ToolChoice::None);
     assert!(matches!(
@@ -617,5 +619,88 @@ async fn a_continued_turn_whose_saved_reply_is_already_shown_prints_only_the_res
     assert_eq!(
         provider.requests()[0].messages.last(),
         Some(&ChatMessage::user(CONTINUE_NOTE))
+    );
+}
+
+fn reconciling() -> RecoveredTurn {
+    RecoveredTurn {
+        cause: Some(ModelRecoveryCause::NetworkInterrupted),
+        ..recovered(RecoveryStrategy::ReconcileTool)
+    }
+}
+
+fn paused_checkpoint(entries: &[Logged]) -> Option<(RecoveryToolState, usize)> {
+    entries.iter().find_map(|entry| match entry {
+        Logged::Recovery {
+            progress: RecoveryProgress::Paused,
+            tool_state,
+            consumed_attempts,
+            ..
+        } => Some((*tool_state, *consumed_attempts)),
+        _ => None,
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reconciling_request_that_starts_a_tool_pauses_for_inspection() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call-2"),
+                tool_name: "echo".to_owned(),
+            }],
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+        ),
+        text_reply("must not be requested"),
+    ]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), vec![echo_tool()]), log);
+    let (report, events) = continue_turn(&mut agent, reconciling()).await;
+    assert_eq!(report.failure.unwrap().code(), "RecoveryPaused");
+    assert_eq!(provider.requests().len(), 1);
+    let paused = recoveries(&events).pop().unwrap();
+    assert!(paused.is_paused());
+    assert_eq!(
+        paused.required_action,
+        ModelRecoveryRequiredAction::InspectUncertainTool
+    );
+    assert_eq!(
+        paused.label(),
+        "⚠ Network interrupted · RequestFailed · recovery paused after 1 attempt"
+    );
+    assert_eq!(
+        paused_checkpoint(&entries.lock().unwrap()),
+        Some((RecoveryToolState::ProvenUnexecuted, 1))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reconciling_reply_that_calls_a_tool_pauses_without_running_it() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-2", "{}")]),
+        text_reply("must not be requested"),
+    ]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), vec![echo_tool()]), log);
+    let (report, events) = continue_turn(&mut agent, reconciling()).await;
+    assert_eq!(report.failure.unwrap().code(), "RecoveryPaused");
+    assert_eq!(provider.requests().len(), 1);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolStarted { .. }))
+    );
+    let paused = recoveries(&events).pop().unwrap();
+    assert_eq!(
+        paused.required_action,
+        ModelRecoveryRequiredAction::InspectUncertainTool
+    );
+    assert_eq!(
+        paused.label(),
+        "⚠ Network interrupted · UnexpectedToolCallDuringReconciliation · recovery paused after 1 attempt"
+    );
+    assert_eq!(
+        paused_checkpoint(&entries.lock().unwrap()),
+        Some((RecoveryToolState::Uncertain, 1))
     );
 }

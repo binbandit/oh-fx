@@ -203,7 +203,14 @@ pub(crate) fn decide(evidence: Evidence) -> Decision {
         } else {
             retry_delay(next_pacing.attempt())
         };
-        return Decision::paced(Strategy::ProbeLiveness, delay, next_pacing);
+        return Decision {
+            required_action: if evidence.tool == ToolEvidence::Uncertain {
+                ModelRecoveryRequiredAction::InspectUncertainTool
+            } else {
+                ModelRecoveryRequiredAction::None
+            },
+            ..Decision::paced(Strategy::ProbeLiveness, delay, next_pacing)
+        };
     }
     let next_pacing = evidence
         .pacing

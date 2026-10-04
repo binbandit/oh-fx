@@ -75,6 +75,7 @@ fn a_queued_recovery_runs_as_its_own_turn_ahead_of_later_prompts() {
         files: Vec::new(),
         source: String::new(),
         source_presented: false,
+        cause: None,
         tool_state: ofx_contract::RecoveryToolState::None,
         strategy: ofx_contract::RecoveryStrategy::RetryRequest,
         fast_mode: false,
