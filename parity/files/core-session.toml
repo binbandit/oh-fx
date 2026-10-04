@@ -114,7 +114,7 @@ note = "Modern metadata and preference codecs exist, and the recovery checkpoint
 upstream = "src/core/session/session_commands.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_commands.rs", "crates/ofx-app/src/app_commands.rs", "crates/ofx-app/src/session_commands.rs"]
-note = "Model query resolution, permissions/fast-mode commands, saved allowlist view/add/remove/reset controllers and the settings status and startup-scrollback controllers exist; live permission-rule replacement, settings menus and workspace-history controllers remain absent."
+note = "Model query resolution, permissions/fast-mode commands, saved allowlist view/add/remove/reset controllers the settings status and startup-scrollback controllers and the prompt history and session title switches exist; live permission-rule replacement, the effort and model settings selections and workspace-history controllers remain absent."
 
 [[file]]
 upstream = "src/core/session/session_compaction.zig"

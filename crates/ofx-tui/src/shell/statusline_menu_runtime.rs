@@ -28,6 +28,7 @@ impl Shell<'_> {
     pub(super) fn open_statusline_menu(&mut self) {
         self.skills_menu = None;
         self.help_menu = None;
+        self.settings_menu = None;
         self.close_picker();
         self.statusline_menu = Some(StatuslineMenu::default());
         self.invalidate();

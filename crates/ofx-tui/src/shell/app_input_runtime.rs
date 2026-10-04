@@ -86,6 +86,9 @@ impl Shell<'_> {
         if self.statusline_menu.is_some() {
             return self.handle_statusline_menu_input(&event);
         }
+        if self.settings_menu_owns(&event) {
+            return Ok(());
+        }
         let revision = self.composer.edit_revision();
         let preserved = self.model_edit_preserved(&event);
         match event {
@@ -102,11 +105,13 @@ impl Shell<'_> {
             | InputEvent::NativeClearProbe
             | InputEvent::NativeClearDetected => {}
         }
-        if self.composer.edit_revision() != revision {
+        let edited = self.composer.edit_revision() != revision;
+        if edited {
             self.file_picker_after_edit();
             self.model_column_after_edit(preserved);
             self.help_menu_edited();
         }
+        self.sync_settings_menu(edited);
         self.sync_skills_menu();
         self.sync_picker_query();
         self.sync_model_menu();
