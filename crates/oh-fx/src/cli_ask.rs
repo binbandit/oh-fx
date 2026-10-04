@@ -1025,6 +1025,7 @@ impl Presenter {
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested
             | UiEvent::CompactionActivity { .. }
+            | UiEvent::TurnCompaction { .. }
             | UiEvent::SkillsMenu { .. }
             | UiEvent::ConversationCleared { .. }
             | UiEvent::SessionPickerOpened { .. }

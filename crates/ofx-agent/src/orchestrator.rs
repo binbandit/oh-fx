@@ -544,13 +544,12 @@ impl Agent {
             };
             let (measured, body) = self.measure(turn, &request).unzip();
             match self
-                .preflight(&mut turn.compaction, request, measured.as_ref(), cancel)
+                .preflight(turn, request, measured.as_ref(), events, cancel)
                 .await
             {
                 Ok(None) => {}
                 Ok(Some(compacted)) => {
-                    self.settle_measurement(measured, None);
-                    self.install_turn_compaction(turn, compacted)?;
+                    self.adopt_compaction(turn, compacted, measured, events)?;
                     continue;
                 }
                 Err(error) => return Err(compaction_stop(error, cancel)),

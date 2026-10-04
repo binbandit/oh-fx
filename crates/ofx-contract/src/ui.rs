@@ -307,6 +307,10 @@ pub enum UiEvent {
     CompactionActivity {
         activity: CompactionActivity,
     },
+    TurnCompaction {
+        turn_id: TurnId,
+        activity: CompactionActivity,
+    },
     SkillsMenu {
         items: Vec<SkillMenuItem>,
         focus: SkillMenuFocus,
