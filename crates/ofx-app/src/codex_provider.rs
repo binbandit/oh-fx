@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Instant;
 
 use ofx_auth::{
-    CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptOAuth,
+    CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, GrokEndpoints,
     MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, prepare_chatgpt_credential,
     refresh_chatgpt_credential,
 };
@@ -22,6 +22,7 @@ pub struct SubscriptionEndpoints {
     pub chatgpt: ChatGptEndpoints,
     pub codex: CodexEndpoints,
     pub models: CodexModelsEndpoints,
+    pub grok: GrokEndpoints,
 }
 
 #[derive(Debug, thiserror::Error)]

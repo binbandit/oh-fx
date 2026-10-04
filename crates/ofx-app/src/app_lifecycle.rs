@@ -344,7 +344,7 @@ fn agent_work(
             let discovery = mcp.clone().map(|mcp| {
                 tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))
             });
-            controller.run(commands).await;
+            Box::pin(controller.run(commands)).await;
             if let Some(discovery) = discovery {
                 discovery.abort();
             }

@@ -42,6 +42,7 @@ use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
 
 mod provider_switch;
+mod sign_out;
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
@@ -72,6 +73,13 @@ pub(crate) struct ControllerState {
     statusline: StatuslineToggles,
     mcp: Option<McpHost>,
     menu_settings: MenuSettings,
+    login: Login,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Login {
+    Ready,
+    Missing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,6 +282,9 @@ impl ControllerState {
     }
 
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
+        if self.login == Login::Missing {
+            self.refuse_signed_out();
+        }
         let prompt = QueuedPrompt::new(self.received_prompts, text, skills);
         self.received_prompts += 1;
         if installing {
@@ -340,6 +351,7 @@ struct CatalogFetch {
     pending: Option<BoxFuture<'static, ModelCatalog>>,
     waiting: Vec<ModelChange>,
     settings: Option<SettingsUpdate>,
+    errand: Option<BoxFuture<'static, Vec<Notice>>>,
 }
 
 impl CatalogFetch {
@@ -379,6 +391,18 @@ impl CatalogFetch {
         }
     }
 
+    fn run(&mut self, errand: BoxFuture<'static, Vec<Notice>>) {
+        let earlier = self.errand.take();
+        self.errand = Some(Box::pin(async move {
+            let mut notices = match earlier {
+                Some(earlier) => earlier.await,
+                None => Vec::new(),
+            };
+            notices.extend(errand.await);
+            notices
+        }));
+    }
+
     async fn next_command(
         &mut self,
         commands: &mut UnboundedReceiver<UiCommand>,
@@ -387,12 +411,15 @@ impl CatalogFetch {
         work: Work,
     ) -> Option<UiCommand> {
         loop {
-            let Some(fetch) = &mut self.pending else {
-                return commands.recv().await;
-            };
             tokio::select! {
                 command = commands.recv() => return command,
-                catalog = fetch => self.arrived(state, persistence, catalog, work),
+                catalog = finished(&mut self.pending) => self.arrived(state, persistence, catalog, work),
+                notices = finished(&mut self.errand) => {
+                    self.errand = None;
+                    for notice in notices {
+                        state.emit(UiEvent::Notice { notice });
+                    }
+                }
             }
         }
     }
@@ -465,6 +492,7 @@ impl Controller {
             history_turns: 0,
             context_to_compact: false,
             mcp,
+            login: Login::Ready,
         };
         if let Some(approvals) = state.setup.approvals() {
             approvals.attach(Arc::clone(&state.emit));
@@ -480,6 +508,7 @@ impl Controller {
                 pending: None,
                 waiting: Vec::new(),
                 settings: None,
+                errand: None,
             },
             state,
             persistence,
@@ -542,7 +571,9 @@ impl Controller {
 
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
+            let held = self.state.login == Login::Missing;
             if self.installation.is_none()
+                && !held
                 && let Some(prompt) = self.state.worker.take_next()
             {
                 if !self.run_turn(&prompt, commands).await {
@@ -648,6 +679,7 @@ impl Controller {
             CommandEffect::Rename(title) => {
                 rename_session(&self.state, self.persistence.as_mut(), &title);
             }
+            CommandEffect::Logout(target) => self.sign_out(&target).await,
         }
         true
     }
@@ -1097,6 +1129,13 @@ fn drain_install_inputs(
     }
 }
 
+async fn finished<T>(slot: &mut Option<BoxFuture<'static, T>>) -> T {
+    match slot {
+        Some(future) => future.await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn next_question(requests: &mut Option<QuestionRequests>) -> QuestionRequest {
     match requests {
         Some(requests) => requests.next().await,
@@ -1142,6 +1181,7 @@ fn run_deferred(
             CommandEffect::Rename(title) => {
                 return rename_session(state, persistence.as_mut(), &title);
             }
+            CommandEffect::Logout(target) => return state.sign_out_during_work(catalog, &target),
             CommandEffect::Clear => {
                 state.pending_clear = Some(state.received_prompts);
                 state.worker.clear();
@@ -4759,6 +4799,136 @@ mod tests {
             .map(|message| message["content"].as_str().unwrap())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    const SIGNED_OUT: &str = "Codex needs a subscription login. Run /login, open Connections, then choose Codex subscription.";
+
+    async fn notices_of(harness: &mut Harness, command: &str) -> Vec<(NoticeTone, String, String)> {
+        harness.command(command);
+        harness.command("/version");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "version"))
+            .await;
+        let mut shown = notices(shown);
+        shown.pop();
+        shown
+    }
+
+    fn auth(tone: NoticeTone, body: &str) -> (NoticeTone, String, String) {
+        (tone, "auth".to_owned(), body.to_owned())
+    }
+
+    #[tokio::test]
+    async fn signing_out_of_the_selected_codex_login_leaves_no_provider_to_use() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        let login = harness.home.path().join("data/chatgpt-auth.json");
+        assert_eq!(
+            notices_of(&mut harness, "/logout codex").await,
+            [
+                auth(NoticeTone::Neutral, "Signed out of Codex."),
+                (
+                    NoticeTone::Warning,
+                    "provider".to_owned(),
+                    "No connected provider is available. Use /provider to sign in.".to_owned()
+                ),
+            ]
+        );
+        assert!(!login.exists());
+        harness.submit("hello");
+        let refused = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"))
+            .await;
+        assert_eq!(notices(refused), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        assert_eq!(
+            notices_of(&mut harness, "/logout").await,
+            [
+                auth(NoticeTone::Neutral, "No Codex login session found."),
+                (
+                    NoticeTone::Warning,
+                    "provider".to_owned(),
+                    "No connected provider is available. Use /provider to sign in.".to_owned()
+                ),
+            ]
+        );
+        assert!(codex.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn logout_reports_each_provider_and_keeps_a_configured_one_in_use() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["still here"]))]);
+        let home = codex_home();
+        let setup = agent_setup_with(
+            &home,
+            &local_settings(&server),
+            SubscriptionEndpoints::default(),
+        )
+        .await;
+        let mut harness = Harness::with_setup(home, setup);
+        assert_eq!(
+            notices_of(&mut harness, "/logout").await,
+            [auth(NoticeTone::Neutral, "Signed out of Codex.")]
+        );
+        for (command, body) in [
+            ("/logout", "No oh-fx login session found."),
+            ("/logout VERCEL", "No oh-fx login session found."),
+            ("/logout codex", "No Codex login session found."),
+            ("/logout grok", "No Grok login session found."),
+        ] {
+            assert_eq!(
+                notices_of(&mut harness, command).await,
+                [auth(NoticeTone::Neutral, body)],
+                "{command}"
+            );
+        }
+        assert_eq!(
+            notices_of(&mut harness, "/logout chatgpt").await,
+            [(
+                NoticeTone::Warning,
+                String::new(),
+                "usage: /logout [vercel|codex|grok]".to_owned()
+            )]
+        );
+        chat(&mut harness, &["hi"]).await;
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_selected_codex_login_stays_during_work_while_others_sign_out() {
+        let codex = FakeServer::start([codex_partial()]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        assert_eq!(
+            notices_of(&mut harness, "/logout codex").await,
+            [auth(
+                NoticeTone::Warning,
+                "Sign out is unavailable until active and queued work finishes."
+            )]
+        );
+        harness.command("/logout grok");
+        let signed_out = within(harness.until(|event| {
+            matches!(event, UiEvent::Notice { notice } if notice.body == "No Grok login session found.")
+        }))
+        .await;
+        assert_eq!(
+            notices(signed_out),
+            [auth(NoticeTone::Neutral, "No Grok login session found.")]
+        );
+        assert!(harness.home.path().join("data/chatgpt-auth.json").exists());
+        assert!(
+            !harness
+                .seen
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnFinished { .. }))
+        );
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
     }
 
     fn notices(events: &[UiEvent]) -> Vec<(NoticeTone, String, String)> {

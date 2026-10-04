@@ -53,6 +53,7 @@ pub(crate) enum CommandEffect {
     OpenSessions,
     OpenSettings,
     Rename(String),
+    Logout(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +135,7 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         }
         SlashKind::ResumeSession => CommandEffect::OpenSessions,
         SlashKind::RenameSession => CommandEffect::Rename(command.payload.to_owned()),
+        SlashKind::Logout => CommandEffect::Logout(command.payload.to_owned()),
         SlashKind::Login => provider_effect(state, work, "/login "),
         SlashKind::Provider => provider_effect(state, work, "/provider "),
         SlashKind::Fast => CommandEffect::ToggleFast,
@@ -222,6 +224,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         | SlashKind::ResumeSession
         | SlashKind::RenameSession
         | SlashKind::Login
+        | SlashKind::Logout
         | SlashKind::Provider
         | SlashKind::Fast
         | SlashKind::Compact => {}
@@ -474,6 +477,10 @@ mod tests {
         assert_eq!(listed("/new").description, "start a fresh session");
         assert_eq!(listed("/resume").description, "resume a saved session");
         assert_eq!(listed("/rename").description, "rename the current session");
+        assert_eq!(
+            listed("/logout").description,
+            "sign out of a provider session"
+        );
         assert_eq!(listed("/provider").aliases, ["/setup"]);
         assert_eq!(
             listed("/mcp").description,

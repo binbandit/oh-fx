@@ -226,6 +226,7 @@ fn run_a_codex_session(home: &Path) -> ! {
             models: format!("{catalog}/backend-api/codex/models"),
             client_version: format!("{catalog}/@openai/codex/latest"),
         },
+        grok: ofx_auth::GrokEndpoints::default(),
     };
     let setup = runtime
         .block_on(profile.connect_interactive(
