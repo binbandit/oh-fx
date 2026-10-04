@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use ofx_contract::{
-    ApprovalRequest, LivePermissionMode, ModelFailureDiagnostic, RestoredHistory, TurnOutcome,
-    UiEvent,
+    ApprovalRequest, LivePermissionMode, LogFailure, ModelFailureDiagnostic, RestoredHistory,
+    TurnOutcome, UiEvent,
 };
 use ofx_text::is_terminal_safe;
 use tokio_util::sync::CancellationToken;
@@ -63,7 +63,7 @@ impl ChildRuntime {
         work: &ActiveWork,
         instructions: &str,
         tools: WorkTools,
-        approvals: &(dyn Fn(ApprovalRequest) + Sync),
+        approvals: &(dyn Fn(ApprovalRequest) -> Result<(), LogFailure> + Sync),
         cancel: &CancellationToken,
     ) -> WorkOutcome {
         let WorkTools { tools, release } = tools;
@@ -78,6 +78,8 @@ impl ChildRuntime {
             .inherit_root_user_requests(Arc::clone(&work.root_user_requests));
         self.permission_mode.set(work.permission_mode);
         let mut partial = String::new();
+        let mut unsaved = None;
+        let stop = cancel.child_token();
         let report = self
             .agent
             .run_turn(
@@ -86,15 +88,29 @@ impl ChildRuntime {
                     UiEvent::AssistantText { text, .. }
                     | UiEvent::AssistantRestarted { text, .. } => partial.push_str(&text),
                     UiEvent::ToolStarted { .. } | UiEvent::ToolRejected { .. } => partial.clear(),
-                    UiEvent::ApprovalRequested { request, .. } => approvals(*request),
+                    UiEvent::ApprovalRequested { request, .. } => {
+                        if let Err(failure) = approvals(*request) {
+                            unsaved.get_or_insert(failure);
+                            stop.cancel();
+                        }
+                    }
                     _ => {}
                 },
-                cancel,
+                &stop,
             )
             .await;
         self.agent.replace_tools(Vec::new());
         release.await;
-        work_outcome(report, partial, cancel.is_cancelled())
+        match unsaved {
+            Some(failure) if !cancel.is_cancelled() => WorkOutcome {
+                outcome: Outcome::Failed,
+                failure: Some(turn_failure_diagnostic(Some(&TurnFailure::Persistence(
+                    failure,
+                )))),
+                text: (!partial.is_empty()).then_some(partial),
+            },
+            _ => work_outcome(report, partial, cancel.is_cancelled()),
+        }
     }
 }
 

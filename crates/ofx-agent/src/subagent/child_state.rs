@@ -103,6 +103,28 @@ impl Registry {
         registry_file::parse(bytes, parent_id)
     }
 
+    pub(crate) fn await_approval(
+        &mut self,
+        child_id: &str,
+        work_id: &str,
+    ) -> Result<(), RegistryError> {
+        let child = self
+            .children
+            .iter_mut()
+            .find(|child| child.id == child_id)
+            .ok_or(RegistryError::ChildNotFound)?;
+        if child
+            .active
+            .as_ref()
+            .is_none_or(|active| active.id != work_id)
+        {
+            return Err(RegistryError::StaleWork);
+        }
+        child.phase = ChildPhase::AwaitingApproval;
+        self.advance();
+        Ok(())
+    }
+
     pub(crate) fn interrupt_active(&mut self) -> bool {
         let mut changed = false;
         for child in &mut self.children {
