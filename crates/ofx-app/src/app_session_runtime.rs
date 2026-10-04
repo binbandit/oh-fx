@@ -222,7 +222,7 @@ impl LiveSession {
 
     pub(crate) fn settle_open_recovery(&self, agent: &mut Agent) -> Result<(), SessionError> {
         let mut session = self.session();
-        if !session.turn_open() || session.recovery_transcript().is_none() {
+        if !session.turn_open() || !session.holds_recovery() {
             return Ok(());
         }
         session.settle_open_recovery()?;

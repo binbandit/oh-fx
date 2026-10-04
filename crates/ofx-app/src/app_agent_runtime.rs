@@ -17,7 +17,7 @@ use ofx_contract::{
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource, Login};
@@ -1026,12 +1026,19 @@ impl Controller {
         let pause = self.agent.recovery_pause();
         let running = Arc::new(Mutex::new(None));
         let running_turn = || *running.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut sink = turn_events(
+        let mut events = turn_events(
             Arc::clone(&self.state.emit),
             Arc::clone(&running),
             self.state.setup.approvals().cloned(),
             Arc::clone(&self.state.context_notices),
         );
+        let (recovering, mut recoveries) = unbounded_channel();
+        let mut sink = move |event: UiEvent| {
+            if matches!(event, UiEvent::Recovery { .. }) {
+                let _ = recovering.send(());
+            }
+            events(event);
+        };
         let state = &mut self.state;
         let persistence = &mut self.persistence;
         let questions = &mut self.questions;
@@ -1082,6 +1089,11 @@ impl Controller {
                         Some(command) => run_deferred(state, persistence, catalog, command, installation, work, &cancel),
                     },
                     request = next_question(questions) => relay_question(state, running_turn(), request),
+                    Some(()) = recoveries.recv() => {
+                        if let Some(notice) = persistence.as_mut().and_then(Persistence::remember_durable_work) {
+                            state.emit(UiEvent::Notice { notice });
+                        }
+                    }
                 }
             }
         };
@@ -1479,7 +1491,7 @@ mod tests {
         FakeServer, Gate, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
     };
     use serde_json::{Value, json};
-    use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+    use tokio::sync::mpsc::UnboundedSender;
     use tokio::time::timeout;
 
     use super::*;
