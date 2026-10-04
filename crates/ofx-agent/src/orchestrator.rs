@@ -1059,6 +1059,8 @@ impl Agent {
         } else {
             0
         };
+        let corrections_repeated = turn.shell_corrections.finish_batch();
+        let failures_repeated = turn.shell_failures.finish_batch();
         if turn.malformed_batches == MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES {
             if self.steered_at_finalizing(turn.id, more_steps, events) {
                 return Ok(None);
@@ -1070,7 +1072,7 @@ impl Agent {
                 TurnFailure::RepeatedMalformedArguments,
             ));
         }
-        if turn.shell_corrections.finish_batch() {
+        if corrections_repeated {
             if self.steered_at_finalizing(turn.id, more_steps, events) {
                 return Ok(None);
             }
@@ -1079,7 +1081,7 @@ impl Agent {
             });
             return Ok(Some(String::new()));
         }
-        if turn.shell_failures.finish_batch() {
+        if failures_repeated {
             if self.steered_at_finalizing(turn.id, more_steps, events) {
                 return Ok(None);
             }

@@ -330,6 +330,22 @@ async fn steering_waiting_when_the_corrections_repeat_continues_the_turn() {
 }
 
 #[tokio::test]
+async fn a_steered_correction_stop_still_settles_the_execution_failures_of_its_batch() {
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", FAILING), ("call-2", BAD_REQUEST)]),
+        shell_reply(&[("call-3", BAD_REQUEST)]),
+        shell_reply(&[("call-4", FAILING)]),
+        text_reply("done"),
+    ]);
+    let (report, events) = run_with_steering_at(&provider, "call-3").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(report.final_text, "done");
+    assert_eq!(provider.requests().len(), 4);
+    assert!(operational(&events).is_empty());
+    assert!(system_notices(&events).is_empty());
+}
+
+#[tokio::test]
 async fn the_validation_stop_is_saved_as_a_reply_without_text() {
     let provider = FakeProvider::new(vec![
         shell_reply(&[("call-1", BAD_REQUEST)]),
