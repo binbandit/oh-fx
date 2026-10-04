@@ -111,7 +111,7 @@ fn a_command_that_takes_arguments_is_left_in_the_composer() {
     assert!(test.shell.help_menu.is_none());
     assert_eq!(test.shell.composer.text(), "/model ");
     assert!(screen.contains("┃ /model"), "{screen}");
-    assert!(sent_after_help(&test).is_empty());
+    assert_eq!(sent_after_help(&test), [UiCommand::ListModels]);
 }
 
 #[test]
@@ -192,4 +192,30 @@ fn skill_mentions_stay_search_text_while_the_menu_is_open() {
     press(&mut test, b"\x1b[B $");
     assert!(test.shell.skills_menu.is_none());
     assert!(test.shell.help_menu.is_some());
+}
+
+#[test]
+fn ctrl_p_waits_for_the_menu_and_an_exact_model_command_opens_the_model_menu() {
+    let mut test = open();
+    press(&mut test, b"\x10");
+    assert!(test.shell.model_menu.is_none());
+    assert!(test.shell.help_menu.is_some());
+    let screen = press(&mut test, b"/model\r");
+    assert!(test.shell.help_menu.is_none());
+    assert!(test.shell.model_menu.is_some());
+    assert!(screen.contains("Models 0  [All]"), "{screen}");
+    assert!(!screen.contains("Commands"), "{screen}");
+}
+
+#[test]
+fn a_late_help_reply_leaves_an_open_model_menu_and_its_lent_draft() {
+    let mut test = TestShell::start();
+    press(&mut test, b"draft\x10");
+    assert!(test.shell.model_menu.is_some());
+    test.deliver(UiEvent::HelpRequested);
+    assert!(test.shell.help_menu.is_none());
+    assert!(test.shell.model_menu.is_some());
+    let screen = test.screen();
+    assert!(screen.contains("Models 0  [All]"), "{screen}");
+    assert!(!screen.contains("Commands"), "{screen}");
 }
