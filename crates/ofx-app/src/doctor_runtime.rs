@@ -17,6 +17,7 @@ const USER_SETTINGS: &str = "~/.config/oh-fx/settings.json";
 const PROJECT_SETTINGS: &str = ".oh-fx.json";
 const PROFILE_MCP: &str = "~/.config/oh-fx/mcp.json";
 const SESSIONS_DIRECTORY: &str = "sessions";
+const UNUSABLE_PROFILE: &str = "InvalidProfileConfiguration";
 
 pub struct Doctor {
     report: DoctorReport,
@@ -139,15 +140,23 @@ impl Collection<'_> {
         let connection = settings.selected_connection(lookup).ok();
         let auth = self.sources.auth(provider, connection);
         self.config_checks(settings);
-        self.auth_check(&auth);
+        match connection.map(|connection| connection.resolve(lookup, self.sources.home)) {
+            Some(Err(error)) => self.push("auth", CheckStatus::Fail, error.to_string()),
+            _ => self.auth_check(&auth),
+        }
         let permission_mode = settings.permission_mode(lookup);
         let agent_step_limit = settings.max_agent_steps(lookup);
         let selected = match connection {
-            Some(connection) => settings.selected_model(connection, None, lookup),
-            None if *provider == ProviderId::Codex => settings.selected_codex_model(None, lookup),
-            None => Err(SelectionError::ProviderUnavailable(
-                provider.label().to_owned(),
-            )),
+            _ if settings.profile_is_unusable() => Err(UNUSABLE_PROFILE.to_owned()),
+            Some(connection) => settings
+                .selected_model(connection, None, lookup)
+                .map_err(|error| error.to_string()),
+            None if *provider == ProviderId::Codex => settings
+                .selected_codex_model(None, lookup)
+                .map_err(|error| error.to_string()),
+            None => {
+                Err(SelectionError::ProviderUnavailable(provider.label().to_owned()).to_string())
+            }
         };
         let model = match selected {
             Ok(model) => {
@@ -162,7 +171,7 @@ impl Collection<'_> {
                 model
             }
             Err(error) => {
-                self.push("startup", CheckStatus::Fail, error.to_string());
+                self.push("startup", CheckStatus::Fail, error);
                 String::new()
             }
         };

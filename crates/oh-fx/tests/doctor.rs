@@ -244,6 +244,68 @@ fn configuration_and_mcp_problems_become_checks() {
 }
 
 #[test]
+fn a_connection_that_ask_cannot_resolve_fails_the_auth_check() {
+    let home = Home::new();
+    let mut settings = local_settings("http://127.0.0.1:9/v1");
+    home.write_settings(&settings);
+    let bad_token = [("LOCAL_KEY", "bad token")];
+    let refused = "the configured provider credential is not a valid bearer token; it must be at most 16 KiB of visible ASCII characters";
+    let output = home.run(&["ask", "hello"], &bad_token);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output.stderr).contains(refused),
+        "{}",
+        text(&output.stderr)
+    );
+    let stdout = home.doctor(&[], &bad_token);
+    assert!(
+        stdout.contains(&format!("\n[fail] auth: {refused}\n")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.starts_with("[doctor] ok=3 warn=4 fail=1\n"),
+        "{stdout}"
+    );
+
+    settings["providers"]["local"]["headers"] = json!({"x-team": "${TEAM_ID}"});
+    home.write_settings(&settings);
+    let key = [("LOCAL_KEY", "secret")];
+    let missing = "header x-team needs the environment variable TEAM_ID, which is not set; export it or give a default with ${TEAM_ID:-value}";
+    let output = home.run(&["ask", "hello"], &key);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output.stderr).contains(missing),
+        "{}",
+        text(&output.stderr)
+    );
+    let stdout = home.doctor(&[], &key);
+    assert!(
+        stdout.contains(&format!("\n[fail] auth: {missing}\n")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn an_unusable_profile_fails_the_startup_check_as_ask_refuses_it() {
+    let home = Home::new();
+    fs::write(home.root.join("config/oh-fx/settings.json"), "{").expect("write settings");
+    let environment = [
+        ("OH_FX_PROVIDER", "codex"),
+        ("OH_FX_MODEL", "gpt-5.4"),
+        ("OH_FX_AUTH_MODE", "host-managed"),
+    ];
+    let output = home.run(&["ask", "hello"], &environment);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(text(&output.stderr), "oh-fx: InvalidProfileConfiguration\n");
+    let stdout = home.doctor(&[], &environment);
+    assert!(
+        stdout.contains("\n[fail] startup: InvalidProfileConfiguration\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\n[doctor] model=\n"), "{stdout}");
+}
+
+#[test]
 fn doctor_refuses_the_v2_store() {
     let home = Home::new();
     let output = home.run(&["doctor"], &[("OH_FX_SESSIONS_V2", "1")]);
