@@ -223,6 +223,10 @@ impl ChatGptOAuth {
         }
     }
 
+    pub fn has_saved_login(&self) -> bool {
+        self.store.presence() == Presence::Present
+    }
+
     pub(crate) fn storage_presence(&self) -> Presence {
         self.store.presence()
     }
