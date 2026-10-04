@@ -19,7 +19,82 @@ const READ_CHUNK_BYTES: usize = 4096;
 const SCROLLBACK_ROWS: usize = 1000;
 const FULL_OUTPUT_ROUNDS: usize = 5;
 
-type Terminal = Arc<Mutex<vt100::Parser<CursorReplies>>>;
+type Terminal = Arc<Mutex<Display>>;
+
+const SYNC_MARKER_PREFIX: &[u8] = b"\x1b[?2026";
+
+struct Display {
+    parser: vt100::Parser<CursorReplies>,
+    shown: vt100::Screen,
+    marker_matched: usize,
+    synchronized: bool,
+}
+
+impl Display {
+    fn new(rows: u16, cols: u16) -> Self {
+        let parser = vt100::Parser::new_with_callbacks(
+            rows,
+            cols,
+            SCROLLBACK_ROWS,
+            CursorReplies::default(),
+        );
+        let shown = parser.screen().clone();
+        Self {
+            parser,
+            shown,
+            marker_matched: 0,
+            synchronized: false,
+        }
+    }
+
+    fn process(&mut self, chunk: &[u8]) {
+        let mut start = 0;
+        for (index, byte) in chunk.iter().enumerate() {
+            let Some(opens) = self.marker(*byte) else {
+                continue;
+            };
+            let marker_start = (index + 1)
+                .saturating_sub(SYNC_MARKER_PREFIX.len() + 1)
+                .max(start);
+            self.parser.process(&chunk[start..marker_start]);
+            self.show_unless_synchronized();
+            self.synchronized = opens;
+            self.parser.process(&chunk[marker_start..=index]);
+            self.show_unless_synchronized();
+            start = index + 1;
+        }
+        self.parser.process(&chunk[start..]);
+        self.show_unless_synchronized();
+    }
+
+    fn marker(&mut self, byte: u8) -> Option<bool> {
+        if self.marker_matched == SYNC_MARKER_PREFIX.len() {
+            self.marker_matched = 0;
+            match byte {
+                b'h' => return Some(true),
+                b'l' => return Some(false),
+                _ => {}
+            }
+        }
+        if byte == SYNC_MARKER_PREFIX[self.marker_matched] {
+            self.marker_matched += 1;
+        } else {
+            self.marker_matched = usize::from(byte == SYNC_MARKER_PREFIX[0]);
+        }
+        None
+    }
+
+    fn show_unless_synchronized(&mut self) {
+        if !self.synchronized {
+            self.shown = self.parser.screen().clone();
+        }
+    }
+
+    fn resize(&mut self, rows: u16, cols: u16) {
+        self.parser.screen_mut().set_size(rows, cols);
+        self.show_unless_synchronized();
+    }
+}
 
 pub struct PtyPair {
     pub master: OwnedFd,
@@ -133,12 +208,7 @@ impl PtySession {
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
         let (stop, reader_stop) = io::pipe()?;
-        let terminal = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            rows,
-            cols,
-            SCROLLBACK_ROWS,
-            CursorReplies::default(),
-        )));
+        let terminal = Arc::new(Mutex::new(Display::new(rows, cols)));
         let output = Arc::new(Mutex::new(Vec::new()));
         let stall = Arc::new(Stall::default());
         let reader = Reader {
@@ -268,14 +338,14 @@ impl PtySession {
     }
 
     pub fn screen(&self) -> String {
-        lock(&self.terminal).screen().contents()
+        lock(&self.terminal).shown.contents()
     }
 
     pub fn screen_rows(&self) -> Vec<String> {
         let terminal = lock(&self.terminal);
-        let cols = terminal.screen().size().1;
+        let cols = terminal.shown.size().1;
         terminal
-            .screen()
+            .shown
             .rows(0, cols)
             .map(|row| row.trim_end().to_owned())
             .collect()
@@ -305,7 +375,7 @@ impl PtySession {
 
     pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
         termios::tcsetwinsize(&self.master, winsize(rows, cols))?;
-        lock(&self.terminal).screen_mut().set_size(rows, cols);
+        lock(&self.terminal).resize(rows, cols);
         self.signal(Signal::WINCH)
     }
 
@@ -435,7 +505,7 @@ impl Reader {
         }
         let mut terminal = lock(&self.terminal);
         terminal.process(chunk);
-        self.replies.append(&mut terminal.callbacks_mut().0);
+        self.replies.append(&mut terminal.parser.callbacks_mut().0);
     }
 
     fn flush_replies(&mut self) {
@@ -553,6 +623,33 @@ mod tests {
                 .any(|window| window == b"\x1b[6n")
         );
         assert_eq!(session.screen_rows().len(), 5);
+    }
+
+    #[test]
+    fn a_synchronized_frame_shows_only_once_it_is_whole() {
+        let session = shell(concat!(
+            "printf 'before\\n'; sleep 0.3; ",
+            "printf '\\033[?20'; sleep 0.3; ",
+            "printf '26hhalf'; sleep 0.3; ",
+            "printf ' whole\\033[?2026l'; sleep 0.3; ",
+            "printf 'after'; exec sleep 10",
+        ));
+        session
+            .wait_for(WAIT, |screen| screen.contains("before"))
+            .unwrap();
+        let seen = Mutex::new(Vec::new());
+        let finished = session.wait_for(WAIT, |screen| {
+            lock(&seen).push(screen.to_owned());
+            screen.contains("after")
+        });
+        let seen = seen.into_inner().unwrap();
+        assert!(finished.is_ok(), "{seen:?}");
+        assert!(
+            seen.iter()
+                .all(|screen| !screen.contains("half") || screen.contains("half whole")),
+            "{seen:?}"
+        );
+        assert!(seen.iter().any(|screen| screen.contains("half whole")));
     }
 
     #[test]
