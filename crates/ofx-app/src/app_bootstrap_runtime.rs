@@ -18,7 +18,7 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ActiveMode, ApprovalDecision, CallDescription, CapabilityResolver, DynamicTools,
+    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools,
     LivePermissionMode, ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId,
     ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias, parse_tool_args_object,
     provider_search_description,
@@ -737,9 +737,9 @@ impl AgentSetup {
         self.config.step_limit
     }
 
-    pub(crate) fn answer_approval(&self, id: RequestId, decision: ApprovalDecision) {
+    pub(crate) fn answer_approval(&self, id: RequestId, answer: ApprovalAnswer) {
         if let Some(approvals) = &self.approvals {
-            approvals.resolve(id, decision);
+            approvals.resolve(id, answer);
         }
     }
 
