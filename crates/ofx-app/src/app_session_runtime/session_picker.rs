@@ -1,12 +1,12 @@
 use ofx_agent::Agent;
-use ofx_contract::{
-    HistoryEntry, Notice, NoticeTone, ResumeRefusal, SessionCursor, SessionPage, SessionRow,
-    SessionScope,
-};
-use ofx_session::{ListScope, ResumeContinuation, SessionError, SessionSummary};
+use ofx_contract::{HistoryEntry, Notice, NoticeTone, ResumeRefusal};
+use ofx_session::{SessionCatalog, SessionError};
+use tokio::time::Instant;
 
 use super::persistence::{Persistence, SESSION_TOPIC};
-use super::{LiveSession, RestoredPreferences, ResumedSession};
+use super::{
+    Answer, Listed, LiveSession, PageRequest, RestoredPreferences, ResumedSession, SessionListing,
+};
 use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(crate) struct Switched {
@@ -22,36 +22,24 @@ pub(crate) struct Refused {
 }
 
 impl Persistence {
-    pub(crate) fn page(
-        &mut self,
-        scope: SessionScope,
-        after: Option<SessionCursor>,
-        limit: usize,
-    ) -> Result<SessionPage, SessionError> {
-        let continuation = after.as_ref().map(|cursor| ResumeContinuation {
-            updated_at_ms: cursor.updated_at_ms,
-            id: cursor.id.clone(),
-        });
-        let catalog = match self.catalog.take() {
-            Some(catalog) if after.is_some() => catalog,
-            _ => self.store.catalog()?,
-        };
-        let listed = catalog.page(
-            match scope {
-                SessionScope::CurrentWorkspace => ListScope::CurrentWorkspace,
-                SessionScope::AllWorkspaces => ListScope::AllWorkspaces,
-            },
-            self.live.as_ref().map(LiveSession::id),
-            continuation.as_ref(),
-            limit,
-        );
-        self.catalog = Some(catalog);
-        Ok(SessionPage {
-            scope,
-            after,
-            rows: listed.summaries.into_iter().map(row).collect(),
-            has_more: listed.has_more,
-        })
+    pub(crate) fn list(
+        &self,
+        listing: &mut SessionListing,
+        request: PageRequest,
+    ) -> Result<Listed, SessionError> {
+        listing.request(&self.store, self.active_id(), request, Instant::now())
+    }
+
+    pub(crate) fn preload(&self, listing: &mut SessionListing) {
+        listing.preload(&self.store, self.active_id(), Instant::now());
+    }
+
+    pub(crate) fn finish_listing(
+        &self,
+        listing: &mut SessionListing,
+        scanned: Result<SessionCatalog, SessionError>,
+    ) -> Vec<Answer> {
+        listing.finish(&self.store, self.active_id(), scanned, Instant::now())
     }
 
     pub(crate) fn resume_selected(
@@ -102,15 +90,5 @@ fn refused(error: SessionError) -> Refused {
             _ => ResumeRefusal::Unavailable,
         },
         notice: None,
-    }
-}
-
-fn row(summary: SessionSummary) -> SessionRow {
-    SessionRow {
-        id: summary.id,
-        title: summary.title,
-        workspace_root: summary.workspace_root,
-        updated_at_ms: summary.updated_at_ms,
-        turns: summary.history_len,
     }
 }

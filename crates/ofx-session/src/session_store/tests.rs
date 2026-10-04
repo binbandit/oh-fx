@@ -648,3 +648,23 @@ fn a_session_whose_folder_was_replaced_is_never_deleted() {
     assert!(fixture.session_dir(&id).join("keep").exists());
     assert!(moved.join("session.json").exists());
 }
+
+#[test]
+fn a_cloned_store_lists_the_same_sessions_and_reports_a_saved_index() {
+    let fixture = Fixture::new();
+    fixture.seed("alpha", "/w", 1, 10);
+    let store = fixture.store("/w");
+    assert!(!store.has_catalog_index());
+    let clone = store.try_clone().unwrap();
+    let ids: Vec<String> = clone
+        .catalog()
+        .unwrap()
+        .page(ListScope::CurrentWorkspace, None, None, 10)
+        .summaries
+        .into_iter()
+        .map(|summary| summary.id)
+        .collect();
+    assert_eq!(ids, ["alpha"]);
+    assert!(store.has_catalog_index());
+    assert!(!fixture.reader("/w").try_clone().unwrap().writable);
+}
