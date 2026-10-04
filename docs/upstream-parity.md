@@ -29,7 +29,7 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 
 ## 34f1ed1..6bdd497
 
-Rows marked `defer:compactor`, `defer:shell`, `defer:startup-probe` and `defer:ultrafast-cli` change behaviour oh-fx already ports. Each is synced by its own pull request in this pass, which moves its rows to `ported`.
+Rows marked `defer:shell`, `defer:startup-probe` and `defer:ultrafast-cli` change behaviour oh-fx already ports. Each is synced by its own pull request in this pass, which moves its rows to `ported`.
 
 | PR | Merge | Title | Status | oh-fx | Note |
 |---|---|---|---|---|---|
@@ -37,7 +37,9 @@ Rows marked `defer:compactor`, `defer:shell`, `defer:startup-probe` and `defer:u
 | #1113 | `07b4e7a` | Send libfx images as raw bytes | `defer:acp` | future ACP | Without an attachment store, `fx acp` refuses an image block that names an `_meta.fx.attachment`; base64 image `data` is read as before. |
 | #1113 | `07b4e7a` | (same) | `n/a` | none | libfx hosts pass prompt images and kernel checkpoints as raw attachments beside their JSON-RPC frames (`host_attachments.zig`, `js_host_attachments.zig`), and kernel checkpoints store image bytes raw. Only the NAPI and WebAssembly entry points supply the store. The JavaScript SDK and its tests. |
 | #1116 | `0107787` | Move sessions v2 bodies to blobs and terminal state to its own folder | `defer:sessions-v2` | future session store | Tool results, tool images, command replay, web-fetch downloads and compaction records become blobs of a v2 session; hosted terminal state moves to `terminal/{id}`; an ACP client's system prompt and tool identities become session settings; older v2 sessions move on their first writable open. See [Sessions v2](#sessions-v2). |
-| #1120 | `b437987` | Fix compaction note retries, entry checks and damaged checkpoints | `defer:compactor` | `ofx-agent` | See [Compactor checks](#compactor-checks). |
+| #1120 | `b437987` | Fix compaction note retries, entry checks and damaged checkpoints | `ported` | `ofx-agent` | A reply with entries but no turn notes gets the notes follow-up. A plain-text reply counts as the notes of the newest turn, and the other turns with work are asked for again. Every entry must name its source, and an entry citing one failed tool call may not call it a success. A checkpoint whose turn or tool count passes `1 << 30` is read as its raw text. |
+| #1120 | `b437987` | (same) | `defer:sessions` | future session store, `read_tool_result` | After an unreadable checkpoint, `records.zig` leaves a saved record numbered past `1 << 30` out of the numbering. |
+| #1120 | `b437987` | (same) | `n/a` | none | The scripted replies of the gateway flow tests and the TUI compaction activity end-to-end test. |
 | #1121 | `7e39bf1` | Avoid redundant Base64 decoding buffers | `ported` | `ofx-session` | Decoding stops re-encoding to compare, and the input accepted is unchanged. oh-fx decodes with the `base64` crate's `STANDARD` engine, which rejects non-canonical padding and trailing bits without re-encoding. |
 | #1112 | `88e6658` | Add opt-in Ultrafast mode | `defer:ultrafast-cli` | `ofx-cli`, `ofx-app` | See [Ultrafast](#ultrafast). |
 | #1112 | `88e6658` | (same) | `defer:ai-gateway` | future Vercel AI Gateway transport | The `openai.serviceTier: "ultrafast"` request, the `ultrafast_mode` setting and `FX_ULTRAFAST`, the model, settings and footer indicators, subagent inheritance, ACP, and the session and recovery-checkpoint fields, which upstream writes only when the mode is on. |
@@ -50,7 +52,9 @@ Rows marked `defer:compactor`, `defer:shell`, `defer:startup-probe` and `defer:u
 | #1127 | `0994a05` | (same) | `defer:interactive` | future interactive startup | The first frame is drawn before a Keychain login is read, before skills are discovered and before the other sign-in sources are checked; a prompt sent first waits for the login; the full-transcript session details show `skills: loading`. oh-fx's event loop waits on its descriptors instead of polling, so upstream's 1 ms first-input wait has no counterpart. |
 | #1127 | `0994a05` | (same) | `n/a` | none | `benchmarks/first_frame.py`, AGENTS.md and CONTRIBUTING.md text, and the single-threaded WebAssembly credential path. |
 | #1129 | `d3c28f3` | Title a v2 session whose first turn crashed | `defer:sessions-v2` | future session store | A resumed v2 session without a stored title writes the title its first prompt gives with its next turn end. |
-| #1135 | `463663f` | Fix false compaction check marks and close finished open entries | `defer:compactor` | `ofx-agent` | See [Compactor checks](#compactor-checks). |
+| #1135 | `463663f` | Fix false compaction check marks and close finished open entries | `ported` | `ofx-agent` | A rule may quote the user's answer in an `ask_user_question` result, though not the question. Values are also looked for in what stays in the conversation after the cut, the rest of a turn in progress included. The notes request says a status entry can replace an open entry it answers or finishes, and the open entry then shows as replaced. |
+| #1135 | `463663f` | (same) | `defer:sessions` | future session store, `read_tool_result` | Folding the earlier compaction drops an open entry that a status replaced. Without saved compactions, oh-fx carries it forward, marked replaced. |
+| #1135 | `463663f` | (same) | `n/a` | none | The README's compaction section, which oh-fx's README does not have. |
 | #1139 | `be6d092` | Exit without waiting on MCP servers or the usage ledger | `defer:mcp` | MCP runtime | At exit, every stdio MCP server's process group gets SIGKILL in one pass after launches under way settle, for at most 1 s. A Docker-backed server, a launch that does not settle or a full kill list falls back to the full teardown. |
 | #1139 | `be6d092` | (same) | `defer:sessions` | future profile usage ledger and session picker catalog | The first usage publication's ledger parse checks the lock's abandon flag every 256 lines, so exit stops it, and process exit leaves the session picker catalog to the exiting process instead of freeing each cached session. oh-fx has neither yet. |
 | #1137 | `6bdd497` | Load shell startup files once per fx process | `defer:shell` | `ofx-tools`, `ofx-app`, `ofx-cli` | See [Shell tool](#shell-tool). |
@@ -137,17 +141,6 @@ The private result reader supports bounded raw pages, and storage no longer appl
 - **ACP:** ACP applies the auto compaction percent.
 - **Vercel AI Gateway:** `model.zig` sends a failed or empty summary once more to another model family.
 - **Trace:** `trace.zig`'s ring and the compaction trace lines.
-
-### Compactor checks
-
-#1120 and #1135 change the compactor oh-fx ports:
-
-- A reply with entries but no turn notes gets the notes follow-up, and a plain-text reply counts as the notes of the turn that keeps it.
-- Every entry must name its source, and an entry about one failed tool call may not call it a success.
-- A rule quoting the user's answer to a question tool counts as the user's words; the questions do not.
-- Values read in the tool calls that stay after the cut, the rest of a turn in progress included, are searched before an entry is marked as found nowhere.
-- The notes request adds that a status entry can replace an open entry it answers or finishes.
-- A checkpoint whose counts pass `1 << 30` is read as damaged.
 
 ### Shell tool
 

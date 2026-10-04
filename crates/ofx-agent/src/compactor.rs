@@ -83,12 +83,14 @@ pub(crate) async fn compact(
     }
     summarizing();
     let turns = turns_from(request.turns, chosen.cut);
+    let kept = kept_from(request.turns, chosen.cut);
     let size = request.size;
     let summary = summarize::compact(
         summarize::Request {
             earlier: request.earlier,
             turns: &turns,
             last_turn_open: chosen.splits_last_turn(),
+            kept: &kept,
             max_prompt_tokens: size.summary_request_tokens(),
             conversation_room: size
                 .room_after_conversation()
@@ -108,43 +110,72 @@ pub(crate) async fn compact(
 fn turns_from<'a>(history: &[HistoryTurn<'a>], cut: Cut) -> Vec<summarize::Turn<'a>> {
     let mut turns: Vec<summarize::Turn<'a>> = history[..cut.turns.min(history.len())]
         .iter()
-        .map(|turn| {
-            let mut items = step_items(&turn.steps);
-            note_items(&turn.notes, &mut items);
-            if !turn.reply.is_empty() {
-                items.push(summarize::Item::Assistant(turn.reply));
-            }
-            summarize::Turn {
-                user: turn.user,
-                items,
-            }
-        })
+        .map(whole_turn)
         .collect();
     if cut.splits_turn()
         && let Some(split) = history.get(cut.turns)
     {
-        let steps = &split.steps[..cut.tool_steps.min(split.steps.len())];
-        let mut items = step_items(steps);
-        let mut remaining = cut
-            .steering
-            .saturating_sub(steps.iter().map(|step| steering_count(&step.notes)).sum());
-        let mut trailing = Vec::new();
-        for note in &split.notes {
-            if remaining == 0 {
-                break;
-            }
-            if matches!(note, Note::User(_)) {
-                remaining -= 1;
-            }
-            trailing.push(*note);
-        }
-        note_items(&trailing, &mut items);
+        let steps = cut.tool_steps.min(split.steps.len());
+        let mut items = step_items(&split.steps[..steps]);
+        note_items(&split.notes[..compacted_notes(split, cut)], &mut items);
         turns.push(summarize::Turn {
             user: split.user,
             items,
         });
     }
     turns
+}
+
+fn kept_from<'a>(history: &[HistoryTurn<'a>], cut: Cut) -> Vec<summarize::Turn<'a>> {
+    let mut rest = history.get(cut.turns..).unwrap_or_default();
+    let mut kept = Vec::new();
+    if cut.splits_turn()
+        && let Some((split, after)) = rest.split_first()
+    {
+        let steps = cut.tool_steps.min(split.steps.len());
+        let mut items = step_items(&split.steps[steps..]);
+        note_items(&split.notes[compacted_notes(split, cut)..], &mut items);
+        if !split.reply.is_empty() {
+            items.push(summarize::Item::Assistant(split.reply));
+        }
+        kept.push(summarize::Turn {
+            user: split.user,
+            items,
+        });
+        rest = after;
+    }
+    kept.extend(rest.iter().map(whole_turn));
+    kept
+}
+
+fn whole_turn<'a>(turn: &HistoryTurn<'a>) -> summarize::Turn<'a> {
+    let mut items = step_items(&turn.steps);
+    note_items(&turn.notes, &mut items);
+    if !turn.reply.is_empty() {
+        items.push(summarize::Item::Assistant(turn.reply));
+    }
+    summarize::Turn {
+        user: turn.user,
+        items,
+    }
+}
+
+fn compacted_notes(split: &HistoryTurn<'_>, cut: Cut) -> usize {
+    let steps = &split.steps[..cut.tool_steps.min(split.steps.len())];
+    let mut remaining = cut
+        .steering
+        .saturating_sub(steps.iter().map(|step| steering_count(&step.notes)).sum());
+    let mut taken = 0;
+    for note in &split.notes {
+        if remaining == 0 {
+            break;
+        }
+        if matches!(note, Note::User(_)) {
+            remaining -= 1;
+        }
+        taken += 1;
+    }
+    taken
 }
 
 fn steering_count(notes: &[Note<'_>]) -> usize {

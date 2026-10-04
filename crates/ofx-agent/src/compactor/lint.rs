@@ -36,6 +36,7 @@ pub(crate) struct Sources<'a> {
     pub(crate) turns: &'a [Record],
     pub(crate) tools: &'a [Record],
     pub(crate) users: &'a [&'a str],
+    pub(crate) kept: &'a [&'a str],
     pub(crate) highest: Highest,
 }
 
@@ -47,6 +48,7 @@ pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) 
         .chain(sources.tools)
         .map(|record| record.text.as_str())
         .chain(sources.users.iter().copied())
+        .chain(sources.kept.iter().copied())
         .collect();
 
     let works = written
@@ -74,11 +76,8 @@ pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) 
             let shared = cited
                 .first()
                 .is_some_and(|first| first.first == note.number && first.last > note.number);
-            if !shared
-                && find_record(sources.tools, note.number)
-                    .is_some_and(|record| record.failed && calls_success(&note.text))
-            {
-                problems.add(&format!("T{} failed", note.number));
+            if !shared {
+                check_failed_call(&mut problems, &note.text, note.number, sources.tools);
             }
             Note {
                 number: note.number,
@@ -97,10 +96,15 @@ pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) 
             let names_a_source =
                 !cited.is_empty() || contains_ignore_case(&entry.text, "turn in progress");
             let kind = entry.id.as_bytes().first().copied();
-            if !names_a_source && matches!(kind, Some(b'R' | b'F')) {
+            if !names_a_source {
                 problems.add("no source");
             }
             check_citations(&mut problems, &entry.text, sources);
+            if kind != Some(b'R')
+                && let Some(number) = only_tool(&cited)
+            {
+                check_failed_call(&mut problems, &entry.text, number, sources.tools);
+            }
             if kind == Some(b'R') {
                 check_quote(&mut problems, &entry.text, &users);
             } else if names_this_compaction(&cited, sources) {
@@ -511,6 +515,23 @@ fn numeric_part(value: &str) -> Option<String> {
     let trimmed = digits.trim_end_matches('.').len();
     digits.truncate(trimmed);
     Some(digits)
+}
+
+fn check_failed_call(problems: &mut Problems, text: &str, number: usize, tools: &[Record]) {
+    if find_record(tools, number).is_some_and(|record| record.failed && calls_success(text)) {
+        problems.add(&format!("T{number} failed"));
+    }
+}
+
+fn only_tool(cited: &[Citation]) -> Option<usize> {
+    let mut found = None;
+    for citation in cited.iter().filter(|citation| citation.kind == b'T') {
+        if found.is_some() || citation.last != citation.first {
+            return None;
+        }
+        found = Some(citation.first);
+    }
+    found
 }
 
 fn calls_success(note: &str) -> bool {

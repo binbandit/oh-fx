@@ -198,6 +198,70 @@ async fn a_cancelled_compaction_sends_nothing() {
 }
 
 #[test]
+fn what_stays_after_the_cut_includes_the_rest_of_an_unfinished_turn() {
+    let history = [
+        ChatMessage::user("write, then read"),
+        assistant("", Some("large-write")),
+        result("large-write", "written"),
+        assistant("", Some("small-read")),
+        result("small-read", "const a = 1;"),
+    ];
+    let turns = history_turns(&history, &[0]);
+    let kept = kept_from(
+        &turns,
+        Cut {
+            turns: 0,
+            tool_steps: 1,
+            ..Cut::default()
+        },
+    );
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].user, "write, then read");
+    assert_eq!(
+        kept[0].items,
+        [
+            summarize::Item::ToolCall(summarize::ToolCall {
+                id: "small-read",
+                name: "read_file",
+                arguments: "{\"path\":\"small-read.md\"}",
+            }),
+            summarize::Item::ToolResult(summarize::ToolResult {
+                call_id: "small-read",
+                name: "read_file",
+                output: "const a = 1;",
+                failed: false,
+            }),
+        ]
+    );
+}
+
+#[test]
+fn turns_after_the_cut_stay_whole() {
+    let (history, starts) = history();
+    let turns = history_turns(&history, &starts);
+    let kept = kept_from(
+        &turns,
+        Cut {
+            turns: 1,
+            ..Cut::default()
+        },
+    );
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].user, "now rewrite them");
+    assert_eq!(kept[0].items.len(), 2);
+    assert!(
+        kept_from(
+            &turns,
+            Cut {
+                turns: 2,
+                ..Cut::default()
+            }
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn error_codes_use_upstream_names() {
     assert_eq!(
         CompactionError::ContextCapacityExceeded.to_string(),
