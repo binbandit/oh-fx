@@ -8,7 +8,7 @@ note = "Browser-host workspace/tool-set projection; the native product does not 
 upstream = "src/builtins/commands.zig"
 status = "partial"
 modules = ["crates/ofx-cli/src/commands.rs", "crates/ofx-app/src/app_commands.rs"]
-note = "Top-level commands/help and active subset of slash commands exist; full slash-command registry and reserved menus/commands are absent. #1112's /ultrafast is not yet registered."
+note = "Top-level commands/help and active subset of slash commands exist; full slash-command registry and reserved menus/commands are absent."
 
 [[file]]
 upstream = "src/builtins/context.zig"

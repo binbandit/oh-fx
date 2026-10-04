@@ -18,6 +18,7 @@ pub(crate) struct StatusSnapshot<'a> {
     pub(crate) history_turns: usize,
     pub(crate) session_permission_grants: usize,
     pub(crate) agent_step_limit: u64,
+    pub(crate) ultrafast_requested: bool,
 }
 
 impl StatusSnapshot<'_> {
@@ -55,7 +56,8 @@ impl StatusSnapshot<'_> {
             "session_permission_grants={}",
             self.session_permission_grants
         );
-        let _ = write!(out, "agent_step_limit={}", self.agent_step_limit);
+        let _ = writeln!(out, "agent_step_limit={}", self.agent_step_limit);
+        let _ = write!(out, "ultrafast_requested={}", self.ultrafast_requested);
         out
     }
 }
@@ -100,10 +102,11 @@ mod tests {
             history_turns: 3,
             session_permission_grants: 2,
             agent_step_limit: 17,
+            ultrafast_requested: true,
         };
         assert_eq!(
             snapshot.render_interactive_body(),
-            "model=model-a\nmodel_source=local\nprovider_endpoint=http://127.0.0.1:8080/v1\nauth=configured provider\nconnected_providers=local\nauth_refreshable=false\npermission_mode=ask\nworkspace=/work/space\nhistory_turns=3\nsession_permission_grants=2\nagent_step_limit=17"
+            "model=model-a\nmodel_source=local\nprovider_endpoint=http://127.0.0.1:8080/v1\nauth=configured provider\nconnected_providers=local\nauth_refreshable=false\npermission_mode=ask\nworkspace=/work/space\nhistory_turns=3\nsession_permission_grants=2\nagent_step_limit=17\nultrafast_requested=true"
         );
     }
 
@@ -118,10 +121,11 @@ mod tests {
             history_turns: 0,
             session_permission_grants: 0,
             agent_step_limit: 0,
+            ultrafast_requested: false,
         };
         assert_eq!(
             snapshot.render_interactive_body(),
-            "model=gpt-6.1-sol\nmodel_source=Codex subscription\nauth=Codex subscription\nconnected_providers=Codex\nauth_refreshable=true\npermission_mode=full access\nworkspace=/work\nhistory_turns=0\nsession_permission_grants=0\nagent_step_limit=0"
+            "model=gpt-6.1-sol\nmodel_source=Codex subscription\nauth=Codex subscription\nconnected_providers=Codex\nauth_refreshable=true\npermission_mode=full access\nworkspace=/work\nhistory_turns=0\nsession_permission_grants=0\nagent_step_limit=0\nultrafast_requested=false"
         );
     }
 }

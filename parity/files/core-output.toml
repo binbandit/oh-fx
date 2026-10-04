@@ -35,7 +35,7 @@ modules = []
 upstream = "src/core/output/output_contracts.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/output_contracts.rs"]
-note = "Interactive status is rendered; doctor/usage, MCP-health and sessions-v2 output snapshots remain missing. #1112's ultrafast_requested status field is not yet synced."
+note = "Interactive status is rendered; doctor/usage, MCP-health and sessions-v2 output snapshots remain missing. #1112's ultrafast_requested is in the interactive status body; the status --json snapshot arrives with the status command."
 
 [[file]]
 upstream = "src/core/output/transcript_presentation.zig"
