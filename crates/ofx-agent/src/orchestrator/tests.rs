@@ -1186,7 +1186,7 @@ async fn provider_failures_drop_an_empty_turn_but_keep_executed_tool_steps() {
     }];
     let provider = FakeProvider::new(vec![Script::Fail(
         partial,
-        failure(ProviderErrorKind::TransportInterrupted, "ReadFailed"),
+        failure(ProviderErrorKind::ProviderError, "ProviderError"),
     )]);
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
     let (report, _) = run(&mut agent, "go").await;
@@ -2876,6 +2876,7 @@ mod provider_executed;
 mod recovery;
 mod recovery_pause;
 mod response_language;
+mod response_restart;
 mod reviews;
 mod shell_retries;
 mod skills;

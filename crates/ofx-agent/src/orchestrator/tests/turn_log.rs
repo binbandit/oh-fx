@@ -38,6 +38,7 @@ pub(super) struct MemoryLog {
     pub(super) blocked: Option<&'static str>,
     pub(super) refused_checkpoint: Option<&'static str>,
     pub(super) refused_turn: Option<&'static str>,
+    pub(super) refused_recovery: Option<&'static str>,
 }
 
 impl MemoryLog {
@@ -180,6 +181,11 @@ impl ConversationLog for MemoryLog {
 
     fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure> {
         self.outcome()?;
+        if let Some(code) = self.refused_recovery {
+            return Err(LogFailure {
+                code: code.to_owned(),
+            });
+        }
         self.entries.lock().unwrap().push(Logged::Recovery {
             user: point.turn.user.to_owned(),
             steps: described_steps(&point.turn),
@@ -286,7 +292,7 @@ async fn interrupted_and_failed_turns_are_logged_as_upstream_saves_them() {
         Script::Fail(Vec::new(), refused()),
         Script::Fail(
             partial("Partial answer"),
-            failure(ProviderErrorKind::TransportInterrupted, "ReadFailed"),
+            failure(ProviderErrorKind::ProviderError, "ProviderError"),
         ),
         tool_reply(&[("call-1", "{}")]),
         Script::Fail(Vec::new(), refused()),

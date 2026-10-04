@@ -235,6 +235,10 @@ pub enum UiEvent {
         turn_id: TurnId,
         text: String,
     },
+    AssistantRestarted {
+        turn_id: TurnId,
+        text: String,
+    },
     ReasoningText {
         turn_id: TurnId,
         text: String,

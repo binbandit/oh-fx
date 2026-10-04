@@ -9,6 +9,7 @@ use ofx_contract::{
     CallDescription, CompactionActivity, CompactionEnd, Notice, NoticeTone, RouteRecoveryStatus,
     ToolActivity, TurnId, TurnOutcome, UiCommand, UiEvent, Usage,
 };
+use ofx_markdown::{Completions, MarkdownProcessor};
 
 use super::leading_whitespace::LeadingWhitespace;
 use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
@@ -117,16 +118,9 @@ impl Shell<'_> {
         self.mark_dirty();
         match delivery.event {
             UiEvent::TurnStarted { turn_id } => self.turn_started(turn_id),
-            UiEvent::AssistantText { turn_id, text } => {
-                if self.is_visible_turn(turn_id) {
-                    self.assistant_text(&text);
-                }
-            }
-            UiEvent::Operational { turn_id, text } => {
-                if self.is_visible_turn(turn_id) {
-                    self.operational_text(&text);
-                }
-            }
+            event @ (UiEvent::AssistantText { .. }
+            | UiEvent::AssistantRestarted { .. }
+            | UiEvent::Operational { .. }) => self.turn_text(event),
             UiEvent::ReasoningText { turn_id, text } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
                     turn.tokens.consume_reasoning(&text);
@@ -216,6 +210,21 @@ impl Shell<'_> {
             .usage_reported(usage.input_tokens, context_window);
         if let Some(turn) = self.visible_turn(turn_id) {
             turn.tokens.settle(usage.output_tokens);
+        }
+    }
+
+    fn turn_text(&mut self, event: UiEvent) {
+        match event {
+            UiEvent::AssistantText { turn_id, text } if self.is_visible_turn(turn_id) => {
+                self.assistant_text(&text);
+            }
+            UiEvent::AssistantRestarted { turn_id, text } if self.is_visible_turn(turn_id) => {
+                self.restart_assistant(&text);
+            }
+            UiEvent::Operational { turn_id, text } if self.is_visible_turn(turn_id) => {
+                self.operational_text(&text);
+            }
+            _ => {}
         }
     }
 
@@ -509,6 +518,27 @@ impl Shell<'_> {
         };
         turn.phase = TurnPhase::Generating;
         turn.tokens.consume_content(text);
+        self.present_assistant(text);
+    }
+
+    fn restart_assistant(&mut self, text: &str) {
+        let Some(turn) = &mut self.turn else {
+            return;
+        };
+        let notice = text.trim_start_matches('\n');
+        let mut events = Vec::new();
+        turn.markdown
+            .push(&text[..text.len() - notice.len()], &mut events);
+        turn.markdown.flush(&mut events);
+        turn.markdown = MarkdownProcessor::with_completions(Completions::ALL);
+        self.transcript.append_assistant(events, &self.theme);
+        self.present_assistant(notice);
+    }
+
+    fn present_assistant(&mut self, text: &str) {
+        let Some(turn) = &mut self.turn else {
+            return;
+        };
         let Some(text) = turn.leading_whitespace.release(text) else {
             return;
         };
