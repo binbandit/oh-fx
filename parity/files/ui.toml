@@ -44,19 +44,19 @@ note = "Inline approval copy and the file approval rows (the Review change heade
 upstream = "src/ui/footer/compact_command_menu_presentation.zig"
 status = "todo"
 modules = []
-note = "No Rust implementation of upstream desiredRowCount, usageVisibleModelItems behavior."
+note = "Its three menus wait on work that has not landed: the usage menu on the durable usage ledger, the statusline menu on the settings catalog that comes with the settings menu (OH-26), and the workspace menu on additional workspace directories (`--add-dir`)."
 
 [[file]]
 upstream = "src/ui/footer/help_menu_presentation.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream max_visible_items, max_inline_rows, menuRowCount behavior."
+status = "ported"
+modules = ["crates/ofx-tui/src/footer/help_menu_presentation.rs"]
+note = "The header packs the category tabs and keeps a far active tab as upstream does, rows put descriptions after the widest matching command with a four-column gutter, an empty search says No commands found., and the layout keeps the selection in a window of at most 20 rows, dropping the header when only two rows fit."
 
 [[file]]
 upstream = "src/ui/footer/input_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/picker_presentation.rs"]
-note = "Composer rows, selection and warning hints, and the model, effort and Fast column projections are implemented; image badges and provider/login picker footer projections are absent."
+note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, and the model, effort and Fast column projections are implemented; image badges and provider/login picker footer projections are absent."
 
 [[file]]
 upstream = "src/ui/footer/interaction_state.zig"

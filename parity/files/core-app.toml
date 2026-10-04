@@ -43,8 +43,8 @@ note = "Native model and permission preferences persist; host-owned configuratio
 [[file]]
 upstream = "src/core/app/app_input_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs"]
-note = "Terminal input routing, the `$` skill mention trigger and the session picker, model menu, model column and Ctrl+P routes exist; image ingress, deferred session-transition input, inline skill and slash completion and the provider/login picker routes are absent."
+modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs", "crates/ofx-tui/src/shell/help_menu_runtime.rs"]
+note = "Terminal input routing, the help menu's keys, the `$` skill mention trigger and the session picker, model menu, model column and Ctrl+P routes exist; image ingress, deferred session-transition input, inline skill and slash completion and the provider/login picker routes are absent."
 
 [[file]]
 upstream = "src/core/app/app_lifecycle.zig"

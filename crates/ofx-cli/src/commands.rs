@@ -538,7 +538,8 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         "rename the current session",
         SlashPresentationCategory::Session,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/rename <title>"),
     SlashSpec::new(
         SlashKind::Stats,
         "/stats",
@@ -551,7 +552,8 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         "show local oh-fx tokens, models, and spend",
         SlashPresentationCategory::Account,
     )
-    .with_aliases(&["/cost"]),
+    .with_aliases(&["/cost"])
+    .with_help("/usage (/cost)"),
     SlashSpec::new(
         SlashKind::Status,
         "/status",
@@ -564,21 +566,24 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         "choose what model and reasoning effort to use",
         SlashPresentationCategory::Model,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/model <id-or-query>"),
     SlashSpec::new(
         SlashKind::Permissions,
         "/permissions",
         "choose what oh-fx is allowed to do",
         SlashPresentationCategory::Security,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/permissions [ask|auto|full-access|reset]"),
     SlashSpec::new(
         SlashKind::Allowlist,
         "/allowlist",
         "manage trusted commands, tools, and URLs",
         SlashPresentationCategory::Security,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/allowlist [view [effective|local|user]|[local|user] add|remove|reset ...]"),
     SlashSpec::new(
         SlashKind::Undo,
         "/undo",
@@ -591,7 +596,10 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         "browse and manage skills",
         SlashPresentationCategory::Extensions,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help(
+        "/skills [list|add|install|show|create|remove|path] [name|url|path] ($ opens skill search)",
+    ),
     SlashSpec::new(
         SlashKind::Copy,
         "/copy",
@@ -610,14 +618,16 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         "browse and update settings",
         SlashPresentationCategory::Appearance,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/settings [startup-scrollback [on|off]]"),
     SlashSpec::new(
         SlashKind::Alias,
         "/alias",
         "show alias availability",
         SlashPresentationCategory::Extensions,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/alias [name] [command]"),
     SlashSpec::new(
         SlashKind::Fast,
         "/fast",
@@ -630,21 +640,24 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         "toggle status line segments",
         SlashPresentationCategory::Appearance,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/statusline [context|session|workspace]"),
     SlashSpec::new(
         SlashKind::Workspace,
         "/workspace",
         "manage additional workspace directories",
         SlashPresentationCategory::Workspace,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/workspace [list|add PATH|remove PATH|clear]"),
     SlashSpec::new(
         SlashKind::Shell,
         "/shell",
         "reload shell startup files for commands",
         SlashPresentationCategory::Workspace,
     )
-    .with_payload(),
+    .with_payload()
+    .with_help("/shell reload"),
     SlashSpec::new(
         SlashKind::Version,
         "/version",

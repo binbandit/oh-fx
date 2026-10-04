@@ -256,13 +256,16 @@ fn drain(master: &OwnedFd, done: &AtomicBool) -> Vec<u8> {
 }
 
 fn options() -> ShellOptions {
-    let spec = |command: &str, aliases: &[&str], category: usize| SlashCommandSpec {
-        command: command.to_owned(),
-        aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
-        description: String::new(),
-        category,
-        compacts: false,
-    };
+    let spec =
+        |command: &str, aliases: &[&str], category: usize, description: &str| SlashCommandSpec {
+            command: command.to_owned(),
+            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+            description: description.to_owned(),
+            help_entry: command.to_owned(),
+            takes_arguments: false,
+            category,
+            compacts: false,
+        };
     ShellOptions {
         version: "0.1.0".to_owned(),
         model: "model-a".to_owned(),
@@ -271,10 +274,14 @@ fn options() -> ShellOptions {
         workspace_label: "workspace".to_owned(),
         startup_scrollback: true,
         commands: vec![
-            spec("/help", &[], 0),
-            spec("/clear", &[], 0),
-            spec("/model", &[], 1),
-            spec("/quit", &["/exit"], 0),
+            spec("/help", &[], 0, "show available slash commands"),
+            spec("/clear", &[], 0, "clear the screen"),
+            SlashCommandSpec {
+                help_entry: "/model <id-or-query>".to_owned(),
+                takes_arguments: true,
+                ..spec("/model", &[], 1, "choose a model")
+            },
+            spec("/quit", &["/exit"], 0, "exit the interactive shell"),
         ],
         command_categories: vec!["General".to_owned(), "Model".to_owned()],
         prompt_history: PromptHistory::enabled(Vec::new(), |_| Ok(())),
