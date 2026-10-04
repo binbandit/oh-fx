@@ -400,17 +400,20 @@ async fn provisional_starts_do_not_flush_withheld_language_or_add_display_bounda
     assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
 }
 
-#[tokio::test]
-async fn failed_withheld_prose_still_prevents_retries_after_a_provisional_start() {
-    let provider = FakeProvider::new(vec![Script::Fail(
-        vec![
-            StreamEvent::TextDelta {
-                text: CHINESE_REPLY.to_owned(),
-            },
-            streamed_start("call-1", "echo"),
-        ],
-        failure(ProviderErrorKind::Unavailable, "Unavailable"),
-    )]);
+#[tokio::test(start_paused = true)]
+async fn failed_withheld_prose_retries_after_a_provisional_start() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![
+                StreamEvent::TextDelta {
+                    text: CHINESE_REPLY.to_owned(),
+                },
+                streamed_start("call-1", "echo"),
+            ],
+            failure(ProviderErrorKind::Unavailable, "Unavailable"),
+        ),
+        text_reply(ENGLISH_REPLY),
+    ]);
     let mut agent = new_agent(
         Arc::clone(&provider),
         vec![stream_start_tool(
@@ -419,17 +422,18 @@ async fn failed_withheld_prose_still_prevents_retries_after_a_provisional_start(
         )],
     );
     let (report, events) = run(&mut agent, ENGLISH_PROMPT).await;
-    assert_eq!(report.outcome, TurnOutcome::Failed);
-    assert_eq!(provider.requests().len(), 1);
-    assert!(streamed(&events).is_empty());
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(provider.requests()[1], provider.requests()[0]);
+    assert_eq!(streamed(&events), [ENGLISH_REPLY]);
+    assert!(finished(&events).is_empty());
     assert!(
         events
             .iter()
             .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
     );
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
-    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        UiEvent::AssistantBoundary { .. } | UiEvent::AssistantRestarted { .. }
+    )));
 }
