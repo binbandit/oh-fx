@@ -310,6 +310,15 @@ pub(super) fn windowed(
     tokens: u32,
     max_output_tokens: u32,
 ) -> (Agent, Arc<Window>) {
+    windowed_with_tools(provider, tokens, max_output_tokens, vec![echo_tool()])
+}
+
+pub(super) fn windowed_with_tools(
+    provider: &Arc<FakeProvider>,
+    tokens: u32,
+    max_output_tokens: u32,
+    tools: Vec<Arc<dyn Tool>>,
+) -> (Agent, Arc<Window>) {
     let window = Arc::new(Window {
         tokens,
         lookups: AtomicUsize::new(0),
@@ -317,7 +326,7 @@ pub(super) fn windowed(
     let shared: Arc<FakeProvider> = Arc::clone(provider);
     let agent = Agent::new(
         shared,
-        vec![echo_tool()],
+        tools,
         Arc::new(FixedContext),
         Arc::new(ArgumentGate),
         AgentConfig {
@@ -871,6 +880,7 @@ async fn a_mid_turn_compaction_logs_its_checkpoint_and_the_steps_it_covers() {
             user: "read the notes".to_owned(),
             steps: Vec::new(),
             steering: Vec::new(),
+            files: Vec::new(),
             end: r#"replied "done" replay=false"#.to_owned(),
         }
     );

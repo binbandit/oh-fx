@@ -1037,6 +1037,7 @@ fn replied_turn(user: &str) -> HistoryTurn<'_> {
         user,
         steps: Vec::new(),
         steering: Vec::new(),
+        files: &[],
         end: TurnEnd::Replied {
             text: "ok",
             provider_replay: None,
@@ -1106,6 +1107,7 @@ fn a_turn_left_unsaved_keeps_its_prompt_language_for_the_next_commit() {
                 user: "افتح الصفحة الرئيسية",
                 steps: Vec::new(),
                 steering: Vec::new(),
+                files: &[],
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "",

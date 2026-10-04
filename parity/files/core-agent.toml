@@ -13,8 +13,8 @@ note = "Streaming Markdown presentation and completion payloads are implemented 
 [[file]]
 upstream = "src/core/agent/execution_memory.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/execution_memory.rs", "crates/ofx-session/src/session_log/file_evidence.rs"]
-note = "Completed tool exchanges and replay are retained, and each saved turn records upstream's file evidence with its whole-file views and stale reads; image memory is absent."
+modules = ["crates/ofx-agent/src/execution_memory.rs", "crates/ofx-agent/src/execution_memory/file_evidence.rs"]
+note = "Completed tool exchanges and replay are retained, and each turn gathers upstream's file evidence with its whole-file views and stale reads, including steps a mid-turn compaction removed; image memory is absent."
 
 [[file]]
 upstream = "src/core/agent/presentation/ansi.zig"

@@ -1,7 +1,6 @@
 mod conversation_history;
 mod conversation_progress;
 mod conversation_writer;
-mod file_evidence;
 pub(crate) mod managed_file;
 mod turn_events;
 mod turn_recovery;
@@ -34,7 +33,6 @@ pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
 use conversation_progress::ProgressPoint;
 use conversation_writer::{ConversationWriter, scan_log};
-use file_evidence::EarlierEvidence;
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
     open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
@@ -107,7 +105,6 @@ pub struct WritableSession {
     started: bool,
     language: String,
     recovery: Recovery,
-    earlier: EarlierEvidence,
     work_id: Option<String>,
 }
 
@@ -277,7 +274,6 @@ impl WritableSession {
             point,
             provider,
             credential,
-            &self.earlier,
         )?;
         if !matches!(self.recovery, Recovery::Continuing) {
             self.recovery = Recovery::Saved;
@@ -304,10 +300,6 @@ impl WritableSession {
         match mem::take(&mut self.recovery) {
             Recovery::Pending(checkpoint) => {
                 self.recovery = Recovery::Continuing;
-                self.earlier = EarlierEvidence::recovered(
-                    checkpoint.files().to_vec(),
-                    checkpoint.recovered_results(),
-                );
                 Some(PendingRecovery::new(checkpoint, &self.owned.dir))
             }
             other => {
@@ -326,9 +318,7 @@ impl WritableSession {
         let timestamp_ms = now_ms();
         let written = self.written()?;
         let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
-        self.append(timestamp_ms, &events[usize::from(open)..])?;
-        self.earlier = EarlierEvidence::default();
-        Ok(())
+        self.append(timestamp_ms, &events[usize::from(open)..])
     }
 
     pub fn record_compaction(
@@ -345,7 +335,6 @@ impl WritableSession {
             Some(active) => self.active_prefix(active, provider, timestamp_ms)?,
             None => Vec::new(),
         };
-        let active_turn = self.writer.context_progress(None)?.point.turns;
         let covers_through_seq = self
             .writer
             .context_coverage(ProgressPoint::from(cut), &events)?;
@@ -356,14 +345,10 @@ impl WritableSession {
             },
         ));
         self.append(timestamp_ms, &events)?;
-        let Some(active) = active else {
-            return Ok(());
-        };
-        if cut.turns == active_turn {
-            let covered = cut.tool_steps.min(active.steps.len());
-            self.earlier.keep_compacted(&active.steps[..covered]);
+        match active {
+            Some(active) => self.write_first_title(fresh, active.user),
+            None => Ok(()),
         }
-        self.write_first_title(fresh, active.user)
     }
 
     fn write_first_title(&mut self, fresh: bool, prompt: &str) -> Result<(), SessionError> {
@@ -417,7 +402,6 @@ impl WritableSession {
             dir: &self.owned.dir,
             provider,
             timestamp_ms,
-            earlier: &self.earlier,
             work_id: self.work_id.as_deref(),
         }
     }
@@ -509,7 +493,6 @@ pub(crate) fn start_session(
             started: true,
             language,
             recovery: Recovery::Absent,
-            earlier: EarlierEvidence::default(),
             work_id: None,
         });
     let session = match prepared {
@@ -576,7 +559,6 @@ pub(crate) fn resume_session(
         history,
         started: false,
         recovery,
-        earlier: EarlierEvidence::default(),
         work_id: None,
     })
 }

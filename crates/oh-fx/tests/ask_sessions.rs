@@ -13,6 +13,7 @@ use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_too
 use serde_json::{Value, json};
 
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", "pk-test-0123456789")];
+const FILE_EVIDENCE: &str = "Session file evidence from previous tool execution. Re-read stale paths before relying on exact contents:";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -298,7 +299,13 @@ fn resumed_tool_steps_are_sent_exactly_as_the_model_first_saw_them() {
     assert_eq!(resumed[..5], live[..]);
     assert_eq!(
         texts(&resumed[5..]),
-        ["assistant: Read it.", "user: and again"]
+        [
+            format!(
+                "user: {FILE_EVIDENCE}\n- action=read status=success path=notes.txt tool=read_file\n- action=read status=failure path=missing.txt tool=read_file"
+            ),
+            "assistant: Read it.".to_owned(),
+            "user: and again".to_owned()
+        ]
     );
 }
 
@@ -668,6 +675,9 @@ fn a_compaction_inside_a_turn_resumes_with_the_requests_the_model_saw() {
         texts(&resumed[live.len()..]),
         [
             format!(
+                "user: {FILE_EVIDENCE}\n- action=read status=success path=small.txt model_view=full tool=read_file\n- action=read status=success path=small.txt model_view=full tool=read_file"
+            ),
+            format!(
                 "assistant: {}",
                 first["final_output"].as_str().expect("a reply")
             ),
@@ -828,9 +838,12 @@ fn an_interrupted_turn_is_saved_and_resumes_with_its_partial_reply_closed() {
     assert_eq!(
         texts(&resumed[live.len()..]),
         [
-            "assistant: half\n\nThe previous response ended before completion.",
-            "user: <turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>",
-            "user: next",
+            format!(
+                "user: {FILE_EVIDENCE}\n- action=read status=success path=small.txt model_view=full tool=read_file"
+            ),
+            "assistant: half\n\nThe previous response ended before completion.".to_owned(),
+            "user: <turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>".to_owned(),
+            "user: next".to_owned(),
         ]
     );
 }

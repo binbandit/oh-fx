@@ -474,6 +474,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
             }],
         }],
         steering: Vec::new(),
+        files: &[],
         end: TurnEnd::Replied {
             text: "fixed",
             provider_replay: None,
@@ -520,6 +521,7 @@ fn continued_turn<'a>(
             })
             .collect(),
         steering: Vec::new(),
+        files: &[],
         end,
     }
 }
@@ -658,6 +660,7 @@ fn standalone_turn<'a>(
             })
             .collect(),
         steering: Vec::new(),
+        files: &[],
         end,
     }
 }
@@ -838,6 +841,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
         user: &continued.prompt,
         steps,
         steering: Vec::new(),
+        files: &[],
         end,
     }
 }
@@ -867,6 +871,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                 }],
             }],
             steering: Vec::new(),
+            files: &[],
             end: TurnEnd::Replied {
                 text: "",
                 provider_replay: None,
@@ -909,6 +914,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
         user: "fix the build",
         steps: Vec::new(),
         steering: Vec::new(),
+        files: &[],
         end: TurnEnd::Replied {
             text: "fixed",
             provider_replay: None,
@@ -960,7 +966,31 @@ fn evidence_json(path: &str, call_id: &str, tool: &str, action: &str, flags: [bo
     )
 }
 
-fn continued_files(end: TurnEnd<'_>, kind: &str, cut: usize, write_id: &str) -> serde_json::Value {
+fn read_evidence(path: &str, call_id: &str) -> ofx_contract::FileEvidence {
+    ofx_contract::FileEvidence {
+        path: path.to_owned(),
+        new_path: None,
+        tool_call_id: call_id.to_owned(),
+        tool_name: "read_file".to_owned(),
+        action: FileEvidenceAction::Read,
+        status: ToolResultStatus::Success,
+        model_view_covers_full_file: true,
+        stale: false,
+    }
+}
+
+fn recovered_files(fixture: &Fixture) -> Vec<ofx_contract::FileEvidence> {
+    let mut resumed = fixture.resume().unwrap();
+    let provider = metadata().preferences.provider;
+    resumed
+        .take_recovery()
+        .unwrap()
+        .into_turn(&provider, "openai/gpt-5", false)
+        .files
+}
+
+#[test]
+fn a_continued_checkpoint_hands_its_saved_file_evidence_to_the_turn() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());
     let saved = [
@@ -983,108 +1013,19 @@ fn continued_files(end: TurnEnd<'_>, kind: &str, cut: usize, write_id: &str) -> 
             &saved,
         ),
     );
-    finish_continued(&fixture, end, kind, cut, write_id)
-}
-
-fn finish_continued(
-    fixture: &Fixture,
-    end: TurnEnd<'_>,
-    kind: &str,
-    cut: usize,
-    write_id: &str,
-) -> serde_json::Value {
-    let mut resumed = fixture.resume().unwrap();
-    let provider = metadata().preferences.provider;
-    let continued = resumed
-        .take_recovery()
-        .unwrap()
-        .into_turn(&provider, "openai/gpt-5", false);
-    let write = [ToolCall::new(
-        write_id,
-        "write_file",
-        r#"{"path":"a.rs","content":"x"}"#,
-    )];
-    let mut turn = continued_history(&continued, end);
-    turn.steps.push(HistoryStep {
-        assistant: "",
-        provider_replay: None,
-        tool_calls: &write,
-        tool_results: vec![StepResult {
-            call_id: write_id,
-            tool_name: "write_file",
-            output: "written",
-            output_bytes: 7,
-            status: ToolResultStatus::Success,
-            model_view_covers_full_file: false,
-        }],
-    });
-    if cut > 0 {
-        let mut active = continued_history(&continued, replied(""));
-        active.steps.clone_from(&turn.steps);
-        resumed
-            .record_compaction(
-                "<summary>worked on a.rs</summary>",
-                HistoryCut {
-                    turns: 1,
-                    tool_steps: cut,
-                    steering: 0,
-                },
-                Some(&active),
-                &provider,
-            )
-            .unwrap();
-        turn.steps.drain(..cut);
-    }
-    resumed.record_turn(&turn, &provider).unwrap();
-    drop(resumed);
-    fixture
-        .log()
-        .iter()
-        .rev()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find_map(|frame| frame["event"].get(kind).map(|event| event["files"].clone()))
-        .unwrap()
+    assert_eq!(
+        recovered_files(&fixture),
+        [read_evidence("gone.rs", "c0"), read_evidence("a.rs", "r1")]
+    );
 }
 
 #[test]
-fn a_continued_turn_keeps_the_checkpoints_file_evidence_and_adds_its_own() {
-    for write_id in ["w1", "r1"] {
-        let expected: serde_json::Value = serde_json::from_str(&format!(
-            "[{},{},{}]",
-            evidence_json("gone.rs", "c0", "read_file", "read", [true, false]),
-            evidence_json("a.rs", "r1", "read_file", "read", [true, true]),
-            evidence_json("a.rs", write_id, "write_file", "write", [false, false]),
-        ))
-        .unwrap();
-        for cut in 0..=2 {
-            assert_eq!(
-                continued_files(replied("fixed"), "turn_completed", cut, write_id),
-                expected,
-                "cut={cut} write={write_id}"
-            );
-            assert_eq!(
-                continued_files(
-                    TurnEnd::Stopped {
-                        reason: ofx_contract::TurnStop::Cancelled,
-                        partial: "half",
-                    },
-                    "interrupted",
-                    cut,
-                    write_id
-                ),
-                expected,
-                "cut={cut} write={write_id}"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_recorded_checkpoint_saves_the_turns_file_evidence_for_its_continuation() {
+fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());
     let provider = metadata().preferences.provider;
     let read = [ToolCall::new("r1", "read_file", r#"{"path":"a.rs"}"#)];
+    let files = [read_evidence("a.rs", "r1")];
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn: HistoryTurn {
@@ -1103,6 +1044,7 @@ fn a_recorded_checkpoint_saves_the_turns_file_evidence_for_its_continuation() {
                 }],
             }],
             steering: Vec::new(),
+            files: &files,
             end: replied(""),
         },
         cause: ModelRecoveryCause::ProviderUnavailable,
@@ -1124,14 +1066,5 @@ fn a_recorded_checkpoint_saves_the_turns_file_evidence_for_its_continuation() {
         saved.contains(&format!("\"files\":[{read_whole}]")),
         "{saved}"
     );
-    let expected: serde_json::Value = serde_json::from_str(&format!(
-        "[{},{}]",
-        evidence_json("a.rs", "r1", "read_file", "read", [true, true]),
-        evidence_json("a.rs", "w1", "write_file", "write", [false, false]),
-    ))
-    .unwrap();
-    assert_eq!(
-        finish_continued(&fixture, replied("fixed"), "turn_completed", 0, "w1"),
-        expected
-    );
+    assert_eq!(recovered_files(&fixture), files);
 }

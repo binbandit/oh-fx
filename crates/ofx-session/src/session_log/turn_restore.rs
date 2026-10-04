@@ -1,13 +1,15 @@
 use std::mem;
 
 use ofx_config::PrivateDir;
-use ofx_contract::{ChatMessage, RestoredHistory, ToolCall, ToolCallId, ToolResultStatus};
+use ofx_contract::{
+    ChatMessage, RestoredHistory, ToolCall, ToolCallId, ToolResultStatus, file_evidence_context,
+};
 
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_error::SessionError;
 use crate::session_event::{
-    ArtifactCompleteness, AssistantEvent, ConversationEvent, SavedReplay, ToolCallEvent,
-    ToolResultEvent,
+    ArtifactCompleteness, AssistantEvent, ConversationEvent, FileEvidence, SavedReplay,
+    ToolCallEvent, ToolResultEvent,
 };
 use crate::session_log::conversation_history::SavedHistory;
 
@@ -48,6 +50,7 @@ struct TurnBuilder {
     results: Vec<ToolResultEvent>,
     steps: Vec<Step>,
     steering: Vec<Steering>,
+    files: Vec<FileEvidence>,
 }
 
 impl TurnBuilder {
@@ -63,10 +66,11 @@ impl TurnBuilder {
             ConversationEvent::ToolResult(result) => self.append_tool_result(result)?,
             ConversationEvent::Steering(steering) => self.append_steering(steering.text)?,
             ConversationEvent::ContextCheckpoint(_) => self.finish_standalone()?,
-            ConversationEvent::TurnCompleted(_) => {
+            ConversationEvent::TurnCompleted(completed) => {
                 if !self.calls.is_empty() || !self.results.is_empty() {
                     return Err(SessionError::InvalidConversationFrame);
                 }
+                self.files = completed.files;
                 return Ok(Some(Ending::Replied {
                     text: self.pending_assistant.take().unwrap_or_default(),
                     replay: self.pending_replay.take(),
@@ -81,6 +85,7 @@ impl TurnBuilder {
                 }
                 self.pending_assistant = None;
                 self.pending_replay = None;
+                self.files = interrupted.files;
                 return Ok(Some(Ending::Stopped {
                     partial: interrupted.partial_text,
                     pending_call: self.calls.pop(),
@@ -195,7 +200,13 @@ pub(crate) fn restored_history(
         };
         turn_starts.push(messages.len());
         messages.push(ChatMessage::user(user));
-        push_execution(&mut messages, builder.steps, builder.steering, dir);
+        push_execution(
+            &mut messages,
+            builder.steps,
+            builder.steering,
+            builder.files,
+            dir,
+        );
         push_ending(&mut messages, ending);
     }
     Ok(RestoredHistory {
@@ -209,6 +220,7 @@ fn push_execution(
     messages: &mut Vec<ChatMessage>,
     steps: Vec<Step>,
     steering: Vec<Steering>,
+    files: Vec<FileEvidence>,
     dir: &PrivateDir,
 ) {
     let mut steering = steering.into_iter().peekable();
@@ -233,6 +245,10 @@ fn push_execution(
                 status: result.status,
             });
         }
+    }
+    if !files.is_empty() {
+        let files: Vec<_> = files.into_iter().map(Into::into).collect();
+        messages.push(ChatMessage::user(file_evidence_context(&files)));
     }
     for entry in steering {
         push_steering(messages, entry);
