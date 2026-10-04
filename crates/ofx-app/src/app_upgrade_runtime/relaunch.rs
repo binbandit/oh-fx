@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -14,10 +15,20 @@ struct Plan {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Relaunch(Arc<Mutex<Option<Plan>>>);
+pub(crate) struct Relaunch {
+    plan: Arc<Mutex<Option<Plan>>>,
+    launch: Arc<[OsString]>,
+}
 
 impl Relaunch {
-    pub(super) fn request(&self, executable: PathBuf) {
+    pub(crate) fn carrying(launch: Vec<OsString>) -> Self {
+        Self {
+            plan: Arc::default(),
+            launch: launch.into(),
+        }
+    }
+
+    pub(crate) fn request(&self, executable: PathBuf) {
         *self.plan() = Some(Plan {
             executable,
             session_id: None,
@@ -45,13 +56,15 @@ impl Relaunch {
             return Err(RelaunchFailure::NoHandoff);
         };
         let mut command = Command::new(plan.executable);
-        command.args(["resume", &session_id, UPGRADE_RELAUNCH_ARG]);
+        command
+            .args(self.launch.iter())
+            .args(["resume", &session_id, UPGRADE_RELAUNCH_ARG]);
         let error = exec(&mut command);
         Err(RelaunchFailure::Exec { error, session_id })
     }
 
     fn plan(&self) -> MutexGuard<'_, Option<Plan>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.plan.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -119,6 +132,39 @@ mod tests {
                 "oh-fx: upgrade installed, but relaunch failed: {}\nContinue session with: oh-fx --resume session-123",
                 io::Error::from(io::ErrorKind::NotFound)
             )
+        );
+    }
+
+    #[test]
+    fn a_relaunch_carries_the_launch_flags_ahead_of_resume() {
+        let relaunch = Relaunch::carrying(
+            [
+                "--add-dir",
+                "/tmp/cli-only",
+                "--no-additional-dirs",
+                "--context-limit",
+                "skill_chunk_bytes=4096",
+            ]
+            .map(OsString::from)
+            .to_vec(),
+        );
+        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"));
+        relaunch.hand_off("session-123");
+        let mut argv = Vec::new();
+        let _ = relaunch.run_with(exec_into(&mut argv));
+        assert_eq!(
+            argv,
+            [
+                "/tmp/oh-fx-upgraded",
+                "--add-dir",
+                "/tmp/cli-only",
+                "--no-additional-dirs",
+                "--context-limit",
+                "skill_chunk_bytes=4096",
+                "resume",
+                "session-123",
+                "--upgrade-relaunch"
+            ]
         );
     }
 

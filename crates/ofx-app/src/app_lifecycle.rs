@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, IsTerminal};
 use std::panic::{self, AssertUnwindSafe};
@@ -60,6 +61,7 @@ struct Session {
     persistence: Option<Persistence>,
     opening: Opening,
     ultrafast_requested: bool,
+    relaunch_args: Vec<OsString>,
 }
 
 pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedResume>) -> ExitCode {
@@ -192,6 +194,7 @@ async fn bootstrap(
         persistence,
         opening,
         ultrafast_requested: modifiers.ultrafast_mode() == Some(true),
+        relaunch_args: modifiers.relaunch_args().to_vec(),
     })
 }
 
@@ -266,7 +269,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         sender.send(UiEvent::Notice { notice });
     }
     let lifecycle = Herdr::from_env().map(Arc::new);
-    let upgrade = InteractiveUpgrade::start(sender.clone());
+    let upgrade = InteractiveUpgrade::start(sender.clone(), session.relaunch_args);
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),

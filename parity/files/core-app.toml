@@ -32,7 +32,7 @@ note = "Supported slash commands including saved allowlist management, the `/usa
 upstream = "src/core/app/app_entry_runtime.zig"
 status = "partial"
 modules = ["crates/oh-fx/src/main.rs", "crates/ofx-app/src/app_lifecycle.rs", "crates/ofx-app/src/app_upgrade_runtime/relaunch.rs"]
-note = "Native command and interactive entry exist, with the upgrade relaunch after a validated resume handoff and upstream's failure messages; cooperative embedded-host execution is absent."
+note = "Native command and interactive entry exist, with the upgrade relaunch after a validated resume handoff and upstream's failure messages; the relaunch also repeats the launch-only directory and context-limit flags, as docs/differences/upgrade.md records; cooperative embedded-host execution is absent."
 
 [[file]]
 upstream = "src/core/app/app_host_config_runtime.zig"
