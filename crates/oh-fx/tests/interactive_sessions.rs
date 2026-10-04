@@ -1771,6 +1771,74 @@ fn a_resumed_shell_labels_saved_tool_results_and_drops_the_call_an_interruption_
     exit(session);
 }
 
+fn saved_command_result(seq: u64, id: &str, presentation: &Value) -> Vec<u8> {
+    frame(
+        seq,
+        &json!({"tool_result": {
+            "call_id": id,
+            "tool_name": "shell",
+            "status": "failure",
+            "artifact_ref": format!("result-{id}.txt"),
+            "stored_bytes": 0,
+            "completeness": "complete",
+            "preview": "",
+            "command_process_presentation": presentation,
+        }}),
+    )
+}
+
+#[test]
+fn a_resumed_shell_labels_a_captured_command_with_its_saved_process_outcome() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let run = |command: &str| json!({"action": "run", "command": command});
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "run the checks"}})),
+            saved_call(5, "c1", "shell", &run("make check")),
+            saved_call(6, "c2", "shell", &run("sleep 60")),
+            saved_call(7, "c3", "shell", &run("kill -9 $$")),
+            saved_call(
+                8,
+                "c4",
+                "shell",
+                &json!({"action": "run", "command": "make lint", "tty": true}),
+            ),
+            saved_command_result(9, "c1", &json!({"exit_code": 2})),
+            saved_command_result(10, "c2", &json!({"timed_out": {}})),
+            saved_command_result(11, "c3", &json!({"signal": 9})),
+            saved_command_result(12, "c4", &json!({"exit_code": 2})),
+            frame(13, &json!({"assistant": {"text": "Checked."}})),
+            frame(14, &json!({"turn_completed": {}})),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "Checked.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ run the checks",
+                "├ Exited 2 make check",
+                "├ Timed out sleep 60",
+                "├ Signaled 9 kill -9 $$",
+                "└ Failed make lint",
+                "Checked.",
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+}
+
 #[test]
 fn a_resumed_provider_search_keeps_its_search_row() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);

@@ -215,6 +215,7 @@ async fn a_continued_turn_keeps_its_checkpoints_evidence_and_adds_its_own() {
                     status: ToolResultStatus::Success,
                 },
             ],
+            outputs: Vec::new(),
             files: vec![
                 whole_read("gone.rs", "call-0"),
                 whole_read("a.rs", "call-1"),

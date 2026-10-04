@@ -654,3 +654,40 @@ fn the_decoder_stays_bounded_under_corrupted_bytes() {
         let _ = decode_conversation_frame(&bytes);
     }
 }
+
+#[test]
+fn a_commands_process_presentation_is_framed_as_upstream_frames_it() {
+    for (presentation, shape) in [
+        (CommandProcessPresentation::ExitCode(3), "{\"exit_code\":3}"),
+        (CommandProcessPresentation::Signal(9), "{\"signal\":9}"),
+        (CommandProcessPresentation::TimedOut, "{\"timed_out\":{}}"),
+        (
+            CommandProcessPresentation::OutputCaptureFailed,
+            "{\"output_capture_failed\":{}}",
+        ),
+    ] {
+        let mut result = ToolResultEvent::new(
+            "call-1",
+            "shell",
+            ToolResultStatus::Failure,
+            "result.txt",
+            0,
+            ArtifactCompleteness::Complete,
+        );
+        result.command_process_presentation = Some(presentation);
+        let event = ConversationEvent::ToolResult(result);
+        let frame = encode(1, &event);
+        assert!(
+            frame.contains(&format!(
+                "\"command_replay_bytes\":null,\"command_process_presentation\":{shape},\"terminal_action_presentation\":null"
+            )),
+            "{frame}"
+        );
+        assert_eq!(decode(&frame).unwrap(), event);
+    }
+    let omitted = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"tool_result\":{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"status\":\"success\",\"artifact_ref\":\"result.txt\",\"stored_bytes\":0,\"completeness\":\"complete\"}}}\n";
+    let ConversationEvent::ToolResult(read) = decode(omitted).unwrap() else {
+        panic!("a tool result");
+    };
+    assert_eq!(read.command_process_presentation, None);
+}

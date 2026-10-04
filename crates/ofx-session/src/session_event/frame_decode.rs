@@ -7,6 +7,7 @@ use super::{
     UserEvent, WireTag,
 };
 use crate::json_fields::{Fields, Json, string};
+use crate::process_presentation;
 use crate::session_codec::parse_saved_provider;
 
 pub(super) fn envelope_from(document: Json<'_>) -> Option<ConversationEnvelope> {
@@ -126,7 +127,9 @@ fn tool_result(fields: &mut Fields<'_>) -> Option<ToolResultEvent> {
         committed_file_presentation: fields.fixed("committed_file_presentation")?,
         command_replay_ref: fields.fixed("command_replay_ref")?,
         command_replay_bytes: fields.fixed("command_replay_bytes")?,
-        command_process_presentation: fields.fixed("command_process_presentation")?,
+        command_process_presentation: fields.nullable("command_process_presentation", |value| {
+            process_presentation::frame::read(value).map(Some)
+        })?,
         terminal_action_presentation: fields.fixed("terminal_action_presentation")?,
     })
 }

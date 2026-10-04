@@ -3,7 +3,8 @@ mod frame_decode;
 use ofx_config::EMERGENCY_CEILING_BYTES;
 pub(crate) use ofx_contract::FileEvidenceAction;
 use ofx_contract::{
-    ProviderReplay, ReplaySource, ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus,
+    CommandProcessPresentation, ProviderReplay, ReplaySource, ToolArgumentIntegrity,
+    ToolExecutionProvenance, ToolResultStatus,
 };
 use serde::Serialize;
 
@@ -183,8 +184,8 @@ pub struct ToolResultEvent {
     command_replay_ref: Null,
     #[serde(default)]
     command_replay_bytes: Null,
-    #[serde(default)]
-    command_process_presentation: Null,
+    #[serde(default, with = "crate::process_presentation::frame")]
+    pub command_process_presentation: Option<CommandProcessPresentation>,
     #[serde(default)]
     terminal_action_presentation: Null,
 }
@@ -215,7 +216,7 @@ impl ToolResultEvent {
             committed_file_presentation: Null,
             command_replay_ref: Null,
             command_replay_bytes: Null,
-            command_process_presentation: Null,
+            command_process_presentation: None,
             terminal_action_presentation: Null,
         }
     }

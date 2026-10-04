@@ -471,6 +471,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
                 output_bytes: 3,
                 status: ToolResultStatus::Success,
                 model_view_covers_full_file: false,
+                process: None,
             }],
         }],
         steering: Vec::new(),
@@ -517,6 +518,7 @@ fn continued_turn<'a>(
                     output_bytes: 3,
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
+                    process: None,
                 }],
             })
             .collect(),
@@ -827,6 +829,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
                 output_bytes: content.len(),
                 status: *status,
                 model_view_covers_full_file: false,
+                process: None,
             });
             messages.next();
         }
@@ -868,6 +871,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                     output_bytes: large.len(),
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
+                    process: None,
                 }],
             }],
             steering: Vec::new(),
@@ -1040,6 +1044,7 @@ fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
                     output: "text",
                     output_bytes: 4,
                     status: ToolResultStatus::Success,
+                    process: None,
                     model_view_covers_full_file: true,
                 }],
             }],

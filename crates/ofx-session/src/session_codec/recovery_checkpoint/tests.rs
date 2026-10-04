@@ -1,7 +1,8 @@
 use ofx_config::ProviderId;
 use ofx_contract::{
     ChatMessage, HistorySteering, HistoryStep, HistoryTurn, ModelRecoveryAction,
-    ModelRecoveryCause, RecoveryPoint, RecoveryProgress, ReplaySource, StepResult, TurnId,
+    ModelRecoveryCause, RecordedOutput, RecoveryPoint, RecoveryProgress, ReplaySource, StepResult,
+    ToolCallId, TurnId,
 };
 
 use super::*;
@@ -28,6 +29,7 @@ fn checkpoint() -> RecoveryCheckpoint {
                     output_bytes: 12,
                     stored_output_bytes: 12,
                     truncated: false,
+                    process: None,
                 }],
             }],
             files: vec![FileEvidence {
@@ -498,6 +500,24 @@ fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
     );
 }
 
+#[test]
+fn a_continuation_keeps_each_restored_results_raw_size_and_process() {
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let mut saved = checkpoint();
+    let result = &mut saved.execution.tool_steps[0].tool_results[0];
+    result.output_bytes = 40;
+    result.process = Some(CommandProcessPresentation::ExitCode(3));
+    assert_eq!(
+        saved.into_continuation(&codex, "gpt-5.4", false).outputs,
+        [RecordedOutput {
+            call_id: ToolCallId::new("call_1"),
+            bytes: 40,
+            whole_file: false,
+            process: Some(CommandProcessPresentation::ExitCode(3)),
+        }]
+    );
+}
+
 fn read_step_calls() -> Vec<ToolCall> {
     vec![ToolCall::new("call_1", "read_file", "{\"path\":\"a.rs\"}")]
 }
@@ -518,6 +538,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                     output_bytes: 12,
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
+                    process: None,
                 }],
             }],
             steering: vec![HistorySteering {
@@ -612,4 +633,59 @@ fn a_paused_point_and_a_spilled_output_are_written_as_upstream_writes_them() {
         written.contains("\"credential_source\":null,\"credential_identity\":null"),
         "{written}"
     );
+}
+
+#[test]
+fn a_commands_process_presentation_is_written_and_read_in_upstreams_checkpoint_form() {
+    let calls = read_step_calls();
+    let mut point = recovery_point(&calls, "fn main() {}");
+    point.turn.steps[0].tool_results[0].process = Some(CommandProcessPresentation::ExitCode(1));
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: None,
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: None,
+            preview: None,
+        }]],
+        files: Vec::new(),
+        created_at_ms: 5,
+    };
+    let written = encode_recovery_file(3, &source).unwrap().unwrap();
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(
+        text.contains(
+            "\"command_output_replay\":null,\"command_process_presentation\":{\"kind\":\"exit_code\",\"value\":1},\"terminal_action_presentation\":null"
+        ),
+        "{text}"
+    );
+    let read = decode_recovery_file(&written, 3).unwrap().unwrap();
+    assert_eq!(
+        read.execution.tool_steps[0].tool_results[0].process,
+        Some(CommandProcessPresentation::ExitCode(1))
+    );
+    let upstream = upstream_checkpoint().replace(
+        "\"command_process_presentation\":null",
+        "\"command_process_presentation\":{\"kind\":\"timed_out\",\"value\":null}",
+    );
+    assert_eq!(
+        decoded(&upstream).execution.tool_steps[0].tool_results[0].process,
+        Some(CommandProcessPresentation::TimedOut)
+    );
+    for invalid in [
+        "{\"kind\":\"timed_out\",\"value\":1}",
+        "{\"timed_out\":{}}",
+        "{\"kind\":\"exit_code\"}",
+    ] {
+        let text = upstream_checkpoint().replace(
+            "\"command_process_presentation\":null",
+            &format!("\"command_process_presentation\":{invalid}"),
+        );
+        assert_eq!(
+            decode_recovery_file(&file_with(&text, 1), 1),
+            Err(SessionError::InvalidRecoveryCheckpoint),
+            "{invalid}"
+        );
+    }
 }

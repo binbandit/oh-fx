@@ -118,6 +118,7 @@ impl TurnReplay<'_, '_> {
                 description: call.description,
                 status: result.status,
                 output,
+                process: result.command_process_presentation,
             }),
         };
         self.shown[call.slot] = Some(entry);
