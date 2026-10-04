@@ -314,7 +314,7 @@ fn item_row(
         &single_line_ellipsized(item.label, value_column.saturating_sub(indent)),
         label_paint,
     );
-    row.push_spaces(value_column.saturating_sub(row.width()));
+    row.pad_to_column(value_column);
     let option_count = snapshot.option_count(item.id);
     if option_count == 0 {
         let room = width.saturating_sub(value_column);
