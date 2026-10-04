@@ -534,9 +534,9 @@ fn replay_refuses_a_result_whose_call_it_did_not_restore() {
         replay.observe(end, seq, event).unwrap();
         end += u64::try_from(bytes.len()).unwrap();
     }
-    let window = replay.finish(&file, end).unwrap();
+    let window = replay.finish(History::log(&file), end).unwrap();
     assert_eq!(
-        replay_history(&file, end, &window),
+        replay_history(History::log(&file), end, &window),
         Err(SessionError::InvalidConversationFrame)
     );
 }
@@ -1121,3 +1121,5 @@ fn a_turn_left_unsaved_keeps_its_prompt_language_for_the_next_commit() {
     session.record_turn(&replied_turn("?"), &provider).unwrap();
     assert_eq!(saved_language(&fixture, "unsaved"), "und-Arab");
 }
+
+mod history_cache;
