@@ -88,8 +88,12 @@ fn described_steps(turn: &HistoryTurn<'_>) -> Vec<String> {
                     } else {
                         ""
                     };
+                    let process = result
+                        .process
+                        .map(|process| format!(" process={process:?}"))
+                        .unwrap_or_default();
                     format!(
-                        "{}={}:{:?}{raw}{whole}",
+                        "{}={}:{:?}{raw}{whole}{process}",
                         result.call_id, result.output, result.status
                     )
                 })

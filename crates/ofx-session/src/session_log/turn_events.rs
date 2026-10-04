@@ -148,6 +148,7 @@ fn step_events(
         event.output_bytes = Some(output_bytes);
         event.preview = Some(preview(result.output).to_owned());
         event.created_at_ms = artifacts.timestamp_ms;
+        event.command_process_presentation = result.process;
         events.push(ConversationEvent::ToolResult(event));
     }
     Ok(())

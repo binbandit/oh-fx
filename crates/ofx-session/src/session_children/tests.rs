@@ -296,6 +296,7 @@ fn a_child_reopened_over_a_compacted_turn_and_its_checkpoint_closes_that_work_fi
                 output: "listing",
                 output_bytes: 7,
                 status: ToolResultStatus::Success,
+                process: None,
                 model_view_covers_full_file: false,
             }],
         }],

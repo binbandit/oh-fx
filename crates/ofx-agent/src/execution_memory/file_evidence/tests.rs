@@ -7,6 +7,7 @@ fn result(call: &ToolCall, status: ToolResultStatus, whole: bool) -> StepResult<
         output: "output",
         output_bytes: 6,
         status,
+        process: None,
         model_view_covers_full_file: whole,
     }
 }

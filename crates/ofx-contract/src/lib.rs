@@ -28,8 +28,8 @@ pub use compactor_settings::AutoCompactPercent;
 pub use file_evidence::{FileEvidence, FileEvidenceAction, file_evidence_context};
 pub use history_turn::{
     ConversationLog, HistoryCut, HistorySteering, HistoryStep, HistoryTurn, LogFailure,
-    RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy, RestoredHistory, StepResult,
-    TurnEnd, TurnStop,
+    RecordedOutput, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
+    RestoredHistory, StepResult, TurnEnd, TurnStop,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
@@ -68,7 +68,7 @@ pub use tool_dispatch::{
 };
 pub use tool_presentation::{
     SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
-    format_unknown_action, is_provider_search_alias, plain_description,
+    format_unknown_action, is_captured_command, is_provider_search_alias, plain_description,
     provider_search_description, subagent_action, subagent_failure_label, subagent_result_state,
 };
 pub use tool_result_errors::{

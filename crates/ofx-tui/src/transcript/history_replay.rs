@@ -53,6 +53,7 @@ mod tests {
             description: None,
             status: ToolResultStatus::Success,
             output: String::new(),
+            process: None,
         })
     }
 

@@ -14,14 +14,14 @@ use ofx_contract::{
     FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction,
     ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ProviderOptions, RecoveredTurn, RecoveryProgress, RecoveryStrategy, RequestId, ReviewFailure,
-    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
-    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext,
-    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
-    TurnStop, UiEvent, Usage, bound_model_output, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
-    tool_review_held_json,
+    ProviderOptions, RecordedOutput, RecoveredTurn, RecoveryProgress, RecoveryStrategy, RequestId,
+    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
+    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus,
+    SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
+    ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
+    ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage, bound_model_output,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
+    tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
-use crate::execution_memory::{EarlierEvidence, RawOutput, steering_text};
+use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Output, Recovery, recovery_cause,
 };
@@ -191,7 +191,7 @@ struct Turn {
     fast_mode: bool,
     fast_notice_shown: bool,
     compaction: TurnCompaction,
-    raw_outputs: Vec<RawOutput>,
+    raw_outputs: Vec<RecordedOutput>,
     earlier_files: EarlierEvidence,
     reviews: TurnReviews,
     language: TurnLanguage,
@@ -523,6 +523,7 @@ impl Agent {
                     .count(),
             );
             self.history.extend(recovered.messages);
+            turn.raw_outputs = recovered.outputs;
             turn.fast_mode = recovered.fast_mode;
             turn.recovery = Some(recovered.strategy);
         }
@@ -1086,10 +1087,8 @@ impl Agent {
                 Some(gate) => match self.gated_group(gate, &calls, next) {
                     GatedGroup::Run(group) => group,
                     GatedGroup::Unexecuted(description, output) => {
-                        turn.raw_outputs.push(RawOutput::partial_view(
-                            calls[next].id.clone(),
-                            output.len(),
-                        ));
+                        turn.raw_outputs
+                            .push(partial_view(calls[next].id.clone(), output.len()));
                         self.settle_unexecuted(turn.id, &calls[next], description, output, events);
                         next += 1;
                         continue;
@@ -1213,10 +1212,11 @@ impl Agent {
             let bytes = output.content.len();
             let (model_output, truncated) =
                 bound_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
-            turn.raw_outputs.push(RawOutput {
+            turn.raw_outputs.push(RecordedOutput {
                 call_id: call.id.clone(),
                 bytes,
                 whole_file: shown_whole && !truncated,
+                process: output.process,
             });
             let content = if escalates {
                 escalate_repeated_failure(turn, call, status, model_output)
