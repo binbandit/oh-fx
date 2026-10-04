@@ -668,7 +668,8 @@ impl Shell<'_> {
             .iter()
             .position(|submission| submission.turn_id.is_none())
             .unwrap_or(self.outstanding.len());
-        let displaced = self.displace_unstarted_turn();
+        self.displace_unstarted_turn();
+        let presented = self.submitted_prompts == self.prompts_before_resume;
         self.outstanding.insert(
             ahead,
             Submission {
@@ -676,28 +677,27 @@ impl Shell<'_> {
                 state: SubmissionState::Queued,
                 turn_id: None,
                 sequence: self.submitted_prompts,
-                presented: !displaced,
+                presented,
             },
         );
         self.submitted_prompts += 1;
         self.promote_next();
     }
 
-    fn displace_unstarted_turn(&mut self) -> bool {
+    fn displace_unstarted_turn(&mut self) {
         if self.turn.as_ref().is_none_or(|turn| turn.turn_id.is_some()) {
-            return false;
+            return;
         }
         let Some(submission) = self
             .outstanding
             .iter_mut()
             .find(|submission| submission.state == SubmissionState::Active)
         else {
-            return false;
+            return;
         };
         submission.state = SubmissionState::Queued;
         submission.presented = false;
         self.turn = None;
-        true
     }
 
     pub(super) fn cancel_visible_turn(&mut self) {
@@ -1475,7 +1475,16 @@ mod tests {
         test.deliver(finished(1, TurnOutcome::Completed));
         let screen = test.screen();
         assert!(
-            in_order(&screen, &["┃ new prompt", "Build fixed."]),
+            in_order(
+                &screen,
+                &[
+                    "┃ fix the build",
+                    "┃ new prompt",
+                    "Cancelled",
+                    "┃ fix the build",
+                    "Build fixed.",
+                ]
+            ),
             "{screen}"
         );
         test.submit("after");
