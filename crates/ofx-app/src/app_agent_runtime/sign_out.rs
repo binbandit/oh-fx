@@ -2,7 +2,7 @@ use ofx_auth::{ChatGptOAuth, DeleteOutcome, GrokOAuth, parse_login_provider};
 use ofx_config::ProviderId;
 use ofx_contract::{BoxFuture, Notice, NoticeTone, UiEvent};
 
-use super::{CatalogFetch, Controller, ControllerState, Login};
+use super::{CatalogFetch, Controller, ControllerState};
 
 const AUTH_TOPIC: &str = "auth";
 const PROVIDER_TOPIC: &str = "provider";
@@ -123,7 +123,7 @@ impl Controller {
             self.state.emit(UiEvent::Notice { notice });
         }
         if target != ProviderId::Gateway && target == self.state.setup.provider() {
-            self.state.login = Login::Missing;
+            self.state.setup.sign_out();
             self.state
                 .notice(NoticeTone::Warning, PROVIDER_TOPIC, NO_PROVIDER);
         }
