@@ -12,9 +12,9 @@ note = "Skill names, frontmatter metadata and exact location/resource contracts 
 
 [[file]]
 upstream = "src/core/skills/skill_invocation.zig"
-status = "partial"
-modules = ["crates/ofx-skills/src/skill_invocation.rs", "crates/ofx-skills/src/skill_invocation/resource.rs", "crates/ofx-skills/src/skill_invocation/explicit_section.rs", "crates/ofx-skills/src/skill_invocation/failures.rs"]
-note = "Explicit bindings, whole location and resource reads and legacy named offset chunks exist; displayNameFromOutput names skill rows when a session is resumed, with the rest of the resumed tool rows."
+status = "ported"
+modules = ["crates/ofx-skills/src/skill_invocation.rs", "crates/ofx-skills/src/skill_invocation/resource.rs", "crates/ofx-skills/src/skill_invocation/explicit_section.rs", "crates/ofx-skills/src/skill_invocation/failures.rs", "crates/ofx-skills/src/skill_invocation/display_name.rs"]
+note = "Explicit bindings, whole location and resource reads and legacy named offset chunks exist, and displayNameFromOutput names a resumed skill row whose call gave no name, as upstream's resume does."
 
 [[file]]
 upstream = "src/core/skills/skill_runtime.zig"

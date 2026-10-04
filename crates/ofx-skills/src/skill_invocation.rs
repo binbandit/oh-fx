@@ -1,3 +1,4 @@
+mod display_name;
 mod explicit_section;
 mod failures;
 mod resource;
@@ -5,6 +6,7 @@ mod resource;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+pub use display_name::display_name_from_output;
 pub use explicit_section::{ExplicitBinding, ExplicitPromptSection, LoadNotice, NoticeTone};
 use failures::{
     attach_discovery_notice, bounded_skill_error, execute_primary_budget, format_ambiguous_skill,
