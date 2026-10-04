@@ -6,7 +6,7 @@ use ofx_contract::{
     ActionLabel, ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency,
     FileChange, FileMutation, FileMutationState, LivePermissionMode, PathAccess, PermissionMode,
     PreparedCall, TargetKind, ToolContext, ToolEffect, ToolOutput, ToolStatusDetail,
-    format_tool_execution_error_json,
+    format_tool_execution_error_json, parse_tool_args_object,
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
@@ -54,6 +54,17 @@ impl MutationRequest {
                 move |_| failure,
             ),
         }
+    }
+
+    pub(crate) fn saved_description(&self, arguments: &str) -> CallDescription {
+        let path = parse_tool_args_object(arguments)
+            .ok()
+            .and_then(|arguments| {
+                arguments
+                    .optional_string(self.presentation.label_argument)
+                    .map(requested_label)
+            });
+        description(&self.presentation, path, ToolEffect::None)
     }
 
     fn plan(&self, requested_path: String, input: MutationInput) -> Result<Plan, ToolOutput> {

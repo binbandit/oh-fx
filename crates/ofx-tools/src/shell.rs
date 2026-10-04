@@ -104,6 +104,22 @@ impl Tool for Shell {
     fn history_arguments(&self, arguments: &str) -> Option<String> {
         Some(request::history_arguments(arguments)).filter(|history| history != arguments)
     }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        let arguments = request::unwrap_request(arguments);
+        let presented = presentation::presentation(
+            &arguments,
+            &self.context.workspace_root,
+            &self.context.executions,
+        );
+        Some(CallDescription {
+            title: presented.title,
+            label: presented.label,
+            activity: ToolActivity::Command,
+            effect: ToolEffect::None,
+            concurrency: Concurrency::Serial,
+        })
+    }
 }
 
 enum Validated {

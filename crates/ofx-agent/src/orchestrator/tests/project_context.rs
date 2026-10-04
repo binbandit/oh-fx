@@ -1,7 +1,10 @@
 use std::cell::Cell;
 use std::collections::HashSet;
 
-use ofx_contract::{TargetKind, ToolArgs, parse_tool_args_object};
+use ofx_contract::{
+    CONTEXT_DEFERRED_TOOL_OUTPUT, DEFERRED_TOOL_OUTPUT, TargetKind, ToolArgs,
+    parse_tool_args_object,
+};
 
 use super::*;
 
@@ -519,7 +522,11 @@ async fn a_lone_write_with_new_rules_is_deferred_until_the_model_reissues_it() {
     assert_eq!(
         scoped_messages(&requests[2].messages),
         [
-            ("call-1", CONTEXT_DEFERRED_OUTPUT, ToolResultStatus::Failure),
+            (
+                "call-1",
+                CONTEXT_DEFERRED_TOOL_OUTPUT,
+                ToolResultStatus::Failure
+            ),
             ("call-2", "scoped", ToolResultStatus::Success),
         ]
     );
@@ -558,7 +565,11 @@ async fn batches_defer_only_writes_whose_own_targets_bring_new_rules() {
         scoped_messages(&requests[1].messages),
         [
             ("call-1", "scoped", ToolResultStatus::Success),
-            ("call-2", CONTEXT_DEFERRED_OUTPUT, ToolResultStatus::Failure),
+            (
+                "call-2",
+                CONTEXT_DEFERRED_TOOL_OUTPUT,
+                ToolResultStatus::Failure
+            ),
             ("call-3", "scoped", ToolResultStatus::Success),
             ("call-4", "invalid arguments", ToolResultStatus::Failure),
         ]
@@ -600,7 +611,11 @@ async fn deferred_results_do_not_count_as_repeated_failures() {
     assert_eq!(
         scoped_messages(&harness.provider.requests()[2].messages),
         [
-            ("call-1", CONTEXT_DEFERRED_OUTPUT, ToolResultStatus::Failure),
+            (
+                "call-1",
+                CONTEXT_DEFERRED_TOOL_OUTPUT,
+                ToolResultStatus::Failure
+            ),
             ("call-2", "scoped failure", ToolResultStatus::Failure),
         ]
     );
@@ -679,9 +694,9 @@ async fn calls_whose_targets_change_before_they_run_are_not_executed() {
         scoped_messages(&requests[2].messages),
         [
             ("call-1", "scoped", ToolResultStatus::Success),
-            ("call-2", NOT_EXECUTED_OUTPUT, ToolResultStatus::Failure),
+            ("call-2", DEFERRED_TOOL_OUTPUT, ToolResultStatus::Failure),
             ("call-3", "scoped", ToolResultStatus::Success),
-            ("call-4", NOT_EXECUTED_OUTPUT, ToolResultStatus::Failure),
+            ("call-4", DEFERRED_TOOL_OUTPUT, ToolResultStatus::Failure),
             ("call-5", "scoped", ToolResultStatus::Success),
         ]
     );
@@ -840,11 +855,11 @@ async fn file_changes_run_only_when_their_completed_target_is_the_gate_target() 
         scoped_messages(&harness.provider.requests()[1].messages),
         [
             ("call-1", "scoped", ToolResultStatus::Success),
-            ("call-2", NOT_EXECUTED_OUTPUT, ToolResultStatus::Failure),
-            ("call-3", NOT_EXECUTED_OUTPUT, ToolResultStatus::Failure),
+            ("call-2", DEFERRED_TOOL_OUTPUT, ToolResultStatus::Failure),
+            ("call-3", DEFERRED_TOOL_OUTPUT, ToolResultStatus::Failure),
             ("call-4", "unreadable target", ToolResultStatus::Failure),
             ("call-5", "scoped", ToolResultStatus::Success),
-            ("call-6", NOT_EXECUTED_OUTPUT, ToolResultStatus::Failure),
+            ("call-6", DEFERRED_TOOL_OUTPUT, ToolResultStatus::Failure),
         ]
     );
     assert_eq!(

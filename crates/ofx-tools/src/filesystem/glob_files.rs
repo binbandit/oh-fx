@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ofx_contract::{
-    CallPresentation, PathAccess, PreparedCall, Tool, ToolActivity, ToolOutput, ToolSpec,
-    filesystem_access_denied_json, plain_description,
+    CallDescription, CallPresentation, PathAccess, PreparedCall, Tool, ToolActivity, ToolEffect,
+    ToolOutput, ToolSpec, filesystem_access_denied_json, plain_description,
 };
 use ofx_text::sanitize_model_text_owned;
 use ofx_workspace::{
@@ -69,6 +69,15 @@ impl Tool for GlobFiles {
                 Ok(arguments) => arguments.run(&context, &path_access),
                 Err(failure) => failure,
             },
+        ))
+    }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        Some(plain_description(
+            TOOL_NAME,
+            &PRESENTATION,
+            arguments,
+            ToolEffect::None,
         ))
     }
 }

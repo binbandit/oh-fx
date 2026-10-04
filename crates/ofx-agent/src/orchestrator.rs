@@ -50,8 +50,6 @@ mod turn_log;
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use project_gate::GatedGroup;
-#[cfg(test)]
-use project_gate::{CONTEXT_DEFERRED_OUTPUT, NOT_EXECUTED_OUTPUT};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;

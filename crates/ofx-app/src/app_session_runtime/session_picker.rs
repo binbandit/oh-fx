@@ -7,6 +7,7 @@ use ofx_session::{ListScope, ResumeContinuation, SessionError, SessionSummary};
 
 use super::persistence::{Persistence, SESSION_TOPIC};
 use super::{LiveSession, RestoredPreferences, ResumedSession};
+use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(crate) struct Switched {
     pub(crate) history: Vec<HistoryEntry>,
@@ -57,6 +58,7 @@ impl Persistence {
         &mut self,
         id: &str,
         agent: &mut Agent,
+        setup: &AgentSetup,
     ) -> Result<Switched, Refused> {
         let mut session = self.store.open_without_waiting(id).map_err(refused)?;
         if session.metadata().preferences.provider != self.provider {
@@ -73,7 +75,7 @@ impl Persistence {
         }
         self.store.move_here(&mut session).map_err(refused)?;
         let resumed = ResumedSession::load(session).map_err(refused)?;
-        let history = resumed.transcript().map_err(refused)?;
+        let history = resumed.transcript(setup).map_err(refused)?;
         let title = resumed.display_title().map(str::to_owned);
         let preferences = self.overrides.restore(resumed.preferences());
         self.adopt_preferences(resumed.preferences());

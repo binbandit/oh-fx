@@ -59,13 +59,14 @@ pub use tool_dispatch::{
 pub use tool_presentation::{
     SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
     format_unknown_action, plain_description, subagent_action, subagent_failure_label,
+    subagent_result_state,
 };
 pub use tool_result_errors::{
-    DetailValue, ExecutionFailure, ReviewHold, ToolPermissionDenialReason,
-    filesystem_access_denied_json, format_tool_execution_error_json, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, shell_request_invalid_field_count, tool_execution_failure_json,
-    tool_permission_denial_reason, tool_permission_denied_json, tool_review_held_json,
-    valued_execution_failure_json,
+    CONTEXT_DEFERRED_TOOL_OUTPUT, DEFERRED_TOOL_OUTPUT, DetailValue, ExecutionFailure, ReviewHold,
+    ToolPermissionDenialReason, filesystem_access_denied_json, format_tool_execution_error_json,
+    malformed_tool_arguments_json, non_object_tool_arguments_json,
+    shell_request_invalid_field_count, tool_execution_failure_json, tool_permission_denial_reason,
+    tool_permission_denied_json, tool_review_held_json, valued_execution_failure_json,
 };
 pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
 pub use types::{
@@ -79,6 +80,7 @@ pub use types::{
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CompactionActivity, CompactionEnd, HistoryEntry, Notice,
-    NoticeLink, NoticeTone, QuestionRequest, StatuslineItem, StatuslineToggles, ToolDeferral,
-    ToolRejection, TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity, WorkspaceIdentitySource,
+    NoticeLink, NoticeTone, QuestionRequest, SavedToolCall, StatuslineItem, StatuslineToggles,
+    ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity,
+    WorkspaceIdentitySource,
 };

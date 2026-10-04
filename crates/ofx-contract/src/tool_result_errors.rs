@@ -10,6 +10,9 @@ const FILESYSTEM_ACCESS_DENIED_SUGGESTION: &str = "Do not retry this path unchan
 #[cfg(not(target_os = "macos"))]
 const FILESYSTEM_ACCESS_DENIED_SUGGESTION: &str = "Do not retry this path unchanged or propose a symlink. oh-fx permissions cannot override the operating system. Ask the user to correct OS filesystem permissions or move/copy the project to an accessible location.";
 
+pub const DEFERRED_TOOL_OUTPUT: &str = "Not executed";
+pub const CONTEXT_DEFERRED_TOOL_OUTPUT: &str = "Scoped project instructions were added before execution. Review them and reissue this tool call if it is still appropriate.";
+
 const USER_DENIED_MESSAGE: &str = "Permission denied by user";
 const USER_DENIED_SUGGESTION: &str = "The tool did not run. Do not retry unchanged; explain the denial or use a safer allowed alternative.";
 

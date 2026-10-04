@@ -225,6 +225,10 @@ pub trait Tool: Send + Sync {
     fn history_arguments(&self, _arguments: &str) -> Option<String> {
         None
     }
+
+    fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
+        self.prepare(arguments).ok().map(|call| call.describe())
+    }
 }
 
 pub trait DynamicTools: Send + Sync {

@@ -18,9 +18,9 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ApprovalDecision, BoxFuture, CapabilityLookup, CapabilityResolver, LivePermissionMode,
-    ModelCapabilities, ModelProvider, PermissionMode, QuestionAsker, RequestId, ReviewTransport,
-    StatuslineToggles, Tool,
+    ApprovalDecision, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver,
+    LivePermissionMode, ModelCapabilities, ModelProvider, PermissionMode, QuestionAsker, RequestId,
+    ReviewTransport, StatuslineToggles, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -740,6 +740,18 @@ impl AgentSetup {
 
     pub(crate) fn forget_children(&self) {
         self.delegation.host.clear();
+    }
+
+    pub(crate) fn describe_saved_call(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+    ) -> Option<CallDescription> {
+        self.tools
+            .iter()
+            .chain([&self.delegation.tool])
+            .find(|tool| tool.spec().name == tool_name)?
+            .describe_saved(arguments)
     }
 
     pub fn agent(&self, delegation: bool) -> Agent {
