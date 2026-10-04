@@ -38,3 +38,6 @@ pub use app_session_runtime::{
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 pub use modes::default_mode;
 pub use ofx_tools::WebFetchProgress;
+
+#[cfg(test)]
+mod prompt_goldens;
