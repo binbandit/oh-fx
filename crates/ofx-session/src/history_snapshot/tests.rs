@@ -42,7 +42,7 @@ impl Fixture {
     }
 
     fn open(&self, id: &str, log: &File, length: u64) -> Option<HistoryCache> {
-        HistoryCache::open(&self.dir, id, log, length, Access::ReadOnly)
+        HistoryCache::open(&self.dir, id, log, length)
     }
 }
 
@@ -57,7 +57,7 @@ fn length(line: &[u8]) -> u64 {
     u64::try_from(line.len()).unwrap()
 }
 
-fn mirror(cache: &mut HistoryCache, lines: &[Vec<u8>]) {
+fn mirror(cache: &mut CacheWriter, lines: &[Vec<u8>]) {
     let (_, mut tee) = cache.split();
     let mut offset = 0;
     for line in lines {
@@ -67,7 +67,7 @@ fn mirror(cache: &mut HistoryCache, lines: &[Vec<u8>]) {
 }
 
 fn written(fixture: &Fixture, id: &str, lines: &[Vec<u8>], committed: u64) {
-    let mut cache = HistoryCache::create(&fixture.dir, id).unwrap();
+    let mut cache = CacheWriter::create(&fixture.dir, id).unwrap();
     mirror(&mut cache, lines);
     assert!(cache.finish(&fixture.dir, committed).is_some());
 }
@@ -166,8 +166,7 @@ fn a_writable_open_drops_the_invalid_tail_and_extends_the_prefix() {
     let prefix = length(&fixture.cache_bytes());
     fixture.write_cache_at(prefix, &[0, 64, 0, 0, 1, 2, 3, 4]);
 
-    let mut cache =
-        HistoryCache::open(&fixture.dir, "sess-1", &log, log_len, Access::Writable).unwrap();
+    let mut cache = CacheWriter::open(&fixture.dir, "sess-1", &log, log_len).unwrap();
     assert_eq!(length(&fixture.cache_bytes()), prefix);
     let (_, mut tee) = cache.split();
     tee.append(
@@ -190,7 +189,7 @@ fn finishing_trims_frames_past_the_committed_log() {
     let lines = [line(1), line(2), line(3)];
     let (log, log_len) = fixture.log(&lines);
     let committed = length(&lines[0]) + length(&lines[1]);
-    let mut cache = HistoryCache::create(&fixture.dir, "sess-1").unwrap();
+    let mut cache = CacheWriter::create(&fixture.dir, "sess-1").unwrap();
     mirror(&mut cache, &lines);
     let cache = cache.finish(&fixture.dir, committed).unwrap();
     assert_eq!(cache.covered(), committed);
@@ -201,11 +200,36 @@ fn finishing_trims_frames_past_the_committed_log() {
 }
 
 #[test]
+fn a_finished_writer_keeps_only_the_frame_index_for_reads() {
+    let fixture = Fixture::new();
+    let large = ConversationEvent::Steering(SteeringEvent {
+        text: "x".repeat(4 * 1024 * 1024),
+    });
+    let lines = [
+        line(1),
+        encode_conversation_frame(2, 1, &large).unwrap(),
+        line(3),
+    ];
+    let (_, log_len) = fixture.log(&lines);
+    let mut writer = CacheWriter::create(&fixture.dir, "sess-1").unwrap();
+    mirror(&mut writer, &lines);
+    assert!(writer.tee.pending.capacity() > 4 * 1024 * 1024);
+    let cache = writer.finish(&fixture.dir, log_len).unwrap();
+    assert_eq!(cache.frames.len(), 3);
+    assert_eq!(cache.frames.capacity(), cache.frames.len());
+    assert_eq!(
+        size_of::<HistoryCache>(),
+        size_of::<(File, Vec<FrameMeta>)>()
+    );
+    assert_eq!(seqs(&cache, 0, log_len), [1, 2, 3]);
+}
+
+#[test]
 fn a_frame_that_does_not_continue_the_log_breaks_the_writer_and_removes_the_cache() {
     let fixture = Fixture::new();
     let lines = [line(1), line(2)];
     let (_, log_len) = fixture.log(&lines);
-    let mut cache = HistoryCache::create(&fixture.dir, "sess-1").unwrap();
+    let mut cache = CacheWriter::create(&fixture.dir, "sess-1").unwrap();
     let (_, mut tee) = cache.split();
     tee.append(0, &lines[0], &decode_conversation_frame(&lines[0]).unwrap());
     tee.append(
@@ -239,8 +263,8 @@ fn the_cache_is_private_and_never_follows_links() {
         fs::Permissions::from_mode(0o644),
     )
     .unwrap();
-    assert!(HistoryCache::open(&fixture.dir, "sess-1", &log, log_len, Access::Writable).is_none());
-    let mut rebuilt = HistoryCache::create(&fixture.dir, "sess-1").unwrap();
+    assert!(CacheWriter::open(&fixture.dir, "sess-1", &log, log_len).is_none());
+    let mut rebuilt = CacheWriter::create(&fixture.dir, "sess-1").unwrap();
     mirror(&mut rebuilt, &lines);
     assert!(rebuilt.finish(&fixture.dir, log_len).is_some());
     let mode = fs::metadata(fixture.path(HISTORY_CACHE_FILE))

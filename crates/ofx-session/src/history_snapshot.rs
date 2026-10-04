@@ -40,6 +40,10 @@ impl FrameMeta {
 pub(crate) struct HistoryCache {
     file: File,
     frames: Vec<FrameMeta>,
+}
+
+pub(crate) struct CacheWriter {
+    cache: HistoryCache,
     tee: Tee,
 }
 
@@ -81,16 +85,43 @@ impl HistoryCache {
         session_id: &str,
         log: &File,
         log_len: u64,
-        access: Access,
     ) -> Option<Self> {
-        let file = open_managed_file(dir, HISTORY_CACHE_FILE, access).ok()??;
+        let file = open_managed_file(dir, HISTORY_CACHE_FILE, Access::ReadOnly).ok()??;
+        let (frames, _) = verify(&file, session_id, log, log_len)?;
+        Some(Self { file, frames })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn covered(&self) -> u64 {
+        self.frames.last().map_or(0, FrameMeta::log_end)
+    }
+
+    pub(crate) fn view(&self) -> CacheView<'_> {
+        CacheView {
+            file: &self.file,
+            frames: &self.frames,
+        }
+    }
+}
+
+impl CacheWriter {
+    pub(crate) fn open(
+        dir: &PrivateDir,
+        session_id: &str,
+        log: &File,
+        log_len: u64,
+    ) -> Option<Self> {
+        let file = open_managed_file(dir, HISTORY_CACHE_FILE, Access::Writable).ok()??;
         let (frames, len) = verify(&file, session_id, log, log_len)?;
-        if access == Access::Writable && file.metadata().ok()?.len() != len {
+        if file.metadata().ok()?.len() != len {
             file.set_len(len).ok()?;
         }
         let covered = frames.last().map_or(0, FrameMeta::log_end);
         let tee = Tee::new(len, covered, MAX_FRAMES - frames.len());
-        Some(Self { file, frames, tee })
+        Some(Self {
+            cache: HistoryCache { file, frames },
+            tee,
+        })
     }
 
     pub(crate) fn create(dir: &PrivateDir, session_id: &str) -> Option<Self> {
@@ -105,64 +136,45 @@ impl HistoryCache {
         tee.pending
             .extend_from_slice(&u64::from(id_len).to_le_bytes());
         tee.pending.extend_from_slice(session_id.as_bytes());
-        Some(Self {
+        let cache = HistoryCache {
             file,
             frames: Vec::new(),
-            tee,
-        })
-    }
-
-    pub(crate) fn remove(dir: &PrivateDir) {
-        let _ = dir.remove(HISTORY_CACHE_FILE);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn covered(&self) -> u64 {
-        self.frames.last().map_or(0, FrameMeta::log_end)
-    }
-
-    pub(crate) fn view(&self) -> CacheView<'_> {
-        CacheView {
-            file: &self.file,
-            frames: &self.frames,
-        }
+        };
+        Some(Self { cache, tee })
     }
 
     pub(crate) fn tee(&mut self) -> CacheTee<'_> {
         CacheTee {
-            file: &self.file,
+            file: &self.cache.file,
             tee: &mut self.tee,
         }
     }
 
     pub(crate) fn split(&mut self) -> (CacheView<'_>, CacheTee<'_>) {
         (
-            CacheView {
-                file: &self.file,
-                frames: &self.frames,
-            },
+            self.cache.view(),
             CacheTee {
-                file: &self.file,
+                file: &self.cache.file,
                 tee: &mut self.tee,
             },
         )
     }
 
-    pub(crate) fn finish(mut self, dir: &PrivateDir, committed: u64) -> Option<Self> {
-        if self.settle(committed).is_none() {
-            drop(self);
-            Self::remove(dir);
-            return None;
-        }
-        Some(self)
-    }
-
-    fn settle(&mut self, committed: u64) -> Option<()> {
+    pub(crate) fn finish(mut self, dir: &PrivateDir, committed: u64) -> Option<HistoryCache> {
         self.tee().flush();
-        if self.tee.broken {
+        let Self { mut cache, tee } = self;
+        if tee.broken || cache.settle(tee.appended, committed).is_none() {
+            drop(cache);
+            let _ = dir.remove(HISTORY_CACHE_FILE);
             return None;
         }
-        self.frames.append(&mut self.tee.appended);
+        Some(cache)
+    }
+}
+
+impl HistoryCache {
+    fn settle(&mut self, appended: Vec<FrameMeta>, committed: u64) -> Option<()> {
+        self.frames.extend(appended);
         let kept = self
             .frames
             .partition_point(|frame| frame.log_end() <= committed);
@@ -170,6 +182,7 @@ impl HistoryCache {
             self.file.set_len(first_dropped.file_offset).ok()?;
             self.frames.truncate(kept);
         }
+        self.frames.shrink_to_fit();
         Some(())
     }
 }

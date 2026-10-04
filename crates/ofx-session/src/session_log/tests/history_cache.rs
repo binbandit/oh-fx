@@ -1,7 +1,7 @@
 use std::os::unix::fs::FileExt;
 
 use super::*;
-use crate::history_snapshot::{HISTORY_CACHE_FILE, HistoryCache};
+use crate::history_snapshot::{CacheWriter, HISTORY_CACHE_FILE, HistoryCache};
 
 impl Fixture {
     fn cache(&self, id: &str) -> PathBuf {
@@ -16,7 +16,7 @@ impl Fixture {
         let dir = self.sessions.open_child(id).unwrap().unwrap();
         let log = File::open(self.events(id)).unwrap();
         let length = log.metadata().unwrap().len();
-        HistoryCache::open(&dir, id, &log, length, Access::ReadOnly).map(|cache| cache.covered())
+        HistoryCache::open(&dir, id, &log, length).map(|cache| cache.covered())
     }
 
     fn log_len(&self, id: &str) -> u64 {
@@ -248,7 +248,7 @@ fn a_cache_whose_frames_fail_validation_is_rebuilt_from_the_log() {
     let log = fs::read(fixture.events(id)).unwrap();
     let lines: Vec<&[u8]> = log.split_inclusive(|byte| *byte == b'\n').collect();
     let dir = fixture.sessions.open_child(id).unwrap().unwrap();
-    let mut cache = HistoryCache::create(&dir, id).unwrap();
+    let mut cache = CacheWriter::create(&dir, id).unwrap();
     let mut tee = cache.tee();
     let mut offset = 0;
     for (index, line) in lines.iter().enumerate() {

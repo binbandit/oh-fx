@@ -17,7 +17,7 @@ use ofx_contract::{
 };
 use ofx_text::lowercase_hex;
 
-use crate::history_snapshot::HistoryCache;
+use crate::history_snapshot::{CacheWriter, HistoryCache};
 use crate::session::infer_conversation_language;
 use crate::session_children::CONTROL_DIR;
 use crate::session_codec::recovery_checkpoint::RouteCredential;
@@ -601,7 +601,7 @@ pub(crate) fn load_session(sessions: &PrivateDir, id: &str) -> Result<SavedSessi
     let file = open_managed_file(&dir, EVENTS_FILE, Access::ReadOnly)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let length = file.metadata()?.len();
-    let cache = HistoryCache::open(&dir, id, &file, length, Access::ReadOnly);
+    let cache = HistoryCache::open(&dir, id, &file, length);
     let history = with_history(&file, cache.as_ref(), |history| {
         let mut replay = ReplayScan::default();
         let scan = scan_log(history, length, &mut replay, None)?;
@@ -616,9 +616,9 @@ fn scan_writable(
     id: &str,
     file: &File,
     replay: &mut ReplayScan,
-) -> Result<(LogScan, Option<HistoryCache>), SessionError> {
+) -> Result<(LogScan, Option<CacheWriter>), SessionError> {
     let length = file.metadata()?.len();
-    if let Some(mut cache) = HistoryCache::open(dir, id, file, length, Access::Writable) {
+    if let Some(mut cache) = CacheWriter::open(dir, id, file, length) {
         let (view, tee) = cache.split();
         let mut cached = ReplayScan::default();
         if let Ok(scan) = scan_log(History::cached(file, view), length, &mut cached, Some(tee)) {
@@ -629,9 +629,9 @@ fn scan_writable(
     let mut cache = if length == 0 {
         None
     } else {
-        HistoryCache::create(dir, id)
+        CacheWriter::create(dir, id)
     };
-    let tee = cache.as_mut().map(HistoryCache::tee);
+    let tee = cache.as_mut().map(CacheWriter::tee);
     let scan = scan_log(History::log(file), length, replay, tee)?;
     Ok((scan, cache))
 }
