@@ -1116,6 +1116,106 @@ fn a_compaction_prepared_checkpoint_is_committed_when_the_session_opens() {
 }
 
 #[test]
+fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let provider = metadata().preferences.provider;
+    let calls = vec![ToolCall::new("c2", "shell", "{\"command\":\"ls\"}")];
+    let turn = HistoryTurn {
+        user: "fix the build",
+        steps: vec![HistoryStep {
+            assistant: "",
+            provider_replay: None,
+            tool_calls: &calls,
+            tool_results: vec![StepResult {
+                call_id: "c2",
+                tool_name: "shell",
+                output: "out",
+                output_bytes: 3,
+                status: ToolResultStatus::Success,
+                process: None,
+                model_view_covers_full_file: false,
+            }],
+        }],
+        steering: Vec::new(),
+        files: &[],
+        end: TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        },
+    };
+    let mut session = fixture.resume().unwrap();
+    session.settle_open_recovery().unwrap();
+    session
+        .record_compaction(
+            "<summary>before</summary>",
+            HistoryCut {
+                turns: 1,
+                tool_steps: 0,
+                steering: 0,
+            },
+            Some(&HistoryTurn {
+                steps: Vec::new(),
+                ..turn.clone()
+            }),
+            &provider,
+        )
+        .unwrap();
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn,
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    assert!(session.turn_open());
+    assert!(session.holds_recovery());
+    session.settle_open_recovery().unwrap();
+    assert!(!session.turn_open());
+    assert!(!session.holds_recovery());
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+    let log = fixture.log();
+    let kinds: Vec<&str> = log
+        .iter()
+        .map(|line| {
+            [
+                "user",
+                "context_checkpoint",
+                "tool_call",
+                "tool_result",
+                "interrupted",
+                "assistant",
+                "turn_completed",
+            ]
+            .into_iter()
+            .find(|kind| line.contains(&format!("\"event\":{{\"{kind}\"")))
+            .unwrap_or("other")
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "context_checkpoint",
+            "tool_call",
+            "tool_result",
+            "interrupted"
+        ],
+        "{log:#?}"
+    );
+}
+
+#[test]
 fn a_refused_credential_leaves_the_checkpoint_pending_until_it_is_settled() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());

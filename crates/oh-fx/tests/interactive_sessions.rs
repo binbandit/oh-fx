@@ -7,7 +7,8 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_testkit::{
-    FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+    FakeServer, PtySession, RecordedRequest, RefusedPort, Reply, chat_text_events,
+    chat_tool_call_events,
 };
 use serde_json::{Value, json};
 
@@ -2308,5 +2309,37 @@ fn a_resumed_shell_shows_the_turn_summaries_upstream_saved() {
         ),
         "{screen}"
     );
+    exit(session);
+}
+
+#[test]
+fn a_first_turn_paused_with_escape_is_kept_for_continue_to_resume() {
+    let port = RefusedPort::reserve();
+    let home = Home::new(&port.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"hi\r");
+    wait(&session, " · esc to pause");
+    session.send(b"\x1b");
+    wait(&session, "recovery paused after 1 attempt");
+    exit(session);
+    let id = home.only_session();
+    assert!(home.sessions().join(&id).join("recovery.json").exists());
+    assert!(home.frames(&id).is_empty());
+
+    let session = home.shell(&["-c"], "continues automatically");
+    let screen = wait(&session, "waiting for connection");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ hi",
+                "model response recovery paused and continues automatically",
+                "waiting for connection"
+            ]
+        ),
+        "{screen}"
+    );
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
     exit(session);
 }
