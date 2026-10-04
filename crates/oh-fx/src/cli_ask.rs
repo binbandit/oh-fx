@@ -976,6 +976,14 @@ impl Presenter {
         self
     }
 
+    fn recovery_reported(&mut self, status: RouteRecoveryStatus) -> io::Result<()> {
+        let notices = self.recovery_notices(&status);
+        self.recovery = Some(status);
+        notices
+            .iter()
+            .try_for_each(|line| self.write_status(StatusBlock::Notice, line))
+    }
+
     fn recovery_notices(&self, status: &RouteRecoveryStatus) -> Vec<String> {
         let terminal = status.is_terminal();
         if self.mode == OutputMode::Quiet && !terminal {
@@ -996,13 +1004,7 @@ impl Presenter {
             }
             UiEvent::AssistantRestarted { text, .. } => self.push_restarted(&text),
             UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
-            UiEvent::Recovery { status, .. } => {
-                let notices = self.recovery_notices(&status);
-                self.recovery = Some(status);
-                notices
-                    .iter()
-                    .try_for_each(|line| self.write_status(StatusBlock::Notice, line))
-            }
+            UiEvent::Recovery { status, .. } => self.recovery_reported(status),
             UiEvent::ToolStarted {
                 call_id,
                 tool_name,
@@ -1061,6 +1063,9 @@ impl Presenter {
             | UiEvent::ModelCatalog { .. }
             | UiEvent::ProviderPicker { .. }
             | UiEvent::ProviderSelected { .. }
+            | UiEvent::LoginChanged { .. }
+            | UiEvent::PromptHeld
+            | UiEvent::HeldPromptDropped
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
             | UiEvent::StatuslineMenuOpened

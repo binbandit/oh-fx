@@ -9,6 +9,7 @@ pub enum SlashKind {
     ResumeSession,
     RenameSession,
     Login,
+    Logout,
     Provider,
     Stats,
     Usage,
@@ -232,6 +233,7 @@ mod tests {
         "/resume · Session · resume a saved session",
         "/rename · Session · rename the current session",
         "/login · Account · choose the model provider and how it signs in",
+        "/logout · Account · sign out of a provider session",
         "/provider (/setup) · Account · choose the model provider and how it signs in",
         "/stats · Account · show token and turn statistics",
         "/usage (/cost) · Account · show local oh-fx tokens, models, and spend",
@@ -291,6 +293,7 @@ mod tests {
             entries,
             [
                 ("/rename", "/rename <title>", true),
+                ("/logout", "/logout [vercel|codex|grok]", true),
                 ("/usage", "/usage (/cost)", false),
                 ("/model", "/model <id-or-query>", true),
                 (
