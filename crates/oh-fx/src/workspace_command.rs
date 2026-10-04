@@ -44,7 +44,7 @@ fn answer(args: &WorkspaceArgs) -> Result<String, Failure> {
     let primary = env::current_dir()
         .and_then(fs::canonicalize)
         .map_err(|_| failed(&"WorkspaceUnavailable"))?;
-    let paths = env::var_os("HOME").and_then(|_| ProfilePaths::from_environment());
+    let paths = ProfilePaths::from_environment();
     let mut settings = match &paths {
         Some(paths) => Settings::load(paths, &primary).map_err(|error| failed(&error))?,
         None => Settings::default(),
@@ -65,7 +65,8 @@ fn answer(args: &WorkspaceArgs) -> Result<String, Failure> {
     let Some(action) = &args.action else {
         return Ok(snapshot(&primary, &current, None, args.format));
     };
-    match execute(paths.as_ref(), &current, &action_of(action)?).map_err(|error| failed(&error))? {
+    let saving = paths.as_ref().filter(|_| env::var_os("HOME").is_some());
+    match execute(saving, &current, &action_of(action)?).map_err(|error| failed(&error))? {
         Outcome::Updated { access, mutation } => {
             Ok(snapshot(&primary, &access, Some(&mutation), args.format))
         }

@@ -297,3 +297,28 @@ fn saving_needs_a_profile_directory() {
     );
     assert!(!home.settings_path().exists());
 }
+
+#[test]
+fn without_home_the_saved_directories_still_list_but_cannot_change() {
+    let home = Home::new();
+    let shared = home.path("shared");
+    let settings =
+        json!({"workspaces": {home.path("workspace"): {"additional_directories": [shared]}}});
+    home.write_settings(&settings);
+    let output = home.run(&["workspace", "--json"], false);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        format!(
+            "{{\"kind\":\"workspace\",\"action\":\"list\",\"changed\":false,\"primary_directory\":\"{}\",\"saved_suppressed\":false,\"limit\":16,\"additional_directories\":[{{\"path\":\"{shared}\",\"saved\":true,\"command_line\":false,\"available\":true,\"active\":true}}]}}\n",
+            home.path("workspace")
+        )
+    );
+    let output = home.run(&["workspace", "remove", &shared, "--json"], false);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stdout),
+        "{\"kind\":\"workspace\",\"error\":\"HOME is not set\",\"code\":\"HomeNotSet\"}\n"
+    );
+    assert_eq!(home.settings(), settings);
+}
