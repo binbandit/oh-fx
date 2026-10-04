@@ -12,7 +12,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 
 use super::child_state::{ActiveWork, Child, Outcome, Registry};
 use super::execution::{ChildRuntime, WorkOutcome};
-use super::tool_host::{ChildAgents, ChildDefaults, ChildStore, effective_settings};
+use super::tool_host::{ChildAgents, ChildDefaults, ChildSettings, ChildStore, effective_settings};
 
 type SharedRuntime = Arc<tokio::sync::Mutex<ChildRuntime>>;
 
@@ -112,6 +112,25 @@ struct Start {
     status: SubagentStatus,
 }
 
+struct Planned {
+    child_id: String,
+    work: ActiveWork,
+    instructions: String,
+    runner: Runner,
+    status: SubagentStatus,
+}
+
+enum Runner {
+    Existing(SharedRuntime),
+    Fresh(Box<FreshChild>),
+}
+
+struct FreshChild {
+    runtime: ChildRuntime,
+    settings: ChildSettings,
+    named: bool,
+}
+
 pub(crate) struct Owner {
     agents: Arc<dyn ChildAgents>,
     state: Mutex<State>,
@@ -163,7 +182,7 @@ impl Owner {
             created_at_ms: now_ms(),
         };
         let before = state.registry.clone();
-        let start = match request.agent_name() {
+        let planned = match request.agent_name() {
             None => self.create(state, request, &defaults, work),
             Some(agent) => match state
                 .registry
@@ -176,13 +195,7 @@ impl Owner {
                 None => self.create(state, request, &defaults, work),
             },
         };
-        let start = start.and_then(|start| match state.save() {
-            Ok(()) => Ok(start),
-            Err(failure) => {
-                state.named.remove(&start.child_id);
-                Err(Refusal::Store(failure.code))
-            }
-        });
+        let start = planned.and_then(|planned| publish(state, planned, &before));
         match start {
             Ok(start) => Admitted::Ready(self.start(state, start, turn_id)),
             Err(refusal) => {
@@ -244,7 +257,7 @@ impl Owner {
         request: &SubagentRequest,
         defaults: &ChildDefaults,
         work: ActiveWork,
-    ) -> Result<Start, Refusal> {
+    ) -> Result<Planned, Refusal> {
         let child_id = if let Some(store) = &state.store {
             store
                 .new_child_id()
@@ -266,32 +279,19 @@ impl Owner {
         let settings = effective_settings(&defaults.settings, request.overrides());
         let permission_mode = LivePermissionMode::from(defaults.permission_mode);
         let agent = self.agents.agent(&settings, permission_mode.clone());
-        let mut runtime = ChildRuntime::new(agent, permission_mode);
-        if let Some(store) = &state.store {
-            let record = store
-                .start_child(&child_id, &settings)
-                .map_err(|failure| Refusal::Store(failure.code))?;
-            runtime = runtime.saved(&child_id, record);
-        }
-        let runtime = Arc::new(tokio::sync::Mutex::new(runtime));
         let status = SubagentStatus {
-            model: settings.model,
-            effort: settings.effort,
+            model: settings.model.clone(),
+            effort: settings.effort.clone(),
         };
-        if request.agent_name().is_some() {
-            state.named.insert(
-                child_id.clone(),
-                NamedChild {
-                    runtime: Arc::clone(&runtime),
-                    status: status.clone(),
-                },
-            );
-        }
-        Ok(Start {
+        Ok(Planned {
             child_id,
             work,
             instructions: instructions.to_owned(),
-            runtime,
+            runner: Runner::Fresh(Box::new(FreshChild {
+                runtime: ChildRuntime::new(agent, permission_mode),
+                settings,
+                named: request.agent_name().is_some(),
+            })),
             status,
         })
     }
@@ -349,6 +349,7 @@ impl Owner {
     ) {
         let mut state = self.lock();
         state.slots.remove(child_id);
+        let before = state.registry.clone();
         let Ok(child) = state
             .registry
             .finish(child_id, work_id, outcome.outcome, outcome.failure)
@@ -356,7 +357,10 @@ impl Owner {
             return;
         };
         let observation = observation(child);
-        let _ = state.save();
+        if state.save().is_err() {
+            state.registry = before;
+            return;
+        }
         state
             .texts
             .insert(child_id.to_owned(), outcome.text.clone());
@@ -378,7 +382,7 @@ fn continue_persistent(
     agent: &str,
     (child_id, phase): (&str, ChildPhase),
     work: ActiveWork,
-) -> Result<Start, Refusal> {
+) -> Result<Planned, Refusal> {
     if request.overrides().is_present() {
         return Err("override_after_create".into());
     }
@@ -404,8 +408,64 @@ fn continue_persistent(
         .map_err(|_| "host_failure")?
         .instructions()
         .to_owned();
-    Ok(Start {
+    Ok(Planned {
         child_id: child_id.to_owned(),
+        work,
+        instructions,
+        runner: Runner::Existing(runtime),
+        status,
+    })
+}
+
+fn publish(state: &mut State, planned: Planned, before: &Registry) -> Result<Start, Refusal> {
+    state
+        .save()
+        .map_err(|failure| Refusal::Store(failure.code))?;
+    let opened = open(state, planned);
+    if opened.is_err() {
+        state.registry = before.clone();
+        let _ = state.save();
+    }
+    opened
+}
+
+fn open(state: &mut State, planned: Planned) -> Result<Start, Refusal> {
+    let Planned {
+        child_id,
+        work,
+        instructions,
+        runner,
+        status,
+    } = planned;
+    let runtime = match runner {
+        Runner::Existing(runtime) => runtime,
+        Runner::Fresh(fresh) => {
+            let FreshChild {
+                mut runtime,
+                settings,
+                named,
+            } = *fresh;
+            if let Some(store) = &state.store {
+                let record = store
+                    .start_child(&child_id, &settings)
+                    .map_err(|failure| Refusal::Store(failure.code))?;
+                runtime = runtime.saved(&child_id, record);
+            }
+            let runtime = Arc::new(tokio::sync::Mutex::new(runtime));
+            if named {
+                state.named.insert(
+                    child_id.clone(),
+                    NamedChild {
+                        runtime: Arc::clone(&runtime),
+                        status: status.clone(),
+                    },
+                );
+            }
+            runtime
+        }
+    };
+    Ok(Start {
+        child_id,
         work,
         instructions,
         runtime,

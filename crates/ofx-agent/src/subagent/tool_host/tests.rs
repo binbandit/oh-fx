@@ -379,7 +379,7 @@ pub(super) fn succeeded(result: &str) -> ToolOutput {
     ))
 }
 
-fn rejected(code: &str) -> ToolOutput {
+pub(super) fn rejected(code: &str) -> ToolOutput {
     ToolOutput::failure(format!(
         r#"{{"ok":false,"result":null,"error_code":"{code}"}}"#
     ))

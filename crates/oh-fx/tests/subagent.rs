@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -592,6 +593,7 @@ fn session_dirs(home: &Home) -> Vec<PathBuf> {
     fs::read_dir(home.root.join("data/oh-fx/sessions"))
         .expect("the sessions directory")
         .map(|entry| entry.expect("an entry").path())
+        .filter(|path| path.is_dir())
         .collect()
 }
 
@@ -666,4 +668,36 @@ fn a_named_agent_is_saved_as_its_own_session_beside_its_parent() {
         "oh-fx ask: subagent child sessions cannot be resumed directly; message the named agent from its parent session\n"
     );
     assert_eq!(server.requests().len(), 4);
+}
+
+#[test]
+fn a_child_whose_admission_cannot_be_saved_leaves_no_session_behind() {
+    let server = FakeServer::start([
+        text("hello back"),
+        delegate(
+            "call_1",
+            &json!({"action": "message", "agent": "reviewer", "message": "review"}),
+        ),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let first = home.ask(&["ask", "hello"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let parent = session_dirs(&home).pop().expect("the parent session");
+    let blocked = parent.join("subagent/children.json");
+    fs::create_dir_all(&blocked).expect("block the registry");
+    for dir in [parent.join("subagent"), blocked] {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("keep it private");
+    }
+    let output = home.ask(&["ask", "--resume", "last", "review"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "parent done");
+    assert_eq!(session_dirs(&home), [parent]);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        tool_result(&requests[2]).contains("tool_execution_failed"),
+        "{}",
+        tool_result(&requests[2])
+    );
 }

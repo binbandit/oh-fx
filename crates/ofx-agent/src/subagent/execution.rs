@@ -100,8 +100,11 @@ pub(crate) fn system_prompt(base: &str, instructions: &str) -> String {
 }
 
 fn work_outcome(report: TurnReport, partial: String, cancelled: bool) -> WorkOutcome {
+    let unsaved = matches!(report.failure, Some(TurnFailure::Persistence(_)));
     let outcome = if cancelled {
         Outcome::Cancelled
+    } else if unsaved {
+        Outcome::Failed
     } else {
         match report.outcome {
             TurnOutcome::Completed => Outcome::Completed,
@@ -112,6 +115,9 @@ fn work_outcome(report: TurnReport, partial: String, cancelled: bool) -> WorkOut
     let failure =
         (outcome == Outcome::Failed).then(|| turn_failure_diagnostic(report.failure.as_ref()));
     let text = match report.outcome {
+        TurnOutcome::Completed if unsaved => {
+            (!report.final_text.is_empty()).then_some(report.final_text)
+        }
         TurnOutcome::Completed => Some(report.final_text),
         TurnOutcome::Interrupted | TurnOutcome::Failed => (!partial.is_empty()).then_some(partial),
     };

@@ -5,7 +5,7 @@ use ofx_config::PrivateDir;
 use crate::session_codec::{SessionMetadata, SessionPreferences};
 use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
-use crate::session_log::managed_file::lock_with_deadline;
+use crate::session_log::managed_file::{lock_with_deadline, remove_created_dir};
 use crate::session_log::{WritableSession, now_ms, start_session};
 
 pub(crate) const CONTROL_DIR: &str = "subagent";
@@ -67,13 +67,24 @@ impl ChildSessions {
                 subagent_child: true,
             },
         )?;
+        match self.mark_owner(&session) {
+            Ok(()) => Ok(session),
+            Err(error) => {
+                drop(session);
+                remove_created_dir(&self.sessions, id);
+                Err(error)
+            }
+        }
+    }
+
+    fn mark_owner(&self, session: &WritableSession) -> Result<(), SessionError> {
         let marker = serde_json::to_vec(&OwnerMarker {
             schema_version: 1,
             parent_id: &self.parent_id,
         })
         .map_err(|_| SessionError::SessionStartFailed)?;
         session.control_dir()?.replace(OWNER_FILE, &marker)?;
-        Ok(session)
+        Ok(())
     }
 
     pub fn load_registry(&self) -> Result<Option<Vec<u8>>, SessionError> {

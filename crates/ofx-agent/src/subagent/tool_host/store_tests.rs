@@ -7,7 +7,7 @@ use ofx_contract::{
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::tests::{Harness, Script, message, run, succeeded};
+use super::tests::{Harness, Script, message, rejected, run, succeeded};
 use super::*;
 
 #[derive(Default)]
@@ -18,16 +18,27 @@ struct Store {
     started: Mutex<Vec<(String, ChildSettings)>>,
     records: Mutex<Vec<Arc<Record>>>,
     refuse_saves: Mutex<bool>,
+    attempts: Mutex<usize>,
+    refused_attempt: Mutex<Option<usize>>,
+    unsaved_turns: Mutex<bool>,
 }
 
 #[derive(Default)]
 struct Record {
     works: Mutex<Vec<String>>,
     turns: Arc<Mutex<Vec<String>>>,
+    unsaved: bool,
 }
 
 struct Log {
     turns: Arc<Mutex<Vec<String>>>,
+    unsaved: bool,
+}
+
+fn commit_failed() -> LogFailure {
+    LogFailure {
+        code: "SessionCommitFailed".to_owned(),
+    }
 }
 
 impl Store {
@@ -56,10 +67,12 @@ impl ChildStore for Store {
     }
 
     fn save_registry(&self, registry: &[u8]) -> Result<(), LogFailure> {
-        if *self.refuse_saves.lock().unwrap() {
-            return Err(LogFailure {
-                code: "SessionCommitFailed".to_owned(),
-            });
+        let mut attempts = self.attempts.lock().unwrap();
+        *attempts += 1;
+        if *self.refuse_saves.lock().unwrap()
+            || *self.refused_attempt.lock().unwrap() == Some(*attempts)
+        {
+            return Err(commit_failed());
         }
         self.saved.lock().unwrap().push(registry.to_vec());
         Ok(())
@@ -74,7 +87,10 @@ impl ChildStore for Store {
             .lock()
             .unwrap()
             .push((child_id.to_owned(), settings.clone()));
-        let record = Arc::new(Record::default());
+        let record = Arc::new(Record {
+            unsaved: *self.unsaved_turns.lock().unwrap(),
+            ..Record::default()
+        });
         self.records.lock().unwrap().push(Arc::clone(&record));
         Ok(record)
     }
@@ -88,6 +104,7 @@ impl ChildRecord for Record {
     fn log(&self) -> Box<dyn ConversationLog> {
         Box::new(Log {
             turns: Arc::clone(&self.turns),
+            unsaved: self.unsaved,
         })
     }
 }
@@ -98,6 +115,9 @@ impl ConversationLog for Log {
     }
 
     fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure> {
+        if self.unsaved {
+            return Err(commit_failed());
+        }
         self.turns.lock().unwrap().push(turn.user.to_owned());
         Ok(())
     }
@@ -261,4 +281,101 @@ async fn an_unbound_host_keeps_its_children_in_memory() {
         )
         .await;
     assert_eq!(output, succeeded("done"));
+}
+
+fn bound(scripts: Vec<Script>) -> (Harness, Arc<Store>) {
+    let harness = Harness::new(scripts);
+    let store = Store::new("parent");
+    harness
+        .host
+        .bind(Some(Arc::clone(&store) as Arc<dyn ChildStore>));
+    (harness, store)
+}
+
+#[tokio::test]
+async fn a_continuation_that_cannot_be_saved_keeps_the_named_child_and_its_conversation() {
+    let (harness, store) = bound(vec![Script::Reply("first"), Script::Reply("second")]);
+    assert_eq!(
+        harness
+            .run("call-1", message("reviewer", None, "one"))
+            .await,
+        succeeded("first")
+    );
+    *store.refuse_saves.lock().unwrap() = true;
+    assert_eq!(
+        harness
+            .run("call-2", message("reviewer", None, "two"))
+            .await,
+        ToolOutput::failure(format_tool_execution_error_json(
+            "subagent",
+            "SessionCommitFailed"
+        ))
+    );
+    *store.refuse_saves.lock().unwrap() = false;
+    assert_eq!(
+        harness
+            .run("call-3", message("reviewer", None, "three"))
+            .await,
+        succeeded("second")
+    );
+    assert_eq!(
+        harness.provider.seen()[1].messages,
+        vec![
+            ChatMessage::user("one"),
+            ChatMessage::Assistant {
+                content: Some("first".to_owned()),
+                tool_calls: Vec::new(),
+                provider_replay: None,
+            },
+            ChatMessage::user("three"),
+        ]
+    );
+    assert_eq!(store.started.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn work_whose_finish_cannot_be_saved_reports_its_state_unavailable() {
+    let (harness, store) = bound(vec![Script::Reply("done")]);
+    *store.refused_attempt.lock().unwrap() = Some(2);
+    assert_eq!(
+        harness.run("call-1", run("inspect")).await,
+        rejected("state_unavailable")
+    );
+    assert_eq!(
+        ids(&store.last_saved()),
+        [("parent-child-1".to_owned(), "running".to_owned())]
+    );
+    assert_eq!(
+        harness.run("call-1", run("inspect")).await,
+        rejected("state_unavailable")
+    );
+}
+
+#[tokio::test]
+async fn a_reply_the_childs_log_cannot_save_fails_the_work_and_keeps_the_reply() {
+    let (harness, store) = bound(vec![Script::Reply("fixed it")]);
+    *store.unsaved_turns.lock().unwrap() = true;
+    assert_eq!(
+        harness.run("call-1", run("fix it")).await,
+        ToolOutput::failure(
+            SubagentResult {
+                result: Some(
+                    "Subagent failed: agent_turn_failed: SessionCommitFailed. Earlier tool calls may have completed; their effects are not rolled back.\n\nPartial result:\nfixed it"
+                ),
+                ..SubagentResult::failure("child_failed")
+            }
+            .encode()
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_new_child_whose_admission_cannot_be_saved_starts_no_session() {
+    let (harness, store) = bound(vec![Script::Reply("fresh")]);
+    *store.refuse_saves.lock().unwrap() = true;
+    harness
+        .run("call-1", message("reviewer", None, "review"))
+        .await;
+    harness.run("call-2", run("inspect")).await;
+    assert!(store.started.lock().unwrap().is_empty());
 }
