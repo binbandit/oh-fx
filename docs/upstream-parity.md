@@ -29,7 +29,7 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 
 ## 34f1ed1..6bdd497
 
-Rows marked `defer:startup-probe` and `defer:ultrafast-cli` change behaviour oh-fx already ports. Each is synced by its own pull request in this pass, which moves its rows to `ported`.
+Rows marked `defer:ultrafast-cli` change behaviour oh-fx already ports. Each is synced by its own pull request in this pass, which moves its rows to `ported`.
 
 | PR | Merge | Title | Status | oh-fx | Note |
 |---|---|---|---|---|---|
@@ -49,7 +49,7 @@ Rows marked `defer:startup-probe` and `defer:ultrafast-cli` change behaviour oh-
 | #1124 | `0a8a391` | Keep a running step's text when fx crashes on sessions v2 | `defer:sessions-v2` | future session store | The running save writes the issuing message's text as an `assistant_running` item with its calls. |
 | #1096 | `335eef8` | Let models recover oversized images | `defer:images` | future image attachments | Before each request, images that fit (8000 pixels per side for up to 20 images, 2000 for more, and 5 MiB encoded each) are sent and the rest are replaced by recovery guidance naming the source path, instead of being downscaled; history keeps file-backed originals until request assembly; pasted `/image` paths become attachments; the history replay cache format advances. oh-fx's `read_file` returns no images yet, so its text results are unchanged. |
 | #1096 | `335eef8` | (same) | `n/a` | none | SDK image recovery through host tools and request-flow test fixtures. |
-| #1127 | `0994a05` | Draw the first frame before slow startup work | `defer:startup-probe` | `ofx-tui` | See [Startup probe](#startup-probe). |
+| #1127 | `0994a05` | Draw the first frame before slow startup work | `ported` | `ofx-tui` | The startup OSC 11 background query is followed by a device attributes query, and the probe ends when that reply arrives, so a terminal that ignores OSC 11 costs one round trip; the 200 ms wait remains for terminals that answer neither. The primary device attributes parser moves from the theme monitor to `theme_protocol`, where the startup probe shares it. |
 | #1127 | `0994a05` | (same) | `defer:interactive` | future interactive startup | The first frame is drawn before a Keychain login is read, before skills are discovered and before the other sign-in sources are checked; a prompt sent first waits for the login; the full-transcript session details show `skills: loading`. oh-fx's event loop waits on its descriptors instead of polling, so upstream's 1 ms first-input wait has no counterpart. |
 | #1127 | `0994a05` | (same) | `n/a` | none | `benchmarks/first_frame.py`, AGENTS.md and CONTRIBUTING.md text, and the single-threaded WebAssembly credential path. |
 | #1129 | `d3c28f3` | Title a v2 session whose first turn crashed | `defer:sessions-v2` | future session store | A resumed v2 session without a stored title writes the title its first prompt gives with its next turn end. |
@@ -150,10 +150,6 @@ The private result reader supports bounded raw pages, and storage no longer appl
 - **ACP:** ACP applies the auto compaction percent.
 - **Vercel AI Gateway:** `model.zig` sends a failed or empty summary once more to another model family.
 - **Trace:** `trace.zig`'s ring and the compaction trace lines.
-
-### Startup probe
-
-#1127 sends the startup OSC 11 background query with a device attributes query behind it and ends the probe when that reply arrives, so a terminal that ignores OSC 11 costs one round trip; the 200 ms wait remains for terminals that answer neither. The primary device attributes parser moves from `theme_monitor.zig` to `theme_protocol.zig`.
 
 ### Ultrafast
 

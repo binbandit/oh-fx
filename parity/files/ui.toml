@@ -354,20 +354,20 @@ note = "Native mode, layout and lifecycle exist; upstream alternate-screen mouse
 [[file]]
 upstream = "src/ui/terminal/theme_detection.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/terminal/theme_detection.rs"]
-note = "Light/dark pins from OH_FX_THEME or the theme setting, background probe and COLORFGBG fallback exist; upstream named user theme selection is absent. #1127 ends the startup background probe at a device-attributes fence; not yet synced."
+modules = ["crates/ofx-tui/src/terminal/theme_detection.rs", "crates/ofx-tui/src/terminal/shell_runtime.rs"]
+note = "Light/dark pins from OH_FX_THEME or the theme setting, the background probe that ends at its device-attributes fence and COLORFGBG fallback exist; upstream named user theme selection is absent."
 
 [[file]]
 upstream = "src/ui/terminal/theme_monitor.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/terminal/theme_monitor.rs"]
-note = "Fenced background queries, deferred bytes and timeout handling exist; upstream deferred-input dispatch consumption receipt and trace diagnostics are absent. #1127 moves its device-attributes parser into theme_protocol; not yet synced."
+note = "Fenced background queries, deferred bytes and timeout handling exist; upstream deferred-input dispatch consumption receipt and trace diagnostics are absent."
 
 [[file]]
 upstream = "src/ui/terminal/theme_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/terminal/theme_protocol.rs"]
-note = "OSC 11 and true-color handling exist; COLORFGBG background parsing rejects upstream decimal digit separators such as 1_5 and accepts +15, which upstream rejects. #1127 moves the device-attributes parser here; not yet synced."
+note = "OSC 11, primary device attributes and true-color handling exist; COLORFGBG background parsing rejects upstream decimal digit separators such as 1_5 and accepts +15, which upstream rejects."
 
 [[file]]
 upstream = "src/ui/terminal/wasm_terminal.zig"
