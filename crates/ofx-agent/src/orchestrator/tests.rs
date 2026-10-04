@@ -2970,3 +2970,338 @@ async fn notices_from_a_dynamic_tool_refresh_are_reported_once_in_the_turn() {
     let (_, events) = run(&mut agent, "second").await;
     assert!(notices(&events).is_empty());
 }
+
+struct StreamStartTool {
+    inner: Arc<dyn Tool>,
+    presentation: Option<ofx_contract::CallPresentation>,
+    preparations: Arc<AtomicUsize>,
+}
+
+struct StreamStartBomb {
+    inner: Arc<dyn Tool>,
+}
+
+impl Tool for StreamStartBomb {
+    fn spec(&self) -> &ToolSpec {
+        self.inner.spec()
+    }
+
+    fn provisional_presentation(&self) -> Option<ofx_contract::CallPresentation> {
+        panic::panic_any(Bomb)
+    }
+
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        self.inner.prepare(arguments)
+    }
+}
+
+#[tokio::test]
+async fn streamed_presentation_panic_payloads_stay_contained() {
+    let provider = FakeProvider::new(vec![Script::Reply(
+        vec![streamed_start("call", "echo")],
+        completion(Some("after"), Vec::new(), FinishReason::Stop),
+    )]);
+    let mut agent = new_agent(
+        provider,
+        vec![Arc::new(StreamStartBomb { inner: echo_tool() })],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+}
+
+#[tokio::test]
+async fn whitespace_before_streamed_tool_start_does_not_insert_a_boundary() {
+    let provider = FakeProvider::new(vec![Script::Reply(
+        vec![
+            StreamEvent::TextDelta {
+                text: "  ".to_owned(),
+            },
+            streamed_start("call", "echo"),
+            StreamEvent::TextDelta {
+                text: "More.".to_owned(),
+            },
+        ],
+        completion(Some("  More."), Vec::new(), FinishReason::Stop),
+    )]);
+    let mut agent = new_agent(
+        provider,
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(assistant_text(&events), "  More.");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+}
+
+impl Tool for StreamStartTool {
+    fn spec(&self) -> &ToolSpec {
+        self.inner.spec()
+    }
+
+    fn provisional_presentation(&self) -> Option<ofx_contract::CallPresentation> {
+        self.presentation
+    }
+
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        self.preparations.fetch_add(1, Ordering::SeqCst);
+        self.inner.prepare(arguments)
+    }
+}
+
+fn streamed_start(id: &str, name: &str) -> StreamEvent {
+    StreamEvent::ToolCallStarted {
+        call_id: ToolCallId::new(id),
+        tool_name: name.to_owned(),
+    }
+}
+
+fn stream_start_tool(activity: ToolActivity, preparations: Arc<AtomicUsize>) -> Arc<dyn Tool> {
+    Arc::new(StreamStartTool {
+        inner: echo_tool(),
+        presentation: Some(ofx_contract::CallPresentation {
+            activity,
+            action_label: "Custom activity",
+            completed_label: "Custom activity completed",
+            label_argument: "path",
+            label_default: "file",
+        }),
+        preparations,
+    })
+}
+
+#[tokio::test]
+async fn streamed_starts_use_registry_metadata_without_preparing_or_executing() {
+    for activity in [ToolActivity::Read, ToolActivity::List, ToolActivity::Open] {
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let provider = FakeProvider::new(vec![Script::Reply(
+            vec![
+                streamed_start("", "echo"),
+                streamed_start("unknown", "missing"),
+                streamed_start("read", "echo"),
+            ],
+            completion(None, Vec::new(), FinishReason::Stop),
+        )]);
+        let mut agent = new_agent(
+            provider,
+            vec![stream_start_tool(activity, Arc::clone(&preparations))],
+        );
+        let (_, events) = run(&mut agent, "read").await;
+        let starts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::ToolProvisional {
+                    call_id,
+                    action_label,
+                    ..
+                } => Some((call_id.as_str(), action_label.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts, [("read", "Custom activity")]);
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            UiEvent::ToolStarted { .. } | UiEvent::ToolFinished { .. }
+        )));
+    }
+}
+
+#[tokio::test]
+async fn streamed_starts_honor_the_metadata_supplied_by_the_registered_tool() {
+    for activity in [ToolActivity::Write, ToolActivity::Edit, ToolActivity::Ask] {
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let provider = FakeProvider::new(vec![Script::Reply(
+            vec![streamed_start("call", "echo")],
+            completion(None, Vec::new(), FinishReason::Stop),
+        )]);
+        let mut agent = new_agent(
+            provider,
+            vec![stream_start_tool(activity, Arc::clone(&preparations))],
+        );
+        let (_, events) = run(&mut agent, "read").await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::ToolProvisional { action_label, .. } if action_label == "Custom activity"
+        )));
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn known_streamed_starts_end_visible_text_before_provisional() {
+    let provider = FakeProvider::new(vec![Script::Reply(
+        vec![
+            StreamEvent::TextDelta {
+                text: "Reading".to_owned(),
+            },
+            streamed_start("call", "echo"),
+        ],
+        completion(Some("Reading"), Vec::new(), FinishReason::Stop),
+    )]);
+    let mut agent = new_agent(
+        provider,
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (_, events) = run(&mut agent, "read").await;
+    let start = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+        .unwrap();
+    assert!(matches!(
+        &events[start - 1],
+        UiEvent::AssistantBoundary { .. }
+    ));
+    assert_eq!(assistant_text(&events), "Reading");
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_local_streamed_starts_retry_without_executing_the_call() {
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![streamed_start("abandoned", "echo")],
+            failure(ProviderErrorKind::Unavailable, "Unavailable"),
+        ),
+        text_reply("recovered"),
+    ]);
+    let mut agent = new_agent(
+        Arc::clone(&provider),
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::clone(&preparations),
+        )],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(provider.requests()[1], provider.requests()[0]);
+    assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, UiEvent::Recovery { .. }))
+    );
+}
+
+#[tokio::test]
+async fn unknown_starts_preserve_text_and_known_ineligible_starts_end_it_once() {
+    for (tool_name, expected_boundaries) in [("missing", 0), ("echo", 1)] {
+        let provider = FakeProvider::new(vec![Script::Reply(
+            vec![
+                StreamEvent::TextDelta {
+                    text: "text".to_owned(),
+                },
+                streamed_start("one", tool_name),
+                streamed_start("two", tool_name),
+            ],
+            completion(Some("text"), Vec::new(), FinishReason::Stop),
+        )]);
+        let mut agent = new_agent(provider, vec![echo_tool()]);
+        let (_, events) = run(&mut agent, "read").await;
+        assert_eq!(assistant_text(&events), "text");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+                .count(),
+            expected_boundaries
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+        );
+    }
+}
+
+#[tokio::test]
+async fn parallel_streamed_starts_do_not_add_repeated_text_boundaries() {
+    let provider = FakeProvider::new(vec![Script::Reply(
+        vec![
+            StreamEvent::TextDelta {
+                text: "text".to_owned(),
+            },
+            streamed_start("one", "echo"),
+            streamed_start("two", "echo"),
+        ],
+        completion(Some("text"), Vec::new(), FinishReason::Stop),
+    )]);
+    let mut agent = new_agent(
+        provider,
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (_, events) = run(&mut agent, "read").await;
+    assert_eq!(assistant_text(&events), "text");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn failed_started_streams_never_prepare_incomplete_arguments() {
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let provider = FakeProvider::new(vec![Script::Fail(
+        vec![streamed_start("incomplete", "echo")],
+        failure(ProviderErrorKind::Protocol, "StreamFailed"),
+    )]);
+    let mut agent = new_agent(
+        provider,
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::clone(&preparations),
+        )],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+            .count(),
+        1
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        UiEvent::ToolStarted { .. } | UiEvent::ToolFinished { .. }
+    )));
+}
