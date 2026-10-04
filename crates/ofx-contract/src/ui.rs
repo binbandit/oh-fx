@@ -1,7 +1,7 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
 use crate::model_capabilities::ModelCapabilities;
 use crate::permission_gate::{
-    ApprovalDecision, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
+    ApprovalAnswer, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
 };
 use crate::session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionScope};
 use crate::settings_catalog::{SettingId, SettingsSnapshot};
@@ -310,6 +310,10 @@ pub enum UiEvent {
         prompt: u64,
         text: String,
     },
+    ApprovalFeedback {
+        turn_id: TurnId,
+        text: String,
+    },
     ApprovalRequested {
         turn_id: TurnId,
         request: Box<ApprovalRequest>,
@@ -447,7 +451,7 @@ pub enum UiCommand {
     },
     Approval {
         request_id: RequestId,
-        decision: ApprovalDecision,
+        answer: ApprovalAnswer,
     },
     QuestionAnswered {
         request_id: RequestId,

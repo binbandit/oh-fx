@@ -107,11 +107,19 @@ fn view_after(file: &FileApproval, frame: PanelFrame<'_>, change_seen: bool) -> 
         &theme(),
         file,
         &layout,
-        &file.choices(),
-        0,
+        choosing(&file.choices()),
         frame,
         change_seen,
     )
+}
+
+fn choosing(choices: &[Choice]) -> Choosing<'_> {
+    Choosing {
+        choices,
+        selected: 0,
+        amendable: false,
+        amending: None,
+    }
 }
 
 fn texts(rows: &[Row]) -> Vec<String> {
@@ -192,8 +200,7 @@ fn review_rows_paint_the_text_and_accent_only_the_number_and_sign() {
         &pinned,
         &file,
         &layout,
-        &file.choices(),
-        0,
+        choosing(&file.choices()),
         frame(80, 22),
         false,
     )

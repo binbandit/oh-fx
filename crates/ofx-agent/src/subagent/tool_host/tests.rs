@@ -5,13 +5,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
-    Admission, ApplicableTarget, ApprovalDecision, ApprovalOrigin, AutoCompactPercent,
-    CallDescription, ChatMessage, Completion, Concurrency, FileChange, FileMutation,
-    FileMutationState, FinishReason, ModelProvider, ModelRequest, PathAccess, PermissionGate,
-    PreparedCall, ProposedFileChange, ProviderError, ProviderErrorKind, ReviewRequest,
-    ReviewVerdict, Reviewed, RootUserRequests, StreamEvent, StreamSink, SubagentRequestInput,
-    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolCall, ToolCallId, ToolEffect,
-    ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
+    Admission, ApplicableTarget, ApprovalAnswer, ApprovalDecision, ApprovalOrigin,
+    AutoCompactPercent, CallDescription, ChatMessage, Completion, Concurrency, FileChange,
+    FileMutation, FileMutationState, FinishReason, ModelProvider, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProposedFileChange, ProviderError, ProviderErrorKind,
+    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, StreamEvent, StreamSink,
+    SubagentRequestInput, SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolCall,
+    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -208,7 +208,8 @@ pub(super) struct Agents {
     pub(super) approvals: Approvals,
     pub(super) requested: Mutex<Vec<ApprovalRequest>>,
     turns: Mutex<Vec<Option<TurnId>>>,
-    decisions: Mutex<VecDeque<ApprovalDecision>>,
+    decisions: Mutex<VecDeque<ApprovalAnswer>>,
+    feedback: Mutex<Vec<(Option<TurnId>, String)>>,
     pub(super) asked: Notify,
     issued: AtomicUsize,
     released: Arc<AtomicUsize>,
@@ -291,6 +292,10 @@ impl ChildAgents for Agents {
     fn root_user_context(&self, requests: &RootUserRequests) -> String {
         format!("current_request: {}\n", requests.current)
     }
+
+    fn approval_feedback(&self, turn_id: Option<TurnId>, text: String) {
+        self.feedback.lock().unwrap().push((turn_id, text));
+    }
 }
 
 pub(super) struct Harness {
@@ -318,6 +323,7 @@ impl Harness {
             requested: Mutex::new(Vec::new()),
             turns: Mutex::new(Vec::new()),
             decisions: Mutex::new(VecDeque::new()),
+            feedback: Mutex::new(Vec::new()),
             asked: Notify::new(),
             issued: AtomicUsize::new(0),
             released: Arc::new(AtomicUsize::new(0)),
@@ -768,7 +774,7 @@ async fn a_childs_approval_is_raised_as_the_subagents_request_and_its_answer_app
         .decisions
         .lock()
         .unwrap()
-        .extend([ApprovalDecision::Once, ApprovalDecision::Deny]);
+        .extend([ApprovalDecision::Once.into(), ApprovalDecision::Deny.into()]);
     assert_eq!(
         harness
             .run("call-1", message("prober", None, "probe"))
@@ -801,6 +807,35 @@ async fn a_childs_approval_is_raised_as_the_subagents_request_and_its_answer_app
 }
 
 #[tokio::test]
+async fn feedback_given_with_a_childs_approval_reaches_the_parents_transcript() {
+    let harness = Harness::new(vec![Script::Probe, Script::Reply("probed it")]);
+    harness
+        .agents
+        .decisions
+        .lock()
+        .unwrap()
+        .push_back(ApprovalAnswer {
+            decision: ApprovalDecision::Once,
+            feedback: Some("then summarize it".to_owned()),
+        });
+    assert_eq!(
+        harness
+            .run("call-1", message("prober", None, "probe"))
+            .await,
+        succeeded("probed it")
+    );
+    assert_eq!(
+        *harness.agents.feedback.lock().unwrap(),
+        [(Some(PARENT_TURN), "then summarize it".to_owned())]
+    );
+    let seen = harness.provider.seen();
+    assert_eq!(
+        seen[1].messages.last(),
+        Some(&ChatMessage::user("then summarize it"))
+    );
+}
+
+#[tokio::test]
 async fn a_childs_file_approval_carries_the_change_for_the_parents_review() {
     let harness = Harness::new(vec![Script::Edit, Script::Reply("edited it")]);
     harness
@@ -808,7 +843,7 @@ async fn a_childs_file_approval_carries_the_change_for_the_parents_review() {
         .decisions
         .lock()
         .unwrap()
-        .push_back(ApprovalDecision::Once);
+        .push_back(ApprovalDecision::Once.into());
     assert_eq!(
         harness
             .run("call-1", message("editor", None, "edit the notes"))
@@ -1165,6 +1200,8 @@ impl ChildAgents for IntentChildren {
     fn root_user_context(&self, _requests: &RootUserRequests) -> String {
         String::new()
     }
+
+    fn approval_feedback(&self, _turn_id: Option<TurnId>, _text: String) {}
 }
 
 fn intent_host(provider: &Arc<ScriptedProvider>, gate: &Arc<IntentGate>) -> Arc<SubagentHost> {
