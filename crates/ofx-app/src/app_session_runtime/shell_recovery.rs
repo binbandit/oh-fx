@@ -6,6 +6,8 @@ const CONTINUES_AUTOMATICALLY: &str = "model response recovery paused and contin
 const CONTINUES_WITH_UNCERTAIN_TOOL: &str = "model response recovery paused and continues automatically; inspect the uncertain tool state if anything looks wrong";
 const NOT_RESTARTED: &str = "oh-fx quit unexpectedly while this response was recovering, so it was not restarted. Send \"continue\" to retry it, or a new message to move on.";
 pub(crate) const NOT_CONTINUED: &str = "the interrupted response could not continue automatically; it will try again on the next resume";
+pub(crate) const SIGN_IN_TO_CONTINUE: &str =
+    "sign in to let the interrupted response continue automatically";
 
 pub(super) struct ShellRecovery {
     pub(super) entries: Vec<HistoryEntry>,

@@ -278,6 +278,7 @@ fn options() -> ShellOptions {
         providers: vec!["codex".to_owned(), "local".to_owned(), "portkey".to_owned()],
         permission_mode: PermissionMode::Auto,
         full_access_warning: false,
+        login_missing: false,
         workspace_label: "workspace".to_owned(),
         startup_scrollback: true,
         commands: vec![

@@ -226,6 +226,7 @@ fn run_a_codex_session(home: &Path) -> ! {
             models: format!("{catalog}/backend-api/codex/models"),
             client_version: format!("{catalog}/@openai/codex/latest"),
         },
+        grok: ofx_auth::GrokEndpoints::default(),
     };
     let setup = runtime
         .block_on(profile.connect_interactive(
@@ -573,6 +574,7 @@ fn shell_options() -> ShellOptions {
         providers: Vec::new(),
         permission_mode: PermissionMode::Auto,
         full_access_warning: false,
+        login_missing: false,
         workspace_label: "workspace".to_owned(),
         startup_scrollback: true,
         commands: Vec::new(),
