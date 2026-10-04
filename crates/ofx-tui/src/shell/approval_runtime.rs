@@ -258,7 +258,9 @@ impl Shell<'_> {
                 self.hold_yes();
                 self.handle_paste(outcome.clone());
             }
-            InputEvent::TextDropped(_) => {}
+            InputEvent::TextDropped(_)
+            | InputEvent::NativeClearProbe
+            | InputEvent::NativeClearDetected => {}
         }
         Ok(())
     }

@@ -85,7 +85,9 @@ impl Shell<'_> {
         if signals.resized {
             self.handle_resize_signal(now_ms);
         }
-        self.apply_pending_resize(now_ms);
+        if !self.input.native_clear_busy() {
+            self.apply_pending_resize(now_ms);
+        }
         self.drain_ui_events();
         self.settle_clipboard();
         if self.collect_file_picker_facts() {
@@ -158,6 +160,9 @@ impl Shell<'_> {
         Ok(InputRead::StillReadable)
     }
 }
+
+#[cfg(test)]
+mod native_clear;
 
 #[cfg(test)]
 mod tests {

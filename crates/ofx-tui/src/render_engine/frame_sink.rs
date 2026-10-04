@@ -28,6 +28,8 @@ pub(crate) trait FrameSink {
     fn resize(&mut self, rows: u16, cols: u16);
 
     fn live_row(&self, index: usize) -> u16;
+
+    fn cursor_row(&self) -> Option<u16>;
 }
 
 pub(crate) struct LiveRegionRenderer {
@@ -244,6 +246,11 @@ impl FrameSink for LiveRegionRenderer {
 
     fn live_row(&self, index: usize) -> u16 {
         u16::try_from(self.top + self.padding + index).unwrap_or(u16::MAX)
+    }
+
+    fn cursor_row(&self) -> Option<u16> {
+        let (row, _) = self.cursor.filter(|_| self.valid)?;
+        u16::try_from(row).ok()
     }
 }
 
