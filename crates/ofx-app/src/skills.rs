@@ -3,7 +3,8 @@ use std::fs;
 use std::future;
 use std::panic;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::Duration;
 
 use ofx_agent::{SkillContext, SkillContextFailure, SkillContextProvider};
 use ofx_config::{ContextLimitName, ContextLimitSource, ContextLimits, ProfilePaths, Settings};
@@ -96,6 +97,7 @@ struct Shared {
     tool: Arc<SkillTool>,
     search: Arc<CapabilitySearch>,
     current: Mutex<Arc<SkillDiscovery>>,
+    installations: Arc<Installations>,
 }
 
 impl HostSkills {
@@ -140,8 +142,13 @@ impl HostSkills {
                 tool,
                 search,
                 current: Mutex::new(Arc::new(found)),
+                installations: Arc::new(Installations::default()),
             }),
         }
+    }
+
+    pub(crate) fn installations(&self) -> Arc<Installations> {
+        Arc::clone(&self.shared.installations)
     }
 
     pub(crate) fn tool(&self) -> Arc<SkillTool> {
@@ -166,6 +173,52 @@ impl HostSkills {
             .discovery
             .load_visible_skills(&self.shared.policy);
         *self.shared.lock() = Arc::new(found);
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Installations {
+    pending: Mutex<usize>,
+    drained: Condvar,
+}
+
+pub(crate) struct SkillInstall {
+    installations: Arc<Installations>,
+}
+
+impl Installations {
+    pub(crate) fn start(self: &Arc<Self>) -> SkillInstall {
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        SkillInstall {
+            installations: Arc::clone(self),
+        }
+    }
+
+    pub(crate) fn wait_for_running(&self, grace: Duration) -> bool {
+        let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if *pending == 0 {
+            return false;
+        }
+        drop(
+            self.drained
+                .wait_timeout_while(pending, grace, |pending| *pending > 0)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        true
+    }
+}
+
+impl Drop for SkillInstall {
+    fn drop(&mut self) {
+        let mut pending = self
+            .installations
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *pending -= 1;
+        if *pending == 0 {
+            self.installations.drained.notify_all();
+        }
     }
 }
 
