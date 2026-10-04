@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use ofx_contract::{
-    CallDescription, CompactionActivity, Notice, NoticeTone, ToolActivity, TurnId, TurnOutcome,
-    UiCommand, UiEvent,
+    CallDescription, CompactionActivity, CompactionEnd, Notice, NoticeTone, ToolActivity, TurnId,
+    TurnOutcome, UiCommand, UiEvent,
 };
 
 use super::leading_whitespace::LeadingWhitespace;
@@ -190,6 +190,11 @@ impl Shell<'_> {
             UiEvent::HelpRequested => self.help_requested(),
             UiEvent::StatsRequested => self.stats_requested(),
             UiEvent::CompactionActivity { activity } => self.compaction_activity(activity),
+            UiEvent::TurnCompaction { turn_id, activity } => {
+                if self.is_visible_turn(turn_id) {
+                    self.turn_compaction(turn_id, activity);
+                }
+            }
             UiEvent::SkillsMenu { items, focus } => self.open_skills_menu(items, &focus),
             UiEvent::ConversationCleared { first_kept_prompt } => {
                 self.conversation_cleared(first_kept_prompt);
@@ -249,10 +254,45 @@ impl Shell<'_> {
                 self.compaction = None;
                 self.promote_next();
             }
+            CompactionActivity::Ended(_) if self.turn_compaction_running() => {}
             CompactionActivity::Ended(end) => {
                 self.compaction = Some(CompactionStatus::ended(end, now_ms));
                 self.promote_next();
             }
+        }
+    }
+
+    fn turn_compaction_running(&self) -> bool {
+        self.compaction
+            .is_some_and(|status| status.running() && status.turn().is_some())
+    }
+
+    fn turn_compaction(&mut self, turn_id: TurnId, activity: CompactionActivity) {
+        let now_ms = self.now_ms();
+        self.compaction = match activity {
+            CompactionActivity::Preparing => {
+                Some(CompactionStatus::turn_preparing(turn_id, now_ms))
+            }
+            CompactionActivity::Summarizing => self.compaction.map(|mut status| {
+                status.summarizing();
+                status
+            }),
+            CompactionActivity::Compacted => None,
+            CompactionActivity::Ended(end) => Some(CompactionStatus::ended(end, now_ms)),
+        };
+    }
+
+    fn settle_turn_compaction(&mut self, turn_id: TurnId, outcome: TurnOutcome) {
+        let unsettled = self
+            .compaction
+            .is_some_and(|status| status.running() && status.turn() == Some(turn_id));
+        if unsettled {
+            let end = if outcome == TurnOutcome::Interrupted {
+                CompactionEnd::Cancelled
+            } else {
+                CompactionEnd::Failed
+            };
+            self.compaction = Some(CompactionStatus::ended(end, self.now_ms()));
         }
     }
 
@@ -529,6 +569,7 @@ impl Shell<'_> {
         if was_visible && let Some(turn) = self.turn.take() {
             self.dismiss_approval();
             self.dismiss_question();
+            self.settle_turn_compaction(turn_id, outcome);
             self.finish_visible_turn(turn, outcome);
         }
         self.promote_next();
@@ -589,8 +630,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn cancel_visible_turn_noting(&mut self, entry: Entry) {
-        if self.turn.take().is_none() {
+        let Some(turn) = self.turn.take() else {
             return;
+        };
+        if let Some(turn_id) = turn.turn_id {
+            self.settle_turn_compaction(turn_id, TurnOutcome::Interrupted);
         }
         self.reveal_pending_approval_call();
         self.dismiss_approval();
@@ -711,6 +755,138 @@ mod tests {
 
     fn compaction(activity: CompactionActivity) -> UiEvent {
         UiEvent::CompactionActivity { activity }
+    }
+
+    fn turn_compaction(turn: u64, activity: CompactionActivity) -> UiEvent {
+        UiEvent::TurnCompaction {
+            turn_id: TurnId::new(turn),
+            activity,
+        }
+    }
+
+    fn compacting_turn() -> TestShell {
+        let mut test = TestShell::start();
+        test.submit("go");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.screen();
+        test.advance(3_000);
+        test.deliver(turn_compaction(1, CompactionActivity::Preparing));
+        test
+    }
+
+    #[test]
+    fn an_automatic_compaction_shows_on_the_turn_clock_until_it_succeeds() {
+        let mut test = compacting_turn();
+        let screen = test.screen();
+        assert!(screen.contains("• Preparing compaction (3s)"), "{screen}");
+        assert!(!screen.contains("Thinking"), "{screen}");
+        test.deliver(turn_compaction(1, CompactionActivity::Summarizing));
+        assert!(test.screen().contains("• Compacting (3s)"));
+        test.deliver(turn_compaction(2, CompactionActivity::Compacted));
+        assert!(test.screen().contains("• Compacting (3s)"));
+        test.deliver(turn_compaction(1, CompactionActivity::Compacted));
+        let screen = test.screen();
+        assert!(screen.contains("• Thinking (3s)"), "{screen}");
+        assert!(!screen.contains("ompact"), "{screen}");
+        assert_eq!(test.sent().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_automatic_compaction_keeps_its_feedback_after_the_turn_until_the_next_prompt() {
+        let mut test = compacting_turn();
+        test.deliver(turn_compaction(
+            1,
+            CompactionActivity::Ended(CompactionEnd::Failed),
+        ));
+        test.deliver(finished(1, TurnOutcome::Failed));
+        let screen = test.screen();
+        assert!(
+            screen.contains("Compaction failed. Try /compact again."),
+            "{screen}"
+        );
+        assert!(!test.shell.working());
+        test.submit("next");
+        assert!(!test.screen().contains("Compaction failed"));
+    }
+
+    #[test]
+    fn cancelling_a_turn_during_its_compaction_reports_the_compaction_cancelled() {
+        let mut test = compacting_turn();
+        test.type_bytes(b"\x03");
+        test.step();
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::Cancel {
+                turn_id: TurnId::new(1)
+            })
+        );
+        test.deliver(turn_compaction(
+            1,
+            CompactionActivity::Ended(CompactionEnd::Failed),
+        ));
+        let screen = test.screen();
+        assert!(
+            screen.contains("Compaction cancelled. Try /compact again when ready."),
+            "{screen}"
+        );
+        test.type_bytes(b"\x1b");
+        test.step();
+        test.advance(50);
+        test.step();
+        assert!(!test.screen().contains("Compaction cancelled"));
+    }
+
+    #[test]
+    fn a_rejected_compact_command_leaves_a_running_automatic_compaction_alone() {
+        let mut test = compacting_turn();
+        test.deliver(turn_compaction(1, CompactionActivity::Summarizing));
+        test.submit("/compact");
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::RunCommand {
+                text: "/compact".to_owned()
+            })
+        );
+        test.deliver(compaction(CompactionActivity::Ended(CompactionEnd::Busy)));
+        let screen = test.screen();
+        assert!(screen.contains("• Compacting (3s)"), "{screen}");
+        assert!(!screen.contains("Wait for the active work"), "{screen}");
+        test.advance(1_500);
+        test.step();
+        let screen = test.screen();
+        assert!(screen.contains("• Compacting (5s)"), "{screen}");
+        assert!(!screen.contains("Thinking"), "{screen}");
+        test.deliver(finished(1, TurnOutcome::Interrupted));
+        let screen = test.screen();
+        assert!(
+            screen.contains("Compaction cancelled. Try /compact again when ready."),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_ends_during_its_compaction_settles_the_compaction() {
+        for (outcome, feedback) in [
+            (
+                TurnOutcome::Interrupted,
+                "Compaction cancelled. Try /compact again when ready.",
+            ),
+            (
+                TurnOutcome::Failed,
+                "Compaction failed. Try /compact again.",
+            ),
+        ] {
+            let mut test = compacting_turn();
+            test.deliver(finished(1, outcome));
+            let screen = test.screen();
+            assert!(screen.contains(feedback), "{screen}");
+        }
+        let mut test = compacting_turn();
+        test.deliver(turn_compaction(1, CompactionActivity::Compacted));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        assert!(!test.screen().contains("ompaction"));
     }
 
     #[test]

@@ -1,10 +1,13 @@
 use std::mem;
 
-use ofx_contract::{ChatMessage, ModelRequest, ProviderError, ProviderErrorKind, ProviderOptions};
+use ofx_contract::{
+    ChatMessage, CompactionActivity, CompactionEnd, ModelRequest, ProviderError, ProviderErrorKind,
+    ProviderOptions, TurnId, UiEvent,
+};
 use tokio_util::sync::CancellationToken;
 
-use super::{Agent, LastReply, Stop, Turn, TurnFailure};
-use crate::compactor::{self, Compacted, CompactionError, Correction, Size, Summarizer};
+use super::{Agent, EventSink, LastReply, Stop, Turn, TurnFailure};
+use crate::compactor::{self, Compacted, CompactionError, Correction, Size, Step, Summarizer};
 use crate::execution_memory::{history_turns, retain};
 use crate::prompt_context::{Calibration, RequestCost};
 
@@ -76,8 +79,13 @@ impl Agent {
                 )
             });
         let size = self.compaction_size(self.request_fixed_tokens);
+        let mut progress = |step| {
+            if step == Step::Summarizing {
+                summarizing();
+            }
+        };
         let compacted = self
-            .compacted_history(size, false, options, None, summarizing, cancel)
+            .compacted_history(size, false, options, None, &mut progress, cancel)
             .await?;
         let Some(compacted) = compacted else {
             return Ok(Compaction::Unchanged);
@@ -131,11 +139,14 @@ impl Agent {
 
     pub(super) async fn preflight(
         &self,
-        turn: &mut TurnCompaction,
+        turn: &mut Turn,
         request: ModelRequest<'_>,
         measured: Option<&Measured>,
+        events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<Option<Compacted>, CompactionError> {
+        let mut shown = CompactionShown::new(turn.id, events);
+        let turn = &mut turn.compaction;
         let pending = turn.overflow == Overflow::Pending;
         let rebuilt = mem::take(&mut turn.rebuilt) && !pending;
         if let Some(measured) = measured {
@@ -151,12 +162,12 @@ impl Agent {
                         true,
                         request.provider_options,
                         conversation,
-                        &mut || {},
+                        &mut |step| shown.step(step),
                         cancel,
                     )
                     .await;
                 self.set_compacting(false);
-                let compacted = compacted?;
+                let compacted = compacted.inspect_err(|error| shown.failed(*error))?;
                 if compacted.is_some() {
                     return Ok(compacted);
                 }
@@ -174,7 +185,28 @@ impl Agent {
         Ok(None)
     }
 
-    pub(super) fn install_turn_compaction(
+    pub(super) fn adopt_compaction(
+        &mut self,
+        turn: &mut Turn,
+        compacted: Compacted,
+        measured: Option<Measured>,
+        events: EventSink<'_>,
+    ) -> Result<(), Stop> {
+        self.settle_measurement(measured, None);
+        let installed = self.install_turn_compaction(turn, compacted);
+        let activity = if installed.is_ok() {
+            CompactionActivity::Compacted
+        } else {
+            CompactionActivity::Ended(CompactionEnd::Failed)
+        };
+        events(UiEvent::TurnCompaction {
+            turn_id: turn.id,
+            activity,
+        });
+        installed
+    }
+
+    fn install_turn_compaction(
         &mut self,
         turn: &mut Turn,
         compacted: Compacted,
@@ -258,7 +290,7 @@ impl Agent {
         active: bool,
         options: ProviderOptions<'_>,
         conversation: Option<ModelRequest<'_>>,
-        summarizing: &mut (dyn FnMut() + Send),
+        progress: &mut (dyn FnMut(Step) + Send),
         cancel: &CancellationToken,
     ) -> Result<Option<Compacted>, CompactionError> {
         let turns = history_turns(&self.history, &self.turn_starts);
@@ -284,7 +316,7 @@ impl Agent {
             model: &self.config.model,
             sends_after_conversation: conversation.is_some(),
         };
-        compactor::compact(request, &mut summarizer, summarizing, cancel).await
+        compactor::compact(request, &mut summarizer, progress, cancel).await
     }
 
     fn install_compaction(&mut self, compacted: Compacted) {
@@ -303,6 +335,47 @@ impl Agent {
         );
         self.compacted = Some(compacted.payload);
         self.calibration = None;
+    }
+}
+
+struct CompactionShown<'e> {
+    turn_id: TurnId,
+    events: EventSink<'e>,
+    started: bool,
+}
+
+impl<'e> CompactionShown<'e> {
+    fn new(turn_id: TurnId, events: EventSink<'e>) -> Self {
+        Self {
+            turn_id,
+            events,
+            started: false,
+        }
+    }
+
+    fn step(&mut self, step: Step) {
+        self.started |= step == Step::Chosen;
+        self.show(match step {
+            Step::Chosen => CompactionActivity::Preparing,
+            Step::Summarizing => CompactionActivity::Summarizing,
+        });
+    }
+
+    fn failed(&mut self, error: CompactionError) {
+        if self.started {
+            self.show(CompactionActivity::Ended(match error {
+                CompactionError::Cancelled => CompactionEnd::Cancelled,
+                CompactionError::ContextCapacityExceeded => CompactionEnd::ContextTooLarge,
+                _ => CompactionEnd::Failed,
+            }));
+        }
+    }
+
+    fn show(&mut self, activity: CompactionActivity) {
+        (self.events)(UiEvent::TurnCompaction {
+            turn_id: self.turn_id,
+            activity,
+        });
     }
 }
 
