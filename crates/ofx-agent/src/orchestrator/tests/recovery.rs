@@ -179,7 +179,7 @@ fn user_note(request: &SeenRequest) -> &str {
 fn unavailable() -> Script {
     Script::Fail(
         Vec::new(),
-        failure(ProviderErrorKind::ServerError, "server_error"),
+        http_failure(ProviderErrorKind::ServerError, "server_error", 503),
     )
 }
 
@@ -229,22 +229,74 @@ async fn each_retry_saves_the_turn_so_far_before_it_waits() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_spent_retry_budget_pauses_the_turn_for_a_later_continuation() {
-    let provider = FakeProvider::new(
-        (0..DEFAULT_MAX_PROVIDER_ATTEMPTS)
-            .map(|_| unavailable())
-            .collect(),
-    );
+async fn a_spent_retry_budget_keeps_recovering_and_saving_the_turn() {
+    let retries = DEFAULT_MAX_PROVIDER_ATTEMPTS + 2;
+    let mut scripts: Vec<Script> = (0..retries).map(|_| unavailable()).collect();
+    scripts.push(text_reply("done"));
+    let provider = FakeProvider::new(scripts);
     let (log, entries) = MemoryLog::shared();
     let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
     let (report, _) = run(&mut agent, "go").await;
-    assert_eq!(report.failure.unwrap().code(), "server_error");
+    assert_eq!(report.outcome, TurnOutcome::Completed);
     let entries = checkpoints(&entries.lock().unwrap());
-    assert_eq!(entries.len(), DEFAULT_MAX_PROVIDER_ATTEMPTS);
-    assert_eq!(entries[0], checkpoint(&[], RETRYING, 1));
+    let expected: Vec<Logged> = (1..=retries)
+        .map(|attempt| checkpoint(&[], RETRYING, attempt))
+        .collect();
+    assert_eq!(entries, expected);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recovery_stalled_at_the_same_point_stops_and_discards_its_checkpoint() {
+    let interrupted = || {
+        Script::Fail(
+            Vec::new(),
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+        )
+    };
+    let provider = FakeProvider::new(vec![interrupted(), interrupted(), interrupted()]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    let retrying = RecoveryProgress::Waiting(ModelRecoveryAction::RetryingRequest);
     assert_eq!(
-        entries[DEFAULT_MAX_PROVIDER_ATTEMPTS - 1],
-        checkpoint(&[], RecoveryProgress::Paused, DEFAULT_MAX_PROVIDER_ATTEMPTS)
+        checkpoints(&entries.lock().unwrap()),
+        [
+            checkpoint(&[], retrying, 1),
+            checkpoint(&[], retrying, 2),
+            Logged::RecoveryCleared,
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_failure_stalled_at_the_same_point_discards_its_checkpoint() {
+    let failed_after_reasoning = || {
+        Script::Fail(
+            vec![StreamEvent::ReasoningDelta {
+                text: "thinking".to_owned(),
+            }],
+            failure(ProviderErrorKind::ServerError, "ProviderError"),
+        )
+    };
+    let provider = FakeProvider::new(vec![
+        failed_after_reasoning(),
+        failed_after_reasoning(),
+        failed_after_reasoning(),
+        text_reply("must not be requested"),
+    ]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    let retrying = RecoveryProgress::Waiting(ModelRecoveryAction::RetryingRequest);
+    assert_eq!(
+        checkpoints(&entries.lock().unwrap()),
+        [
+            checkpoint(&[], retrying, 1),
+            checkpoint(&[], retrying, 2),
+            Logged::RecoveryCleared,
+        ]
     );
 }
 

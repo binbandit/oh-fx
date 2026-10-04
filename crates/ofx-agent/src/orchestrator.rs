@@ -12,15 +12,16 @@ use ofx_contract::{
     ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
     DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure, FileChange, FileMutation,
     FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
-    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRequest, PathAccess,
-    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions, RecoveredTurn,
-    RecoveryProgress, RecoveryStrategy, RequestId, ReviewFailure, ReviewHold, ReviewRequest,
-    ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus,
-    SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool, ToolActivity,
-    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect,
-    ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent,
-    Usage, bound_model_output, malformed_tool_arguments_json, non_object_tool_arguments_json,
-    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
+    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction,
+    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
+    ProviderOptions, RecoveredTurn, RecoveryProgress, RecoveryStrategy, RequestId, ReviewFailure,
+    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
+    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
+    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext,
+    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    TurnStop, UiEvent, Usage, bound_model_output, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -32,7 +33,7 @@ use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::{RawOutput, steering_text};
 use crate::model_response_recovery::{
-    DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, RetryPacing, decide, recovery_cause,
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, recovery_cause,
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
@@ -833,37 +834,18 @@ impl Agent {
     ) -> Result<Completion, Stop> {
         let turn_id = turn.id;
         let mut attempt = 1;
-        let mut pacing = RetryPacing::Idle;
+        let mut recovery = Recovery::default();
         let mut recovering_from = None;
         let mut pending = None;
         loop {
-            let mut partial = String::new();
-            let mut admitted = false;
-            let mut sink = |event: StreamEvent| match event {
-                StreamEvent::Admitted => {
-                    admitted = true;
-                    if let Some(status) = pending.take() {
-                        events(UiEvent::Recovery { turn_id, status });
-                    }
-                }
-                StreamEvent::TextDelta { text } => {
-                    partial.push_str(&text);
-                    if let Some(text) = turn.language.stage.admit(text) {
-                        events(UiEvent::AssistantText { turn_id, text });
-                    }
-                }
-                StreamEvent::ReasoningDelta { text } => {
-                    events(UiEvent::ReasoningText { turn_id, text });
-                }
-            };
-            let streamed = match body.take() {
-                Some(body) => {
-                    self.provider
-                        .stream_body(&request, body, &mut sink, cancel)
-                        .await
-                }
-                None => self.provider.stream(&request, &mut sink, cancel).await,
-            };
+            let Attempt {
+                streamed,
+                partial,
+                streamed_bytes,
+                admitted,
+            } = self
+                .attempt(turn, &request, body.take(), &mut pending, events, cancel)
+                .await;
             let consumed = attempt - usize::from(!admitted);
             let error = match streamed {
                 Ok(completion) => {
@@ -881,28 +863,35 @@ impl Agent {
                 let recovery = recovering_from.map(|cause| (cause, consumed));
                 return Err(self.interruption(turn, recovery, &error, partial, events));
             }
-            let cause = recovery_cause(error.kind).filter(|_| partial.is_empty());
-            let Some(cause) = cause.filter(|_| attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS) else {
-                if let Some(status) = stopped_status(
-                    cause.or(recovering_from),
-                    attempt,
-                    consumed,
-                    &error,
-                    &partial,
-                ) {
+            let Some(cause) = recovery_cause(error.kind).filter(|_| partial.is_empty()) else {
+                if let Some(status) =
+                    stopped_status(recovering_from, attempt, consumed, &error, &partial)
+                {
                     events(UiEvent::Recovery { turn_id, status });
                 }
-                let failure = self.exhausted_failure(turn, cause, consumed, error);
-                return Err(Stop::Failed { failure, partial });
+                return Err(Stop::Failed {
+                    failure: TurnFailure::Provider(error),
+                    partial,
+                });
+            };
+            let decision = recovery.decide(cause, &error, streamed_bytes);
+            let Some(action) = decision.strategy.action() else {
+                events(UiEvent::Recovery {
+                    turn_id,
+                    status: stalled_status(cause, consumed, &error, &decision),
+                });
+                self.discard_recovery();
+                return Err(Stop::Failed {
+                    failure: TurnFailure::Provider(error),
+                    partial,
+                });
             };
             if cause == ModelRecoveryCause::ProviderUnavailable {
                 turn.fast_mode = false;
                 request.provider_options.fast = false;
             }
-            let retry_after = error.retry_after.map(|delay| delay.as_secs());
-            let decision = decide(cause, retry_after, pacing);
-            let mut status = retry_status(attempt, cause, &decision, &error);
-            self.record_wait(turn, cause, decision.action, consumed)?;
+            let mut status = retry_status(attempt, cause, action, &decision, &error);
+            self.record_wait(turn, cause, action, consumed)?;
             events(UiEvent::Recovery {
                 turn_id,
                 status: status.clone(),
@@ -919,8 +908,55 @@ impl Agent {
             status.failed_attempt = attempt;
             status.retry_wait = None;
             pending = Some(status);
-            pacing = decision.next_pacing;
             recovering_from = Some(cause);
+        }
+    }
+
+    async fn attempt(
+        &self,
+        turn: &mut Turn,
+        request: &ModelRequest<'_>,
+        body: Option<String>,
+        pending: &mut Option<RouteRecoveryStatus>,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> Attempt {
+        let turn_id = turn.id;
+        let mut partial = String::new();
+        let mut streamed_bytes = 0;
+        let mut admitted = false;
+        let mut sink = |event: StreamEvent| match event {
+            StreamEvent::Admitted => {
+                admitted = true;
+                if let Some(status) = pending.take() {
+                    events(UiEvent::Recovery { turn_id, status });
+                }
+            }
+            StreamEvent::TextDelta { text } => {
+                streamed_bytes += text.len();
+                partial.push_str(&text);
+                if let Some(text) = turn.language.stage.admit(text) {
+                    events(UiEvent::AssistantText { turn_id, text });
+                }
+            }
+            StreamEvent::ReasoningDelta { text } => {
+                streamed_bytes += text.len();
+                events(UiEvent::ReasoningText { turn_id, text });
+            }
+        };
+        let streamed = match body {
+            Some(body) => {
+                self.provider
+                    .stream_body(request, body, &mut sink, cancel)
+                    .await
+            }
+            None => self.provider.stream(request, &mut sink, cancel).await,
+        };
+        Attempt {
+            streamed,
+            partial,
+            streamed_bytes,
+            admitted,
         }
     }
 
@@ -958,6 +994,7 @@ impl Agent {
                 attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
                 cause: Some(cause),
                 action: Some(ModelRecoveryAction::Paused),
+                required_action: ModelRecoveryRequiredAction::None,
                 delay_seconds: 0,
                 diagnostic: Some(failure_diagnostic(error)),
                 retry_wait: None,
@@ -1518,6 +1555,7 @@ fn argument_rejection(call: &ToolCall) -> Option<ToolOutput> {
 fn retry_status(
     attempt: usize,
     cause: ModelRecoveryCause,
+    action: ModelRecoveryAction,
     decision: &Decision,
     error: &ProviderError,
 ) -> RouteRecoveryStatus {
@@ -1527,11 +1565,19 @@ fn retry_status(
         succeeded_attempt: 0,
         attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
         cause: Some(cause),
-        action: Some(decision.action),
+        action: Some(action),
+        required_action: ModelRecoveryRequiredAction::None,
         delay_seconds: decision.delay.as_secs(),
         diagnostic: Some(failure_diagnostic(error)),
         retry_wait: Some(decision.delay),
     }
+}
+
+struct Attempt {
+    streamed: Result<Completion, ProviderError>,
+    partial: String,
+    streamed_bytes: usize,
+    admitted: bool,
 }
 
 fn stopped_status(
@@ -1541,20 +1587,39 @@ fn stopped_status(
     error: &ProviderError,
     partial: &str,
 ) -> Option<RouteRecoveryStatus> {
-    let exhausted =
-        attempt >= DEFAULT_MAX_PROVIDER_ATTEMPTS && recovery_cause(error.kind).is_some();
     let unanswered = attempt > 1 && error.status.is_none();
-    (partial.is_empty() && (exhausted || unanswered)).then(|| RouteRecoveryStatus {
+    (partial.is_empty() && unanswered).then(|| RouteRecoveryStatus {
         kind: RouteRecoveryKind::TerminalProviderError,
         failed_attempt: consumed,
         succeeded_attempt: 0,
         attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
         cause,
         action: None,
+        required_action: ModelRecoveryRequiredAction::None,
         delay_seconds: 0,
         diagnostic: Some(failure_diagnostic(error)),
         retry_wait: None,
     })
+}
+
+fn stalled_status(
+    cause: ModelRecoveryCause,
+    consumed: usize,
+    error: &ProviderError,
+    decision: &Decision,
+) -> RouteRecoveryStatus {
+    RouteRecoveryStatus {
+        kind: RouteRecoveryKind::TerminalProviderError,
+        failed_attempt: consumed,
+        succeeded_attempt: 0,
+        attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
+        cause: Some(cause),
+        action: None,
+        required_action: decision.required_action,
+        delay_seconds: 0,
+        diagnostic: Some(failure_diagnostic(error)),
+        retry_wait: None,
+    }
 }
 
 fn failure_diagnostic(error: &ProviderError) -> ModelFailureDiagnostic {
@@ -1569,6 +1634,7 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
         attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
         cause: None,
         action: None,
+        required_action: ModelRecoveryRequiredAction::None,
         delay_seconds: 0,
         diagnostic: None,
         retry_wait: None,
