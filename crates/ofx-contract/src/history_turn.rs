@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::file_evidence::FileEvidence;
 use crate::ids::TurnId;
 use crate::types::{
     ChatMessage, ModelRecoveryAction, ModelRecoveryCause, ProviderReplay, ToolCall,
@@ -54,6 +55,7 @@ pub struct HistoryTurn<'a> {
     pub user: &'a str,
     pub steps: Vec<HistoryStep<'a>>,
     pub steering: Vec<HistorySteering<'a>>,
+    pub files: &'a [FileEvidence],
     pub end: TurnEnd<'a>,
 }
 
@@ -70,6 +72,7 @@ pub enum RecoveryStrategy {
 pub struct RecoveredTurn {
     pub prompt: String,
     pub messages: Vec<ChatMessage>,
+    pub files: Vec<FileEvidence>,
     pub strategy: RecoveryStrategy,
     pub fast_mode: bool,
 }

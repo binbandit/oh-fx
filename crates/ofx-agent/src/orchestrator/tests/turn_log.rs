@@ -1,5 +1,6 @@
 use ofx_contract::{
-    HistoryCut, HistoryTurn, RecoveryPoint, RecoveryProgress, RestoredHistory, TurnEnd,
+    FileEvidence, HistoryCut, HistoryTurn, RecoveryPoint, RecoveryProgress, RestoredHistory,
+    TurnEnd,
 };
 
 use super::*;
@@ -10,6 +11,7 @@ pub(super) enum Logged {
         user: String,
         steps: Vec<String>,
         steering: Vec<String>,
+        files: Vec<String>,
         end: String,
     },
     Compaction {
@@ -21,6 +23,7 @@ pub(super) enum Logged {
     Recovery {
         user: String,
         steps: Vec<String>,
+        files: Vec<String>,
         progress: RecoveryProgress,
         consumed_attempts: usize,
         fast_mode: bool,
@@ -139,6 +142,7 @@ impl ConversationLog for MemoryLog {
                     )
                 })
                 .collect(),
+            files: described_files(turn.files),
             end: described_end(turn.end),
         });
         Ok(())
@@ -179,6 +183,7 @@ impl ConversationLog for MemoryLog {
         self.entries.lock().unwrap().push(Logged::Recovery {
             user: point.turn.user.to_owned(),
             steps: described_steps(&point.turn),
+            files: described_files(point.turn.files),
             progress: point.progress,
             consumed_attempts: point.consumed_attempts,
             fast_mode: point.fast_mode,
@@ -192,11 +197,28 @@ impl ConversationLog for MemoryLog {
     }
 }
 
+fn described_files(files: &[FileEvidence]) -> Vec<String> {
+    files
+        .iter()
+        .map(|file| {
+            let mut described = format!("{} {}", file.action.label(), file.path);
+            if file.model_view_covers_full_file {
+                described.push_str(" full");
+            }
+            if file.stale {
+                described.push_str(" stale");
+            }
+            described
+        })
+        .collect()
+}
+
 fn logged_turn(user: &str, steps: &[&str], end: &str) -> Logged {
     Logged::Turn {
         user: user.to_owned(),
         steps: steps.iter().map(|step| (*step).to_owned()).collect(),
         steering: Vec::new(),
+        files: Vec::new(),
         end: end.to_owned(),
     }
 }

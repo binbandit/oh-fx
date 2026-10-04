@@ -1,12 +1,13 @@
 use ofx_contract::{
-    ChatMessage, ConversationLog, HistoryTurn, LogFailure, ModelRecoveryAction, ModelRecoveryCause,
-    RecoveryPoint, RecoveryProgress, RestoredHistory, TurnEnd, TurnStop,
+    ChatMessage, ConversationLog, FileEvidence, HistoryTurn, LogFailure, ModelRecoveryAction,
+    ModelRecoveryCause, RecoveryPoint, RecoveryProgress, RestoredHistory, TurnEnd, TurnStop,
+    file_evidence_context,
 };
 
 use super::turn_ledger::TurnRecord;
 use super::{Agent, Stop, Turn, TurnFailure};
 use crate::compactor::{Compacted, encode_checkpoint, restore_checkpoint};
-use crate::execution_memory::{history_turn, logged_steps};
+use crate::execution_memory::{ToolStep, history_turn, logged_steps};
 use crate::model_response_recovery::DEFAULT_MAX_PROVIDER_ATTEMPTS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +55,7 @@ impl Agent {
             .map_or(Ok(()), |log| log.require_writable())
     }
 
-    pub(super) fn note_recorded(&mut self, turn: &Turn, ending: Ending, saved: bool) {
+    fn note_recorded(&mut self, turn: &Turn, ending: Ending, saved: bool) {
         let record = match ending {
             Ending::Discarded if saved && turn.compaction.checkpointed() => TurnRecord::LogOnly,
             Ending::Discarded => return,
@@ -64,11 +65,52 @@ impl Agent {
         self.ledger.push(record);
     }
 
-    pub(super) fn record_turn(
+    pub(super) fn save_turn(
         &mut self,
         prompt: &str,
         turn: &Turn,
         ending: Ending,
+    ) -> Result<(), LogFailure> {
+        let files = self.turn_files(turn, ending);
+        let recorded = self.record_turn(prompt, turn, ending, &files);
+        self.settle_steering(turn.start);
+        self.note_recorded(turn, ending, recorded.is_ok());
+        self.send_file_evidence(turn.start, &files);
+        recorded
+    }
+
+    fn turn_files(&self, turn: &Turn, ending: Ending) -> Vec<FileEvidence> {
+        if ending == Ending::Discarded || turn.start >= self.history.len() {
+            return Vec::new();
+        }
+        let parsed = history_turn(&self.history, turn.start, self.history.len());
+        let steps = logged_steps(&parsed.steps, &turn.raw_outputs);
+        turn.earlier_files.turn_files(&steps)
+    }
+
+    pub(super) fn keep_compacted_files(&self, turn: &mut Turn, covered: usize) {
+        let parsed = history_turn(&self.history, turn.start, self.history.len());
+        let steps = logged_steps(&parsed.steps, &turn.raw_outputs);
+        let covered = covered.min(steps.len());
+        turn.earlier_files.keep_compacted(&steps[..covered]);
+    }
+
+    fn send_file_evidence(&mut self, start: usize, files: &[FileEvidence]) {
+        if files.is_empty() || start >= self.history.len() {
+            return;
+        }
+        let parsed = history_turn(&self.history, start, self.history.len());
+        let at = parsed.steps.last().map_or(start + 1, ToolStep::end);
+        self.history
+            .insert(at, ChatMessage::user(file_evidence_context(files)));
+    }
+
+    fn record_turn(
+        &mut self,
+        prompt: &str,
+        turn: &Turn,
+        ending: Ending,
+        files: &[FileEvidence],
     ) -> Result<(), LogFailure> {
         let start = turn.start;
         let Some(log) = self.log.as_mut() else {
@@ -81,6 +123,7 @@ impl Agent {
                 user: parsed.user,
                 steps: logged_steps(&parsed.steps, &turn.raw_outputs),
                 steering: parsed.logged_steering(),
+                files,
                 end: TurnEnd::Replied {
                     text: parsed.reply,
                     provider_replay: parsed.reply_replay,
@@ -90,6 +133,7 @@ impl Agent {
                 user: parsed.user,
                 steps: logged_steps(&parsed.steps, &turn.raw_outputs),
                 steering: parsed.logged_steering(),
+                files,
                 end: TurnEnd::Stopped {
                     reason,
                     partial: parsed.reply,
@@ -99,6 +143,7 @@ impl Agent {
                 user: prompt,
                 steps: Vec::new(),
                 steering: Vec::new(),
+                files: &[],
                 end: TurnEnd::Stopped {
                     reason: TurnStop::Failed,
                     partial: "",
@@ -134,9 +179,12 @@ impl Agent {
         if turn.start >= self.history.len() {
             return Ok(());
         }
+        let mut point_turn = turn_so_far(&self.history, turn);
+        let files = turn.earlier_files.turn_files(&point_turn.steps);
+        point_turn.files = &files;
         log.record_recovery(&RecoveryPoint {
             turn_id: turn.id,
-            turn: turn_so_far(&self.history, turn),
+            turn: point_turn,
             cause,
             progress,
             model: &self.config.model,
@@ -179,6 +227,7 @@ fn turn_so_far<'a>(history: &'a [ChatMessage], turn: &Turn) -> HistoryTurn<'a> {
         user: parsed.user,
         steps: logged_steps(&parsed.steps, &turn.raw_outputs),
         steering: parsed.logged_steering(),
+        files: &[],
         end: TurnEnd::Replied {
             text: "",
             provider_replay: None,

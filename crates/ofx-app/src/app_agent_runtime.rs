@@ -1908,6 +1908,20 @@ mod tests {
         FakeServer::start(replies)
     }
 
+    fn file_evidence_messages(body: &Value) -> usize {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| {
+                message["role"] == "user"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.starts_with("Session file evidence"))
+            })
+            .count()
+    }
+
     fn first_user_message(body: &Value) -> &str {
         body["messages"]
             .as_array()
@@ -2054,7 +2068,8 @@ mod tests {
         let requests = server.requests();
         assert_eq!(requests.len(), 8);
         let body = requests[7].json();
-        assert_eq!(user_messages(&body), 6);
+        assert_eq!(user_messages(&body), 7);
+        assert_eq!(file_evidence_messages(&body), 1);
         assert_eq!(first_user_message(&body), "read the notes");
         let sent_meanwhile = body["messages"]
             .as_array()
@@ -2113,7 +2128,9 @@ mod tests {
             Some(&CompactionActivity::Ended(CompactionEnd::Failed))
         );
         chat(&mut harness, &["after"]).await;
-        assert_eq!(user_messages(&server.requests()[7].json()), 6);
+        let body = server.requests()[7].json();
+        assert_eq!(user_messages(&body), 7);
+        assert_eq!(file_evidence_messages(&body), 1);
     }
 
     async fn fast_notice(harness: &mut Harness) -> String {

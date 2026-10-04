@@ -47,6 +47,7 @@ fn replied(user: &str) -> HistoryTurn<'_> {
         user,
         steps: Vec::new(),
         steering: Vec::new(),
+        files: &[],
         end: TurnEnd::Replied {
             text: "done",
             provider_replay: None,
