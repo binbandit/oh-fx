@@ -78,6 +78,7 @@ fn request<'a>(turns: &'a [Turn<'a>]) -> Request<'a> {
         earlier: None,
         turns,
         last_turn_open: false,
+        kept: &[],
         max_prompt_tokens: usize::MAX,
         conversation_room: None,
         max_text_tokens: usize::MAX,
@@ -247,9 +248,29 @@ fn a_reply_that_skips_turns_with_work_is_asked_once_more_for_just_those() {
     assert_eq!(summary.compacted.entries.len(), 2);
     assert_eq!(summary.compacted.entries[1].id, "F2");
 
+    let mut facts = FakeModel::scripted(&[
+        "Facts:\nF1 (T1): the first build printed one",
+        "Turn 1\nIn between: Ran make.\n\nTurn 2\nIn between: Ran make again.\n\nTurn 3\nIn between: Ran make a third time.",
+    ]);
+    let only_facts = run(request(&turns), &mut facts).unwrap();
+    assert_eq!(facts.calls, 2);
+    assert!(facts.seen_user.ends_with(
+        "\n\nTurn 1 (T1)\nTurn 2 (T2)\nTurn 3 (T3)\n\nUnder each heading, In between: with what the assistant did before its final reply, then a line for every tool call, starting with its ID, on why it was used and what it showed.\n\nThen any new entries from those turns under the same sections, each starting with its ID and the turn or tool call it comes from. The highest IDs so far: F1. Number new entries after them. Write only these notes."
+    ), "{}", facts.seen_user);
+    assert_eq!(only_facts.compacted.turns[1].work, "Ran make again.");
+    assert_eq!(only_facts.compacted.entries[0].id, "F1");
+
     let mut prose = FakeModel::replying("The builds ran.");
-    run(request(&turns), &mut prose).unwrap();
-    assert_eq!(prose.calls, 1);
+    let other = run(request(&turns), &mut prose).unwrap();
+    assert_eq!(prose.calls, 2);
+    assert_eq!(other.compacted.turns[3].work, "The builds ran.");
+    assert_eq!(other.compacted.turns[2].work, "The builds ran.");
+
+    let single = [worked_turn("first", "call-1", "one")];
+    let mut once = FakeModel::replying("The build ran.");
+    let kept = run(request(&single), &mut once).unwrap();
+    assert_eq!(once.calls, 1);
+    assert_eq!(kept.compacted.turns[0].work, "The build ran.");
 }
 
 #[test]
@@ -361,8 +382,11 @@ fn the_conversation_serves_only_a_request_for_every_turn() {
     ];
     let one = turn_tokens(&turns[0]);
     let room = REQUEST_OVERHEAD_TOKENS + tokens(&[SYSTEM_PROMPT]) + one + one / 2;
-    let mut model = FakeModel::default();
-    run(
+    let mut model = FakeModel::scripted(&[
+        "Turn 1\nIn between: Ran the first build.",
+        "Turn 2\nIn between: Ran the second build.",
+    ]);
+    let summary = run(
         Request {
             max_prompt_tokens: room,
             conversation_room: Some(100_000),
@@ -373,6 +397,7 @@ fn the_conversation_serves_only_a_request_for_every_turn() {
     .unwrap();
     assert_eq!(model.calls, 2);
     assert_eq!(model.after_conversation_calls, 0);
+    assert_eq!(summary.compacted.turns[1].work, "Ran the second build.");
 }
 
 #[test]
@@ -590,6 +615,127 @@ fn tests_turn() -> Vec<Turn<'static>> {
             Item::Assistant("All 12 tests pass."),
         ],
     }]
+}
+
+#[test]
+fn a_rule_may_quote_the_users_answer_to_a_question_but_not_the_question() {
+    let asked = [Turn {
+        user: "plan the next blocks",
+        items: vec![
+            call("q", "ask_user_question", "{}"),
+            result(
+                "q",
+                "ask_user_question",
+                "[{\"question\":\"Which block comes first?\",\"answer\":\"Block 6 before Block 5\"}]",
+            ),
+            Item::Assistant("Block 6 goes first."),
+        ],
+    }];
+    let mut model = FakeModel::replying(
+        "Turn 1\nIn between: asked which block comes first.\nT1: the user put block 6 first\n\nRules:\n- R1 (T1): \"Block 6 before Block 5\"\n- R2 (T1): \"Which block comes first?\"",
+    );
+    let summary = run(request(&asked), &mut model).unwrap();
+    let entries = &summary.compacted.entries;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].text, "R1 (T1): \"Block 6 before Block 5\"");
+    assert_eq!(
+        entries[1].text,
+        "R2 (T1): \"Which block comes first?\" [check: not the user's exact words]"
+    );
+}
+
+#[test]
+fn a_questions_result_gives_the_users_answers_not_the_questions() {
+    assert_eq!(
+        question_answers(
+            "[{\"question\":\"Which block first?\",\"answer\":\"Block 6 before Block 5\"},{\"question\":\"Push it?\",\"answer\":\"Legitimate, push\"}]"
+        ),
+        ["Block 6 before Block 5", "Legitimate, push"]
+    );
+    assert!(question_answers("The user dismissed the question.").is_empty());
+    assert!(question_answers("[{\"question\":\"Push it?\"}]").is_empty());
+
+    let output = "[{\"question\":\"Push it?\",\"answer\":\"Legitimate, push\"}]";
+    let turns = [Turn {
+        user: "ship it",
+        items: vec![
+            result("q", "ask_user_question", output),
+            result("s", "shell", output),
+        ],
+    }];
+    assert_eq!(
+        user_messages(&request(&turns)),
+        ["ship it", "Legitimate, push"]
+    );
+}
+
+#[test]
+fn a_value_read_in_the_conversation_that_stays_after_the_cut_is_not_marked() {
+    let kept = [Turn {
+        user: "",
+        items: vec![
+            call(
+                "k",
+                "shell",
+                "{\"command\":\"rg -n subagentStatusLine src\"}",
+            ),
+            result(
+                "k",
+                "shell",
+                "src/ui/status_line.zig:40:fn subagentStatusLine(",
+            ),
+        ],
+    }];
+    let fact = "F2 (T1): the status line comes from `subagentStatusLine` in src/ui/status_line.zig";
+    let turns = sample();
+
+    let mut model = FakeModel::replying(
+        "Turn 1\nIn between: Ran the build and found the missing semicolon.\nT1: ran the build; it stopped at src/a.zig:4\n\nFacts:\nF1 (T1): the build fails on a missing semicolon at src/a.zig:4\nF2 (T1): the status line comes from `subagentStatusLine` in src/ui/status_line.zig",
+    );
+    let with_kept = run(
+        Request {
+            kept: &kept,
+            ..request(&turns)
+        },
+        &mut model,
+    )
+    .unwrap();
+    assert_eq!(with_kept.compacted.entries[1].text, fact);
+
+    let without = run(request(&turns), &mut model).unwrap();
+    assert_eq!(
+        without.compacted.entries[1].text,
+        format!(
+            "{fact} [check: not in the saved turns or tool calls: subagentStatusLine, src/ui/status_line.zig]"
+        )
+    );
+}
+
+#[test]
+fn a_status_that_finishes_an_open_entry_marks_it_replaced() {
+    let first_turns = sample();
+    let mut first_model = FakeModel::replying(
+        "Turn 1\nIn between: Ran the build and found the missing semicolon.\nT1: ran the build; it stopped at src/a.zig:4\n\nFacts:\nF1 (T1): the build fails on a missing semicolon at src/a.zig:4\n\nOpen:\nO1 (M1): run the tests after the fix",
+    );
+    let first = run(request(&first_turns), &mut first_model).unwrap();
+
+    let second_turns = tests_turn();
+    let mut second_model = FakeModel::replying(
+        "Turn 3\nIn between: ran the tests.\nT2: ran the tests; all 12 pass\n\nStatus:\nS1 (T2): all 12 tests pass; replaces O1",
+    );
+    let second = run(after(&first.compacted, &second_turns), &mut second_model).unwrap();
+    assert!(
+        second
+            .text
+            .contains("O1 (M1): run the tests after the fix (replaced by S1)\n"),
+        "{}",
+        second.text
+    );
+    assert!(
+        second
+            .text
+            .contains("S1 (T2): all 12 tests pass; replaces O1\n")
+    );
 }
 
 #[test]

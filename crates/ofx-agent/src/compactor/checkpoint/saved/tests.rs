@@ -119,6 +119,8 @@ fn checkpoints_this_port_cannot_hold_fall_back_to_their_text() {
         r#"{"entries":[{"id":"R1"}],"saved":false}"#,
         r#"{"turns":[{"number":1,"users":["a"],"tools":[{"line":"x"}]}],"saved":false}"#,
         r#"{"open":3,"saved":false}"#,
+        r#"{"turn_count":1073741825,"saved":false}"#,
+        r#"{"tool_count":18446744073709551615,"saved":false}"#,
         "[]",
         "not json",
     ] {
@@ -128,6 +130,14 @@ fn checkpoints_this_port_cannot_hold_fall_back_to_their_text() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn counts_up_to_the_most_any_session_numbers_are_readable() {
+    let json = r#"{"turn_count":1073741824,"tool_count":1073741824,"saved":false}"#;
+    let payload = restore_checkpoint(&format!("{MARKER}{json}")).1.unwrap();
+    assert_eq!(payload.turn_count, 1 << 30);
+    assert_eq!(payload.tool_count, 1 << 30);
 }
 
 #[test]
