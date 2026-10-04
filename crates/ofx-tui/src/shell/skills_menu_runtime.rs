@@ -143,6 +143,7 @@ impl Shell<'_> {
         let mentions = self.skill_catalog.is_some()
             && self.model_menu.is_none()
             && self.model_draft.is_none()
+            && self.help_menu.is_none()
             && !self.command_skills_menu_open()
             && !self.picker_active()
             && !contains_position(self.composer.text(), start);

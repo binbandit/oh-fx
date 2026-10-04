@@ -1,0 +1,156 @@
+use ofx_contract::{SkillMenuFocus, UiCommand, UiEvent};
+
+use crate::shell::test_shell::TestShell;
+
+const HEADER: &str = "Commands 4  [All]  General  Model";
+const ROWS: &str = "  /help     show available slash commands\n  /clear    clear the screen\n  /quit     exit the interactive shell\n  /model    choose a model";
+const HINT: &str = "↑↓ navigate     tab category     enter open     esc close";
+
+fn open() -> TestShell {
+    let mut test = TestShell::start();
+    test.submit("/help");
+    assert_eq!(
+        test.sent(),
+        [UiCommand::RunCommand {
+            text: "/help".to_owned()
+        }]
+    );
+    test.deliver(UiEvent::HelpRequested);
+    test
+}
+
+fn press(test: &mut TestShell, bytes: &[u8]) -> String {
+    test.type_bytes(bytes);
+    test.step();
+    test.screen()
+}
+
+fn sent_after_help(test: &TestShell) -> Vec<UiCommand> {
+    test.sent()[1..].to_vec()
+}
+
+#[test]
+fn help_opens_a_command_menu_under_the_composer_in_category_order() {
+    let mut test = open();
+    let screen = test.screen();
+    assert!(
+        screen.contains(&format!("┃ \n\n{HEADER}\n\n{ROWS}\n\n{HINT}")),
+        "{screen}"
+    );
+    assert!(!screen.contains("auto · model-a"), "{screen}");
+    assert!(test.shell.composer.is_empty());
+}
+
+#[test]
+fn help_closes_an_open_skills_menu() {
+    let mut test = TestShell::start();
+    test.deliver(UiEvent::SkillsMenu {
+        items: Vec::new(),
+        focus: SkillMenuFocus::Start,
+    });
+    assert!(test.shell.skills_menu.is_some());
+    test.deliver(UiEvent::HelpRequested);
+    assert!(test.shell.skills_menu.is_none());
+    let screen = test.screen();
+    assert!(screen.contains(HEADER), "{screen}");
+    assert!(!screen.contains("Skills"), "{screen}");
+}
+
+#[test]
+fn typing_filters_tab_switches_the_category_and_enter_runs_the_selection() {
+    let mut test = open();
+    let screen = press(&mut test, b"shell");
+    assert!(
+        screen.contains("Commands 1  [All]  General  Model"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("  /quit    exit the interactive shell"),
+        "{screen}"
+    );
+    assert!(!screen.contains("show available"), "{screen}");
+    let screen = press(&mut test, b"\x7f\x7f\x7f\x7f\x7f\t");
+    assert!(
+        screen.contains("Commands 3  All  [General]  Model"),
+        "{screen}"
+    );
+    assert!(!screen.contains("/model"), "{screen}");
+    let screen = press(&mut test, b"\t");
+    assert!(
+        screen.contains("Commands 1  All  General  [Model]"),
+        "{screen}"
+    );
+    let screen = press(&mut test, b"\x1b[Z\x1b[Z");
+    assert!(screen.contains(HEADER), "{screen}");
+    press(&mut test, b"\x1b[B\x1b[B\x1b[A\x0e\x0b\x0e");
+    assert_eq!(test.shell.help_menu.unwrap().selected(), 2);
+    assert!(sent_after_help(&test).is_empty());
+    let screen = press(&mut test, b"\r");
+    assert!(test.shell.help_menu.is_none());
+    assert_eq!(
+        sent_after_help(&test),
+        [UiCommand::RunCommand {
+            text: "/quit".to_owned()
+        }]
+    );
+    assert!(screen.contains("auto · model-a"), "{screen}");
+    assert!(!screen.contains("Commands"), "{screen}");
+}
+
+#[test]
+fn a_command_that_takes_arguments_is_left_in_the_composer() {
+    let mut test = open();
+    let screen = press(&mut test, b"id-or");
+    assert!(screen.contains("Commands 1  [All]"), "{screen}");
+    let screen = press(&mut test, b"\r");
+    assert!(test.shell.help_menu.is_none());
+    assert_eq!(test.shell.composer.text(), "/model ");
+    assert!(screen.contains("┃ /model"), "{screen}");
+    assert!(sent_after_help(&test).is_empty());
+}
+
+#[test]
+fn an_exact_command_closes_the_menu_and_runs_as_typed() {
+    for typed in ["/clear", "/exit "] {
+        let mut test = open();
+        press(&mut test, typed.as_bytes());
+        press(&mut test, b"\r");
+        assert!(test.shell.help_menu.is_none(), "{typed:?}");
+        assert_eq!(
+            sent_after_help(&test),
+            [UiCommand::RunCommand {
+                text: typed.to_owned()
+            }],
+            "{typed:?}"
+        );
+    }
+}
+
+#[test]
+fn without_matches_enter_keeps_the_menu_and_arrows_pass_through() {
+    let mut test = open();
+    let screen = press(&mut test, b"zzz\r");
+    assert!(screen.contains("Commands 0  [All]"), "{screen}");
+    assert!(screen.contains("No commands found."), "{screen}");
+    assert!(test.shell.help_menu.is_some());
+    assert_eq!(test.shell.composer.text(), "zzz");
+    assert!(sent_after_help(&test).is_empty());
+    assert!(!test.shell.move_help_menu(-1));
+    press(&mut test, b"\x7f\x7f\x7f");
+    assert!(test.shell.move_help_menu(-1));
+    assert_eq!(test.shell.help_menu.unwrap().selected(), 3);
+}
+
+#[test]
+fn escape_closes_the_menu_and_clears_its_query() {
+    let mut test = open();
+    press(&mut test, b"cl\x1b");
+    test.advance(40);
+    test.draining(|shell| shell.flush_pending_input().unwrap());
+    assert!(test.shell.help_menu.is_none());
+    assert!(test.shell.composer.is_empty());
+    assert!(!test.shell.gestures.escape_clear_armed());
+    let screen = test.screen();
+    assert!(!screen.contains("Commands"), "{screen}");
+    assert!(screen.contains("auto · model-a"), "{screen}");
+}

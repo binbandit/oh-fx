@@ -250,6 +250,7 @@ impl Shell<'_> {
             && self.question.is_none()
             && !self.skills_menu_visible()
             && self.model_menu.is_none()
+            && self.help_menu.is_none()
             && self.picker.is_none()
     }
 

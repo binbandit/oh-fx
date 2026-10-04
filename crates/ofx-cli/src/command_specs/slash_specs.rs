@@ -88,6 +88,7 @@ pub struct SlashSpec {
     pub command: &'static str,
     pub aliases: &'static [&'static str],
     pub completion_description: &'static str,
+    pub help_entry: &'static str,
     pub presentation_category: SlashPresentationCategory,
     pub(crate) arguments: SlashArguments,
 }
@@ -104,9 +105,14 @@ impl SlashSpec {
             command,
             aliases: &[],
             completion_description,
+            help_entry: command,
             presentation_category,
             arguments: SlashArguments::None,
         }
+    }
+
+    pub(crate) const fn with_help(self, help_entry: &'static str) -> Self {
+        Self { help_entry, ..self }
     }
 
     pub(crate) const fn with_aliases(self, aliases: &'static [&'static str]) -> Self {
@@ -120,7 +126,7 @@ impl SlashSpec {
         }
     }
 
-    pub(crate) fn accepts_payload(&self) -> bool {
+    pub fn accepts_payload(&self) -> bool {
         self.arguments == SlashArguments::Payload
     }
 
@@ -273,6 +279,59 @@ mod tests {
         }
         assert!(spec(SlashKind::Statusline).accepts_payload());
         assert!(spec(SlashKind::Shell).accepts_payload());
+    }
+
+    #[test]
+    fn help_entries_follow_upstreams_and_name_the_commands_that_take_arguments() {
+        let entries: Vec<(&str, &str, bool)> = SLASH_REGISTRY
+            .commands()
+            .iter()
+            .filter(|spec| spec.help_entry != spec.command)
+            .map(|spec| (spec.command, spec.help_entry, spec.accepts_payload()))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                ("/rename", "/rename <title>", true),
+                ("/usage", "/usage (/cost)", false),
+                ("/model", "/model <id-or-query>", true),
+                (
+                    "/permissions",
+                    "/permissions [ask|auto|full-access|reset]",
+                    true
+                ),
+                (
+                    "/allowlist",
+                    "/allowlist [view [effective|local|user]|[local|user] add|remove|reset ...]",
+                    true
+                ),
+                (
+                    "/skills",
+                    "/skills [list|add|install|show|create|remove|path] [name|url|path] ($ opens skill search)",
+                    true
+                ),
+                ("/settings", "/settings [startup-scrollback [on|off]]", true),
+                ("/alias", "/alias [name] [command]", true),
+                (
+                    "/statusline",
+                    "/statusline [context|session|workspace]",
+                    true
+                ),
+                (
+                    "/workspace",
+                    "/workspace [list|add PATH|remove PATH|clear]",
+                    true
+                ),
+                ("/shell", "/shell reload", true),
+            ]
+        );
+        assert!(
+            SLASH_REGISTRY
+                .commands()
+                .iter()
+                .filter(|spec| spec.help_entry == spec.command)
+                .all(|spec| !spec.accepts_payload())
+        );
     }
 
     #[test]

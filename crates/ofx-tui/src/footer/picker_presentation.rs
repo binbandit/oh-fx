@@ -70,9 +70,6 @@ pub(crate) fn catalog_menu_hint_row(
     ctrl_c_pending: bool,
     tab: &str,
 ) -> Row {
-    if ctrl_c_pending {
-        return Row::styled(CTRL_C_EXIT_HINT, theme.statusline).clipped(width);
-    }
     let hints = [
         format!("↑↓ navigate     tab {tab}     enter use     esc close"),
         format!("↑↓ navigate  tab {tab}  enter use  esc close"),
@@ -80,11 +77,41 @@ pub(crate) fn catalog_menu_hint_row(
         "enter use  esc close".to_owned(),
         "enter esc".to_owned(),
     ];
+    menu_hint_row(
+        theme,
+        width,
+        ctrl_c_pending,
+        &hints.each_ref().map(String::as_str),
+    )
+}
+
+pub(crate) fn menu_hint_row(
+    theme: &Theme,
+    width: usize,
+    ctrl_c_pending: bool,
+    hints: &[&str],
+) -> Row {
+    if ctrl_c_pending {
+        return Row::styled(CTRL_C_EXIT_HINT, theme.statusline).clipped(width);
+    }
     let hint = hints
         .iter()
         .find(|hint| visible_width(hint) <= width)
-        .unwrap_or(&hints[hints.len() - 1]);
+        .or(hints.last())
+        .copied()
+        .unwrap_or_default();
     Row::styled(hint, theme.dim).clipped(width)
+}
+
+pub(crate) fn inline_menu_band(rows: Vec<Row>) -> Vec<Row> {
+    if rows.is_empty() {
+        return rows;
+    }
+    let mut band = Vec::with_capacity(rows.len() + 2);
+    band.push(Row::new());
+    band.extend(rows);
+    band.push(Row::new());
+    band
 }
 
 pub(crate) fn single_line_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
@@ -613,5 +640,15 @@ mod tests {
         assert_eq!(list_picker_rows(24, 0, 0), 6);
         assert_eq!(list_picker_rows(8, 0, 0), 3);
         assert_eq!(list_picker_rows(5, 1, 0), 1);
+    }
+
+    #[test]
+    fn inline_menu_bands_put_a_blank_row_on_each_side_of_their_rows() {
+        assert!(inline_menu_band(Vec::new()).is_empty());
+        let band = inline_menu_band(vec![Row::plain("menu")]);
+        assert_eq!(
+            band.iter().map(Row::text).collect::<Vec<_>>(),
+            ["", "menu", ""]
+        );
     }
 }

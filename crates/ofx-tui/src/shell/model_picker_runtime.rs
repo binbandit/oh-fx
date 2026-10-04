@@ -89,6 +89,7 @@ impl Shell<'_> {
         if self.exit_model_shortcut()
             || self.cancel_model_menu()
             || self.skills_menu_visible()
+            || self.help_menu.is_some()
             || self.picker.is_some()
         {
             return;
