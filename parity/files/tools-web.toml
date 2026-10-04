@@ -26,7 +26,7 @@ note = "HTML tag/entity handling, links/images, lists/tables/code and bounded Ma
 upstream = "src/tools/web/http_fetch.zig"
 status = "ported"
 modules = ["crates/ofx-tools/src/web/http_fetch.rs"]
-note = "Bounded HTTP fetch, status/encoding settlement and redirect policy are implemented with transport regressions; TLS/public-address/redirection safety differences are documented in architecture.md."
+note = "Bounded HTTP fetch, status/encoding settlement and redirect policy are implemented with transport regressions; TLS/public-address/redirection safety differences are documented in docs/differences/tool-web.md."
 
 [[file]]
 upstream = "src/tools/web/search.zig"

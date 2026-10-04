@@ -50,7 +50,7 @@ note = "Managed local process operations exist; injected identity provider and t
 upstream = "src/core/execution/process_tree.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/process_tree.rs"]
-note = "Linux tree tracking and group fallback exist; Darwin unique-process lineage witnesses are absent, as architecture.md records."
+note = "Linux tree tracking and group fallback exist; Darwin unique-process lineage witnesses are absent, as docs/differences/tool-shell.md records."
 
 [[file]]
 upstream = "src/core/execution/router.zig"

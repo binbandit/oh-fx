@@ -115,7 +115,7 @@ note = "tools/list paging under the tool cap, tool validation and tools/call res
 upstream = "src/core/mcp/health.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/health.rs"]
-note = "Health rendering, the /mcp summary and the startup notice exist; OAuth states, retry scheduling and resource and prompt counts report only what oh-fx tracks, as recorded in architecture.md, and the local configuration inspection is missing."
+note = "Health rendering, the /mcp summary and the startup notice exist; OAuth states, retry scheduling and resource and prompt counts report only what oh-fx tracks, as recorded in docs/differences/mcp.md, and the local configuration inspection is missing."
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"
@@ -232,7 +232,7 @@ note = "Initialize, tools/list, tools/call and cancellation messages and capabil
 upstream = "src/core/mcp/protocol_negotiation.zig"
 status = "ported"
 modules = ["crates/ofx-mcp/src/protocol_negotiation.rs"]
-note = "The opt-in 2026-07-28 protocol is omitted as recorded in architecture.md."
+note = "The opt-in 2026-07-28 protocol is omitted as recorded in docs/differences/mcp.md."
 
 [[file]]
 upstream = "src/core/mcp/selected_schema.zig"
@@ -322,7 +322,7 @@ note = "Tool calls from the published snapshot with the response frame cap and p
 upstream = "src/core/mcp/tool_result.zig"
 status = "ported"
 modules = ["crates/ofx-mcp/src/tool_result.rs"]
-note = "Image and audio items and binary resources are described rather than sent, as recorded in architecture.md."
+note = "Image and audio items and binary resources are described rather than sent, as recorded in docs/differences/mcp.md."
 
 [[file]]
 upstream = "src/core/mcp/tool_search.zig"

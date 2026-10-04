@@ -20,7 +20,7 @@ note = "Completed tool exchanges and replay are retained, and each turn gathers 
 upstream = "src/core/agent/presentation/ansi.zig"
 status = "ported"
 modules = ["crates/ofx-markdown/src/presentation/ansi.rs", "crates/ofx-markdown/src/styled.rs"]
-note = "Markers, limits and balanced style transitions are implemented through SpanWriter instead of raw escape writes, as architecture.md describes."
+note = "Markers, limits and balanced style transitions are implemented through SpanWriter instead of raw escape writes, as docs/differences/markdown.md describes."
 
 [[file]]
 upstream = "src/core/agent/presentation/block_parse.zig"
@@ -170,7 +170,7 @@ note = "Read-only and subagent leading groups execute separately in plain and pr
 upstream = "src/core/agent/runtime/prompt_context.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/prompt_context.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Prompt separation and request calibration exist; request image accounting and each-attempt measurement are absent, as architecture.md records."
+note = "Prompt separation and request calibration exist; request image accounting and each-attempt measurement are absent, as docs/differences/compaction.md records."
 
 [[file]]
 upstream = "src/core/agent/runtime/response_language.zig"

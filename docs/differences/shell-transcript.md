@@ -1,0 +1,9 @@
+# Interactive transcript and tool rows
+
+- A failed turn's error stays in the transcript under its prompt. Upstream shows it as live status that the next prompt or exit erases.
+- The interactive session adds a tool call's row to the transcript when the call starts, or when it asks for approval where upstream starts its row before the permission check. Upstream also shows a row while the model is still streaming the call, so a call that never starts, such as the rest of a batch cancelled during an approval, has a cancelled row there and none here.
+- Like upstream's compact transcript, the interactive session shows no shell command output, only each command's row with its outcome, such as `Exited 7` or `Timed out`. Upstream shows the output, at most five rows per command with its exit status and a `… N lines more (ctrl+o to view)` hint, in its full transcript (Ctrl+O), which oh-fx has not ported yet.
+- A tool row shows the control characters of its path, pattern, or command as visible escapes such as `\x1b`. Upstream drops them from the row, and keeps any color sequence the target carries as styling.
+- Cancelling a turn while a call runs settles the call's row as `Cancelled <target>` with its feedback row at once, and later events from that turn are ignored. Upstream shows `Cancelled` alone until the call stops, then the call's own outcome, such as `Ran …` followed by the turn's cancellation notice when it finished in the meantime.
+- The `collapse_tool_calls` setting is not read yet, so every tool group lists its calls. With the setting on, upstream shows only each group's header.
+- A Codex 401 in the interactive session ends its status text with `Run oh-fx login codex to sign in again.` Upstream says `Reconnect Codex through /login to repair this source.`, and `/login` has not landed.
