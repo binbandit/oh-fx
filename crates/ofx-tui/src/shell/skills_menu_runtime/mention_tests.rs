@@ -193,3 +193,18 @@ fn a_shell_without_a_catalog_keeps_the_dollar_plain() {
     assert!(!screen.contains("Skills"), "{screen}");
     assert_eq!(test.shell.composer.text(), "$rev");
 }
+
+#[test]
+fn super_r_waits_while_a_mention_menu_shows_matches() {
+    let mut test = shell();
+    let screen = press(&mut test, b"$rev\x1b[114;9u");
+    assert!(screen.contains(HEADER), "{screen}");
+    assert!(!screen.contains("switching sessions"), "{screen}");
+    let screen = press(&mut test, b"zzz\x1b[114;9u");
+    assert!(!screen.contains(HEADER), "{screen}");
+    assert!(
+        screen.contains("* session: submit or clear the draft before switching sessions"),
+        "{screen}"
+    );
+    assert!(test.sent().is_empty());
+}
