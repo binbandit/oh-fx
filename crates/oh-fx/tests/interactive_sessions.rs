@@ -1730,6 +1730,67 @@ fn a_resumed_shell_labels_saved_tool_results_and_drops_the_call_an_interruption_
 }
 
 #[test]
+fn a_resumed_provider_search_keeps_its_search_row() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let found = r#"{"results":[]}"#;
+    let arguments = json!({"query": "zig news", "allowed_domains": ["ziglang.org"]});
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "search the web"}})),
+            frame(
+                5,
+                &json!({"tool_call": {
+                    "call_id": "s1",
+                    "tool_name": "exa_search",
+                    "arguments_json": arguments.to_string(),
+                    "provider_result": found,
+                    "provenance": "provider_executed",
+                }}),
+            ),
+            frame(
+                6,
+                &json!({"tool_call": {
+                    "call_id": "s2",
+                    "tool_name": "parallel_search",
+                    "arguments_json": "[]",
+                    "argument_integrity": "non_object_json",
+                    "provider_result": found,
+                    "provenance": "provider_executed",
+                }}),
+            ),
+            saved_result(7, "s1", "exa_search", "success", found),
+            saved_result(8, "s2", "parallel_search", "success", found),
+            frame(9, &json!({"assistant": {"text": "Searched."}})),
+            frame(10, &json!({"turn_completed": {}})),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "Searched.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ search the web",
+                "├ Searched zig news | allowed: ziglang.org",
+                "└ Completed tool call",
+                "Searched.",
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+}
+
+#[test]
 fn a_resumed_subagent_row_reads_its_outcome_from_the_whole_saved_result() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
     let home = Home::new(&server.base_url());

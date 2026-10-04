@@ -20,7 +20,8 @@ use ofx_config::{
 use ofx_contract::{
     ActiveMode, ApprovalDecision, CallDescription, CapabilityResolver, DynamicTools,
     LivePermissionMode, ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId,
-    ReviewTransport, StatuslineToggles, Tool,
+    ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias, parse_tool_args_object,
+    provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -763,6 +764,11 @@ impl AgentSetup {
         tool_name: &str,
         arguments: &str,
     ) -> Option<CallDescription> {
+        if is_provider_search_alias(tool_name) {
+            return parse_tool_args_object(arguments)
+                .is_ok()
+                .then(|| provider_search_description(arguments));
+        }
         self.tools
             .iter()
             .chain([&self.delegation.tool])
