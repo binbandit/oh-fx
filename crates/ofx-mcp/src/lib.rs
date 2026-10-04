@@ -7,6 +7,7 @@ mod legacy_elicitation_runtime;
 mod legacy_http_sse;
 mod legacy_sse;
 mod legacy_streamable_http;
+mod local_inspection;
 mod mcp_contract;
 mod mcp_runtime;
 mod native_config;
@@ -36,6 +37,9 @@ mod workspace_config;
 
 pub use command_provider::{AddIntent, AddIntentError, is_valid_server_name, parse_add_intent};
 pub use error::McpError;
+pub use local_inspection::{
+    ConfiguredServer, LocalConfigInspection, ProfileConfigDiagnostic, inspect_local_config,
+};
 pub use mcp_contract::{
     ConfigScope, ConfigSource, DEFAULT_OPERATION_TIMEOUT_MS, DEFAULT_RESTART_LIMIT,
     DEFAULT_STARTUP_TIMEOUT_MS, EnvVar, HttpHeader, HttpHeaderEnv, InvalidServerConfig,
