@@ -88,6 +88,7 @@ impl TestShell {
             theme: Theme::builtin(false, true, true),
             theme_pinned: true,
             launch_row: 1,
+            tmux_history: None,
         };
         let shell = Shell::assemble(
             setup,

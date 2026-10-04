@@ -291,6 +291,10 @@ impl Terminal {
         }
     }
 
+    pub(crate) fn fatal_signal_wakeup(&self) -> Option<BorrowedFd<'_>> {
+        self.write_abort.as_ref().map(AsFd::as_fd)
+    }
+
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
         let abort = self.write_abort.as_ref().map(AsFd::as_fd);
         write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
@@ -527,6 +531,7 @@ pub(crate) mod test_pty {
     use std::time::{Duration, Instant};
 
     use ofx_testkit::{PtyPair, PtySession};
+    use rustix::event::{PollFd, PollFlags, Timespec};
     use rustix::termios::LocalModes;
 
     use super::{Capabilities, ColorSupport, HistoryReset, Terminal};
@@ -616,6 +621,20 @@ pub(crate) mod test_pty {
     pub(crate) fn type_ahead(pty: &PtyPair, terminal: &Terminal) {
         rustix::io::write(&pty.master, b"git push --force\r").unwrap();
         assert!(terminal.poll_input(Some(WAIT)).unwrap().readable);
+    }
+
+    pub(crate) fn read_written(pty: &PtyPair) -> Vec<u8> {
+        let mut written = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let quiet = Timespec::try_from(Duration::from_millis(50)).unwrap();
+        loop {
+            let mut fds = [PollFd::new(&pty.master, PollFlags::IN)];
+            if rustix::event::poll(&mut fds, Some(&quiet)).unwrap() == 0 {
+                return written;
+            }
+            let count = rustix::io::read(&pty.master, &mut buffer).unwrap();
+            written.extend_from_slice(&buffer[..count]);
+        }
     }
 
     pub(crate) fn unread_input(pty: &PtyPair) -> u64 {

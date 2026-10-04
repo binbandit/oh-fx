@@ -6,6 +6,7 @@ pub(crate) mod signal_pipe;
 mod theme_detection;
 mod theme_monitor;
 mod theme_protocol;
+mod tmux_history;
 
 use thiserror::Error;
 
@@ -18,6 +19,9 @@ pub(crate) use shell_runtime::test_pty;
 pub(crate) use shell_runtime::{ColorSupport, HistoryReset, Terminal};
 pub(crate) use theme_monitor::{FeedResult as ThemeMonitorFeed, Monitor as ThemeMonitor};
 pub(crate) use theme_monitor::{ThemeQuery, ThemeUpdate};
+pub(crate) use tmux_history::TmuxHistory;
+#[cfg(test)]
+pub(crate) use tmux_history::fake_tmux;
 
 const INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[>1u\x1b[?2004h\x1b[?7l";
 const TMUX_INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[?2004h\x1b[?7l";
