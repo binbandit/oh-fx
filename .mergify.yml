@@ -23,6 +23,14 @@ queue_rules:
     max_checks_retries: 2
     checks_timeout: 45 min
 
+priority_rules:
+  - name: priority label
+    conditions:
+      - base = main
+      - label = priority
+    priority: high
+    allow_checks_interruption: true
+
 merge_protections_settings:
   post_comment: false
   auto_merge_conditions:
