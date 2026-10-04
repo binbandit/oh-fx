@@ -216,3 +216,32 @@ async fn steering_left_by_a_cancelled_turn_runs_next_as_a_continuation() {
         ["read it".to_owned(), steered("use the backup instead")]
     );
 }
+
+#[tokio::test]
+async fn a_prompt_released_by_an_install_steers_the_turn_as_plain_text() {
+    let server = FakeServer::start([outside_read(), Reply::sse(&chat_text_events(&["Done."]))]);
+    let mut harness = Harness::start(&server).await;
+    write_skill(&harness.home, "install-pack", "new-skill");
+    let source = fs::canonicalize(harness.home.path().join("workspace/install-pack")).unwrap();
+    let (release, installer) = held_install_lock(&harness.home);
+    waiting_for_approval(&mut harness).await;
+    harness.command(&format!("/skills install {}", source.display()));
+    harness.submit("$new-skill check it");
+    settle_commands(&mut harness).await;
+    release.send(()).unwrap();
+    installer.join().unwrap();
+    harness
+        .until(|event| matches!(event, UiEvent::Notice { notice } if notice.body == "Installed: new-skill"))
+        .await;
+    approve(&harness);
+    let events = harness
+        .until(finished(TurnOutcome::Completed))
+        .await
+        .to_vec();
+    assert_eq!(started(&events), 0);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let body = requests[1].json();
+    assert_eq!(user_texts(&body)[1..], [steered("$new-skill check it")]);
+    assert!(!system_text(&body).contains("<skill_content name=\"new-skill\""));
+}
