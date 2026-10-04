@@ -84,6 +84,11 @@ impl SessionGrants {
         self.lock().clear();
     }
 
+    pub(crate) fn forget_commands(&self) {
+        self.lock()
+            .retain(|grant| !matches!(grant, SessionGrant::Command { .. }));
+    }
+
     pub(crate) fn snapshot(&self) -> Vec<SessionGrant> {
         self.lock().clone()
     }
