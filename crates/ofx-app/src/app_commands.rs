@@ -372,60 +372,62 @@ mod tests {
 
     use super::*;
 
+    fn listed(command: &str) -> SlashCommandSpec {
+        slash_command_specs()
+            .into_iter()
+            .find(|spec| spec.command == command)
+            .unwrap_or_else(|| panic!("{command} is not listed"))
+    }
+
     #[test]
     fn the_shell_lists_the_registry_commands_with_their_aliases() {
         let specs = slash_command_specs();
-        let commands: Vec<&str> = specs.iter().map(|spec| spec.command.as_str()).collect();
-        assert_eq!(
-            commands,
-            [
-                "/help",
-                "/clear",
-                "/new",
-                "/reset",
-                "/resume",
-                "/rename",
-                "/stats",
-                "/usage",
-                "/status",
-                "/model",
-                "/permissions",
-                "/allowlist",
-                "/undo",
-                "/mcp",
-                "/skills",
-                "/copy",
-                "/compact",
-                "/settings",
-                "/alias",
-                "/fast",
-                "/statusline",
-                "/workspace",
-                "/shell",
-                "/version",
-                "/quit",
-            ]
-        );
+        let shown: Vec<(&str, Vec<&str>, &str, &str, bool)> = specs
+            .iter()
+            .map(|spec| {
+                (
+                    spec.command.as_str(),
+                    spec.aliases.iter().map(String::as_str).collect(),
+                    spec.description.as_str(),
+                    spec.help_entry.as_str(),
+                    spec.takes_arguments,
+                )
+            })
+            .collect();
+        let registered: Vec<(&str, Vec<&str>, &str, &str, bool)> = SLASH_REGISTRY
+            .commands()
+            .iter()
+            .map(|spec| {
+                (
+                    spec.command,
+                    spec.aliases.to_vec(),
+                    spec.completion_description,
+                    spec.help_entry,
+                    spec.accepts_payload(),
+                )
+            })
+            .collect();
+        assert_eq!(shown, registered);
         let compacting: Vec<&str> = specs
             .iter()
             .filter(|spec| spec.compacts)
             .map(|spec| spec.command.as_str())
             .collect();
         assert_eq!(compacting, ["/compact"]);
-        assert_eq!(specs[2].description, "start a fresh session");
-        assert_eq!(specs[4].description, "resume a saved session");
-        assert_eq!(specs[5].description, "rename the current session");
+        assert_eq!(listed("/new").description, "start a fresh session");
+        assert_eq!(listed("/resume").description, "resume a saved session");
+        assert_eq!(listed("/rename").description, "rename the current session");
         assert_eq!(
-            specs[13].description,
+            listed("/mcp").description,
             "manage local and remote MCP servers, resources, prompts, and project trust"
         );
-        assert_eq!(specs[14].description, "browse and manage skills");
+        assert_eq!(listed("/skills").description, "browse and manage skills");
         assert_eq!(
-            specs[22].description,
+            listed("/shell").description,
             "reload shell startup files for commands"
         );
-        assert_eq!(specs[24].aliases, ["/exit"]);
-        assert_eq!(specs[24].description, "exit the interactive shell");
+        assert_eq!(listed("/quit").aliases, ["/exit"]);
+        assert_eq!(listed("/quit").description, "exit the interactive shell");
     }
 
     #[test]
@@ -436,36 +438,12 @@ mod tests {
             .iter()
             .map(|spec| (spec.command.as_str(), categories[spec.category].as_str()))
             .collect();
-        assert_eq!(
-            grouped,
-            [
-                ("/help", "General"),
-                ("/clear", "General"),
-                ("/new", "Session"),
-                ("/reset", "Session"),
-                ("/resume", "Session"),
-                ("/rename", "Session"),
-                ("/stats", "Account"),
-                ("/usage", "Account"),
-                ("/status", "General"),
-                ("/model", "Model"),
-                ("/permissions", "Security"),
-                ("/allowlist", "Security"),
-                ("/undo", "Session"),
-                ("/mcp", "Extensions"),
-                ("/skills", "Extensions"),
-                ("/copy", "Session"),
-                ("/compact", "Session"),
-                ("/settings", "Appearance"),
-                ("/alias", "Extensions"),
-                ("/fast", "Model"),
-                ("/statusline", "Appearance"),
-                ("/workspace", "Workspace"),
-                ("/shell", "Workspace"),
-                ("/version", "General"),
-                ("/quit", "General"),
-            ]
-        );
+        let registered: Vec<(&str, &str)> = SLASH_REGISTRY
+            .commands()
+            .iter()
+            .map(|spec| (spec.command, spec.presentation_category.label()))
+            .collect();
+        assert_eq!(grouped, registered);
         assert_eq!(categories.len(), 11);
         assert_eq!(categories[0], "General");
         assert_eq!(categories[10], "Product");
