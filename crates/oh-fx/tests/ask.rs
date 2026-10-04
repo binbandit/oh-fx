@@ -555,6 +555,30 @@ fn identical_shell_failures_in_consecutive_steps_stop_the_turn_with_the_upstream
 }
 
 #[test]
+fn repeated_shell_validation_failures_end_the_turn_with_the_upstream_notice() {
+    let invalid = r#"{"request":{"action":"run"}}"#;
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events("call_1", "shell", invalid)),
+        Reply::sse(&chat_tool_call_events("call_2", "shell", invalid)),
+        Reply::sse(&chat_text_events(&["must not be requested"])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let output = home.ask(&["ask", "--json", "go"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "Running command\nRunning command\n[notice] Repeated shell validation failures stopped the tool loop. The invalid shell calls were not executed and produced no shell effect.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0);
+    assert_eq!(result["output"], "");
+    assert_eq!(result["final_output"], "");
+    assert_eq!(result["steps"], 2);
+    assert!(result.get("error").is_none(), "{result}");
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[test]
 fn transient_failures_retry_with_upstream_notices_and_recovery_json() {
     let failure = r#"{"error":{"message":"boom"}}"#;
     let server = FakeServer::start([

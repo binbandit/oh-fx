@@ -38,7 +38,7 @@ use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvid
 use crate::prompt_context::Calibration;
 use crate::recovery_pause::RecoveryPause;
 use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
-use crate::tool_admission::ShellExecutionFailureRetry;
+use crate::tool_admission::{ShellExecutionFailureRetry, ShellValidationRetry};
 use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
 
@@ -68,6 +68,7 @@ const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
 const REPEATED_MALFORMED_ARGUMENTS_NOTICE: &str = "Repeated malformed tool arguments stopped the agent loop. The invalid calls were not executed. Continue with a follow-up prompt if needed.";
 const MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES: u32 = 3;
+const REPEATED_SHELL_VALIDATION_NOTICE: &str = "Repeated shell validation failures stopped the tool loop. The invalid shell calls were not executed and produced no shell effect.";
 const REPEATED_SHELL_EXECUTION_FAILURE_NOTICE: &str = "Repeated identical shell failures stopped the tool loop. The failed action was not retried again; inspect the environment or change the action before continuing.";
 const REPLAYED_MALFORMED_ARGUMENTS: &str = "{}";
 const FAST_UNAVAILABLE_NOTICE: &str =
@@ -184,6 +185,7 @@ struct Turn {
     summary_requested: bool,
     failures: HashMap<(String, String), u32>,
     malformed_batches: u32,
+    shell_corrections: ShellValidationRetry,
     shell_failures: ShellExecutionFailureRetry,
     fast_mode: bool,
     fast_notice_shown: bool,
@@ -457,6 +459,7 @@ impl Agent {
             summary_requested: false,
             failures: HashMap::new(),
             malformed_batches: 0,
+            shell_corrections: ShellValidationRetry::default(),
             shell_failures: ShellExecutionFailureRetry::default(),
             fast_mode: self.config.fast_mode,
             fast_notice_shown: false,
@@ -683,12 +686,11 @@ impl Agent {
             (FinishReason::Stop, false) if completion.tool_calls.iter().all(provider_executed) => {
                 self.run_batch(turn, completion, more_steps, events, cancel)
                     .await
-                    .map(|()| None)
             }
-            (FinishReason::ToolCalls, false) => self
-                .run_batch(turn, completion, more_steps, events, cancel)
-                .await
-                .map(|()| None),
+            (FinishReason::ToolCalls, false) => {
+                self.run_batch(turn, completion, more_steps, events, cancel)
+                    .await
+            }
             _ => Err(Stop::failed(TurnFailure::InvalidCompletion)),
         }
     }
@@ -974,8 +976,9 @@ impl Agent {
         more_steps: bool,
         events: EventSink<'_>,
         cancel: &CancellationToken,
-    ) -> Result<(), Stop> {
+    ) -> Result<Option<String>, Stop> {
         self.enter_tool_phase();
+        turn.shell_corrections.begin_batch();
         turn.shell_failures.begin_batch();
         turn.silent_tool_steps = if completion
             .content
@@ -1043,15 +1046,26 @@ impl Agent {
         if cancel.is_cancelled() {
             return Err(Stop::interrupted());
         }
+        self.settle_batch_retries(turn, all_malformed, more_steps, events)
+    }
+
+    fn settle_batch_retries(
+        &mut self,
+        turn: &mut Turn,
+        all_malformed: bool,
+        more_steps: bool,
+        events: EventSink<'_>,
+    ) -> Result<Option<String>, Stop> {
         turn.malformed_batches = if all_malformed {
             (turn.malformed_batches + 1).min(MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES)
         } else {
             0
         };
+        let corrections_repeated = turn.shell_corrections.finish_batch();
+        let failures_repeated = turn.shell_failures.finish_batch();
         if turn.malformed_batches == MAX_CONSECUTIVE_MALFORMED_ARGUMENT_BATCHES {
-            if more_steps && let Some(steering) = self.finalizing_steering() {
-                self.append_steering(turn.id, steering, events);
-                return Ok(());
+            if self.steered_at_finalizing(turn.id, more_steps, events) {
+                return Ok(None);
             }
             return Err(self.stop_with_notice(
                 turn.id,
@@ -1060,10 +1074,18 @@ impl Agent {
                 TurnFailure::RepeatedMalformedArguments,
             ));
         }
-        if turn.shell_failures.finish_batch() {
-            if more_steps && let Some(steering) = self.finalizing_steering() {
-                self.append_steering(turn.id, steering, events);
-                return Ok(());
+        if corrections_repeated {
+            if self.steered_at_finalizing(turn.id, more_steps, events) {
+                return Ok(None);
+            }
+            events(UiEvent::SystemNotice {
+                text: REPEATED_SHELL_VALIDATION_NOTICE.to_owned(),
+            });
+            return Ok(Some(String::new()));
+        }
+        if failures_repeated {
+            if self.steered_at_finalizing(turn.id, more_steps, events) {
+                return Ok(None);
             }
             return Err(self.stop_with_notice(
                 turn.id,
@@ -1072,7 +1094,20 @@ impl Agent {
                 TurnFailure::RepeatedShellExecutionFailure,
             ));
         }
-        Ok(())
+        Ok(None)
+    }
+
+    fn steered_at_finalizing(
+        &mut self,
+        turn_id: TurnId,
+        more_steps: bool,
+        events: EventSink<'_>,
+    ) -> bool {
+        let Some(steering) = more_steps.then(|| self.finalizing_steering()).flatten() else {
+            return false;
+        };
+        self.append_steering(turn_id, steering, events);
+        true
     }
 
     fn record_settled(&mut self, turn: &mut Turn, outcomes: Vec<Settled<'_>>) {
@@ -1095,6 +1130,8 @@ impl Agent {
                     saved.as_deref().unwrap_or(&call.arguments),
                     status,
                 );
+            } else {
+                turn.shell_corrections.observe(call, &output.content);
             }
             let shown_whole = output.model_view_covers_full_file == Some(true);
             let bytes = output.content.len();
