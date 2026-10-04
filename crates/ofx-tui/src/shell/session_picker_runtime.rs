@@ -212,6 +212,9 @@ impl Shell<'_> {
     }
 
     pub(super) fn open_all_sessions(&mut self) {
+        if self.skills_menu_visible() {
+            return;
+        }
         if self.composer.is_empty() {
             self.send(UiCommand::OpenSessions {
                 scope: SessionScope::AllWorkspaces,

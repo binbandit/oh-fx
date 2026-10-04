@@ -366,6 +366,19 @@ mod tests {
     }
 
     #[test]
+    fn super_r_leaves_an_open_skills_menu_alone() {
+        let mut test = TestShell::start();
+        open(&mut test, SkillMenuFocus::Start);
+        let screen = press(&mut test, b"\x1b[114;9u");
+        assert!(test.sent().is_empty());
+        assert!(test.shell.skills_menu.is_some());
+        assert!(screen.contains(HEADER), "{screen}");
+        let screen = press(&mut test, b"rev\x1b[114;9u");
+        assert!(test.sent().is_empty());
+        assert!(!screen.contains("switching sessions"), "{screen}");
+    }
+
+    #[test]
     fn show_focuses_a_skill_on_its_source_tab_or_filters_an_ambiguous_name() {
         let mut test = TestShell::start();
         open(&mut test, SkillMenuFocus::Item(1));
