@@ -1917,3 +1917,58 @@ fn a_shell_that_quit_unexpectedly_asks_before_continuing_a_paused_response() {
     }
     assert_eq!(server.requests().len(), 1);
 }
+
+#[test]
+fn a_paused_turn_a_compaction_left_open_is_committed_when_the_next_prompt_arrives() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    home.append(&id, &frame(4, &json!({"user": {"text": "fix the build"}})));
+    home.append(
+        &id,
+        &frame(
+            5,
+            &json!({"context_checkpoint": {"covers_through_seq": 3, "summary": "<summary>first question answered</summary>"}}),
+        ),
+    );
+    pause_a_response(&home, &id);
+    fs::write(
+        home.sessions().join(&id).join("owner.live"),
+        "{\"pid\":1,\"opened_at_ms\":1}\n",
+    )
+    .expect("leave an owner marker behind");
+
+    let session = home.shell(&["-c"], "quit unexpectedly");
+    assert_eq!(kinds(&home.frames(&id)).len(), 5);
+    session.send(b"next question\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    assert_eq!(
+        kinds(&home.frames(&id))[4..],
+        [
+            "context_checkpoint",
+            "interrupted",
+            "user",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+    let sent = chat(&server.requests()[1]);
+    assert!(
+        sent.iter()
+            .any(|(role, content)| role == "user" && content == "fix the build"),
+        "{sent:?}"
+    );
+    assert_eq!(
+        sent.last(),
+        Some(&("user".to_owned(), "next question".to_owned()))
+    );
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+}

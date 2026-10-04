@@ -1,5 +1,5 @@
 use ofx_contract::{HistoryEntry, Notice, NoticeTone};
-use ofx_session::{PendingRecovery, SessionError, WritableSession};
+use ofx_session::{PendingRecovery, WritableSession};
 
 pub(crate) const RECOVERY_TOPIC: &str = "recovery";
 const CONTINUES_AUTOMATICALLY: &str = "model response recovery paused and continues automatically";
@@ -12,34 +12,29 @@ pub(super) struct ShellRecovery {
     pub(super) pending: Option<PendingRecovery>,
 }
 
-pub(super) fn shell_recovery(
-    session: &mut WritableSession,
-) -> Result<Option<ShellRecovery>, SessionError> {
+pub(super) fn shell_recovery(session: &mut WritableSession) -> Option<ShellRecovery> {
     let unclean = session.previous_owner_died() || session.recovery_was_asked();
-    if unclean {
-        session.settle_open_recovery()?;
-    }
     let Some(shown) = session.recovery_transcript() else {
-        return Ok(None);
+        return None;
     };
     let mut entries = shown.entries;
     if unclean {
         session.mark_recovery_asked();
         entries.push(warning(NOT_RESTARTED));
-        return Ok(Some(ShellRecovery {
+        return Some(ShellRecovery {
             entries,
             pending: None,
-        }));
+        });
     }
     entries.push(warning(if shown.uncertain_tool {
         CONTINUES_WITH_UNCERTAIN_TOOL
     } else {
         CONTINUES_AUTOMATICALLY
     }));
-    Ok(Some(ShellRecovery {
+    Some(ShellRecovery {
         entries,
         pending: session.take_recovery(),
-    }))
+    })
 }
 
 fn warning(body: &str) -> HistoryEntry {

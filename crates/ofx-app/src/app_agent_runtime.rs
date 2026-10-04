@@ -499,6 +499,13 @@ impl Controller {
             if self.installation.is_none()
                 && let Some(prompt) = self.state.worker.take_next()
             {
+                if prompt.recovered.is_none() {
+                    let settled = self
+                        .persistence
+                        .as_mut()
+                        .and_then(|persistence| persistence.settle_open_recovery(&mut self.agent));
+                    self.session_notice(settled);
+                }
                 if !self.run_turn(&prompt, commands).await {
                     return;
                 }
