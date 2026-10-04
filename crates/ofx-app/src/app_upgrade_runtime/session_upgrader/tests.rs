@@ -87,7 +87,11 @@ fn a_found_release_reports_upgrading_then_ready_and_stops_checking() {
         QUICK,
     );
     assert_eq!(next_label(&started.labels), "upgrading to 0.3.0...");
-    assert_eq!(next_label(&started.labels), "update ready: restart oh-fx");
+    assert_eq!(
+        next_label(&started.labels),
+        "update ready: ctrl+g to reload"
+    );
+    assert!(started.upgrader.readiness().ready());
     thread::sleep(Duration::from_millis(20));
     assert_eq!(started.checks.try_iter().count(), 2);
 }
@@ -104,6 +108,7 @@ fn a_failed_install_reports_upgrade_failed_until_the_next_check_clears_it() {
     );
     assert_eq!(next_label(&started.labels), "upgrading to 1.2.3...");
     assert_eq!(next_label(&started.labels), "upgrade failed");
+    assert!(!started.upgrader.readiness().ready());
     assert_eq!(next_label(&started.labels), "");
 }
 

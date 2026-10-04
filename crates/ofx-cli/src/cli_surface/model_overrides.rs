@@ -6,6 +6,8 @@ use ofx_contract::ReasoningEffort;
 use super::arg_stream::{ArgStream, MissingValue, ValueForm, merge_toggle, non_blank};
 use super::launch_modifiers::GlobalLaunchError;
 
+pub const ULTRAFAST_ARG: &str = "--ultrafast";
+
 pub(crate) enum ModelOverride {
     Model(OsString),
     Setting,
@@ -41,7 +43,7 @@ impl ModelOverrides {
             if enabled {
                 self.ultrafast = Some(false);
             }
-        } else if let Some(enabled) = args.take_toggle("--ultrafast", "--no-ultrafast") {
+        } else if let Some(enabled) = args.take_toggle(ULTRAFAST_ARG, "--no-ultrafast") {
             let ultrafast = merge_toggle(
                 self.ultrafast,
                 enabled,
