@@ -19,6 +19,7 @@ zeroize.workspace = true
 [dev-dependencies]
 ofx-testkit.workspace = true
 rustix = { workspace = true, features = ["pty"] }
+tempfile.workspace = true
 unicode-width.workspace = true
 vt100.workspace = true
 

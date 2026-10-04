@@ -90,7 +90,7 @@ use crate::row_text::Row;
 use crate::terminal::signal_pipe::SignalPipe;
 use crate::terminal::{
     CONFIRMATION_TAG_COLUMN, ColorSupport, ExitCleanup, HistoryReset, Layout, StartupViewport,
-    Terminal, TerminalError, interactive_mode_enable_sequence,
+    Terminal, TerminalError, TmuxHistory, interactive_mode_enable_sequence,
 };
 use crate::theme::Theme;
 use crate::transcript::history_replay::replayed_entries;
@@ -224,6 +224,7 @@ impl ActiveTurn {
 
 pub(crate) struct Shell<'a> {
     terminal: Terminal,
+    tmux_history: Option<TmuxHistory>,
     input: TerminalInput,
     composer: Composer,
     history: HistoryRecorder,
@@ -327,6 +328,7 @@ struct Setup {
     theme: Theme,
     theme_pinned: bool,
     launch_row: u16,
+    tmux_history: Option<TmuxHistory>,
 }
 
 impl<'a> Shell<'a> {
@@ -382,6 +384,7 @@ impl<'a> Shell<'a> {
             theme,
             theme_pinned,
             launch_row: plan.launch_row,
+            tmux_history: TmuxHistory::detect(),
         };
         Ok(Self::assemble(setup, options, events, clipboard, send))
     }
@@ -432,6 +435,7 @@ impl<'a> Shell<'a> {
         let statusline = Statusline::new(options.statusline, options.workspace_identity.take());
         let mut shell = Self {
             terminal: setup.terminal,
+            tmux_history: setup.tmux_history,
             input: setup.input,
             composer,
             history,
@@ -648,19 +652,10 @@ impl<'a> Shell<'a> {
             banner.len() + 1
         };
         let tail_gap = self.transcript.tail_wants_footer_gap();
-        let composer = self.frame.composer.take().unwrap_or_else(|| {
-            match (&mut self.approval, &self.question) {
-                (Some(prompt), _) => prompt.view(&self.theme, self.layout, banner_rows),
-                (None, Some(prompt)) => prompt.composer_view(&self.theme, self.layout.cols),
-                (None, None) if self.statusline_menu.is_some() => ComposerView::hidden(),
-                (None, None) => composer_view(
-                    &self.composer,
-                    self.layout.cols,
-                    input_row_limit(usize::from(self.layout.content_bottom)),
-                    &self.theme,
-                ),
-            }
-        });
+        let composer = match self.frame.composer.take() {
+            Some(composer) => composer,
+            None => self.composer_frame_view(banner_rows),
+        };
         let input_extra = composer.rows.len().saturating_sub(1);
         let column = if menu_band.is_none() {
             self.inline_column_band(input_extra, banner_rows)
@@ -700,6 +695,7 @@ impl<'a> Shell<'a> {
         );
         self.frame.composer = Some(composer);
         self.footer_row = live.footer_row;
+        self.clear_tmux_history();
         self.renderer.present(
             &Frame {
                 appended: &appended,
@@ -735,6 +731,20 @@ impl<'a> Shell<'a> {
         let catalog_menu = self.catalog_menu_band();
         let (hint, warning_included) = self.hint_row(catalog_menu.as_ref().map(|(_, hint)| *hint));
         (catalog_menu.map(|(rows, _)| rows), hint, warning_included)
+    }
+
+    fn composer_frame_view(&mut self, banner_rows: usize) -> ComposerView {
+        match (&mut self.approval, &self.question) {
+            (Some(prompt), _) => prompt.view(&self.theme, self.layout, banner_rows),
+            (None, Some(prompt)) => prompt.composer_view(&self.theme, self.layout.cols),
+            (None, None) if self.statusline_menu.is_some() => ComposerView::hidden(),
+            (None, None) => composer_view(
+                &self.composer,
+                self.layout.cols,
+                input_row_limit(usize::from(self.layout.content_bottom)),
+                &self.theme,
+            ),
+        }
     }
 
     fn catalog_menu_band(&self) -> Option<(Vec<Row>, MenuHint)> {
@@ -782,6 +792,14 @@ impl<'a> Shell<'a> {
             self.banner_rows().len(),
             max_rows,
         )
+    }
+
+    fn clear_tmux_history(&self) {
+        if let Some(tmux) = &self.tmux_history
+            && self.renderer.screen_reset_pending()
+        {
+            tmux.clear(&self.terminal);
+        }
     }
 
     fn hint_row(&self, menu_hint: Option<MenuHint>) -> (Row, bool) {
@@ -1089,7 +1107,39 @@ mod tests {
 
     use super::*;
     use crate::output::activity_status::ACTIVITY_BLINK_HALF_PERIOD_MS;
+    use crate::terminal::fake_tmux::FakeTmux;
     use crate::terminal::test_pty;
+
+    #[test]
+    fn a_reset_inside_tmux_clears_the_pane_and_its_history_before_the_frame() {
+        let fake = FakeTmux::new(0, 0);
+        let mut test = test_shell::TestShell::start();
+        test.shell.tmux_history = Some(TmuxHistory::with_program(fake.program(), "%3"));
+        test.screen();
+        test.type_bytes(b"x");
+        test.step();
+        test.screen();
+        assert!(fake.calls().is_empty());
+        test.resize(24, 100);
+        let written = test.written();
+        assert!(
+            written.starts_with(
+                "\x1b[0m\x1b[2J\x1b[3J\x1b[H\x1b[?2026h\x1b[?25l\x1b[0m\x1b[2J\x1b[3J"
+            ),
+            "{written:?}"
+        );
+        assert_eq!(
+            fake.calls(),
+            [
+                "capture-pane|-p|-t|%3|",
+                "run-shell|-C|-t|%3|#{?pane_in_mode,,clear-history -t #{pane_id}}|"
+            ]
+        );
+        test.type_bytes(b"\x0c");
+        test.step();
+        test.screen();
+        assert_eq!(fake.calls().len(), 4);
+    }
 
     #[test]
     fn a_replay_rewrites_at_most_the_last_256_kib_of_the_transcript() {

@@ -722,6 +722,77 @@ fn a_screen_cleared_behind_the_shell_is_redrawn_on_the_next_key() {
 }
 
 #[test]
+fn a_resize_inside_tmux_clears_the_pane_history_through_tmux() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let bin = home.root.join("bin");
+    fs::create_dir_all(&bin).expect("create the bin directory");
+    let calls = home.root.join("tmux-calls");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s|' \"$@\" >> '{}'\nprintf '\\n' >> '{}'\n",
+        calls.display(),
+        calls.display()
+    );
+    fs::write(bin.join("tmux"), script).expect("write the fake tmux");
+    fs::set_permissions(bin.join("tmux"), fs::Permissions::from_mode(0o755))
+        .expect("make the fake tmux executable");
+    let mut command = home.command();
+    command
+        .env("TMUX", "/tmp/tmux-1/default,1,0")
+        .env("TMUX_PANE", "%9")
+        .env("PATH", &bin);
+    let mut session = PtySession::spawn(command, 24, 80).expect("spawn oh-fx in a pty");
+    wait(&session, "auto · model-a");
+    assert!(!calls.exists());
+    session.resize(20, 70).expect("resize the pty");
+    let deadline = Instant::now() + WAIT;
+    while fs::read_to_string(&calls)
+        .unwrap_or_default()
+        .matches('\n')
+        .count()
+        < 2
+    {
+        assert!(Instant::now() < deadline, "tmux was never asked to clear");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        fs::read_to_string(&calls).expect("read the tmux calls"),
+        "capture-pane|-p|-t|%9|\nrun-shell|-C|-t|%9|#{?pane_in_mode,,clear-history -t #{pane_id}}|\n"
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn a_tmux_that_never_answers_holds_neither_the_frame_nor_a_sigterm() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let bin = home.root.join("bin");
+    fs::create_dir_all(&bin).expect("create the bin directory");
+    fs::write(bin.join("tmux"), "#!/bin/sh\nexec /bin/sleep 30\n").expect("write the fake tmux");
+    fs::set_permissions(bin.join("tmux"), fs::Permissions::from_mode(0o755))
+        .expect("make the fake tmux executable");
+    let mut command = home.command();
+    command
+        .env("TMUX", "/tmp/tmux-1/default,1,0")
+        .env("TMUX_PANE", "%9")
+        .env("PATH", &bin);
+    let mut session = PtySession::spawn(command, 24, 80).expect("spawn oh-fx in a pty");
+    wait(&session, "auto · model-a");
+    session.send(b"\x0c");
+    session.send(b"after");
+    wait(&session, "\u{2503} after");
+    session.send(b"\x0c");
+    thread::sleep(Duration::from_millis(50));
+    session.terminate().unwrap();
+    let status = session
+        .wait_exit(WAIT)
+        .expect("SIGTERM ends a shell waiting for tmux");
+    assert_eq!(status.signal(), Some(SIGTERM));
+    assert!(session.cooked().unwrap());
+}
+
+#[test]
 fn tmux_sessions_never_probe_for_a_native_clear() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&settings(&server.base_url()));

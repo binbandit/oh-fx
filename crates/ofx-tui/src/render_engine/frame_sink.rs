@@ -21,6 +21,8 @@ pub(crate) trait FrameSink {
 
     fn reset_screen(&mut self);
 
+    fn screen_reset_pending(&self) -> bool;
+
     fn release_screen(&mut self);
 
     fn flush_queued(&mut self, out: &mut String);
@@ -242,6 +244,10 @@ impl FrameSink for LiveRegionRenderer {
         self.rows = usize::from(rows.max(1));
         self.cols = usize::from(cols.max(1));
         self.valid = false;
+    }
+
+    fn screen_reset_pending(&self) -> bool {
+        self.in_frame.contains(CLEAR_SCREEN_AND_HISTORY)
     }
 
     fn live_row(&self, index: usize) -> u16 {
