@@ -2891,6 +2891,7 @@ mod file_evidence;
 mod interrupted_closure;
 mod malformed_arguments;
 mod modes;
+mod prefill_retry;
 mod project_context;
 mod provider_executed;
 mod recovery;

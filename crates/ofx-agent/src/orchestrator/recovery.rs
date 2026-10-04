@@ -5,11 +5,17 @@ use ofx_contract::{
     ChatMessage, ModelRecoveryCause, ProviderError, RecoveryStrategy, ToolChoice, TurnId, UiEvent,
 };
 
-use super::{EventSink, Turn};
+use super::{Agent, EventSink, Stop, Turn, TurnFailure};
 use crate::assistant_stream::LanguageStage;
-use crate::model_response_recovery::{Output, Strategy, ToolEvidence, failed_in_stream};
+use crate::model_response_recovery::{
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, Output, Strategy, ToolEvidence, failed_in_stream,
+};
 
 const RESPONSE_RESTARTED: &str = "\n\n[Response interrupted. Restarting.]\n\n";
+const PREFILL_CONTINUATION: &str = "Continue from the preceding tool result.";
+const PREFILL_UNSUPPORTED: &str = "does not support assistant message prefill";
+const USER_TAIL_REQUIRED: &str = "must end with a user message";
+const BAD_REQUEST: u16 = 400;
 
 const CONTINUE_RESPONSE: &str = "The previous response was interrupted. Restart that response from the beginning using the completed tool results above. Do not repeat completed tool actions.";
 const REGENERATE_TOOL: &str = "The previous response ended during an incomplete tool call. fx did not execute that call. Recreate it only if it is still needed.";
@@ -56,7 +62,7 @@ pub(super) fn recovery_tool_choice(recovery: Option<RecoveryStrategy>) -> ToolCh
 pub(super) struct Restart<'a> {
     interrupted: String,
     latest: String,
-    messages: Option<Cow<'a, [ChatMessage]>>,
+    messages: Cow<'a, [ChatMessage]>,
 }
 
 #[derive(Debug, Default)]
@@ -66,7 +72,7 @@ pub(super) struct RestoredReply {
 }
 
 impl<'a> Restart<'a> {
-    pub(super) fn begin(turn: &mut Turn, events: EventSink<'_>) -> Self {
+    pub(super) fn begin(turn: &mut Turn, sent: &'a [ChatMessage], events: EventSink<'_>) -> Self {
         let RestoredReply {
             mut source,
             presented,
@@ -88,7 +94,7 @@ impl<'a> Restart<'a> {
         Self {
             interrupted: source,
             latest: String::new(),
-            messages: None,
+            messages: Cow::Borrowed(sent),
         }
     }
 
@@ -121,9 +127,22 @@ impl<'a> Restart<'a> {
         observed: ToolEvidence,
         stage: &LanguageStage,
     ) -> bool {
-        cause == ModelRecoveryCause::ProviderUnavailable
-            && self.source(stage).is_empty()
-            && observed == ToolEvidence::None
+        cause == ModelRecoveryCause::ProviderUnavailable && self.unsent(observed, stage)
+    }
+
+    fn unsent(&self, observed: ToolEvidence, stage: &LanguageStage) -> bool {
+        self.source(stage).is_empty() && observed == ToolEvidence::None
+    }
+
+    fn rejected_prefill(
+        &self,
+        error: &ProviderError,
+        observed: ToolEvidence,
+        stage: &LanguageStage,
+    ) -> bool {
+        rejects_prefill(error)
+            && ends_with_tool_result(&self.messages)
+            && self.unsent(observed, stage)
     }
 
     fn output(&self, stage: &LanguageStage) -> Output {
@@ -158,12 +177,19 @@ impl<'a> Restart<'a> {
         true
     }
 
-    pub(super) fn messages<'b>(&'b self, sent: &'b [ChatMessage]) -> &'b [ChatMessage] {
-        self.messages.as_deref().unwrap_or(sent)
+    pub(super) fn messages(&self) -> &[ChatMessage] {
+        &self.messages
     }
 
     pub(super) fn resend(&mut self, messages: Cow<'a, [ChatMessage]>) {
-        self.messages = Some(messages);
+        self.messages = messages;
+    }
+
+    pub(super) fn failed(self, error: ProviderError) -> Stop {
+        Stop::Failed {
+            failure: TurnFailure::Provider(error),
+            partial: self.into_partial(),
+        }
     }
 
     pub(super) fn into_partial(self) -> String {
@@ -179,5 +205,66 @@ pub(super) fn restarted(turn_id: TurnId) -> UiEvent {
     UiEvent::AssistantRestarted {
         turn_id,
         text: RESPONSE_RESTARTED.to_owned(),
+    }
+}
+
+fn ends_with_tool_result(sent: &[ChatMessage]) -> bool {
+    matches!(sent.last(), Some(ChatMessage::Tool { .. }))
+}
+
+fn rejects_prefill(error: &ProviderError) -> bool {
+    error.status == Some(BAD_REQUEST)
+        && error.detail.as_deref().is_some_and(|detail| {
+            detail.contains(PREFILL_UNSUPPORTED) && detail.contains(USER_TAIL_REQUIRED)
+        })
+}
+
+impl Agent {
+    pub(super) fn asks_again<'a>(
+        &'a self,
+        turn: &mut Turn,
+        (error, observed, attempt): (&ProviderError, ToolEvidence, usize),
+        restart: &mut Restart<'a>,
+    ) -> bool {
+        let rejected = turn.continuation.is_none()
+            && attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS
+            && restart.rejected_prefill(error, observed, &turn.language.stage);
+        if rejected {
+            turn.continuation = Some(PREFILL_CONTINUATION);
+            restart.resend(self.request_messages(turn));
+        }
+        rejected
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ofx_contract::{ProviderErrorKind, ToolCallId, ToolResultStatus};
+
+    use super::*;
+
+    #[test]
+    fn assistant_prefill_rejection_recovers_after_any_tool_result_tail() {
+        let rejected = |status, detail: &str| {
+            let mut error = ProviderError::new(ProviderErrorKind::InvalidRequest, "BadRequest");
+            error.status = Some(status);
+            error.detail = Some(detail.to_owned());
+            error
+        };
+        let detail = "AI_APICallError: This model does not support assistant message prefill. The conversation must end with a user message.";
+        let after_tool = [
+            ChatMessage::user("go"),
+            ChatMessage::Tool {
+                call_id: ToolCallId::new("call"),
+                tool_name: "subagent".to_owned(),
+                content: "failed".to_owned(),
+                status: ToolResultStatus::Failure,
+            },
+        ];
+        assert!(rejects_prefill(&rejected(400, detail)));
+        assert!(ends_with_tool_result(&after_tool));
+        assert!(!rejects_prefill(&rejected(400, "other failure")));
+        assert!(!rejects_prefill(&rejected(429, detail)));
+        assert!(!ends_with_tool_result(&[ChatMessage::user("go")]));
     }
 }
