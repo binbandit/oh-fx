@@ -11,6 +11,7 @@ mod approval_queue;
 mod codex_provider;
 mod context;
 mod file_mention_runtime;
+mod herdr;
 mod model_cache_runtime;
 mod modes;
 mod native;

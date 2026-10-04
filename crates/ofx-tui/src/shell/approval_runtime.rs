@@ -225,6 +225,7 @@ impl Shell<'_> {
                 decision: ApprovalDecision::Deny,
             });
         }
+        self.foreground(super::ForegroundState::Blocked, Some(b"permission"));
         self.invalidate();
     }
 
