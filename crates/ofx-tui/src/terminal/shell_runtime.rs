@@ -16,18 +16,20 @@ use super::app_lifecycle;
 use super::cursor_probe::{CursorPosition, find_position_response, find_position_span};
 use super::theme_detection::{THEME_ENV, ThemeDetection, configured_theme, detect_theme_with};
 use super::theme_protocol::{
-    TerminalBackground, find_osc11_reply, parse_osc11_response, truecolor_supported_for_values,
+    TerminalBackground, find_osc11_reply, parse_osc11_response, trailing_primary_device_attributes,
+    truecolor_supported_for_values,
 };
 use super::{
-    CURSOR_POSITION_QUERY, Layout, THEME_BACKGROUND_QUERY, THEME_BACKGROUND_QUERY_WITH_FENCE,
-    THEME_COLOR_SCHEME_QUERY, THEME_NOTIFICATION_ENABLE_SEQUENCE, THEME_RESPONSE_FENCE_QUERY,
-    TerminalError, interactive_mode_enable_sequence,
+    CURSOR_POSITION_QUERY, Layout, THEME_BACKGROUND_QUERY_WITH_FENCE, THEME_COLOR_SCHEME_QUERY,
+    THEME_NOTIFICATION_ENABLE_SEQUENCE, THEME_RESPONSE_FENCE_QUERY, TerminalError,
+    interactive_mode_enable_sequence,
 };
 
 const CURSOR_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const BACKGROUND_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 const ABNORMAL_RESTORE_WAIT: Duration = Duration::from_millis(100);
 const PROBE_REPLY_LIMIT: usize = 64;
+const FENCED_BACKGROUND_REPLY_LIMIT: usize = 192;
 const CONTROLLING_TERMINAL: &CStr = c"/dev/tty";
 const SYNC_UPDATES_ENV: &str = "OH_FX_SYNC_UPDATES";
 const LEGACY_SYNC_UPDATES_ENV: &str = "FLASH_SYNC_UPDATES";
@@ -205,7 +207,7 @@ impl Terminal {
 
     pub(crate) fn query_cursor_position(&mut self) -> Result<CursorPosition, TerminalError> {
         self.write_all(CURSOR_POSITION_QUERY.as_bytes())?;
-        let reply = self.read_reply(CURSOR_PROBE_TIMEOUT, |bytes| {
+        let reply = self.read_reply(CURSOR_PROBE_TIMEOUT, PROBE_REPLY_LIMIT, |bytes| {
             find_position_span(bytes).map(|(span, _)| span)
         })?;
         reply
@@ -214,11 +216,19 @@ impl Terminal {
     }
 
     pub(crate) fn query_background(&mut self) -> Option<TerminalBackground> {
-        self.write_all(THEME_BACKGROUND_QUERY.as_bytes()).ok()?;
-        let reply = self
-            .read_reply(BACKGROUND_PROBE_TIMEOUT, find_osc11_reply)
-            .ok()??;
-        parse_osc11_response(&reply)
+        self.write_all(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
+            .ok()?;
+        let unclaimed = self.typeahead.len();
+        let fenced = self.read_reply(
+            BACKGROUND_PROBE_TIMEOUT,
+            FENCED_BACKGROUND_REPLY_LIMIT,
+            |bytes| trailing_primary_device_attributes(bytes).map(|start| start..bytes.len()),
+        );
+        let span = find_osc11_reply(&self.typeahead[unclaimed..])
+            .map(|span| span.start + unclaimed..span.end + unclaimed);
+        let reply: Option<Vec<u8>> = span.map(|span| self.typeahead.drain(span).collect());
+        fenced.ok()?;
+        parse_osc11_response(&reply?)
     }
 
     pub(crate) fn take_typeahead(&mut self) -> Vec<u8> {
@@ -299,12 +309,13 @@ impl Terminal {
     fn read_reply(
         &mut self,
         timeout: Duration,
+        limit: usize,
         find: impl Fn(&[u8]) -> Option<Range<usize>>,
     ) -> Result<Option<Vec<u8>>, TerminalError> {
         let deadline = Instant::now() + timeout;
-        let mut received = Vec::with_capacity(PROBE_REPLY_LIMIT);
+        let mut received = Vec::with_capacity(limit);
         let mut reply = None;
-        while received.len() < PROBE_REPLY_LIMIT {
+        while received.len() < limit {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
@@ -1228,7 +1239,7 @@ mod tests {
         let pty = test_pty::open();
         let mut terminal = test_pty::terminal(&pty);
         terminal.enable_raw_mode().unwrap();
-        rustix::io::write(&pty.master, b"ab\x1b]11;rgb:0000/0000/0000\x07").unwrap();
+        rustix::io::write(&pty.master, b"ab\x1b]11;rgb:0000/0000/0000\x07\x1b[?1;2c").unwrap();
         assert!(!terminal.query_background().unwrap().light);
         rustix::io::write(&pty.master, b"cd\x1b[7;3Re").unwrap();
         assert_eq!(
@@ -1243,7 +1254,7 @@ mod tests {
         assert_eq!(
             read_master(&pty),
             [
-                THEME_BACKGROUND_QUERY,
+                THEME_BACKGROUND_QUERY_WITH_FENCE,
                 CURSOR_POSITION_QUERY,
                 CURSOR_POSITION_QUERY
             ]
@@ -1254,14 +1265,51 @@ mod tests {
     }
 
     #[test]
-    fn background_query_parses_the_osc_11_reply() {
+    fn background_query_parses_the_osc_11_reply_and_consumes_its_fence() {
         let pty = test_pty::open();
         let mut terminal = test_pty::terminal(&pty);
         terminal.enable_raw_mode().unwrap();
-        rustix::io::write(&pty.master, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\").unwrap();
+        rustix::io::write(&pty.master, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;22c").unwrap();
         let background = terminal.query_background().unwrap();
         assert!(background.light);
-        assert!(read_master(&pty).starts_with(THEME_BACKGROUND_QUERY.as_bytes()));
+        assert!(terminal.take_typeahead().is_empty());
+        assert_eq!(
+            read_master(&pty),
+            THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes()
+        );
+        terminal.disable_raw_mode();
+    }
+
+    #[test]
+    fn a_terminal_that_ignores_osc_11_ends_the_probe_at_the_fence() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        terminal.enable_raw_mode().unwrap();
+        rustix::io::write(&pty.master, b"\x1b[?62;22ctyped").unwrap();
+        assert_eq!(terminal.query_background(), None);
+        assert!(terminal.take_typeahead().is_empty());
+        let mut unread = [0_u8; 8];
+        let count = rustix::io::read(&terminal.input, &mut unread).unwrap();
+        assert_eq!(&unread[..count], b"typed");
+        assert_eq!(
+            read_master(&pty),
+            THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes()
+        );
+        terminal.disable_raw_mode();
+    }
+
+    #[test]
+    fn input_around_the_fenced_background_reply_is_kept_as_typeahead() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        terminal.enable_raw_mode().unwrap();
+        rustix::io::write(&pty.master, b"ab\x1b]11;rgb:0000/0000/0000\x07cd\x1b[?1;2c").unwrap();
+        assert!(!terminal.query_background().unwrap().light);
+        assert_eq!(terminal.take_typeahead(), b"abcd");
+        assert_eq!(
+            read_master(&pty),
+            THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes()
+        );
         terminal.disable_raw_mode();
     }
 
@@ -1469,8 +1517,8 @@ mod tests {
             let output = test_pty::wait_output(&session, expected.as_bytes());
             assert!(session.wait_exit(test_pty::WAIT).unwrap().success());
             let queried = output
-                .windows(THEME_BACKGROUND_QUERY.len())
-                .any(|window| window == THEME_BACKGROUND_QUERY.as_bytes());
+                .windows(THEME_BACKGROUND_QUERY_WITH_FENCE.len())
+                .any(|window| window == THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes());
             assert_eq!(queried, probed, "{env:?}");
         }
     }

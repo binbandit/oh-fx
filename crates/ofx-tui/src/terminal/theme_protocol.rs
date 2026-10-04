@@ -2,6 +2,7 @@ use std::ops::Range;
 
 const OSC11_REPLY_PREFIX: &[u8] = b"\x1b]11;";
 const OSC11_RGB_PREFIX: &[u8] = b"\x1b]11;rgb:";
+const PRIMARY_DEVICE_ATTRIBUTES_PREFIX: &[u8] = b"\x1b[?";
 const LIGHT_LUMINANCE_THRESHOLD: u32 = 32768;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +16,42 @@ pub(crate) struct Rgb {
 pub(crate) struct TerminalBackground {
     pub(crate) light: bool,
     pub(crate) rgb: Rgb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseStatus {
+    Invalid,
+    Pending,
+    Complete,
+}
+
+pub(crate) fn classify_primary_device_attributes(bytes: &[u8]) -> ResponseStatus {
+    if PRIMARY_DEVICE_ATTRIBUTES_PREFIX.starts_with(bytes) {
+        return ResponseStatus::Pending;
+    }
+    let Some(parameters) = bytes.strip_prefix(PRIMARY_DEVICE_ATTRIBUTES_PREFIX) else {
+        return ResponseStatus::Invalid;
+    };
+    let mut expect_digit = true;
+    for (index, byte) in parameters.iter().enumerate() {
+        match byte {
+            b'0'..=b'9' => expect_digit = false,
+            b';' if !expect_digit => expect_digit = true,
+            b'c' if !expect_digit && index + 1 == parameters.len() => {
+                return ResponseStatus::Complete;
+            }
+            _ => return ResponseStatus::Invalid,
+        }
+    }
+    ResponseStatus::Pending
+}
+
+pub(crate) fn trailing_primary_device_attributes(bytes: &[u8]) -> Option<usize> {
+    let start = bytes
+        .windows(PRIMARY_DEVICE_ATTRIBUTES_PREFIX.len())
+        .rposition(|window| window == PRIMARY_DEVICE_ATTRIBUTES_PREFIX)?;
+    (classify_primary_device_attributes(&bytes[start..]) == ResponseStatus::Complete)
+        .then_some(start)
 }
 
 pub(crate) fn find_osc11_reply(bytes: &[u8]) -> Option<Range<usize>> {
@@ -123,6 +160,57 @@ mod tests {
     fn truecolor_supported_for_values_defaults_to_truecolor_for_unknown_terminals() {
         assert!(truecolor_supported_for_values(None, None));
         assert!(truecolor_supported_for_values(None, Some("ghostty")));
+    }
+
+    #[test]
+    fn the_device_attributes_fence_ends_the_background_probe() {
+        let dark = b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\\x1b[?62;22c";
+        let fence = trailing_primary_device_attributes(dark).unwrap();
+        assert!(!parse_osc11_response(&dark[..fence]).unwrap().light);
+        let light = b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?1;2c";
+        let fence = trailing_primary_device_attributes(light).unwrap();
+        assert!(parse_osc11_response(&light[..fence]).unwrap().light);
+        assert_eq!(trailing_primary_device_attributes(b"\x1b[?62;22c"), Some(0));
+    }
+
+    #[test]
+    fn the_background_probe_keeps_reading_until_the_fence_completes() {
+        for pending in [
+            &b"\x1b]11;rgb:cccc/cccc/cc"[..],
+            b"\x1b]11;rgb:cccc/cccc/cccc\x1b\\",
+            b"\x1b]11;rgb:cccc/cccc/cccc\x1b\\\x1b[?62;2",
+            b"\x1b[?c",
+            b"\x1b[?62;c",
+            b"",
+        ] {
+            assert_eq!(
+                trailing_primary_device_attributes(pending),
+                None,
+                "{pending:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_device_attributes_replies_are_classified_as_upstream_does() {
+        for (bytes, status) in [
+            (&b"\x1b"[..], ResponseStatus::Pending),
+            (b"\x1b[?", ResponseStatus::Pending),
+            (b"\x1b[?62;22", ResponseStatus::Pending),
+            (b"\x1b[?62;22c", ResponseStatus::Complete),
+            (b"\x1b[?1;2c", ResponseStatus::Complete),
+            (b"\x1b[?c", ResponseStatus::Invalid),
+            (b"\x1b[?62;;1c", ResponseStatus::Invalid),
+            (b"\x1b[?62;c", ResponseStatus::Invalid),
+            (b"\x1b[?62cx", ResponseStatus::Invalid),
+            (b"\x1b[62c", ResponseStatus::Invalid),
+        ] {
+            assert_eq!(
+                classify_primary_device_attributes(bytes),
+                status,
+                "{bytes:?}"
+            );
+        }
     }
 
     #[test]
