@@ -8,12 +8,14 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
-    HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, RecoveryStrategy, StepResult,
-    ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd, TurnStop,
+    CommandProcessPresentation, HistorySteering, HistoryStep, HistoryTurn, ProviderReplay,
+    RecoveryStrategy, StepResult, ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd,
+    TurnStop,
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
 use crate::json_fields::{Fields, Json, parse_json};
+use crate::process_presentation;
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
@@ -105,6 +107,7 @@ struct SavedToolResult {
     output_bytes: usize,
     stored_output_bytes: u64,
     truncated: bool,
+    process: Option<CommandProcessPresentation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +174,7 @@ impl SavedToolStep {
                     output_bytes: result.output_bytes,
                     status: result.status,
                     model_view_covers_full_file: false,
+                    process: result.process,
                 })
                 .collect(),
         }
@@ -349,6 +353,9 @@ fn tool_result(value: Json<'_>) -> Option<SavedToolResult> {
         output_bytes: usize::try_from(fields.unsigned("output_bytes")?).ok()?,
         stored_output_bytes: fields.unsigned("stored_output_bytes")?,
         truncated: fields.flag("truncated")?,
+        process: fields.present_or_null("command_process_presentation", |value| {
+            process_presentation::checkpoint::read(value).map(Some)
+        })?,
     };
     fixed::<False>(&mut fields, "provider_native")?;
     fixed::<False>(&mut fields, "review_feedback")?;
@@ -357,7 +364,6 @@ fn tool_result(value: Json<'_>) -> Option<SavedToolResult> {
     for presentation in [
         "committed_file_presentation",
         "command_output_replay",
-        "command_process_presentation",
         "terminal_action_presentation",
     ] {
         fixed::<Null>(&mut fields, presentation)?;

@@ -950,6 +950,39 @@ fn continue_recovery_resumes_a_paused_turn_from_its_saved_tool_steps() {
 }
 
 #[test]
+fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_process() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["continued"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    save_checkpoint(&home, &id, CONFIGURED_IDENTITY);
+    let path = home.sessions().join(&id).join("recovery.json");
+    let saved = fs::read_to_string(&path).expect("read recovery.json");
+    let failed = saved
+        .replace(r#""output_bytes":12"#, r#""output_bytes":40"#)
+        .replace(
+            r#""command_process_presentation":null"#,
+            r#""command_process_presentation":{"kind":"exit_code","value":3}"#,
+        );
+    assert_ne!(failed, saved);
+    fs::write(&path, failed).expect("write recovery.json");
+    let result = home.ask_json(&["--resume-id", &id, "--continue-recovery"], &[]);
+    assert_eq!(result["final_output"], "continued", "{result}");
+    let frames = home.frames(&id);
+    let restored = frames
+        .iter()
+        .find_map(|frame| frame["event"].get("tool_result"))
+        .expect("the restored result");
+    assert_eq!(restored["output_bytes"], 40);
+    assert_eq!(
+        restored["command_process_presentation"],
+        json!({"exit_code": 3})
+    );
+}
+
+#[test]
 fn continue_recovery_refuses_a_possibly_sent_request_under_another_credential() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
     let home = Home::new(&server.base_url());
@@ -1125,6 +1158,44 @@ fn a_saved_turn_records_which_files_the_model_read_whole_and_which_went_stale() 
                 false,
                 false
             ),
+        ]
+    );
+}
+
+#[test]
+fn a_failed_command_saves_its_process_presentation_as_upstream_frames_it() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "shell",
+            r#"{"request":{"action":"run","command":"exit 3"}}"#,
+        )),
+        Reply::sse(&chat_tool_call_events(
+            "call_2",
+            "shell",
+            r#"{"request":{"action":"run","command":"true"}}"#,
+        )),
+        Reply::sse(&chat_text_events(&["Done."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let result = home.ask_json(&["--yolo", "run it"], &[]);
+    assert_eq!(result["final_output"], "Done.", "{result}");
+    let saved: Vec<(String, Value)> = home
+        .frames(&session_id(&result))
+        .iter()
+        .filter_map(|frame| frame["event"].get("tool_result"))
+        .map(|result| {
+            (
+                result["status"].as_str().expect("a status").to_owned(),
+                result["command_process_presentation"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        saved,
+        [
+            ("failure".to_owned(), json!({"exit_code": 3})),
+            ("success".to_owned(), Value::Null),
         ]
     );
 }

@@ -1,8 +1,8 @@
 use std::mem;
 
 use ofx_contract::{
-    ChatMessage, HistorySteering, HistoryStep, ProviderReplay, StepResult, ToolCall, ToolCallId,
-    ToolResultStatus,
+    ChatMessage, HistorySteering, HistoryStep, ProviderReplay, RecordedOutput, StepResult,
+    ToolCall, ToolCallId, ToolResultStatus,
 };
 
 const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
@@ -244,26 +244,18 @@ fn steering_after<'a>(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RawOutput {
-    pub(crate) call_id: ToolCallId,
-    pub(crate) bytes: usize,
-    pub(crate) whole_file: bool,
-}
-
-impl RawOutput {
-    pub(crate) fn partial_view(call_id: ToolCallId, bytes: usize) -> Self {
-        Self {
-            call_id,
-            bytes,
-            whole_file: false,
-        }
+pub(crate) fn partial_view(call_id: ToolCallId, bytes: usize) -> RecordedOutput {
+    RecordedOutput {
+        call_id,
+        bytes,
+        whole_file: false,
+        process: None,
     }
 }
 
 pub(crate) fn logged_steps<'a>(
     steps: &[ToolStep<'a>],
-    raw_outputs: &[RawOutput],
+    raw_outputs: &[RecordedOutput],
 ) -> Vec<HistoryStep<'a>> {
     let kept = steps.iter().map(|step| step.results.len()).sum::<usize>();
     let mut recorded = raw_outputs
@@ -289,6 +281,7 @@ pub(crate) fn logged_steps<'a>(
                         tool_name: result.tool_name,
                         output: result.output,
                         output_bytes: raw.map_or(result.output.len(), |raw| raw.bytes),
+                        process: raw.and_then(|raw| raw.process),
                         status: if result.failed {
                             ToolResultStatus::Failure
                         } else {

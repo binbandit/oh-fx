@@ -6,9 +6,9 @@ note = "Capability corpus relevance scoring, source/cursor validation and retrie
 
 [[file]]
 upstream = "src/core/tooling/captured_command.zig"
-status = "todo"
-modules = []
-note = "Recognition of historical captured command records are unimplemented."
+status = "ported"
+modules = ["crates/ofx-contract/src/tool_presentation.rs"]
+note = "A resumed row recognizes a shell run without a terminal and the historical terminal exec and run_command records as captured commands."
 
 [[file]]
 upstream = "src/core/tooling/command_output_content.zig"

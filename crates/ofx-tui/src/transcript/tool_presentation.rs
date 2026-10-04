@@ -3,8 +3,9 @@ use ofx_contract::{
     DEFERRED_TOOL_OUTPUT, FileChangeStats, ReasoningEffort, SavedToolCall, SubagentActionState,
     SubagentStatus, ToolActivity, ToolArgsError, ToolCallId, ToolDeferral,
     ToolPermissionDenialReason, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnOutcome,
-    format_unknown_action, parse_tool_args_object, shell_request_invalid_field_count,
-    subagent_action, subagent_failure_label, subagent_result_state, tool_permission_denial_reason,
+    format_unknown_action, is_captured_command, parse_tool_args_object,
+    shell_request_invalid_field_count, subagent_action, subagent_failure_label,
+    subagent_result_state, tool_permission_denial_reason,
 };
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_inline, mask_secrets};
 
@@ -117,9 +118,19 @@ impl ToolActivityRow {
             row.title = encoded_target(&format_unknown_action(&call.tool_name));
         }
         let (outcome, label) = row.saved_outcome(call.status, &call.output);
-        row.status = row
-            .saved_subagent_status(&call.arguments, &call.output, outcome, label)
-            .unwrap_or_else(|| row.settled(outcome, label, None, None));
+        let command = call
+            .process
+            .filter(|_| matches!(outcome, ToolOutcome::Completed | ToolOutcome::Failed))
+            .filter(|_| is_captured_command(&call.tool_name, &call.arguments));
+        row.status = match command {
+            Some(process) => {
+                let (outcome, label) = command_outcome(process);
+                row.settled(outcome, &label, None, Some(process))
+            }
+            None => row
+                .saved_subagent_status(&call.arguments, &call.output, outcome, label)
+                .unwrap_or_else(|| row.settled(outcome, label, None, None)),
+        };
         row
     }
 
@@ -408,16 +419,7 @@ impl ToolActivityRow {
         if self.activity != Some(ToolActivity::Command) {
             return None;
         }
-        Some(match process? {
-            CommandProcessPresentation::ExitCode(0) => (ToolOutcome::Completed, "Ran".to_owned()),
-            CommandProcessPresentation::ExitCode(code) => {
-                (ToolOutcome::Failed, format!("Exited {code}"))
-            }
-            CommandProcessPresentation::Signal(signal) => {
-                (ToolOutcome::Failed, format!("Signaled {signal}"))
-            }
-            CommandProcessPresentation::TimedOut => (ToolOutcome::Failed, "Timed out".to_owned()),
-        })
+        process.map(command_outcome)
     }
 
     fn correction_suffix(&self, content: &str) -> Option<String> {
@@ -449,6 +451,22 @@ fn subagent_status(
         label_len: action.label.len(),
         process: None,
     })
+}
+
+fn command_outcome(process: CommandProcessPresentation) -> (ToolOutcome, String) {
+    match process {
+        CommandProcessPresentation::ExitCode(0) => (ToolOutcome::Completed, "Ran".to_owned()),
+        CommandProcessPresentation::ExitCode(code) => {
+            (ToolOutcome::Failed, format!("Exited {code}"))
+        }
+        CommandProcessPresentation::Signal(signal) => {
+            (ToolOutcome::Failed, format!("Signaled {signal}"))
+        }
+        CommandProcessPresentation::TimedOut => (ToolOutcome::Failed, "Timed out".to_owned()),
+        CommandProcessPresentation::OutputCaptureFailed => {
+            (ToolOutcome::Failed, "Output capture failed".to_owned())
+        }
+    }
 }
 
 fn denial_label(reason: ToolPermissionDenialReason) -> &'static str {
@@ -1252,6 +1270,7 @@ mod tests {
             description,
             status,
             output: output.to_owned(),
+            process: None,
         })
         .status
     }
@@ -1346,6 +1365,106 @@ mod tests {
         }
     }
 
+    fn saved_command(
+        arguments: &str,
+        status: ToolResultStatus,
+        output: &str,
+        process: Option<CommandProcessPresentation>,
+    ) -> ToolStatus {
+        ToolActivityRow::saved(SavedToolCall {
+            call_id: ToolCallId::new("call"),
+            tool_name: "shell".to_owned(),
+            arguments: arguments.to_owned(),
+            description: Some(description(
+                ToolActivity::Command,
+                Some(("Running", "Ran", "ls")),
+                "Running ls",
+            )),
+            status,
+            output: output.to_owned(),
+            process,
+        })
+        .status
+    }
+
+    #[test]
+    fn saved_commands_settle_with_their_process_outcome_when_upstream_captured_them() {
+        use CommandProcessPresentation::{ExitCode, OutputCaptureFailed, Signal, TimedOut};
+        let run = r#"{"action":"run","command":"ls"}"#;
+        let failed = ToolResultStatus::Failure;
+        let ran = ToolResultStatus::Success;
+        let wrapped = r#"{"request":{"action":"run","command":"ls"}}"#;
+        let terminal = r#"{"action":"run","command":"ls","tty":true}"#;
+        let cases = [
+            (
+                run,
+                failed,
+                Some(ExitCode(3)),
+                "Exited 3 ls",
+                ToolOutcome::Failed,
+            ),
+            (
+                run,
+                failed,
+                Some(Signal(9)),
+                "Signaled 9 ls",
+                ToolOutcome::Failed,
+            ),
+            (
+                run,
+                failed,
+                Some(TimedOut),
+                "Timed out ls",
+                ToolOutcome::Failed,
+            ),
+            (
+                run,
+                failed,
+                Some(OutputCaptureFailed),
+                "Output capture failed ls",
+                ToolOutcome::Failed,
+            ),
+            (
+                run,
+                ran,
+                Some(ExitCode(0)),
+                "Ran ls",
+                ToolOutcome::Completed,
+            ),
+            (run, ran, None, "Ran ls", ToolOutcome::Completed),
+            (
+                wrapped,
+                failed,
+                Some(ExitCode(3)),
+                "Failed ls",
+                ToolOutcome::Failed,
+            ),
+            (
+                terminal,
+                failed,
+                Some(ExitCode(3)),
+                "Failed ls",
+                ToolOutcome::Failed,
+            ),
+        ];
+        for (arguments, status, process, phrase, outcome) in cases {
+            let settled = saved_command(arguments, status, "", process);
+            assert_eq!(settled.phrase, phrase, "{arguments} {process:?}");
+            assert_eq!(settled.outcome, Some(outcome), "{arguments} {process:?}");
+        }
+        let denied = saved_command(
+            run,
+            failed,
+            &tool_permission_denied_json("shell"),
+            Some(ExitCode(3)),
+        );
+        assert_eq!(denied.phrase, "Denied ls");
+        assert_eq!(
+            saved_command(run, failed, "", Some(ExitCode(3))).process,
+            Some(ExitCode(3))
+        );
+    }
+
     #[test]
     fn saved_subagent_calls_settle_as_upstream_resume_names_them() {
         let saved_child = |arguments: &str, status: ToolResultStatus, output: &str| {
@@ -1364,6 +1483,7 @@ mod tests {
                 description: Some(description),
                 status,
                 output: output.to_owned(),
+                process: None,
             })
             .status
         };

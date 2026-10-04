@@ -11,7 +11,7 @@ use super::{
     Agent, EventSink, Stop, Turn, TurnFailure, escalate_repeated_failure, tool_finished,
     tool_started,
 };
-use crate::execution_memory::RawOutput;
+use crate::execution_memory::partial_view;
 
 pub(super) fn provider_executed(call: &ToolCall) -> bool {
     call.provenance == ToolExecutionProvenance::ProviderExecuted
@@ -66,7 +66,7 @@ impl Agent {
             ToolResultStatus::Success
         };
         turn.raw_outputs
-            .push(RawOutput::partial_view(call.id.clone(), result.len()));
+            .push(partial_view(call.id.clone(), result.len()));
         let model_output = prepare_model_output(&call.name, result, DEFAULT_MAX_TOOL_RESULT_BYTES);
         if shown {
             let output = ToolOutput {

@@ -1,4 +1,4 @@
-use ofx_contract::{ChatMessage, RecoveredTurn, ToolCallId};
+use ofx_contract::{ChatMessage, RecordedOutput, RecoveredTurn, ToolCallId};
 
 use super::{RecoveryCheckpoint, RouteCredential, SavedSteering, SavedToolStep};
 use crate::session_codec::SavedProvider;
@@ -25,8 +25,10 @@ impl RecoveryCheckpoint {
         let unchanged = self.route.provider == *provider
             && self.route.model == model
             && self.route.requested_fast_mode == fast_mode;
+        let (messages, outputs) = messages(self.execution.tool_steps, self.execution.steering);
         RecoveredTurn {
-            messages: messages(self.execution.tool_steps, self.execution.steering),
+            messages,
+            outputs,
             files: self.execution.files.into_iter().map(Into::into).collect(),
             prompt: self.user,
             strategy: self.strategy,
@@ -39,8 +41,12 @@ impl RecoveryCheckpoint {
     }
 }
 
-fn messages(steps: Vec<SavedToolStep>, steering: Vec<SavedSteering>) -> Vec<ChatMessage> {
+fn messages(
+    steps: Vec<SavedToolStep>,
+    steering: Vec<SavedSteering>,
+) -> (Vec<ChatMessage>, Vec<RecordedOutput>) {
     let mut messages = Vec::new();
+    let mut outputs = Vec::new();
     let mut steering = steering.into_iter().peekable();
     for (index, step) in steps.into_iter().enumerate() {
         while let Some(entry) = steering.next_if(|entry| entry.after_tool_step_count == index) {
@@ -69,17 +75,26 @@ fn messages(steps: Vec<SavedToolStep>, steering: Vec<SavedSteering>) -> Vec<Chat
             tool_calls: answered,
             provider_replay,
         });
-        messages.extend(tool_results.into_iter().map(|result| ChatMessage::Tool {
-            call_id: ToolCallId::new(result.tool_call_id),
-            tool_name: result.tool_name,
-            content: result.output,
-            status: result.status,
-        }));
+        for result in tool_results {
+            let call_id = ToolCallId::new(result.tool_call_id);
+            outputs.push(RecordedOutput {
+                call_id: call_id.clone(),
+                bytes: result.output_bytes,
+                whole_file: false,
+                process: result.process,
+            });
+            messages.push(ChatMessage::Tool {
+                call_id,
+                tool_name: result.tool_name,
+                content: result.output,
+                status: result.status,
+            });
+        }
     }
     for entry in steering {
         push_steering(&mut messages, entry);
     }
-    messages
+    (messages, outputs)
 }
 
 fn push_steering(messages: &mut Vec<ChatMessage>, entry: SavedSteering) {

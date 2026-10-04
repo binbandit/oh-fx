@@ -1,10 +1,10 @@
 use std::fmt;
 
 use crate::file_evidence::FileEvidence;
-use crate::ids::TurnId;
+use crate::ids::{ToolCallId, TurnId};
 use crate::types::{
-    ChatMessage, ModelRecoveryAction, ModelRecoveryCause, ProviderReplay, ToolCall,
-    ToolResultStatus,
+    ChatMessage, CommandProcessPresentation, ModelRecoveryAction, ModelRecoveryCause,
+    ProviderReplay, ToolCall, ToolResultStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +15,7 @@ pub struct StepResult<'a> {
     pub output_bytes: usize,
     pub status: ToolResultStatus,
     pub model_view_covers_full_file: bool,
+    pub process: Option<CommandProcessPresentation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,10 +70,19 @@ pub enum RecoveryStrategy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedOutput {
+    pub call_id: ToolCallId,
+    pub bytes: usize,
+    pub whole_file: bool,
+    pub process: Option<CommandProcessPresentation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredTurn {
     pub prompt: String,
     pub messages: Vec<ChatMessage>,
     pub files: Vec<FileEvidence>,
+    pub outputs: Vec<RecordedOutput>,
     pub strategy: RecoveryStrategy,
     pub fast_mode: bool,
 }

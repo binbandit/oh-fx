@@ -1,9 +1,10 @@
 use ofx_config::EMERGENCY_CEILING_BYTES;
-use ofx_contract::{HistoryStep, RecoveryPoint, RecoveryProgress};
+use ofx_contract::{CommandProcessPresentation, HistoryStep, RecoveryPoint, RecoveryProgress};
 use serde::Serialize;
 
 use super::{CHECKPOINT_VERSION, EXECUTION_SCHEMA_VERSION, RouteCredential};
 use crate::fixed_field::{False, NoItems, Null};
+use crate::process_presentation;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{FileEvidence, SavedReplay, WireTag};
@@ -95,7 +96,8 @@ struct ResultWire<'a> {
     permission_feedback: NoItems,
     committed_file_presentation: Null,
     command_output_replay: Null,
-    command_process_presentation: Null,
+    #[serde(with = "process_presentation::checkpoint")]
+    command_process_presentation: Option<CommandProcessPresentation>,
     terminal_action_presentation: Null,
 }
 
@@ -223,7 +225,7 @@ fn step_wire<'a>(
                     permission_feedback: NoItems,
                     committed_file_presentation: Null,
                     command_output_replay: Null,
-                    command_process_presentation: Null,
+                    command_process_presentation: result.process,
                     terminal_action_presentation: Null,
                 }
             })

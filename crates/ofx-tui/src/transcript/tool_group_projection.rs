@@ -156,7 +156,11 @@ impl Summary {
         let timed_out = process == Some(CommandProcessPresentation::TimedOut);
         let process_failed = matches!(
             process,
-            Some(CommandProcessPresentation::Signal(_) | CommandProcessPresentation::TimedOut)
+            Some(
+                CommandProcessPresentation::Signal(_)
+                    | CommandProcessPresentation::TimedOut
+                    | CommandProcessPresentation::OutputCaptureFailed
+            )
         ) || matches!(process, Some(CommandProcessPresentation::ExitCode(code)) if code != 0);
         let Some(outcome) = row.status.outcome else {
             return;

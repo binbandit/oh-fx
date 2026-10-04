@@ -109,6 +109,7 @@ fn result<'a>(call: &'a ToolCall, output: &'a str, status: ToolResultStatus) -> 
         output_bytes: output.len(),
         status,
         model_view_covers_full_file: false,
+        process: None,
     }
 }
 
