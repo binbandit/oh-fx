@@ -1,4 +1,6 @@
-use ofx_contract::{HistoryCut, HistoryTurn, RestoredHistory, TurnEnd};
+use ofx_contract::{
+    HistoryCut, HistoryTurn, RecoveryPoint, RecoveryProgress, RestoredHistory, TurnEnd,
+};
 
 use super::*;
 
@@ -16,6 +18,14 @@ pub(super) enum Logged {
         user: Option<String>,
         steps: Vec<String>,
     },
+    Recovery {
+        user: String,
+        steps: Vec<String>,
+        progress: RecoveryProgress,
+        consumed_attempts: usize,
+        fast_mode: bool,
+    },
+    RecoveryCleared,
 }
 
 #[derive(Default)]
@@ -156,6 +166,23 @@ impl ConversationLog for MemoryLog {
             user: active.map(|active| active.user.to_owned()),
             steps: active.map(described_steps).unwrap_or_default(),
         });
+        Ok(())
+    }
+
+    fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure> {
+        self.outcome()?;
+        self.entries.lock().unwrap().push(Logged::Recovery {
+            user: point.turn.user.to_owned(),
+            steps: described_steps(&point.turn),
+            progress: point.progress,
+            consumed_attempts: point.consumed_attempts,
+            fast_mode: point.fast_mode,
+        });
+        Ok(())
+    }
+
+    fn clear_recovery(&self) -> Result<(), LogFailure> {
+        self.entries.lock().unwrap().push(Logged::RecoveryCleared);
         Ok(())
     }
 }

@@ -1,5 +1,8 @@
 use ofx_config::ProviderId;
-use ofx_contract::{ChatMessage, ReplaySource};
+use ofx_contract::{
+    ChatMessage, HistorySteering, HistoryStep, HistoryTurn, ModelRecoveryAction,
+    ModelRecoveryCause, RecoveryPoint, RecoveryProgress, ReplaySource, StepResult, TurnId,
+};
 
 use super::*;
 use crate::session_event::FileEvidenceAction;
@@ -47,10 +50,10 @@ fn checkpoint() -> RecoveryCheckpoint {
         route: RecoveryRoute {
             provider: SavedProvider::new(ProviderId::Codex, None).unwrap(),
             model: "gpt-5.4".to_owned(),
-            credential: Some(SavedCredential {
-                source: "chatgpt_subscription",
-                identity: Some([0xab; 32]),
-            }),
+            credential: Some(RouteCredential::saved(
+                "chatgpt_subscription",
+                Some([0xab; 32]),
+            )),
             requested_fast_mode: false,
             fast_mode: true,
             may_have_sent: true,
@@ -387,35 +390,23 @@ fn a_possibly_sent_request_continues_only_under_the_credential_that_sent_it() {
         1,
         false,
     );
-    assert!(configured.authorizes(CredentialAuthority::Configured));
-    assert!(
-        !configured.authorizes(CredentialAuthority::ChatgptSubscription {
-            account_id: "acct_1"
-        })
-    );
+    assert!(configured.authorizes(RouteCredential::configured()));
+    assert!(!configured.authorizes(RouteCredential::chatgpt_subscription("acct_1")));
     let account = with_credential(
         "chatgpt_subscription",
         &format!("\"{ACCOUNT_IDENTITY}\""),
         0,
         true,
     );
-    assert!(
-        account.authorizes(CredentialAuthority::ChatgptSubscription {
-            account_id: "acct_1"
-        })
-    );
+    assert!(account.authorizes(RouteCredential::chatgpt_subscription("acct_1")));
     for other in ["acct_2", ""] {
-        assert!(
-            !account.authorizes(CredentialAuthority::ChatgptSubscription { account_id: other })
-        );
+        assert!(!account.authorizes(RouteCredential::chatgpt_subscription(other)));
     }
-    assert!(!account.authorizes(CredentialAuthority::Configured));
+    assert!(!account.authorizes(RouteCredential::configured()));
     let unidentified = with_credential("configured", "null", 1, false);
-    assert!(!unidentified.authorizes(CredentialAuthority::Configured));
+    assert!(!unidentified.authorizes(RouteCredential::configured()));
     let unsent = with_credential("configured", "null", 0, false);
-    assert!(unsent.authorizes(CredentialAuthority::ChatgptSubscription {
-        account_id: "acct_9"
-    }));
+    assert!(unsent.authorizes(RouteCredential::chatgpt_subscription("acct_9")));
 }
 
 #[test]
@@ -504,5 +495,109 @@ fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
         !checkpoint()
             .into_continuation(&gateway, "gpt-5.4", false)
             .fast_mode
+    );
+}
+
+fn read_step_calls() -> Vec<ToolCall> {
+    vec![ToolCall::new("call_1", "read_file", "{\"path\":\"a.rs\"}")]
+}
+
+fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'a> {
+    RecoveryPoint {
+        turn_id: TurnId::new(7),
+        turn: HistoryTurn {
+            user: "fix the build",
+            steps: vec![HistoryStep {
+                assistant: "Reading.",
+                provider_replay: None,
+                tool_calls: calls,
+                tool_results: vec![StepResult {
+                    call_id: "call_1",
+                    tool_name: "read_file",
+                    output,
+                    output_bytes: 12,
+                    status: ToolResultStatus::Success,
+                }],
+            }],
+            steering: vec![HistorySteering {
+                text: "also tests",
+                assistant_prefix: "",
+                after_tool_step_count: 1,
+            }],
+            end: TurnEnd::Replied {
+                text: "",
+                provider_replay: None,
+            },
+        },
+        cause: ModelRecoveryCause::RateLimited,
+        progress: RecoveryProgress::Waiting(ModelRecoveryAction::RetryingRequest),
+        model: "gpt-5.4",
+        requested_fast_mode: false,
+        fast_mode: true,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    }
+}
+
+#[test]
+fn a_recovery_point_is_written_in_upstream_recovery_json_form() {
+    let calls = read_step_calls();
+    let point = recovery_point(&calls, "fn main() {}");
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: Some(RouteCredential::chatgpt_subscription("acct_1")),
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: None,
+            preview: None,
+        }]],
+        created_at_ms: 5,
+    };
+    let written = encode_recovery_file(12, &source).unwrap().unwrap();
+    let expected = upstream_checkpoint()
+        .replace("\"files\":[{\"path\":\"a.rs\",\"new_path\":null,\"tool_call_id\":\"call_1\",\"tool_name\":\"read_file\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":true,\"stale\":false}]", "\"files\":[]")
+        .replace("\"cause\":\"response_interrupted\",\"action\":\"continuing_response\",\"tool_state\":\"confirmed\"", "\"cause\":\"rate_limited\",\"action\":\"retrying_request\",\"tool_state\":\"none\"")
+        .replace("\"assistant_source\":\"Looking at\"", "\"assistant_source\":\"\"")
+        .replace(IDENTITY, ACCOUNT_IDENTITY);
+    assert_eq!(
+        String::from_utf8(written.clone()).unwrap(),
+        String::from_utf8(file_with(&expected, 12)).unwrap()
+    );
+    let read = decode_recovery_file(&written, 12).unwrap().unwrap();
+    assert!(read.authorizes(RouteCredential::chatgpt_subscription("acct_1")));
+    assert!(!read.authorizes(RouteCredential::chatgpt_subscription("acct_2")));
+    assert_eq!(read.strategy, RecoveryStrategy::RetryRequest);
+    assert_eq!(
+        read.execution.tool_steps[0].tool_results[0].output,
+        "fn main() {}"
+    );
+}
+
+#[test]
+fn a_paused_point_and_a_spilled_output_are_written_as_upstream_writes_them() {
+    let calls = read_step_calls();
+    let mut point = recovery_point(&calls, "fn main() {}");
+    point.progress = RecoveryProgress::Paused;
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: None,
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: Some("result-read_file-1-2.txt".to_owned()),
+            preview: Some("fn".to_owned()),
+        }]],
+        created_at_ms: 5,
+    };
+    let written = String::from_utf8(encode_recovery_file(3, &source).unwrap().unwrap()).unwrap();
+    assert!(written.contains("\"action\":\"paused\""), "{written}");
+    assert!(
+        written.contains("\"output\":\"\",\"output_handle\":\"result-read_file-1-2.txt\",\"preview\":\"fn\",\"output_bytes\":12,\"stored_output_bytes\":12"),
+        "{written}"
+    );
+    assert!(
+        written.contains("\"credential_source\":null,\"credential_identity\":null"),
+        "{written}"
     );
 }

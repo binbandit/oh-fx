@@ -323,7 +323,7 @@ fn other_failures_keep_the_session_they_started() {
 }
 
 #[test]
-fn a_saved_run_that_retries_and_then_fails_before_any_work_reports_recovery_as_not_durable() {
+fn a_saved_run_stopped_after_a_retry_can_be_continued_from_its_checkpoint() {
     let server = FakeServer::start([
         Reply::status(429, r#"{"error":{"message":"slow down"}}"#),
         Reply::status(400, r#"{"error":{"message":"bad"}}"#),
@@ -335,10 +335,41 @@ fn a_saved_run_that_retries_and_then_fails_before_any_work_reports_recovery_as_n
     assert_eq!(result["exit_code"], 1);
     assert_eq!(
         result["recovery"],
-        json!({"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":false,"message":"⚠ Rate limited · HTTP 429 · slow down · retrying request"})
+        json!({"state":"active","kind":"auto_retry","cause":"rate_limited","action":"retrying_request","attempt":2,"attempt_limit":10,"delay_seconds":0,"durable":true,"message":"⚠ Rate limited · HTTP 429 · slow down · retrying request"})
     );
     assert_eq!(home.session_ids(), std::slice::from_ref(&id));
     assert!(home.frames(&id).is_empty());
+    let saved: Value = serde_json::from_slice(
+        &fs::read(home.sessions().join(&id).join("recovery.json")).expect("a recovery checkpoint"),
+    )
+    .expect("checkpoint JSON");
+    assert_eq!(saved["conversation_seq"], 0);
+    let checkpoint = &saved["checkpoint"];
+    assert_eq!(checkpoint["user"]["text"], "lost");
+    assert_eq!(checkpoint["cause"], "rate_limited");
+    assert_eq!(checkpoint["action"], "retrying_request");
+    assert_eq!(checkpoint["consumed_provider_attempts"], 1);
+    assert_eq!(checkpoint["authority"]["credential_source"], "configured");
+    assert_eq!(
+        checkpoint["authority"]["credential_identity"],
+        CONFIGURED_IDENTITY
+    );
+    assert_eq!(
+        checkpoint["authority"]["provider"],
+        home.metadata(&id)["provider"]
+    );
+    let resumed = home.ask_json(&["--resume-id", &id, "--continue-recovery"], &[]);
+    assert_eq!(session_id(&resumed), id);
+    assert_eq!(resumed["final_output"], "fresh");
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+    assert_eq!(
+        kinds(&home.frames(&id)),
+        ["user", "assistant", "turn_completed"]
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(texts(&conversation(&requests[1])), ["user: lost"]);
+    assert_eq!(texts(&conversation(&requests[2])), ["user: lost"]);
     let output = home.ask(&["ask", "--resume-id", &id, "--continue-recovery"], &[]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
@@ -353,13 +384,6 @@ fn a_saved_run_that_retries_and_then_fails_before_any_work_reports_recovery_as_n
     assert!(output.stderr.is_empty());
     let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
     assert_eq!(result["error"], "NoPendingRecovery");
-    let resumed = home.ask_json(&["--resume-id", &id, "next"], &[]);
-    assert_eq!(session_id(&resumed), id);
-    assert_eq!(resumed["final_output"], "fresh");
-    let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(texts(&conversation(&requests[1])), ["user: lost"]);
-    assert_eq!(texts(&conversation(&requests[2])), ["user: next"]);
 }
 
 #[test]

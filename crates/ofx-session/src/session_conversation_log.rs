@@ -1,19 +1,29 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_contract::{ConversationLog, HistoryCut, HistoryTurn, LogFailure};
+use ofx_contract::{ConversationLog, HistoryCut, HistoryTurn, LogFailure, RecoveryPoint};
 
 use crate::session_codec::SavedProvider;
+use crate::session_codec::recovery_checkpoint::RouteCredential;
 use crate::session_error::SessionError;
 use crate::session_log::WritableSession;
 
 pub struct SessionLog {
     session: Arc<Mutex<WritableSession>>,
     provider: SavedProvider,
+    credential: RouteCredential,
 }
 
 impl SessionLog {
-    pub fn new(session: Arc<Mutex<WritableSession>>, provider: SavedProvider) -> Self {
-        Self { session, provider }
+    pub fn new(
+        session: Arc<Mutex<WritableSession>>,
+        provider: SavedProvider,
+        credential: RouteCredential,
+    ) -> Self {
+        Self {
+            session,
+            provider,
+            credential,
+        }
     }
 
     fn session(&self) -> MutexGuard<'_, WritableSession> {
@@ -41,6 +51,17 @@ impl ConversationLog for SessionLog {
         self.session()
             .record_compaction(checkpoint, cut, active, &self.provider)
             .map_err(log_failure)
+    }
+
+    fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure> {
+        self.session()
+            .record_recovery(point, &self.provider, self.credential)
+            .map_err(log_failure)
+    }
+
+    fn clear_recovery(&self) -> Result<(), LogFailure> {
+        self.session().discard_recovery();
+        Ok(())
     }
 }
 
