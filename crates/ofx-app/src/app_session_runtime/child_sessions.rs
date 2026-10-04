@@ -77,7 +77,7 @@ impl ChildStore for SessionChildren {
         Ok(ResumedChild {
             record: Arc::new(ChildSession {
                 session: Arc::new(Mutex::new(session)),
-                provider: self.provider.clone(),
+                route: self.route.clone(),
             }),
             settings,
             history,
