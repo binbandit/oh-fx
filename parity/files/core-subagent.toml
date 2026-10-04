@@ -2,7 +2,7 @@
 upstream = "src/core/subagent/agent_adapter.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/execution.rs"]
-note = "Child turns run through Agent with inherited root-user review context and forwarded approval requests; provider credential/capability routing, MCP authority views, child steering and durable session callbacks are absent."
+note = "Child turns run through Agent with inherited root-user review context and forwarded approval requests, and each child logs its turns into its own saved session with the work id; provider credential/capability routing, MCP authority views, child steering, recovery checkpoints and replayed results read from the child's history are absent."
 
 [[file]]
 upstream = "src/core/subagent/approval_registry.zig"
@@ -18,8 +18,8 @@ modules = []
 [[file]]
 upstream = "src/core/subagent/child_state.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/subagent/child_state.rs"]
-note = "In-memory registry tracks bounded children, work fingerprints, phases and outcomes; persistent registry codecs, v2 child-line folding, managed-session markers and Lost outcome are absent."
+modules = ["crates/ofx-agent/src/subagent/child_state.rs", "crates/ofx-agent/src/subagent/child_state/registry_file.rs", "crates/ofx-session/src/session_children.rs"]
+note = "The registry tracks bounded children, work fingerprints, phases, outcomes and generations and is written to the parent's children.json as upstream writes it, with each child session's owner marker; reading the registry back on resume, interruptActive, v2 child-line folding and the Lost outcome are absent."
 
 [[file]]
 upstream = "src/core/subagent/domain.zig"
@@ -31,7 +31,7 @@ note = "Name/instruction/text validators exist; admission authority snapshots, i
 upstream = "src/core/subagent/execution.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/execution.rs"]
-note = "Child turns preserve final or partial text, cancellation and bounded failure diagnostics; durable child session commits, recovery admission and compaction work-identity persistence are absent."
+note = "Child turns preserve final or partial text, cancellation and bounded failure diagnostics, and commit to the child's own session; recovery admission and compaction work-identity persistence are absent."
 
 [[file]]
 upstream = "src/core/subagent/live_metrics.zig"
@@ -43,7 +43,7 @@ note = "A child's input tokens are not tracked while it works, so its status lin
 upstream = "src/core/subagent/managed_owner.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/managed_owner.rs"]
-note = "Native owner starts and observes children, retains results, forwards approval requests and cancels abandoned waits; feedback queues, approval route pinning, durable registry publication and live metrics are absent."
+note = "Native owner starts and observes children, retains results, forwards approval requests, cancels abandoned waits and publishes the registry to the parent session after every change; feedback queues, approval route pinning and live metrics are absent."
 
 [[file]]
 upstream = "src/core/subagent/model_contract.zig"
@@ -53,8 +53,9 @@ note = "Request/result validation exists; matchCatalogModel catalog matching and
 
 [[file]]
 upstream = "src/core/subagent/resume_admission.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_store.rs", "crates/ofx-session/src/session_discovery.rs"]
+note = "Child sessions are left out of listings and latest-session selection, and a direct resume of one is refused with OneOffSessionNotResumable; the session index cache and read-only detail admission are absent."
 
 [[file]]
 upstream = "src/core/subagent/tool_host.zig"

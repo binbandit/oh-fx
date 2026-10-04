@@ -456,6 +456,7 @@ impl Controller {
             if let Some(title) = resumed_title {
                 self.state.session_title.set(Some(&title));
             }
+            self.bind_children();
             self.session_notice(opened);
         }
         if let Some(herdr) = &self.herdr {
@@ -650,6 +651,7 @@ impl Controller {
             Ok(switched) => {
                 self.forget_tracked_changes();
                 self.state.setup.forget_children();
+                self.bind_children();
                 self.restore_preferences(switched.preferences);
                 self.remember_agent_facts();
                 self.state.session_title.set(switched.title.as_deref());
@@ -690,7 +692,13 @@ impl Controller {
             .persistence
             .as_mut()
             .and_then(|persistence| persistence.begin_unless_open(&mut self.agent));
+        self.bind_children();
         self.session_notice(started);
+    }
+
+    fn bind_children(&self) {
+        let store = self.persistence.as_ref().and_then(Persistence::children);
+        self.state.setup.bind_children(store);
     }
 
     fn reconfigure(&mut self) {
@@ -738,6 +746,7 @@ impl Controller {
             .persistence
             .as_mut()
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
+        self.bind_children();
         self.state.session_title.set(None);
         for prompt in &self.state.queue {
             observe_prompt(self.persistence.as_ref(), &prompt.text);
@@ -4979,7 +4988,14 @@ mod tests {
         let turn = harness.running_turn();
         let [(turn_id, request)] = approval_requests(&requested).try_into().unwrap();
         assert_eq!(turn_id, turn);
-        assert_eq!(request.origin, ApprovalOrigin::Subagent("1".to_owned()));
+        let child = saved_sessions(&harness.home)
+            .into_iter()
+            .find(|saved| saved["subagent_child"] == true)
+            .unwrap();
+        assert_eq!(
+            request.origin,
+            ApprovalOrigin::Subagent(child["id"].as_str().unwrap().to_owned())
+        );
         assert_eq!(request.tool_name, "read_file");
         harness.send(UiCommand::Approval {
             request_id: request.id,

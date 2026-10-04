@@ -7,7 +7,7 @@ use ofx_text::is_terminal_safe;
 use tokio_util::sync::CancellationToken;
 
 use super::child_state::{ActiveWork, Outcome};
-use super::tool_host::WorkTools;
+use super::tool_host::{ChildRecord, WorkTools};
 use crate::orchestrator::{Agent, TurnFailure, TurnReport};
 
 const MAX_DIAGNOSTIC_BYTES: usize = 256;
@@ -16,6 +16,7 @@ pub(crate) struct ChildRuntime {
     agent: Agent,
     base_prompt: String,
     permission_mode: LivePermissionMode,
+    record: Option<Arc<dyn ChildRecord>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +42,14 @@ impl ChildRuntime {
             base_prompt: agent.config().system_prompt.clone(),
             agent,
             permission_mode,
+            record: None,
         }
+    }
+
+    pub(crate) fn saved(mut self, child_id: &str, record: Arc<dyn ChildRecord>) -> Self {
+        self.agent.attach_session(child_id.to_owned(), record.log());
+        self.record = Some(record);
+        self
     }
 
     pub(crate) async fn run(
@@ -53,6 +61,9 @@ impl ChildRuntime {
         cancel: &CancellationToken,
     ) -> WorkOutcome {
         let WorkTools { tools, release } = tools;
+        if let Some(record) = &self.record {
+            record.begin_work(&work.id);
+        }
         self.agent.replace_tools(tools);
         let mut config = self.agent.config().clone();
         config.system_prompt = system_prompt(&self.base_prompt, instructions);
@@ -89,8 +100,11 @@ pub(crate) fn system_prompt(base: &str, instructions: &str) -> String {
 }
 
 fn work_outcome(report: TurnReport, partial: String, cancelled: bool) -> WorkOutcome {
+    let unsaved = matches!(report.failure, Some(TurnFailure::Persistence(_)));
     let outcome = if cancelled {
         Outcome::Cancelled
+    } else if unsaved {
+        Outcome::Failed
     } else {
         match report.outcome {
             TurnOutcome::Completed => Outcome::Completed,
@@ -101,6 +115,9 @@ fn work_outcome(report: TurnReport, partial: String, cancelled: bool) -> WorkOut
     let failure =
         (outcome == Outcome::Failed).then(|| turn_failure_diagnostic(report.failure.as_ref()));
     let text = match report.outcome {
+        TurnOutcome::Completed if unsaved => {
+            (!report.final_text.is_empty()).then_some(report.final_text)
+        }
         TurnOutcome::Completed => Some(report.final_text),
         TurnOutcome::Interrupted | TurnOutcome::Failed => (!partial.is_empty()).then_some(partial),
     };

@@ -43,7 +43,7 @@ pub struct UserEvent {
     #[serde(default)]
     images: NoItems,
     #[serde(default)]
-    work_id: Null,
+    pub work_id: Option<String>,
 }
 
 impl UserEvent {
@@ -51,7 +51,14 @@ impl UserEvent {
         Self {
             text: text.into(),
             images: NoItems,
-            work_id: Null,
+            work_id: None,
+        }
+    }
+
+    pub fn for_work(text: impl Into<String>, work_id: impl Into<String>) -> Self {
+        Self {
+            work_id: Some(work_id.into()),
+            ..Self::new(text)
         }
     }
 }
@@ -591,7 +598,9 @@ impl ConversationEnvelope {
 
 fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
     let valid = match event {
-        ConversationEvent::User(user) => is_valid_text(&user.text),
+        ConversationEvent::User(user) => {
+            is_valid_text(&user.text) && user.work_id.as_deref().is_none_or(is_valid_identity)
+        }
         ConversationEvent::Assistant(assistant) => {
             assistant.text.len() <= MAX_TEXT_BYTES
                 && assistant.provider_replay.as_ref().is_none_or(|replay| {

@@ -1,4 +1,4 @@
-use ofx_contract::{ProviderError, ProviderErrorKind, Usage};
+use ofx_contract::{LogFailure, ProviderError, ProviderErrorKind, Usage};
 
 use super::*;
 
@@ -67,6 +67,33 @@ fn completed_work_keeps_its_reply_and_failed_work_its_partial_text() {
         false,
     );
     assert_eq!(silent.text, None);
+}
+
+#[test]
+fn a_reply_the_child_could_not_save_fails_the_work_and_keeps_the_reply() {
+    let unsaved = LogFailure {
+        code: "SessionCommitFailed".to_owned(),
+    };
+    for (turn, partial) in [
+        (TurnOutcome::Completed, ""),
+        (TurnOutcome::Interrupted, "fixed it"),
+    ] {
+        let outcome = work_outcome(
+            report(
+                turn,
+                "fixed it",
+                Some(TurnFailure::Persistence(unsaved.clone())),
+            ),
+            partial.to_owned(),
+            false,
+        );
+        assert_eq!(outcome.outcome, Outcome::Failed, "{turn:?}");
+        assert_eq!(
+            outcome.failure.unwrap().as_str(),
+            "agent_turn_failed: SessionCommitFailed"
+        );
+        assert_eq!(outcome.text.as_deref(), Some("fixed it"));
+    }
 }
 
 #[test]

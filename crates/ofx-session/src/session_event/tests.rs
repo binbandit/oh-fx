@@ -161,6 +161,34 @@ fn every_event_kind_is_written_in_upstream_shape_and_round_trips() {
 }
 
 #[test]
+fn a_child_turn_names_its_work_as_upstream_writes_it() {
+    let event = ConversationEvent::User(UserEvent::for_work("read the notes", "call_1"));
+    let frame = encode(1, &event);
+    assert_eq!(
+        frame,
+        "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"user\":{\"text\":\"read the notes\",\"images\":[],\"work_id\":\"call_1\"}}}\n"
+    );
+    assert_eq!(decode(&frame), Ok(event));
+    let base =
+        "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"user\":{\"text\":\"x\",";
+    assert_eq!(
+        decode(&format!("{base}\"work_id\":\"w\"}}}}}}\n")),
+        Ok(ConversationEvent::User(UserEvent::for_work("x", "w")))
+    );
+    for work_id in ["\"\"", "1", "[]", &format!("\"{}\"", "w".repeat(257))] {
+        assert_eq!(
+            decode(&format!("{base}\"work_id\":{work_id}}}}}}}\n")),
+            Err(SessionError::InvalidConversationFrame),
+            "{work_id}"
+        );
+    }
+    assert_eq!(
+        encode_conversation_frame(1, 1, &ConversationEvent::User(UserEvent::for_work("x", ""))),
+        Err(SessionError::InvalidConversationEvent)
+    );
+}
+
+#[test]
 fn file_evidence_from_upstream_frames_round_trips_byte_for_byte() {
     let read = "{\"path\":\"src/main.rs\",\"new_path\":null,\"tool_call_id\":\"call_1\",\"tool_name\":\"read_file\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":true,\"stale\":true}";
     let renamed = "{\"path\":\"old.rs\",\"new_path\":\"new.rs\",\"tool_call_id\":\"call_2\",\"tool_name\":\"shell\",\"action\":\"rename\",\"status\":\"failure\",\"model_view_covers_full_file\":false,\"stale\":false}";
@@ -341,7 +369,6 @@ fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
     let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":";
     for event in [
         "{\"user\":{\"text\":\"x\",\"images\":[{\"path\":\"/a.png\",\"media_type\":\"image/png\"}]}}",
-        "{\"user\":{\"text\":\"x\",\"work_id\":\"w\"}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"final_identity\":\"empty\"}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"provisional_id\":\"p\"}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"argument_integrity\":\"bogus\"}}",

@@ -20,6 +20,7 @@ pub(crate) struct TurnArtifacts<'a> {
     pub(crate) provider: &'a SavedProvider,
     pub(crate) timestamp_ms: i64,
     pub(crate) earlier: &'a EarlierEvidence,
+    pub(crate) work_id: Option<&'a str>,
 }
 
 pub(crate) fn turn_events(
@@ -42,7 +43,11 @@ pub(crate) fn turn_events(
         return Err(SessionError::InvalidConversationEvent);
     }
     let mut steering = steering.iter().peekable();
-    let mut events = vec![ConversationEvent::User(UserEvent::new(turn.user))];
+    let user = match artifacts.work_id {
+        Some(work_id) => UserEvent::for_work(turn.user, work_id),
+        None => UserEvent::new(turn.user),
+    };
+    let mut events = vec![ConversationEvent::User(user)];
     for (index, step) in steps.iter().enumerate() {
         let position = written.tool_steps + index;
         while let Some(entry) = steering.next_if(|entry| entry.after_tool_step_count <= position) {

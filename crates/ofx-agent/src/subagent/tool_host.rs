@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use ofx_contract::{
-    ApprovalRequest, BoxFuture, LivePermissionMode, ModelFailureDiagnostic, PermissionMode,
-    ReasoningEffort, SubagentOverride, SubagentProvider, SubagentRequest, SubagentResult, Tool,
-    ToolContext, ToolOutput, TurnId,
+    ApprovalRequest, BoxFuture, ConversationLog, LivePermissionMode, LogFailure,
+    ModelFailureDiagnostic, PermissionMode, ReasoningEffort, RootUserRequests, SubagentOverride,
+    SubagentProvider, SubagentRequest, SubagentResult, Tool, ToolContext, ToolOutput, TurnId,
+    format_tool_execution_error_json,
 };
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
@@ -38,6 +39,28 @@ pub trait ChildAgents: Send + Sync {
     fn work_tools(&self) -> WorkTools;
 
     fn approval_requested(&self, turn_id: Option<TurnId>, request: ApprovalRequest);
+
+    fn root_user_context(&self, requests: &RootUserRequests) -> String;
+}
+
+pub trait ChildStore: Send + Sync {
+    fn parent_id(&self) -> &str;
+
+    fn new_child_id(&self) -> Result<String, LogFailure>;
+
+    fn save_registry(&self, registry: &[u8]) -> Result<(), LogFailure>;
+
+    fn start_child(
+        &self,
+        child_id: &str,
+        settings: &ChildSettings,
+    ) -> Result<Arc<dyn ChildRecord>, LogFailure>;
+}
+
+pub trait ChildRecord: Send + Sync {
+    fn begin_work(&self, work_id: &str);
+
+    fn log(&self) -> Box<dyn ConversationLog>;
 }
 
 pub struct SubagentHost {
@@ -53,6 +76,10 @@ impl SubagentHost {
 
     pub fn clear(&self) {
         self.owner.clear();
+    }
+
+    pub fn bind(&self, store: Option<Arc<dyn ChildStore>>) {
+        self.owner.bind(store);
     }
 }
 
@@ -76,6 +103,9 @@ async fn execute_managed(
     let root_user_requests = context.root_user_requests.clone().unwrap_or_default();
     match owner.admit(request, &operation_id, root_user_requests, context.turn_id) {
         Admitted::Rejected(code) => output(SubagentResult::failure(code)),
+        Admitted::Failed(code) => {
+            ToolOutput::failure(format_tool_execution_error_json("subagent", &code))
+        }
         Admitted::Completed(finished) => complete(&finished),
         Admitted::Ready(waiter) => {
             if let Some(sink) = &context.subagent_status {
@@ -176,5 +206,7 @@ fn terminal_result<'a>(observation: &Observation, result: Option<&'a str>) -> Su
     }
 }
 
+#[cfg(test)]
+mod store_tests;
 #[cfg(test)]
 mod tests;

@@ -52,6 +52,7 @@ const UNAVAILABLE_CODE: &str = "NotAvailableYet";
 const WEB_FETCH_TOOL: &str = "web_fetch";
 const INVALID_MODEL_CODE: &str = "InvalidModel";
 const HOME_NOT_SET: &str = "HomeNotSet";
+const CHILD_SESSION_NOT_RESUMABLE: &str = "subagent child sessions cannot be resumed directly; message the named agent from its parent session";
 const PERMISSION_REQUIRED_HEADLINE: &str =
     "permission required for tool execution in noninteractive mode";
 const PERMISSION_PROMPT_UNAVAILABLE: &str = "noninteractive_permission_prompt_unavailable";
@@ -168,7 +169,12 @@ impl From<CodexUnavailable> for Failure {
 
 impl From<SessionError> for Failure {
     fn from(error: SessionError) -> Self {
-        Self::code(error.to_string())
+        match error {
+            SessionError::OneOffSessionNotResumable => {
+                Self::notice(error.to_string(), CHILD_SESSION_NOT_RESUMABLE)
+            }
+            _ => Self::code(error.to_string()),
+        }
     }
 }
 

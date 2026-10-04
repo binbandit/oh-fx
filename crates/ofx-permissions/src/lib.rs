@@ -6,6 +6,7 @@ mod session_permission_state;
 mod tool_admission;
 
 pub use auto_classifier::{DEFAULT_REVIEW_TIMEOUT, Reviewer};
+pub use auto_classifier_context::canonical_root_user_context;
 pub use permissions::{
     FileMutationKind, FileMutationTargets, FileTargetFailure, TraversalDirectory,
     WEB_FETCH_PERMISSION, WEB_SEARCH_PERMISSION, canonical_web_fetch_domain_pattern,
