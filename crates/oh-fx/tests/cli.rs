@@ -323,7 +323,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
         (&["session", "last", "--json"], "session"),
         (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),
-        (&["workspace", "--json"], "workspace"),
         (&["replay", "tape", "--json"], "replay"),
     ] {
         let output = oh_fx(args, &[]);

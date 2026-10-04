@@ -9,6 +9,7 @@ use crate::app_bootstrap_runtime::CredentialSource;
 
 pub(crate) mod doctor;
 pub(crate) mod status;
+pub(crate) mod workspace;
 
 const CODEX_CONNECTION: &str = "Codex";
 

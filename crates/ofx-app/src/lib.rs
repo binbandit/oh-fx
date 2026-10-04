@@ -40,6 +40,7 @@ pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 pub use doctor_runtime::Doctor;
 pub use modes::default_mode;
 pub use ofx_tools::WebFetchProgress;
+pub use output_contracts::workspace::{WorkspaceSnapshot, workspace_error_message};
 
 #[cfg(test)]
 mod prompt_goldens;

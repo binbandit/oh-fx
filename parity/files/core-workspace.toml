@@ -121,13 +121,13 @@ note = "Simple Unicode case folding and ASCII comparison behavior match the tran
 upstream = "src/core/workspace/workspace_access.zig"
 status = "partial"
 modules = ["crates/ofx-workspace/src/pathing.rs", "crates/ofx-workspace/src/workspace_access.rs"]
-note = "Saved and launch additional directories resolve, merge and activate as upstream does; refresh, staged add, remove and clear, and saved source spellings arrive with the workspace command."
+note = "Saved and launch additional directories resolve, merge and activate as upstream does, with the saved source spellings and the staged add, remove and clear that the workspace command commits; the availability refresh arrives with /workspace."
 
 [[file]]
 upstream = "src/core/workspace/workspace_commands.zig"
-status = "todo"
-modules = []
-note = "Durable additional workspace-root mutations are unimplemented."
+status = "partial"
+modules = ["crates/ofx-workspace/src/workspace_commands.rs"]
+note = "Add, remove and clear commit to settings with upstream's patch, effective capacity, launch flag warning and indeterminate-commit reconciliation; the failure phase and the reconciled access that /workspace reports arrive with it."
 
 [[file]]
 upstream = "src/core/workspace/workspace_files.zig"
