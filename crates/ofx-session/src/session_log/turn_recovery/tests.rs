@@ -1216,6 +1216,142 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
 }
 
 #[test]
+fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() {
+    let fixture = Fixture::new();
+    let mut started = start_session(&fixture.sessions, metadata()).unwrap();
+    started.append(2, &finished_turn()).unwrap();
+    started
+        .append(
+            3,
+            &[
+                user("fix the build"),
+                ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
+                    covers_through_seq: 3,
+                    summary: "<summary>before</summary>".to_owned(),
+                }),
+            ],
+        )
+        .unwrap();
+    drop(started);
+    fixture.save_checkpoint(5, &checkpoint("fix the build", &[], "", ""));
+    let provider = metadata().preferences.provider;
+    let mut session = fixture.resume().unwrap();
+    let continued = session
+        .take_recovery()
+        .unwrap()
+        .into_turn(&provider, "openai/gpt-5", false);
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn: continued_history(&continued, replied("")),
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    assert!(session.holds_recovery());
+    session.settle_open_recovery().unwrap();
+    assert!(!session.turn_open());
+    session
+        .record_turn(
+            &HistoryTurn {
+                user: "next question",
+                steps: Vec::new(),
+                steering: Vec::new(),
+                files: &[],
+                end: replied("Moved on."),
+            },
+            &provider,
+        )
+        .unwrap();
+    let log = fixture.log();
+    assert_eq!(log.len(), 9, "{log:#?}");
+    assert!(log[5].contains("\"interrupted\":{"), "{}", log[5]);
+    assert!(
+        log[6].contains("\"user\":{\"text\":\"next question\""),
+        "{}",
+        log[6]
+    );
+    assert!(log[7].contains("Moved on."), "{}", log[7]);
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
+fn a_continued_turn_compacted_then_paused_is_committed_before_the_next_prompt_is_saved() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(3, &checkpoint("fix the build", &[], "", ""));
+    let provider = metadata().preferences.provider;
+    let mut session = fixture.resume().unwrap();
+    let continued = session
+        .take_recovery()
+        .unwrap()
+        .into_turn(&provider, "openai/gpt-5", false);
+    let turn = continued_history(&continued, replied(""));
+    session
+        .record_compaction(
+            "<summary>before</summary>",
+            HistoryCut {
+                turns: 1,
+                tool_steps: 0,
+                steering: 0,
+            },
+            Some(&turn),
+            &provider,
+        )
+        .unwrap();
+    assert!(session.turn_open());
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn,
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    session.settle_open_recovery().unwrap();
+    assert!(!session.turn_open());
+    session
+        .record_turn(
+            &HistoryTurn {
+                user: "next question",
+                steps: Vec::new(),
+                steering: Vec::new(),
+                files: &[],
+                end: replied("Moved on."),
+            },
+            &provider,
+        )
+        .unwrap();
+    let log = fixture.log();
+    assert_eq!(log.len(), 9, "{log:#?}");
+    assert!(
+        log[3].contains("\"user\":{\"text\":\"fix the build\""),
+        "{}",
+        log[3]
+    );
+    assert!(log[4].contains("\"context_checkpoint\":{"), "{}", log[4]);
+    assert!(log[5].contains("\"interrupted\":{"), "{}", log[5]);
+    assert!(
+        log[6].contains("\"user\":{\"text\":\"next question\""),
+        "{}",
+        log[6]
+    );
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
 fn a_refused_credential_leaves_the_checkpoint_pending_until_it_is_settled() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());
