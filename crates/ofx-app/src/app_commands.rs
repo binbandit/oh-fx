@@ -2,7 +2,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
-use ofx_contract::{CompactionActivity, CompactionEnd, Notice, NoticeTone, UiEvent};
+use ofx_contract::{
+    CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, ModelOption, Notice,
+    NoticeTone, ReasoningEffort, UiEvent,
+};
 use ofx_session::resolve_model_query_from_ids;
 use ofx_text::encode_terminal_safe;
 use ofx_tui::SlashCommandSpec;
@@ -32,6 +35,7 @@ const NOTHING_TO_UNDO: &str = "Nothing to undo.";
 const RESUME_DURING_TURN: &str = "resume is unavailable until the response finishes";
 const SESSION_TOPIC: &str = "session";
 const RENAME_USAGE: &str = "usage: /rename <title>";
+const MODEL_USAGE: &str = "usage: /model <id> <effort> [normal|fast]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
@@ -42,6 +46,30 @@ pub(crate) enum CommandEffect {
     Compact,
     OpenSessions,
     Rename(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelPick {
+    pub(crate) model: String,
+    pub(crate) effort: ReasoningEffort,
+    pub(crate) fast_mode: Option<bool>,
+}
+
+pub(crate) enum ModelChange {
+    Query(String),
+    Pick(ModelPick),
+    ToggleFast,
+}
+
+pub(crate) enum Outcome {
+    Unchanged,
+    Changed { effort: Option<ReasoningEffort> },
+}
+
+impl ModelChange {
+    pub(crate) fn needs_catalog(&self, state: &ControllerState) -> bool {
+        !matches!(self, Self::ToggleFast) || !state.fast_mode()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,14 +126,7 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         SlashKind::Fast => CommandEffect::ToggleFast,
         SlashKind::Compact => compaction_effect(state, work),
         SlashKind::Model if !command.payload.is_empty() => {
-            let resolved = resolve_model_query(state.models(), command.payload);
-            let prefix = if work == Work::Turn {
-                "Next turn will use "
-            } else {
-                "Switched to "
-            };
-            state.notice(NoticeTone::Neutral, "", &format!("{prefix}{resolved}"));
-            CommandEffect::SwitchModel(resolved)
+            CommandEffect::SwitchModel(command.payload.to_owned())
         }
         kind => {
             report(state, kind, command.payload);
@@ -164,7 +185,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
             WORKSPACE_ACCESS_UNAVAILABLE,
         ),
         SlashKind::Version => state.notice(NoticeTone::Neutral, "version", ofx_upgrade::VERSION),
-        SlashKind::Model => state.notice(NoticeTone::Neutral, "model", &model_status(state)),
+        SlashKind::Model => state.notice(NoticeTone::Neutral, "model", state.model()),
         SlashKind::Permissions => state.permissions().handle_command(payload),
         SlashKind::Shell => state.permissions().reload_shell(payload),
         SlashKind::Skills => handle_skills(state, payload),
@@ -178,19 +199,96 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
     }
 }
 
-pub(crate) async fn toggle_fast(state: &mut ControllerState) -> bool {
+pub(crate) fn listed(catalog: &ModelCatalog) -> &[ModelOption] {
+    match catalog {
+        ModelCatalog::Listed { models, .. } => models,
+        ModelCatalog::Failed { .. } => &[],
+    }
+}
+
+pub(crate) fn change_model(
+    state: &mut ControllerState,
+    change: ModelChange,
+    models: &[ModelOption],
+    work: Work,
+) -> Outcome {
+    match change {
+        ModelChange::Query(query) => {
+            switch_model(state, &query, models, work);
+            Outcome::Changed { effort: None }
+        }
+        ModelChange::Pick(pick) => pick_model(state, pick, models, work),
+        ModelChange::ToggleFast if toggle_fast(state, models) => Outcome::Changed { effort: None },
+        ModelChange::ToggleFast => Outcome::Unchanged,
+    }
+}
+
+fn switch_model(state: &mut ControllerState, query: &str, models: &[ModelOption], work: Work) {
+    let ids: Vec<String> = models.iter().map(|option| option.id.clone()).collect();
+    let resolved = resolve_model_query(&ids, query);
+    state.notice(
+        NoticeTone::Neutral,
+        "",
+        &model_switch_notice(&resolved, work),
+    );
+    state.select_model(resolved);
+}
+
+fn pick_model(
+    state: &mut ControllerState,
+    pick: ModelPick,
+    models: &[ModelOption],
+    work: Work,
+) -> Outcome {
+    let capabilities = capabilities_of(models, &pick.model);
+    let effort_offered = match &pick.effort {
+        ReasoningEffort::Auto => true,
+        ReasoningEffort::Named(name) => capabilities.reasoning_efforts.contains(name),
+    };
+    if !effort_offered || capabilities.supports_fast_mode != pick.fast_mode.is_some() {
+        state.notice(NoticeTone::Error, "", MODEL_USAGE);
+        return Outcome::Unchanged;
+    }
+    state.notice(
+        NoticeTone::Neutral,
+        "",
+        &model_switch_notice(&pick.model, work),
+    );
+    let effort = (!capabilities.reasoning_efforts.is_empty()).then_some(pick.effort);
+    state.apply_pick(pick.model, effort.as_ref(), pick.fast_mode.unwrap_or(false));
+    Outcome::Changed { effort }
+}
+
+fn capabilities_of(models: &[ModelOption], model: &str) -> ModelCapabilities {
+    models
+        .iter()
+        .find(|option| option.id == model)
+        .map(|option| option.capabilities.clone())
+        .unwrap_or_default()
+}
+
+fn model_switch_notice(model: &str, work: Work) -> String {
+    let prefix = if work == Work::Turn {
+        "Next turn will use "
+    } else {
+        "Switched to "
+    };
+    format!("{prefix}{model}")
+}
+
+fn toggle_fast(state: &mut ControllerState, models: &[ModelOption]) -> bool {
     if state.fast_mode() {
         state.set_fast_mode(false);
-        state.save_model_preference(FAST_TOPIC);
+        state.save_model_preference(FAST_TOPIC, None);
         state.notice(NoticeTone::Neutral, FAST_TOPIC, "off");
         return true;
     }
-    if !state.supports_fast_mode().await {
+    if !capabilities_of(models, state.model()).supports_fast_mode {
         state.notice(NoticeTone::Neutral, FAST_TOPIC, NO_FAST_MODE);
         return false;
     }
     state.set_fast_mode(true);
-    state.save_model_preference(FAST_TOPIC);
+    state.save_model_preference(FAST_TOPIC, None);
     state.notice(NoticeTone::Neutral, FAST_TOPIC, "on");
     true
 }
@@ -252,14 +350,6 @@ fn copy_last_reply(state: &ControllerState) {
     } else {
         state.notice(NoticeTone::Error, CLIPBOARD_TOPIC, COPY_FAILED);
     }
-}
-
-fn model_status(state: &ControllerState) -> String {
-    let models = state.models();
-    if models.is_empty() {
-        return state.model().to_owned();
-    }
-    format!("{}\navailable: {}", state.model(), models.join(", "))
 }
 
 fn resolve_model_query(ids: &[String], query: &str) -> String {

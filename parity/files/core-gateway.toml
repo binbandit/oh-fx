@@ -7,7 +7,7 @@ modules = []
 upstream = "src/core/gateway/model_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/model_catalog.rs"]
-note = "HTTP failure categories are implemented; upstream catalog fetching, public fallback, projection and picker catalog ownership are absent."
+note = "HTTP failure categories and which of them a picker retries are implemented; upstream catalog fetching, public fallback, projection and picker catalog ownership are absent."
 
 [[file]]
 upstream = "src/core/gateway/model_catalog_metadata.zig"

@@ -58,6 +58,12 @@ pub(crate) struct PromptHistory {
     index: Option<usize>,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct Navigation {
+    draft: Option<Snapshot>,
+    index: Option<usize>,
+}
+
 impl PromptHistory {
     #[cfg(test)]
     pub(crate) fn active_index(&self) -> Option<usize> {
@@ -96,6 +102,18 @@ impl PromptHistory {
     pub(crate) fn reset_navigation(&mut self) {
         self.index = None;
         self.draft = None;
+    }
+
+    pub(super) fn take_navigation(&mut self) -> Navigation {
+        Navigation {
+            draft: self.draft.take(),
+            index: self.index.take(),
+        }
+    }
+
+    pub(super) fn restore_navigation(&mut self, navigation: Navigation) {
+        self.draft = navigation.draft;
+        self.index = navigation.index;
     }
 }
 

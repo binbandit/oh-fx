@@ -48,6 +48,29 @@ pub(crate) struct CatalogCapabilities {
     listed: OnceLock<Vec<CodexModel>>,
 }
 
+impl CatalogCapabilities {
+    pub(crate) fn cached(&self) -> Option<&[CodexModel]> {
+        self.listed.get().map(Vec::as_slice)
+    }
+
+    pub(crate) async fn listed(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<&[CodexModel], CatalogFailure> {
+        if let Some(listed) = self.listed.get() {
+            return Ok(listed);
+        }
+        let catalog = CodexModelCatalog::new(
+            &self.user_agent,
+            self.endpoints.clone(),
+            Some(self.cache_directory.clone()),
+        )
+        .map_err(|_| CatalogFailure::Transport)?;
+        let models = catalog.fetch(Some(&self.credential), cancel).await?;
+        Ok(self.listed.get_or_init(|| models))
+    }
+}
+
 impl CapabilityResolver for CatalogCapabilities {
     fn resolve<'a>(
         &'a self,
@@ -55,21 +78,8 @@ impl CapabilityResolver for CatalogCapabilities {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, CapabilityLookup> {
         Box::pin(async move {
-            if let Some(listed) = self.listed.get() {
-                return CapabilityLookup::Resolved(listed_capabilities(listed, model));
-            }
-            let Ok(catalog) = CodexModelCatalog::new(
-                &self.user_agent,
-                self.endpoints.clone(),
-                Some(self.cache_directory.clone()),
-            ) else {
-                return CapabilityLookup::CatalogUnavailable;
-            };
-            match catalog.fetch(Some(&self.credential), cancel).await {
-                Ok(models) => CapabilityLookup::Resolved(listed_capabilities(
-                    self.listed.get_or_init(|| models),
-                    model,
-                )),
+            match self.listed(cancel).await {
+                Ok(listed) => CapabilityLookup::Resolved(listed_capabilities(listed, model)),
                 Err(CatalogFailure::Cancellation) => CapabilityLookup::Cancelled,
                 Err(_) => CapabilityLookup::CatalogUnavailable,
             }

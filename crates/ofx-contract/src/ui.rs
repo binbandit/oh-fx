@@ -1,4 +1,5 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
+use crate::model_capabilities::ModelCapabilities;
 use crate::permission_gate::{
     ApprovalDecision, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
 };
@@ -8,7 +9,7 @@ use crate::subagent::SubagentStatus;
 use crate::tool_dispatch::CallDescription;
 use crate::types::{
     CommandProcessPresentation, FileChangeStats, PermissionMode, QuestionBatchEntry,
-    RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, Usage,
+    ReasoningEffort, RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -195,6 +196,36 @@ pub struct QuestionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOption {
+    pub id: String,
+    pub capabilities: ModelCapabilities,
+    pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelCatalogSource {
+    ProfileSettings,
+    Subscription,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogRetry {
+    RateLimited,
+    Unreachable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelCatalog {
+    Listed {
+        models: Vec<ModelOption>,
+        source: ModelCatalogSource,
+    },
+    Failed {
+        retry: Option<CatalogRetry>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     TurnStarted {
         turn_id: TurnId,
@@ -294,6 +325,9 @@ pub enum UiEvent {
     SessionTitleChanged {
         title: Option<String>,
     },
+    ModelCatalog {
+        catalog: ModelCatalog,
+    },
     PermissionModeChanged {
         mode: PermissionMode,
         full_access_warning: bool,
@@ -345,6 +379,12 @@ pub enum UiCommand {
     },
     RunCommand {
         text: String,
+    },
+    ListModels,
+    SelectModel {
+        model: String,
+        effort: ReasoningEffort,
+        fast_mode: Option<bool>,
     },
     Cancel {
         turn_id: TurnId,

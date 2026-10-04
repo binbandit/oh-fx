@@ -1034,6 +1034,7 @@ impl Presenter {
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }
             | UiEvent::SessionTitleChanged { .. }
+            | UiEvent::ModelCatalog { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
             | UiEvent::HelpRequested
