@@ -51,6 +51,7 @@ pub(crate) fn command_grant(request: &CommandRequest) -> Option<SessionGrant> {
             profile,
             shell,
             terminal,
+            ..
         } => Some(SessionGrant::Command {
             command: command.clone(),
             cwd: cwd.clone(),
@@ -106,7 +107,8 @@ impl SessionGrants {
     }
 
     pub(crate) fn allow_command(&self, request: &CommandRequest) -> bool {
-        command_grant(request).is_some_and(|grant| self.lock().contains(&grant))
+        !matches!(request, CommandRequest::Run { reload: true, .. })
+            && command_grant(request).is_some_and(|grant| self.lock().contains(&grant))
     }
 
     fn lock(&self) -> MutexGuard<'_, Vec<SessionGrant>> {

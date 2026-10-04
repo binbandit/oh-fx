@@ -521,6 +521,7 @@ mod tests {
                     profile: CommandProfile::User,
                     shell: None,
                     terminal: false,
+                    reload: false,
                 }),
                 file: None,
                 origin: ApprovalOrigin::ActiveSession,

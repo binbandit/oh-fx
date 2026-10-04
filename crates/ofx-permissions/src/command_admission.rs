@@ -65,6 +65,7 @@ mod tests {
             profile: CommandProfile::User,
             shell: None,
             terminal,
+            reload: false,
         }
     }
 

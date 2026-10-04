@@ -370,6 +370,7 @@ async fn shell_requests_carry_the_whole_command_its_directory_and_any_input() {
             profile: CommandProfile::User,
             shell: None,
             terminal: false,
+            reload: false,
         })
     );
     assert_eq!(
@@ -599,6 +600,7 @@ async fn a_remembered_command_asks_again_under_another_profile_or_terminal_mode(
                 profile,
                 shell: None,
                 terminal,
+                reload: false,
             }),
             Some(SessionGrant::Command {
                 command: "echo granted".to_owned(),
@@ -689,6 +691,7 @@ async fn a_terminal_run_that_names_its_shell_asks_with_that_shell_and_binds_it()
                 profile,
                 shell: shell.clone(),
                 terminal: true,
+                reload: false,
             }),
             Some(SessionGrant::Command {
                 command: "echo granted".to_owned(),
