@@ -877,7 +877,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
         "  /resume         resume a saved session",
         "  /rename         rename the current session",
         "  /undo           undo the latest tracked file operation",
-        "  /statusline     toggle status line segments",
+        "  /ultrafast      request Ultra mode when supported",
     ];
     session
         .wait_for(WAIT, |screen| menu.iter().all(|line| screen.contains(line)))

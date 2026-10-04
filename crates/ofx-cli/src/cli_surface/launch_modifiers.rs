@@ -67,6 +67,10 @@ impl LaunchModifiers {
         self.model.fast
     }
 
+    pub fn ultrafast_mode(&self) -> Option<bool> {
+        self.model.ultrafast
+    }
+
     pub(crate) fn has_workspace_modifiers(&self) -> bool {
         !self.workspace.additional_directories.is_empty()
             || self.workspace.saved_directories_suppressed

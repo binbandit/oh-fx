@@ -24,6 +24,7 @@ pub enum SlashKind {
     Settings,
     Alias,
     Fast,
+    Ultrafast,
     Statusline,
     Workspace,
     Shell,
@@ -246,6 +247,7 @@ mod tests {
         "/settings · Appearance · browse and update settings",
         "/alias · Extensions · show alias availability",
         "/fast · Model · toggle Fast mode when supported",
+        "/ultrafast · Model · request Ultra mode when supported",
         "/statusline · Appearance · toggle status line segments",
         "/workspace · Workspace · manage additional workspace directories",
         "/shell · Workspace · reload shell startup files for commands",
@@ -274,6 +276,7 @@ mod tests {
         assert_eq!(rows, UPSTREAM_REGISTRY);
         assert!(spec(SlashKind::Statusline).accepts_payload());
         assert!(spec(SlashKind::Shell).accepts_payload());
+        assert!(spec(SlashKind::Ultrafast).accepts_payload());
     }
 
     #[test]
@@ -312,6 +315,7 @@ mod tests {
                 ),
                 ("/settings", "/settings [startup-scrollback [on|off]]", true),
                 ("/alias", "/alias [name] [command]", true),
+                ("/ultrafast", "/ultrafast [on|off|status]", true),
                 (
                     "/statusline",
                     "/statusline [context|session|workspace]",
