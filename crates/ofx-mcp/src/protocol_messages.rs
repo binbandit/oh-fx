@@ -1,8 +1,11 @@
+use std::fmt::Write as _;
+
 use ofx_jsonrpc::{Frame, RequestId};
 use serde_json::{Map, Value, json};
 
 use crate::error::McpError;
 use crate::mcp_contract::validate_json_rpc_response_envelope;
+use crate::mcp_json::write_compact;
 use crate::protocol_negotiation::{ElicitationWire, ResponsePayload, classify_response_payload};
 
 pub(crate) const CLIENT_NAME: &str = "oh-fx";
@@ -91,16 +94,20 @@ pub(crate) fn build_tools_list_request(request_id: u64, cursor: Option<&str>) ->
 pub(crate) fn build_tool_call_request(
     request_id: u64,
     original_name: &str,
-    arguments: &Map<String, Value>,
+    arguments_json: &str,
     progress_token: Option<u64>,
 ) -> String {
-    let mut params = Map::new();
+    let mut out = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{",
+        wire_id(request_id)
+    );
     if let Some(token) = progress_token {
-        params.insert("_meta".to_owned(), json!({"progressToken": token}));
+        let _ = write!(out, "\"_meta\":{{\"progressToken\":{token}}},");
     }
-    params.insert("name".to_owned(), Value::from(original_name));
-    params.insert("arguments".to_owned(), Value::Object(arguments.clone()));
-    request_frame(request_id, "tools/call", &Value::Object(params))
+    let _ = write!(out, "\"name\":{},\"arguments\":", json!(original_name));
+    write_compact(&mut out, arguments_json);
+    out.push_str("}}");
+    out
 }
 
 pub(crate) fn build_cancellation_notification(request_id: u64, reason: &str) -> String {
@@ -111,11 +118,15 @@ pub(crate) fn build_cancellation_notification(request_id: u64, reason: &str) -> 
     .encode()
 }
 
-fn request_frame(request_id: u64, method: &str, params: &Value) -> String {
-    let id = i64::try_from(request_id).map_or_else(
+fn wire_id(request_id: u64) -> RequestId {
+    i64::try_from(request_id).map_or_else(
         |_| RequestId::String(request_id.to_string()),
         RequestId::Integer,
-    );
+    )
+}
+
+fn request_frame(request_id: u64, method: &str, params: &Value) -> String {
+    let id = wire_id(request_id);
     Frame::Request {
         id: &id,
         method,
@@ -288,13 +299,21 @@ mod tests {
 
     #[test]
     fn tool_call_requests_compact_arguments_and_carry_progress_tokens() {
-        let arguments = json!({"text": "line one\nline two", "n": 2});
-        let arguments = arguments.as_object().unwrap();
+        let arguments = "{\n  \"text\": \"line one\\nline two\",\n  \"n\": 2\n}";
         assert_eq!(
             build_tool_call_request(4, "echo", arguments, Some(4)),
             "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"_meta\":{\"progressToken\":4},\"name\":\"echo\",\"arguments\":{\"text\":\"line one\\nline two\",\"n\":2}}}"
         );
         assert!(!build_tool_call_request(5, "echo", arguments, None).contains("_meta"));
+    }
+
+    #[test]
+    fn tool_call_arguments_keep_the_number_tokens_and_key_order_the_model_wrote() {
+        let arguments = "{\"z\": 1e3, \"id\": 12345678901234567890123, \"ratio\": 1.50, \"a\": -0}";
+        assert_eq!(
+            build_tool_call_request(6, "lookup", arguments, None),
+            "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"lookup\",\"arguments\":{\"z\":1e3,\"id\":12345678901234567890123,\"ratio\":1.50,\"a\":-0}}}"
+        );
     }
 
     #[test]
