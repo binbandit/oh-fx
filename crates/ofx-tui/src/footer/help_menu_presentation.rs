@@ -1,7 +1,7 @@
 use ofx_text::visible_width;
 
-use crate::footer::picker_presentation::{inline_menu_band, single_line_ellipsized};
-use crate::row_text::{Paint, Row};
+use crate::footer::picker_presentation::inline_menu_band;
+use crate::row_text::{Paint, Row, single_line_ellipsized};
 use crate::shell::SlashCommandSpec;
 use crate::shell::help_menu::HelpMenu;
 use crate::theme::Theme;
@@ -145,7 +145,7 @@ fn command_row(spec: &SlashCommandSpec, paint: Paint, columns: Columns) -> Row {
         ),
         paint,
     );
-    row.push_spaces(columns.description.saturating_sub(row.width()));
+    row.pad_to_column(columns.description);
     row.push(
         &single_line_ellipsized(
             &spec.description,
