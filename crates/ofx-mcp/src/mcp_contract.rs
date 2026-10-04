@@ -82,11 +82,31 @@ pub enum ConfigSource {
     Workspace,
 }
 
+impl ConfigSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::Acp => "acp",
+            Self::Workspace => "workspace",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigScope {
     Profile,
     AcpSession,
     Workspace,
+}
+
+impl ConfigScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::AcpSession => "acp_session",
+            Self::Workspace => "workspace",
+        }
+    }
 }
 
 pub(crate) fn source_allows_scope(source: ConfigSource, scope: ConfigScope) -> bool {
@@ -102,6 +122,16 @@ pub enum WorkspaceAdmission {
     Pending,
     Approved,
     Rejected,
+}
+
+impl WorkspaceAdmission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
 }
 
 pub(crate) fn source_allows_workspace_admission(

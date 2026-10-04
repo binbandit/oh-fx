@@ -160,7 +160,6 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
         (&["--sessions-v2", "resume", "last"], "--sessions-v2"),
         (&["login", "vercel"], "login"),
         (&["replay", "tape"], "replay"),
-        (&["status"], "status"),
         (&["balance"], "credits"),
         (&["sessions"], "sessions"),
         (&["mcp", "list"], "mcp"),
@@ -318,8 +317,7 @@ fn interactive_and_resume_launches_need_a_terminal() {
 #[test]
 fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelope() {
     for (args, kind) in [
-        (&["status", "--json"][..], "status"),
-        (&["models", "--json"], "models"),
+        (&["models", "--json"][..], "models"),
         (&["doctor", "--json"], "doctor"),
         (&["balance", "--json"], "credits"),
         (&["usage", "--json"], "usage"),
@@ -516,9 +514,9 @@ fn commands_that_keep_no_sessions_accept_and_ignore_sessions_v2() {
     let output = oh_fx(&["--sessions-v2", "upgrade", "--channel", "dev"], &[]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stderr(&output), "usage: oh-fx upgrade [--json]\n");
-    let output = oh_fx(&["--sessions-v2", "status"], &[]);
+    let output = oh_fx(&["--sessions-v2", "sessions"], &[]);
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stderr(&output), "oh-fx: status is not available yet\n");
+    assert_eq!(stderr(&output), "oh-fx: sessions is not available yet\n");
 }
 
 #[test]
