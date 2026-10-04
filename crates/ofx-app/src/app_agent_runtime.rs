@@ -976,10 +976,10 @@ fn run_deferred(
     work: Work,
     cancel: &CancellationToken,
 ) {
-    if let UiCommand::RunCommand { text } = &command {
-        if defer_install_input(state, text, installation.is_some()) {
-            return;
-        }
+    if let UiCommand::RunCommand { text } = &command
+        && defer_install_input(state, text, installation.is_some())
+    {
+        return;
     }
     let change = match command {
         UiCommand::RunCommand { text } => match handle_command(state, &text, work) {
