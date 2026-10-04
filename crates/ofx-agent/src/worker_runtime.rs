@@ -205,6 +205,14 @@ impl WorkerRuntime {
         self.lock().queue.clear();
     }
 
+    pub fn waiting_texts(&self) -> Vec<String> {
+        self.lock()
+            .queue
+            .iter()
+            .map(|prompt| prompt.text.clone())
+            .collect()
+    }
+
     pub fn pop_queued_steer_for_edit(&self) -> Option<QueuedPrompt> {
         let mut state = self.lock();
         if !state.processing()

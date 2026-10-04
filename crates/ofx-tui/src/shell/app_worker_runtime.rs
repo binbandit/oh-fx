@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use ofx_contract::{
-    CallDescription, CompactionActivity, CompactionEnd, Notice, NoticeTone, ToolActivity, TurnId,
-    TurnOutcome, UiCommand, UiEvent,
+    CallDescription, CompactionActivity, CompactionEnd, Notice, NoticeTone, RouteRecoveryStatus,
+    ToolActivity, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
 use super::leading_whitespace::LeadingWhitespace;
@@ -145,13 +145,13 @@ impl Shell<'_> {
             | UiEvent::ToolFinished { .. }
             | UiEvent::ToolDeferred { .. }
             | UiEvent::SubagentStatus { .. }) => self.tool_event(event),
-            UiEvent::ContextNotice { .. } | UiEvent::SteeringApplied { .. } => {}
-            UiEvent::Recovery { turn_id, status } => {
-                let now_ms = self.now_ms();
-                if let Some(turn) = self.visible_turn(turn_id) {
-                    turn.recovery = Some(RecoveryStatus::new(status, now_ms));
-                }
-            }
+            UiEvent::SteeringApplied {
+                turn_id,
+                prompt,
+                text,
+            } => self.steering_applied(turn_id, prompt, text),
+            UiEvent::ContextNotice { .. } => {}
+            UiEvent::Recovery { turn_id, status } => self.recovery_reported(turn_id, status),
             UiEvent::UsageReported {
                 turn_id,
                 usage,
@@ -209,6 +209,13 @@ impl Shell<'_> {
             }
             UiEvent::SessionResumed { history } => self.session_resumed(history),
             UiEvent::ExitRequested => self.should_exit = true,
+        }
+    }
+
+    fn recovery_reported(&mut self, turn_id: TurnId, status: RouteRecoveryStatus) {
+        let now_ms = self.now_ms();
+        if let Some(turn) = self.visible_turn(turn_id) {
+            turn.recovery = Some(RecoveryStatus::new(status, now_ms));
         }
     }
 
