@@ -78,6 +78,7 @@ fn metadata(id: &str) -> SessionMetadata {
             fast_mode: false,
         },
         title: None,
+        subagent_child: false,
     }
 }
 

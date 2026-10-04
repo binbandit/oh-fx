@@ -19,6 +19,7 @@ use ofx_contract::{
 use ofx_text::lowercase_hex;
 
 use crate::session::infer_conversation_language;
+use crate::session_children::CONTROL_DIR;
 use crate::session_codec::recovery_checkpoint::RouteCredential;
 use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
@@ -107,6 +108,7 @@ pub struct WritableSession {
     language: String,
     recovery: Recovery,
     earlier: EarlierEvidence,
+    work_id: Option<String>,
 }
 
 impl WritableSession {
@@ -136,6 +138,14 @@ impl WritableSession {
 
     pub fn visit_transcript(&self, visit: impl FnMut(SavedTurn)) -> Result<(), SessionError> {
         visit_turns(self.writer.file(), self.writer.committed_bytes(), visit)
+    }
+
+    pub fn begin_work(&mut self, work_id: &str) {
+        self.work_id = Some(work_id.to_owned());
+    }
+
+    pub(crate) fn control_dir(&self) -> Result<PrivateDir, SessionError> {
+        Ok(self.owned.dir.open_or_create_child(CONTROL_DIR)?)
     }
 
     pub fn observe_prompt(&mut self, prompt: &str) {
@@ -408,6 +418,7 @@ impl WritableSession {
             provider,
             timestamp_ms,
             earlier: &self.earlier,
+            work_id: self.work_id.as_deref(),
         }
     }
 
@@ -499,6 +510,7 @@ pub(crate) fn start_session(
             language,
             recovery: Recovery::Absent,
             earlier: EarlierEvidence::default(),
+            work_id: None,
         });
     let session = match prepared {
         Ok(session) => session,
@@ -565,6 +577,7 @@ pub(crate) fn resume_session(
         started: false,
         recovery,
         earlier: EarlierEvidence::default(),
+        work_id: None,
     })
 }
 

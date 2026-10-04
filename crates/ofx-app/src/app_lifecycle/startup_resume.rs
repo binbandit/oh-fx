@@ -53,6 +53,9 @@ fn session_failure_line(error: SessionError) -> String {
             "oh-fx: no readable saved sessions for this workspace, and some saved sessions are unreadable; run `oh-fx doctor` for recovery guidance."
         }
         SessionError::SessionNotFound => "oh-fx: saved session not found.",
+        SessionError::OneOffSessionNotResumable => {
+            "oh-fx: subagent child sessions cannot be resumed directly; message the named agent from its parent session"
+        }
         SessionError::SessionBusy => {
             "oh-fx: another oh-fx process may be using this session (running or suspended); check other terminals or run jobs, then use fg or quit that process"
         }

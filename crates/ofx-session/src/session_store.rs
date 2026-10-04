@@ -10,6 +10,7 @@ use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
 use crate::session_catalog_cache::{CatalogScan, scan_catalog};
+use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
 use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
@@ -125,6 +126,7 @@ impl SessionStore {
                 conversation_language: DEFAULT_CONVERSATION_LANGUAGE.to_owned(),
                 preferences,
                 title: None,
+                subagent_child: false,
             },
         )
     }
@@ -150,7 +152,24 @@ impl SessionStore {
         let sessions = self
             .writable_sessions()
             .map_err(|_| SessionError::SessionNotFound)?;
-        resume_session(sessions, id, deadline)
+        if let Some(dir) = sessions.open_child(id).ok().flatten()
+            && has_owner_marker(&dir)?
+        {
+            return Err(SessionError::OneOffSessionNotResumable);
+        }
+        let session = resume_session(sessions, id, deadline)?;
+        if session.metadata().subagent_child {
+            return Err(SessionError::OneOffSessionNotResumable);
+        }
+        Ok(session)
+    }
+
+    pub fn children(&self, parent_id: &str) -> Result<ChildSessions, SessionError> {
+        ChildSessions::new(
+            self.writable_sessions()?.try_clone()?,
+            parent_id,
+            &self.workspace_root,
+        )
     }
 
     pub fn resume_latest(&self) -> Result<WritableSession, SessionError> {

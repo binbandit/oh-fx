@@ -6,7 +6,6 @@ use ofx_text::lowercase_hex;
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
-use crate::fixed_field::False;
 use crate::json_fields::{Fields, Json, parse_json, string};
 use crate::session_error::SessionError;
 use crate::session_layout::is_valid_session_id;
@@ -103,6 +102,7 @@ pub struct SessionMetadata {
     pub conversation_language: String,
     pub preferences: SessionPreferences,
     pub title: Option<String>,
+    pub subagent_child: bool,
 }
 
 #[derive(Serialize)]
@@ -119,7 +119,7 @@ struct MetadataWire<'a> {
     effort: &'a str,
     fast_mode: bool,
     title: Option<&'a str>,
-    subagent_child: False,
+    subagent_child: bool,
 }
 
 pub(crate) fn encode_session_metadata(metadata: &SessionMetadata) -> Result<Vec<u8>, SessionError> {
@@ -138,7 +138,7 @@ pub(crate) fn encode_session_metadata(metadata: &SessionMetadata) -> Result<Vec<
         effort,
         fast_mode: metadata.preferences.fast_mode,
         title: metadata.title.as_deref(),
-        subagent_child: False,
+        subagent_child: metadata.subagent_child,
     })
     .map_err(|_| SessionError::InvalidSessionMetadata)?;
     if bytes.is_empty() || bytes.len() > MAX_SESSION_METADATA_BYTES {
@@ -180,8 +180,8 @@ fn metadata_from(document: Json<'_>) -> Option<SessionMetadata> {
             fast_mode: fields.flag("fast_mode")?,
         },
         title: fields.nullable("title", |value| string(value).map(Some))?,
+        subagent_child: fields.or("subagent_child", false, |value| value.as_bool())?,
     };
-    fields.fixed::<False>("subagent_child")?;
     fields.finish(metadata)
 }
 

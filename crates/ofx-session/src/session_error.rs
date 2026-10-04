@@ -80,6 +80,8 @@ pub enum SessionError {
     NoSavedSessions,
     #[error("NoReadableSessions")]
     NoReadableSessions,
+    #[error("OneOffSessionNotResumable")]
+    OneOffSessionNotResumable,
     #[error(transparent)]
     Storage(DurableError),
     #[error("{0:?}")]

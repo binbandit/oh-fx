@@ -38,7 +38,9 @@ pub(crate) struct ActiveWork {
     pub(crate) request_fingerprint: [u8; 32],
     pub(crate) message: String,
     pub(crate) root_user_requests: Arc<RootUserRequests>,
+    pub(crate) root_user_context: String,
     pub(crate) permission_mode: PermissionMode,
+    pub(crate) created_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +48,7 @@ pub(crate) struct Child {
     pub(crate) id: String,
     pub(crate) kind: Kind,
     pub(crate) phase: ChildPhase,
+    pub(crate) work_generation: u64,
     pub(crate) active: Option<ActiveWork>,
     pub(crate) last_work_id: Option<String>,
     pub(crate) last_request_fingerprint: Option<[u8; 32]>,
@@ -85,16 +88,17 @@ impl Child {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Registry {
+    generation: u64,
     children: Vec<Child>,
 }
 
 impl Registry {
-    pub(crate) fn find_by_id(&self, child_id: &str) -> Option<&Child> {
-        self.children.iter().find(|child| child.id == child_id)
+    pub(crate) fn render(&self, parent_id: &str) -> Vec<u8> {
+        registry_file::render(self, parent_id)
     }
 
-    fn find_by_id_mut(&mut self, child_id: &str) -> Option<&mut Child> {
-        self.children.iter_mut().find(|child| child.id == child_id)
+    pub(crate) fn find_by_id(&self, child_id: &str) -> Option<&Child> {
+        self.children.iter().find(|child| child.id == child_id)
     }
 
     pub(crate) fn find_persistent(&self, agent: &str) -> Option<&Child> {
@@ -157,13 +161,19 @@ impl Registry {
             id: child_id.to_owned(),
             kind,
             phase: ChildPhase::Running,
+            work_generation: 1,
             active: Some(active),
             last_work_id: None,
             last_request_fingerprint: None,
             last_outcome: None,
             last_failure: None,
         });
+        self.advance();
         Ok(())
+    }
+
+    fn advance(&mut self) {
+        self.generation = self.generation.saturating_add(1);
     }
 
     pub(crate) fn start_persistent_work(
@@ -175,11 +185,13 @@ impl Registry {
         if instructions.is_some_and(|value| value.is_empty() || !valid_instructions(value)) {
             return Err(RegistryError::InvalidState);
         }
-        let child = self
+        let index = self
             .children
-            .iter_mut()
-            .find(|child| child.agent_name() == Some(agent))
+            .iter()
+            .position(|child| child.agent_name() == Some(agent))
             .ok_or(RegistryError::ChildNotFound)?;
+        let generation = self.generation.saturating_add(1);
+        let child = &mut self.children[index];
         match child.phase {
             ChildPhase::Idle | ChildPhase::Interrupted => {}
             ChildPhase::Running | ChildPhase::AwaitingApproval => {
@@ -193,7 +205,9 @@ impl Registry {
         }
         child.active = Some(active);
         child.phase = ChildPhase::Running;
-        Ok(child)
+        child.work_generation = child.work_generation.saturating_add(1);
+        self.generation = generation;
+        Ok(&self.children[index])
     }
 
     pub(crate) fn finish(
@@ -203,9 +217,12 @@ impl Registry {
         outcome: Outcome,
         failure: Option<ModelFailureDiagnostic>,
     ) -> Result<&Child, RegistryError> {
-        let child = self
-            .find_by_id_mut(child_id)
+        let index = self
+            .children
+            .iter()
+            .position(|child| child.id == child_id)
             .ok_or(RegistryError::ChildNotFound)?;
+        let child = &mut self.children[index];
         if child
             .active
             .as_ref()
@@ -227,9 +244,11 @@ impl Registry {
             Kind::OneOff => ChildPhase::Finished,
             Kind::Persistent { .. } => ChildPhase::Idle,
         };
-        Ok(child)
+        self.advance();
+        Ok(&self.children[index])
     }
 }
 
+mod registry_file;
 #[cfg(test)]
 mod tests;

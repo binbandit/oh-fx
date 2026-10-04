@@ -6,8 +6,66 @@ fn work(id: &str, fingerprint: u8) -> ActiveWork {
         request_fingerprint: [fingerprint; 32],
         message: "do the work".to_owned(),
         root_user_requests: Arc::default(),
+        root_user_context: String::new(),
         permission_mode: PermissionMode::Auto,
+        created_at_ms: 1,
     }
+}
+
+#[test]
+fn the_registry_is_written_as_upstream_writes_children_json() {
+    let mut registry = Registry::default();
+    registry
+        .append_one_off("child-1", work("work-1", 1))
+        .unwrap();
+    registry
+        .finish(
+            "child-1",
+            "work-1",
+            Outcome::Failed,
+            Some(ModelFailureDiagnostic::new("agent_turn_failed: Boom")),
+        )
+        .unwrap();
+    let mut active = work("work-2", 0xab);
+    active.message = "review \"this\"\n".to_owned();
+    active.root_user_context = "current_request: review it\n".to_owned();
+    active.permission_mode = PermissionMode::Yolo;
+    active.created_at_ms = 1_700_000_000_000;
+    registry
+        .append_persistent("child-2", "reviewer", "Be terse.", active)
+        .unwrap();
+    let one = "01".repeat(32);
+    let ab = "ab".repeat(32);
+    assert_eq!(
+        String::from_utf8(registry.render("parent")).unwrap(),
+        format!(
+            "{{\"schema_version\":2,\"parent_id\":\"parent\",\"generation\":3,\"children\":[\
+            {{\"id\":\"child-1\",\"kind\":\"one_off\",\"persistent\":null,\"phase\":\"finished\",\"work_generation\":1,\"active\":null,\"last_work_id\":\"work-1\",\"last_request_fingerprint\":\"{one}\",\"last_outcome\":\"failed\",\"last_failure\":\"agent_turn_failed: Boom\"}},\
+            {{\"id\":\"child-2\",\"kind\":\"persistent\",\"persistent\":{{\"agent\":\"reviewer\",\"instructions\":\"Be terse.\"}},\"phase\":\"running\",\"work_generation\":1,\"active\":{{\"id\":\"work-2\",\"request_fingerprint\":\"{ab}\",\"message\":\"review \\\"this\\\"\\n\",\"root_user_intent_context\":\"current_request: review it\\n\",\"root_user_messages\":[],\"root_user_evidence_complete\":false,\"permission_mode\":\"yolo\",\"created_at_ms\":1700000000000}},\"last_work_id\":null,\"last_request_fingerprint\":null,\"last_outcome\":null,\"last_failure\":null}}\
+            ]}}"
+        )
+    );
+}
+
+#[test]
+fn every_change_advances_the_generation_and_new_work_its_childs() {
+    let mut registry = Registry::default();
+    registry
+        .append_persistent("child", "reviewer", "", work("work-1", 1))
+        .unwrap();
+    registry
+        .finish("child", "work-1", Outcome::Completed, None)
+        .unwrap();
+    registry
+        .start_persistent_work("reviewer", Some("Be terse."), work("work-2", 2))
+        .unwrap();
+    let rendered = String::from_utf8(registry.render("parent")).unwrap();
+    assert!(rendered.contains("\"generation\":3,"), "{rendered}");
+    assert!(rendered.contains("\"work_generation\":2,"), "{rendered}");
+    assert!(
+        rendered.contains("\"persistent\":{\"agent\":\"reviewer\",\"instructions\":\"Be terse.\"}"),
+        "{rendered}"
+    );
 }
 
 #[test]
