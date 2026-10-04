@@ -323,7 +323,7 @@ async fn connection_retries_keep_fast_mode() {
 }
 
 #[tokio::test]
-async fn an_outage_after_reply_text_fails_the_turn_without_a_slower_retry() {
+async fn an_outage_after_reply_text_restarts_the_reply_on_the_same_route() {
     let provider = FakeProvider::new(vec![
         Script::Fail(
             vec![StreamEvent::TextDelta {
@@ -331,11 +331,11 @@ async fn an_outage_after_reply_text_fails_the_turn_without_a_slower_retry() {
             }],
             failure(ProviderErrorKind::ServerError, "server_error"),
         ),
-        text_reply("never"),
+        text_reply("restarted"),
     ]);
     let resolver = FakeResolver::new(vec![supporting(&[], true)]);
     let mut agent = agent_with(&provider, Some(&resolver), requesting(None, true));
     let (report, _) = run(&mut agent, "go").await;
-    assert_eq!(report.outcome, TurnOutcome::Failed);
-    assert_eq!(sent_options(&provider), [(None, true)]);
+    assert_eq!(report.final_text, "restarted");
+    assert_eq!(sent_options(&provider), [(None, true), (None, true)]);
 }

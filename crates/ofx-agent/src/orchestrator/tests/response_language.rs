@@ -148,6 +148,25 @@ async fn one_clear_language_mismatch_is_retried_without_publishing_or_keeping_it
     assert_eq!(count_text(&provider.requests()[2], CHINESE_REPLY), 0);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_restarted_reply_is_held_until_its_own_prefix_matches() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![StreamEvent::TextDelta {
+                text: "I will inspect ".to_owned(),
+            }],
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+        ),
+        text_reply(CHINESE_REPLY),
+        text_reply(ENGLISH_REPLY),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, ENGLISH_PROMPT).await;
+    assert_eq!(report.final_text, ENGLISH_REPLY);
+    assert_eq!(streamed(&events), ["I will inspect ", ENGLISH_REPLY]);
+    assert_eq!(provider.requests().len(), 3);
+}
+
 #[tokio::test]
 async fn a_second_clear_mismatch_fails_the_turn_without_keeping_a_reply() {
     let provider = FakeProvider::new(vec![text_reply(CHINESE_REPLY), text_reply(RUSSIAN_REPLY)]);

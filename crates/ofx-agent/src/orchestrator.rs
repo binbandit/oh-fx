@@ -33,7 +33,7 @@ use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::{EarlierEvidence, RawOutput, steering_text};
 use crate::model_response_recovery::{
-    DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, recovery_cause,
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Output, Recovery, recovery_cause,
 };
 use crate::project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
 use crate::prompt_context::Calibration;
@@ -60,7 +60,7 @@ use project_gate::GatedGroup;
 use provider_tools::{
     ends_with_provider_results, joins_parallel_groups, malformed_provider_calls, provider_executed,
 };
-use recovery::recovery_tool_choice;
+use recovery::{Restart, recovery_tool_choice, restarted, retried_strategy};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -658,6 +658,7 @@ impl Agent {
                 }
                 Err(Stop::Interrupted { partial }) if self.steers_after_interrupt(cancel) => {
                     self.settle_measurement(measured, None);
+                    turn.recovery = None;
                     self.keep_interrupted_reply(&partial);
                     step += 1;
                     continue;
@@ -856,16 +857,22 @@ impl Agent {
         let mut recovery = Recovery::default();
         let mut recovering_from = None;
         let mut pending = None;
+        let mut restart = Restart::default();
         loop {
+            let sent = ModelRequest {
+                messages: restart.messages(request.messages),
+                ..request
+            };
             let Attempt {
                 streamed,
                 partial,
                 streamed_bytes,
                 admitted,
             } = self
-                .attempt(turn, &request, body.take(), &mut pending, events, cancel)
+                .attempt(turn, &sent, body.take(), &mut pending, events, cancel)
                 .await;
             let consumed = attempt - usize::from(!admitted);
+            let spoke = restart.observe(partial);
             let error = match streamed {
                 Ok(completion) => {
                     if recovering_from.is_some() {
@@ -880,20 +887,22 @@ impl Agent {
             };
             if error.kind == ProviderErrorKind::Cancelled || cancel.is_cancelled() {
                 let recovery = recovering_from.map(|cause| (cause, consumed));
+                let partial = restart.into_partial();
                 return Err(self.interruption(turn, recovery, &error, partial, events));
             }
-            let Some(cause) = recovery_cause(error.kind).filter(|_| partial.is_empty()) else {
+            let Some(cause) = recovery_cause(error.kind) else {
                 if let Some(status) =
-                    stopped_status(recovering_from, attempt, consumed, &error, &partial)
+                    stopped_status(recovering_from, attempt, consumed, &error, spoke)
                 {
                     events(UiEvent::Recovery { turn_id, status });
                 }
                 return Err(Stop::Failed {
                     failure: TurnFailure::Provider(error),
-                    partial,
+                    partial: restart.into_partial(),
                 });
             };
-            let decision = recovery.decide(cause, &error, streamed_bytes);
+            let output = restart.output(&turn.language.stage);
+            let decision = recovery.decide(cause, &error, streamed_bytes, output);
             let Some(action) = decision.strategy.action() else {
                 events(UiEvent::Recovery {
                     turn_id,
@@ -902,15 +911,21 @@ impl Agent {
                 self.discard_recovery();
                 return Err(Stop::Failed {
                     failure: TurnFailure::Provider(error),
-                    partial,
+                    partial: restart.into_partial(),
                 });
             };
-            if cause == ModelRecoveryCause::ProviderUnavailable {
+            if cause == ModelRecoveryCause::ProviderUnavailable && output == Output::None {
                 turn.fast_mode = false;
                 request.provider_options.fast = false;
             }
+            let strategy = retried_strategy(turn.recovery, decision.strategy);
+            if strategy != turn.recovery {
+                turn.recovery = strategy;
+                request.tool_choice = recovery_tool_choice(strategy);
+                restart.resend(self.request_messages(turn));
+            }
             let mut status = retry_status(attempt, cause, action, &decision, &error);
-            self.record_wait(turn, cause, action, consumed)?;
+            self.record_wait(turn, cause, action, consumed, restart.partial())?;
             events(UiEvent::Recovery {
                 turn_id,
                 status: status.clone(),
@@ -919,10 +934,15 @@ impl Agent {
                 biased;
                 () = cancel.cancelled() => {
                     let recovery = Some((cause, consumed));
-                    return Err(self.interruption(turn, recovery, &error, String::new(), events));
+                    let partial = restart.into_partial();
+                    return Err(self.interruption(turn, recovery, &error, partial, events));
                 }
                 () = tokio::time::sleep(decision.delay) => {}
             }
+            if restart.restarted(&turn.language.stage) {
+                events(restarted(turn_id));
+            }
+            turn.language.stage.restart();
             attempt += 1;
             status.failed_attempt = attempt;
             status.retry_wait = None;
@@ -1604,10 +1624,10 @@ fn stopped_status(
     attempt: usize,
     consumed: usize,
     error: &ProviderError,
-    partial: &str,
+    spoke: bool,
 ) -> Option<RouteRecoveryStatus> {
     let unanswered = attempt > 1 && error.status.is_none();
-    (partial.is_empty() && unanswered).then(|| RouteRecoveryStatus {
+    (!spoke && unanswered).then(|| RouteRecoveryStatus {
         kind: RouteRecoveryKind::TerminalProviderError,
         failed_attempt: consumed,
         succeeded_attempt: 0,

@@ -402,3 +402,57 @@ fn clearing_the_conversation_drops_a_kept_label() {
     let screen = test.screen();
     assert!(!screen.contains(STOPPED), "{screen}");
 }
+
+#[test]
+fn a_restarted_reply_shows_the_upstream_notice_before_the_new_reply() {
+    let mut test = running();
+    let reply = |text: &str| UiEvent::AssistantText {
+        turn_id: TurnId::new(TURN),
+        text: text.to_owned(),
+    };
+    test.deliver(reply("Hel"));
+    test.deliver(UiEvent::AssistantRestarted {
+        turn_id: TurnId::new(TURN),
+        text: "\n\n[Response interrupted. Restarting.]\n\n".to_owned(),
+    });
+    test.deliver(reply("Hello."));
+    test.deliver(finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let row = |wanted: &str| {
+        rows.iter()
+            .position(|row| row.trim_start() == wanted)
+            .unwrap_or_else(|| panic!("{wanted:?} in\n{screen}"))
+    };
+    let notice = row("[Response interrupted. Restarting.]");
+    assert_eq!(row("Hel") + 2, notice, "{screen}");
+    assert_eq!(notice + 2, row("Hello."), "{screen}");
+}
+
+#[test]
+fn a_restart_inside_an_open_code_block_starts_the_new_reply_afresh() {
+    let mut test = running();
+    let reply = |text: &str| UiEvent::AssistantText {
+        turn_id: TurnId::new(TURN),
+        text: text.to_owned(),
+    };
+    test.deliver(reply("```rust\nlet value ="));
+    test.deliver(UiEvent::AssistantRestarted {
+        turn_id: TurnId::new(TURN),
+        text: "\n\n[Response interrupted. Restarting.]\n\n".to_owned(),
+    });
+    test.deliver(reply("Done:\n\n```rust\nlet value = 1;\n```\n"));
+    test.deliver(finished(TurnOutcome::Completed));
+    let screen = test.screen();
+    let rows: Vec<&str> = screen.lines().map(str::trim).collect();
+    let row = |wanted: &str| {
+        rows.iter()
+            .position(|row| *row == wanted)
+            .unwrap_or_else(|| panic!("{wanted:?} in\n{screen}"))
+    };
+    assert!(!screen.contains("```"), "{screen}");
+    let notice = row("[Response interrupted. Restarting.]");
+    assert!(row("let value =") < notice, "{screen}");
+    assert!(notice < row("Done:"), "{screen}");
+    assert!(row("Done:") < row("let value = 1;"), "{screen}");
+}

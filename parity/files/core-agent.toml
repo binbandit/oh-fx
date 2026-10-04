@@ -92,7 +92,7 @@ note = "History, usage and request calibration exist; inline images and kernel c
 upstream = "src/core/agent/runtime/assistant_stream.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/assistant_stream.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Assistant normalization, text deltas and response language staging exist; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
+note = "Assistant normalization, text deltas, response language staging and the restart of an interrupted response with its notice exist; restoring a checkpoint's saved assistant source is deferred to the next recovery slice; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
 
 [[file]]
 upstream = "src/core/agent/runtime/checkpoint.zig"
@@ -152,13 +152,13 @@ note = "Prepared calls and cancellation lifecycle exist; durable stop/attention 
 upstream = "src/core/agent/runtime/model_response_recovery.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/model_response_recovery.rs"]
-note = "The recovery policy retries without a turn budget, throttles past the 15-minute billable window, stream timeouts included, waits on connectivity, checks the connection on a stream timeout and stops a recovery stalled by network or in-stream provider failures; partial-output restart, regeneration and reconciliation of tool calls, delivery evidence and the response-interrupted, system-resumed, authentication, request-limit, content-filter and compaction causes are absent."
+note = "The recovery policy retries without a turn budget, throttles past the 15-minute billable window, stream timeouts included, waits on connectivity, checks the connection on a stream timeout and stops a recovery stalled by network or in-stream provider failures, and restarts a response interrupted after partial output; regeneration and reconciliation of tool calls, delivery evidence and the response-interrupted, system-resumed, authentication, request-limit, content-filter and compaction causes are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, and shell calls kept in their normalized form and projected into each request exist; vision, dynamic tool advertisement and Gateway or compaction recovery checkpoints remain absent."
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, the continue_response restart with its note, and shell calls kept in their normalized form and projected into each request exist; vision, dynamic tool advertisement and Gateway or compaction recovery checkpoints remain absent, and writing the partial assistant source into a restart's checkpoint is deferred to the next recovery slice."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
