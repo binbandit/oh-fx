@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Instant;
 
@@ -10,7 +11,7 @@ use ofx_auth::{
 use ofx_config::ProfilePaths;
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, Completion, ModelCapabilities, ModelProvider,
-    ModelRequest, ProviderError, ProviderErrorKind, StreamSink,
+    ModelRequest, ProviderError, ProviderErrorKind, ProviderReplay, StreamSink,
 };
 use ofx_gateway::{
     CatalogCredential, CatalogFailure, CodexAccess, CodexCredentials, CodexEndpoints, CodexModel,
@@ -37,13 +38,83 @@ impl ModelProvider for SignedOutProvider {
         _sink: &'a mut dyn StreamSink,
         _cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
-        Box::pin(async {
-            Err(ProviderError::new(
-                ProviderErrorKind::Unauthorized,
-                "MissingCredentials",
-            ))
-        })
+        missing_credentials()
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SubscriptionLogin {
+    signed_out: AtomicBool,
+}
+
+impl SubscriptionLogin {
+    pub(crate) fn sign_out(&self) {
+        self.signed_out.store(true, Ordering::Release);
+    }
+
+    fn signed_out(&self) -> bool {
+        self.signed_out.load(Ordering::Acquire)
+    }
+}
+
+pub(crate) struct SubscriptionProvider {
+    codex: CodexProvider,
+    login: Arc<SubscriptionLogin>,
+}
+
+impl SubscriptionProvider {
+    pub(crate) fn new(codex: CodexProvider, login: Arc<SubscriptionLogin>) -> Self {
+        Self { codex, login }
+    }
+}
+
+impl ModelProvider for SubscriptionProvider {
+    fn stream<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        if self.login.signed_out() {
+            return missing_credentials();
+        }
+        self.codex.stream(request, sink, cancel)
+    }
+
+    fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        self.codex.request_body(request)
+    }
+
+    fn stream_body<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        body: String,
+        sink: &'a mut dyn StreamSink,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        if self.login.signed_out() {
+            return missing_credentials();
+        }
+        self.codex.stream_body(request, body, sink, cancel)
+    }
+
+    fn project_replay(
+        &self,
+        replay: &ProviderReplay,
+        text: bool,
+        reasoning: bool,
+    ) -> Result<Option<ProviderReplay>, ProviderError> {
+        self.codex.project_replay(replay, text, reasoning)
+    }
+}
+
+fn missing_credentials<'a>() -> BoxFuture<'a, Result<Completion, ProviderError>> {
+    Box::pin(async {
+        Err(ProviderError::new(
+            ProviderErrorKind::Unauthorized,
+            "MissingCredentials",
+        ))
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,6 +131,7 @@ pub(crate) struct CodexSubscription {
     pub(crate) provider: CodexProvider,
     pub(crate) capabilities: CatalogCapabilities,
     pub(crate) account_id: String,
+    pub(crate) login: Arc<SubscriptionLogin>,
 }
 
 pub(crate) struct CatalogCapabilities {
@@ -67,6 +139,7 @@ pub(crate) struct CatalogCapabilities {
     endpoints: CodexModelsEndpoints,
     cache_directory: PathBuf,
     credential: CatalogCredential,
+    login: Arc<SubscriptionLogin>,
     listed: OnceLock<Vec<CodexModel>>,
 }
 
@@ -81,6 +154,9 @@ impl CatalogCapabilities {
     ) -> Result<&[CodexModel], CatalogFailure> {
         if let Some(listed) = self.listed.get() {
             return Ok(listed);
+        }
+        if self.login.signed_out() {
+            return Err(CatalogFailure::Authentication);
         }
         let catalog = CodexModelCatalog::new(
             &self.user_agent,
@@ -266,11 +342,13 @@ pub(crate) async fn codex_subscription(
     let account_id = access.account_id().to_owned();
     let refresh_after_ms = access.refresh_after_ms();
     let token = access.into_token();
+    let login = Arc::new(SubscriptionLogin::default());
     let capabilities = CatalogCapabilities {
         user_agent: user_agent.to_owned(),
         endpoints: endpoints.models,
         cache_directory: paths.cache.clone(),
         credential: CatalogCredential::new(token.clone(), account_id.clone()),
+        login: Arc::clone(&login),
         listed: OnceLock::new(),
     };
     let access = CodexAccess::new(token, account_id.clone(), refresh_after_ms);
@@ -284,6 +362,7 @@ pub(crate) async fn codex_subscription(
         provider,
         capabilities,
         account_id,
+        login,
     })
 }
 
