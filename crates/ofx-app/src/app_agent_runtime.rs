@@ -4,14 +4,15 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{
-    Agent, Compaction, CompactionError, QuestionRequests, QueuedPrompt, TurnFailure, TurnReport,
-    WorkerRuntime,
+    Agent, Compaction, CompactionError, EventSink, QuestionRequests, QueuedPrompt, TurnFailure,
+    TurnReport, WorkerRuntime,
 };
 use ofx_config::save_model_preference;
 use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelOption, Notice, NoticeTone,
-    ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor, SessionScope,
-    SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
+    ProviderError, QuestionRequest, ReasoningEffort, RecoveredTurn, ResumeRefusal, SessionCursor,
+    SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand,
+    UiEvent,
 };
 use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -26,7 +27,9 @@ use crate::app_commands::{
 };
 use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
+use crate::app_session_runtime::{
+    NOT_CONTINUED, Persistence, RECOVERY_TOPIC, RestoredPreferences, SessionTitle,
+};
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
@@ -256,6 +259,16 @@ impl ControllerState {
             self.worker.admit(prompt);
         }
     }
+
+    fn holds_recovery(&self) -> bool {
+        self.worker.holds_recovery()
+    }
+
+    fn receive_recovery(&mut self, recovered: RecoveredTurn) {
+        let prompt = QueuedPrompt::recovery(self.received_prompts, recovered);
+        self.received_prompts += 1;
+        self.worker.admit(prompt);
+    }
 }
 
 struct ContextNotices {
@@ -476,15 +489,18 @@ impl Controller {
                 .persistence
                 .as_ref()
                 .and_then(Persistence::resumed_title);
-            let opened = self
+            let (opened, continues) = self
                 .persistence
                 .as_mut()
-                .and_then(|persistence| persistence.open(&mut self.agent));
+                .map_or((None, false), |persistence| {
+                    persistence.open(&mut self.agent)
+                });
             if let Some(title) = resumed_title {
                 self.state.session_title.set(Some(&title));
             }
             self.bind_children();
             self.session_notice(opened);
+            self.continue_recovery(continues);
         }
         if let Some(herdr) = &self.herdr {
             herdr.initialize(self.persistence.as_ref().and_then(Persistence::active_id));
@@ -502,6 +518,13 @@ impl Controller {
             if self.installation.is_none()
                 && let Some(prompt) = self.state.worker.take_next()
             {
+                if prompt.recovered().is_none() {
+                    let settled = self
+                        .persistence
+                        .as_mut()
+                        .and_then(|persistence| persistence.settle_open_recovery(&mut self.agent));
+                    self.session_notice(settled);
+                }
                 if !self.run_turn(&prompt, commands).await {
                     return;
                 }
@@ -565,6 +588,11 @@ impl Controller {
                     after,
                     limit,
                 } => self.list_sessions(scope, after, limit),
+                command @ (UiCommand::OpenSessions { .. } | UiCommand::ResumeSession { .. })
+                    if self.state.holds_recovery() =>
+                {
+                    refuse_session_command(&self.state, command);
+                }
                 UiCommand::OpenSessions { scope } => self.open_picker(scope),
                 UiCommand::ResumeSession { id } => self.resume_session(&id),
                 UiCommand::CloseSessionPicker => self.close_picker(),
@@ -596,6 +624,9 @@ impl Controller {
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => self.change_model(ModelChange::ToggleFast).await,
             CommandEffect::Compact => return self.compact(commands).await,
+            CommandEffect::OpenSessions if self.state.holds_recovery() => {
+                refuse_resume_during_turn(&self.state);
+            }
             CommandEffect::OpenSessions => self.open_picker(SessionScope::CurrentWorkspace),
             CommandEffect::OpenSettings => self.open_settings_menu().await,
             CommandEffect::Rename(title) => {
@@ -697,11 +728,35 @@ impl Controller {
                 });
                 self.show_startup_notices();
                 self.session_notice(switched.notice);
+                self.continue_recovery(switched.continues);
             }
             Err(refused) => {
                 self.session_notice(refused.notice);
                 self.refuse_resume(id, refused.refusal);
             }
+        }
+    }
+
+    fn continue_recovery(&mut self, continues: bool) {
+        let Some(persistence) = self.persistence.as_ref().filter(|_| continues) else {
+            return;
+        };
+        match persistence.continue_recovery(
+            &self.state.setup,
+            &self.state.model,
+            self.state.fast_mode,
+        ) {
+            Ok(recovered) => {
+                observe_prompt(self.persistence.as_ref(), &recovered.prompt);
+                self.state.emit(UiEvent::RecoveryContinuing {
+                    prompt: recovered.prompt.clone(),
+                    id: self.state.received_prompts,
+                });
+                self.state.receive_recovery(recovered);
+            }
+            Err(_) => self
+                .state
+                .notice(NoticeTone::Warning, RECOVERY_TOPIC, NOT_CONTINUED),
         }
     }
 
@@ -846,9 +901,7 @@ impl Controller {
         let mut open = true;
         let installation = &mut self.installation;
         let report = {
-            let turn =
-                self.agent
-                    .run_turn_with_skills(&prompt.text, &prompt.skills, &mut sink, &cancel);
+            let turn = run_prompt(&mut self.agent, prompt, &mut sink, &cancel);
             tokio::pin!(turn);
             loop {
                 tokio::select! {
@@ -1145,6 +1198,22 @@ fn refuse_session_command(state: &ControllerState, command: UiCommand) {
         }),
         UiCommand::OpenSessions { .. } => refuse_resume_during_turn(state),
         _ => {}
+    }
+}
+
+async fn run_prompt(
+    agent: &mut Agent,
+    prompt: &QueuedPrompt,
+    events: EventSink<'_>,
+    cancel: &CancellationToken,
+) -> TurnReport {
+    match prompt.recovered().cloned() {
+        Some(recovered) => agent.continue_turn(recovered, events, cancel).await,
+        None => {
+            agent
+                .run_turn_with_skills(&prompt.text, &prompt.skills, events, cancel)
+                .await
+        }
     }
 }
 
@@ -4759,6 +4828,127 @@ mod tests {
             drop(file);
         });
         (release, worker)
+    }
+
+    fn pause_a_saved_response(home: &tempfile::TempDir, id: &str) {
+        let dir = home.path().join("data/sessions").join(id);
+        let metadata: Value =
+            serde_json::from_slice(&fs::read(dir.join("session.json")).unwrap()).unwrap();
+        let seq = fs::read_to_string(dir.join("events.jsonl"))
+            .unwrap()
+            .lines()
+            .count();
+        let checkpoint = json!({
+            "version": 2,
+            "turn_id": 2,
+            "user": {"text": "fix the build", "images": []},
+            "assistant_source": "",
+            "execution": {
+                "schema_version": 10,
+                "tool_steps": [],
+                "files": [],
+                "steering": [],
+                "turn_summary": null
+            },
+            "cause": "rate_limited",
+            "action": "retrying_request",
+            "tool_state": "none",
+            "authority": {
+                "provider": metadata["provider"],
+                "model": metadata["model"],
+                "credential_source": null,
+                "credential_identity": null
+            },
+            "requested_fast_mode": false,
+            "fast_mode": false,
+            "max_provider_attempts": 10,
+            "consumed_provider_attempts": 0,
+            "outstanding_reservation": false
+        });
+        fs::write(
+            dir.join("recovery.json"),
+            format!("{{\"conversation_seq\":{seq},\"checkpoint\":{checkpoint}}}\n"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_recovery_waiting_for_an_installation_keeps_its_session_until_it_runs() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["answer a"])),
+            Reply::sse(&chat_text_events(&["answer b"])),
+            Reply::sse(&chat_text_events(&["build fixed"])),
+        ]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        write_skill(&home, "install-pack", "new-skill");
+        let source = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
+        let mut harness = Harness::saved(home, setup);
+        chat(&mut harness, &["question a"]).await;
+        let first = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        chat(&mut harness, &["question b"]).await;
+        let second = saved_sessions(&harness.home)
+            .iter()
+            .filter_map(|session| session["id"].as_str())
+            .find(|id| *id != first)
+            .unwrap()
+            .to_owned();
+        pause_a_saved_response(&harness.home, &first);
+        let (release, worker) = held_install_lock(&harness.home);
+        harness.command(&format!("/skills install {}", source.display()));
+        harness.send(UiCommand::ResumeSession { id: first.clone() });
+        harness
+            .until(|event| matches!(event, UiEvent::RecoveryContinuing { .. }))
+            .await;
+        harness.command("/resume");
+        harness.send(UiCommand::ResumeSession { id: second.clone() });
+        let switched = harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::SessionResumeFailed { .. } | UiEvent::SessionResumed { .. }
+                )
+            })
+            .await;
+        assert!(
+            matches!(
+                switched.last(),
+                Some(UiEvent::SessionResumeFailed { id, .. }) if *id == second
+            ),
+            "{switched:?}"
+        );
+        assert!(
+            !switched
+                .iter()
+                .any(|event| matches!(event, UiEvent::SessionPickerOpened { .. })),
+            "{switched:?}"
+        );
+        release.send(()).unwrap();
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        let continued = requests[2].body_text();
+        assert!(continued.contains("question a"), "{continued}");
+        assert!(continued.contains("fix the build"), "{continued}");
+        assert!(!continued.contains("question b"), "{continued}");
+        let saved = fs::read_to_string(
+            harness
+                .home
+                .path()
+                .join("data/sessions")
+                .join(&first)
+                .join("events.jsonl"),
+        )
+        .unwrap();
+        assert!(saved.contains("build fixed"), "{saved}");
+        worker.join().unwrap();
     }
 
     #[tokio::test]
