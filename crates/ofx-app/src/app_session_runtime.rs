@@ -4,7 +4,9 @@ mod persistence;
 mod resume_transcript;
 mod session_picker;
 mod session_titles;
+mod shell_recovery;
 
+use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{Agent, ChildStore};
@@ -22,6 +24,8 @@ pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
 pub use session_titles::TitleGeneration;
 pub(crate) use session_titles::{RenameError, SessionTitle, validate_session_title};
+pub(crate) use shell_recovery::{NOT_CONTINUED, RECOVERY_TOPIC};
+use shell_recovery::{ShellRecovery, shell_recovery};
 
 #[derive(Debug)]
 pub enum ResumeFailure {
@@ -40,6 +44,7 @@ pub struct ResumedSession {
     history: RestoredHistory,
     title: String,
     title_present: bool,
+    recovery: Option<ShellRecovery>,
 }
 
 impl ResumedSession {
@@ -48,10 +53,22 @@ impl ResumedSession {
         profile: &mut Profile,
         target: &ResumeTarget,
     ) -> Result<Self, ResumeFailure> {
-        let mut session = store.resume_target(target)?;
+        let session = store.resume_target(target)?;
         select(profile, &session)?;
-        session.settle_recovery()?;
-        Ok(Self::load(session)?)
+        Ok(Self::for_shell(session)?)
+    }
+
+    fn for_shell(mut session: WritableSession) -> Result<Self, SessionError> {
+        let recovery = shell_recovery(&mut session);
+        let mut resumed = Self::load(session)?;
+        resumed.recovery = recovery;
+        Ok(resumed)
+    }
+
+    pub(crate) fn take_continuation(&mut self) -> bool {
+        self.recovery
+            .as_mut()
+            .is_some_and(|recovery| mem::take(&mut recovery.continues))
     }
 
     pub fn open_for_ask(
@@ -86,6 +103,7 @@ impl ResumedSession {
             history,
             title,
             title_present,
+            recovery: None,
         })
     }
 
@@ -94,9 +112,14 @@ impl ResumedSession {
     }
 
     pub(crate) fn transcript(&self, setup: &AgentSetup) -> Result<Vec<HistoryEntry>, SessionError> {
-        resume_transcript::transcript(&self.session, &self.title, &|tool_name, arguments| {
-            setup.describe_saved_call(tool_name, arguments)
-        })
+        let mut entries =
+            resume_transcript::transcript(&self.session, &self.title, &|tool_name, arguments| {
+                setup.describe_saved_call(tool_name, arguments)
+            })?;
+        if let Some(recovery) = &self.recovery {
+            entries.extend(recovery.entries.iter().cloned());
+        }
+        Ok(entries)
     }
 
     pub(crate) fn display_title(&self) -> Option<&str> {
@@ -180,6 +203,29 @@ impl LiveSession {
 
     pub fn observe_prompt(&self, prompt: &str) {
         self.session().observe_prompt(prompt);
+    }
+
+    pub(crate) fn continue_recovery(
+        &self,
+        setup: &AgentSetup,
+        model: &str,
+        fast_mode: bool,
+    ) -> Result<RecoveredTurn, SessionError> {
+        let provider = running_provider(setup)?;
+        let pending = self
+            .session()
+            .take_authorized_recovery(setup.route_credential())?;
+        Ok(pending.into_turn(&provider, model, fast_mode))
+    }
+
+    pub(crate) fn settle_open_recovery(&self, agent: &mut Agent) -> Result<(), SessionError> {
+        let mut session = self.session();
+        if !session.turn_open() || session.recovery_transcript().is_none() {
+            return Ok(());
+        }
+        session.settle_open_recovery()?;
+        agent.restore(session.restored_history()?);
+        Ok(())
     }
 
     fn session(&self) -> MutexGuard<'_, WritableSession> {

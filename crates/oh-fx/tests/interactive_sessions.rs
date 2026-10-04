@@ -1897,3 +1897,238 @@ fn a_resumed_subagent_row_reads_its_outcome_from_the_whole_saved_result() {
     );
     exit(session);
 }
+
+const CONFIGURED_IDENTITY: &str =
+    "40122b758656199048961e6e8369383c25ebcdeddced75b64ad736e527014da8";
+
+fn pause_a_response(home: &Home, id: &str) {
+    pause_a_response_under(home, id, CONFIGURED_IDENTITY);
+}
+
+fn pause_a_response_under(home: &Home, id: &str, credential: &str) {
+    let checkpoint = json!({
+        "version": 2,
+        "turn_id": 2,
+        "user": {"text": "fix the build", "images": []},
+        "assistant_source": "",
+        "execution": {
+            "schema_version": 10,
+            "tool_steps": [],
+            "files": [],
+            "steering": [],
+            "turn_summary": null
+        },
+        "cause": "rate_limited",
+        "action": "retrying_request",
+        "tool_state": "none",
+        "authority": {
+            "provider": home.metadata(id)["provider"],
+            "model": "model-a",
+            "credential_source": "configured",
+            "credential_identity": credential
+        },
+        "requested_fast_mode": false,
+        "fast_mode": false,
+        "max_provider_attempts": 10,
+        "consumed_provider_attempts": 1,
+        "outstanding_reservation": false
+    });
+    let seq = home.frames(id).len();
+    fs::write(
+        home.sessions().join(id).join("recovery.json"),
+        format!("{{\"conversation_seq\":{seq},\"checkpoint\":{checkpoint}}}\n"),
+    )
+    .expect("write recovery.json");
+}
+
+#[test]
+fn a_resumed_shell_continues_a_paused_response_on_its_own() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Build fixed."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    pause_a_response(&home, &id);
+
+    let session = home.shell(&["-c"], "session resumed: first question");
+    let screen = wait(&session, "Build fixed.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "First answer.",
+                "fix the build",
+                "model response recovery paused and continues automatically",
+                "Build fixed."
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+    assert_eq!(
+        chat(&server.requests()[1]),
+        [
+            turn("first question", "First answer."),
+            vec![("user".to_owned(), "fix the build".to_owned())]
+        ]
+        .concat()
+    );
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+    assert_eq!(
+        kinds(&home.frames(&id)),
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+}
+
+#[test]
+fn a_shell_that_quit_unexpectedly_asks_before_continuing_a_paused_response() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["First answer."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    pause_a_response(&home, &id);
+    fs::write(
+        home.sessions().join(&id).join("owner.live"),
+        "{\"pid\":1,\"opened_at_ms\":1}\n",
+    )
+    .expect("leave an owner marker behind");
+
+    for _ in 0..2 {
+        let session = home.shell(&["-c"], "session resumed: first question");
+        let screen = wait(&session, "quit unexpectedly");
+        assert!(
+            appears_in_order(
+                &screen,
+                &["First answer.", "fix the build", "quit unexpectedly"]
+            ),
+            "{screen}"
+        );
+        exit(session);
+        assert!(home.sessions().join(&id).join("recovery.asked").exists());
+        assert!(home.sessions().join(&id).join("recovery.json").exists());
+    }
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn a_paused_turn_a_compaction_left_open_is_committed_when_the_next_prompt_arrives() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    home.append(&id, &frame(4, &json!({"user": {"text": "fix the build"}})));
+    home.append(
+        &id,
+        &frame(
+            5,
+            &json!({"context_checkpoint": {"covers_through_seq": 3, "summary": "<summary>first question answered</summary>"}}),
+        ),
+    );
+    pause_a_response(&home, &id);
+    fs::write(
+        home.sessions().join(&id).join("owner.live"),
+        "{\"pid\":1,\"opened_at_ms\":1}\n",
+    )
+    .expect("leave an owner marker behind");
+
+    let session = home.shell(&["-c"], "quit unexpectedly");
+    assert_eq!(kinds(&home.frames(&id)).len(), 5);
+    session.send(b"next question\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    assert_eq!(
+        kinds(&home.frames(&id))[4..],
+        [
+            "context_checkpoint",
+            "interrupted",
+            "user",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+    let sent = chat(&server.requests()[1]);
+    assert!(
+        sent.iter()
+            .any(|(role, content)| role == "user" && content == "fix the build"),
+        "{sent:?}"
+    );
+    assert_eq!(
+        sent.last(),
+        Some(&("user".to_owned(), "next question".to_owned()))
+    );
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+}
+
+#[test]
+fn a_refused_continuation_leaves_the_paused_turn_for_the_next_prompt_to_commit() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    home.append(&id, &frame(4, &json!({"user": {"text": "fix the build"}})));
+    home.append(
+        &id,
+        &frame(
+            5,
+            &json!({"context_checkpoint": {"covers_through_seq": 3, "summary": "<summary>first question answered</summary>"}}),
+        ),
+    );
+    pause_a_response_under(&home, &id, &"ab".repeat(32));
+
+    let session = home.shell(&["-c"], "could not continue automatically");
+    assert_eq!(kinds(&home.frames(&id)).len(), 5);
+    session.send(b"next question\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    let frames = home.frames(&id);
+    assert_eq!(
+        kinds(&frames)[4..],
+        [
+            "context_checkpoint",
+            "interrupted",
+            "user",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+    assert_eq!(frames[6]["event"]["user"]["text"], "next question");
+    assert_eq!(server.requests().len(), 2);
+    let sent = chat(&server.requests()[1]);
+    assert!(
+        sent.iter()
+            .any(|(role, content)| role == "user" && content == "fix the build"),
+        "{sent:?}"
+    );
+    assert_eq!(
+        sent.last(),
+        Some(&("user".to_owned(), "next question".to_owned()))
+    );
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+}
