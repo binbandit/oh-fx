@@ -1,7 +1,9 @@
 use zeroize::Zeroize;
 
 use super::forwarded_bytes::ForwardedBytes;
-use super::theme_protocol::{Rgb, parse_osc11_response};
+use super::theme_protocol::{
+    ResponseStatus, Rgb, classify_primary_device_attributes, parse_osc11_response,
+};
 
 const RESPONSE_IDLE_TIMEOUT_MS: i64 = 75;
 const BACKGROUND_RESPONSE_TIMEOUT_MS: i64 = 200;
@@ -9,7 +11,6 @@ const BACKGROUND_RESPONSE_TIMEOUT_MS: i64 = 200;
 const MAX_CANDIDATE_BYTES: usize = 64;
 const DARK_RESPONSE: &[u8] = b"\x1b[?997;1n";
 const LIGHT_RESPONSE: &[u8] = b"\x1b[?997;2n";
-const PRIMARY_DEVICE_ATTRIBUTES_PREFIX: &[u8] = b"\x1b[?";
 const OSC11_PREFIX: &[u8] = b"\x1b]11;rgb:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,13 +44,6 @@ enum QueryState {
         deadline_ms: i64,
         background: Option<ThemeUpdate>,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResponseStatus {
-    Invalid,
-    Pending,
-    Complete,
 }
 
 #[derive(Debug)]
@@ -330,27 +324,6 @@ impl Monitor {
         self.candidate[..self.candidate_len].fill(0);
         self.candidate_len = 0;
     }
-}
-
-fn classify_primary_device_attributes(bytes: &[u8]) -> ResponseStatus {
-    if PRIMARY_DEVICE_ATTRIBUTES_PREFIX.starts_with(bytes) {
-        return ResponseStatus::Pending;
-    }
-    let Some(parameters) = bytes.strip_prefix(PRIMARY_DEVICE_ATTRIBUTES_PREFIX) else {
-        return ResponseStatus::Invalid;
-    };
-    let mut expect_digit = true;
-    for (index, byte) in parameters.iter().enumerate() {
-        match byte {
-            b'0'..=b'9' => expect_digit = false,
-            b';' if !expect_digit => expect_digit = true,
-            b'c' if !expect_digit && index + 1 == parameters.len() => {
-                return ResponseStatus::Complete;
-            }
-            _ => return ResponseStatus::Invalid,
-        }
-    }
-    ResponseStatus::Pending
 }
 
 fn add_millis(now_ms: i64, duration_ms: i64) -> i64 {

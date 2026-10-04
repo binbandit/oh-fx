@@ -20,7 +20,6 @@ const INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[>1u\x1b[?2004h\x1
 const TMUX_INTERACTIVE_MODE_ENABLE_SEQUENCE: &str = "\x1b[>4;2m\x1b[?2004h\x1b[?7l";
 pub(crate) const THEME_NOTIFICATION_ENABLE_SEQUENCE: &str = "\x1b[?2031h";
 pub(crate) const THEME_COLOR_SCHEME_QUERY: &str = "\x1b[?996n";
-pub(crate) const THEME_BACKGROUND_QUERY: &str = "\x1b]11;?\x1b\\";
 pub(crate) const THEME_RESPONSE_FENCE_QUERY: &str = "\x1b[c";
 pub(crate) const THEME_BACKGROUND_QUERY_WITH_FENCE: &str = "\x1b]11;?\x1b\\\x1b[c";
 pub(crate) const CURSOR_POSITION_QUERY: &str = "\x1b[6n";
@@ -165,7 +164,7 @@ mod tests {
     fn background_query_with_fence_appends_the_response_fence() {
         assert_eq!(
             THEME_BACKGROUND_QUERY_WITH_FENCE,
-            format!("{THEME_BACKGROUND_QUERY}{THEME_RESPONSE_FENCE_QUERY}")
+            format!("\x1b]11;?\x1b\\{THEME_RESPONSE_FENCE_QUERY}")
         );
     }
 }
