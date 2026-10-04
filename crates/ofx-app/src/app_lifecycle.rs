@@ -33,7 +33,7 @@ use crate::app_session_runtime::{
     LaunchOverrides, Persistence, configured_preferences, open_store, session_route,
 };
 use crate::app_steering_runtime::WaitingSteering;
-use crate::app_upgrade_runtime;
+use crate::app_upgrade_runtime::{self, SessionUpgrader};
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
 use crate::herdr::{Herdr, HerdrObserver};
@@ -83,7 +83,7 @@ pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedRes
             return ExitCode::FAILURE;
         }
     };
-    let update = app_upgrade_runtime::announce_and_schedule();
+    let update = app_upgrade_runtime::announce_update();
     match run(session, update, runtime) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -305,12 +305,14 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         runtime,
         lifecycle,
     );
+    let upgrader = app_upgrade_runtime::start_session_upgrader(sender.clone());
     host(
         options,
         sender,
         receiver,
         refreshes.as_deref(),
         Some(&installations),
+        upgrader.as_ref(),
         agent,
     )
 }
@@ -393,21 +395,35 @@ fn host(
     receiver: UiEventReceiver,
     refreshes: Option<&DetachedRefreshes>,
     installations: Option<&Installations>,
+    upgrader: Option<&SessionUpgrader>,
     work: impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static,
 ) -> Result<(), SessionError> {
+    let stop_upgrader = || {
+        if let Some(upgrader) = upgrader {
+            upgrader.stop_for_process_exit();
+        }
+    };
     let (commands, worker_commands) = tokio::sync::mpsc::unbounded_channel();
     let notices = events.clone();
     let panics = PanicCapture::install(WORKER_THREAD, move |notice| {
         notices.send(UiEvent::Notice { notice });
     });
-    let worker = Worker::spawn(events.clone(), move || work(events, worker_commands))?;
+    let worker = Worker::spawn(events.clone(), move || work(events, worker_commands))
+        .inspect_err(|_| stop_upgrader())?;
     let result = panics
         .contain_shell(|| {
-            run_shell(options, receiver, NativeClipboard, move |command| {
-                let _ = commands.send(command);
-            })
+            run_shell(
+                options,
+                receiver,
+                NativeClipboard,
+                move |command| {
+                    let _ = commands.send(command);
+                },
+                stop_upgrader,
+            )
         })
         .unwrap_or_else(|payload| panic::resume_unwind(payload));
+    stop_upgrader();
     worker.finish(refreshes, installations, &panics)?;
     Ok(result?)
 }

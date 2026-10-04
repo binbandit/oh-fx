@@ -312,6 +312,139 @@ mod tests {
         release.join().unwrap();
     }
 
+    const INTERRUPTED_CHILD: &str = "OH_FX_UPGRADE_INTERRUPTED_INSTALL";
+    const INTERRUPTED_TEST: &str =
+        "archive::tests::an_install_killed_before_its_rename_leaves_the_old_binary_working";
+    const WAIT: Duration = Duration::from_secs(15);
+
+    fn open_liveness_pipe(path: &Path) -> fs::File {
+        assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
+        fs::File::from(
+            rustix::fs::open(
+                path,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::NONBLOCK
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn wait_for_every_writer_to_exit(pipe: &mut fs::File, deadline: std::time::Instant) {
+        let mut byte = [0_u8; 1];
+        loop {
+            match pipe.read(&mut byte) {
+                Ok(0) => return,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "a process holding the liveness pipe is still running"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+                other => panic!("unexpected read from the liveness pipe: {other:?}"),
+            }
+        }
+    }
+
+    fn wait_for(path: &Path, deadline: std::time::Instant) {
+        while !path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} never appeared",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn an_install_killed_before_its_rename_leaves_the_old_binary_working() {
+        if let Some(root) = std::env::var_os(INTERRUPTED_CHILD) {
+            let root = Path::new(&root);
+            let binary = fs::read(root.join("release")).unwrap();
+            let _ = install_executable(&root.join("oh-fx"), &binary, "0.1.0-dev.2");
+            std::process::exit(0);
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let target = root.join("oh-fx");
+        fs::write(&target, version_script("0.1.0-dev.1")).unwrap();
+        fs::set_permissions(&target, Permissions::from_mode(EXECUTABLE_MODE)).unwrap();
+        let alive = root.join("alive");
+        let mut pipe = open_liveness_pipe(&alive);
+        let verifying = root.join("verifying");
+        let finish = root.join("finish");
+        fs::write(
+            root.join("release"),
+            format!(
+                "#!/bin/sh\nexec 3>'{}'\ntouch '{}'\nwhile [ -d '{}' ] && [ ! -e '{}' ]; do sleep 0.01; done\necho 0.1.0-dev.2\n",
+                alive.display(),
+                verifying.display(),
+                root.display(),
+                finish.display()
+            ),
+        )
+        .unwrap();
+        let mut installer = Command::new(std::env::current_exe().unwrap())
+            .args([INTERRUPTED_TEST, "--exact", "--test-threads=1"])
+            .env(INTERRUPTED_CHILD, &root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + WAIT;
+        wait_for(&verifying, deadline);
+        installer.kill().unwrap();
+        installer.wait().unwrap();
+        fs::write(&finish, b"").unwrap();
+        wait_for_every_writer_to_exit(&mut pipe, deadline);
+        assert_eq!(fs::read(&target).unwrap(), version_script("0.1.0-dev.1"));
+        assert_eq!(reported_version(&target).as_deref(), Some("0.1.0-dev.1"));
+        let entries: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        let leftovers = entries
+            .iter()
+            .filter(|name| {
+                name.as_encoded_bytes()
+                    .starts_with(STAGING_PREFIX.as_bytes())
+            })
+            .count();
+        assert_eq!(leftovers, 1, "{entries:?}");
+    }
+
+    #[test]
+    fn the_liveness_pipe_sees_an_exit_that_nobody_has_reaped() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let alive = root.join("alive");
+        let mut pipe = open_liveness_pipe(&alive);
+        let opened = root.join("opened");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "exec 3>'{}'; touch '{}'",
+                alive.display(),
+                opened.display()
+            ))
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + WAIT;
+        wait_for(&opened, deadline);
+        wait_for_every_writer_to_exit(&mut pipe, deadline);
+        let unreaped = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("kill -0 {}", child.id()))
+            .status()
+            .unwrap();
+        assert!(unreaped.success(), "the exited child was reaped too early");
+        child.wait().unwrap();
+    }
+
     #[test]
     fn refuses_to_replace_a_read_only_binary() {
         let directory = tempfile::tempdir().unwrap();

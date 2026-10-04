@@ -160,14 +160,15 @@ pub(crate) enum DangerStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HintState {
+pub(crate) struct HintState<'a> {
     pub(crate) ctrl_c_pending: bool,
     pub(crate) esc_clear_armed: bool,
     pub(crate) esc_interrupt_armed: bool,
     pub(crate) danger: DangerStatus,
+    pub(crate) upgrade_status: &'a str,
 }
 
-pub(crate) fn danger_status_text(state: HintState, width: usize) -> &'static str {
+pub(crate) fn danger_status_text(state: HintState<'_>, width: usize) -> &'static str {
     if state.danger == DangerStatus::None
         || state.esc_clear_armed
         || state.esc_interrupt_armed
@@ -181,7 +182,12 @@ pub(crate) fn danger_status_text(state: HintState, width: usize) -> &'static str
         .unwrap_or_default()
 }
 
-pub(crate) fn compose_hint_row(theme: &Theme, base: &Row, state: HintState, width: usize) -> Row {
+pub(crate) fn compose_hint_row(
+    theme: &Theme,
+    base: &Row,
+    state: HintState<'_>,
+    width: usize,
+) -> Row {
     let danger = danger_status_text(state, width);
     if !danger.is_empty() {
         let tag_col = width - visible_width(danger);
@@ -207,6 +213,8 @@ pub(crate) fn compose_hint_row(theme: &Theme, base: &Row, state: HintState, widt
         }
     } else if state.esc_clear_armed {
         right = ESC_CLEAR_HINT;
+    } else if !state.ctrl_c_pending || width > left.width() + visible_width(state.upgrade_status) {
+        right = state.upgrade_status;
     }
     let right_width = visible_width(right);
     let left_width = if right_width > 0 && width > right_width {
@@ -306,6 +314,7 @@ mod tests {
             esc_clear_armed: false,
             esc_interrupt_armed: false,
             danger: DangerStatus::None,
+            upgrade_status: "",
         };
         assert_eq!(
             compose_hint_row(&theme(), &base, idle, 100).text(),
@@ -362,6 +371,7 @@ mod tests {
             esc_clear_armed: false,
             esc_interrupt_armed: false,
             danger: DangerStatus::FullAccess,
+            upgrade_status: "",
         };
         let full = compose_hint_row(&theme(), &base, warning, 80);
         assert_eq!(full.width(), 80);
@@ -415,5 +425,94 @@ mod tests {
             80,
         );
         assert_eq!(ctrl_c.text(), "press ctrl+c again to exit");
+    }
+
+    #[test]
+    fn the_hint_row_right_aligns_the_upgrade_status_below_every_other_cue() {
+        let base = Row::styled("auto · gpt-5.1", Paint::fg(245));
+        let ready = HintState {
+            ctrl_c_pending: false,
+            esc_clear_armed: false,
+            esc_interrupt_armed: false,
+            danger: DangerStatus::None,
+            upgrade_status: "update ready: ctrl+g to reload",
+        };
+        let row = compose_hint_row(&theme(), &base, ready, 48);
+        assert_eq!(row.width(), 48);
+        assert_eq!(
+            row.text(),
+            "auto · gpt-5.1    update ready: ctrl+g to reload"
+        );
+        assert_eq!(row.segments().last().unwrap().paint, theme().dim);
+        assert_eq!(
+            compose_hint_row(&theme(), &base, ready, 44).text(),
+            "auto · gpt-5. update ready: ctrl+g to reload"
+        );
+        assert_eq!(
+            compose_hint_row(&theme(), &base, ready, 30).text(),
+            "auto · gpt-5.1"
+        );
+        assert!(
+            compose_hint_row(
+                &theme(),
+                &base,
+                HintState {
+                    esc_clear_armed: true,
+                    ..ready
+                },
+                80
+            )
+            .text()
+            .ends_with(" esc again to clear")
+        );
+        assert!(
+            compose_hint_row(
+                &theme(),
+                &base,
+                HintState {
+                    danger: DangerStatus::FullAccess,
+                    ..ready
+                },
+                80
+            )
+            .text()
+            .ends_with("Full access enabled: oh-fx permission checks disabled")
+        );
+        assert_eq!(
+            compose_hint_row(
+                &theme(),
+                &base,
+                HintState {
+                    ctrl_c_pending: true,
+                    ..ready
+                },
+                80
+            )
+            .text(),
+            "press ctrl+c again to exit                        update ready: ctrl+g to reload"
+        );
+    }
+
+    #[test]
+    fn the_upgrade_status_gives_way_to_the_whole_ctrl_c_exit_hint() {
+        let base = Row::styled("auto · gpt-5.1", Paint::fg(245));
+        let pending = HintState {
+            ctrl_c_pending: true,
+            esc_clear_armed: false,
+            esc_interrupt_armed: false,
+            danger: DangerStatus::None,
+            upgrade_status: "update ready: ctrl+g to reload",
+        };
+        for width in [31, 56] {
+            assert_eq!(
+                compose_hint_row(&theme(), &base, pending, width).text(),
+                "press ctrl+c again to exit",
+                "width {width}"
+            );
+        }
+        assert_eq!(
+            compose_hint_row(&theme(), &base, pending, 57).text(),
+            "press ctrl+c again to exit update ready: ctrl+g to reload"
+        );
     }
 }

@@ -1,11 +1,37 @@
-use ofx_config::ProfilePaths;
-use ofx_contract::{Notice, NoticeTone};
+mod live_release;
+mod session_upgrader;
 
-pub(crate) fn announce_and_schedule() -> Option<Notice> {
+use std::time::Duration;
+
+use ofx_config::ProfilePaths;
+use ofx_contract::{Notice, NoticeTone, UiEvent};
+use ofx_tui::UiEventSender;
+
+use live_release::LiveRelease;
+#[cfg(test)]
+pub(crate) use session_upgrader::{CheckOutcome, ReleaseCheck};
+pub(crate) use session_upgrader::{SessionUpgrader, Timing};
+
+const SESSION_TIMING: Timing = Timing {
+    initial_delay: Duration::from_secs(10),
+    interval: Duration::from_mins(5),
+};
+
+pub(crate) fn announce_update() -> Option<Notice> {
     let paths = ProfilePaths::from_environment()?;
-    let notice = ofx_upgrade::version_change_since_last_run(&paths.state).map(updated_notice);
-    ofx_upgrade::schedule_background_upgrade(&paths.state);
-    notice
+    ofx_upgrade::version_change_since_last_run(&paths.state).map(updated_notice)
+}
+
+pub(crate) fn start_session_upgrader(events: UiEventSender) -> Option<SessionUpgrader> {
+    if !ofx_upgrade::auto_upgrade_allowed() {
+        return None;
+    }
+    let paths = ProfilePaths::from_environment()?;
+    let release = LiveRelease::installed(paths.state)?;
+    SessionUpgrader::start(release, SESSION_TIMING, move |label| {
+        events.send(UiEvent::UpgradeStatus { label });
+    })
+    .ok()
 }
 
 fn updated_notice(version: &str) -> Notice {
