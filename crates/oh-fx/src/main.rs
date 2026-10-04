@@ -12,6 +12,7 @@ mod question_call_record;
 mod shell_call_record;
 mod status_command;
 mod upgrade_command;
+mod usage_command;
 
 use std::env;
 use std::ffi::OsString;
@@ -94,6 +95,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Permissions(format) => permissions_command::run(format),
             Command::Provider(target) => provider_command::run(target),
             Command::Status(format) => status_command::run(format),
+            Command::Usage(format) => usage_command::run(format),
             other => unavailable_command(&other),
         },
     }
@@ -229,7 +231,7 @@ pub(crate) fn print(bytes: &[u8], failure: WriteFailure) -> ExitCode {
     written(write_stdout_unbuffered(bytes), failure, ExitCode::SUCCESS)
 }
 
-fn fail(text: &str, failure: WriteFailure) -> ExitCode {
+pub(crate) fn fail(text: &str, failure: WriteFailure) -> ExitCode {
     written(write_stdout(text), failure, ExitCode::FAILURE)
 }
 
