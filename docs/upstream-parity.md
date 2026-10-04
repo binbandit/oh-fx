@@ -29,7 +29,7 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 
 The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `6bdd497`). Native foreground startup, accepted turns and visible permission/question attention use it. Lifecycle registration remains partial: later session selection, manual compaction and route-recovery decision reporting, configurable command hooks and sounds are pending. Working admission timing and the application environment prefix differ as recorded in [differences/hooks.md](differences/hooks.md).
 
-The fixed permission-review policy golden compares the actual runtime template byte for byte with upstream at the existing pin. The source blob and its 3,195-byte policy are identical at `34f1ed1` and `6bdd497`, with no substitutions. [Extraction and provenance](../parity/goldens/review-policy/README.md) are recorded alongside the fixture. This partial OH-7 coverage changes no permission behavior, file-map status, or parity pin; other prompt, tool metadata, and help goldens remain follow-up work.
+The shared `cargo xtask parity goldens` command regenerates the fixed system, compaction and permission-review policy artifacts from pinned Git objects. Its `--check` mode compares bytes without writing and runs in parity CI after an explicit shallow fetch supplies source blobs. The permission-review policy golden compares the actual runtime template byte for byte with upstream at the existing pin. The source blob and its 3,195-byte policy are identical at `34f1ed1` and `6bdd497`, with no substitutions. [Extraction and provenance](../parity/goldens/review-policy/README.md) are recorded alongside the fixture. This partial OH-7 coverage changes no permission behavior, file-map status, or parity pin; other prompt, tool metadata, and help goldens remain follow-up work.
 
 ## 34f1ed1..6bdd497
 
@@ -193,5 +193,14 @@ Port `src/gateway/xai_grok_models.zig` as of #1110 or later with the next OH-9 r
    Check pull requests that are still open in oh-fx as well. A change to an area that exists only on an open branch belongs in that branch before it merges.
 
 4. Add the rows under a new `<old>..<new>` heading. Move the sync point to the last merge reviewed, update the date and `parity/UPSTREAM` to its full commit, and reconcile every file-map row against the new tree. The checker requires the documented Sync point to match that pin.
+
+5. Regenerate and review the covered golden artifacts from the new pin, including any documented deliberate differences, then check their bytes before committing the parity pass:
+
+   ```sh
+   cargo xtask parity goldens --upstream fx-upstream
+   cargo xtask parity goldens --check --upstream fx-upstream
+   ```
+
+   These commands fetch nothing. Ensure the local repository already contains the new commit and required source blobs; the parity CI job fetches its pinned snapshot before checking.
 
 When a deferred area is ported, move its rows to `ported` and update its file-map statuses in the same pull request. Partial implementations must retain concrete missing-behavior notes.

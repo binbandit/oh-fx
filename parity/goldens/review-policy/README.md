@@ -2,7 +2,7 @@
 
 This partial OH-7 slice compares the actual private `REVIEW_POLICY_TEMPLATE` used by the permission review request with the fixed upstream XML policy. It changes no policy, permission behavior, or runtime request construction. Dynamic review data, other prompts, tool metadata, and help remain outside this slice.
 
-Run `cargo xtask parity review-policy-goldens --upstream PATH`, or use `OH_FX_UPSTREAM`, to regenerate `review_policy.xml`. The command reads the commit and source Git objects at the existing `parity/UPSTREAM` pin with lazy fetching explicitly disabled. It ignores the upstream HEAD and working files, and performs no fetch, checkout, or upstream write. Missing objects and rejected extraction fail before fixture writes. Source blobs must already be available in a partial clone.
+Run `cargo xtask parity goldens --upstream PATH`, or use `OH_FX_UPSTREAM`, to regenerate `review_policy.xml`. The command reads the commit and source Git objects at the existing `parity/UPSTREAM` pin with lazy fetching explicitly disabled. It ignores the upstream HEAD and working files, and performs no fetch, checkout, or upstream write. Missing objects and rejected extraction fail before fixture writes. Source blobs must already be available in a partial clone.
 
 The source is `src/core/permissions/auto_classifier.zig`, its unique `const review_policy_template` declaration. Extraction accepts only the four-space-indented Zig multiline string lines followed by the standalone semicolon. It removes each multiline prefix and joins the contents with newline bytes, retaining blank lines, spaces, and the final newline. Missing or duplicate declarations, changed syntax, unterminated declarations, and empty or non-newline-terminated policies are rejected.
 

@@ -332,6 +332,3 @@ fn normalized_rationale(rationale: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod review_policy_goldens;

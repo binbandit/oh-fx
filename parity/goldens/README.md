@@ -1,13 +1,14 @@
-# Fixed prompt goldens
+# Upstream goldens
 
-This is the first fixed-prompt slice of OH-7 Part 2. Tool metadata, CLI help, dynamic compaction notes requests, and other prompts remain outside this slice.
+This partial OH-7 coverage includes the fixed system prompt, compaction system instruction and permission-review policy. Tool metadata, CLI help, dynamic compaction notes requests, and other prompts remain outside this slice.
 
-Regenerate offline with `cargo xtask parity goldens --upstream PATH` (or `OH_FX_UPSTREAM`). The repository must contain the commit named by `parity/UPSTREAM`; its HEAD and working files are not inputs. The command reads Git objects with lazy fetching explicitly disabled and does not fetch, check out, or change the upstream repository. A missing blob in a partial clone fails locally; source blobs must already be available. Both sources are read and validated before either golden is replaced.
+Check without writes with `cargo xtask parity goldens --check --upstream PATH`. The parity CI job explicitly fetches the pinned snapshot and runs this check. Regenerate offline with `cargo xtask parity goldens --upstream PATH` (or `OH_FX_UPSTREAM`). The repository must contain the commit named by `parity/UPSTREAM`; its HEAD and working files are not inputs. The command reads Git objects with lazy fetching explicitly disabled and does not fetch, check out, or change the upstream repository. A missing blob in a partial clone fails locally; source blobs must already be available. The pin must resolve as a commit. All registered sources are read and every extractor is validated before any golden is replaced. `GIT_NO_LAZY_FETCH=1` and an empty `GIT_ALLOW_PROTOCOL` are set after inherited Git variables are removed, avoiding a Git2.44-only command option.
 
 | Golden | Upstream source | Extraction |
 |---|---|---|
 | `system_prompt.md` | `src/builtins/system_prompt.md` | Entire blob, retaining its final newline |
 | `compaction_system_prompt.txt` | `src/core/compactor/summarize.zig` | Concatenated plain string literals in the unique `pub const system_prompt` declaration, without an added newline |
+| `review-policy/review_policy.xml` | `src/core/permissions/auto_classifier.zig` | Unique Zig multiline `review_policy_template`, retaining its final newline; see [policy provenance](review-policy/README.md) |
 
 The extractor rejects changed syntax, escapes, empty prompts, missing declarations, and duplicate declarations. Such changes require a source review rather than silently changing extraction rules.
 

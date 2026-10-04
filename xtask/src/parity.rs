@@ -1,7 +1,5 @@
 mod goldens;
 
-mod review_policy_goldens;
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -69,9 +67,6 @@ struct Ledger {
 pub(crate) fn run(options: &[&str]) -> Result<(), String> {
     if let ["goldens", rest @ ..] = options {
         return goldens::run(rest);
-    }
-    if let ["review-policy-goldens", rest @ ..] = options {
-        return review_policy_goldens::run(rest);
     }
     let upstream = upstream_path(
         options,
@@ -316,13 +311,11 @@ fn verify_checkout(upstream: &Path, pin: &str) -> Result<(), String> {
 }
 
 fn git(upstream: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
-    command.current_dir(upstream).args(args);
-    for (variable, _) in std::env::vars_os() {
-        if variable.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(variable);
-        }
-    }
+    git_with_transport(upstream, args, false)
+}
+
+fn git_with_transport(upstream: &Path, args: &[&str], offline: bool) -> Result<String, String> {
+    let mut command = git_command(std::ffi::OsStr::new("git"), upstream, args, offline);
     let output = command
         .output()
         .map_err(|error| format!("upstream git {}: {error}", args.join(" ")))?;
@@ -334,6 +327,27 @@ fn git(upstream: &Path, args: &[&str]) -> Result<String, String> {
         ));
     }
     String::from_utf8(output.stdout).map_err(|error| error.to_string())
+}
+
+fn git_command(
+    program: &std::ffi::OsStr,
+    upstream: &Path,
+    args: &[&str],
+    offline: bool,
+) -> Command {
+    let mut command = Command::new(program);
+    command.current_dir(upstream).args(args);
+    for (variable, _) in std::env::vars_os() {
+        if variable.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(variable);
+        }
+    }
+    if offline {
+        command
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .env("GIT_ALLOW_PROTOCOL", "");
+    }
+    command
 }
 
 fn upstream_path(options: &[&str], fallback: Option<PathBuf>) -> Result<PathBuf, String> {
