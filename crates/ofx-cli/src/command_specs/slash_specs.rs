@@ -8,6 +8,8 @@ pub enum SlashKind {
     ResetSession,
     ResumeSession,
     RenameSession,
+    Login,
+    Provider,
     Stats,
     Usage,
     Status,
@@ -205,6 +207,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn login_and_provider_choose_the_provider_without_an_argument() {
+        assert_eq!(spec(SlashKind::Provider).aliases, ["/setup"]);
+        for kind in [SlashKind::Login, SlashKind::Provider] {
+            assert_eq!(
+                spec(kind).completion_description,
+                "choose the model provider and how it signs in"
+            );
+            assert_eq!(
+                spec(kind).presentation_category,
+                SlashPresentationCategory::Account
+            );
+            assert!(!spec(kind).accepts_payload());
+        }
+    }
+
     const UPSTREAM_REGISTRY: &[&str] = &[
         "/help · General · show available slash commands",
         "/clear · General · start a fresh conversation while keeping managed processes",
@@ -212,6 +230,8 @@ mod tests {
         "/reset · Session · reset the current session context",
         "/resume · Session · resume a saved session",
         "/rename · Session · rename the current session",
+        "/login · Account · choose the model provider and how it signs in",
+        "/provider (/setup) · Account · choose the model provider and how it signs in",
         "/stats · Account · show token and turn statistics",
         "/usage (/cost) · Account · show local oh-fx tokens, models, and spend",
         "/status · General · show runtime configuration",

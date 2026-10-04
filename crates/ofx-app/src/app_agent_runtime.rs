@@ -39,6 +39,8 @@ use crate::user_settings::{self, unsaved_notice};
 use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
 
+mod provider_switch;
+
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 const CONTEXT_TOPIC: &str = "context";
@@ -306,12 +308,19 @@ pub(crate) struct Controller {
 
 struct CatalogFetch {
     source: ModelSource,
+    provider: String,
     pending: Option<BoxFuture<'static, ModelCatalog>>,
     waiting: Vec<ModelChange>,
     settings: Option<SettingsUpdate>,
 }
 
 impl CatalogFetch {
+    fn retarget(&mut self, source: ModelSource, provider: &str) {
+        self.source = source;
+        provider.clone_into(&mut self.provider);
+        self.pending = None;
+    }
+
     fn request(&mut self) {
         if self.pending.is_none() {
             let source = self.source.clone();
@@ -384,7 +393,8 @@ impl CatalogFetch {
         if let Some(update) = self.settings.take() {
             state.show_settings(update, listed(&catalog));
         }
-        state.emit(UiEvent::ModelCatalog { catalog });
+        let provider = self.provider.clone();
+        state.emit(UiEvent::ModelCatalog { provider, catalog });
     }
 }
 
@@ -434,6 +444,7 @@ impl Controller {
                 .with_steering(Arc::clone(&state.worker)),
             catalog: CatalogFetch {
                 source: state.setup.models_source(),
+                provider: state.setup.provider().label().to_owned(),
                 pending: None,
                 waiting: Vec::new(),
                 settings: None,
@@ -525,6 +536,7 @@ impl Controller {
                     }
                 }
                 UiCommand::ListModels => self.catalog.request(),
+                UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
                 UiCommand::SelectModel {
                     model,
                     effort,
@@ -1080,6 +1092,7 @@ fn run_deferred(
             fast_mode,
         }),
         UiCommand::ListModels => return catalog.request(),
+        UiCommand::SelectProvider { .. } => return state.provider_busy(),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
         UiCommand::StepSetting { setting, delta } => {
@@ -2937,7 +2950,7 @@ mod tests {
     async fn listed_catalog(harness: &mut Harness) -> ModelCatalog {
         harness.send(UiCommand::ListModels);
         match harness.until(catalog_event).await.last() {
-            Some(UiEvent::ModelCatalog { catalog }) => catalog.clone(),
+            Some(UiEvent::ModelCatalog { catalog, .. }) => catalog.clone(),
             other => panic!("{other:?}"),
         }
     }
@@ -3299,6 +3312,283 @@ mod tests {
         let turn_id = harness.running_turn();
         harness.send(UiCommand::Cancel { turn_id });
         harness.until(finished(TurnOutcome::Interrupted)).await;
+    }
+
+    fn switching_settings(provider: &str, local: &FakeServer, other: &FakeServer) -> Value {
+        let connection = |server: &FakeServer, models: &[&str]| {
+            json!({
+                "protocol": "openai-chat-completions",
+                "base_url": server.base_url(),
+                "auth": {"type": "none"},
+                "models": models,
+            })
+        };
+        json!({
+            "provider": provider,
+            "models": {"codex": CODEX_MODEL},
+            "session_titles": false,
+            "providers": {
+                "local": connection(local, &["model-a", "vendor/model-b"]),
+                "other": connection(other, &["other-model"]),
+            }
+        })
+    }
+
+    fn select_provider(provider: &str) -> UiCommand {
+        UiCommand::SelectProvider {
+            provider: provider.to_owned(),
+        }
+    }
+
+    fn provider_notice(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::Notice { notice } if notice.topic == "provider"
+            && !notice.body.starts_with("Preparing"))
+    }
+
+    async fn switched(harness: &mut Harness, provider: &str) -> Vec<String> {
+        harness.send(select_provider(provider));
+        let shown = harness.until(provider_notice).await;
+        notice_body(shown)
+    }
+
+    #[tokio::test]
+    async fn provider_commands_open_the_column_and_wait_for_running_work() {
+        let held = Reply::held_sse(&chat_text_events(&["partial\n"])[..2]);
+        let local = FakeServer::start([held]);
+        let other = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let settings = switching_settings("local", &local, &other);
+        let setup = agent_setup_with(&home, &settings, SubscriptionEndpoints::default()).await;
+        let mut harness = Harness::with_setup(home, setup);
+        for (command, prefix) in [
+            ("/provider", "/provider "),
+            ("/setup", "/provider "),
+            ("/login", "/login "),
+        ] {
+            harness.command(command);
+            let opened = harness
+                .until(|event| matches!(event, UiEvent::ProviderPicker { .. }))
+                .await;
+            assert_eq!(
+                opened.last(),
+                Some(&UiEvent::ProviderPicker {
+                    prefix: prefix.to_owned(),
+                    providers: vec!["codex".to_owned(), "local".to_owned(), "other".to_owned()],
+                })
+            );
+        }
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        let busy =
+            "provider|Provider switching is unavailable until active and queued work finishes.";
+        harness.command("/provider");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { .. }))
+            .await;
+        assert_eq!(notice_body(shown), [busy]);
+        assert_eq!(switched(&mut harness, "other").await, [busy]);
+        assert!(other.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_switched_to_codex_is_named_with_the_codex_title_model() {
+        let codex = FakeServer::start([
+            codex_text("Fix the renderer"),
+            codex_text("Fix the renderer"),
+        ]);
+        let catalog = codex_catalog(false, 4);
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([]);
+        let mut settings = switching_settings("local", &local, &other);
+        settings["session_titles"] = json!(true);
+        let home = codex_home();
+        let setup = agent_setup_with(&home, &settings, codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::saved(home, setup);
+        harness.send(select_provider("codex"));
+        harness.until(provider_notice).await;
+        chat(&mut harness, &["please fix the renderer"]).await;
+        within(until_titled(&mut harness, "Fix the renderer")).await;
+        assert_eq!(title_requests(&codex).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_switch_moves_the_conversation_and_keeps_fast_mode_and_effort() {
+        let codex = FakeServer::start([codex_text("one"), codex_text("three")]);
+        let catalog = codex_catalog(true, 4);
+        let local = FakeServer::start([Reply::sse(&chat_text_events(&["two"]))]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("codex", &local, &other);
+        let endpoints = codex_endpoints(&codex, &catalog);
+        let home = codex_home();
+        let setup = agent_setup_with(&home, &settings, endpoints).await;
+        let mut harness = Harness::saved(home, setup);
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        harness.submit("one");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        harness.send(select_provider("local"));
+        let shown = harness.until(provider_notice).await;
+        assert_eq!(
+            notice_body(shown),
+            [
+                "provider|Preparing local.",
+                "provider|Switched to local with model-a."
+            ]
+        );
+        assert!(shown.contains(&UiEvent::ProviderSelected {
+            provider: "local".to_owned()
+        }));
+        assert!(shown.contains(&UiEvent::ModelSelected {
+            model: "model-a".to_owned()
+        }));
+        let saved = saved_settings(&harness);
+        assert_eq!(saved["provider"], "local");
+        assert_eq!(saved["models"]["local"], "model-a");
+        assert_eq!(saved["models"]["codex"], OTHER_CODEX_MODEL);
+        assert_eq!(saved["effort"], "low");
+        assert_eq!(saved["fast_mode"], true);
+        assert_eq!(saved.get("fast_mode_model_bound"), None);
+        let session = &saved_sessions(&harness.home)[0];
+        assert_eq!(session["provider"]["name"], "local");
+        assert_eq!(session["model"], "model-a");
+        assert_eq!(session["effort"], "low");
+        assert_eq!(session["fast_mode"], true);
+        harness.submit("two");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let request = local.requests()[0].json();
+        assert_eq!(request["model"], "model-a");
+        assert_eq!(user_messages(&request), 2);
+        assert_eq!(
+            switched(&mut harness, "codex").await,
+            [
+                "provider|Preparing Codex subscription.".to_owned(),
+                format!("provider|Switched to Codex subscription with {OTHER_CODEX_MODEL}.")
+            ]
+        );
+        harness.submit("three");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = codex.requests();
+        let request = requests[1].json();
+        assert_eq!(request["model"], OTHER_CODEX_MODEL);
+        assert_eq!(request["reasoning"]["effort"], "low");
+        assert_eq!(request["service_tier"], "priority");
+        assert_eq!(saved_sessions(&harness.home)[0]["provider"], "codex");
+    }
+
+    #[tokio::test]
+    async fn a_child_started_after_a_switch_runs_on_the_new_provider() {
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([
+            delegate("read the notes"),
+            Reply::sse(&chat_text_events(&["child done"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let home = tempfile::tempdir().unwrap();
+        let settings = switching_settings("local", &local, &other);
+        let setup = agent_setup_with(&home, &settings, SubscriptionEndpoints::default()).await;
+        let mut harness = Harness::saved(home, setup);
+        assert_eq!(
+            switched(&mut harness, "other").await,
+            [
+                "provider|Preparing other.",
+                "provider|Switched to other with other-model."
+            ]
+        );
+        harness.submit("delegate the reading");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert!(local.requests().is_empty());
+        let requests = other.requests();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.json()["model"] == "other-model")
+        );
+        assert!(requests[1].body_text().contains("read the notes"));
+    }
+
+    #[tokio::test]
+    async fn a_settings_failure_is_reported_before_preparing_and_changes_nothing() {
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let settings = switching_settings("local", &local, &other);
+        let setup = agent_setup_with(&home, &settings, SubscriptionEndpoints::default()).await;
+        let mut harness = Harness::with_setup(home, setup);
+        assert_eq!(
+            switched(&mut harness, "local").await,
+            ["provider|Already using local."]
+        );
+        let path = harness.home.path().join("config/settings.json");
+        fs::write(&path, "{not json").unwrap();
+        harness.send(select_provider("other"));
+        let shown = harness.until(provider_notice).await;
+        assert_eq!(
+            notice_body(shown),
+            [
+                "provider|Could not load the saved provider selection. The current provider is unchanged."
+            ]
+        );
+        fs::write(&path, settings.to_string()).unwrap();
+        assert_eq!(
+            switched(&mut harness, "missing").await,
+            [
+                "provider|The target provider catalog is unavailable. The current provider is unchanged."
+            ]
+        );
+        assert_eq!(
+            switched(&mut harness, "codex").await,
+            [
+                "provider|Preparing Codex subscription.",
+                "provider|Run oh-fx login codex, then try switching again."
+            ]
+        );
+        assert!(
+            harness
+                .seen
+                .iter()
+                .all(|event| !matches!(event, UiEvent::ProviderSelected { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_catalog_requested_before_a_switch_is_never_delivered_after_it() {
+        let gate = Gate::default();
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([catalog_version(), catalog_listing(true).after(&gate)]);
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("codex", &local, &other);
+        let endpoints = codex_endpoints(&codex, &catalog);
+        let home = codex_home();
+        let setup = agent_setup_with(&home, &settings, endpoints).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.send(UiCommand::ListModels);
+        while catalog.requests().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            switched(&mut harness, "local").await,
+            [
+                "provider|Preparing local.",
+                "provider|Switched to local with model-a."
+            ]
+        );
+        gate.open();
+        harness.send(UiCommand::ListModels);
+        let delivered = harness.until(catalog_event).await;
+        let catalogs: Vec<&str> = delivered
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::ModelCatalog { provider, .. } => Some(provider.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(catalogs, ["local"]);
     }
 
     #[tokio::test]

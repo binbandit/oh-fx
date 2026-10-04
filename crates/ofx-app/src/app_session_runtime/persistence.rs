@@ -201,6 +201,24 @@ impl Persistence {
         Ok(title.to_owned())
     }
 
+    pub(crate) fn select_provider(
+        &mut self,
+        agent: &mut Agent,
+        route: SessionRoute,
+        model: &str,
+    ) -> Result<(), SessionError> {
+        let provider = route.provider.clone();
+        self.preferences.provider = provider.clone();
+        model.clone_into(&mut self.preferences.model);
+        self.route = route.clone();
+        let Some(live) = &mut self.live else {
+            return Ok(());
+        };
+        live.route = route;
+        live.attach(agent);
+        live.session().select_provider(provider, model)
+    }
+
     pub(crate) fn close(&mut self, agent: &mut Agent) {
         if let Some(task) = self.title_task.take() {
             task.abort();

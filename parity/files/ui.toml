@@ -56,7 +56,7 @@ note = "The header packs the category tabs and keeps a far active tab as upstrea
 upstream = "src/ui/footer/input_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/picker_presentation.rs"]
-note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the status line menu hint ladder, and the model, effort and Fast column projections are implemented, with the composer hidden behind the status line menu; image badges and provider/login picker footer projections are absent."
+note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the status line menu hint ladder, and the model, effort, Fast and provider column projections are implemented, with the composer hidden behind the status line menu; image badges and login picker footer projections are absent."
 
 [[file]]
 upstream = "src/ui/footer/interaction_state.zig"
