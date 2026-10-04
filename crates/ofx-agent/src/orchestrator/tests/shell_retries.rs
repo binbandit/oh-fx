@@ -1,8 +1,13 @@
+use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 use crate::worker_runtime::{QueuedPrompt, WorkerRuntime};
 
 const FAILING: &str = r#"{"command":"cargo test","fail":1}"#;
 const OTHER_FAILING: &str = r#"{"command":"cargo build","fail":1}"#;
+const BAD_REQUEST: &str = r#"{"bad_request":1}"#;
+const OTHER_BAD_REQUEST: &str = r#"{"bad_request":1,"bad_session":1}"#;
+const INVALID_SHELL_REQUEST: &str = r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["request.command is required."]}}"#;
+const INVALID_SESSION_REQUEST: &str = r#"{"error":{"code":"invalid_shell_request","executed":false,"problems":["request.command is required.","request.session_id is required."]}}"#;
 
 struct ShellTool {
     inner: Arc<dyn Tool>,
@@ -15,6 +20,12 @@ impl Tool for ShellTool {
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        if arguments.contains("bad_session") {
+            return Err(ToolOutput::failure(INVALID_SESSION_REQUEST));
+        }
+        if arguments.contains("bad_request") {
+            return Err(ToolOutput::failure(INVALID_SHELL_REQUEST));
+        }
         self.inner.prepare(
             &self
                 .saved_arguments(arguments)
@@ -188,6 +199,40 @@ async fn the_count_starts_again_in_the_next_turn() {
     assert_eq!(second.final_text, "second");
 }
 
+async fn run_with_steering_at(
+    provider: &Arc<FakeProvider>,
+    steered_call: &str,
+) -> (TurnReport, Vec<UiEvent>) {
+    let worker = Arc::new(WorkerRuntime::default());
+    let mut agent =
+        new_agent(Arc::clone(provider), vec![shell_tool()]).with_steering(Arc::clone(&worker));
+    worker.admit(QueuedPrompt::new(0, "go".to_owned(), Vec::new()));
+    let prompt = worker.take_next().expect("a queued prompt");
+    let mut events = Vec::new();
+    let report =
+        agent
+            .run_turn(
+                &prompt.text,
+                &mut |event| {
+                    if let UiEvent::ToolStarted { call_id, .. }
+                    | UiEvent::ToolRejected { call_id, .. } = &event
+                        && call_id.as_str() == steered_call
+                    {
+                        worker.admit(QueuedPrompt::new(
+                            1,
+                            "try another way".to_owned(),
+                            Vec::new(),
+                        ));
+                    }
+                    events.push(event);
+                },
+                &CancellationToken::new(),
+            )
+            .await;
+    worker.finish_processing();
+    (report, events)
+}
+
 #[tokio::test]
 async fn steering_waiting_when_the_failures_repeat_continues_the_turn() {
     let provider = FakeProvider::new(vec![
@@ -195,33 +240,140 @@ async fn steering_waiting_when_the_failures_repeat_continues_the_turn() {
         shell_reply(&[("call-2", FAILING)]),
         text_reply("Steered."),
     ]);
-    let worker = Arc::new(WorkerRuntime::default());
-    let mut agent =
-        new_agent(Arc::clone(&provider), vec![shell_tool()]).with_steering(Arc::clone(&worker));
-    worker.admit(QueuedPrompt::new(0, "go".to_owned(), Vec::new()));
-    let prompt = worker.take_next().expect("a queued prompt");
-    let mut events = Vec::new();
-    let report = agent
-        .run_turn(
-            &prompt.text,
-            &mut |event| {
-                if let UiEvent::ToolStarted { call_id, .. } = &event
-                    && call_id.as_str() == "call-2"
-                {
-                    worker.admit(QueuedPrompt::new(
-                        1,
-                        "try another way".to_owned(),
-                        Vec::new(),
-                    ));
-                }
-                events.push(event);
-            },
-            &CancellationToken::new(),
-        )
-        .await;
-    worker.finish_processing();
+    let (report, events) = run_with_steering_at(&provider, "call-2").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(report.final_text, "Steered.");
     assert_eq!(provider.requests().len(), 3);
     assert!(operational(&events).is_empty());
+}
+
+fn system_notices(events: &[UiEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::SystemNotice { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn repeated_shell_validation_failures_complete_the_turn_with_the_upstream_notice() {
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", BAD_REQUEST)]),
+        shell_reply(&[("call-2", r#"{"bad_request":2}"#)]),
+        text_reply("must not be requested"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![shell_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(report.failure, None);
+    assert_eq!(report.final_text, "");
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(system_notices(&events), [REPEATED_SHELL_VALIDATION_NOTICE]);
+    assert!(operational(&events).is_empty());
+    assert_eq!(
+        agent.history.last(),
+        Some(&ChatMessage::Tool {
+            call_id: ToolCallId::new("call-2"),
+            tool_name: "shell".to_owned(),
+            content: INVALID_SHELL_REQUEST.to_owned(),
+            status: ToolResultStatus::Failure,
+        })
+    );
+    assert_eq!(agent.last_assistant_reply().as_deref(), Some(""));
+}
+
+#[tokio::test]
+async fn validation_failures_that_change_or_skip_a_batch_keep_the_loop_running() {
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", BAD_REQUEST)]),
+        shell_reply(&[("call-2", OTHER_BAD_REQUEST)]),
+        shell_reply(&[("call-3", r#"{"command":"ls"}"#)]),
+        shell_reply(&[("call-4", OTHER_BAD_REQUEST)]),
+        shell_reply(&[("call-5", r#"{"invalid":1}"#)]),
+        shell_reply(&[("call-6", r#"{"invalid":1}"#)]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![shell_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.final_text, "done");
+    assert_eq!(provider.requests().len(), 7);
+    assert!(system_notices(&events).is_empty());
+}
+
+#[tokio::test]
+async fn the_validation_stop_is_checked_before_the_execution_failure_stop() {
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", BAD_REQUEST), ("call-2", FAILING)]),
+        shell_reply(&[("call-3", FAILING), ("call-4", BAD_REQUEST)]),
+        text_reply("must not be requested"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![shell_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(system_notices(&events), [REPEATED_SHELL_VALIDATION_NOTICE]);
+    assert!(operational(&events).is_empty());
+}
+
+#[tokio::test]
+async fn steering_waiting_when_the_corrections_repeat_continues_the_turn() {
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", BAD_REQUEST)]),
+        shell_reply(&[("call-2", BAD_REQUEST)]),
+        text_reply("Steered."),
+    ]);
+    let (report, events) = run_with_steering_at(&provider, "call-2").await;
+    assert_eq!(report.final_text, "Steered.");
+    assert_eq!(provider.requests().len(), 3);
+    assert!(system_notices(&events).is_empty());
+}
+
+#[tokio::test]
+async fn a_steered_correction_stop_still_settles_the_execution_failures_of_its_batch() {
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", FAILING), ("call-2", BAD_REQUEST)]),
+        shell_reply(&[("call-3", BAD_REQUEST)]),
+        shell_reply(&[("call-4", FAILING)]),
+        text_reply("done"),
+    ]);
+    let (report, events) = run_with_steering_at(&provider, "call-3").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(report.final_text, "done");
+    assert_eq!(provider.requests().len(), 4);
+    assert!(operational(&events).is_empty());
+    assert!(system_notices(&events).is_empty());
+}
+
+#[tokio::test]
+async fn the_validation_stop_is_saved_as_a_reply_without_text() {
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", BAD_REQUEST)]),
+        shell_reply(&[("call-2", BAD_REQUEST)]),
+        text_reply("next"),
+    ]);
+    let (log, entries) = MemoryLog::shared();
+    let shared: Arc<FakeProvider> = Arc::clone(&provider);
+    let mut agent = logged(new_agent(shared, vec![shell_tool()]), log);
+    run(&mut agent, "go").await;
+    let entries = entries.lock().unwrap().clone();
+    let [
+        Logged::Turn {
+            user, steps, end, ..
+        },
+    ] = entries.as_slice()
+    else {
+        panic!("expected one logged turn: {entries:?}");
+    };
+    assert_eq!(user, "go");
+    assert_eq!(steps.len(), 2);
+    assert!(steps[1].contains(r#"calls=["call-2"]"#), "{steps:?}");
+    assert_eq!(end, r#"replied "" replay=false"#);
+    run(&mut agent, "again").await;
+    let messages = &provider.requests()[2].messages;
+    assert_eq!(messages.last(), Some(&ChatMessage::user("again")));
+    assert!(matches!(
+        &messages[messages.len() - 2],
+        ChatMessage::Tool { call_id, .. } if call_id.as_str() == "call-2"
+    ));
 }
