@@ -1282,12 +1282,12 @@ impl Presenter {
             | TurnFailure::Compaction(_)
             | TurnFailure::Persistence(_)
             | TurnFailure::RecoveryPaused => self.describe_error(failure.code(), None),
-            TurnFailure::StepLimitReached | TurnFailure::RepeatedMalformedArguments => {
-                Ok(FailureSummary {
-                    error: None,
-                    auth_failure: false,
-                })
-            }
+            TurnFailure::StepLimitReached
+            | TurnFailure::RepeatedMalformedArguments
+            | TurnFailure::RepeatedShellExecutionFailure => Ok(FailureSummary {
+                error: None,
+                auth_failure: false,
+            }),
         };
         summary.unwrap_or_else(|error| FailureSummary {
             error: Some(write_error_name(&error).to_owned()),
@@ -2285,9 +2285,14 @@ mod tests {
                 r#"{"name":"write_file","status":"error"}]"#,
             )
         );
-        let summary = presenter.describe_failure(&TurnFailure::RepeatedMalformedArguments);
-        assert_eq!(summary.error, None);
-        assert!(!summary.auth_failure);
+        for silent in [
+            TurnFailure::RepeatedMalformedArguments,
+            TurnFailure::RepeatedShellExecutionFailure,
+        ] {
+            let summary = presenter.describe_failure(&silent);
+            assert_eq!(summary.error, None);
+            assert!(!summary.auth_failure);
+        }
     }
 
     #[test]

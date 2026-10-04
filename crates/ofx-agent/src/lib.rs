@@ -14,6 +14,7 @@ mod scripted_provider;
 mod skill_context;
 mod subagent;
 mod text_completion;
+mod tool_admission;
 mod turn_reviews;
 mod worker_runtime;
 
