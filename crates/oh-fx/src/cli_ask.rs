@@ -1049,9 +1049,7 @@ impl Presenter {
                 description,
                 ..
             } => self.tool_rejected(&call_id, tool_name, &arguments, reason, description),
-            UiEvent::ContextNotice { text, .. } => {
-                return self.context_notice(&text);
-            }
+            UiEvent::ContextNotice { text, .. } => return self.context_notice(&text),
             UiEvent::SystemNotice { text } => {
                 self.write_status(StatusBlock::Notice, &format!("[notice] {text}\n"))
             }
