@@ -93,17 +93,25 @@ fn recorded_frames_parse_back_in_order() {
 fn frame_deltas_count_milliseconds_since_the_previous_frame() {
     let directory = tempfile::tempdir().unwrap();
     let path = tape_path(&directory, "deltas.fxtape");
+    let started = std::time::Instant::now();
     let recorder = create(&path, 80, 24, "v").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
     recorder.record_stdout(b"later");
     recorder.record_stdout(b"soon");
+    let elapsed_ms = i32::try_from(started.elapsed().as_millis()).unwrap();
     recorder.shutdown();
     let bytes = fs::read(&path).unwrap();
     let mut parser = TapeParser::new(&bytes).unwrap();
     let first = parser.next_frame().unwrap().unwrap();
     let second = parser.next_frame().unwrap().unwrap();
     assert!(first.delta_ms >= 30, "{}", first.delta_ms);
-    assert!((0..30).contains(&second.delta_ms), "{}", second.delta_ms);
+    assert!(second.delta_ms >= 0, "{}", second.delta_ms);
+    assert!(
+        first.delta_ms + second.delta_ms <= elapsed_ms + 1,
+        "{} + {} after {elapsed_ms} ms",
+        first.delta_ms,
+        second.delta_ms
+    );
 }
 
 #[test]
