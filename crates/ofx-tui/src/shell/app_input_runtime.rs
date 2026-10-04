@@ -272,7 +272,7 @@ impl Shell<'_> {
     }
 
     fn interrupt(&mut self) {
-        if self.compaction_running() {
+        if self.manual_compaction_running() {
             self.cancel_compaction();
         } else {
             self.cancel_visible_turn();
