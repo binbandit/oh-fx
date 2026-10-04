@@ -43,7 +43,7 @@ fn listed(profile: &Profile, format: OutputFormat) -> Listing {
     runtime.block_on(list_models(
         profile,
         format,
-        crate::login_command::host_managed(),
+        ofx_auth::host_managed_auth(),
         &mut io::stdout().lock(),
         &mut io::stderr(),
     ))

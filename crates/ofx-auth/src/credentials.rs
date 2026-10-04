@@ -1,4 +1,9 @@
+use std::env;
+use std::os::unix::ffi::OsStrExt;
+
 pub(crate) const GROK_SOURCE_LABEL: &str = "Grok subscription";
+
+pub const AUTH_MODE_VARIABLE: &str = "OH_FX_AUTH_MODE";
 
 pub const MISSING_CHATGPT_CREDENTIAL_MESSAGE: &str =
     "oh-fx needs a Codex subscription login for this model. Run oh-fx login codex.";
@@ -18,6 +23,11 @@ pub fn parse_auth_mode(value: Option<&[u8]>) -> Option<AuthMode> {
         Some(b"host-managed") => Some(AuthMode::HostManaged),
         Some(_) => None,
     }
+}
+
+pub fn host_managed_auth() -> bool {
+    let mode = env::var_os(AUTH_MODE_VARIABLE);
+    parse_auth_mode(mode.as_deref().map(OsStrExt::as_bytes)) == Some(AuthMode::HostManaged)
 }
 
 pub fn is_valid_auth_mode(value: Option<&[u8]>) -> bool {
