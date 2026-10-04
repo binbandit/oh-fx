@@ -1,9 +1,8 @@
 use ofx_contract::{CatalogRetry, ModelCatalogSource, ModelOption};
 use ofx_text::visible_width;
 
-use crate::footer::picker_presentation::{middle_ellipsized, single_line_ellipsized};
 use crate::list_window::update_edge_start;
-use crate::row_text::{Row, terminal_safe};
+use crate::row_text::{Row, single_line_ellipsized, single_line_middle_ellipsized, terminal_safe};
 use crate::shell::model_menu::{CatalogLoad, ModelMenu, VENDOR_TABS, available_tabs};
 use crate::theme::Theme;
 
@@ -279,11 +278,11 @@ fn title_row(
         theme.dim
     };
     row.push(
-        &middle_ellipsized(&terminal_safe(&option.id), id_budget),
+        &single_line_middle_ellipsized(&terminal_safe(&option.id), id_budget),
         paint,
     );
     if show_facts {
-        row.push_spaces(facts_start.saturating_sub(row.width()));
+        row.pad_to_column(facts_start);
         row.push(
             &single_line_ellipsized(&facts, width - facts_start),
             theme.dim,
@@ -398,8 +397,6 @@ mod tests {
             assert!(visible_width(row) <= 40, "{row:?}");
             assert!(!row.contains("…\u{301}"), "{row:?}");
         }
-        let marked = middle_ellipsized("abcdefgh\u{301}ij", 6);
-        assert_eq!(marked, "abc…ij");
     }
 
     #[test]
