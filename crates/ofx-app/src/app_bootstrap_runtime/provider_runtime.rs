@@ -110,6 +110,7 @@ impl AgentSetup {
     pub(crate) async fn route_for(
         &self,
         target: &SwitchTarget,
+        keep: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<Route, Notice> {
         let lookup = |name: &str| env::var(name).ok();
@@ -132,7 +133,7 @@ impl AgentSetup {
                 return Err(refused(CATALOG_UNAVAILABLE));
             };
             let ids: Vec<String> = models.into_iter().map(|option| option.id).collect();
-            route.model = listed_model(&ids, preferred.as_deref())
+            route.model = kept_model(&ids, keep, preferred.as_deref())
                 .filter(|_| !ids.is_empty())
                 .ok_or_else(|| refused(NO_MODELS))?;
             return Ok(route);
@@ -141,7 +142,7 @@ impl AgentSetup {
             .connection(id)
             .ok_or_else(|| refused(PROVIDER_MISSING))?;
         let preferred = settings.selected_model(connection, None, &lookup).ok();
-        let model = listed_model(connection.models(), preferred.as_deref())
+        let model = kept_model(connection.models(), keep, preferred.as_deref())
             .ok_or_else(|| refused(NO_MODELS))?;
         connection_route(connection, Ok(model), preferred).map_err(|error| failure(&error))
     }
@@ -236,6 +237,12 @@ fn listed_model(listed: &[String], preferred: Option<&str>) -> Option<String> {
     }
 }
 
+fn kept_model(listed: &[String], keep: Option<&str>, preferred: Option<&str>) -> Option<String> {
+    keep.filter(|model| listed.iter().any(|id| id == model))
+        .map(str::to_owned)
+        .or_else(|| listed_model(listed, preferred))
+}
+
 fn refused(body: &str) -> Notice {
     Notice::new(NoticeTone::Error, PROVIDER_TOPIC, body)
 }
@@ -268,6 +275,24 @@ mod tests {
         assert_eq!(listed_model(&listed, None), Some("a".to_owned()));
         assert_eq!(listed_model(&[], Some("own")), Some("own".to_owned()));
         assert_eq!(listed_model(&[], None), None);
+    }
+
+    #[test]
+    fn a_restored_login_keeps_a_listed_session_model_and_else_falls_back_as_a_switch_does() {
+        let listed = ids(&["a", "b", "c"]);
+        assert_eq!(
+            kept_model(&listed, Some("c"), Some("b")),
+            Some("c".to_owned())
+        );
+        assert_eq!(
+            kept_model(&listed, Some("gone"), Some("b")),
+            Some("b".to_owned())
+        );
+        assert_eq!(kept_model(&listed, None, Some("b")), Some("b".to_owned()));
+        assert_eq!(
+            kept_model(&listed, Some("gone"), None),
+            Some("a".to_owned())
+        );
     }
 
     #[test]
