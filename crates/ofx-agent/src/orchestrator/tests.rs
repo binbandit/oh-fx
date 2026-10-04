@@ -2409,15 +2409,15 @@ async fn a_stream_failure_after_the_same_reasoning_stops_the_recovery() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_stream_timeout_checks_the_connection_before_retrying() {
-    let timeout = || Script::Fail(Vec::new(), failure(ProviderErrorKind::Timeout, "Timeout"));
+async fn a_stream_stall_checks_the_connection_before_retrying() {
+    let stalled = || failure(ProviderErrorKind::StreamStalled, "StreamStalled");
     let provider = FakeProvider::new(vec![
-        timeout(),
+        Script::Fail(Vec::new(), stalled()),
         Script::Fail(
             vec![StreamEvent::ReasoningDelta {
                 text: "thinking".to_owned(),
             }],
-            failure(ProviderErrorKind::Timeout, "Timeout"),
+            stalled(),
         ),
         text_reply("ok"),
     ]);
@@ -2432,6 +2432,25 @@ async fn a_stream_timeout_checks_the_connection_before_retrying() {
             "⚠ Gateway stream timed out · checking the connection · 1s",
             "⚠ Gateway stream timed out · checking the connection · 1s",
             "✓ recovered · succeeded on attempt 3",
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_transport_timeout_retries_as_a_network_interruption() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(Vec::new(), failure(ProviderErrorKind::Timeout, "Timeout")),
+        text_reply("ok"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        labels(&events),
+        [
+            "⚠ Network interrupted · timed out · retrying request",
+            "⚠ Network interrupted · timed out · retrying request",
+            "✓ recovered · succeeded on attempt 2",
         ]
     );
 }
@@ -2470,7 +2489,7 @@ async fn retries_slow_to_once_a_minute_past_the_recovery_window() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_timeout_past_the_recovery_window_waits_a_minute_before_asking_again() {
+async fn a_stall_past_the_recovery_window_waits_a_minute_before_asking_again() {
     let mut scripts: Vec<Script> = (0..35)
         .map(|_| {
             Script::Fail(
@@ -2484,7 +2503,7 @@ async fn a_timeout_past_the_recovery_window_waits_a_minute_before_asking_again()
             vec![StreamEvent::ReasoningDelta {
                 text: text.to_owned(),
             }],
-            failure(ProviderErrorKind::Timeout, "Timeout"),
+            failure(ProviderErrorKind::StreamStalled, "StreamStalled"),
         )
     }));
     scripts.push(text_reply("ok"));

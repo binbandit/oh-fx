@@ -239,8 +239,10 @@ pub(crate) fn recovery_cause(kind: ProviderErrorKind) -> Option<ModelRecoveryCau
         | ProviderErrorKind::Unavailable
         | ProviderErrorKind::GatewayTimeout => Some(ModelRecoveryCause::ProviderUnavailable),
         ProviderErrorKind::ConnectivityLost => Some(ModelRecoveryCause::ConnectivityLost),
-        ProviderErrorKind::TransportInterrupted => Some(ModelRecoveryCause::NetworkInterrupted),
-        ProviderErrorKind::Timeout => Some(ModelRecoveryCause::ProviderStreamTimeout),
+        ProviderErrorKind::TransportInterrupted | ProviderErrorKind::Timeout => {
+            Some(ModelRecoveryCause::NetworkInterrupted)
+        }
+        ProviderErrorKind::StreamStalled => Some(ModelRecoveryCause::ProviderStreamTimeout),
         _ => None,
     }
 }

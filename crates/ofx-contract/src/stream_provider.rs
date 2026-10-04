@@ -69,6 +69,7 @@ pub enum ProviderErrorKind {
     ConnectivityLost,
     TransportInterrupted,
     Timeout,
+    StreamStalled,
     Protocol,
     Cancelled,
 }

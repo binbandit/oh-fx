@@ -10,6 +10,9 @@ mod provider_failure;
 mod provider_versions;
 mod responses_protocol;
 mod secret_mask;
+mod stall_watch;
+#[cfg(test)]
+mod test_sources;
 mod tool_call_ids;
 
 pub use chat_completions::ChatCompletionsProvider;
