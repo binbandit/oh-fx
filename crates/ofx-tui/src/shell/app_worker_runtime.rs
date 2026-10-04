@@ -202,7 +202,7 @@ impl Shell<'_> {
                 self.session_resume_failed(&id, refusal);
             }
             UiEvent::SessionResumed { history } => self.session_resumed(history),
-            UiEvent::RecoveryContinuing { prompt } => self.recovery_continuing(prompt),
+            UiEvent::RecoveryContinuing { prompt, id } => self.recovery_continuing(prompt, id),
             UiEvent::ExitRequested => self.should_exit = true,
         }
     }
@@ -662,7 +662,7 @@ impl Shell<'_> {
         }
     }
 
-    fn recovery_continuing(&mut self, prompt: String) {
+    fn recovery_continuing(&mut self, prompt: String, id: u64) {
         let ahead = self
             .outstanding
             .iter()
@@ -670,13 +670,18 @@ impl Shell<'_> {
             .unwrap_or(self.outstanding.len());
         self.displace_unstarted_turn();
         let presented = self.submitted_prompts == self.prompts_before_resume;
+        for submission in &mut self.outstanding {
+            if submission.sequence >= id {
+                submission.sequence += 1;
+            }
+        }
         self.outstanding.insert(
             ahead,
             Submission {
                 prompt,
                 state: SubmissionState::Queued,
                 turn_id: None,
-                sequence: self.submitted_prompts,
+                sequence: id,
                 presented,
             },
         );
@@ -1376,6 +1381,7 @@ mod tests {
         });
         test.deliver(UiEvent::RecoveryContinuing {
             prompt: "fix the build".to_owned(),
+            id: 0,
         });
         test.deliver(started(1));
         test.deliver(text(1, "Build fixed.\n"));
@@ -1412,10 +1418,40 @@ mod tests {
     }
 
     #[test]
+    fn typeahead_that_steers_a_continued_recovery_leaves_the_shell_idle_when_it_finishes() {
+        let mut test = resumed_with_typeahead();
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+            id: 0,
+        });
+        test.deliver(started(1));
+        test.deliver(UiEvent::SteeringApplied {
+            turn_id: TurnId::new(1),
+            prompt: 1,
+            text: "new prompt".to_owned(),
+        });
+        test.deliver(text(1, "Both done.\n"));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        assert!(
+            test.shell.outstanding.is_empty(),
+            "{:?}",
+            test.shell.outstanding
+        );
+        assert!(test.shell.turn.is_none());
+        assert!(!test.shell.working());
+        let screen = test.screen();
+        assert!(
+            in_order(&screen, &["┃ fix the build", "┃ new prompt", "Both done."]),
+            "{screen}"
+        );
+    }
+
+    #[test]
     fn a_recovery_that_starts_after_typeahead_runs_first_under_its_own_prompt() {
         let mut test = resumed_with_typeahead();
         test.deliver(UiEvent::RecoveryContinuing {
             prompt: "fix the build".to_owned(),
+            id: 0,
         });
         test.deliver(started(1));
         test.deliver(text(1, "Build fixed.\n"));
@@ -1458,6 +1494,7 @@ mod tests {
         test.step();
         test.deliver(UiEvent::RecoveryContinuing {
             prompt: "fix the build".to_owned(),
+            id: 0,
         });
         test.deliver(started(1));
         test.deliver(text(1, "Build fixed.\n"));
