@@ -219,6 +219,13 @@ impl WorkerRuntime {
         self.lock().queue.clear();
     }
 
+    pub fn holds_recovery(&self) -> bool {
+        self.lock()
+            .queue
+            .iter()
+            .any(|prompt| prompt.recovered.is_some())
+    }
+
     pub fn waiting_texts(&self) -> Vec<String> {
         self.lock()
             .queue

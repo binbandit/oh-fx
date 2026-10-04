@@ -286,6 +286,10 @@ impl ControllerState {
         }
     }
 
+    fn holds_recovery(&self) -> bool {
+        self.worker.holds_recovery()
+    }
+
     fn receive_recovery(&mut self, recovered: RecoveredTurn) {
         let prompt = QueuedPrompt::recovery(self.received_prompts, recovered);
         self.received_prompts += 1;
@@ -630,6 +634,11 @@ impl Controller {
                     after,
                     limit,
                 } => self.list_sessions(scope, after, limit),
+                command @ (UiCommand::OpenSessions { .. } | UiCommand::ResumeSession { .. })
+                    if self.state.holds_recovery() =>
+                {
+                    refuse_session_command(&self.state, command);
+                }
                 UiCommand::OpenSessions { scope } => self.open_picker(scope),
                 UiCommand::ResumeSession { id } => self.resume_session(&id),
                 UiCommand::CloseSessionPicker => self.close_picker(),
@@ -661,6 +670,9 @@ impl Controller {
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => self.change_model(ModelChange::ToggleFast).await,
             CommandEffect::Compact => return self.compact(commands).await,
+            CommandEffect::OpenSessions if self.state.holds_recovery() => {
+                refuse_resume_during_turn(&self.state);
+            }
             CommandEffect::OpenSessions => self.open_picker(SessionScope::CurrentWorkspace),
             CommandEffect::OpenSettings => self.open_settings_menu().await,
             CommandEffect::Rename(title) => {
@@ -5040,6 +5052,127 @@ mod tests {
             drop(file);
         });
         (release, worker)
+    }
+
+    fn pause_a_saved_response(home: &tempfile::TempDir, id: &str) {
+        let dir = home.path().join("data/sessions").join(id);
+        let metadata: Value =
+            serde_json::from_slice(&fs::read(dir.join("session.json")).unwrap()).unwrap();
+        let seq = fs::read_to_string(dir.join("events.jsonl"))
+            .unwrap()
+            .lines()
+            .count();
+        let checkpoint = json!({
+            "version": 2,
+            "turn_id": 2,
+            "user": {"text": "fix the build", "images": []},
+            "assistant_source": "",
+            "execution": {
+                "schema_version": 10,
+                "tool_steps": [],
+                "files": [],
+                "steering": [],
+                "turn_summary": null
+            },
+            "cause": "rate_limited",
+            "action": "retrying_request",
+            "tool_state": "none",
+            "authority": {
+                "provider": metadata["provider"],
+                "model": metadata["model"],
+                "credential_source": null,
+                "credential_identity": null
+            },
+            "requested_fast_mode": false,
+            "fast_mode": false,
+            "max_provider_attempts": 10,
+            "consumed_provider_attempts": 0,
+            "outstanding_reservation": false
+        });
+        fs::write(
+            dir.join("recovery.json"),
+            format!("{{\"conversation_seq\":{seq},\"checkpoint\":{checkpoint}}}\n"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_recovery_waiting_for_an_installation_keeps_its_session_until_it_runs() {
+        let server = FakeServer::start([
+            Reply::sse(&chat_text_events(&["answer a"])),
+            Reply::sse(&chat_text_events(&["answer b"])),
+            Reply::sse(&chat_text_events(&["build fixed"])),
+        ]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        write_skill(&home, "install-pack", "new-skill");
+        let source = fs::canonicalize(home.path().join("workspace/install-pack")).unwrap();
+        let mut harness = Harness::saved(home, setup);
+        chat(&mut harness, &["question a"]).await;
+        let first = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        chat(&mut harness, &["question b"]).await;
+        let second = saved_sessions(&harness.home)
+            .iter()
+            .filter_map(|session| session["id"].as_str())
+            .find(|id| *id != first)
+            .unwrap()
+            .to_owned();
+        pause_a_saved_response(&harness.home, &first);
+        let (release, worker) = held_install_lock(&harness.home);
+        harness.command(&format!("/skills install {}", source.display()));
+        harness.send(UiCommand::ResumeSession { id: first.clone() });
+        harness
+            .until(|event| matches!(event, UiEvent::RecoveryContinuing { .. }))
+            .await;
+        harness.command("/resume");
+        harness.send(UiCommand::ResumeSession { id: second.clone() });
+        let switched = harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::SessionResumeFailed { .. } | UiEvent::SessionResumed { .. }
+                )
+            })
+            .await;
+        assert!(
+            matches!(
+                switched.last(),
+                Some(UiEvent::SessionResumeFailed { id, .. }) if *id == second
+            ),
+            "{switched:?}"
+        );
+        assert!(
+            !switched
+                .iter()
+                .any(|event| matches!(event, UiEvent::SessionPickerOpened { .. })),
+            "{switched:?}"
+        );
+        release.send(()).unwrap();
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        let continued = requests[2].body_text();
+        assert!(continued.contains("question a"), "{continued}");
+        assert!(continued.contains("fix the build"), "{continued}");
+        assert!(!continued.contains("question b"), "{continued}");
+        let saved = fs::read_to_string(
+            harness
+                .home
+                .path()
+                .join("data/sessions")
+                .join(&first)
+                .join("events.jsonl"),
+        )
+        .unwrap();
+        assert!(saved.contains("build fixed"), "{saved}");
+        worker.join().unwrap();
     }
 
     #[tokio::test]
