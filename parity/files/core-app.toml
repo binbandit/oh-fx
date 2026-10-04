@@ -120,7 +120,7 @@ note = "Native workspace file mentions/completion exist and the launch applies a
 upstream = "src/core/app/input_approval_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/approval_runtime.rs"]
-note = "Approval keyboard actions exist with documented safety gating; upstream file-diff preview and queued submission integration are incomplete."
+note = "Approval keyboard actions, feedback draft editing and left and right choice moves exist with documented safety gating; upstream file-diff preview and queued submission integration are incomplete."
 
 [[file]]
 upstream = "src/core/app/input_completion_runtime.zig"
