@@ -1,13 +1,7 @@
-use ofx_contract::ToolCallId;
-
 use super::*;
 
 fn shell(id: &str, arguments: &str) -> ToolCall {
-    ToolCall {
-        id: ToolCallId::new(id),
-        name: SHELL_TOOL.to_owned(),
-        arguments: arguments.to_owned(),
-    }
+    ToolCall::new(id, SHELL_TOOL, arguments)
 }
 
 #[test]
