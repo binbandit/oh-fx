@@ -12,10 +12,13 @@ use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
-use ofx_contract::{HistoryCut, HistoryTurn, ReasoningEffort, RestoredHistory, TurnEnd, TurnStop};
+use ofx_contract::{
+    HistoryCut, HistoryTurn, ReasoningEffort, RecoveryPoint, RestoredHistory, TurnEnd, TurnStop,
+};
 use ofx_text::lowercase_hex;
 
 use crate::session::infer_conversation_language;
+use crate::session_codec::recovery_checkpoint::RouteCredential;
 use crate::session_codec::{
     MAX_SESSION_METADATA_BYTES, SavedProvider, SessionMetadata, SessionPreferences,
     decode_session_metadata, encode_session_metadata,
@@ -36,7 +39,9 @@ use managed_file::{
 };
 use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
-use turn_recovery::{Recovery, clear_recovery, commit_checkpoint, open_unfinished_turn};
+use turn_recovery::{
+    Recovery, clear_recovery, commit_checkpoint, open_unfinished_turn, save_checkpoint,
+};
 use turn_restore::{complete_result_output, restored_history};
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
@@ -208,10 +213,7 @@ impl WritableSession {
             self.writer.block_open_turn();
         }
         saved?;
-        if !matches!(self.recovery, Recovery::Absent) {
-            clear_recovery(&self.owned.dir);
-            self.recovery = Recovery::Absent;
-        }
+        self.discard_recovery();
         self.write_first_title(fresh, turn.user)?;
         self.save_language()
     }
@@ -247,6 +249,33 @@ impl WritableSession {
         )?;
         self.history = replayed_history(self.writer.file(), self.writer.committed_bytes())?;
         Ok(())
+    }
+
+    pub fn record_recovery(
+        &mut self,
+        point: &RecoveryPoint<'_>,
+        provider: &SavedProvider,
+        credential: RouteCredential,
+    ) -> Result<(), SessionError> {
+        self.require_writable()?;
+        save_checkpoint(
+            &self.owned.dir,
+            self.writer.last_seq(),
+            point,
+            provider,
+            credential,
+        )?;
+        if !matches!(self.recovery, Recovery::Continuing) {
+            self.recovery = Recovery::Saved;
+        }
+        Ok(())
+    }
+
+    pub fn discard_recovery(&mut self) {
+        if !matches!(self.recovery, Recovery::Absent) {
+            clear_recovery(&self.owned.dir);
+            self.recovery = Recovery::Absent;
+        }
     }
 
     pub fn settle_open_recovery(&mut self) -> Result<(), SessionError> {

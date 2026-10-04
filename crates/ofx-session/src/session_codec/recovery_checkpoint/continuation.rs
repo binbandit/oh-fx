@@ -1,59 +1,19 @@
 use ofx_contract::{ChatMessage, RecoveredTurn, ToolCallId};
-use sha2::{Digest, Sha256};
 
-use super::{CREDENTIAL_IDENTITY_BYTES, RecoveryCheckpoint, SavedSteering, SavedToolStep};
+use super::{RecoveryCheckpoint, RouteCredential, SavedSteering, SavedToolStep};
 use crate::session_codec::SavedProvider;
-
-const CREDENTIAL_AUTHORITY_DOMAIN: &[u8] = b"fx-credential-authority-v1\0";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CredentialAuthority<'a> {
-    Configured,
-    ChatgptSubscription { account_id: &'a str },
-}
-
-impl CredentialAuthority<'_> {
-    fn source(self) -> &'static str {
-        match self {
-            Self::Configured => "configured",
-            Self::ChatgptSubscription { .. } => "chatgpt_subscription",
-        }
-    }
-
-    fn identity(self) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
-        let mut hash = Sha256::new();
-        hash.update(CREDENTIAL_AUTHORITY_DOMAIN);
-        hash.update(self.source());
-        match self {
-            Self::Configured => hash.update(b"\0slot\0"),
-            Self::ChatgptSubscription { account_id } => {
-                if account_id.is_empty() {
-                    return None;
-                }
-                hash.update(b"\0account\0");
-                hash.update(account_id);
-            }
-        }
-        let mut identity = [0_u8; CREDENTIAL_IDENTITY_BYTES];
-        identity.copy_from_slice(&hash.finalize());
-        Some(identity)
-    }
-}
 
 impl RecoveryCheckpoint {
     pub(crate) fn prompt(&self) -> &str {
         &self.user
     }
 
-    pub(crate) fn authorizes(&self, credential: CredentialAuthority<'_>) -> bool {
-        if !self.route.may_have_sent {
-            return true;
-        }
-        self.route.credential.is_some_and(|saved| {
-            saved.source == credential.source()
-                && saved.identity.is_some()
-                && saved.identity == credential.identity()
-        })
+    pub(crate) fn authorizes(&self, credential: RouteCredential) -> bool {
+        !self.route.may_have_sent
+            || self
+                .route
+                .credential
+                .is_some_and(|saved| saved.identifies(credential))
     }
 
     pub(crate) fn into_continuation(

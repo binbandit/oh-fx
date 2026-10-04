@@ -61,7 +61,7 @@ impl Persistence {
         setup: &AgentSetup,
     ) -> Result<Switched, Refused> {
         let mut session = self.store.open_without_waiting(id).map_err(refused)?;
-        if session.metadata().preferences.provider != self.provider {
+        if session.metadata().preferences.provider != self.route.provider {
             return Err(Refused {
                 refusal: ResumeRefusal::Unavailable,
                 notice: Some(Notice::new(
@@ -82,7 +82,7 @@ impl Persistence {
         self.adopt_preferences(resumed.preferences());
         self.close(agent);
         agent.clear_history();
-        let live = LiveSession::resume(resumed, self.provider.clone(), agent);
+        let live = LiveSession::resume(resumed, self.route.clone(), agent);
         live.attach(agent);
         let notice = self.remember(live.id());
         self.live = Some(live);
