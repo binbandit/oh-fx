@@ -74,6 +74,8 @@ async fn provider_executed_calls_publish_their_provider_result_instead_of_runnin
         [
             "start call-1",
             "finish call-1",
+            "start provider_search",
+            "finish provider_search",
             "start call-2",
             "finish call-2"
         ]
@@ -325,5 +327,51 @@ async fn a_final_answer_with_provider_results_splits_its_replay_between_step_and
     assert_eq!(
         replays(&harness.agent.history),
         [Some("reasoning of parts"), Some("reasoning of parts")]
+    );
+}
+
+#[tokio::test]
+async fn provider_searches_show_a_search_row_and_other_provider_tools_stay_silent() {
+    let search = ToolCall {
+        arguments: r#"{"query":"zig news"}"#.to_owned(),
+        ..provider_call("provider_search", "exa_search", Some(SOURCE))
+    };
+    let failed = provider_call(
+        "provider_failed",
+        "parallel_search",
+        Some("Tool parallel_search failed: timeout"),
+    );
+    let quiet = provider_call("provider_other", "provider_tool", Some("{}"));
+    let mut harness = harness(vec![
+        reply(None, vec![search, failed, quiet], FinishReason::ToolCalls),
+        text_reply("Final"),
+    ]);
+    let (report, events) = run(&mut harness.agent, "search").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let rows: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::ToolStarted {
+                call_id,
+                description,
+                ..
+            } => Some(format!("start {} {}", call_id.as_str(), description.title)),
+            UiEvent::ToolFinished {
+                call_id,
+                status,
+                content,
+                ..
+            } => Some(format!("finish {} {status:?} {content}", call_id.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "start provider_search Searching zig news".to_owned(),
+            format!("finish provider_search Success {SOURCE}"),
+            "start provider_failed Searching web".to_owned(),
+            "finish provider_failed Failure Tool parallel_search failed: timeout".to_owned(),
+        ]
     );
 }

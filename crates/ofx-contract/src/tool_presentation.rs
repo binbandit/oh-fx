@@ -1,10 +1,12 @@
-use ofx_text::{encode_terminal_safe, is_posix_space};
+use std::fmt::Write;
+
+use ofx_text::{clipped_label, encode_terminal_safe, is_posix_space};
 use serde_json::{Map, Value};
 
 use crate::subagent::SteeringDelivery;
-use crate::tool_args::parse_tool_args_object;
+use crate::tool_args::{ToolArgValue, parse_tool_args_object};
 use crate::tool_dispatch::{
-    ActionLabel, CallDescription, CallPresentation, Concurrency, ToolEffect,
+    ActionLabel, CallDescription, CallPresentation, Concurrency, ToolActivity, ToolEffect,
 };
 
 const SUBAGENT_TOOL_NAME: &str = "subagent";
@@ -18,6 +20,10 @@ const NOT_SENT_CODES: [&str; 3] = [
     "override_after_create",
 ];
 const INTERRUPTED_CODES: [&str; 3] = ["child_cancelled", "child_interrupted", "child_lost"];
+const PROVIDER_SEARCH_ALIASES: [&str; 3] = ["exa_search", "perplexity_search", "parallel_search"];
+const SEARCH_QUERY_WIDTH: usize = 120;
+const SEARCH_DOMAIN_WIDTH: usize = 48;
+const SEARCH_DOMAINS_SHOWN: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentActionState<'a> {
@@ -65,6 +71,63 @@ pub fn format_plain_action(tool_name: &str, label: Option<&ActionLabel>) -> Stri
 
 pub fn format_unknown_action(tool_name: &str) -> String {
     format!("Working: {tool_name}")
+}
+
+pub fn is_provider_search_alias(tool_name: &str) -> bool {
+    PROVIDER_SEARCH_ALIASES.contains(&tool_name)
+}
+
+pub fn provider_search_description(arguments: &str) -> CallDescription {
+    let label = ActionLabel {
+        active: "Searching",
+        completed: "Searched",
+        target: search_detail(arguments),
+    };
+    CallDescription {
+        title: label.title(),
+        label: Some(label),
+        activity: ToolActivity::Read,
+        effect: ToolEffect::ReadOnly,
+        concurrency: Concurrency::Parallel,
+    }
+}
+
+fn search_detail(arguments: &str) -> String {
+    let Ok(arguments) = parse_tool_args_object(arguments) else {
+        return "web".to_owned();
+    };
+    let query = arguments.optional_string("query").unwrap_or("web");
+    let mut detail = clipped_label(query, SEARCH_QUERY_WIDTH).into_owned();
+    for (key, label) in [
+        ("allowed_domains", "allowed"),
+        ("blocked_domains", "blocked"),
+    ] {
+        if let Some(ToolArgValue::Array(domains)) = arguments.get(key) {
+            push_search_domains(&mut detail, label, domains);
+        }
+    }
+    detail
+}
+
+fn push_search_domains(detail: &mut String, label: &str, domains: &[ToolArgValue]) {
+    if domains.is_empty() {
+        return;
+    }
+    let _ = write!(detail, " | {label}: ");
+    for (index, domain) in domains.iter().take(SEARCH_DOMAINS_SHOWN).enumerate() {
+        if index > 0 {
+            detail.push_str(", ");
+        }
+        match domain {
+            ToolArgValue::String(domain) => {
+                detail.push_str(&clipped_label(domain, SEARCH_DOMAIN_WIDTH));
+            }
+            _ => detail.push('?'),
+        }
+    }
+    if domains.len() > SEARCH_DOMAINS_SHOWN {
+        let _ = write!(detail, " +{}", domains.len() - SEARCH_DOMAINS_SHOWN);
+    }
 }
 
 pub fn subagent_action(
@@ -496,5 +559,55 @@ mod tests {
             })
         );
         assert_eq!(plain_action_label(&READ, "[]"), None);
+    }
+
+    #[test]
+    fn provider_search_aliases_describe_their_query_and_domain_filters() {
+        for name in ["exa_search", "perplexity_search", "parallel_search"] {
+            assert!(is_provider_search_alias(name), "{name}");
+        }
+        for name in ["web_search", "search", "exa"] {
+            assert!(!is_provider_search_alias(name), "{name}");
+        }
+        let described = provider_search_description(
+            r#"{"query":"zig news","allowed_domains":["ziglang.org","github.com","a.io","b.io"],"blocked_domains":[1,"spam.test"]}"#,
+        );
+        let target = "zig news | allowed: ziglang.org, github.com, a.io +1 | blocked: ?, spam.test";
+        assert_eq!(described.title, format!("Searching {target}"));
+        assert_eq!(
+            described.label,
+            Some(ActionLabel {
+                active: "Searching",
+                completed: "Searched",
+                target: target.to_owned(),
+            })
+        );
+        assert_eq!(described.activity, ToolActivity::Read);
+        assert_eq!(described.effect, ToolEffect::ReadOnly);
+        for arguments in [
+            "{}",
+            "[]",
+            "not json",
+            r#"{"query":7,"allowed_domains":[]}"#,
+        ] {
+            assert_eq!(
+                provider_search_description(arguments).title,
+                "Searching web",
+                "{arguments}"
+            );
+        }
+        let long_query = "q".repeat(130);
+        let long_domain = "d".repeat(60);
+        let clipped = provider_search_description(&format!(
+            r#"{{"query":"{long_query}","blocked_domains":["{long_domain}"]}}"#
+        ));
+        assert_eq!(
+            clipped.title,
+            format!(
+                "Searching {}... | blocked: {}...",
+                "q".repeat(117),
+                "d".repeat(45)
+            )
+        );
     }
 }

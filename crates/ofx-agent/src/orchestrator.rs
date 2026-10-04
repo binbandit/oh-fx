@@ -1058,7 +1058,7 @@ impl Agent {
                 return Err(Stop::interrupted());
             }
             if provider_executed(&calls[next]) {
-                self.publish_provider_result(turn, &calls[next]);
+                self.publish_provider_result(turn, &calls[next], events);
                 next += 1;
                 continue;
             }
