@@ -12,6 +12,7 @@ mod codex_provider;
 mod context;
 mod file_mention_runtime;
 mod model_cache_runtime;
+mod modes;
 mod native;
 mod output_contracts;
 mod prompt_history_runtime;
@@ -31,4 +32,5 @@ pub use app_session_runtime::{
     open_store, recovered_turn, running_provider,
 };
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
+pub use modes::default_mode;
 pub use ofx_tools::WebFetchProgress;
