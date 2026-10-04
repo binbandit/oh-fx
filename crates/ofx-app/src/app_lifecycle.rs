@@ -38,6 +38,7 @@ use crate::herdr::{Herdr, HerdrObserver};
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
 use crate::skill_mention_runtime::SkillMentions;
+use crate::skills::Installations;
 use startup_resume::open_requested;
 
 mod startup_resume;
@@ -283,6 +284,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     };
     let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();
+    let installations = session.setup.skills().installations();
     let agent = agent_work(
         session.setup,
         (session.persistence, picking),
@@ -290,7 +292,14 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         runtime,
         lifecycle,
     );
-    host(options, sender, receiver, refreshes.as_deref(), agent)
+    host(
+        options,
+        sender,
+        receiver,
+        refreshes.as_deref(),
+        Some(&installations),
+        agent,
+    )
 }
 
 fn agent_work(
@@ -368,6 +377,7 @@ fn host(
     events: UiEventSender,
     receiver: UiEventReceiver,
     refreshes: Option<&DetachedRefreshes>,
+    installations: Option<&Installations>,
     work: impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static,
 ) -> Result<(), SessionError> {
     let (commands, worker_commands) = tokio::sync::mpsc::unbounded_channel();
@@ -383,7 +393,7 @@ fn host(
             })
         })
         .unwrap_or_else(|payload| panic::resume_unwind(payload));
-    worker.finish(refreshes, &panics)?;
+    worker.finish(refreshes, installations, &panics)?;
     Ok(result?)
 }
 
@@ -410,6 +420,7 @@ impl Worker {
     fn finish(
         self,
         refreshes: Option<&DetachedRefreshes>,
+        installations: Option<&Installations>,
         panics: &PanicCapture,
     ) -> Result<(), SessionError> {
         if let Some(refreshes) = refreshes {
@@ -421,7 +432,9 @@ impl Worker {
                     return Err(SessionError::AgentStopped(panics.take_worker_report()));
                 }
                 Err(RecvTimeoutError::Timeout)
-                    if refreshes.is_some_and(DetachedRefreshes::wait_for_running) => {}
+                    if installations.is_some_and(|installs| {
+                        installs.wait_for_running(WORKER_SHUTDOWN_GRACE)
+                    }) || refreshes.is_some_and(DetachedRefreshes::wait_for_running) => {}
                 Ok(()) | Err(RecvTimeoutError::Timeout) => return Ok(()),
             }
         }
