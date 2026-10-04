@@ -1,5 +1,6 @@
 use ofx_contract::UiCommand;
 
+use super::picker_state::{MODEL_PREFIX, is_bare_model_command};
 use super::{Shell, SlashCommandSpec, Submission, SubmissionState};
 use crate::output::compaction_activity::CompactionStatus;
 
@@ -102,6 +103,12 @@ impl Shell<'_> {
         let text = self.composer.expanded_text().into_owned();
         match classify(&text, &self.options.commands) {
             Submit::Empty => self.composer.clear(),
+            Submit::Command(command)
+                if command == MODEL_PREFIX.trim_end()
+                    && !is_bare_model_command(&text, text.len()) =>
+            {
+                self.open_model_menu();
+            }
             Submit::Command(command) => {
                 self.composer.clear();
                 self.record_command_history(&command);

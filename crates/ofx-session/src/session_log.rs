@@ -12,7 +12,7 @@ use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
-use ofx_contract::{HistoryCut, HistoryTurn, RestoredHistory, TurnEnd, TurnStop};
+use ofx_contract::{HistoryCut, HistoryTurn, ReasoningEffort, RestoredHistory, TurnEnd, TurnStop};
 use ofx_text::lowercase_hex;
 
 use crate::session::infer_conversation_language;
@@ -392,9 +392,17 @@ impl WritableSession {
         Ok(())
     }
 
-    pub fn select_model(&mut self, model: &str, fast_mode: bool) -> Result<(), SessionError> {
+    pub fn select_model(
+        &mut self,
+        model: &str,
+        effort: Option<&ReasoningEffort>,
+        fast_mode: bool,
+    ) -> Result<(), SessionError> {
         let mut preferences = self.metadata.preferences.clone();
         model.clone_into(&mut preferences.model);
+        if let Some(effort) = effort {
+            effort.clone_into(&mut preferences.effort);
+        }
         preferences.fast_mode = fast_mode;
         self.set_preferences(preferences, now_ms())
     }

@@ -48,9 +48,9 @@ note = "Skill token binding and separator ownership are implemented; allocation-
 
 [[file]]
 upstream = "src/core/input/composer_stash.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream ComposerView, capture, restore behavior."
+status = "ported"
+modules = ["crates/ofx-tui/src/composer/composer_stash.rs"]
+note = "The draft, its registered entities, edit history, vertical navigation and prompt-history position move out and back as upstream capture and restore move them."
 
 [[file]]
 upstream = "src/core/input/composer_text_replacement.zig"
@@ -138,8 +138,8 @@ note = "Registered paste expansion, length admission and placeholders exist; pro
 [[file]]
 upstream = "src/core/input/picker_state.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs", "crates/ofx-tui/src/shell/skills_menu_runtime.rs"]
-note = "File and skill picker routing exists in shell adapters; upstream shared inline suppression, model/effort/fast stages and provider/login stages are absent."
+modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs", "crates/ofx-tui/src/shell/skills_menu_runtime.rs", "crates/ofx-tui/src/shell/picker_state.rs", "crates/ofx-tui/src/shell/model_picker_runtime.rs"]
+note = "File and skill picker routing exist in shell adapters, and the model, effort and Fast stages of the inline model column with their dismissal; provider and login stages are absent."
 
 [[file]]
 upstream = "src/core/input/registered_entities.zig"
