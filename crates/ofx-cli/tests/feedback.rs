@@ -12,7 +12,7 @@ fn feedback_keeps_upstreams_position_category_and_argument_policy() {
     assert_eq!(commands[index].presentation_category.label(), "Product");
     assert_eq!(
         commands[index].completion_description,
-        "open the fx feedback form"
+        "open the oh-fx issue form"
     );
     assert!(SLASH_REGISTRY.parse_command("/feedback").is_some());
     assert!(SLASH_REGISTRY.parse_command("/feedback extra").is_none());

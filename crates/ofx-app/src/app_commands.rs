@@ -14,7 +14,6 @@ use ofx_workspace::{ChangeTracker, MAX_PATH_BYTES, UndoResult};
 
 use crate::app_agent_runtime::ControllerState;
 use crate::app_session_runtime::{Persistence, RenameError, validate_session_title};
-use crate::feedback_command::feedback_notice;
 use crate::mcp_commands::handle_mcp;
 use crate::session_commands::{handle_allowlist, handle_settings};
 use crate::skill_commands::{InstallRequest, handle_skills};
@@ -222,9 +221,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         }
         SlashKind::Copy => copy_last_reply(state),
         SlashKind::Ultrafast => ultrafast(state, payload),
-        SlashKind::Feedback => state.emit(UiEvent::Notice {
-            notice: feedback_notice(ofx_auth::open_url),
-        }),
+        SlashKind::Feedback => state.feedback(),
         SlashKind::Statusline => state.toggle_statusline(payload),
         SlashKind::Workspace => state.notice(
             NoticeTone::Error,

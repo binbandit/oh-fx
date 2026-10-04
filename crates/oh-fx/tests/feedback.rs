@@ -10,9 +10,22 @@ use serde_json::json;
 const URL: &str = "https://github.com/binbandit/oh-fx/issues/new";
 const WAIT: Duration = Duration::from_secs(15);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Launch {
+    Exit(i32),
+    Signal,
+    Held,
+}
+
 #[test]
-fn feedback_routes_to_the_existing_opener_and_reports_spawn_outcomes() {
-    for launch in [Some(0), Some(7), None] {
+fn feedback_routes_to_the_existing_opener_and_reports_launcher_outcomes() {
+    for launch in [
+        Some(Launch::Exit(0)),
+        Some(Launch::Exit(7)),
+        Some(Launch::Signal),
+        Some(Launch::Held),
+        None,
+    ] {
         let home = tempfile::tempdir().unwrap();
         let root = home.path().canonicalize().unwrap();
         let workspace = root.join("workspace");
@@ -22,20 +35,9 @@ fn feedback_routes_to_the_existing_opener_and_reports_spawn_outcomes() {
             fs::create_dir_all(path).unwrap();
         }
         let captured = root.join("opened-url");
-        if let Some(status) = launch {
-            let launcher = bin.join(if cfg!(target_os = "macos") {
-                "open"
-            } else {
-                "xdg-open"
-            });
-            fs::write(
-                &launcher,
-                format!(
-                    "#!/bin/sh\nprintf '%s' \"$1\" > \"$OH_FX_FEEDBACK_TEST_URL\"\nexit {status}\n"
-                ),
-            )
-            .unwrap();
-            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        let captured_pid = root.join("launcher-pid");
+        if let Some(launch) = launch {
+            install_launcher(&bin, launch);
         }
         let server = FakeServer::start([]);
         fs::write(
@@ -66,13 +68,23 @@ fn feedback_routes_to_the_existing_opener_and_reports_spawn_outcomes() {
             .env("TERM", "xterm-256color")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env("OH_FX_FEEDBACK_TEST_URL", &captured)
+            .env("OH_FX_FEEDBACK_TEST_PID", &captured_pid)
             .process_group(0);
         let mut session = PtySession::spawn(command, 24, 120).unwrap();
         session
             .wait_for(WAIT, |screen| screen.contains("Run /help for commands"))
             .unwrap();
         session.send(b"/feedback\r");
-        let notice = if launch.is_some() {
+        if launch == Some(Launch::Held) {
+            session.send(b"/version\r");
+            let screen = session
+                .wait_for(Duration::from_secs(1), |screen| {
+                    screen.contains(&format!("version: {}", ofx_upgrade::VERSION))
+                })
+                .unwrap();
+            assert!(!screen.contains(&format!("Opened {URL}.")), "{screen}");
+        }
+        let notice = if matches!(launch, Some(Launch::Exit(0) | Launch::Held)) {
             format!("Opened {URL}.")
         } else {
             format!("Could not open {URL}. Open it manually.")
@@ -87,6 +99,11 @@ fn feedback_routes_to_the_existing_opener_and_reports_spawn_outcomes() {
                 })
                 .unwrap();
         }
+        if launch == Some(Launch::Held) {
+            let pid = fs::read_to_string(&captured_pid).unwrap();
+            assert!(launcher_running(&pid));
+            session.wait_for(WAIT, |_| !launcher_running(&pid)).unwrap();
+        }
         session.send(b"/quit\r");
         assert!(session.wait_exit(WAIT).unwrap().success());
         if launch.is_some() {
@@ -96,4 +113,30 @@ fn feedback_routes_to_the_existing_opener_and_reports_spawn_outcomes() {
         }
         assert!(server.requests().is_empty());
     }
+}
+
+fn launcher_running(pid: &str) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", pid])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("check whether the launcher remains alive")
+        .success()
+}
+
+fn install_launcher(bin: &std::path::Path, launch: Launch) {
+    let launcher = bin.join(if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    });
+    let outcome = match launch {
+        Launch::Signal => "kill -TERM $$".to_owned(),
+        Launch::Held => "/bin/sleep 4\nexit 0".to_owned(),
+        Launch::Exit(status) => format!("exit {status}"),
+    };
+    fs::write(&launcher, format!("#!/bin/sh\nprintf '%s' \"$1\" > \"$OH_FX_FEEDBACK_TEST_URL\"\nprintf '%s' \"$$\" > \"$OH_FX_FEEDBACK_TEST_PID\"\n{outcome}\n")).expect("install the test launcher");
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700))
+        .expect("install the test launcher");
 }

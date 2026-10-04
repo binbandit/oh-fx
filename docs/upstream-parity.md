@@ -109,7 +109,7 @@ The `slack` command (`slack install`, `slack status`, and `slack refresh`) preda
 
 ## Feedback command
 
-`/feedback` is ported independently of the trace report. It keeps upstream's command order, Product category, no-payload routing and notice text with the issue-form URL substitution and existing opener spawn-result difference recorded in architecture. The trace ring, `/trace`, trace emissions and interactive tracing remain deferred; this slice does not complete OH-11 or its compactor trace rows.
+`/feedback` is ported independently of the trace report. It keeps upstream's command order, Product category, no-payload routing and notice text with the issue-form URL substitution and bounded launcher wait difference recorded in [differences/slash-commands.md](differences/slash-commands.md). The trace ring, `/trace`, trace emissions and interactive tracing remain deferred; this slice does not complete OH-11 or its compactor trace rows.
 
 ## Deferred areas
 

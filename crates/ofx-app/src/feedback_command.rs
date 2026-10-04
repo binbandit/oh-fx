@@ -1,8 +1,30 @@
-use ofx_contract::{Notice, NoticeTone};
+use std::sync::Arc;
+use std::thread;
+
+use ofx_contract::{Notice, NoticeTone, UiEvent};
+
+use crate::app_agent_runtime::Emit;
 
 const URL: &str = "https://github.com/binbandit/oh-fx/issues/new";
 
-pub(crate) fn feedback_notice(open: impl FnOnce(&str) -> bool) -> Notice {
+pub(crate) fn start_feedback(emit: &Emit) {
+    let worker_emit = Arc::clone(emit);
+    if thread::Builder::new()
+        .name("feedback".to_owned())
+        .spawn(move || {
+            worker_emit(UiEvent::Notice {
+                notice: feedback_notice(ofx_auth::open_url_bounded),
+            });
+        })
+        .is_err()
+    {
+        emit(UiEvent::Notice {
+            notice: feedback_notice(|_| false),
+        });
+    }
+}
+
+fn feedback_notice(open: impl FnOnce(&str) -> bool) -> Notice {
     if open(URL) {
         Notice::new(NoticeTone::Neutral, "", format!("Opened {URL}."))
     } else {

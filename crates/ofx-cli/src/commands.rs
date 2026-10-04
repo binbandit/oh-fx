@@ -638,7 +638,7 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
     SlashSpec::new(
         SlashKind::Feedback,
         "/feedback",
-        "open the fx feedback form",
+        "open the oh-fx issue form",
         SlashPresentationCategory::Product,
     ),
     SlashSpec::new(

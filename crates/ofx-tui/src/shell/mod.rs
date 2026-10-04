@@ -5,8 +5,6 @@ mod approval_amendment;
 mod approval_runtime;
 mod directory_completion_job;
 mod event_loop;
-#[cfg(test)]
-mod feedback_command_tests;
 mod held_prompt_runtime;
 pub(crate) mod help_menu;
 mod help_menu_runtime;
