@@ -241,8 +241,8 @@ note = "Prepared calls and permission traits exist; transport publication outcom
 [[file]]
 upstream = "src/core/agent/runtime/tool_presentation.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/tool_presentation.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Plain action/error labels and authoritative events exist; tracked provisional statuses, unmatched recovery settlement and grouped lifecycle IDs are absent."
+modules = ["crates/ofx-contract/src/tool_presentation.rs", "crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/provider_tools.rs"]
+note = "Plain action/error labels, authoritative events and the provider-search row lifecycle exist; tracked provisional statuses, unmatched recovery settlement and grouped lifecycle IDs are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/vision_contracts.zig"
