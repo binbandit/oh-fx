@@ -1,8 +1,6 @@
-use std::fs::File;
-
 use crate::session_error::SessionError;
-use crate::session_event::{ConversationEvent, ToolResultEvent, decode_conversation_frame};
-use crate::session_replay::{LineRead, LineReader};
+use crate::session_event::{ConversationEvent, ToolResultEvent};
+use crate::session_replay::{FrameReader, History};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SavedHistory {
@@ -112,19 +110,15 @@ impl ReplayScan {
 
     pub(crate) fn observe_range(
         &mut self,
-        file: &File,
+        history: History<'_>,
         start: u64,
         end: u64,
     ) -> Result<(), SessionError> {
-        let mut reader = LineReader::new(file, start, end)?;
-        loop {
-            let offset = reader.offset();
-            let LineRead::Line(line) = reader.next_line()? else {
-                return Ok(());
-            };
-            let envelope = decode_conversation_frame(&line)?;
-            self.observe(offset, envelope.seq, &envelope.event)?;
+        let mut frames = history.frames(start, end);
+        while let Some(frame) = frames.next_frame()? {
+            self.observe(frame.offset, frame.envelope.seq, &frame.envelope.event)?;
         }
+        Ok(())
     }
 
     pub(crate) fn rewind(&mut self, last_seq: u64, turn_open: bool) {
@@ -134,7 +128,11 @@ impl ReplayScan {
         }
     }
 
-    pub(crate) fn finish(&self, file: &File, end: u64) -> Result<ReplayWindow, SessionError> {
+    pub(crate) fn finish(
+        &self,
+        history: History<'_>,
+        end: u64,
+    ) -> Result<ReplayWindow, SessionError> {
         let mut window = self.window;
         if window.checkpoint_offset.is_none() {
             return Ok(window);
@@ -142,37 +140,32 @@ impl ReplayScan {
         window.offset = 0;
         window.active_user_offset = None;
         window.prior_turn_count = 0;
-        let mut reader = LineReader::new(file, 0, end)?;
-        loop {
-            let offset = reader.offset();
-            let LineRead::Line(line) = reader.next_line()? else {
-                break;
-            };
-            let envelope = decode_conversation_frame(&line)?;
-            if envelope.seq > window.coverage {
+        let mut frames = history.frames(0, end);
+        while let Some(frame) = frames.next_frame()? {
+            if frame.envelope.seq > window.coverage {
                 break;
             }
-            match envelope.event {
-                ConversationEvent::User(_) => window.active_user_offset = Some(offset),
+            match frame.envelope.event {
+                ConversationEvent::User(_) => window.active_user_offset = Some(frame.offset),
                 ConversationEvent::TurnCompleted(_) | ConversationEvent::Interrupted(_) => {
                     window.active_user_offset = None;
                     window.prior_turn_count += 1;
                 }
                 _ => {}
             }
-            window.offset = reader.offset();
+            window.offset = frames.offset();
         }
         Ok(window)
     }
 }
 
 pub(crate) fn replay_history(
-    file: &File,
+    history: History<'_>,
     end: u64,
     window: &ReplayWindow,
 ) -> Result<SavedHistory, SessionError> {
     let compacted = match window.checkpoint_offset {
-        Some(offset) => match read_event_at(file, offset, end)? {
+        Some(offset) => match history.event_at(offset, end)? {
             ConversationEvent::ContextCheckpoint(checkpoint) => Some(CompactedHistory {
                 summary: checkpoint.summary,
                 removed_turn_count: window.prior_turn_count,
@@ -183,33 +176,34 @@ pub(crate) fn replay_history(
         None => None,
     };
     let current = match window.active_user_offset {
-        Some(offset) => match read_event_at(file, offset, end)? {
+        Some(offset) => match history.event_at(offset, end)? {
             user @ ConversationEvent::User(_) => Some(vec![user]),
             _ => return Err(SessionError::InvalidConversationFrame),
         },
         None => None,
     };
     let mut turns = Vec::new();
-    let reader = LineReader::new(file, window.offset, end)?;
-    group_turns(reader, current, |turn| turns.push(turn))?;
+    group_turns(history.frames(window.offset, end), current, |turn| {
+        turns.push(turn);
+    })?;
     Ok(SavedHistory { compacted, turns })
 }
 
 pub(crate) fn visit_turns(
-    file: &File,
+    history: History<'_>,
     end: u64,
     visit: impl FnMut(SavedTurn),
 ) -> Result<(), SessionError> {
-    group_turns(LineReader::new(file, 0, end)?, None, visit)
+    group_turns(history.frames(0, end), None, visit)
 }
 
 fn group_turns(
-    mut reader: LineReader<'_>,
+    mut frames: FrameReader<'_>,
     mut current: Option<Vec<ConversationEvent>>,
     mut visit: impl FnMut(SavedTurn),
 ) -> Result<(), SessionError> {
-    while let LineRead::Line(line) = reader.next_line()? {
-        let event = decode_conversation_frame(&line)?.event;
+    while let Some(frame) = frames.next_frame()? {
+        let event = frame.envelope.event;
         match event {
             ConversationEvent::User(_) => {
                 if current.replace(vec![event]).is_some() {
@@ -251,11 +245,4 @@ fn answers_a_replayed_call(events: &[ConversationEvent], result: &ToolResultEven
         matches!(event, ConversationEvent::ToolCall(call)
             if call.call_id == result.call_id && call.tool_name == result.tool_name)
     })
-}
-
-fn read_event_at(file: &File, offset: u64, end: u64) -> Result<ConversationEvent, SessionError> {
-    match LineReader::new(file, offset, end)?.next_line()? {
-        LineRead::Line(line) => Ok(decode_conversation_frame(&line)?.event),
-        LineRead::End | LineRead::Torn => Err(SessionError::InvalidConversationFrame),
-    }
 }
