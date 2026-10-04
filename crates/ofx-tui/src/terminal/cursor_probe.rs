@@ -118,6 +118,13 @@ impl TaggedCursorProbe {
         self.mode != Mode::Idle
     }
 
+    pub(crate) fn discarding_late_reply(&self) -> bool {
+        matches!(
+            self.mode,
+            Mode::DiscardingLate | Mode::DiscardingLateUntilPasteEnds
+        )
+    }
+
     pub(crate) fn deadline_ms(&self) -> Option<i64> {
         matches!(self.mode, Mode::Waiting | Mode::DiscardingLate).then_some(self.deadline_ms)
     }

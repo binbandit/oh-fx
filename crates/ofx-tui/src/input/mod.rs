@@ -261,7 +261,7 @@ impl TerminalInput {
         match entry {
             Entry::Fresh => match self.owner() {
                 Owner::ThemeMonitor => self.feed_theme_monitor(byte, context),
-                Owner::Paste => self.paste.consume_byte(byte),
+                Owner::Paste => self.capture_paste_byte(byte),
                 Owner::Input if self.theme_monitor.enabled => {
                     self.feed_theme_monitor(byte, context);
                 }
@@ -291,7 +291,7 @@ impl TerminalInput {
 
     fn after_theme_monitor(&mut self, byte: u8, context: InputContext) {
         if self.paste.active() {
-            self.paste.consume_byte(byte);
+            self.capture_paste_byte(byte);
         } else if self.cursor_probe.intercepts_input() {
             self.feed_cursor_probe(byte, context.now_ms);
         } else if let Some(row) = self.native_clear_row(byte, context) {
@@ -315,6 +315,24 @@ impl TerminalInput {
         self.released.push(&[byte]);
         self.cursor_probe.begin(now_ms);
         self.events.push_back(InputEvent::NativeClearProbe);
+    }
+
+    fn capture_paste_byte(&mut self, byte: u8) {
+        if !self.cursor_probe.discarding_late_reply() {
+            self.paste.consume_byte(byte);
+            return;
+        }
+        match self.cursor_probe.feed(byte) {
+            ProbeFeed::Pending => {}
+            ProbeFeed::Position(_) | ProbeFeed::LateResponse => {
+                self.native_clear.finish_late_response();
+            }
+            ProbeFeed::Forward(forwarded) => {
+                for byte in forwarded.as_slice() {
+                    self.paste.consume_byte(*byte);
+                }
+            }
+        }
     }
 
     fn feed_cursor_probe(&mut self, byte: u8, now_ms: i64) {

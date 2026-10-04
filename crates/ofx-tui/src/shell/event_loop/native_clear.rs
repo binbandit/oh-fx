@@ -110,3 +110,63 @@ fn a_resize_during_the_probe_settles_after_the_reply() {
     assert!(test.shell.pending_resize.is_none());
     assert!(test.screen().contains("┃ a"));
 }
+
+#[test]
+fn a_reply_moved_by_a_resize_during_the_probe_keeps_the_transcript() {
+    let mut test = probing();
+    for index in 0..30 {
+        test.shell.input_notice(&format!("notice {index}"));
+    }
+    test.shell.mark_dirty();
+    test.screen();
+    let row = cursor_row(&test);
+    assert!(row > 10, "{row}");
+    test.type_bytes(b"a");
+    test.step();
+    assert_eq!(test.written(), TAGGED_CURSOR_QUERY);
+    test.signal_resize(10, 80);
+    test.type_bytes(&reply(10));
+    test.step();
+    test.advance(150);
+    test.step();
+    assert!(test.shell.pending_resize.is_none());
+    test.shell.transcript.restart(80);
+    let replayed: String = test
+        .shell
+        .transcript
+        .take_new_rows(&test.shell.theme)
+        .iter()
+        .map(|row| row.text() + "\n")
+        .collect();
+    assert!(replayed.contains("earlier output"), "{replayed}");
+    assert!(replayed.contains("notice 29"), "{replayed}");
+    assert_eq!(test.shell.composer.text(), "a");
+}
+
+fn pasting_after_a_timed_out_probe() -> TestShell {
+    let mut test = probing();
+    test.type_bytes(b"a\x1b[200~");
+    test.step();
+    assert_eq!(test.written(), TAGGED_CURSOR_QUERY);
+    test.advance(100);
+    test.step();
+    test
+}
+
+#[test]
+fn a_late_reply_right_after_a_paste_ends_leaves_the_paste_whole() {
+    let mut test = pasting_after_a_timed_out_probe();
+    test.type_bytes(b"text\x1b[201~\x1b[5;1R\x1b[5;2R");
+    test.step();
+    test.settle();
+    assert_eq!(test.shell.composer.text(), "atext");
+}
+
+#[test]
+fn a_late_reply_inside_a_paste_stays_out_of_the_pasted_text() {
+    let mut test = pasting_after_a_timed_out_probe();
+    test.type_bytes(b"left\x1b[5;1R\x1b[5;2Rright\x1b[201~");
+    test.step();
+    test.settle();
+    assert_eq!(test.shell.composer.text(), "aleftright");
+}

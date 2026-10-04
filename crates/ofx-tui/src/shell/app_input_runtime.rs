@@ -69,7 +69,9 @@ impl Shell<'_> {
                 return Ok(());
             }
             InputEvent::NativeClearDetected => {
-                self.start_fresh_transcript(FreshScreen::Erase);
+                if !self.resized_since_frame() {
+                    self.start_fresh_transcript(FreshScreen::Erase);
+                }
                 return Ok(());
             }
             _ => {}

@@ -935,6 +935,13 @@ impl<'a> Shell<'a> {
         self.transcript.push(entry);
     }
 
+    fn resized_since_frame(&self) -> bool {
+        self.pending_resize.is_some()
+            || self.terminal.query_layout(FOOTER_ROWS).is_ok_and(|layout| {
+                layout.rows != self.layout.rows || layout.cols != self.layout.cols
+            })
+    }
+
     fn native_clear_row(&self) -> Option<u16> {
         let blocked = self.approval.is_some()
             || self.question.is_some()
