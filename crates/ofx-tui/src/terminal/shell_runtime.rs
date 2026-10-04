@@ -291,6 +291,10 @@ impl Terminal {
         }
     }
 
+    pub(crate) fn fatal_signal_wakeup(&self) -> Option<BorrowedFd<'_>> {
+        self.write_abort.as_ref().map(AsFd::as_fd)
+    }
+
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
         let abort = self.write_abort.as_ref().map(AsFd::as_fd);
         write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
