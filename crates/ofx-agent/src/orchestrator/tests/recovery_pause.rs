@@ -84,7 +84,7 @@ async fn pausing_a_connectivity_wait_ends_the_turn_with_a_paused_status() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_paused_turn_is_saved_as_failed_and_stays_in_the_history() {
+async fn a_paused_turn_keeps_its_checkpoint_and_leaves_the_log_and_the_history() {
     let provider = FakeProvider::new(vec![lost(), text_reply("next")]);
     let (log, entries) = MemoryLog::shared();
     let shared: Arc<FakeProvider> = Arc::clone(&provider);
@@ -95,19 +95,12 @@ async fn a_paused_turn_is_saved_as_failed_and_stays_in_the_history() {
         [
             checkpoint(RecoveryProgress::Waiting(CONNECTIVITY), 1),
             checkpoint(RecoveryProgress::Paused, 1),
-            Logged::Turn {
-                user: "go".to_owned(),
-                steps: Vec::new(),
-                steering: Vec::new(),
-                files: Vec::new(),
-                end: r#"Failed """#.to_owned(),
-            }
         ]
     );
     run(&mut agent, "again").await;
     assert_eq!(
         provider.requests()[1].messages,
-        vec![ChatMessage::user("go"), ChatMessage::user("again")]
+        vec![ChatMessage::user("again")]
     );
 }
 
@@ -130,7 +123,7 @@ async fn pausing_a_retried_request_in_flight_counts_it() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_paused_turn_keeps_the_text_its_retried_request_streamed() {
+async fn a_paused_turn_leaves_the_history_with_the_text_its_retried_request_streamed() {
     for saved in [true, false] {
         let provider = FakeProvider::new(vec![
             lost(),
@@ -154,28 +147,13 @@ async fn a_paused_turn_keeps_the_text_its_retried_request_streamed() {
                 [
                     checkpoint(RecoveryProgress::Waiting(CONNECTIVITY), 1),
                     checkpoint(RecoveryProgress::Paused, 2),
-                    Logged::Turn {
-                        user: "go".to_owned(),
-                        steps: Vec::new(),
-                        steering: Vec::new(),
-                        files: Vec::new(),
-                        end: r#"Failed "Half an answer""#.to_owned(),
-                    }
                 ]
             );
         }
         run(&mut agent, "again").await;
         assert_eq!(
             provider.requests()[2].messages,
-            vec![
-                ChatMessage::user("go"),
-                ChatMessage::Assistant {
-                    content: Some("Half an answer".to_owned()),
-                    tool_calls: Vec::new(),
-                    provider_replay: None,
-                },
-                ChatMessage::user("again"),
-            ],
+            vec![ChatMessage::user("again")],
             "{saved}"
         );
     }

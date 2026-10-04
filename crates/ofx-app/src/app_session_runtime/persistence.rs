@@ -142,7 +142,12 @@ impl Persistence {
                 ),
             ));
         }
-        if !self.remember_fresh || live.session().last_seq() == 0 {
+        self.remember_durable_work()
+    }
+
+    pub(crate) fn remember_durable_work(&mut self) -> Option<Notice> {
+        let live = self.live.as_ref()?;
+        if !self.remember_fresh || !live.session().has_durable_work() {
             return None;
         }
         self.remember_fresh = false;
