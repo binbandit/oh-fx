@@ -2648,6 +2648,7 @@ mod recovery;
 mod recovery_pause;
 mod response_language;
 mod reviews;
+mod shell_retries;
 mod skills;
 mod steering;
 mod turn_log;
