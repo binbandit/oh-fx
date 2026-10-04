@@ -55,7 +55,7 @@ impl Controller {
         let route = match self
             .state
             .setup
-            .route_for(&switch, &CancellationToken::new())
+            .route_for(&switch, None, &CancellationToken::new())
             .await
         {
             Ok(route) => route,
@@ -89,14 +89,20 @@ impl Controller {
         else {
             return false;
         };
+        let model = self.state.model.clone();
         match self
             .state
             .setup
-            .route_for(&switch, &CancellationToken::new())
+            .route_for(&switch, Some(&model), &CancellationToken::new())
             .await
         {
             Ok(route) => {
                 self.install(&ProviderId::Codex, route);
+                if self.state.model != model {
+                    self.state.emit(UiEvent::ModelSelected {
+                        model: self.state.model.clone(),
+                    });
+                }
                 if !self.bind_session() {
                     self.state
                         .notice(NoticeTone::Warning, PROVIDER_TOPIC, LOGIN_UNSAVED);
