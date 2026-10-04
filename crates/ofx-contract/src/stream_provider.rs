@@ -165,6 +165,7 @@ mod tests {
             source: ReplaySource {
                 provider: "codex".to_owned(),
                 model: "model".to_owned(),
+                binding: None,
             },
             parts_json: "[]".to_owned(),
         };

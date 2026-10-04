@@ -79,6 +79,7 @@ impl SavedReplay {
             source: ReplaySource {
                 provider: self.source.provider.id().label().to_owned(),
                 model: self.source.model,
+                binding: self.source.provider.binding(),
             },
             parts_json: self.parts_json,
         }

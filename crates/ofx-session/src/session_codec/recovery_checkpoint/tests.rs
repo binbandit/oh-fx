@@ -1,4 +1,5 @@
-use ofx_contract::ReplaySource;
+use ofx_config::ProviderId;
+use ofx_contract::{ChatMessage, ReplaySource};
 
 use super::*;
 use crate::session_event::FileEvidenceAction;
@@ -12,7 +13,6 @@ fn checkpoint() -> RecoveryCheckpoint {
         execution: SavedExecution {
             tool_steps: vec![SavedToolStep {
                 assistant: Some("Reading.".to_owned()),
-                durable_replay: None,
                 provider_replay: None,
                 tool_calls: vec![ToolCall::new("call_1", "read_file", "{\"path\":\"a.rs\"}")],
                 tool_results: vec![SavedToolResult {
@@ -42,6 +42,18 @@ fn checkpoint() -> RecoveryCheckpoint {
                 assistant_prefix: None,
                 after_tool_step_count: 1,
             }],
+        },
+        strategy: RecoveryStrategy::ContinueAfterTool,
+        route: RecoveryRoute {
+            provider: SavedProvider::new(ProviderId::Codex, None).unwrap(),
+            model: "gpt-5.4".to_owned(),
+            credential: Some(SavedCredential {
+                source: "chatgpt_subscription",
+                identity: Some([0xab; 32]),
+            }),
+            requested_fast_mode: false,
+            fast_mode: true,
+            may_have_sent: true,
         },
     }
 }
@@ -137,6 +149,7 @@ fn durable_bytes_steering_prefixes_renames_and_replays_read_back() {
             source: ReplaySource {
                 provider: "codex".to_owned(),
                 model: "gpt-5.4".to_owned(),
+                binding: None,
             },
             parts_json: "[]".to_owned(),
         })
@@ -186,6 +199,14 @@ fn checkpoints_upstream_rejects_or_oh_fx_cannot_hold_are_invalid() {
     let base = upstream_checkpoint();
     let cases = [
         base.replace("\"version\":2", "\"version\":1"),
+        base.replace(
+            "\"tool_results\":[{\"tool_call_id\":\"call_1\"",
+            "\"tool_results\":[{\"tool_call_id\":\"call_9\"",
+        ),
+        base.replace(
+            "\"tool_results\":[{\"tool_call_id\":\"call_1\",\"tool_name\":\"read_file\"",
+            "\"tool_results\":[{\"tool_call_id\":\"call_1\",\"tool_name\":\"write_file\"",
+        ),
         base.replace("\"version\":2", "\"version\":3"),
         base.replace("\"images\":[]", "\"images\":[{\"id\":1}]"),
         base.replace("\"images\":[]", "\"images\":[],\"work_id\":\"w\""),
@@ -274,6 +295,32 @@ fn checkpoints_upstream_rejects_or_oh_fx_cannot_hold_are_invalid() {
 }
 
 #[test]
+fn a_repeated_key_invalidates_the_recovery_file_even_for_an_earlier_sequence() {
+    let base = upstream_checkpoint();
+    let repeated_inside = |field: &str| {
+        let text = base.replacen(field, &format!("{field}{field}"), 1);
+        format!("{{\"conversation_seq\":1,\"checkpoint\":{text}}}\n")
+    };
+    let files = [
+        format!("{{\"conversation_seq\":1,\"conversation_seq\":1,\"checkpoint\":{base}}}\n"),
+        format!("{{\"conversation_seq\":1,\"checkpoint\":{base},\"checkpoint\":{base}}}\n"),
+        format!("{{\"conversation_seq\":1,\"conversation_seq\":1,\"checkpoint\":{base}"),
+        repeated_inside("\"turn_id\":7,"),
+        repeated_inside("\"output_bytes\":12,"),
+        repeated_inside("\"credential_source\":\"chatgpt_subscription\","),
+    ];
+    for file in files {
+        for current in [1, 2] {
+            assert_eq!(
+                decode_recovery_file(file.as_bytes(), current),
+                Err(SessionError::InvalidRecoveryCheckpoint),
+                "{file:.300}"
+            );
+        }
+    }
+}
+
+#[test]
 fn spilled_outputs_restore_from_the_result_store_or_say_they_are_unavailable() {
     let root = tempfile::tempdir().unwrap();
     let dir = PrivateDir::open_or_create(&root.path().join("session")).unwrap();
@@ -305,4 +352,157 @@ fn spilled_outputs_restore_from_the_result_store_or_say_they_are_unavailable() {
         format_stored_result_output(&handle, "fn main", 12)
     );
     assert_eq!(output(&upstream_checkpoint()), "fn main() {}");
+}
+
+const CONFIGURED_IDENTITY: &str =
+    "40122b758656199048961e6e8369383c25ebcdeddced75b64ad736e527014da8";
+const ACCOUNT_IDENTITY: &str = "0e5c498c1df280148a53f73b4722f0a5b602ca6ea599ca03eea8aad6a783ee39";
+
+fn with_credential(
+    source: &str,
+    identity: &str,
+    consumed: u64,
+    outstanding: bool,
+) -> RecoveryCheckpoint {
+    decoded(
+        &upstream_checkpoint()
+            .replace("chatgpt_subscription", source)
+            .replace(&format!("\"{IDENTITY}\""), identity)
+            .replace(
+                "\"consumed_provider_attempts\":1",
+                &format!("\"consumed_provider_attempts\":{consumed}"),
+            )
+            .replace(
+                "\"outstanding_reservation\":false",
+                &format!("\"outstanding_reservation\":{outstanding}"),
+            ),
+    )
+}
+
+#[test]
+fn a_possibly_sent_request_continues_only_under_the_credential_that_sent_it() {
+    let configured = with_credential(
+        "configured",
+        &format!("\"{CONFIGURED_IDENTITY}\""),
+        1,
+        false,
+    );
+    assert!(configured.authorizes(CredentialAuthority::Configured));
+    assert!(
+        !configured.authorizes(CredentialAuthority::ChatgptSubscription {
+            account_id: "acct_1"
+        })
+    );
+    let account = with_credential(
+        "chatgpt_subscription",
+        &format!("\"{ACCOUNT_IDENTITY}\""),
+        0,
+        true,
+    );
+    assert!(
+        account.authorizes(CredentialAuthority::ChatgptSubscription {
+            account_id: "acct_1"
+        })
+    );
+    for other in ["acct_2", ""] {
+        assert!(
+            !account.authorizes(CredentialAuthority::ChatgptSubscription { account_id: other })
+        );
+    }
+    assert!(!account.authorizes(CredentialAuthority::Configured));
+    let unidentified = with_credential("configured", "null", 1, false);
+    assert!(!unidentified.authorizes(CredentialAuthority::Configured));
+    let unsent = with_credential("configured", "null", 0, false);
+    assert!(unsent.authorizes(CredentialAuthority::ChatgptSubscription {
+        account_id: "acct_9"
+    }));
+}
+
+#[test]
+fn the_recovery_strategy_follows_the_saved_tool_state_and_cause() {
+    let base = upstream_checkpoint();
+    let cases = [
+        (
+            "response_interrupted",
+            "confirmed",
+            "Looking at",
+            RecoveryStrategy::ContinueAfterTool,
+        ),
+        (
+            "response_interrupted",
+            "proven_unexecuted",
+            "",
+            RecoveryStrategy::RegenerateTool,
+        ),
+        (
+            "response_interrupted",
+            "uncertain",
+            "",
+            RecoveryStrategy::ReconcileTool,
+        ),
+        (
+            "response_interrupted",
+            "none",
+            "Looking at",
+            RecoveryStrategy::ContinueResponse,
+        ),
+        ("rate_limited", "none", "", RecoveryStrategy::RetryRequest),
+        (
+            "request_limit_reached",
+            "uncertain",
+            "Looking at",
+            RecoveryStrategy::RetryRequest,
+        ),
+    ];
+    for (cause, tool_state, partial, expected) in cases {
+        let text = base
+            .replace("response_interrupted", cause)
+            .replace(
+                "\"tool_state\":\"confirmed\"",
+                &format!("\"tool_state\":\"{tool_state}\""),
+            )
+            .replace(
+                "\"assistant_source\":\"Looking at\"",
+                &format!("\"assistant_source\":\"{partial}\""),
+            );
+        assert_eq!(
+            decoded(&text).strategy,
+            expected,
+            "{cause} {tool_state} {partial:?}"
+        );
+    }
+}
+
+#[test]
+fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let continued = checkpoint().into_continuation(&codex, "gpt-5.4", false);
+    assert!(continued.fast_mode);
+    assert_eq!(continued.prompt, "fix the build");
+    assert_eq!(continued.strategy, RecoveryStrategy::ContinueAfterTool);
+    assert_eq!(
+        continued.messages[0],
+        ChatMessage::Assistant {
+            content: Some("Reading.".to_owned()),
+            tool_calls: checkpoint().execution.tool_steps[0].tool_calls.clone(),
+            provider_replay: None,
+        }
+    );
+    assert_eq!(continued.messages.len(), 3);
+    assert!(
+        !checkpoint()
+            .into_continuation(&codex, "gpt-5.5", false)
+            .fast_mode
+    );
+    assert!(
+        checkpoint()
+            .into_continuation(&codex, "gpt-5.4", true)
+            .fast_mode
+    );
+    let gateway = SavedProvider::new(ProviderId::Gateway, None).unwrap();
+    assert!(
+        !checkpoint()
+            .into_continuation(&gateway, "gpt-5.4", false)
+            .fast_mode
+    );
 }

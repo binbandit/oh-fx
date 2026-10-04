@@ -18,7 +18,6 @@ pub(crate) struct TurnArtifacts<'a> {
     pub(crate) dir: &'a PrivateDir,
     pub(crate) provider: &'a SavedProvider,
     pub(crate) timestamp_ms: i64,
-    pub(crate) saved_replays: &'a [Option<SavedReplay>],
 }
 
 pub(crate) fn turn_events(
@@ -48,7 +47,7 @@ pub(crate) fn turn_events(
             steering_events(entry, &mut events);
         }
         let follows_standalone = index > 0 && steps[index - 1].tool_calls.is_empty();
-        step_events(artifacts, step, position, follows_standalone, &mut events)?;
+        step_events(artifacts, step, follows_standalone, &mut events)?;
     }
     for entry in steering {
         steering_events(entry, &mut events);
@@ -103,19 +102,15 @@ fn steering_events(steering: &HistorySteering<'_>, events: &mut Vec<Conversation
 fn step_events(
     artifacts: &TurnArtifacts<'_>,
     step: &HistoryStep<'_>,
-    position: usize,
     follows_standalone: bool,
     events: &mut Vec<ConversationEvent>,
 ) -> Result<(), SessionError> {
     if !step.assistant.is_empty() || step.provider_replay.is_some() || follows_standalone {
         events.push(ConversationEvent::Assistant(AssistantEvent {
             text: step.assistant.to_owned(),
-            provider_replay: match artifacts.saved_replays.get(position) {
-                Some(saved) => saved.clone(),
-                None => step
-                    .provider_replay
-                    .and_then(|replay| saved_replay(replay, artifacts.provider)),
-            },
+            provider_replay: step
+                .provider_replay
+                .and_then(|replay| saved_replay(replay, artifacts.provider)),
             standalone_response: step.tool_calls.is_empty(),
         }));
     }
@@ -152,10 +147,10 @@ fn step_events(
 
 fn saved_replay(replay: &ProviderReplay, running: &SavedProvider) -> Option<SavedReplay> {
     let id = ProviderId::parse(&replay.source.provider)?;
-    let provider = if id == *running.id() {
-        running.clone()
-    } else {
-        SavedProvider::new(id, None)?
+    let provider = match replay.source.binding {
+        Some(binding) => SavedProvider::new(id, Some(binding))?,
+        None if id == *running.id() => running.clone(),
+        None => SavedProvider::new(id, None)?,
     };
     Some(SavedReplay {
         source: SavedReplaySource {

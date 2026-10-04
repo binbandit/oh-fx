@@ -33,6 +33,7 @@ use ofx_mcp::{
     load_native_configs, profile_config_path,
 };
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
+use ofx_session::CredentialAuthority;
 use ofx_tools::WebFetchProgress;
 use ofx_workspace::ChangeTracker;
 use tokio_util::sync::CancellationToken;
@@ -142,6 +143,7 @@ pub struct AgentSetup {
     capabilities: Option<Arc<dyn CapabilityResolver>>,
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
+    account_id: Option<String>,
     tools: Vec<Arc<dyn Tool>>,
     delegation: Delegation,
     mcp: Option<Arc<McpRuntime>>,
@@ -172,6 +174,7 @@ struct Route {
     model: String,
     configured_model: Option<String>,
     source: CredentialSource,
+    account_id: Option<String>,
     uses_tls: bool,
 }
 
@@ -330,6 +333,7 @@ impl Profile {
             capabilities: route.capabilities,
             connection: route.connection,
             source: route.source,
+            account_id: route.account_id,
             tools,
             delegation: Delegation::new(children),
             mcp,
@@ -431,6 +435,7 @@ impl Profile {
             model: model.map_err(ConnectError::InvalidModel)?,
             configured_model,
             source: CredentialSource::Configured,
+            account_id: None,
             uses_tls,
         })
     }
@@ -467,6 +472,7 @@ impl Profile {
             model,
             configured_model,
             source: CredentialSource::Codex,
+            account_id: Some(subscription.account_id),
             uses_tls,
         })
     }
@@ -576,6 +582,15 @@ impl AgentSetup {
 
     pub fn source(&self) -> CredentialSource {
         self.source
+    }
+
+    pub(crate) fn credential_authority(&self) -> CredentialAuthority<'_> {
+        match self.source {
+            CredentialSource::Configured => CredentialAuthority::Configured,
+            CredentialSource::Codex => CredentialAuthority::ChatgptSubscription {
+                account_id: self.account_id.as_deref().unwrap_or_default(),
+            },
+        }
     }
 
     pub fn provider(&self) -> ProviderId {

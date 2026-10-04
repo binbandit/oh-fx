@@ -93,6 +93,7 @@ fn replay(provider: &str, parts: &str) -> ProviderReplay {
         source: ReplaySource {
             provider: provider.to_owned(),
             model: "gpt-5.4".to_owned(),
+            binding: None,
         },
         parts_json: parts.to_owned(),
     }
@@ -668,12 +669,15 @@ fn replays_are_saved_only_with_a_provider_identity_that_reads_back() {
     assert_eq!(saved(4), Value::Null);
     assert_eq!(saved(7)["source"]["provider"], "codex");
     let restored = fixture.resumed();
+    let mut bound = own.clone();
+    bound.source.binding = Some([7; 32]);
+    assert!(bound.matches(&own.source));
     assert_eq!(
         restored.messages[1],
         ChatMessage::Assistant {
             content: Some("a".to_owned()),
             tool_calls: Vec::new(),
-            provider_replay: Some(own),
+            provider_replay: Some(bound),
         }
     );
 }
