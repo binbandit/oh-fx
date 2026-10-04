@@ -202,6 +202,12 @@ impl ChildAgents for ChildFactory {
     fn root_user_context(&self, requests: &RootUserRequests) -> String {
         canonical_root_user_context(requests)
     }
+
+    fn approval_feedback(&self, turn_id: Option<TurnId>, text: String) {
+        if let Some(approvals) = &self.approvals {
+            approvals.child_feedback(turn_id, text);
+        }
+    }
 }
 
 #[cfg(test)]
