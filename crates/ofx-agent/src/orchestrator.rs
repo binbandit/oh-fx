@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
-use crate::execution_memory::{RawOutput, steering_text};
+use crate::execution_memory::{EarlierEvidence, RawOutput, steering_text};
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, recovery_cause,
 };
@@ -192,6 +192,7 @@ struct Turn {
     fast_notice_shown: bool,
     compaction: TurnCompaction,
     raw_outputs: Vec<RawOutput>,
+    earlier_files: EarlierEvidence,
     reviews: TurnReviews,
     language: TurnLanguage,
     recovery: Option<RecoveryStrategy>,
@@ -466,6 +467,7 @@ impl Agent {
             fast_notice_shown: false,
             compaction: TurnCompaction::default(),
             raw_outputs: Vec::new(),
+            earlier_files: EarlierEvidence::default(),
             reviews: TurnReviews::default(),
             language: self.turn_language(prompt),
             recovery: None,
@@ -500,6 +502,14 @@ impl Agent {
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {
+            turn.earlier_files = EarlierEvidence::recovered(
+                recovered.files,
+                recovered
+                    .messages
+                    .iter()
+                    .filter(|message| matches!(message, ChatMessage::Tool { .. }))
+                    .count(),
+            );
             self.history.extend(recovered.messages);
             turn.fast_mode = recovered.fast_mode;
             turn.recovery = Some(recovered.strategy);
@@ -539,10 +549,7 @@ impl Agent {
                 (TurnOutcome::Failed, String::new(), Some(failure), ending)
             }
         };
-        let recorded = self.record_turn(prompt, &turn, ending);
-        self.settle_steering(turn.start);
-        self.note_recorded(&turn, ending, recorded.is_ok());
-        if let Err(error) = recorded
+        if let Err(error) = self.save_turn(prompt, &turn, ending)
             && failure.is_none()
         {
             failure = Some(TurnFailure::Persistence(error));

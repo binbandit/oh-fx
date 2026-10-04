@@ -525,6 +525,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                 assistant_prefix: "",
                 after_tool_step_count: 1,
             }],
+            files: &[],
             end: TurnEnd::Replied {
                 text: "",
                 provider_replay: None,
