@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 
 use ofx_contract::{DynamicTools, Tool};
+use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -16,7 +17,7 @@ use crate::server_lifecycle::{Lifecycle, Server};
 use crate::server_transport::ConnectOptions;
 use crate::server_views::{health_failure, snapshot_server};
 use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
-use crate::timing::spawn;
+use crate::timing::{spawn, spawn_on};
 use crate::tool_mcp_registry::{SchemaLimits, publish_tools};
 use crate::tool_names::ToolNames;
 use crate::transport::ShutdownMode;
@@ -220,6 +221,10 @@ impl McpRuntime {
             desired.push(Arc::clone(&server));
             fresh.push(server);
         }
+        let mut unpublished = Unpublished {
+            servers: &fresh,
+            armed: true,
+        };
         let starting = Settling::all(
             fresh
                 .iter()
@@ -244,6 +249,7 @@ impl McpRuntime {
             return Err(ReloadCancelled);
         }
         let previous = std::mem::replace(&mut *lock(&self.servers), desired.clone());
+        unpublished.armed = false;
         *lock(&self.workspace_diagnostics) = candidate.workspace_diagnostics;
         self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         let removed: Vec<Arc<Server>> = previous
@@ -329,6 +335,28 @@ fn published_outcome(snapshot: &Snapshot) -> ReloadOutcome {
             .map(|server| server.configured_name.clone())
             .collect(),
         healthy: health::startup_decision(&snapshot.servers) == Health::Ready,
+    }
+}
+
+struct Unpublished<'a> {
+    servers: &'a [Arc<Server>],
+    armed: bool,
+}
+
+impl Drop for Unpublished<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        for server in self.servers {
+            if let Some(client) = server.retire()
+                && let Ok(runtime) = Handle::try_current()
+            {
+                spawn_on(&runtime, async move {
+                    client.shutdown(ShutdownMode::Immediate).await;
+                });
+            }
+        }
     }
 }
 
@@ -533,11 +561,36 @@ done
         execute(prepare(runtime, name, arguments)).await
     }
 
+    #[cfg(target_os = "linux")]
     fn process_ended(pid: i32) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
             stat.rsplit_once(") ")
                 .is_some_and(|(_, fields)| fields.starts_with('Z'))
         })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_ended(pid: i32) -> bool {
+        std::process::Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map_or(true, |output| {
+                let state = String::from_utf8_lossy(&output.stdout);
+                let state = state.trim();
+                state.is_empty() || state.starts_with('Z')
+            })
+    }
+
+    async fn ended_within(pid: i32, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        while tokio::time::Instant::now() < deadline {
+            if process_ended(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        process_ended(pid)
     }
 
     #[tokio::test]
@@ -950,6 +1003,44 @@ done
             outcome,
             Ok(ReloadOutcome::Published { healthy: false, .. })
         ));
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn an_aborted_reload_stops_candidates_that_already_connected() {
+        let fast = tempfile::tempdir().unwrap();
+        let slow = tempfile::tempdir().unwrap();
+        let stalled = r#"echo $$ >> "$STATE/pids"; exec sleep 30"#;
+        let runtime = runtime(Vec::new());
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            let cancel = cancel.clone();
+            let candidate = load(vec![
+                config("fast", SERVER, fast.path()),
+                config("slow", stalled, slow.path()),
+            ]);
+            async move { runtime.reconcile(candidate, true, true, &cancel).await }
+        });
+        for _ in 0..500 {
+            if lines(&fast.path().join("lists")) > 0 && lines(&slow.path().join("pids")) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(lines(&fast.path().join("lists")) > 0);
+        cancel.cancel();
+        task.abort();
+        assert!(task.await.is_err_and(|error| error.is_cancelled()));
+        for state in [&fast, &slow] {
+            let pids = std::fs::read_to_string(state.path().join("pids")).unwrap();
+            let pid: i32 = pids.lines().next().unwrap().parse().unwrap();
+            assert!(
+                ended_within(pid, Duration::from_secs(5)).await,
+                "{pid} is still running"
+            );
+        }
+        assert!(runtime.snapshot_health().servers.is_empty());
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 
