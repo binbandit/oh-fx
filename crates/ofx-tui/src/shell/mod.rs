@@ -155,6 +155,7 @@ struct Submission {
     state: SubmissionState,
     turn_id: Option<TurnId>,
     sequence: u64,
+    presented: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +236,7 @@ pub(crate) struct Shell<'a> {
     options: ShellOptions,
     outstanding: VecDeque<Submission>,
     submitted_prompts: u64,
+    prompts_before_resume: u64,
     turn: Option<ActiveTurn>,
     compaction: Option<CompactionStatus>,
     approval: Option<ApprovalPrompt>,
@@ -442,6 +444,7 @@ impl<'a> Shell<'a> {
             options,
             outstanding: VecDeque::new(),
             submitted_prompts: 0,
+            prompts_before_resume: 0,
             turn: None,
             compaction: None,
             approval: None,
