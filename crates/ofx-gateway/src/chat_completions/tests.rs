@@ -231,6 +231,7 @@ async fn chat_completions_reasoning_presentation_checks_cancellation_before_cont
             }
             StreamEvent::TextDelta { .. } => content += 1,
             StreamEvent::Admitted => {}
+            StreamEvent::ToolCallStarted { .. } => panic!("unexpected tool start"),
         };
         let outcome = consume_wire(&wire, wire.len(), Limits::default(), &mut sink, &cancel).await;
         if cancel_on_reasoning {
