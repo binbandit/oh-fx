@@ -11,8 +11,9 @@ note = "Codex credential preparation and refresh exist; Vercel/Grok preparation,
 
 [[file]]
 upstream = "src/core/auth/auth_transition.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-app/src/app_agent_runtime/sign_out.rs"]
+note = "The default /logout target and the busy rule for signing out of the selected provider are implemented; Gateway and Grok logout fallbacks are absent because oh-fx has no Gateway transport and does not activate Grok."
 
 [[file]]
 upstream = "src/core/auth/browser_callback.zig"
