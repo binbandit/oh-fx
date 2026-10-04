@@ -56,7 +56,7 @@ note = "The header packs the category tabs and keeps a far active tab as upstrea
 upstream = "src/ui/footer/input_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/picker_presentation.rs"]
-note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the status line menu hint ladder, and the model, effort and Fast column projections are implemented; image badges and provider/login picker footer projections are absent."
+note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the status line menu hint ladder, and the model, effort and Fast column projections are implemented, with the composer hidden behind the status line menu; image badges and provider/login picker footer projections are absent."
 
 [[file]]
 upstream = "src/ui/footer/interaction_state.zig"
@@ -126,9 +126,9 @@ note = "Composer and question footer rows are arranged; upstream surface measure
 
 [[file]]
 upstream = "src/ui/footer/settings_menu_presentation.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream max_inline_rows, menuRowCount, visibleNavigationItemsForBudget behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/settings_menu_presentation.rs"]
+note = "The header tabs and their narrow fallbacks, aligned rows, highlighted choices, empty search, row budget and hint ladder exist; the inline model menu rows are absent until the model menu lands."
 
 [[file]]
 upstream = "src/ui/footer/skills_menu_presentation.zig"

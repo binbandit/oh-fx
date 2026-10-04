@@ -36,13 +36,15 @@ impl PromptHistoryRuntime {
                 Err(notice) => (Vec::new(), Some(notice)),
             }
         };
-        let history = if enabled {
-            PromptHistory::enabled(entries, move |text| {
-                self.record_accepted(now_ms(), text)
-                    .map_err(|error| error.to_string())
-            })
-        } else {
-            PromptHistory::disabled()
+        let available = self.store.is_some();
+        let saver = move |text: &str| {
+            self.record_accepted(now_ms(), text)
+                .map_err(|error| error.to_string())
+        };
+        let history = match (available, enabled) {
+            (false, _) => PromptHistory::disabled(),
+            (true, true) => PromptHistory::enabled(entries, saver),
+            (true, false) => PromptHistory::paused(saver),
         };
         (history, notice)
     }

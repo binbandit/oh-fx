@@ -216,7 +216,7 @@ impl Shell<'_> {
     }
 
     pub(super) fn open_all_sessions(&mut self) {
-        if self.help_menu.is_some() || self.skills_menu_visible() {
+        if self.settings_menu.is_some() || self.help_menu.is_some() || self.skills_menu_visible() {
             return;
         }
         if self.composer.is_empty() {

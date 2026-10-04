@@ -55,11 +55,11 @@ note = "Native system prompt selection exists; embedded-host prompt variants and
 [[file]]
 upstream = "src/core/config/settings_catalog.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/shell/statusline_menu_runtime.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation.rs"]
-note = "The status line menu's segment choices, wrapping selection and on/off toggles exist; the settings menu's catalog, categories, search and option cycling are absent."
+modules = ["crates/ofx-contract/src/settings_catalog.rs", "crates/ofx-tui/src/shell/settings_menu_runtime.rs", "crates/ofx-tui/src/shell/statusline_menu_runtime.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation.rs"]
+note = "Categories, search, option cycling, the menu's selection window and the status line menu exist for the status line, model, fast mode, permission mode, session title, startup scrollback and prompt history rows; the reasoning effort, slash menu category, tool collapse, sound level and ultra mode rows and the model row's choices are absent as documented."
 
 [[file]]
 upstream = "src/core/config/settings_store.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/settings_store.rs"]
-note = "Permission/model preference writes, scoped permission-rule add/remove/reset patches and recovery backups exist; full settings catalog, workspace-directory mutation and project MCP mutation API remain incomplete."
+note = "Permission/model preference writes, the startup scrollback, status line, session title and prompt history patches, scoped permission-rule add/remove/reset patches and recovery backups exist; the remaining settings catalog patches, workspace-directory mutation and project MCP mutation API remain incomplete."
