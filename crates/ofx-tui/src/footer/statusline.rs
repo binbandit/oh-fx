@@ -47,6 +47,10 @@ impl Statusline {
         self.session_title = title.map(str::to_owned);
     }
 
+    pub(crate) fn toggles(&self) -> StatuslineToggles {
+        self.toggles
+    }
+
     pub(crate) fn set(&mut self, item: StatuslineItem, enabled: bool) {
         self.toggles.set(item, enabled);
     }

@@ -54,8 +54,9 @@ note = "Native system prompt selection exists; embedded-host prompt variants and
 
 [[file]]
 upstream = "src/core/config/settings_catalog.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/statusline_menu_runtime.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation.rs"]
+note = "The status line menu's segment choices, wrapping selection and on/off toggles exist; the settings menu's catalog, categories, search and option cycling are absent."
 
 [[file]]
 upstream = "src/core/config/settings_store.zig"
