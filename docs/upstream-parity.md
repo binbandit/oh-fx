@@ -29,6 +29,8 @@ The file map measures structural coverage. Re-audit entries and missing-behavior
 
 The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `6bdd497`). Native foreground startup, accepted turns and visible permission/question attention use it. Lifecycle registration remains partial: later session selection, manual compaction and route-recovery decision reporting, configurable command hooks and sounds are pending. Working admission timing and the application environment prefix differ as recorded in [differences/hooks.md](differences/hooks.md).
 
+The fixed permission-review policy golden compares the actual runtime template byte for byte with upstream at the existing pin. The source blob and its 3,195-byte policy are identical at `34f1ed1` and `6bdd497`, with no substitutions. [Extraction and provenance](../parity/goldens/review-policy/README.md) are recorded alongside the fixture. This partial OH-7 coverage changes no permission behavior, file-map status, or parity pin; other prompt, tool metadata, and help goldens remain follow-up work.
+
 ## 34f1ed1..6bdd497
 
 | PR | Merge | Title | Status | oh-fx | Note |

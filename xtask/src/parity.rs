@@ -1,5 +1,7 @@
 mod goldens;
 
+mod review_policy_goldens;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -67,6 +69,9 @@ struct Ledger {
 pub(crate) fn run(options: &[&str]) -> Result<(), String> {
     if let ["goldens", rest @ ..] = options {
         return goldens::run(rest);
+    }
+    if let ["review-policy-goldens", rest @ ..] = options {
+        return review_policy_goldens::run(rest);
     }
     let upstream = upstream_path(
         options,
