@@ -15,7 +15,7 @@ pub(crate) const TOP_LEVEL_SOURCES: &[SourceTopLevelSpec] = &[
     SourceTopLevelSpec::new(
         TopLevelKind::Ask,
         "ask",
-        "ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>",
+        "ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>",
         "Run one noninteractive request",
     )
     .with_options(&[
@@ -26,6 +26,11 @@ pub(crate) const TOP_LEVEL_SOURCES: &[SourceTopLevelSpec] = &[
         SourceOptionDoc::new("--effort <level>", "Override the reasoning effort for this request"),
         SourceOptionDoc::new("--fast", "Enable Fast mode for this request when the model supports it"),
         SourceOptionDoc::new("--no-fast", "Disable Fast mode for this request"),
+        SourceOptionDoc::new(
+            "--ultrafast",
+            "Request Ultra mode for this request when the model supports it",
+        ),
+        SourceOptionDoc::new("--no-ultrafast", "Disable Ultra mode for this request"),
         SourceOptionDoc::new(
             "--provider-order <a,b,...>",
             "Prefer these gateway providers in order for this request",
@@ -74,11 +79,13 @@ pub(crate) const TOP_LEVEL_SOURCES: &[SourceTopLevelSpec] = &[
     SourceTopLevelSpec::new(
         TopLevelKind::Acp,
         "acp",
-        "acp [--model <id>] [--log-file <path>]",
+        "acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]",
         "Start an ACP server over stdio",
     )
     .with_options(&[
         SourceOptionDoc::new("--model <id>", "Override the default model"),
+        SourceOptionDoc::new("--ultrafast", "Request Ultra mode when the model supports it"),
+        SourceOptionDoc::new("--no-ultrafast", "Disable Ultra mode"),
         SourceOptionDoc::new("--log-file <path>", "Write ACP logs to a file"),
     ]),
     SourceTopLevelSpec::new(
@@ -408,6 +415,10 @@ const TOP_LEVEL_FLAGS: &[TopLevelFlag] = &[
     TopLevelFlag {
         usage: "--fast, --no-fast",
         description: "Turn Fast mode on or off for an interactive session",
+    },
+    TopLevelFlag {
+        usage: "--ultrafast, --no-ultrafast",
+        description: "Request Ultra mode on or off for an interactive session",
     },
     TopLevelFlag {
         usage: "-c, --continue",

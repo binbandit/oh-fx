@@ -5,7 +5,7 @@ use ofx_config::ProviderId;
 use ofx_session::is_valid_session_id;
 use ofx_text::parse_unsigned;
 
-use super::arg_stream::{ArgStream, ValueForm, non_blank, requests_json};
+use super::arg_stream::{ArgStream, ValueForm, merge_toggle, non_blank, requests_json};
 use super::failure::{ArgumentErrorCode, CliError};
 use crate::command_specs::TopLevelKind;
 
@@ -45,8 +45,13 @@ pub(crate) fn validate_acp(args: Vec<OsString>) -> Result<(), CliError> {
     let mut stream = ArgStream::new(args);
     let mut model = false;
     let mut log_file = false;
+    let mut ultrafast = None;
     let invalid = || CliError::Usage(TopLevelKind::Acp);
     while stream.peek().is_some() {
+        if let Some(enabled) = stream.take_toggle("--ultrafast", "--no-ultrafast") {
+            ultrafast = Some(merge_toggle(ultrafast, enabled, invalid())?);
+            continue;
+        }
         let seen = if let Some(value) = stream.take_option("model", ValueForm::Separate) {
             value.map_err(|_| invalid())?;
             &mut model

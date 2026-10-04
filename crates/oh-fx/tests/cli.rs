@@ -537,7 +537,7 @@ fn invalid_command_arguments_fail_before_the_availability_check() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "oh-fx: --provider, --model, --effort, --fast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `oh-fx ask`\n"
+        "oh-fx: --provider, --model, --effort, --fast, --ultrafast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `oh-fx ask`\n"
     );
 }
 

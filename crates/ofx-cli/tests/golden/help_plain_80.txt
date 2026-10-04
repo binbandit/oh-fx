@@ -44,24 +44,29 @@ Commands:
   help                           Show this help
 
 Flags:
-  --context-limit <spec>  Set name=bytes|off; repeatable
-  --add-dir <path>        Add a workspace directory; repeatable
-  --no-additional-dirs    Ignore saved additional directories
-  --provider <name>       Override the model provider for an interactive session
-                          (gateway, codex, grok, or a configured name)
-  --model <id>            Override the model for an interactive session
-  --effort <level>        Override the reasoning effort for an interactive
-                          session
-  --fast, --no-fast       Turn Fast mode on or off for an interactive session
-  -c, --continue          Resume the remembered workspace session
-  -r                      Open the saved-session picker
-  --resume [last|<id>]    Resume the latest workspace session or an exact ID
-  --resume-last           Resume the latest workspace session
-  --resume-<id>           Resume a session by exact ID
-  --sessions-v2           Use the experimental v2 session store, also set by
-                          OH_FX_SESSIONS_V2=1
-  -h, --help              Display this help and exit
-  -v, --version           Print the oh-fx version and exit
+  --context-limit <spec>       Set name=bytes|off; repeatable
+  --add-dir <path>             Add a workspace directory; repeatable
+  --no-additional-dirs         Ignore saved additional directories
+  --provider <name>            Override the model provider for an interactive
+                               session (gateway, codex, grok, or a configured
+                               name)
+  --model <id>                 Override the model for an interactive session
+  --effort <level>             Override the reasoning effort for an interactive
+                               session
+  --fast, --no-fast            Turn Fast mode on or off for an interactive
+                               session
+  --ultrafast, --no-ultrafast  Request Ultra mode on or off for an interactive
+                               session
+  -c, --continue               Resume the remembered workspace session
+  -r                           Open the saved-session picker
+  --resume [last|<id>]         Resume the latest workspace session or an exact
+                               ID
+  --resume-last                Resume the latest workspace session
+  --resume-<id>                Resume a session by exact ID
+  --sessions-v2                Use the experimental v2 session store, also set
+                               by OH_FX_SESSIONS_V2=1
+  -h, --help                   Display this help and exit
+  -v, --version                Print the oh-fx version and exit
 
 Examples:
   oh-fx

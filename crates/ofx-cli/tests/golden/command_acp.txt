@@ -3,8 +3,10 @@ oh-fx acp
 Start an ACP server over stdio
 
 Usage:
-  oh-fx acp [--model <id>] [--log-file <path>]
+  oh-fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]
 
 Options:
   --model <id>       Override the default model
+  --ultrafast        Request Ultra mode when the model supports it
+  --no-ultrafast     Disable Ultra mode
   --log-file <path>  Write ACP logs to a file

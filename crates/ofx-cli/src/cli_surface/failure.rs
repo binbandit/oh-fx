@@ -10,7 +10,7 @@ use crate::command_specs::{
     HelpStyle, PRODUCT_NAME, TOP_LEVEL_HELP_DEFAULT_WIDTH, TopLevelKind, render_top_level_help,
 };
 
-const GLOBAL_LAUNCH_USAGE: &str = "usage: oh-fx [--context-limit NAME=BYTES|off] [--add-dir PATH]... [--no-additional-dirs] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] <command>";
+const GLOBAL_LAUNCH_USAGE: &str = "usage: oh-fx [--context-limit NAME=BYTES|off] [--add-dir PATH]... [--no-additional-dirs] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] <command>";
 const ECHOED_ARGUMENT_BYTES: usize = 160;
 
 #[derive(Debug, Clone, Copy)]
@@ -54,7 +54,7 @@ pub enum CliError {
     )]
     WorkspaceModifiersUnsupported,
     #[error(
-        "--provider, --model, --effort, --fast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `oh-fx ask`"
+        "--provider, --model, --effort, --fast, --ultrafast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `oh-fx ask`"
     )]
     ModelModifiersUnsupported,
     #[error("usage: oh-fx --version")]
