@@ -93,6 +93,10 @@ impl PermissionPolicy {
         self.session_grants.count()
     }
 
+    pub fn forget_command_approvals(&self) {
+        self.session_grants.forget_commands();
+    }
+
     #[must_use]
     pub fn with_reviewer(mut self, reviewer: Reviewer) -> Self {
         self.reviewer = Some(reviewer);
@@ -1064,6 +1068,35 @@ mod tests {
             child.admit(&read("../parent/a.txt")),
             Admission::ApprovalRequired
         );
+    }
+
+    #[test]
+    fn forgetting_command_approvals_keeps_every_other_grant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(root.join("a.txt"), "text\n").unwrap();
+        let policy = PermissionPolicy::new(PermissionMode::Ask, &workspace);
+        let child =
+            PermissionPolicy::new(PermissionMode::Ask, &workspace).inheriting_grants_of(&policy);
+        let command = CommandRequest::Run {
+            command: "cargo test".to_owned(),
+            cwd: workspace.clone(),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+            reload: false,
+        };
+        approve_always(&policy, GatedAction::Call(&read("../a.txt")));
+        approve_always(&policy, GatedAction::Command(&command));
+        assert_eq!(policy.session_grant_count(), 2);
+        assert_ne!(child.admit_command(&command), Admission::ApprovalRequired);
+        policy.forget_command_approvals();
+        assert_eq!(policy.session_grant_count(), 1);
+        assert_ne!(policy.admit(&read("../a.txt")), Admission::ApprovalRequired);
+        assert_eq!(policy.admit_command(&command), Admission::ApprovalRequired);
+        assert_eq!(child.admit_command(&command), Admission::ApprovalRequired);
     }
 
     #[test]

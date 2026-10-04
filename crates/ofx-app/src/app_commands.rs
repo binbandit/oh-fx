@@ -166,6 +166,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         SlashKind::Version => state.notice(NoticeTone::Neutral, "version", ofx_upgrade::VERSION),
         SlashKind::Model => state.notice(NoticeTone::Neutral, "model", &model_status(state)),
         SlashKind::Permissions => state.permissions().handle_command(payload),
+        SlashKind::Shell => state.permissions().reload_shell(payload),
         SlashKind::Skills => handle_skills(state, payload),
         SlashKind::ClearScreen
         | SlashKind::NewSession
@@ -302,6 +303,7 @@ mod tests {
                 "/fast",
                 "/statusline",
                 "/workspace",
+                "/shell",
                 "/version",
                 "/quit",
             ]
@@ -316,8 +318,12 @@ mod tests {
         assert_eq!(specs[4].description, "resume a saved session");
         assert_eq!(specs[5].description, "rename the current session");
         assert_eq!(specs[13].description, "browse and manage skills");
-        assert_eq!(specs[22].aliases, ["/exit"]);
-        assert_eq!(specs[22].description, "exit the interactive shell");
+        assert_eq!(
+            specs[21].description,
+            "reload shell startup files for commands"
+        );
+        assert_eq!(specs[23].aliases, ["/exit"]);
+        assert_eq!(specs[23].description, "exit the interactive shell");
     }
 
     #[test]
@@ -352,6 +358,7 @@ mod tests {
                 ("/fast", "Model"),
                 ("/statusline", "Appearance"),
                 ("/workspace", "Workspace"),
+                ("/shell", "Workspace"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]

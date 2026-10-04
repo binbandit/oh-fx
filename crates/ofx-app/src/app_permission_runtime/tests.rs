@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use ofx_contract::SessionGrant;
+use ofx_contract::{CommandProfile, SessionGrant};
 use tempfile::TempDir;
 
 use super::*;
@@ -193,6 +193,40 @@ fn reset_returns_to_ask_and_forgets_every_session_grant() {
             .notice_body()
             .ends_with("session grants: (none)")
     );
+}
+
+#[test]
+fn shell_reload_forgets_remembered_commands_and_keeps_every_other_grant() {
+    let fixture = Fixture::new(PermissionMode::Ask);
+    fixture
+        .policy
+        .remember_approval(&SessionGrant::ReadsUnder(PathBuf::from("/elsewhere")));
+    fixture.policy.remember_approval(&SessionGrant::Command {
+        command: "npm test".to_owned(),
+        cwd: PathBuf::from("/workspace"),
+        profile: CommandProfile::User,
+        shell: None,
+        terminal: false,
+    });
+    let runtime = fixture.runtime(false);
+    for wrong in ["", "now", "reload now", "RELOAD"] {
+        runtime.reload_shell(wrong);
+        assert_eq!(fixture.take(), ["error||usage: /shell reload"], "{wrong}");
+    }
+    assert_eq!(fixture.policy.session_grant_count(), 2);
+    runtime.reload_shell(" reload\t");
+    assert_eq!(
+        fixture.take(),
+        [
+            "neutral|shell|The next command reloads your shell startup files. Remembered command approvals were reset."
+        ]
+    );
+    assert_eq!(fixture.policy.session_grant_count(), 1);
+    let listing = fixture.policy.notice_body();
+    assert!(listing.contains(" - read -> "), "{listing}");
+    assert!(!listing.contains(" - bash -> "), "{listing}");
+    assert_eq!(fixture.mode.get(), PermissionMode::Ask);
+    assert_eq!(fixture.saved(), None);
 }
 
 #[test]
