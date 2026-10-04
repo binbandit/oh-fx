@@ -22,7 +22,7 @@ modules = []
 upstream = "src/core/session/history_snapshot.zig"
 status = "not-applicable"
 modules = []
-note = "Resume replays events.jsonl itself: a 7.5 MB, 3,000-turn log replays in 15 ms, so the binary history-cache.bin mirror would add a codec for every event type and a writer on every open for little gain, as architecture.md records. Upstream rebuilds the disposable file on its next writable open of a session that lacks it."
+note = "Resume replays events.jsonl itself: a 7.5 MB, 3,000-turn log replays in 15 ms, so the binary history-cache.bin mirror would add a codec for every event type and a writer on every open for little gain, as docs/differences/session-store.md records. Upstream rebuilds the disposable file on its next writable open of a session that lacks it."
 
 [[file]]
 upstream = "src/core/session/js_host_prompt_history.zig"
@@ -40,7 +40,7 @@ note = "JavaScript host callback binding for the embedded runtime; excluded from
 upstream = "src/core/session/legacy_background_migration.zig"
 status = "not-applicable"
 modules = []
-note = "Clears background run_command records and logs that fx releases up to 0.0.7 left in session folders; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as architecture.md records."
+note = "Clears background run_command records and logs that fx releases up to 0.0.7 left in session folders; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as docs/differences/session-store.md records."
 
 [[file]]
 upstream = "src/core/session/profile_usage_runtime.zig"
@@ -143,7 +143,7 @@ note = "Modern conversation event encoding and sequencing exist, file evidence o
 upstream = "src/core/session/session_json.zig"
 status = "todo"
 modules = []
-note = "The legacy snapshot decoders and the snapshot writer upstream uses for test fixtures are not needed, since oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as architecture.md records; writeExecutionMemoryJson renders the session detail output of oh-fx session (OH-41)."
+note = "The legacy snapshot decoders and the snapshot writer upstream uses for test fixtures are not needed, since oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as docs/differences/session-store.md records; writeExecutionMemoryJson renders the session detail output of oh-fx session (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_layout.zig"
@@ -161,7 +161,7 @@ note = "Modern append/replay exists, and a matching recovery checkpoint stays pe
 upstream = "src/core/session/session_migration.zig"
 status = "not-applicable"
 modules = []
-note = "Imports the session layouts older fx releases wrote: v1 and v2 session.json snapshots, which predate fx's public repository, and the schema-v3 semantic event log that releases 0.0.1 to 0.0.7 wrote before 0.0.8 cut over to the conversation layout; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as architecture.md records."
+note = "Imports the session layouts older fx releases wrote: v1 and v2 session.json snapshots, which predate fx's public repository, and the schema-v3 semantic event log that releases 0.0.1 to 0.0.7 wrote before 0.0.8 cut over to the conversation layout; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as docs/differences/session-store.md records."
 
 [[file]]
 upstream = "src/core/session/session_projection.zig"
@@ -184,7 +184,7 @@ note = "Buffered line reading exists; exact-commit, recovery checkpoint and chil
 upstream = "src/core/session/session_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, the .resume-catalog index exists, history-cache.bin is left out as architecture.md records, and doctor (OH-41) and v2 routing (OH-27) remain."
+note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, the .resume-catalog index exists, history-cache.bin is left out as docs/differences/session-store.md records, and doctor (OH-41) and v2 routing (OH-27) remain."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"
