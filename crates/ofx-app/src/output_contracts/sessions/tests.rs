@@ -83,6 +83,21 @@ fn languages_and_timestamps_follow_upstreams_labels() {
     assert_eq!(language_label("und-Zzzz"), Some("und-Zzzz"));
     assert_eq!(language_label("pt-BR"), Some("Portuguese"));
     assert_eq!(language_label("tlh"), Some("tlh"));
+    assert_eq!(language_label("abc界"), Some("abc界"));
+    assert_eq!(language_label("und界"), Some("und界"));
+    let sessions = [session("abc", None, 1, "abc界")];
+    let snapshot = SessionListSnapshot {
+        sessions: &sessions,
+        has_more: false,
+        next_cursor: None,
+        skipped_invalid: 0,
+        all_workspaces: false,
+    };
+    assert!(
+        snapshot
+            .render(OutputFormat::Text)
+            .contains("id=abc | 1 turn | abc界 | updated")
+    );
     assert_eq!(utc_timestamp(0), "1970-01-01 00:00:00.000 UTC");
     assert_eq!(utc_timestamp(-1), "unknown");
     assert_eq!(

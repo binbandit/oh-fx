@@ -76,7 +76,7 @@ impl RowSummary {
     }
 
     fn listed(&self, id: &str) -> Option<SessionSummary> {
-        if self.flags & !CHECKPOINT_FLAG != 0 {
+        if self.flags & !CHECKPOINT_FLAG != 0 || self.preview.is_none() && self.history_len > 0 {
             return None;
         }
         Some(SessionSummary {

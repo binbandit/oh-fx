@@ -443,6 +443,42 @@ fn cached_rows_keep_and_return_their_first_prompt_preview() {
 }
 
 #[test]
+fn rows_saved_before_previews_are_read_again_to_backfill_them() {
+    let sessions = Sessions::new();
+    sessions.seed("alpha", 1);
+    sessions.seed("empty", 0);
+    let preview = sessions.scan(true).summaries[0].preview.clone();
+    assert!(preview.is_some());
+    let rows: Vec<Row> = sessions
+        .cached()
+        .rows
+        .into_iter()
+        .map(|mut row| {
+            row.summary.as_mut().unwrap().preview = None;
+            row
+        })
+        .collect();
+    sessions.write_catalog(&rows);
+    let listed = sessions.scan(true);
+    let alpha = listed
+        .summaries
+        .iter()
+        .find(|summary| summary.id == "alpha")
+        .unwrap();
+    assert_eq!(alpha.preview, preview);
+    let cached = sessions.cached();
+    let row = cached.row("alpha").unwrap();
+    assert_eq!(row.summary.as_ref().unwrap().preview, preview);
+    let empty = cached.row("empty").unwrap();
+    assert_eq!(
+        cached.reuse("empty", &empty.fingerprint),
+        Some(Reuse::Listed(
+            empty.summary.as_ref().unwrap().listed("empty").unwrap()
+        ))
+    );
+}
+
+#[test]
 fn rows_oh_fx_cannot_list_are_classified_again_and_excluded_rows_stay_hidden() {
     let sessions = Sessions::new();
     sessions.seed("alpha", 1);

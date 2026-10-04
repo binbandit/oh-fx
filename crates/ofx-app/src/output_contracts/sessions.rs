@@ -166,8 +166,12 @@ fn language_label(tag: &str) -> Option<&str> {
     if tag.eq_ignore_ascii_case("und") {
         return None;
     }
-    if tag.len() > 4 && tag[..4].eq_ignore_ascii_case("und-") {
-        let script = &tag[4..];
+    if tag.len() > 4
+        && let Some(script) = tag
+            .get(..4)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("und-"))
+            .map(|_| &tag[4..])
+    {
         return Some(
             SCRIPT_LABELS
                 .iter()
