@@ -1,4 +1,4 @@
-use ofx_contract::{ReplaySource, ToolCallId};
+use ofx_contract::{CommandProcessPresentation, ReplaySource, ToolCallId};
 
 use super::*;
 
@@ -266,6 +266,40 @@ fn a_later_compaction_replaces_the_earlier_checkpoint() {
 }
 
 #[test]
+fn logged_results_carry_the_process_presentation_their_command_returned() {
+    let history = vec![
+        ChatMessage::user("go"),
+        assistant("", &["a", "b"]),
+        result("a", ToolResultStatus::Failure),
+        result("b", ToolResultStatus::Success),
+    ];
+    let turn = history_turn(&history, 0, history.len());
+    let recorded = [
+        RecordedOutput {
+            call_id: ToolCallId::new("a"),
+            bytes: 11,
+            whole_file: false,
+            process: Some(CommandProcessPresentation::ExitCode(3)),
+        },
+        RecordedOutput {
+            call_id: ToolCallId::new("b"),
+            bytes: 11,
+            whole_file: false,
+            process: None,
+        },
+    ];
+    let processes: Vec<Option<CommandProcessPresentation>> = logged_steps(&turn.steps, &recorded)
+        .iter()
+        .flat_map(|step| step.tool_results.clone())
+        .map(|result| result.process)
+        .collect();
+    assert_eq!(
+        processes,
+        [Some(CommandProcessPresentation::ExitCode(3)), None]
+    );
+}
+
+#[test]
 fn logged_results_carry_the_raw_length_their_tool_returned() {
     let history = vec![
         ChatMessage::user("go"),
@@ -276,7 +310,7 @@ fn logged_results_carry_the_raw_length_their_tool_returned() {
         result("a", ToolResultStatus::Success),
     ];
     let turn = history_turn(&history, 0, history.len());
-    let lengths = |raw: &[RawOutput]| -> Vec<(String, usize, usize)> {
+    let lengths = |raw: &[RecordedOutput]| -> Vec<(String, usize, usize)> {
         logged_steps(&turn.steps, raw)
             .iter()
             .flat_map(|step| step.tool_results.clone())
@@ -289,10 +323,11 @@ fn logged_results_carry_the_raw_length_their_tool_returned() {
             })
             .collect()
     };
-    let raw = |call_id: &str, bytes| RawOutput {
+    let raw = |call_id: &str, bytes| RecordedOutput {
         call_id: ToolCallId::new(call_id),
         bytes,
         whole_file: false,
+        process: None,
     };
     let recorded = [
         raw("dropped", 1),

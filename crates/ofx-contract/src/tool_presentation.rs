@@ -3,6 +3,7 @@ use std::fmt::Write;
 use ofx_text::{clipped_label, encode_terminal_safe, is_posix_space};
 use serde_json::{Map, Value};
 
+use crate::strict_json::{DuplicateKeys, Json, parse_strict_json};
 use crate::subagent::SteeringDelivery;
 use crate::tool_args::{ToolArgValue, parse_tool_args_object};
 use crate::tool_dispatch::{
@@ -10,6 +11,9 @@ use crate::tool_dispatch::{
 };
 
 const SUBAGENT_TOOL_NAME: &str = "subagent";
+const SHELL_TOOL_NAME: &str = "shell";
+const TERMINAL_TOOL_NAME: &str = "terminal";
+const RUN_COMMAND_TOOL_NAME: &str = "run_command";
 const SUBAGENT_NAME_BYTES: usize = 64;
 const SUBAGENT_PREVIEW_BUFFER_BYTES: usize = 124;
 const SUBAGENT_PREVIEW_BYTES: usize = 120;
@@ -203,6 +207,34 @@ pub fn format_subagent_plain_action(
     } else {
         format!("{} {}", action.label, action.detail)
     })
+}
+
+pub fn is_captured_command(tool_name: &str, arguments: &str) -> bool {
+    if tool_name == RUN_COMMAND_TOOL_NAME {
+        return true;
+    }
+    let shell = tool_name == SHELL_TOOL_NAME;
+    if !shell && tool_name != TERMINAL_TOOL_NAME {
+        return false;
+    }
+    let Ok(Json::Object(request)) =
+        parse_strict_json(arguments.as_bytes(), DuplicateKeys::AfterValue)
+    else {
+        return false;
+    };
+    let field = |name: &str| {
+        request
+            .entries()
+            .iter()
+            .find_map(|(key, value)| (key == name).then_some(value))
+    };
+    match (shell, field("action")) {
+        (false, Some(Json::String(action))) => action == "exec",
+        (true, Some(Json::String(action))) if action == "run" => {
+            matches!(field("tty"), None | Some(Json::Null | Json::Bool(false)))
+        }
+        _ => false,
+    }
 }
 
 pub fn subagent_result_state(
@@ -430,6 +462,37 @@ mod tests {
             .as_deref(),
             Some("Subagent still running · work")
         );
+    }
+
+    #[test]
+    fn captured_commands_are_shell_runs_without_a_terminal_and_older_command_records() {
+        for (tool, arguments) in [
+            ("terminal", r#"{"action":"exec","command":"printf ok"}"#),
+            ("shell", r#"{"action":"run","command":"printf ok"}"#),
+            ("shell", r#"{"action":"run","command":"ls","tty":false}"#),
+            ("shell", r#"{"action":"run","command":"ls","tty":null}"#),
+            ("run_command", "{}"),
+            ("run_command", "not-json"),
+        ] {
+            assert!(is_captured_command(tool, arguments), "{tool} {arguments}");
+        }
+        for (tool, arguments) in [
+            ("terminal", r#"{"action":"start","command":"printf ok"}"#),
+            (
+                "shell",
+                r#"{"action":"run","command":"printf ok","tty":true}"#,
+            ),
+            ("shell", r#"{"action":"run","command":"ls","tty":"no"}"#),
+            ("shell", r#"{"action":"wait","session_id":"shell-1"}"#),
+            ("shell", r#"{"request":{"action":"run","command":"ls"}}"#),
+            ("shell", r#"{"action":"run","action":"run"}"#),
+            ("read_file", "{}"),
+            ("terminal", "not-json"),
+            ("shell", "not-json"),
+            ("shell", "[]"),
+        ] {
+            assert!(!is_captured_command(tool, arguments), "{tool} {arguments}");
+        }
     }
 
     #[test]

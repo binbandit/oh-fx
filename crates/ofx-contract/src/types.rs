@@ -58,6 +58,7 @@ pub enum CommandProcessPresentation {
     ExitCode(i64),
     Signal(u32),
     TimedOut,
+    OutputCaptureFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

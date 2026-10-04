@@ -1,7 +1,8 @@
 use std::sync::Mutex;
 
 use ofx_contract::{
-    HistoryCut, HistoryTurn, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
+    CommandProcessPresentation, HistoryCut, HistoryTurn, RecordedOutput, RecoveredTurn,
+    RecoveryPoint, RecoveryProgress, RecoveryStrategy,
 };
 
 use super::compaction::{spoken_tool_reply, unmetered, windowed};
@@ -29,6 +30,7 @@ fn recovered(strategy: RecoveryStrategy) -> RecoveredTurn {
         prompt: "fix it".to_owned(),
         messages: saved_step(),
         files: Vec::new(),
+        outputs: Vec::new(),
         strategy,
         fast_mode: false,
     }
@@ -96,6 +98,34 @@ async fn a_continued_turn_resends_its_saved_steps_without_running_them_again() {
     });
     history.push(ChatMessage::user("next"));
     assert_eq!(provider.requests()[1].messages, history);
+}
+
+#[tokio::test]
+async fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_process() {
+    let provider = FakeProvider::new(vec![tool_reply(&[("call-2", "{}")]), text_reply("done")]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), vec![echo_tool()]), log);
+    let restored = RecoveredTurn {
+        outputs: vec![RecordedOutput {
+            call_id: ToolCallId::new("call-1"),
+            bytes: 40,
+            whole_file: false,
+            process: Some(CommandProcessPresentation::ExitCode(3)),
+        }],
+        ..recovered(RecoveryStrategy::ContinueAfterTool)
+    };
+    let (report, _) = continue_turn(&mut agent, restored).await;
+    assert_eq!(report.final_text, "done");
+    let Logged::Turn { steps, .. } = &entries.lock().unwrap()[0] else {
+        panic!("a saved turn");
+    };
+    assert_eq!(
+        *steps,
+        [
+            r#""Checking." replay=false calls=["call-1"] results=["call-1=saved output:Success raw=40 process=ExitCode(3)"]"#,
+            r#""" replay=false calls=["call-2"] results=["call-2=echo {}:Success"]"#,
+        ]
+    );
 }
 
 #[tokio::test]
