@@ -997,10 +997,7 @@ impl Presenter {
 
     fn handle(&mut self, event: UiEvent) -> bool {
         let written = match event {
-            UiEvent::AssistantText { text, .. } => {
-                self.begin_response();
-                self.push_assistant(&text)
-            }
+            UiEvent::AssistantText { text, .. } => self.assistant_text(&text),
             UiEvent::AssistantRestarted { text, .. } => self.push_restarted(&text),
             UiEvent::AssistantBoundary { .. } if self.mode == OutputMode::Terminal => {
                 self.push_assistant("\n")
@@ -1102,6 +1099,11 @@ impl Presenter {
                 false
             }
         }
+    }
+
+    fn assistant_text(&mut self, text: &str) -> io::Result<()> {
+        self.begin_response();
+        self.push_assistant(text)
     }
 
     fn tool_finished(&mut self, call_id: &ToolCallId, record: ToolRecord) -> io::Result<()> {
