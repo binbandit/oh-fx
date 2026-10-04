@@ -1,6 +1,6 @@
 use ofx_contract::{
     ChatMessage, ConversationLog, HistoryTurn, LogFailure, ModelRecoveryAction, ModelRecoveryCause,
-    ProviderError, RecoveryPoint, RecoveryProgress, RestoredHistory, TurnEnd, TurnStop,
+    RecoveryPoint, RecoveryProgress, RestoredHistory, TurnEnd, TurnStop,
 };
 
 use super::turn_ledger::TurnRecord;
@@ -164,22 +164,6 @@ impl Agent {
             failure: TurnFailure::Persistence(failure),
             partial: String::new(),
         })
-    }
-
-    pub(super) fn exhausted_failure(
-        &self,
-        turn: &Turn,
-        cause: Option<ModelRecoveryCause>,
-        consumed_attempts: usize,
-        error: ProviderError,
-    ) -> TurnFailure {
-        let paused = cause.map(|cause| {
-            self.record_recovery(turn, cause, RecoveryProgress::Paused, consumed_attempts)
-        });
-        match paused {
-            Some(Err(failure)) => TurnFailure::Persistence(failure),
-            Some(Ok(())) | None => TurnFailure::Provider(error),
-        }
     }
 
     pub(super) fn discard_recovery(&self) {
