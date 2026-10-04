@@ -72,7 +72,7 @@ async fn a_running_turn_keeps_its_user_message_and_compacts_its_finished_steps()
     let (history, starts) = history();
     let turns = history_turns(&history, &starts);
     let mut model = Notes::default();
-    let mut summarizing = 0;
+    let mut steps = Vec::new();
     let compacted = compact(
         Request {
             turns: &turns,
@@ -83,13 +83,13 @@ async fn a_running_turn_keeps_its_user_message_and_compacts_its_finished_steps()
             sends_after_conversation: false,
         },
         &mut model,
-        &mut || summarizing += 1,
+        &mut |step| steps.push(step),
         &CancellationToken::new(),
     )
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(summarizing, 1);
+    assert_eq!(steps, [Step::Chosen, Step::Summarizing]);
     assert_eq!(
         compacted.cut,
         Cut {
@@ -131,7 +131,7 @@ async fn the_request_after_the_conversation_is_offered_only_when_the_caller_can_
             sends_after_conversation: true,
         },
         &mut model,
-        &mut || {},
+        &mut |_| {},
         &CancellationToken::new(),
     )
     .await
@@ -158,18 +158,18 @@ async fn nothing_is_compacted_while_the_conversation_fits() {
         model: "m",
         sends_after_conversation: false,
     };
-    let mut summarizing = false;
+    let mut steps = Vec::new();
     assert_eq!(
         compact(
             request,
             &mut model,
-            &mut || summarizing = true,
+            &mut |step| steps.push(step),
             &CancellationToken::new()
         )
         .await,
         Ok(None)
     );
-    assert!(!summarizing);
+    assert!(steps.is_empty());
     assert!(model.prompts.is_empty());
 }
 
@@ -188,12 +188,12 @@ async fn a_cancelled_compaction_sends_nothing() {
         model: "m",
         sends_after_conversation: false,
     };
-    let mut summarizing = false;
+    let mut steps = Vec::new();
     assert_eq!(
-        compact(request, &mut model, &mut || summarizing = true, &cancel).await,
+        compact(request, &mut model, &mut |step| steps.push(step), &cancel).await,
         Err(CompactionError::Cancelled)
     );
-    assert!(!summarizing);
+    assert_eq!(steps, [Step::Chosen]);
     assert!(model.prompts.is_empty());
 }
 
@@ -301,7 +301,7 @@ async fn messages_oh_fx_added_to_a_turn_reach_the_notes_request_as_notes() {
             sends_after_conversation: false,
         },
         &mut model,
-        &mut || {},
+        &mut |_| {},
         &CancellationToken::new(),
     )
     .await
@@ -347,7 +347,7 @@ async fn steering_reaches_the_notes_request_as_a_user_message_added_while_the_tu
             sends_after_conversation: false,
         },
         &mut model,
-        &mut || {},
+        &mut |_| {},
         &CancellationToken::new(),
     )
     .await

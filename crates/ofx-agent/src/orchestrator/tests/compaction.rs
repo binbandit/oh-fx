@@ -1,4 +1,4 @@
-use ofx_contract::HistoryCut;
+use ofx_contract::{CompactionActivity, CompactionEnd, HistoryCut};
 
 use super::*;
 use crate::compactor::CompactionError;
@@ -360,6 +360,25 @@ fn overflow(kind: ProviderErrorKind, detail: Option<&str>) -> Script {
     Script::Fail(Vec::new(), error)
 }
 
+fn compaction_activity(events: &[UiEvent]) -> Vec<CompactionActivity> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::TurnCompaction { turn_id, activity } => {
+                assert_eq!(*turn_id, TurnId::new(2));
+                Some(*activity)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+const SHOWN_THEN_COMPACTED: [CompactionActivity; 3] = [
+    CompactionActivity::Preparing,
+    CompactionActivity::Summarizing,
+    CompactionActivity::Compacted,
+];
+
 fn mentions(message: &ChatMessage, text: &str) -> bool {
     match message {
         ChatMessage::User { content, .. }
@@ -383,10 +402,12 @@ async fn a_request_past_the_compaction_point_compacts_older_turns_and_continues(
         unmetered(text_reply("Automatic compaction complete.")),
     ]);
     let (mut agent, _) = windowed(&provider, 45_000, 64);
-    let (first, _) = run(&mut agent, "AUTO_HISTORY_USER_SENTINEL").await;
+    let (first, events) = run(&mut agent, "AUTO_HISTORY_USER_SENTINEL").await;
     assert_eq!(first.outcome, TurnOutcome::Completed);
-    let (second, _) = run(&mut agent, "AUTO_RECENT_USER").await;
+    assert!(compaction_activity(&events).is_empty());
+    let (second, events) = run(&mut agent, "AUTO_RECENT_USER").await;
     assert_eq!(second.outcome, TurnOutcome::Completed);
+    assert_eq!(compaction_activity(&events), SHOWN_THEN_COMPACTED);
     assert_eq!(second.final_text, "Automatic compaction complete.");
 
     let requests = provider.requests();
@@ -520,9 +541,10 @@ async fn a_context_overflow_compacts_once_and_retries() {
         ]);
         let (mut agent, _) = windowed(&provider, 128_000, 16_384);
         run(&mut agent, "PRIOR_USER").await;
-        let (report, _) = run(&mut agent, "continue").await;
+        let (report, events) = run(&mut agent, "continue").await;
         assert_eq!(report.outcome, TurnOutcome::Completed);
         assert_eq!(report.final_text, "RECOVERED");
+        assert_eq!(compaction_activity(&events), SHOWN_THEN_COMPACTED);
 
         let requests = provider.requests();
         assert_eq!(requests.len(), 5);
@@ -576,7 +598,12 @@ async fn an_overflow_with_nothing_to_compact_is_a_provider_failure() {
         Some("input is too long"),
     )]);
     let (mut agent, window) = windowed(&provider, 128_000, 16_384);
-    let (report, _) = run(&mut agent, "an enormous prompt").await;
+    let (report, events) = run(&mut agent, "an enormous prompt").await;
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, UiEvent::TurnCompaction { .. }))
+    );
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(
         report.failure.as_ref().map(TurnFailure::code),
@@ -591,7 +618,8 @@ async fn a_request_that_still_does_not_fit_after_compaction_fails_with_context_c
     let provider = FakeProvider::new(vec![unmetered(text_reply("small answer"))]);
     let (mut agent, _) = windowed(&provider, 2_000, 64);
     run(&mut agent, "small question").await;
-    let (report, _) = run(&mut agent, &"x ".repeat(4_000)).await;
+    let (report, events) = run(&mut agent, &"x ".repeat(4_000)).await;
+    assert_eq!(compaction_activity(&events), SHOWN_THEN_COMPACTED);
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(
         report.failure,
@@ -625,8 +653,26 @@ async fn cancelling_an_automatic_compaction_interrupts_the_turn_and_keeps_its_wo
         }
         trigger.cancel();
     });
-    let report = agent.run_turn("read the notes", &mut |_| {}, &cancel).await;
+    let mut events = Vec::new();
+    let report = agent
+        .run_turn("read the notes", &mut |event| events.push(event), &cancel)
+        .await;
     assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    let shown: Vec<CompactionActivity> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::TurnCompaction { activity, .. } => Some(*activity),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            CompactionActivity::Preparing,
+            CompactionActivity::Summarizing,
+            CompactionActivity::Ended(CompactionEnd::Cancelled),
+        ]
+    );
     assert_eq!(report.failure, None);
     assert!(mentions(
         &provider.requests()[1].messages[3],
@@ -652,7 +698,22 @@ async fn a_failed_automatic_compaction_fails_the_turn_with_its_error() {
         ),
     ]);
     let (mut agent, _) = windowed(&provider, 45_000, 64);
-    let (report, _) = run(&mut agent, "read the notes").await;
+    let (report, events) = run(&mut agent, "read the notes").await;
+    let shown: Vec<CompactionActivity> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::TurnCompaction { activity, .. } => Some(*activity),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            CompactionActivity::Preparing,
+            CompactionActivity::Summarizing,
+            CompactionActivity::Ended(CompactionEnd::Failed),
+        ]
+    );
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[2].messages.len(), 1);
@@ -866,9 +927,16 @@ async fn a_checkpoint_that_cannot_be_saved_fails_the_turn_and_is_not_installed()
     ]);
     let (agent, _) = windowed(&provider, 45_000, 64);
     let mut agent = turn_log::logged(agent, Box::new(turn_log::MemoryLog::failing("SessionBusy")));
-    let (report, _) = run(&mut agent, "read the notes").await;
+    let (report, events) = run(&mut agent, "read the notes").await;
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(report.failure.unwrap().code(), "SessionBusy");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        UiEvent::TurnCompaction {
+            activity: CompactionActivity::Ended(CompactionEnd::Failed),
+            ..
+        }
+    )));
     assert_eq!(provider.requests().len(), 2);
     assert_eq!(user_text(&agent.history[0]), "read the notes");
     assert!(agent.compacted.is_none());
