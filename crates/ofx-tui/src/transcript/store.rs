@@ -10,6 +10,7 @@ use crate::row_text::Row;
 use crate::theme::Theme;
 
 const REPLAY_TAIL_BYTES: usize = 256 * 1024;
+const RETAINED_TEXT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub(crate) struct Transcript {
@@ -21,6 +22,8 @@ pub(crate) struct Transcript {
     open_group: Option<usize>,
     provisional: Option<Vec<Row>>,
     replaying: bool,
+    entry_bytes: Vec<usize>,
+    retained_bytes: usize,
 }
 
 impl Transcript {
@@ -51,6 +54,7 @@ impl Transcript {
         if self.rendered == self.entries.len() {
             for event in &events {
                 let rows = render_assistant_event(event, self.cols, theme);
+                self.retain_rows_of_last_entry(&rows);
                 if is_blank_line(event) {
                     self.held_blanks.extend(rows);
                 } else {
@@ -124,6 +128,7 @@ impl Transcript {
 
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+        self.forget_retained();
         self.rendered = 0;
         self.pending.clear();
         self.held_blanks.clear();
@@ -133,6 +138,7 @@ impl Transcript {
 
     pub(crate) fn restart(&mut self, cols: usize) {
         self.cols = cols;
+        self.forget_retained();
         self.rendered = 0;
         self.pending.clear();
         self.held_blanks.clear();
@@ -149,12 +155,15 @@ impl Transcript {
         while self.rendered < self.entries.len() && self.is_final(self.rendered) {
             let index = self.rendered;
             self.push_separator(index);
-            self.pending
-                .extend(self.entries[index].render(self.cols, theme));
+            let rows = self.entries[index].render(self.cols, theme);
+            self.entry_bytes.push(0);
+            self.retain_rows_of_last_entry(&rows);
+            self.pending.extend(rows);
             self.hold_trailing_blanks(index, theme);
             self.rendered += 1;
             self.provisional = None;
         }
+        self.enforce_retention();
         let mut rows = std::mem::take(&mut self.pending);
         if std::mem::take(&mut self.replaying) {
             keep_replay_tail(&mut rows);
@@ -195,6 +204,42 @@ impl Transcript {
         }
     }
 
+    fn retain_rows_of_last_entry(&mut self, rows: &[Row]) {
+        let bytes: usize = rows.iter().map(|row| row.text_len() + 1).sum();
+        if let Some(last) = self.entry_bytes.last_mut() {
+            *last += bytes;
+            self.retained_bytes += bytes;
+        }
+    }
+
+    fn forget_retained(&mut self) {
+        self.entry_bytes.clear();
+        self.retained_bytes = 0;
+    }
+
+    fn enforce_retention(&mut self) {
+        if self.retained_bytes <= RETAINED_TEXT_BYTES {
+            return;
+        }
+        let latest_prompt = self.entries[..self.rendered]
+            .iter()
+            .rposition(|entry| matches!(entry, Entry::UserTurn { .. }))
+            .unwrap_or(self.rendered);
+        let mut dropped = 0;
+        while self.retained_bytes > RETAINED_TEXT_BYTES && dropped < latest_prompt {
+            self.retained_bytes -= self.entry_bytes[dropped];
+            dropped += 1;
+        }
+        if dropped == 0 {
+            return;
+        }
+        self.entries.drain(..dropped);
+        self.entry_bytes.drain(..dropped);
+        self.rendered -= dropped;
+        self.open_group = self.open_group.map(|index| index - dropped);
+        self.provisional = None;
+    }
+
     fn push_separator(&mut self, index: usize) {
         if index > 0 && !self.entries[index - 1].keeps_trailing_blank() {
             self.pending.push(Row::new());
@@ -220,7 +265,9 @@ fn keep_replay_tail(rows: &mut Vec<Row>) {
 
 #[cfg(test)]
 mod tests {
-    use ofx_contract::{Notice, NoticeTone};
+    use ofx_contract::{
+        ActionLabel, CallDescription, Concurrency, Notice, NoticeTone, ToolActivity, ToolEffect,
+    };
     use ofx_markdown::{Hang, Line, Span, Style};
 
     use super::*;
@@ -339,5 +386,105 @@ mod tests {
         assert!(!replayed.contains(&format!("  {}", lines[0])));
         transcript.restart(120);
         assert_eq!(transcript.take_new_rows(&theme()).len(), 3002);
+    }
+    fn notice(index: usize) -> Entry {
+        Entry::Notice(Notice::new(
+            NoticeTone::Neutral,
+            "",
+            format!("notice {index:05} {}", "z".repeat(90)),
+        ))
+    }
+
+    fn reading(call: &str) -> ToolActivityRow {
+        ToolActivityRow::started(
+            ToolCallId::new(call),
+            "read_file",
+            CallDescription {
+                title: "Reading notes.md".to_owned(),
+                label: Some(ActionLabel {
+                    active: "Reading",
+                    completed: "Read",
+                    target: "notes.md".to_owned(),
+                }),
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Parallel,
+            },
+        )
+    }
+
+    #[test]
+    fn final_entries_past_1_mib_of_rendered_text_are_dropped_oldest_first() {
+        let mut transcript = Transcript::default();
+        transcript.restart(120);
+        transcript.push(Entry::Welcome {
+            version: "1.0.0".to_owned(),
+        });
+        for index in 0..12_000 {
+            transcript.push(notice(index));
+            if index % 100 == 0 {
+                transcript.take_new_rows(&theme());
+            }
+        }
+        transcript.take_new_rows(&theme());
+        assert!(transcript.retained_bytes <= 1024 * 1024);
+        assert!(transcript.retained_bytes > 1024 * 1024 - 200);
+        assert_eq!(transcript.entries.len(), transcript.rendered);
+        assert!(transcript.entries.len() < 10_000);
+        transcript.replay(120);
+        let replayed = texts(&transcript.take_new_rows(&theme()));
+        assert_eq!(
+            replayed.last().map(String::as_str),
+            Some(format!("* notice 11999 {}", "z".repeat(90)).as_str())
+        );
+        assert!(!replayed.iter().any(|row| row.contains("v1.0.0")));
+    }
+
+    #[test]
+    fn the_latest_prompt_what_followed_it_and_running_tools_are_kept() {
+        let mut transcript = Transcript::default();
+        transcript.restart(120);
+        for index in 0..4000 {
+            transcript.push(notice(index));
+        }
+        transcript.push(Entry::UserTurn {
+            text: "latest".to_owned(),
+        });
+        let long: Vec<String> = (0..12_000)
+            .map(|index| format!("reply {index:05} {}", "w".repeat(90)))
+            .collect();
+        transcript.append_assistant(long.iter().map(|text| line(text)).collect(), &theme());
+        transcript.take_new_rows(&theme());
+        transcript.add_tool_row(reading("call-1"));
+        transcript.take_new_rows(&theme());
+        assert!(matches!(transcript.entries[0], Entry::UserTurn { .. }));
+        assert_eq!(transcript.entries.len(), 3);
+        assert!(
+            transcript
+                .tool_row_mut(&ToolCallId::new("call-1"))
+                .is_some()
+        );
+        assert!(transcript.cancel_active_tools());
+        transcript.push(Entry::UserTurn {
+            text: "next".to_owned(),
+        });
+        transcript.take_new_rows(&theme());
+        assert!(matches!(transcript.entries[0], Entry::ToolGroup(_)));
+    }
+
+    #[test]
+    fn a_transcript_under_1_mib_keeps_every_entry() {
+        let mut transcript = Transcript::default();
+        transcript.restart(120);
+        for index in 0..100 {
+            transcript.push(notice(index));
+        }
+        transcript.take_new_rows(&theme());
+        assert_eq!(transcript.entries.len(), 100);
+        transcript.replay(80);
+        transcript.take_new_rows(&theme());
+        assert_eq!(transcript.entries.len(), 100);
+        transcript.clear();
+        assert_eq!(transcript.retained_bytes, 0);
     }
 }
