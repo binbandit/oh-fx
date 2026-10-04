@@ -1,4 +1,4 @@
-use ofx_contract::{StatuslineItem, UiCommand};
+use ofx_contract::UiCommand;
 
 use super::Shell;
 use crate::footer::compact_command_menu_presentation::{
@@ -31,12 +31,6 @@ impl Shell<'_> {
         self.close_picker();
         self.statusline_menu = Some(StatuslineMenu::default());
         self.invalidate();
-    }
-
-    pub(super) fn statusline_changed(&mut self, item: StatuslineItem, enabled: bool) {
-        if self.statusline_menu.is_none() {
-            self.statusline.set(item, enabled);
-        }
     }
 
     pub(super) fn statusline_menu_band(&self) -> Option<(Vec<Row>, Row)> {
@@ -107,7 +101,7 @@ impl Shell<'_> {
         let (item, _) = STATUSLINE_CHOICES[menu.selected];
         let enabled = !self.statusline.toggles().enabled(item);
         self.statusline.set(item, enabled);
-        self.send(UiCommand::SetStatusline { item, enabled });
+        self.send(UiCommand::ToggleStatusline { item });
     }
 }
 

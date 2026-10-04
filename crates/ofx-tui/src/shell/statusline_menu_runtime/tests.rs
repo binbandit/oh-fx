@@ -16,8 +16,16 @@ fn press(test: &mut TestShell, bytes: &[u8]) -> String {
     test.screen()
 }
 
-fn set(item: StatuslineItem, enabled: bool) -> UiCommand {
-    UiCommand::SetStatusline { item, enabled }
+fn toggle(item: StatuslineItem) -> UiCommand {
+    UiCommand::ToggleStatusline { item }
+}
+
+fn shown(test: &TestShell, item: StatuslineItem) -> bool {
+    test.shell.statusline.toggles().enabled(item)
+}
+
+fn changed(test: &mut TestShell, item: StatuslineItem, enabled: bool) {
+    test.deliver(UiEvent::StatuslineChanged { item, enabled });
 }
 
 #[test]
@@ -37,105 +45,78 @@ fn the_menu_takes_the_composer_s_place_and_lists_the_three_segments_with_their_v
 }
 
 #[test]
-fn toggles_in_one_batch_each_flip_the_value_the_last_one_left() {
+fn toggles_in_one_batch_each_reach_the_controller_and_flip_the_shown_value() {
     let mut test = opened();
     press(&mut test, b"\r\r\x1b[B\x1b[C");
     assert_eq!(
         test.sent(),
         [
-            set(StatuslineItem::Context, true),
-            set(StatuslineItem::Context, false),
-            set(StatuslineItem::Session, true),
+            toggle(StatuslineItem::Context),
+            toggle(StatuslineItem::Context),
+            toggle(StatuslineItem::Session),
         ]
     );
     let screen = test.screen();
     assert!(screen.contains("  Session      off  on"), "{screen}");
-    assert!(
-        test.shell
-            .statusline
-            .toggles()
-            .enabled(StatuslineItem::Session)
-    );
-    assert!(
-        !test
-            .shell
-            .statusline
-            .toggles()
-            .enabled(StatuslineItem::Context)
-    );
+    assert!(shown(&test, StatuslineItem::Session));
+    assert!(!shown(&test, StatuslineItem::Context));
 }
 
 #[test]
-fn enter_toggles_the_selected_segment_and_the_row_follows_its_value() {
+fn enter_left_and_right_toggle_the_selected_segment() {
     let mut test = opened();
     press(&mut test, b"\x1b[B\r");
-    assert_eq!(
-        test.sent().last(),
-        Some(&set(StatuslineItem::Session, true))
-    );
-    test.deliver(UiEvent::StatuslineChanged {
-        item: StatuslineItem::Session,
-        enabled: true,
-    });
+    assert_eq!(test.sent().last(), Some(&toggle(StatuslineItem::Session)));
+    assert!(shown(&test, StatuslineItem::Session));
     press(&mut test, b"\x1b[B\x1b[C");
-    assert_eq!(
-        test.sent().last(),
-        Some(&set(StatuslineItem::Workspace, true))
-    );
+    assert_eq!(test.sent().last(), Some(&toggle(StatuslineItem::Workspace)));
     press(&mut test, b"\x1b[B\x1b[D");
-    assert_eq!(
-        test.sent().last(),
-        Some(&set(StatuslineItem::Context, true))
-    );
-    press(&mut test, b"\x1b[A\x1b[A\x1b[D");
-    assert_eq!(
-        test.sent().last(),
-        Some(&set(StatuslineItem::Session, false))
-    );
+    assert_eq!(test.sent().last(), Some(&toggle(StatuslineItem::Context)));
+    assert_eq!(test.sent().len(), 3);
 }
 
 #[test]
-fn an_echo_of_an_older_toggle_never_undoes_a_newer_one_while_the_menu_is_open() {
+fn every_toggle_reaches_the_controller_when_its_changes_arrive_between_keys() {
     let mut test = opened();
     press(&mut test, b"\r\r");
-    test.deliver(UiEvent::StatuslineChanged {
-        item: StatuslineItem::Context,
-        enabled: true,
-    });
+    changed(&mut test, StatuslineItem::Context, true);
     press(&mut test, b"\r");
     assert_eq!(
         test.sent(),
         [
-            set(StatuslineItem::Context, true),
-            set(StatuslineItem::Context, false),
-            set(StatuslineItem::Context, true),
+            toggle(StatuslineItem::Context),
+            toggle(StatuslineItem::Context),
+            toggle(StatuslineItem::Context),
         ]
     );
-    test.deliver(UiEvent::StatuslineChanged {
-        item: StatuslineItem::Context,
-        enabled: false,
-    });
-    assert!(
-        test.shell
-            .statusline
-            .toggles()
-            .enabled(StatuslineItem::Context)
-    );
+    changed(&mut test, StatuslineItem::Context, false);
+    changed(&mut test, StatuslineItem::Context, true);
+    assert!(shown(&test, StatuslineItem::Context));
+}
+
+#[test]
+fn a_slash_command_s_change_reaches_the_open_menu_and_the_next_toggle_flips_it() {
+    let mut test = opened();
+    changed(&mut test, StatuslineItem::Context, true);
+    assert!(shown(&test, StatuslineItem::Context));
+    press(&mut test, b"\r");
+    assert_eq!(test.sent(), [toggle(StatuslineItem::Context)]);
+    assert!(!shown(&test, StatuslineItem::Context));
+    changed(&mut test, StatuslineItem::Context, false);
+    press(&mut test, b"\x1b");
+    test.advance(100);
+    test.settle();
+    assert!(test.shell.statusline_menu.is_none());
+    assert!(!shown(&test, StatuslineItem::Context));
 }
 
 #[test]
 fn ctrl_j_and_ctrl_k_move_and_other_keys_never_reach_the_composer() {
     let mut test = opened();
     press(&mut test, b"\n\nx\x03\x04 \r");
-    assert_eq!(
-        test.sent().last(),
-        Some(&set(StatuslineItem::Workspace, true))
-    );
+    assert_eq!(test.sent().last(), Some(&toggle(StatuslineItem::Workspace)));
     press(&mut test, b"\x0b\r");
-    assert_eq!(
-        test.sent().last(),
-        Some(&set(StatuslineItem::Session, true))
-    );
+    assert_eq!(test.sent().last(), Some(&toggle(StatuslineItem::Session)));
     assert!(test.shell.composer.is_empty());
     assert!(test.shell.statusline_menu.is_some());
     assert!(!test.shell.gestures.ctrl_c_exit_armed());

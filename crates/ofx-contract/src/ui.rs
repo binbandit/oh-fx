@@ -378,9 +378,8 @@ pub enum UiCommand {
         prompt: String,
         skills: Vec<SkillBinding>,
     },
-    SetStatusline {
+    ToggleStatusline {
         item: StatuslineItem,
-        enabled: bool,
     },
     RunCommand {
         text: String,

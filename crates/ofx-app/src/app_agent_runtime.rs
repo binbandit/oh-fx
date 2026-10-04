@@ -141,7 +141,8 @@ impl ControllerState {
         }
     }
 
-    pub(crate) fn set_statusline(&mut self, item: StatuslineItem, enabled: bool) {
+    pub(crate) fn flip_statusline(&mut self, item: StatuslineItem) {
+        let enabled = !self.statusline.enabled(item);
         let access = SettingsAccess {
             paths: self.setup.preferences(),
             workspace_root: self.setup.workspace_root(),
@@ -467,9 +468,7 @@ impl Controller {
                     self.change_model(ModelChange::Pick(pick)).await;
                 }
                 UiCommand::TogglePermissionMode => self.state.permissions.toggle_mode(),
-                UiCommand::SetStatusline { item, enabled } => {
-                    self.state.set_statusline(item, enabled);
-                }
+                UiCommand::ToggleStatusline { item } => self.state.flip_statusline(item),
                 UiCommand::FullAccessWarningShown => {
                     self.state.permissions.full_access_warning_shown();
                 }
@@ -888,9 +887,7 @@ fn run_deferred(
         }),
         UiCommand::ListModels => return catalog.request(),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
-        UiCommand::SetStatusline { item, enabled } => {
-            return state.set_statusline(item, enabled);
-        }
+        UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
         UiCommand::FullAccessWarningShown => {
             return state.permissions.full_access_warning_shown();
         }
@@ -2897,20 +2894,22 @@ mod tests {
         harness
             .until(|event| matches!(event, UiEvent::StatuslineMenuOpened))
             .await;
-        harness.send(UiCommand::SetStatusline {
+        let toggle = || UiCommand::ToggleStatusline {
             item: StatuslineItem::Session,
-            enabled: true,
-        });
-        let shown = harness
-            .until(|event| matches!(event, UiEvent::StatuslineChanged { .. }))
-            .await;
-        assert_eq!(
-            shown,
-            [UiEvent::StatuslineChanged {
-                item: StatuslineItem::Session,
-                enabled: true,
-            }]
-        );
+        };
+        harness.send(toggle());
+        harness.send(toggle());
+        harness.send(toggle());
+        let changed = |event: &UiEvent| matches!(event, UiEvent::StatuslineChanged { .. });
+        let mut shown = Vec::new();
+        for _ in 0..3 {
+            shown.extend(harness.until(changed).await.iter().cloned());
+        }
+        let session = |enabled| UiEvent::StatuslineChanged {
+            item: StatuslineItem::Session,
+            enabled,
+        };
+        assert_eq!(shown, [session(true), session(false), session(true)]);
         assert_eq!(
             saved_settings(&harness)["statusLine"],
             json!({"context": true, "session": true})
