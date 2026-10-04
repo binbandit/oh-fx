@@ -912,6 +912,7 @@ struct Presenter {
     source: CredentialSource,
     stdout: Box<dyn Write + Send>,
     output: String,
+    response: ResponseOutput,
     has_output: bool,
     boundary_pending: bool,
     trailing_newlines: usize,
@@ -925,6 +926,13 @@ struct Presenter {
     write_error: Option<&'static str>,
     command_echo: Option<Arc<CommandEcho>>,
     command_calls: Vec<ToolCallId>,
+}
+
+#[derive(Debug, Default)]
+struct ResponseOutput {
+    start: usize,
+    started: bool,
+    restarted: bool,
 }
 
 struct FailureSummary {
@@ -941,6 +949,7 @@ impl Presenter {
             source,
             stdout: Box::new(io::stdout()),
             output: String::new(),
+            response: ResponseOutput::default(),
             has_output: false,
             boundary_pending: false,
             trailing_newlines: 0,
@@ -981,7 +990,11 @@ impl Presenter {
 
     fn handle(&mut self, event: UiEvent) -> bool {
         let written = match event {
-            UiEvent::AssistantText { text, .. } => self.push_assistant(&text),
+            UiEvent::AssistantText { text, .. } => {
+                self.begin_response();
+                self.push_assistant(&text)
+            }
+            UiEvent::AssistantRestarted { text, .. } => self.push_restarted(&text),
             UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
             UiEvent::Recovery { status, .. } => {
                 let notices = self.recovery_notices(&status);
@@ -1188,8 +1201,50 @@ impl Presenter {
         Some(self.settling_progress.remove(index).1)
     }
 
+    fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        if outcome == TurnOutcome::Completed {
+            self.discard_restarted_preview();
+        }
+    }
+
+    fn begin_response(&mut self) {
+        if mem::replace(&mut self.response.started, true) {
+            return;
+        }
+        self.discard_restarted_preview();
+        self.response.start = self.output.len();
+    }
+
+    fn discard_restarted_preview(&mut self) {
+        if !mem::take(&mut self.response.restarted) {
+            return;
+        }
+        self.output.truncate(self.response.start);
+        self.has_output = !self.output.is_empty();
+        self.boundary_pending = self.has_output;
+        self.trailing_newlines = if self.output.ends_with("\n\n") {
+            2
+        } else {
+            usize::from(self.output.ends_with('\n'))
+        };
+    }
+
+    fn push_restarted(&mut self, text: &str) -> io::Result<()> {
+        self.response.started = false;
+        match self.mode {
+            OutputMode::Raw => self.write_output(text),
+            OutputMode::Json => {
+                self.response.restarted = true;
+                write_stderr(text)
+            }
+            OutputMode::Quiet => write_stderr(text),
+            OutputMode::Terminal => self.push_terminal_text(text),
+        }
+    }
+
     fn start_step(&mut self) {
         self.steps += 1;
+        self.response.started = false;
         self.held_blank_text.clear();
         if self.has_output {
             self.boundary_pending = true;
@@ -1344,6 +1399,7 @@ impl Presenter {
     }
 
     fn finish(mut self, report: &TurnReport, model: &str, saved: Option<SavedAsk>) -> ExitCode {
+        self.finalize_turn(report.outcome);
         if self.mode == OutputMode::Terminal {
             let _ = self.end_line();
         }
@@ -2215,6 +2271,82 @@ mod tests {
         presenter.mode = OutputMode::Terminal;
         presenter.stdout = Box::new(screen.clone());
         (presenter, screen)
+    }
+
+    fn restarted(text: &str) -> UiEvent {
+        UiEvent::AssistantRestarted {
+            turn_id: TurnId::new(1),
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_restart_drops_only_the_interrupted_json_preview() {
+        let mut presenter = json_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Completed tool commentary."),
+                started("call-1", "Reading", ToolEffect::ReadOnly),
+                assistant("DISCARDED partial"),
+                restarted("Restart notice\n"),
+            ],
+        );
+        assert_eq!(
+            presenter.output,
+            "Completed tool commentary.\n\nDISCARDED partial"
+        );
+        present(&mut presenter, [assistant("Replacement.")]);
+        assert_eq!(
+            presenter.output,
+            "Completed tool commentary.\n\nReplacement."
+        );
+    }
+
+    #[test]
+    fn an_unreplaced_json_preview_is_dropped_only_when_the_turn_completes() {
+        for (outcome, kept) in [
+            (
+                TurnOutcome::Failed,
+                "Completed commentary.\n\nRetained preview.",
+            ),
+            (
+                TurnOutcome::Interrupted,
+                "Completed commentary.\n\nRetained preview.",
+            ),
+            (TurnOutcome::Completed, "Completed commentary.\n\n"),
+        ] {
+            let mut presenter = json_presenter();
+            present(
+                &mut presenter,
+                [
+                    assistant("Completed commentary.\n\n"),
+                    started("call-1", "Reading", ToolEffect::ReadOnly),
+                    assistant("Retained preview."),
+                    restarted("Restart\n"),
+                    restarted("Restart\n"),
+                ],
+            );
+            presenter.finalize_turn(outcome);
+            assert_eq!(presenter.output, kept, "{outcome:?}");
+        }
+    }
+
+    #[test]
+    fn the_terminal_shows_the_restart_notice_between_the_replies() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                assistant("Hel"),
+                restarted("\n\n[Response interrupted. Restarting.]\n\n"),
+                assistant("Hello."),
+            ],
+        );
+        assert_eq!(
+            screen.text(),
+            "Hel\n\n[Response interrupted. Restarting.]\n\nHello."
+        );
     }
 
     #[test]

@@ -304,6 +304,27 @@ async fn a_stream_failure_stalled_at_the_same_point_discards_its_checkpoint() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_restart_saves_its_checkpoint_as_continuing_the_response() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![StreamEvent::TextDelta {
+                text: "Hel".to_owned(),
+            }],
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+        ),
+        text_reply("Hello."),
+    ]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    run(&mut agent, "go").await;
+    let restarting = RecoveryProgress::Waiting(ModelRecoveryAction::ContinuingResponse);
+    assert_eq!(
+        checkpoints(&entries.lock().unwrap()).first(),
+        Some(&checkpoint(&[], restarting, 1))
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failure_that_is_not_retried_saves_no_checkpoint() {
     let provider = FakeProvider::new(vec![Script::Fail(
         Vec::new(),

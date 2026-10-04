@@ -12,6 +12,7 @@ fn evidence(cause: ModelRecoveryCause) -> Evidence {
         retry_after_seconds: None,
         pacing: RetryPacing::Idle,
         progress: Progress::Unknown,
+        output: Output::None,
         recovery_elapsed: None,
     }
 }
@@ -174,6 +175,30 @@ fn a_timeout_past_the_recovery_window_waits_the_billable_minimum() {
 }
 
 #[test]
+fn partial_output_restarts_the_response_unless_the_connection_is_down_or_silent() {
+    let partial = |cause| {
+        decide(Evidence {
+            output: Output::Partial,
+            ..evidence(cause)
+        })
+    };
+    for cause in [INTERRUPTED, UNAVAILABLE, RATE_LIMITED] {
+        let restart = partial(cause);
+        assert_eq!(restart.strategy, Strategy::ContinueResponse, "{cause:?}");
+        assert_eq!(restart.delay, decide(evidence(cause)).delay, "{cause:?}");
+    }
+    assert_eq!(
+        partial(CONNECTIVITY).strategy,
+        Strategy::WaitForConnectivity
+    );
+    assert_eq!(partial(STREAM_TIMEOUT).strategy, Strategy::ProbeLiveness);
+    assert_eq!(
+        Strategy::ContinueResponse.action(),
+        Some(ModelRecoveryAction::ContinuingResponse)
+    );
+}
+
+#[test]
 fn implicit_retry_pacing_is_independent_from_the_shared_attempt_budget() {
     let first = decide(evidence(INTERRUPTED));
     let second = decide(Evidence {
@@ -236,12 +261,16 @@ fn network_and_stream_failures_carry_progress_evidence_and_http_status_failures_
     assert!(!tracks_progress(RATE_LIMITED, &stream_failure));
     let mut recovery = Recovery::default();
     for _ in 0..3 {
-        let decision = recovery.decide(UNAVAILABLE, &http_failure, 12);
+        let decision = recovery.decide(UNAVAILABLE, &http_failure, 12, Output::None);
         assert_eq!(decision.strategy, Strategy::RetryRequest);
     }
     let mut recovery = Recovery::default();
     let decisions: Vec<Strategy> = (0..3)
-        .map(|_| recovery.decide(UNAVAILABLE, &stream_failure, 12).strategy)
+        .map(|_| {
+            recovery
+                .decide(UNAVAILABLE, &stream_failure, 12, Output::None)
+                .strategy
+        })
         .collect();
     assert_eq!(
         decisions,

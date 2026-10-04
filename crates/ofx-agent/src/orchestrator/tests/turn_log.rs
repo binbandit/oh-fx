@@ -286,7 +286,7 @@ async fn interrupted_and_failed_turns_are_logged_as_upstream_saves_them() {
         Script::Fail(Vec::new(), refused()),
         Script::Fail(
             partial("Partial answer"),
-            failure(ProviderErrorKind::TransportInterrupted, "ReadFailed"),
+            failure(ProviderErrorKind::ProviderError, "ProviderError"),
         ),
         tool_reply(&[("call-1", "{}")]),
         Script::Fail(Vec::new(), refused()),

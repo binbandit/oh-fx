@@ -390,6 +390,7 @@ impl ModelRecoveryCause {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModelRecoveryAction {
     RetryingRequest,
+    ContinuingResponse,
     WaitingForConnectivity,
     CheckingLiveness,
     Paused,
@@ -399,6 +400,7 @@ impl ModelRecoveryAction {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::RetryingRequest => "retrying_request",
+            Self::ContinuingResponse => "continuing_response",
             Self::WaitingForConnectivity => "waiting_for_connectivity",
             Self::CheckingLiveness => "checking_liveness",
             Self::Paused => "paused",
@@ -408,6 +410,7 @@ impl ModelRecoveryAction {
     const fn display(self) -> &'static str {
         match self {
             Self::RetryingRequest => "retrying request",
+            Self::ContinuingResponse => "restarting response",
             Self::WaitingForConnectivity => "waiting for connection",
             Self::CheckingLiveness => "checking the connection",
             Self::Paused => "recovery paused",
@@ -974,6 +977,28 @@ mod tests {
         assert_eq!(
             ModelRecoveryAction::CheckingLiveness.as_str(),
             "checking_liveness"
+        );
+    }
+
+    #[test]
+    fn a_restarted_response_says_it_is_restarting() {
+        let restarting = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::AutoRetry,
+            action: Some(ModelRecoveryAction::ContinuingResponse),
+            delay_seconds: 1,
+            ..stopped(
+                Some(ModelRecoveryCause::NetworkInterrupted),
+                1,
+                Some("ReadFailed"),
+            )
+        };
+        assert_eq!(
+            restarting.label(),
+            "⚠ Network interrupted · connection dropped · restarting response in 1s"
+        );
+        assert_eq!(
+            ModelRecoveryAction::ContinuingResponse.as_str(),
+            "continuing_response"
         );
     }
 

@@ -606,6 +606,56 @@ fn transient_failures_retry_with_upstream_notices_and_recovery_json() {
     assert_eq!(server.requests().len(), 4);
 }
 
+fn cut_off_after(text: &str) -> Reply {
+    let body: String = chat_text_events(&[text])[..2]
+        .iter()
+        .flat_map(|event| ["data: ", event, "\n\n"])
+        .collect();
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len() + 1
+    );
+    Reply::Raw(format!("{head}{body}").into_bytes())
+}
+
+#[test]
+fn an_interrupted_reply_restarts_with_the_upstream_notice_in_each_output_mode() {
+    let server = FakeServer::start([
+        cut_off_after("Hel"),
+        Reply::sse(&chat_text_events(&["Hello."])),
+        cut_off_after("Hel"),
+        Reply::sse(&chat_text_events(&["Hello."])),
+        cut_off_after("Hel"),
+        Reply::sse(&chat_text_events(&["Hello."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let key = [("PORTKEY_API_KEY", PORTKEY_KEY)];
+    let restarted = "\n\n[Response interrupted. Restarting.]\n\n";
+    let output = home.ask(&["ask", "--no-save", "hi"], &key);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), format!("Hel{restarted}Hello."));
+    let notice = "[notice] ⚠ Network interrupted · connection dropped · restarting response\n";
+    assert_eq!(
+        stderr(&output),
+        format!("{notice}{notice}[notice] ✓ recovered · succeeded on attempt 2\n")
+    );
+    let output = home.ask(&["ask", "--json", "--no-save", "hi"], &key);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["output"], "Hello.");
+    assert_eq!(result["final_output"], "Hello.");
+    assert!(stderr(&output).contains(restarted), "{}", stderr(&output));
+    let output = home.ask(&["ask", "--quiet", "--no-save", "hi"], &key);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stderr(&output), restarted);
+    let requests = server.requests();
+    let note = "The previous response was interrupted. Restart that response from the beginning using the completed tool results above. Do not repeat completed tool actions.";
+    let notes: Vec<bool> = requests
+        .iter()
+        .map(|request| request.body_text().contains(note))
+        .collect();
+    assert_eq!(notes, [false, true, false, true, false, true]);
+}
+
 #[test]
 fn sign_in_redirects_are_not_followed_and_explain_the_base_url() {
     let identity_provider = FakeServer::start([]);

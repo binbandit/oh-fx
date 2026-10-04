@@ -122,6 +122,11 @@ impl Shell<'_> {
                     self.assistant_text(&text);
                 }
             }
+            UiEvent::AssistantRestarted { turn_id, text } => {
+                if self.is_visible_turn(turn_id) {
+                    self.present_assistant(&text);
+                }
+            }
             UiEvent::Operational { turn_id, text } => {
                 if self.is_visible_turn(turn_id) {
                     self.operational_text(&text);
@@ -509,6 +514,13 @@ impl Shell<'_> {
         };
         turn.phase = TurnPhase::Generating;
         turn.tokens.consume_content(text);
+        self.present_assistant(text);
+    }
+
+    fn present_assistant(&mut self, text: &str) {
+        let Some(turn) = &mut self.turn else {
+            return;
+        };
         let Some(text) = turn.leading_whitespace.release(text) else {
             return;
         };

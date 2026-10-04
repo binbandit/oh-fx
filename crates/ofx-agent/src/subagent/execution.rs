@@ -83,7 +83,8 @@ impl ChildRuntime {
             .run_turn(
                 &work.message,
                 &mut |event| match event {
-                    UiEvent::AssistantText { text, .. } => partial.push_str(&text),
+                    UiEvent::AssistantText { text, .. }
+                    | UiEvent::AssistantRestarted { text, .. } => partial.push_str(&text),
                     UiEvent::ToolStarted { .. } | UiEvent::ToolRejected { .. } => partial.clear(),
                     UiEvent::ApprovalRequested { request, .. } => approvals(*request),
                     _ => {}
