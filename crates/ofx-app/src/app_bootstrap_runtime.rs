@@ -18,9 +18,9 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ActiveMode, ApprovalDecision, CallDescription, CapabilityResolver, LivePermissionMode,
-    ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport,
-    StatuslineToggles, Tool,
+    ActiveMode, ApprovalDecision, CallDescription, CapabilityResolver, DynamicTools,
+    LivePermissionMode, ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId,
+    ReviewTransport, StatuslineToggles, Tool,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app_agent_runtime::Emit;
 use crate::app_mcp_runtime::{McpHost, McpSources};
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_subagent_runtime::{ChildFactory, Delegation};
+use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
@@ -304,6 +304,7 @@ impl Profile {
         );
         let permissions = self.reviewed_policy(&permission_mode, &route.reviewer);
         let approvals = interactive.then(ApprovalQueue::shared);
+        let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
         let children = ChildFactory {
             provider: Arc::clone(&route.provider),
             executions: launch.executions.clone(),
@@ -315,12 +316,12 @@ impl Profile {
             approvals: approvals.clone(),
             project: project.clone(),
             skills: Arc::clone(&skills),
+            mcp: ParentCatalog::shared(mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>)),
             workspace_root: self.workspace_root.clone(),
             permission_mode: permission_mode.clone(),
             parent: Mutex::new(config.clone()),
             mode: launch.mode,
         };
-        let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
         Ok(AgentSetup {
             provider: route.provider,
             title_model: route.title_model,
