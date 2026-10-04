@@ -21,6 +21,7 @@ use crate::responses_protocol::{
     Delta, FailureCause, Reducer, ReplayLimits, ResponsesCompletion, ResponsesError,
     ResponsesFinish, StreamLimits, push_json_string, select_replay_parts, write_input, write_tools,
 };
+use crate::stall_watch::StallWatch;
 
 const RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const REPLAY_PROVIDER: &str = "codex";
@@ -267,9 +268,6 @@ impl CodexProvider {
         match send(builder, cancel).await {
             Ok(response) => Ok(response),
             Err(SendFailure::Cancelled) => Err(ProviderError::cancelled()),
-            Err(SendFailure::Timeout) => {
-                Err(ProviderError::new(ProviderErrorKind::Timeout, "Timeout"))
-            }
             Err(SendFailure::Transport(error)) => {
                 Err(transport_failure(&error, &self.secrets(sent)))
             }
@@ -421,6 +419,7 @@ async fn consume_stream<S: ChunkSource + Send>(
 ) -> Result<ResponsesCompletion, ProviderError> {
     let mut reducer = Reducer::new(limits);
     let mut decoder = SseDecoder::new(MAX_SSE_EVENT_BYTES);
+    let mut watch = StallWatch::start();
     let mut events: usize = 0;
     'stream: loop {
         loop {
@@ -429,6 +428,7 @@ async fn consume_stream<S: ChunkSource + Send>(
                 Ok(None) => break,
                 Err(_) => return Err(codex_failure(ResponsesError::EventTooLarge)),
             };
+            watch.progressed();
             if data == b"[DONE]" {
                 break 'stream;
             }
@@ -460,21 +460,9 @@ async fn consume_stream<S: ChunkSource + Send>(
                 }
             }
         }
-        let chunk = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(ProviderError::cancelled()),
-            chunk = source.next_chunk() => chunk,
-        };
-        match chunk {
-            Ok(Some(bytes)) => decoder.push(bytes.as_ref()),
-            Ok(None) => break,
-            Err(detail) => {
-                return Err(ProviderError::new(
-                    ProviderErrorKind::TransportInterrupted,
-                    "ReadFailed",
-                )
-                .with_detail(sanitized(detail, secrets)));
-            }
+        match watch.next_chunk(source, cancel, secrets).await? {
+            Some(bytes) => decoder.push(bytes.as_ref()),
+            None => break,
         }
     }
     reducer.finish(cancel.is_cancelled()).map_err(codex_failure)

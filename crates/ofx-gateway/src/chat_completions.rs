@@ -25,6 +25,7 @@ use crate::gateway_error_format::{
     format_http_error_message, format_http_recovery_diagnostic, sanitize_external_text,
 };
 use crate::secret_mask::mask_configured_secrets;
+use crate::stall_watch::StallWatch;
 
 const RESPONSE_HEAD_TIMEOUT: Duration = Duration::from_mins(2);
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -131,15 +132,14 @@ impl ChatCompletionsProvider {
             builder = builder.bearer_auth(token);
         }
         sink.emit(StreamEvent::Admitted);
-        let mut response = match send(builder, cancel).await {
-            Ok(response) => response,
-            Err(SendFailure::Cancelled) => return Err(ProviderError::cancelled()),
-            Err(SendFailure::Timeout) => {
-                return Err(ProviderError::new(ProviderErrorKind::Timeout, "Timeout"));
-            }
-            Err(SendFailure::Transport(error)) => {
+        let sent = tokio::time::timeout(RESPONSE_HEAD_TIMEOUT, send(builder, cancel)).await;
+        let mut response = match sent {
+            Ok(Ok(response)) => response,
+            Ok(Err(SendFailure::Cancelled)) => return Err(ProviderError::cancelled()),
+            Ok(Err(SendFailure::Transport(error))) => {
                 return Err(transport_failure(&error, &self.secrets));
             }
+            Err(_) => return Err(ProviderError::new(ProviderErrorKind::Timeout, "Timeout")),
         };
         if response.status() != StatusCode::OK {
             return Err(http_failure(response, cancel, &self.secrets, Some(&self.chat_url)).await);
@@ -269,7 +269,6 @@ impl ModelProvider for ChatCompletionsProvider {
 
 pub(crate) enum SendFailure {
     Cancelled,
-    Timeout,
     Transport(reqwest::Error),
 }
 
@@ -277,15 +276,10 @@ pub(crate) async fn send(
     builder: RequestBuilder,
     cancel: &CancellationToken,
 ) -> Result<Response, SendFailure> {
-    let outcome = tokio::select! {
+    tokio::select! {
         biased;
-        () = cancel.cancelled() => return Err(SendFailure::Cancelled),
-        outcome = tokio::time::timeout(RESPONSE_HEAD_TIMEOUT, builder.send()) => outcome,
-    };
-    match outcome {
-        Ok(Ok(response)) => Ok(response),
-        Ok(Err(error)) => Err(SendFailure::Transport(error)),
-        Err(_) => Err(SendFailure::Timeout),
+        () = cancel.cancelled() => Err(SendFailure::Cancelled),
+        sent = builder.send() => sent.map_err(SendFailure::Transport),
     }
 }
 
@@ -480,6 +474,7 @@ impl Stream<'_> {
         }
         let limits = self.limits;
         let mut decoder = SseDecoder::new(limits.event_bytes);
+        let mut watch = StallWatch::start();
         let mut events = 0;
         let mut received = 0;
         loop {
@@ -492,6 +487,7 @@ impl Stream<'_> {
             ));
             match decoder.next_event() {
                 Ok(Some(data)) => {
+                    watch.progressed();
                     events += 1;
                     let deltas = reducer
                         .accept(data, cancel.is_cancelled())
@@ -519,31 +515,15 @@ impl Stream<'_> {
                 }
                 Err(_) => return Err(protocol_failure(ProtocolError::EventTooLarge)),
             }
-            let chunk = tokio::select! {
-                biased;
-                () = cancel.cancelled() => return Err(ProviderError::cancelled()),
-                chunk = source.next_chunk() => chunk,
+            let Some(bytes) = watch.next_chunk(source, cancel, self.secrets).await? else {
+                reducer
+                    .end_of_stream()
+                    .map_err(|error| self.completion_failure(error, reducer, received))?;
+                return self.finish(reducer, cancel, received);
             };
-            match chunk {
-                Ok(Some(bytes)) => {
-                    let bytes = bytes.as_ref();
-                    received += bytes.len();
-                    decoder.push(bytes);
-                }
-                Ok(None) => {
-                    reducer
-                        .end_of_stream()
-                        .map_err(|error| self.completion_failure(error, reducer, received))?;
-                    return self.finish(reducer, cancel, received);
-                }
-                Err(detail) => {
-                    return Err(ProviderError::new(
-                        ProviderErrorKind::TransportInterrupted,
-                        "ReadFailed",
-                    )
-                    .with_detail(sanitized(detail, self.secrets)));
-                }
-            }
+            let bytes = bytes.as_ref();
+            received += bytes.len();
+            decoder.push(bytes);
         }
     }
 
