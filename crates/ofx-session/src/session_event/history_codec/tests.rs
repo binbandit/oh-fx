@@ -1,5 +1,5 @@
 use ofx_config::ProviderId;
-use ofx_contract::CommandProcessPresentation;
+use ofx_contract::{CommandProcessPresentation, TurnSummary, TurnTokenProgress};
 
 use super::*;
 use crate::session_event::InterruptReason;
@@ -125,7 +125,7 @@ fn history_snapshot_codec_round_trips_every_event_kind() {
         8,
         ConversationEvent::TurnCompleted(TurnCompletedEvent {
             files: vec![file_evidence()],
-            turn_summary: Null,
+            turn_summary: None,
         }),
     ));
     let mut interrupted =
@@ -271,6 +271,64 @@ fn history_snapshot_codec_writes_upstream_interrupted_layout() {
         encoded(&envelope(4, 6, ConversationEvent::Interrupted(interrupted))),
         expected
     );
+}
+
+#[test]
+fn history_snapshot_codec_writes_turn_summaries_in_upstream_layout() {
+    let summary = TurnSummary {
+        started_at_ms: 1000,
+        completed_at_ms: 4500,
+        thinking_duration_ms: 1200,
+        turn_duration_ms: 3500,
+        token_progress: TurnTokenProgress {
+            input_tokens: 1234,
+            output_tokens: 340,
+            input_exact: true,
+            output_exact: false,
+        },
+    };
+    let mut summary_bytes = vec![1];
+    for value in [1000, 4500, 1200, 3500, 1234, 340] {
+        summary_bytes.extend(word(value));
+    }
+    summary_bytes.extend([1, 0]);
+    let mut expected = Vec::new();
+    expected.extend(word(3));
+    expected.extend(word(4));
+    expected.extend(word(6));
+    expected.push(5);
+    expected.extend(word(0));
+    expected.extend(&summary_bytes);
+    let completed = envelope(
+        4,
+        6,
+        ConversationEvent::TurnCompleted(TurnCompletedEvent {
+            files: Vec::new(),
+            turn_summary: Some(summary),
+        }),
+    );
+    assert_eq!(encoded(&completed), expected);
+    round_trip(&completed);
+    let mut interrupted = InterruptedEvent::new(InterruptReason::Cancelled, None);
+    interrupted.turn_summary = Some(summary);
+    let interrupted = envelope(4, 6, ConversationEvent::Interrupted(interrupted));
+    let mut expected = Vec::new();
+    expected.extend(word(3));
+    expected.extend(word(4));
+    expected.extend(word(6));
+    expected.extend([6, 0, 0, 0, 0, 0]);
+    expected.extend(word(0));
+    expected.extend(&summary_bytes);
+    expected.push(0);
+    assert_eq!(encoded(&interrupted), expected);
+    round_trip(&interrupted);
+    let mut torn = encoded(&completed);
+    torn.truncate(torn.len() - 1);
+    assert!(decode_history_envelope(&torn).is_none());
+    let mut bad_flag = encoded(&completed);
+    let last = bad_flag.len() - 1;
+    bad_flag[last] = 2;
+    assert!(decode_history_envelope(&bad_flag).is_none());
 }
 
 #[test]

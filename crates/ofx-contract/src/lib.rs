@@ -89,7 +89,8 @@ pub use types::{
     PermissionRule, ProviderReplay, QuestionBatchEntry, QuestionOption, ReasoningEffort,
     ReplaySource, RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic,
     ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolResultStatus,
-    ToolStatusDetail, Usage, is_valid_reasoning_effort, valid_credential_account_id,
+    ToolStatusDetail, TurnSummary, TurnTokenProgress, Usage, is_valid_reasoning_effort,
+    valid_credential_account_id,
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,

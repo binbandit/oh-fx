@@ -53,6 +53,34 @@ pub enum ToolResultStatus {
     Failure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnTokenProgress {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub input_exact: bool,
+    pub output_exact: bool,
+}
+
+impl Default for TurnTokenProgress {
+    fn default() -> Self {
+        Self {
+            input_tokens: 0,
+            output_tokens: 0,
+            input_exact: true,
+            output_exact: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnSummary {
+    pub started_at_ms: i64,
+    pub completed_at_ms: i64,
+    pub thinking_duration_ms: u64,
+    pub turn_duration_ms: u64,
+    pub token_progress: TurnTokenProgress,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandProcessPresentation {
     ExitCode(i64),

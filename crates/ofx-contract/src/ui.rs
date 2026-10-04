@@ -10,7 +10,7 @@ use crate::subagent::SubagentStatus;
 use crate::tool_dispatch::CallDescription;
 use crate::types::{
     CommandProcessPresentation, FileChangeStats, PermissionMode, QuestionBatchEntry,
-    ReasoningEffort, RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, Usage,
+    ReasoningEffort, RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, TurnSummary, Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -157,6 +157,7 @@ pub enum HistoryEntry {
     Cancelled,
     Notice(Notice),
     Tool(SavedToolCall),
+    TurnSummary(TurnSummary),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
