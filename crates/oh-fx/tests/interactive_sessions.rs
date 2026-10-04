@@ -2343,3 +2343,42 @@ fn a_first_turn_paused_with_escape_is_kept_for_continue_to_resume() {
     wait(&session, CANCELLATION);
     exit(session);
 }
+
+#[test]
+fn a_shell_killed_while_its_first_turn_waits_to_retry_is_reopened_by_continue() {
+    let port = RefusedPort::reserve();
+    let home = Home::new(&port.base_url());
+    let mut session = home.shell(&[], WELCOME);
+    session.send(b"hi\r");
+    wait(&session, " · esc to pause");
+    let remembered = home.sessions().with_file_name("continue");
+    let deadline = std::time::Instant::now() + WAIT;
+    let named = |entry: fs::DirEntry| {
+        let name = entry.file_name();
+        name.len() == 64
+            && name
+                .to_string_lossy()
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+    };
+    while !fs::read_dir(&remembered).is_ok_and(|entries| entries.filter_map(Result::ok).any(named))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the session was never remembered for -c"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    session.kill().expect("kill oh-fx");
+    assert!(session.wait_exit(WAIT).is_some());
+    let id = home.only_session();
+    assert!(home.sessions().join(&id).join("recovery.json").exists());
+
+    let session = home.shell(&["-c"], "quit unexpectedly");
+    let screen = wait(&session, "auto · model-a");
+    assert!(
+        appears_in_order(&screen, &["┃ hi", "quit unexpectedly"]),
+        "{screen}"
+    );
+    exit(session);
+}
