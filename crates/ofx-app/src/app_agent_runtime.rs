@@ -10,10 +10,11 @@ use ofx_agent::{
 use ofx_config::save_model_preference;
 use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelOption, Notice, NoticeTone,
-    ProviderError, QuestionRequest, ReasoningEffort, ResumeRefusal, SessionCursor, SessionScope,
-    SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
+    ProviderError, QuestionRequest, ReasoningEffort, RecoveredTurn, ResumeRefusal, SessionCursor,
+    SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand,
+    UiEvent,
 };
-use ofx_session::{SessionError, prompt_display_title};
+use ofx_session::{PendingRecovery, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -26,7 +27,9 @@ use crate::app_commands::{
 };
 use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_session_runtime::{Persistence, RestoredPreferences, SessionTitle};
+use crate::app_session_runtime::{
+    NOT_CONTINUED, Persistence, RECOVERY_TOPIC, RestoredPreferences, SessionTitle, continued_turn,
+};
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
 use crate::native::NativeClipboard;
@@ -250,6 +253,12 @@ impl ControllerState {
             self.worker.admit(prompt);
         }
     }
+
+    fn receive_recovery(&mut self, recovered: RecoveredTurn) {
+        let prompt = QueuedPrompt::recovery(self.received_prompts, recovered);
+        self.received_prompts += 1;
+        self.worker.admit(prompt);
+    }
 }
 
 struct ContextNotices {
@@ -461,15 +470,18 @@ impl Controller {
                 .persistence
                 .as_ref()
                 .and_then(Persistence::resumed_title);
-            let opened = self
+            let (opened, pending) = self
                 .persistence
                 .as_mut()
-                .and_then(|persistence| persistence.open(&mut self.agent));
+                .map_or((None, None), |persistence| {
+                    persistence.open(&mut self.agent)
+                });
             if let Some(title) = resumed_title {
                 self.state.session_title.set(Some(&title));
             }
             self.bind_children();
             self.session_notice(opened);
+            self.continue_recovery(pending);
         }
         if let Some(herdr) = &self.herdr {
             herdr.initialize(self.persistence.as_ref().and_then(Persistence::active_id));
@@ -678,11 +690,35 @@ impl Controller {
                 });
                 self.show_startup_notices();
                 self.session_notice(switched.notice);
+                self.continue_recovery(switched.pending);
             }
             Err(refused) => {
                 self.session_notice(refused.notice);
                 self.refuse_resume(id, refused.refusal);
             }
+        }
+    }
+
+    fn continue_recovery(&mut self, pending: Option<PendingRecovery>) {
+        let Some(pending) = pending else {
+            return;
+        };
+        match continued_turn(
+            pending,
+            &self.state.setup,
+            &self.state.model,
+            self.state.fast_mode,
+        ) {
+            Ok(recovered) => {
+                observe_prompt(self.persistence.as_ref(), &recovered.prompt);
+                self.state.emit(UiEvent::RecoveryContinuing {
+                    prompt: recovered.prompt.clone(),
+                });
+                self.state.receive_recovery(recovered);
+            }
+            Err(_) => self
+                .state
+                .notice(NoticeTone::Warning, RECOVERY_TOPIC, NOT_CONTINUED),
         }
     }
 
@@ -827,9 +863,18 @@ impl Controller {
         let mut open = true;
         let installation = &mut self.installation;
         let report = {
-            let turn =
-                self.agent
-                    .run_turn_with_skills(&prompt.text, &prompt.skills, &mut sink, &cancel);
+            let agent = &mut self.agent;
+            let recovered = prompt.recovered().cloned();
+            let turn = async {
+                match recovered {
+                    Some(recovered) => agent.continue_turn(recovered, &mut sink, &cancel).await,
+                    None => {
+                        agent
+                            .run_turn_with_skills(&prompt.text, &prompt.skills, &mut sink, &cancel)
+                            .await
+                    }
+                }
+            };
             tokio::pin!(turn);
             loop {
                 tokio::select! {

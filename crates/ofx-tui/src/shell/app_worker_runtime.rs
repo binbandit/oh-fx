@@ -11,7 +11,7 @@ use ofx_contract::{
 };
 
 use super::leading_whitespace::LeadingWhitespace;
-use super::{ActiveTurn, FreshScreen, Shell, SubmissionState};
+use super::{ActiveTurn, FreshScreen, Shell, Submission, SubmissionState};
 use crate::footer::file_approval::FileApproval;
 use crate::output::activity_status::TurnPhase;
 use crate::output::compaction_activity::CompactionStatus;
@@ -211,6 +211,7 @@ impl Shell<'_> {
                 self.session_resume_failed(&id, refusal);
             }
             UiEvent::SessionResumed { history } => self.session_resumed(history),
+            UiEvent::RecoveryContinuing { prompt } => self.recovery_continuing(prompt),
             UiEvent::ExitRequested => self.should_exit = true,
         }
     }
@@ -618,9 +619,24 @@ impl Shell<'_> {
         let mut turn = ActiveTurn::new(&submission.prompt, now_ms);
         turn.turn_id = submission.turn_id;
         let text = submission.prompt.clone();
+        let presented = submission.presented;
         self.turn = Some(turn);
         self.kept_recovery = None;
-        self.push_entry(Entry::UserTurn { text });
+        if !presented {
+            self.push_entry(Entry::UserTurn { text });
+        }
+    }
+
+    fn recovery_continuing(&mut self, prompt: String) {
+        self.outstanding.push_back(Submission {
+            prompt,
+            state: SubmissionState::Queued,
+            turn_id: None,
+            sequence: self.submitted_prompts,
+            presented: true,
+        });
+        self.submitted_prompts += 1;
+        self.promote_next();
     }
 
     pub(super) fn cancel_visible_turn(&mut self) {
@@ -1289,6 +1305,31 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_continued_recovery_streams_under_its_already_shown_prompt() {
+        let mut test = TestShell::start();
+        test.deliver(UiEvent::SessionResumed {
+            history: vec![HistoryEntry::User("fix the build".to_owned())],
+        });
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+        });
+        test.deliver(started(1));
+        test.deliver(text(1, "Build fixed.\n"));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert_eq!(screen.matches("┃ fix the build").count(), 1, "{screen}");
+        assert!(screen.contains("Build fixed."), "{screen}");
+        assert!(test.sent().is_empty());
+        test.submit("next");
+        test.deliver(started(2));
+        test.deliver(text(2, "Next answer.\n"));
+        test.deliver(finished(2, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(screen.contains("┃ next"), "{screen}");
+        assert!(screen.contains("Next answer."), "{screen}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use ofx_contract::SkillBinding;
+use ofx_contract::{RecoveredTurn, SkillBinding};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +17,7 @@ pub struct QueuedPrompt {
     pub text: String,
     pub skills: Vec<SkillBinding>,
     delivery: Delivery,
+    recovered: Option<RecoveredTurn>,
 }
 
 impl QueuedPrompt {
@@ -26,7 +27,20 @@ impl QueuedPrompt {
             text,
             skills,
             delivery: Delivery::Ordinary,
+            recovered: None,
         }
+    }
+
+    pub fn recovery(id: u64, recovered: RecoveredTurn) -> Self {
+        Self {
+            text: recovered.prompt.clone(),
+            recovered: Some(recovered),
+            ..Self::new(id, String::new(), Vec::new())
+        }
+    }
+
+    pub fn recovered(&self) -> Option<&RecoveredTurn> {
+        self.recovered.as_ref()
     }
 
     pub fn is_continuation(&self) -> bool {
@@ -34,7 +48,7 @@ impl QueuedPrompt {
     }
 
     fn same_turn_eligible(&self) -> bool {
-        self.skills.is_empty()
+        self.skills.is_empty() && self.recovered.is_none()
     }
 }
 

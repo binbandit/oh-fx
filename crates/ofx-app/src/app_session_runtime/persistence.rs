@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use ofx_agent::{Agent, ChildStore, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, ReasoningEffort, TurnOutcome};
-use ofx_session::{SessionCatalog, SessionError, SessionPreferences, SessionStore};
+use ofx_session::{
+    PendingRecovery, SessionCatalog, SessionError, SessionPreferences, SessionStore,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -65,10 +67,15 @@ impl Persistence {
             .map(str::to_owned)
     }
 
-    pub(crate) fn open(&mut self, agent: &mut Agent) -> Option<Notice> {
-        let Some(Resumption { session, remember }) = self.resumption.take() else {
-            return self.begin_fresh(agent);
+    pub(crate) fn open(&mut self, agent: &mut Agent) -> (Option<Notice>, Option<PendingRecovery>) {
+        let Some(Resumption {
+            mut session,
+            remember,
+        }) = self.resumption.take()
+        else {
+            return (self.begin_fresh(agent), None);
         };
+        let pending = session.take_pending_recovery();
         let live = LiveSession::resume(session, self.route.clone(), agent);
         live.attach(agent);
         let notice = if remember {
@@ -77,7 +84,7 @@ impl Persistence {
             None
         };
         self.live = Some(live);
-        notice
+        (notice, pending)
     }
 
     pub(crate) fn begin_fresh(&mut self, agent: &mut Agent) -> Option<Notice> {

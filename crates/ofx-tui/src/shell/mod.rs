@@ -151,6 +151,7 @@ struct Submission {
     state: SubmissionState,
     turn_id: Option<TurnId>,
     sequence: u64,
+    presented: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
