@@ -419,6 +419,26 @@ impl Agent {
             .await
     }
 
+    fn new_turn(&self, id: TurnId, prompt: &str) -> Turn {
+        Turn {
+            id,
+            start: self.history.len(),
+            usage: Usage::default(),
+            silent_tool_steps: 0,
+            summary_requested: false,
+            failures: HashMap::new(),
+            malformed_batches: 0,
+            shell_failures: ShellExecutionFailureRetry::default(),
+            fast_mode: self.config.fast_mode,
+            fast_notice_shown: false,
+            compaction: TurnCompaction::default(),
+            raw_outputs: Vec::new(),
+            reviews: TurnReviews::default(),
+            language: self.turn_language(prompt),
+            recovery: None,
+        }
+    }
+
     async fn run_prompt(
         &mut self,
         prompt: &str,
@@ -443,23 +463,7 @@ impl Agent {
                 failure: Some(TurnFailure::Persistence(failure)),
             };
         }
-        let mut turn = Turn {
-            id,
-            start: self.history.len(),
-            usage: Usage::default(),
-            silent_tool_steps: 0,
-            summary_requested: false,
-            failures: HashMap::new(),
-            malformed_batches: 0,
-            shell_failures: ShellExecutionFailureRetry::default(),
-            fast_mode: self.config.fast_mode,
-            fast_notice_shown: false,
-            compaction: TurnCompaction::default(),
-            raw_outputs: Vec::new(),
-            reviews: TurnReviews::default(),
-            language: self.turn_language(prompt),
-            recovery: None,
-        };
+        let mut turn = self.new_turn(id, prompt);
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {

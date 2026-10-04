@@ -25,7 +25,7 @@ fn shell_tool() -> Arc<dyn Tool> {
         spec: ToolSpec {
             name: "shell".to_owned(),
             description: "Run a command.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
     })
 }
@@ -33,11 +33,7 @@ fn shell_tool() -> Arc<dyn Tool> {
 fn shell_reply(calls: &[(&str, &str)]) -> Script {
     let calls = calls
         .iter()
-        .map(|(id, arguments)| ToolCall {
-            id: ToolCallId::new(*id),
-            name: "shell".to_owned(),
-            arguments: (*arguments).to_owned(),
-        })
+        .map(|(id, arguments)| ToolCall::new(*id, "shell", *arguments))
         .collect();
     Script::Reply(Vec::new(), completion(None, calls, FinishReason::ToolCalls))
 }
