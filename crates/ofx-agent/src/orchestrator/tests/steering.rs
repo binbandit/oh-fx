@@ -528,3 +528,63 @@ async fn steering_after_a_cut_reply_is_taken_when_another_step_is_left() {
         ]
     );
 }
+
+async fn steered_after_streamed_tool_event(tool_event: StreamEvent) -> Arc<FakeProvider> {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            vec![
+                tool_event,
+                StreamEvent::ReasoningDelta {
+                    text: "planning".to_owned(),
+                },
+            ],
+            completion(
+                None,
+                vec![echo_call("call-1", r#"{"text":"one"}"#)],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply("Done."),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    worker.admit(plain(0, "go"));
+    let (report, events) = run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, _| {
+            if matches!(event, UiEvent::ReasoningText { .. }) {
+                worker.admit(plain(1, "also run the linter"));
+            }
+        },
+    )
+    .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
+    provider
+}
+
+#[tokio::test]
+async fn steering_typed_after_a_streamed_tool_start_waits_for_the_tool_result() {
+    let provider = steered_after_streamed_tool_event(StreamEvent::ToolCallStarted {
+        call_id: ToolCallId::new("call-1"),
+        tool_name: "echo".to_owned(),
+    })
+    .await;
+    assert_eq!(
+        provider.requests()[1].messages.last(),
+        Some(&ChatMessage::user(steering_message("also run the linter")))
+    );
+}
+
+#[tokio::test]
+async fn steering_typed_after_streamed_tool_input_waits_for_the_tool_result() {
+    let provider = steered_after_streamed_tool_event(StreamEvent::ToolInputDelta {
+        text: "{".to_owned(),
+    })
+    .await;
+    assert_eq!(
+        provider.requests()[1].messages.last(),
+        Some(&ChatMessage::user(steering_message("also run the linter")))
+    );
+}
