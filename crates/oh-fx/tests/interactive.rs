@@ -565,6 +565,29 @@ fn statusline_toggles_the_context_and_workspace_segments() {
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
+#[test]
+fn a_theme_pinned_in_settings_skips_the_probe_unless_the_environment_names_another() {
+    let server = FakeServer::start([]);
+    let mut settings = settings(&server.base_url());
+    settings["theme"] = json!("Light");
+    let home = Home::with_settings(&settings);
+    let mut session = home.shell(24, 80);
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    let output = session.output();
+    assert!(count(&output, b"\x1b[0;1;38;5;235moh-fx") > 0);
+    for probe in [&b"\x1b]11;?"[..], b"\x1b[?2031h", b"\x1b[?996n"] {
+        assert_eq!(count(&output, probe), 0, "{probe:?}");
+    }
+    let mut command = home.command();
+    command.env("OH_FX_THEME", "dark");
+    let mut session = PtySession::spawn(command, 24, 80).expect("spawn oh-fx in a pty");
+    wait(&session, "auto · model-a");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    assert!(count(&session.output(), b"\x1b[0;1;38;5;255moh-fx") > 0);
+}
+
 fn output_after(session: &PtySession, start: usize, needle: &[u8]) -> Vec<u8> {
     let deadline = Instant::now() + WAIT;
     loop {

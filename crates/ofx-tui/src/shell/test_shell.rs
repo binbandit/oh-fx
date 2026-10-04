@@ -283,6 +283,7 @@ fn options() -> ShellOptions {
         opening: Opening::Welcome,
         statusline: ofx_contract::StatuslineToggles::default(),
         workspace_identity: None,
+        theme: None,
     }
 }
 

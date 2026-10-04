@@ -226,6 +226,8 @@ pub enum LayerError {
     InvalidPermissionRuleTool,
     #[error("InvalidSessionTitlesType")]
     InvalidSessionTitlesType,
+    #[error("InvalidThemeType")]
+    InvalidThemeType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -283,6 +285,7 @@ struct Layer {
     statusline_workspace: Option<bool>,
     permission_rules: Option<Vec<PermissionRule>>,
     session_titles: Option<bool>,
+    theme: Option<String>,
 }
 
 impl Layer {
@@ -549,6 +552,13 @@ impl Settings {
             .session_titles
             .or(self.global.session_titles)
             .unwrap_or(true)
+    }
+
+    pub fn theme(&self) -> Option<&str> {
+        self.workspace
+            .theme
+            .as_deref()
+            .or(self.global.theme.as_deref())
     }
 
     pub fn context_limits(&self) -> ContextLimits {
@@ -950,6 +960,11 @@ fn parse_layer(object: &Map<String, Value>, scope: LayerScope) -> Result<ParsedL
         "session_titles",
         LayerError::InvalidSessionTitlesType,
     )?;
+    layer.theme = match object.get("theme") {
+        None => None,
+        Some(Value::String(theme)) => (!theme.is_empty()).then(|| theme.clone()),
+        Some(_) => return Err(LayerError::InvalidThemeType),
+    };
     if object.contains_key("skill_match_fuzzy") {
         rejected.push(LayerError::RetiredSkillMatchFuzzy);
     }
@@ -1522,6 +1537,7 @@ mod tests {
                 r#"{"session_titles":"off"}"#,
                 DiagnosticCause::MalformedSettings,
             ),
+            (r#"{"theme":5}"#, DiagnosticCause::MalformedSettings),
             (r#"{"model":" bad"}"#, DiagnosticCause::InvalidModelId),
         ] {
             let settings = load(&fixture(Some(json), None)).unwrap();
@@ -1746,6 +1762,26 @@ mod tests {
             project.diagnostics()[0].to_string(),
             "config project: ignored_project_user_only_setting; key=session_titles"
         );
+    }
+
+    #[test]
+    fn the_theme_follows_workspace_overrides_and_ignores_the_project() {
+        let unset = fixture_settings("{}");
+        assert_eq!(unset.theme(), None);
+        assert_eq!(fixture_settings(r#"{"theme":""}"#).theme(), None);
+        let global = fixture_settings(r#"{"theme":"Light"}"#);
+        assert!(global.diagnostics().is_empty());
+        assert_eq!(global.theme(), Some("Light"));
+        let overridden = fixture(None, None);
+        let workspace = serde_json::to_string(&overridden.workspace.to_string_lossy()).unwrap();
+        let json =
+            format!(r#"{{"theme":"light","workspaces":{{{workspace}:{{"theme":"dark"}}}}}}"#);
+        fs::write(overridden.paths.config.join(SETTINGS_FILE), json).unwrap();
+        let settings = load(&overridden).unwrap();
+        assert_eq!(settings.theme(), Some("dark"));
+        let project = load(&fixture(None, Some(r#"{"theme":"light"}"#))).unwrap();
+        assert_eq!(project.theme(), None);
+        assert_eq!(project.diagnostics().len(), 1);
     }
 
     #[test]

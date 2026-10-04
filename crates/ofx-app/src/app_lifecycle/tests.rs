@@ -312,6 +312,7 @@ fn run_a_worker_that_panics() -> ! {
         opening: Opening::Welcome,
         statusline: ofx_contract::StatuslineToggles::default(),
         workspace_identity: None,
+        theme: None,
     };
     let outcome = host(options, events, receiver, None, |events, mut commands| {
         let _ = commands.blocking_recv();
@@ -390,6 +391,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         opening: Opening::Welcome,
         statusline: ofx_contract::StatuslineToggles::default(),
         workspace_identity: None,
+        theme: None,
     };
     let stopped = directory.join("stopped");
     let outcome = host(options, events, receiver, None, move |_, mut commands| {

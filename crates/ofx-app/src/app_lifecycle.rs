@@ -272,6 +272,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         workspace_identity: Some(Box::new(StatuslineIdentity::new(
             session.profile.workspace_root(),
         ))),
+        theme: session.profile.settings().theme().map(str::to_owned),
     };
     let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();
