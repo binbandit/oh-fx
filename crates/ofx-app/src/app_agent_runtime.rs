@@ -56,7 +56,7 @@ pub(crate) struct ControllerState {
     setup: AgentSetup,
     model: String,
     effort: ReasoningEffort,
-    fast_mode: bool,
+    speed: Speed,
     config_pending: bool,
     pending_clear: Option<u64>,
     pending_install_inputs: VecDeque<InstallInput>,
@@ -73,6 +73,13 @@ pub(crate) struct ControllerState {
     statusline: StatuslineToggles,
     mcp: Option<McpHost>,
     menu_settings: MenuSettings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Speed {
+    Normal,
+    Fast,
+    UltraRequested,
 }
 
 enum InstallInput {
@@ -98,11 +105,25 @@ impl ControllerState {
     }
 
     pub(crate) fn fast_mode(&self) -> bool {
-        self.fast_mode
+        self.speed == Speed::Fast
     }
 
     pub(crate) fn set_fast_mode(&mut self, enabled: bool) {
-        self.fast_mode = enabled;
+        if enabled {
+            self.speed = Speed::Fast;
+        } else if self.speed == Speed::Fast {
+            self.speed = Speed::Normal;
+        }
+    }
+
+    pub(crate) fn ultrafast_requested(&self) -> bool {
+        self.speed == Speed::UltraRequested
+    }
+
+    pub(crate) fn withdraw_ultrafast_request(&mut self) {
+        if self.speed == Speed::UltraRequested {
+            self.speed = Speed::Normal;
+        }
     }
 
     pub(crate) fn save_model_preference(&self, topic: &str, effort: Option<&ReasoningEffort>) {
@@ -113,7 +134,7 @@ impl ControllerState {
                 &provider,
                 &self.model,
                 effort.map(ReasoningEffort::label),
-                self.fast_mode,
+                self.fast_mode(),
             )
         });
         if let Err(unsaved) = saved {
@@ -125,7 +146,7 @@ impl ControllerState {
 
     pub(crate) fn status_body(&self) -> String {
         self.setup
-            .status(&self.model, self.history_turns)
+            .status(&self.model, self.history_turns, self.ultrafast_requested())
             .render_interactive_body()
     }
 
@@ -222,7 +243,7 @@ impl ControllerState {
 
     pub(crate) fn select_model(&mut self, model: String) {
         if model != self.model {
-            self.fast_mode = false;
+            self.speed = Speed::Normal;
         }
         self.use_model(model);
         self.save_model_preference(MODEL_TOPIC, None);
@@ -237,7 +258,11 @@ impl ControllerState {
         if let Some(effort) = effort {
             effort.clone_into(&mut self.effort);
         }
-        self.fast_mode = fast_mode;
+        self.speed = if fast_mode {
+            Speed::Fast
+        } else {
+            Speed::Normal
+        };
         self.use_model(model);
         self.save_model_preference(MODEL_PICKER_TOPIC, effort);
     }
@@ -430,7 +455,11 @@ impl Controller {
             model: setup.model().to_owned(),
             effort: setup.reasoning_effort(),
             permissions: setup.permission_runtime(Arc::clone(&emit)),
-            fast_mode: setup.fast_mode(),
+            speed: if setup.fast_mode() {
+                Speed::Fast
+            } else {
+                Speed::Normal
+            },
             statusline: setup.statusline(),
             menu_settings: MenuSettings::new(setup.prompt_history_enabled()),
             setup,
@@ -473,6 +502,13 @@ impl Controller {
 
     pub(crate) fn with_herdr(mut self, herdr: Option<Arc<crate::herdr::Herdr>>) -> Self {
         self.herdr = herdr;
+        self
+    }
+
+    pub(crate) fn requesting_ultrafast(mut self, requested: bool) -> Self {
+        if requested {
+            self.state.speed = Speed::UltraRequested;
+        }
         self
     }
 
@@ -765,7 +801,7 @@ impl Controller {
             .setup
             .restore_reasoning(restored.reasoning_effort, restored.fast_mode);
         self.state.effort = self.state.setup.reasoning_effort();
-        self.state.fast_mode = restored.fast_mode;
+        self.state.set_fast_mode(restored.fast_mode);
         if restored.model != self.state.model {
             self.state.use_model(restored.model);
         }
@@ -795,7 +831,7 @@ impl Controller {
 
     fn reconfigure(&mut self) {
         let mut config = self.state.setup.config(&self.state.model);
-        config.fast_mode = self.state.fast_mode;
+        config.fast_mode = self.state.fast_mode();
         config.reasoning_effort = self.state.effort.clone().into_named();
         self.state.setup.delegate_as(&config);
         self.agent.set_config(config);
@@ -1230,7 +1266,7 @@ fn save_session_preferences(
 ) -> Option<Notice> {
     persistence
         .as_mut()
-        .and_then(|persistence| persistence.select_model(&state.model, effort, state.fast_mode))
+        .and_then(|persistence| persistence.select_model(&state.model, effort, state.fast_mode()))
 }
 
 fn turn_events(
@@ -1578,7 +1614,11 @@ mod tests {
             setup: AgentSetup,
             observe: impl Fn(&UiEvent) + Send + Sync + 'static,
         ) -> Self {
-            Self::spawn_observer(home, setup, None, observe)
+            Self::spawn_observer(home, setup, None, false, observe)
+        }
+
+        fn requesting_ultrafast(home: tempfile::TempDir, setup: AgentSetup) -> Self {
+            Self::spawn_observer(home, setup, None, true, |_| {})
         }
 
         fn spawn(
@@ -1586,13 +1626,14 @@ mod tests {
             setup: AgentSetup,
             persistence: Option<Persistence>,
         ) -> Self {
-            Self::spawn_observer(home, setup, persistence, |_| {})
+            Self::spawn_observer(home, setup, persistence, false, |_| {})
         }
 
         fn spawn_observer(
             home: tempfile::TempDir,
             setup: AgentSetup,
             persistence: Option<Persistence>,
+            ultrafast: bool,
             observe: impl Fn(&UiEvent) + Send + Sync + 'static,
         ) -> Self {
             let (events_sender, events) = unbounded_channel();
@@ -1606,6 +1647,7 @@ mod tests {
             let worker = Arc::new(WorkerRuntime::default());
             tokio::spawn(
                 Controller::new(setup, emit, persistence, false, Arc::clone(&worker))
+                    .requesting_ultrafast(ultrafast)
                     .with_clipboard(shared)
                     .run(receiver),
             );
@@ -1900,7 +1942,7 @@ mod tests {
         let workspace = fs::canonicalize(harness.home.path().join("workspace")).unwrap();
         let expected = |turns: usize, grants: usize| {
             format!(
-                "status|model=model-a\nmodel_source=local\nprovider_endpoint={}\nauth=configured provider\nconnected_providers=local\nauth_refreshable=false\npermission_mode=auto\nworkspace={}\nhistory_turns={turns}\nsession_permission_grants={grants}\nagent_step_limit=0",
+                "status|model=model-a\nmodel_source=local\nprovider_endpoint={}\nauth=configured provider\nconnected_providers=local\nauth_refreshable=false\npermission_mode=auto\nworkspace={}\nhistory_turns={turns}\nsession_permission_grants={grants}\nagent_step_limit=0\nultrafast_requested=false",
                 server.base_url(),
                 workspace.display()
             )
@@ -2231,6 +2273,98 @@ mod tests {
             .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "fast"))
             .await;
         notice_body(shown).pop().unwrap()
+    }
+
+    async fn ultrafast_notice(harness: &mut Harness, command: &str) -> (NoticeTone, String) {
+        harness.command(command);
+        let shown = harness
+            .until(
+                |event| matches!(event, UiEvent::Notice { notice } if notice.topic == "ultrafast"),
+            )
+            .await;
+        match shown.last() {
+            Some(UiEvent::Notice { notice }) => (notice.tone, notice.body.clone()),
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn ultra_mode_requests_are_reported_and_need_a_model_that_has_it() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        for (command, tone, body) in [
+            ("/ultrafast", NoticeTone::Neutral, "requested: off"),
+            (
+                "/ultrafast ON",
+                NoticeTone::Warning,
+                "Ultra mode is unavailable for this model and may increase cost.",
+            ),
+            ("/ultrafast  status ", NoticeTone::Neutral, "requested: off"),
+            ("/ultrafast off", NoticeTone::Neutral, "requested off"),
+        ] {
+            assert_eq!(
+                ultrafast_notice(&mut harness, command).await,
+                (tone, body.to_owned()),
+                "{command}"
+            );
+        }
+        harness.command("/ultrafast faster");
+        assert_eq!(
+            notices_until(&mut harness, "").await,
+            ["|usage: /ultrafast [on|off|status]"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ultra_request_from_launch_lasts_until_turned_off_or_the_model_changes() {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        let mut harness = Harness::requesting_ultrafast(home, setup);
+        let requested = (NoticeTone::Neutral, "requested: on".to_owned());
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            requested
+        );
+        let status = status_notice(&mut harness).await;
+        assert!(status.ends_with("\nultrafast_requested=true"), "{status}");
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast off").await,
+            (NoticeTone::Neutral, "requested off".to_owned())
+        );
+        let status = status_notice(&mut harness).await;
+        assert!(status.ends_with("\nultrafast_requested=false"), "{status}");
+
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        let mut switched = Harness::requesting_ultrafast(home, setup);
+        switched.command("/model model-a");
+        notices_until(&mut switched, "").await;
+        assert_eq!(
+            ultrafast_notice(&mut switched, "/ultrafast").await,
+            requested
+        );
+        switched.command("/model model-b");
+        notices_until(&mut switched, "").await;
+        assert_eq!(
+            ultrafast_notice(&mut switched, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: off".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn turning_fast_mode_on_withdraws_the_ultra_request() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 8);
+        let home = codex_home();
+        let setup =
+            agent_setup_with(&home, &codex_settings(), codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::requesting_ultrafast(home, setup);
+        assert_eq!(fast_notice(&mut harness).await, "fast|on");
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: off".to_owned())
+        );
     }
 
     #[tokio::test]
@@ -3083,6 +3217,27 @@ mod tests {
                 "{status}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_picked_model_withdraws_the_ultra_request() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 2);
+        let home = codex_home();
+        let setup =
+            agent_setup_with(&home, &codex_settings(), codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::requesting_ultrafast(home, setup);
+        let ModelCatalog::Listed { models, .. } = listed_catalog(&mut harness).await else {
+            panic!("the Codex catalog lists its models");
+        };
+        harness.send(select(&models[0].id, ReasoningEffort::Auto, Some(false)));
+        harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: off".to_owned())
+        );
     }
 
     #[tokio::test]

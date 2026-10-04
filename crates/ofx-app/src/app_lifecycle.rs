@@ -57,6 +57,7 @@ struct Session {
     permission_mode: PermissionMode,
     persistence: Option<Persistence>,
     opening: Opening,
+    ultrafast_requested: bool,
 }
 
 pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedResume>) -> ExitCode {
@@ -188,6 +189,7 @@ async fn bootstrap(
         permission_mode,
         persistence,
         opening,
+        ultrafast_requested: modifiers.ultrafast_mode() == Some(true),
     })
 }
 
@@ -299,7 +301,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let installations = session.setup.skills().installations();
     let agent = agent_work(
         session.setup,
-        (session.persistence, picking),
+        (session.persistence, picking, session.ultrafast_requested),
         session.executions,
         steering,
         runtime,
@@ -319,7 +321,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
 
 fn agent_work(
     setup: AgentSetup,
-    (persistence, pick_at_start): (Option<Persistence>, bool),
+    (persistence, pick_at_start, ultrafast_requested): (Option<Persistence>, bool, bool),
     executions: ManagedExecutions,
     steering: Arc<WorkerRuntime>,
     runtime: Runtime,
@@ -336,7 +338,8 @@ fn agent_work(
             pick_at_start,
             steering,
         )
-        .with_herdr(herdr);
+        .with_herdr(herdr)
+        .requesting_ultrafast(ultrafast_requested);
         runtime.block_on(async {
             let discovery = mcp.clone().map(|mcp| {
                 tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))
