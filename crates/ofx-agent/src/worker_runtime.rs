@@ -226,6 +226,10 @@ impl WorkerRuntime {
             .any(|prompt| prompt.recovered.is_some())
     }
 
+    pub fn has_waiting_prompts(&self) -> bool {
+        !self.lock().queue.is_empty()
+    }
+
     pub fn waiting_texts(&self) -> Vec<String> {
         self.lock()
             .queue

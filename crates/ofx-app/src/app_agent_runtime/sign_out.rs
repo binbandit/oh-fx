@@ -3,6 +3,7 @@ use ofx_config::ProviderId;
 use ofx_contract::{BoxFuture, Notice, NoticeTone, UiEvent};
 
 use super::{CatalogFetch, Controller, ControllerState};
+use crate::app_bootstrap_runtime::Login;
 
 const AUTH_TOPIC: &str = "auth";
 const PROVIDER_TOPIC: &str = "provider";
@@ -30,6 +31,14 @@ enum Removal {
 }
 
 impl ControllerState {
+    pub(crate) fn login_missing(&self) -> bool {
+        self.setup.login() == Login::Missing
+    }
+
+    pub(crate) fn holds_prompt(&self) -> bool {
+        self.login_missing() && self.worker.has_waiting_prompts()
+    }
+
     pub(super) fn refuse_signed_out(&self) {
         self.notice(NoticeTone::Warning, AUTH_TOPIC, SIGNED_OUT);
     }
@@ -124,6 +133,7 @@ impl Controller {
         }
         if target != ProviderId::Gateway && target == self.state.setup.provider() {
             self.state.setup.sign_out();
+            self.state.emit(UiEvent::LoginChanged { missing: true });
             self.state
                 .notice(NoticeTone::Warning, PROVIDER_TOPIC, NO_PROVIDER);
         }

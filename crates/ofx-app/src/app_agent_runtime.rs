@@ -279,6 +279,7 @@ impl ControllerState {
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
         if self.setup.login() == Login::Missing {
             self.refuse_signed_out();
+            self.emit(UiEvent::PromptHeld);
         }
         let prompt = QueuedPrompt::new(self.received_prompts, text, skills);
         self.received_prompts += 1;
@@ -545,6 +546,7 @@ impl Controller {
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
         self.show_startup_notices();
         if !self.pick_at_start {
+            let resuming = self.persistence.as_ref().is_some_and(Persistence::resuming);
             let resumed_title = self
                 .persistence
                 .as_ref()
@@ -561,6 +563,9 @@ impl Controller {
             self.bind_children();
             self.session_notice(opened);
             self.continue_recovery(continues);
+            if resuming {
+                self.ask_for_a_login();
+            }
         }
         if let Some(persistence) = &self.persistence {
             persistence.preload(&mut self.listing);
@@ -629,6 +634,8 @@ impl Controller {
                 }
                 UiCommand::ListModels => self.catalog.request(),
                 UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
+                UiCommand::RetryHeldPrompt => self.retry_held_prompt().await,
+                UiCommand::DropHeldPrompt => self.drop_held_prompts(),
                 UiCommand::SelectModel {
                     model,
                     effort,
@@ -820,6 +827,7 @@ impl Controller {
                 self.show_startup_notices();
                 self.session_notice(switched.notice);
                 self.continue_recovery(switched.continues);
+                self.ask_for_a_login();
             }
             Err(refused) => {
                 self.session_notice(refused.notice);
@@ -848,6 +856,12 @@ impl Controller {
             Err(_) => self
                 .state
                 .notice(NoticeTone::Warning, RECOVERY_TOPIC, NOT_CONTINUED),
+        }
+    }
+
+    fn ask_for_a_login(&self) {
+        if self.state.login_missing() {
+            self.state.refuse_signed_out();
         }
     }
 
@@ -1261,6 +1275,8 @@ fn run_deferred(
         | UiCommand::ResumeSession { .. }
         | UiCommand::CloseSessionPicker => return refuse_session_command(state, command),
         UiCommand::Submit { .. }
+        | UiCommand::RetryHeldPrompt
+        | UiCommand::DropHeldPrompt
         | UiCommand::Cancel { .. }
         | UiCommand::PauseRecovery { .. }
         | UiCommand::Approval { .. }
@@ -4913,6 +4929,123 @@ mod tests {
             ]
         );
         assert!(codex.requests().is_empty());
+    }
+
+    async fn signed_out(codex: &FakeServer, catalog: &FakeServer) -> Harness {
+        let home = tempfile::tempdir().unwrap();
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let setup = agent_setup_with(&home, &settings, codex_endpoints(codex, catalog)).await;
+        Harness::with_setup(home, setup)
+    }
+
+    async fn held(harness: &mut Harness, prompt: &str) {
+        harness.submit(prompt);
+        within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+    }
+
+    fn save_login(harness: &Harness) {
+        let saved = codex_home();
+        fs::create_dir_all(harness.home.path().join("data")).unwrap();
+        fs::copy(
+            saved.path().join("data/chatgpt-auth.json"),
+            harness.home.path().join("data/chatgpt-auth.json"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_held_prompt_retried_without_a_login_asks_again_and_runs_once_one_is_saved() {
+        let codex = FakeServer::start([codex_text("found it")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signed_out(&codex, &catalog).await;
+        held(&mut harness, "hello").await;
+        harness.send(UiCommand::RetryHeldPrompt);
+        let asked =
+            within(harness.until(
+                |event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"),
+            ))
+            .await;
+        assert_eq!(notices(asked), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        save_login(&harness);
+        harness.send(UiCommand::RetryHeldPrompt);
+        let ran = within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert!(notices(ran).is_empty());
+        assert!(ran.contains(&UiEvent::LoginChanged { missing: false }));
+        assert!(codex.requests()[0].json().to_string().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn a_held_prompt_dropped_from_the_shell_never_runs() {
+        let codex = FakeServer::start([codex_text("only the next one")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signed_out(&codex, &catalog).await;
+        held(&mut harness, "dropped").await;
+        harness.send(UiCommand::DropHeldPrompt);
+        save_login(&harness);
+        harness.send(UiCommand::RetryHeldPrompt);
+        within(harness.until(|event| *event == UiEvent::LoginChanged { missing: false })).await;
+        harness.submit("next");
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        let request = codex.requests()[0].json().to_string();
+        assert!(request.contains("next"), "{request}");
+        assert!(!request.contains("dropped"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn compacting_while_signed_out_asks_for_authentication() {
+        let codex = FakeServer::start([codex_text("one")]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        chat(&mut harness, &["one"]).await;
+        notices_of(&mut harness, "/logout codex").await;
+        harness.command("/compact");
+        let ended = within(harness.until(compaction_settled)).await;
+        assert_eq!(
+            activities(ended),
+            [CompactionActivity::Ended(
+                CompactionEnd::AuthenticationRejected
+            )]
+        );
+        held(&mut harness, "two").await;
+        harness.command("/compact");
+        let ended = within(harness.until(compaction_settled)).await;
+        assert_eq!(
+            activities(ended),
+            [CompactionActivity::Ended(CompactionEnd::Busy)]
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_a_session_while_signed_out_asks_for_a_login() {
+        let codex = FakeServer::start([codex_text("one")]);
+        let catalog = codex_catalog(false, 1);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        chat(&mut harness, &["first question"]).await;
+        let first = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        notices_of(&mut harness, "/logout codex").await;
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        harness.send(UiCommand::ResumeSession { id: first });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+        let shown =
+            within(harness.until(
+                |event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"),
+            ))
+            .await;
+        assert_eq!(
+            notices(shown).last(),
+            Some(&auth(NoticeTone::Warning, SIGNED_OUT))
+        );
     }
 
     #[tokio::test]
