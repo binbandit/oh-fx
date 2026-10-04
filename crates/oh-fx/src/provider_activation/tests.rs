@@ -51,9 +51,9 @@ impl Fixture {
                     models: format!("{}/backend-api/codex/models", catalog.base_url()),
                     client_version: format!("{}/@openai/codex/latest", catalog.base_url()),
                 },
+                grok: ofx_auth::GrokEndpoints::default(),
             },
             lookup: |_| None,
-            grok: ofx_auth::GrokEndpoints::default(),
         }
     }
 
@@ -319,7 +319,7 @@ fn the_saved_model_wins_only_when_the_catalog_lists_it() {
 impl Fixture {
     pub(crate) fn grok_profile(&self, auth: &FakeServer, catalog: &FakeServer) -> Profile {
         let mut profile = self.profile(auth, catalog);
-        profile.grok = ofx_auth::GrokEndpoints {
+        profile.endpoints.grok = ofx_auth::GrokEndpoints {
             issuer: auth.base_url(),
             token_url: format!("{}/oauth/token", auth.base_url()),
             userinfo_url: format!("{}/userinfo", auth.base_url()),

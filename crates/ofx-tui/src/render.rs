@@ -35,16 +35,23 @@ pub(crate) fn compact_model_label(model: &str) -> String {
     claude_name.to_owned()
 }
 
+const LOGIN_HINT: &str = "run /login";
+
 pub(crate) fn hint_line(
     theme: &Theme,
     model: &str,
     permission_mode: PermissionMode,
     statusline: StatuslineView<'_>,
+    login_missing: bool,
     width: usize,
 ) -> Row {
     let model_label = compact_model_label(model);
     let permission_label = permission_mode.display_label();
     let mut row = Row::new();
+    if login_missing {
+        row.push(LOGIN_HINT, theme.statusline);
+        row.push(STATUSLINE_SEPARATOR, theme.statusline);
+    }
     let status_limit = width.min(MAX_STATUS_LINE_BYTES);
     let leading_fits = status_limit > 0
         && visible_width(permission_label)
@@ -140,6 +147,7 @@ mod tests {
             model,
             mode,
             statusline,
+            false,
             width,
         )
         .text()
@@ -197,6 +205,25 @@ mod tests {
             line("openai/gpt-5", PermissionMode::Ask, empty_window, 80),
             "ask · gpt-5 · 1k/0k 0%"
         );
+    }
+
+    #[test]
+    fn a_missing_login_leads_the_hint_line_before_its_segments() {
+        let full = StatuslineView {
+            context_used: 43_000,
+            context_total: Some(1_000_000),
+            session_title: None,
+            identity: None,
+        };
+        let row = hint_line(
+            &Theme::builtin(false, false, true),
+            "anthropic/claude-opus-4.8",
+            PermissionMode::Auto,
+            full,
+            true,
+            256,
+        );
+        assert_eq!(row.text(), "run /login · auto · opus 4.8 · 43k/1000k 4%");
     }
 
     #[test]
@@ -361,6 +388,7 @@ mod tests {
             "fake-model",
             PermissionMode::Auto,
             StatuslineView::default(),
+            false,
             100,
         );
         assert_eq!(row.text(), "auto · fake-model");
@@ -371,6 +399,7 @@ mod tests {
             "openai/gpt-5",
             PermissionMode::Ask,
             StatuslineView::default(),
+            false,
             100,
         );
         assert_eq!(ask.text(), "ask · gpt-5");
@@ -381,6 +410,7 @@ mod tests {
                 "fake-model",
                 PermissionMode::Auto,
                 StatuslineView::default(),
+                false,
                 12
             )
             .text(),
@@ -392,6 +422,7 @@ mod tests {
                 "x",
                 PermissionMode::Yolo,
                 StatuslineView::default(),
+                false,
                 40
             )
             .text(),
@@ -407,6 +438,7 @@ mod tests {
             "mod\x1b]2;PWNED\x07",
             PermissionMode::Auto,
             StatuslineView::default(),
+            false,
             100,
         );
         assert_eq!(row.text(), "auto · mod\\x1b]2;PWNED\\x07");
@@ -417,6 +449,7 @@ mod tests {
                 "mod\x1b]2;PWNED\x07",
                 PermissionMode::Auto,
                 StatuslineView::default(),
+                false,
                 25
             )
             .text(),
