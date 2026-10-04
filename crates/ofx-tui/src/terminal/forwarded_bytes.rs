@@ -6,20 +6,30 @@ pub(crate) struct ForwardedBytes {
     len: usize,
 }
 
+impl Default for ForwardedBytes {
+    fn default() -> Self {
+        Self {
+            buffer: [0; CAPACITY],
+            len: 0,
+        }
+    }
+}
+
 impl ForwardedBytes {
     pub(crate) fn single(byte: u8) -> Self {
-        let mut forwarded = Self::from_slice(&[]);
+        let mut forwarded = Self::default();
         forwarded.push(byte);
         forwarded
     }
 
     pub(crate) fn from_slice(bytes: &[u8]) -> Self {
-        let mut forwarded = Self {
-            buffer: [0; CAPACITY],
-            len: 0,
-        };
+        let mut forwarded = Self::default();
         forwarded.extend_from_slice(bytes);
         forwarded
+    }
+
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
     }
 
     pub(crate) fn push(&mut self, byte: u8) {

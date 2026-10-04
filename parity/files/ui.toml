@@ -167,9 +167,8 @@ modules = ["crates/ofx-tui/src/input/escape_parser.rs"]
 
 [[file]]
 upstream = "src/ui/input/native_clear_probe.zig"
-status = "todo"
-modules = []
-note = "Native clear-probe capture, 4096-byte retained input bound, disable state and late-response lifecycle are absent; the Rust cursor-response parser is a different component."
+status = "ported"
+modules = ["crates/ofx-tui/src/input/native_clear_probe.rs", "crates/ofx-tui/src/input/mod.rs"]
 
 [[file]]
 upstream = "src/ui/input/runtime.zig"
@@ -343,7 +342,7 @@ note = "Native terminal shell exists; upstream transcript frame state and full a
 upstream = "src/ui/terminal/cursor_probe.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/terminal/cursor_probe.rs"]
-note = "One-shot cursor response parsing exists; upstream private/tagged probe synchronization, forwarded backlog and idle-timeout protocol are absent."
+note = "One-shot parsing and the tagged reply-pair parser with forwarded backlog, idle timeout, late-reply window and paste pause exist; the private ?6n protocol and pausing a probe still waiting for its reply belong to the resize probe, which is not ported."
 
 [[file]]
 upstream = "src/ui/terminal/terminal.zig"

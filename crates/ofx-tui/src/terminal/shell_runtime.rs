@@ -296,6 +296,19 @@ impl Terminal {
         write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
     }
 
+    pub(crate) fn write_all_unless_full(&self, bytes: &[u8]) -> Result<bool, TerminalError> {
+        let written = loop {
+            match rustix::io::write(&self.output, bytes) {
+                Ok(written) => break written,
+                Err(Errno::INTR) => {}
+                Err(Errno::AGAIN) => return Ok(false),
+                Err(errno) => return Err(errno.into()),
+            }
+        };
+        self.write_all(&bytes[written..])?;
+        Ok(true)
+    }
+
     fn write_abnormal_restore(&self) {
         let output = self.output.as_fd();
         let deadline = Some(Instant::now() + self.restore_wait);
@@ -697,6 +710,31 @@ mod tests {
             test_pty::terminal(pty).capabilities(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_write_unless_full_gives_up_only_when_the_terminal_takes_nothing() {
+        let pty = test_pty::open();
+        let terminal = nonblocking_terminal(&pty);
+        let filler = [b'f'; 4096];
+        while rustix::io::write(&terminal.output, &filler).is_ok() {}
+        assert!(!terminal.write_all_unless_full(b"query").unwrap());
+        let master = pty.master.try_clone().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut received = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            while !received.ends_with(b"query") {
+                let count = rustix::io::read(&master, &mut buffer).unwrap();
+                received.extend_from_slice(&buffer[..count]);
+            }
+            received
+        });
+        while !terminal.write_all_unless_full(b"query").unwrap() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let received = reader.join().unwrap();
+        let queries = received.windows(5).filter(|window| *window == b"query");
+        assert_eq!(queries.count(), 1);
     }
 
     #[test]
