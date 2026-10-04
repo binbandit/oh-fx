@@ -656,6 +656,14 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Model,
     ),
     SlashSpec::new(
+        SlashKind::Ultrafast,
+        "/ultrafast",
+        "request Ultra mode when supported",
+        SlashPresentationCategory::Model,
+    )
+    .with_payload()
+    .with_help("/ultrafast [on|off|status]"),
+    SlashSpec::new(
         SlashKind::Statusline,
         "/statusline",
         "toggle status line segments",
