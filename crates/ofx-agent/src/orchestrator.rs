@@ -212,6 +212,26 @@ struct KnownCapabilities {
     catalog_unavailable: bool,
 }
 
+#[derive(Default)]
+struct StreamText {
+    partial: String,
+    visible: bool,
+    ends_in_newline: bool,
+}
+
+impl StreamText {
+    fn push(&mut self, text: &str) {
+        self.partial.push_str(text);
+    }
+
+    fn displayed(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.visible |= !text.trim_matches([' ', '\t', '\r', '\n']).is_empty();
+            self.ends_in_newline = text.ends_with('\n');
+        }
+    }
+}
+
 struct LastReply {
     turn: usize,
     text: Arc<str>,
@@ -963,7 +983,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Attempt {
         let turn_id = turn.id;
-        let mut partial = String::new();
+        let mut streamed_text = StreamText::default();
         let mut streamed_bytes = 0;
         let mut admitted = false;
         let mut sink = |event: StreamEvent| match event {
@@ -973,10 +993,20 @@ impl Agent {
                     events(UiEvent::Recovery { turn_id, status });
                 }
             }
+            StreamEvent::ToolCallStarted { call_id, tool_name } => {
+                streamed_text.ends_in_newline |= self.streamed_tool_start(
+                    turn_id,
+                    call_id,
+                    tool_name,
+                    streamed_text.visible && !streamed_text.ends_in_newline,
+                    events,
+                );
+            }
             StreamEvent::TextDelta { text } => {
                 streamed_bytes += text.len();
-                partial.push_str(&text);
+                streamed_text.push(&text);
                 if let Some(text) = turn.language.stage.admit(text) {
+                    streamed_text.displayed(&text);
                     events(UiEvent::AssistantText { turn_id, text });
                 }
             }
@@ -995,7 +1025,7 @@ impl Agent {
         };
         Attempt {
             streamed,
-            partial,
+            partial: streamed_text.partial,
             streamed_bytes,
             admitted,
         }
@@ -1045,6 +1075,33 @@ impl Agent {
             failure: TurnFailure::RecoveryPaused,
             partial,
         }
+    }
+
+    fn streamed_tool_start(
+        &self,
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        tool_name: String,
+        needs_newline: bool,
+        events: EventSink<'_>,
+    ) -> bool {
+        self.enter_tool_phase();
+        let Some(tool) = self.tool(&tool_name) else {
+            return false;
+        };
+        if needs_newline {
+            events(UiEvent::AssistantBoundary { turn_id });
+        }
+        let presentation = contained(|| tool.provisional_presentation()).flatten();
+        if let Some(presentation) = presentation.filter(|_| !call_id.as_str().is_empty()) {
+            events(UiEvent::ToolProvisional {
+                turn_id,
+                call_id,
+                tool_name,
+                action_label: presentation.action_label.to_owned(),
+            });
+        }
+        needs_newline
     }
 
     async fn run_batch(

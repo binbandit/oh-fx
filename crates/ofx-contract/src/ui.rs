@@ -252,6 +252,15 @@ pub enum UiEvent {
         turn_id: TurnId,
         status: RouteRecoveryStatus,
     },
+    AssistantBoundary {
+        turn_id: TurnId,
+    },
+    ToolProvisional {
+        turn_id: TurnId,
+        call_id: ToolCallId,
+        tool_name: String,
+        action_label: String,
+    },
     ToolStarted {
         turn_id: TurnId,
         call_id: ToolCallId,
