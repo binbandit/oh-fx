@@ -15,7 +15,18 @@ impl Tool for ShellTool {
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
-        self.inner.prepare(arguments)
+        self.inner.prepare(
+            &self
+                .saved_arguments(arguments)
+                .unwrap_or_else(|| arguments.to_owned()),
+        )
+    }
+
+    fn saved_arguments(&self, arguments: &str) -> Option<String> {
+        arguments
+            .strip_prefix(r#"{"request":"#)?
+            .strip_suffix('}')
+            .map(str::to_owned)
     }
 }
 
@@ -79,6 +90,30 @@ async fn identical_shell_failures_in_consecutive_batches_stop_the_turn_with_the_
             provider_replay: None,
         })
     );
+}
+
+#[tokio::test]
+async fn a_failure_repeated_with_and_without_its_request_wrapper_stops_the_turn() {
+    let wrapped = format!(r#"{{"request":{FAILING}}}"#);
+    let provider = FakeProvider::new(vec![
+        shell_reply(&[("call-1", &wrapped)]),
+        shell_reply(&[("call-2", FAILING)]),
+        text_reply("must not be requested"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![shell_tool()]);
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(
+        finished(&events),
+        [
+            ("call-1", ToolResultStatus::Failure),
+            ("call-2", ToolResultStatus::Failure),
+        ]
+    );
+    assert_eq!(
+        report.failure,
+        Some(TurnFailure::RepeatedShellExecutionFailure)
+    );
+    assert_eq!(provider.requests().len(), 2);
 }
 
 #[tokio::test]

@@ -1051,7 +1051,12 @@ impl Agent {
             };
             let status = output.status;
             if executed {
-                turn.shell_failures.observe(call, status);
+                let saved = self.saved_arguments(call);
+                turn.shell_failures.observe(
+                    &call.name,
+                    saved.as_deref().unwrap_or(&call.arguments),
+                    status,
+                );
             }
             turn.raw_outputs
                 .push((call.id.clone(), output.content.len()));
@@ -1178,11 +1183,13 @@ impl Agent {
         self.offer_tools();
     }
 
+    fn saved_arguments(&self, call: &ToolCall) -> Option<String> {
+        self.tool(&call.name)
+            .and_then(|tool| contained(|| tool.saved_arguments(&call.arguments)).flatten())
+    }
+
     fn history_call(&self, call: ToolCall) -> ToolCall {
-        let saved = self
-            .tool(&call.name)
-            .and_then(|tool| contained(|| tool.saved_arguments(&call.arguments)).flatten());
-        match saved {
+        match self.saved_arguments(&call) {
             Some(arguments) => ToolCall { arguments, ..call },
             None => call,
         }
