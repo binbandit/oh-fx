@@ -20,7 +20,7 @@ use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
-use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
+use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource, Login};
 use crate::app_commands::{
     CommandEffect, ModelChange, ModelPick, Outcome, Work, change_model, handle_command, listed,
     refuse_resume_during_turn, rename_session,
@@ -76,13 +76,6 @@ pub(crate) struct ControllerState {
     statusline: StatuslineToggles,
     mcp: Option<McpHost>,
     menu_settings: MenuSettings,
-    login: Login,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Login {
-    Ready,
-    Missing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,7 +278,7 @@ impl ControllerState {
     }
 
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
-        if self.login == Login::Missing {
+        if self.setup.login() == Login::Missing {
             self.refuse_signed_out();
         }
         let prompt = QueuedPrompt::new(self.received_prompts, text, skills);
@@ -506,7 +499,6 @@ impl Controller {
             history_turns: 0,
             context_to_compact: false,
             mcp,
-            login: Login::Ready,
         };
         if let Some(approvals) = state.setup.approvals() {
             approvals.attach(Arc::clone(&state.emit));
@@ -594,7 +586,7 @@ impl Controller {
 
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
-            let held = self.state.login == Login::Missing;
+            let held = self.state.setup.login() == Login::Missing;
             if self.installation.is_none()
                 && !held
                 && let Some(prompt) = self.state.worker.take_next()
@@ -5036,6 +5028,31 @@ mod tests {
             ]
         );
         assert!(codex.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_codex_launch_without_a_login_opens_signed_out() {
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let setup =
+            agent_setup_with(&home, &codex_settings(), codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.submit("hello");
+        let refused = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"))
+            .await;
+        assert_eq!(notices(refused), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        assert_eq!(
+            notices_of(&mut harness, "/model").await,
+            [(
+                NoticeTone::Neutral,
+                "model".to_owned(),
+                CODEX_MODEL.to_owned()
+            )]
+        );
+        assert!(codex.requests().is_empty());
+        assert!(catalog.requests().is_empty());
     }
 
     #[tokio::test]

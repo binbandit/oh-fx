@@ -151,6 +151,7 @@ impl AgentSetup {
             .set_reviewer(Reviewer::new(route.reviewer, DEFAULT_REVIEW_TIMEOUT));
         self.provider = route.provider;
         self.title_model = route.title_model;
+        self.login = route.login;
         self.models = route.models;
         self.connection = route.connection;
         self.source = route.source;

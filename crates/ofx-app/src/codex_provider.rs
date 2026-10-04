@@ -8,7 +8,10 @@ use ofx_auth::{
     refresh_chatgpt_credential,
 };
 use ofx_config::ProfilePaths;
-use ofx_contract::{BoxFuture, CapabilityLookup, CapabilityResolver, ModelCapabilities};
+use ofx_contract::{
+    BoxFuture, CapabilityLookup, CapabilityResolver, Completion, ModelCapabilities, ModelProvider,
+    ModelRequest, ProviderError, ProviderErrorKind, StreamSink,
+};
 use ofx_gateway::{
     CatalogCredential, CatalogFailure, CodexAccess, CodexCredentials, CodexEndpoints, CodexModel,
     CodexModelCatalog, CodexModelsEndpoints, CodexProvider, CodexRefresh,
@@ -23,6 +26,24 @@ pub struct SubscriptionEndpoints {
     pub codex: CodexEndpoints,
     pub models: CodexModelsEndpoints,
     pub grok: GrokEndpoints,
+}
+
+pub(crate) struct SignedOutProvider;
+
+impl ModelProvider for SignedOutProvider {
+    fn stream<'a>(
+        &'a self,
+        _request: &'a ModelRequest<'a>,
+        _sink: &'a mut dyn StreamSink,
+        _cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
+        Box::pin(async {
+            Err(ProviderError::new(
+                ProviderErrorKind::Unauthorized,
+                "MissingCredentials",
+            ))
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
