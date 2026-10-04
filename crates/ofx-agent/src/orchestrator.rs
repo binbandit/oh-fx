@@ -872,7 +872,7 @@ impl Agent {
                     partial,
                 });
             };
-            let decision = recovery.decide(cause, error.retry_after, streamed_bytes);
+            let decision = recovery.decide(cause, &error, streamed_bytes);
             let Some(action) = decision.strategy.action() else {
                 events(UiEvent::Recovery {
                     turn_id,

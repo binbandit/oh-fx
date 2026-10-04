@@ -179,7 +179,7 @@ fn user_note(request: &SeenRequest) -> &str {
 fn unavailable() -> Script {
     Script::Fail(
         Vec::new(),
-        failure(ProviderErrorKind::ServerError, "server_error"),
+        http_failure(ProviderErrorKind::ServerError, "server_error", 503),
     )
 }
 
@@ -254,6 +254,37 @@ async fn a_recovery_stalled_at_the_same_point_stops_and_discards_its_checkpoint(
         )
     };
     let provider = FakeProvider::new(vec![interrupted(), interrupted(), interrupted()]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    let retrying = RecoveryProgress::Waiting(ModelRecoveryAction::RetryingRequest);
+    assert_eq!(
+        checkpoints(&entries.lock().unwrap()),
+        [
+            checkpoint(&[], retrying, 1),
+            checkpoint(&[], retrying, 2),
+            Logged::RecoveryCleared,
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_failure_stalled_at_the_same_point_discards_its_checkpoint() {
+    let failed_after_reasoning = || {
+        Script::Fail(
+            vec![StreamEvent::ReasoningDelta {
+                text: "thinking".to_owned(),
+            }],
+            failure(ProviderErrorKind::ServerError, "ProviderError"),
+        )
+    };
+    let provider = FakeProvider::new(vec![
+        failed_after_reasoning(),
+        failed_after_reasoning(),
+        failed_after_reasoning(),
+        text_reply("must not be requested"),
+    ]);
     let (log, entries) = MemoryLog::shared();
     let mut agent = logged(new_agent(Arc::clone(&provider), Vec::new()), log);
     let (report, _) = run(&mut agent, "go").await;

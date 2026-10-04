@@ -157,6 +157,23 @@ fn billable_retries_throttle_past_the_recovery_window_without_dying() {
 }
 
 #[test]
+fn a_timeout_past_the_recovery_window_waits_the_billable_minimum() {
+    let past_window = Evidence {
+        progress: Progress::Advancing,
+        recovery_elapsed: Some(BILLABLE_RETRY_WINDOW + Duration::from_nanos(1)),
+        ..evidence(STREAM_TIMEOUT)
+    };
+    let throttled = decide(past_window);
+    assert_eq!(throttled.strategy, Strategy::ProbeLiveness);
+    assert_eq!(throttled.delay, THROTTLED_RETRY_DELAY);
+    let at_window = decide(Evidence {
+        recovery_elapsed: Some(BILLABLE_RETRY_WINDOW),
+        ..past_window
+    });
+    assert_eq!(at_window.delay, Duration::from_millis(250));
+}
+
+#[test]
 fn implicit_retry_pacing_is_independent_from_the_shared_attempt_budget() {
     let first = decide(evidence(INTERRUPTED));
     let second = decide(Evidence {
@@ -206,13 +223,34 @@ fn repeated_failures_at_the_same_point_count_as_a_stall() {
 }
 
 #[test]
-fn only_network_failures_carry_progress_evidence() {
-    for cause in [INTERRUPTED, CONNECTIVITY, STREAM_TIMEOUT] {
-        assert!(tracks_progress(cause), "{cause:?}");
+fn network_and_stream_failures_carry_progress_evidence_and_http_status_failures_do_not() {
+    let stream_failure = ProviderError::new(ProviderErrorKind::ServerError, "ProviderError");
+    let mut http_failure = stream_failure.clone();
+    http_failure.status = Some(503);
+    for cause in [INTERRUPTED, CONNECTIVITY, STREAM_TIMEOUT, UNAVAILABLE] {
+        assert!(tracks_progress(cause, &stream_failure), "{cause:?}");
     }
     for cause in [UNAVAILABLE, RATE_LIMITED] {
-        assert!(!tracks_progress(cause), "{cause:?}");
+        assert!(!tracks_progress(cause, &http_failure), "{cause:?}");
     }
+    assert!(!tracks_progress(RATE_LIMITED, &stream_failure));
+    let mut recovery = Recovery::default();
+    for _ in 0..3 {
+        let decision = recovery.decide(UNAVAILABLE, &http_failure, 12);
+        assert_eq!(decision.strategy, Strategy::RetryRequest);
+    }
+    let mut recovery = Recovery::default();
+    let decisions: Vec<Strategy> = (0..3)
+        .map(|_| recovery.decide(UNAVAILABLE, &stream_failure, 12).strategy)
+        .collect();
+    assert_eq!(
+        decisions,
+        [
+            Strategy::RetryRequest,
+            Strategy::RetryRequest,
+            Strategy::Stop
+        ]
+    );
     assert_eq!(
         recovery_cause(ProviderErrorKind::Timeout),
         Some(STREAM_TIMEOUT)

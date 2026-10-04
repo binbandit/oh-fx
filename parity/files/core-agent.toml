@@ -152,7 +152,7 @@ note = "Prepared calls and cancellation lifecycle exist; durable stop/attention 
 upstream = "src/core/agent/runtime/model_response_recovery.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/model_response_recovery.rs"]
-note = "The recovery policy retries without a turn budget, throttles past the 15-minute billable window, waits on connectivity, checks the connection on a stream timeout and stops a stalled recovery; partial-output restart, regeneration and reconciliation of tool calls, delivery evidence and the response-interrupted, system-resumed, authentication, request-limit, content-filter and compaction causes are absent."
+note = "The recovery policy retries without a turn budget, throttles past the 15-minute billable window, stream timeouts included, waits on connectivity, checks the connection on a stream timeout and stops a recovery stalled by network or in-stream provider failures; partial-output restart, regeneration and reconciliation of tool calls, delivery evidence and the response-interrupted, system-resumed, authentication, request-limit, content-filter and compaction causes are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/orchestrator.zig"

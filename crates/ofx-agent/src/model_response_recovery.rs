@@ -3,7 +3,8 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use ofx_contract::{
-    ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ProviderErrorKind,
+    ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ProviderError,
+    ProviderErrorKind,
 };
 
 pub(crate) const DEFAULT_MAX_PROVIDER_ATTEMPTS: usize = 10;
@@ -144,20 +145,21 @@ pub(crate) fn decide(evidence: Evidence) -> Decision {
             required_action: ModelRecoveryRequiredAction::SurfaceStall,
         };
     }
+    let throttled = evidence
+        .recovery_elapsed
+        .is_some_and(|elapsed| elapsed > BILLABLE_RETRY_WINDOW);
     if cause == ModelRecoveryCause::ProviderStreamTimeout {
         let next_pacing = evidence.pacing.after_failure(cause, None);
-        return Decision::paced(
-            Strategy::ProbeLiveness,
-            retry_delay(next_pacing.attempt()),
-            next_pacing,
-        );
+        let delay = if throttled {
+            THROTTLED_RETRY_DELAY
+        } else {
+            retry_delay(next_pacing.attempt())
+        };
+        return Decision::paced(Strategy::ProbeLiveness, delay, next_pacing);
     }
     let next_pacing = evidence
         .pacing
         .after_failure(cause, evidence.retry_after_seconds);
-    let throttled = evidence
-        .recovery_elapsed
-        .is_some_and(|elapsed| elapsed > BILLABLE_RETRY_WINDOW);
     let delay = match evidence.retry_after_seconds {
         Some(seconds) if seconds > 0 => {
             let hinted = Duration::from_secs(seconds.min(MAX_RETRY_AFTER_SECONDS));
@@ -184,15 +186,15 @@ impl Recovery {
     pub(crate) fn decide(
         &mut self,
         cause: ModelRecoveryCause,
-        retry_after: Option<Duration>,
+        error: &ProviderError,
         streamed_bytes: usize,
     ) -> Decision {
         let started = *self.started.get_or_insert_with(Instant::now);
         let decision = decide(Evidence {
             cause,
-            retry_after_seconds: retry_after.map(|delay| delay.as_secs()),
+            retry_after_seconds: error.retry_after.map(|delay| delay.as_secs()),
             pacing: self.pacing,
-            progress: if tracks_progress(cause) {
+            progress: if tracks_progress(cause, error) {
                 self.progress.observe(streamed_bytes)
             } else {
                 Progress::Unknown
@@ -204,13 +206,14 @@ impl Recovery {
     }
 }
 
-fn tracks_progress(cause: ModelRecoveryCause) -> bool {
-    matches!(
-        cause,
+fn tracks_progress(cause: ModelRecoveryCause, error: &ProviderError) -> bool {
+    match cause {
         ModelRecoveryCause::NetworkInterrupted
-            | ModelRecoveryCause::ConnectivityLost
-            | ModelRecoveryCause::ProviderStreamTimeout
-    )
+        | ModelRecoveryCause::ConnectivityLost
+        | ModelRecoveryCause::ProviderStreamTimeout => true,
+        ModelRecoveryCause::ProviderUnavailable => error.status.is_none(),
+        ModelRecoveryCause::RateLimited => false,
+    }
 }
 
 pub(crate) fn recovery_cause(kind: ProviderErrorKind) -> Option<ModelRecoveryCause> {

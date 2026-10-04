@@ -606,6 +606,12 @@ fn failure(kind: ProviderErrorKind, code: &str) -> ProviderError {
     ProviderError::new(kind, code)
 }
 
+fn http_failure(kind: ProviderErrorKind, code: &str, status: u16) -> ProviderError {
+    let mut error = failure(kind, code);
+    error.status = Some(status);
+    error
+}
+
 fn config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_owned(),
@@ -2228,7 +2234,7 @@ async fn retryable_failures_retry_with_upstream_pacing_and_report_recovery() {
     let mut rate_limited = failure(ProviderErrorKind::RateLimited, "rate_limited");
     rate_limited.retry_after = Some(Duration::from_secs(2));
     rate_limited.diagnostic = Some("HTTP 429 · slow".to_owned());
-    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    let mut unavailable = http_failure(ProviderErrorKind::ServerError, "server_error", 500);
     unavailable.diagnostic = Some("HTTP 500 · boom".to_owned());
     let provider = FakeProvider::new(vec![
         Script::Fail(Vec::new(), unavailable),
@@ -2351,7 +2357,7 @@ async fn the_same_network_failure_at_the_same_point_stops_the_recovery() {
             text: text.to_owned(),
         }]
     };
-    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    let mut unavailable = http_failure(ProviderErrorKind::ServerError, "server_error", 503);
     unavailable.diagnostic = Some("HTTP 503 · overloaded".to_owned());
     let provider = FakeProvider::new(vec![
         interrupted(thinking("a")),
@@ -2369,6 +2375,36 @@ async fn the_same_network_failure_at_the_same_point_stops_the_recovery() {
         recoveries(&events)
             .iter()
             .all(|status| !status.is_terminal())
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_failure_after_the_same_reasoning_stops_the_recovery() {
+    let mut failed = failure(ProviderErrorKind::ServerError, "ProviderError");
+    failed.diagnostic = Some("server_error: overloaded".to_owned());
+    let failed_after_reasoning = || {
+        Script::Fail(
+            vec![StreamEvent::ReasoningDelta {
+                text: "thinking".to_owned(),
+            }],
+            failed.clone(),
+        )
+    };
+    let provider = FakeProvider::new(vec![
+        failed_after_reasoning(),
+        failed_after_reasoning(),
+        failed_after_reasoning(),
+        text_reply("must not be requested"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(provider.requests().len(), 3);
+    let stop = recoveries(&events).pop().unwrap();
+    assert_eq!(stop.failed_attempt, 3);
+    assert_eq!(
+        stop.label(),
+        "⚠ Provider unavailable · server_error: overloaded · kept failing at the same point · stopped"
     );
 }
 
@@ -2406,7 +2442,7 @@ async fn retries_slow_to_once_a_minute_past_the_recovery_window() {
         .map(|_| {
             Script::Fail(
                 Vec::new(),
-                failure(ProviderErrorKind::ServerError, "server_error"),
+                http_failure(ProviderErrorKind::ServerError, "server_error", 500),
             )
         })
         .collect();
@@ -2434,8 +2470,39 @@ async fn retries_slow_to_once_a_minute_past_the_recovery_window() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_timeout_past_the_recovery_window_waits_a_minute_before_asking_again() {
+    let mut scripts: Vec<Script> = (0..35)
+        .map(|_| {
+            Script::Fail(
+                Vec::new(),
+                http_failure(ProviderErrorKind::ServerError, "server_error", 500),
+            )
+        })
+        .collect();
+    scripts.extend(["a", "ab", "abc"].map(|text| {
+        Script::Fail(
+            vec![StreamEvent::ReasoningDelta {
+                text: text.to_owned(),
+            }],
+            failure(ProviderErrorKind::Timeout, "Timeout"),
+        )
+    }));
+    scripts.push(text_reply("ok"));
+    let provider = FakeProvider::new(scripts);
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new());
+    let (report, events) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let waits: Vec<Duration> = recoveries(&events)
+        .iter()
+        .filter_map(|status| status.retry_wait)
+        .collect();
+    assert_eq!(waits.len(), 38);
+    assert_eq!(waits[35..], [Duration::from_mins(1); 3]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_retried_request_that_fails_without_a_status_stops_the_recovery() {
-    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    let mut unavailable = http_failure(ProviderErrorKind::ServerError, "server_error", 503);
     unavailable.diagnostic = Some("HTTP 503 · overloaded".to_owned());
     let provider = FakeProvider::new(vec![
         Script::Fail(Vec::new(), unavailable.clone()),
@@ -2473,7 +2540,7 @@ async fn a_retried_request_that_fails_without_a_status_stops_the_recovery() {
 
 #[tokio::test(start_paused = true)]
 async fn a_retried_request_refused_before_admission_publishes_no_in_flight_status() {
-    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    let mut unavailable = http_failure(ProviderErrorKind::ServerError, "server_error", 503);
     unavailable.diagnostic = Some("HTTP 503 · overloaded".to_owned());
     let provider = FakeProvider::new(vec![
         Script::Fail(Vec::new(), unavailable),
@@ -2500,7 +2567,7 @@ async fn a_retried_request_refused_before_admission_publishes_no_in_flight_statu
 
 #[tokio::test(start_paused = true)]
 async fn a_retried_request_shows_its_status_once_it_is_admitted() {
-    let mut unavailable = failure(ProviderErrorKind::ServerError, "server_error");
+    let mut unavailable = http_failure(ProviderErrorKind::ServerError, "server_error", 503);
     unavailable.diagnostic = Some("HTTP 503 · overloaded".to_owned());
     let provider = FakeProvider::new(vec![
         Script::Fail(Vec::new(), unavailable),
