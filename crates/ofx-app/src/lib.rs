@@ -13,6 +13,7 @@ mod approval_queue;
 mod codex_provider;
 mod context;
 mod doctor_runtime;
+mod feedback_command;
 mod file_mention_runtime;
 mod herdr;
 mod mcp_commands;

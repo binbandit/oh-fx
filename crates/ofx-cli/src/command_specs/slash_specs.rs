@@ -21,6 +21,7 @@ pub enum SlashKind {
     Mcp,
     Skills,
     Copy,
+    Feedback,
     Compact,
     Settings,
     Alias,
