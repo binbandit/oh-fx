@@ -2,6 +2,7 @@ mod child_sessions;
 mod launch_overrides;
 mod persistence;
 mod resume_transcript;
+mod session_listing;
 mod session_picker;
 mod session_titles;
 
@@ -20,6 +21,7 @@ use crate::app_bootstrap_runtime::{AgentSetup, Profile};
 use child_sessions::SessionChildren;
 pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
+pub(crate) use session_listing::{Answer, Listed, PageRequest, SessionListing};
 pub use session_titles::TitleGeneration;
 pub(crate) use session_titles::{RenameError, SessionTitle, validate_session_title};
 

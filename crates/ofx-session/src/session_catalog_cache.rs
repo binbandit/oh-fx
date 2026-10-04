@@ -155,6 +155,10 @@ impl CachedCatalog {
     }
 }
 
+pub(crate) fn catalog_file_exists(sessions: &PrivateDir) -> bool {
+    sessions.private_file_exists(CATALOG_FILE).unwrap_or(false)
+}
+
 fn read_catalog(sessions: &PrivateDir) -> Option<Vec<u8>> {
     let file = open_managed_file(sessions, CATALOG_FILE, Access::ReadOnly).ok()??;
     let stat = rustix::fs::fstat(&file).ok()?;
