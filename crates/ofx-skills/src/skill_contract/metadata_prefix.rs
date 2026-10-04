@@ -10,6 +10,7 @@ const CHUNK_BYTES: usize = 16 * 1024;
 pub(crate) enum MetadataPrefixError {
     StreamTooLong,
     Unreadable,
+    Operational(std::io::ErrorKind),
 }
 
 struct MetadataScanner {
@@ -66,7 +67,7 @@ pub(crate) fn read_metadata_prefix(
         let wanted = chunk.len().min(readable_size - content.len());
         let offset = u64::try_from(content.len()).map_err(|_| MetadataPrefixError::Unreadable)?;
         let read = read_positional_all(file, &mut chunk[..wanted], offset)
-            .map_err(|_| MetadataPrefixError::Unreadable)?;
+            .map_err(|error| MetadataPrefixError::Operational(error.kind()))?;
         if read == 0 {
             return Err(MetadataPrefixError::Unreadable);
         }
@@ -132,5 +133,24 @@ mod tests {
         }
         assert!(late_found);
         assert_eq!(late_scanner.offset, late.len());
+    }
+    #[test]
+    fn metadata_read_retains_operational_error_classification() {
+        use std::os::unix::fs::FileExt;
+        let fixture = crate::test_fixture::Fixture::new();
+        fixture.write("SKILL.md", "---\nname: review\n---\n");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(fixture.path("SKILL.md"))
+            .unwrap();
+        let kind = file.read_at(&mut [0], 0).unwrap_err().kind();
+        let result = read_metadata_prefix(
+            &file,
+            usize::try_from(file.metadata().unwrap().len()).unwrap(),
+        );
+        assert_eq!(
+            format!("{:?}", result.unwrap_err()),
+            format!("Operational({kind:?})")
+        );
     }
 }
