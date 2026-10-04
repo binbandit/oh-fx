@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
@@ -1178,13 +1179,33 @@ impl Agent {
     }
 
     fn history_call(&self, call: ToolCall) -> ToolCall {
-        let rewritten = self
+        let saved = self
             .tool(&call.name)
-            .and_then(|tool| contained(|| tool.history_arguments(&call.arguments)).flatten());
-        match rewritten {
+            .and_then(|tool| contained(|| tool.saved_arguments(&call.arguments)).flatten());
+        match saved {
             Some(arguments) => ToolCall { arguments, ..call },
             None => call,
         }
+    }
+
+    fn request_history(&self) -> Cow<'_, [ChatMessage]> {
+        let mut history = Cow::Borrowed(self.history.as_slice());
+        for (index, message) in self.history.iter().enumerate() {
+            let ChatMessage::Assistant { tool_calls, .. } = message else {
+                continue;
+            };
+            for (position, call) in tool_calls.iter().enumerate() {
+                let sent = self.tool(&call.name).and_then(|tool| {
+                    contained(|| tool.request_arguments(&call.arguments)).flatten()
+                });
+                if let Some(arguments) = sent
+                    && let ChatMessage::Assistant { tool_calls, .. } = &mut history.to_mut()[index]
+                {
+                    tool_calls[position].arguments = arguments;
+                }
+            }
+        }
+        history
     }
 
     fn lazy_group<'c>(

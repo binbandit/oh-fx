@@ -318,14 +318,24 @@ impl Tool for EchoTool {
         }))
     }
 
-    fn history_arguments(&self, arguments: &str) -> Option<String> {
+    fn saved_arguments(&self, arguments: &str) -> Option<String> {
         assert!(
             !arguments.contains("history_panic"),
-            "history arguments panicked"
+            "saved arguments panicked"
         );
         arguments
             .contains("in_history")
-            .then(|| format!("history {arguments}"))
+            .then(|| format!("saved {arguments}"))
+    }
+
+    fn request_arguments(&self, arguments: &str) -> Option<String> {
+        assert!(
+            !arguments.contains("request_panic"),
+            "request arguments panicked"
+        );
+        arguments
+            .starts_with("saved ")
+            .then(|| format!("sent {arguments}"))
     }
 }
 
@@ -967,14 +977,16 @@ async fn modern_mixed_batch_materializes_unsupported_terminal_before_admission()
 }
 
 #[tokio::test]
-async fn calls_enter_the_history_in_their_tools_history_form_and_run_as_sent() {
+async fn calls_are_kept_in_their_saved_form_sent_in_their_request_form_and_run_as_sent() {
     let provider = FakeProvider::new(vec![
         tool_reply(&[
             ("call-1", r#"{"in_history":true}"#),
             ("call-2", r#"{"in_history":true,"history_panic":true}"#),
-            ("call-3", r#"{"text":"plain"}"#),
+            ("call-3", r#"{"in_history":true,"request_panic":true}"#),
+            ("call-4", r#"{"text":"plain"}"#),
         ]),
         text_reply("ok"),
+        text_reply("again"),
     ]);
     let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
     let (report, events) = run(&mut agent, "go").await;
@@ -991,30 +1003,55 @@ async fn calls_enter_the_history_in_their_tools_history_form_and_run_as_sent() {
         [
             r#"{"in_history":true}"#,
             r#"{"in_history":true,"history_panic":true}"#,
+            r#"{"in_history":true,"request_panic":true}"#,
             r#"{"text":"plain"}"#
         ]
     );
-    let messages = &provider.requests()[1].messages;
+    let saved = vec![
+        echo_call("call-1", r#"saved {"in_history":true}"#),
+        echo_call("call-2", r#"{"in_history":true,"history_panic":true}"#),
+        echo_call(
+            "call-3",
+            r#"saved {"in_history":true,"request_panic":true}"#,
+        ),
+        echo_call("call-4", r#"{"text":"plain"}"#),
+    ];
     assert_eq!(
-        messages[1],
+        agent.history[1],
         ChatMessage::Assistant {
             content: None,
-            tool_calls: vec![
-                echo_call("call-1", r#"history {"in_history":true}"#),
-                echo_call("call-2", r#"{"in_history":true,"history_panic":true}"#),
-                echo_call("call-3", r#"{"text":"plain"}"#),
-            ],
+            tool_calls: saved.clone(),
             provider_replay: None,
         }
     );
+    let sent = ChatMessage::Assistant {
+        content: None,
+        tool_calls: vec![
+            echo_call("call-1", r#"sent saved {"in_history":true}"#),
+            echo_call("call-2", r#"{"in_history":true,"history_panic":true}"#),
+            echo_call(
+                "call-3",
+                r#"saved {"in_history":true,"request_panic":true}"#,
+            ),
+            echo_call("call-4", r#"{"text":"plain"}"#),
+        ],
+        provider_replay: None,
+    };
+    assert_eq!(provider.requests()[1].messages[1], sent);
     assert_eq!(
-        messages[2],
+        provider.requests()[1].messages[2],
         tool_message(
             "call-1",
             r#"echo {"in_history":true}"#,
             ToolResultStatus::Success
         )
     );
+    run(&mut agent, "again").await;
+    assert_eq!(provider.requests()[2].messages[1], sent);
+    let ChatMessage::Assistant { tool_calls, .. } = &agent.history[1] else {
+        panic!("the turn's tool step");
+    };
+    assert_eq!(*tool_calls, saved);
 }
 
 #[tokio::test]

@@ -168,19 +168,21 @@ impl ShellRequest {
 }
 
 pub(super) fn unwrap_request(arguments: &str) -> String {
-    json_value::reencode(arguments)
-        .and_then(|encoded| encoded.sole_object_member("request").map(str::to_owned))
-        .unwrap_or_else(|| arguments.to_owned())
+    saved_arguments(arguments).unwrap_or_else(|| arguments.to_owned())
 }
 
-pub(super) fn history_arguments(arguments: &str) -> String {
-    let unwrapped = unwrap_request(arguments);
-    match json_value::reencode(&unwrapped) {
-        Some(encoded) if encoded.is_object() && encoded.sole_object_member("request").is_none() => {
-            format!(r#"{{"request":{}}}"#, encoded.text)
-        }
-        _ => unwrapped,
-    }
+pub(super) fn saved_arguments(arguments: &str) -> Option<String> {
+    json_value::reencode(arguments)?
+        .sole_object_member("request")
+        .map(str::to_owned)
+}
+
+pub(super) fn request_arguments(saved: &str) -> Option<String> {
+    let encoded = json_value::reencode(saved).filter(json_value::Encoded::is_object)?;
+    encoded
+        .sole_object_member("request")
+        .is_none()
+        .then(|| format!(r#"{{"request":{}}}"#, encoded.text))
 }
 
 pub(super) fn decode(arguments: &str) -> Result<ShellRequest, String> {

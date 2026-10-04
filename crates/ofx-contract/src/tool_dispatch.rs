@@ -222,7 +222,11 @@ pub trait Tool: Send + Sync {
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput>;
 
-    fn history_arguments(&self, _arguments: &str) -> Option<String> {
+    fn saved_arguments(&self, _arguments: &str) -> Option<String> {
+        None
+    }
+
+    fn request_arguments(&self, _arguments: &str) -> Option<String> {
         None
     }
 
