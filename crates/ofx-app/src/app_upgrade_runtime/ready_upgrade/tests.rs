@@ -62,6 +62,7 @@ fn apply(
     let relaunched = shortcut.apply_with(
         conversation.map(|conversation| conversation as &mut dyn ResumeHandoff),
         &|event| events.borrow_mut().push(event),
+        false,
         || {
             resolved.set(resolved.get() + 1);
             executable
@@ -106,6 +107,30 @@ fn a_ready_upgrade_validates_the_conversation_then_requests_the_relaunch() {
     assert_eq!(
         relaunch_argv(&applied.shortcut),
         [UPGRADED, "resume", "session-123", "--upgrade-relaunch"]
+    );
+}
+
+#[test]
+fn a_requested_ultra_mode_is_relaunched_with_the_session() {
+    let mut conversation = Conversation::default();
+    let shortcut = UpgradeShortcut::new(
+        Some(Readiness::settled(UpgradeState::Ready)),
+        Relaunch::default(),
+    );
+    assert!(
+        shortcut.apply_with(Some(&mut conversation), &|_| {}, true, || Ok(
+            PathBuf::from(UPGRADED)
+        ),)
+    );
+    assert_eq!(
+        relaunch_argv(&shortcut),
+        [
+            UPGRADED,
+            "--ultrafast",
+            "resume",
+            "session-123",
+            "--upgrade-relaunch"
+        ]
     );
 }
 

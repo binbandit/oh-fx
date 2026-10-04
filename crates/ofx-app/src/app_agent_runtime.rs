@@ -747,7 +747,8 @@ impl Controller {
             .persistence
             .as_mut()
             .map(|persistence| persistence as &mut dyn ResumeHandoff);
-        self.upgrade.apply(handoff, &*self.state.emit)
+        self.upgrade
+            .apply(handoff, &*self.state.emit, self.state.ultrafast_requested())
     }
 
     fn open_picker(&self, scope: SessionScope) {
@@ -1638,20 +1639,21 @@ mod tests {
             Self::saved(home, setup)
         }
 
-        async fn upgrading(server: &FakeServer, upgrade: UpgradeShortcut) -> Self {
+        async fn upgrading(server: &FakeServer, upgrade: UpgradeShortcut, ultrafast: bool) -> Self {
             let home = tempfile::tempdir().unwrap();
             let setup = agent_setup(&home, server).await;
-            Self::saved_with(home, setup, upgrade)
+            Self::saved_with(home, setup, upgrade, ultrafast)
         }
 
         fn saved(home: tempfile::TempDir, setup: AgentSetup) -> Self {
-            Self::saved_with(home, setup, UpgradeShortcut::default())
+            Self::saved_with(home, setup, UpgradeShortcut::default(), false)
         }
 
         fn saved_with(
             home: tempfile::TempDir,
             setup: AgentSetup,
             upgrade: UpgradeShortcut,
+            ultrafast: bool,
         ) -> Self {
             let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
             let store =
@@ -1669,11 +1671,11 @@ mod tests {
                 fast_mode: None,
             };
             let persistence = Persistence::new(store, route, preferences, overrides, None);
-            Self::spawn(home, setup, Some(persistence), upgrade)
+            Self::spawn(home, setup, Some(persistence), upgrade, ultrafast)
         }
 
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
-            Self::spawn(home, setup, None, UpgradeShortcut::default())
+            Self::spawn(home, setup, None, UpgradeShortcut::default(), false)
         }
 
         fn with_setup_observer(
@@ -1700,8 +1702,9 @@ mod tests {
             setup: AgentSetup,
             persistence: Option<Persistence>,
             upgrade: UpgradeShortcut,
+            ultrafast: bool,
         ) -> Self {
-            Self::spawn_observer(home, setup, persistence, false, upgrade, |_| {})
+            Self::spawn_observer(home, setup, persistence, ultrafast, upgrade, |_| {})
         }
 
         fn spawn_observer(
@@ -2519,7 +2522,7 @@ mod tests {
             Some(Readiness::settled(UpgradeState::Ready)),
             relaunch.clone(),
         );
-        let mut harness = Harness::upgrading(&server, upgrade).await;
+        let mut harness = Harness::upgrading(&server, upgrade, false).await;
         harness.send(UiCommand::ApplyReadyUpgrade);
         harness
             .until(|event| *event == UiEvent::ExitRequested)
@@ -2546,6 +2549,33 @@ mod tests {
                 "--upgrade-relaunch".into(),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_ready_upgrade_relaunches_with_the_launchs_ultra_request() {
+        use crate::app_upgrade_runtime::{Readiness, Relaunch, UpgradeState};
+
+        let server = FakeServer::start(Vec::new());
+        let relaunch = Relaunch::default();
+        let upgrade = UpgradeShortcut::new(
+            Some(Readiness::settled(UpgradeState::Ready)),
+            relaunch.clone(),
+        );
+        let mut harness = Harness::upgrading(&server, upgrade, true).await;
+        harness.send(UiCommand::ApplyReadyUpgrade);
+        harness
+            .until(|event| *event == UiEvent::ExitRequested)
+            .await;
+        timeout(Duration::from_secs(10), harness.until(|_| false))
+            .await
+            .expect("the controller stops after requesting the relaunch");
+        let mut argv = Vec::new();
+        let _ = relaunch.run_with(|command| {
+            argv.extend(command.get_args().map(ToOwned::to_owned));
+            std::io::Error::from(std::io::ErrorKind::NotFound)
+        });
+        assert_eq!(argv[0], "--ultrafast");
+        assert_eq!(argv[1], "resume");
     }
 
     fn saved_sessions(home: &tempfile::TempDir) -> Vec<Value> {
