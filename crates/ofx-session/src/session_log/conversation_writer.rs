@@ -1,13 +1,14 @@
 use std::fs::File;
 use std::os::unix::fs::FileExt;
 
+use crate::history_snapshot::CacheTee;
 use crate::session_error::SessionError;
 use crate::session_event::{
     ConversationEvent, ConversationState, decode_conversation_frame, encode_conversation_frame,
 };
 use crate::session_log::conversation_history::ReplayScan;
 use crate::session_log::conversation_progress::{ConversationProgress, ProgressPoint};
-use crate::session_replay::{LineRead, LineReader};
+use crate::session_replay::{History, LineRead, LineReader};
 
 pub(crate) struct ConversationWriter {
     file: File,
@@ -33,25 +34,16 @@ pub(crate) struct OpenTurn {
 }
 
 pub(crate) fn scan_log(
-    file: &File,
+    history: History<'_>,
     length: u64,
     replay: &mut ReplayScan,
+    mut tee: Option<CacheTee<'_>>,
 ) -> Result<LogScan, SessionError> {
     let mut state = ConversationState::default();
     let mut open_turn: Option<OpenTurn> = None;
-    let mut reader = LineReader::new(file, 0, length)?;
-    let mut torn = false;
-    loop {
-        let offset = reader.offset();
-        let line = match reader.next_line()? {
-            LineRead::Line(line) => line,
-            LineRead::End => break,
-            LineRead::Torn => {
-                torn = true;
-                break;
-            }
-        };
-        let envelope = decode_conversation_frame(&line)?;
+    let mut frames = history.frames(0, length);
+    while let Some(frame) = frames.next_frame()? {
+        let (offset, envelope) = (frame.offset, &frame.envelope);
         let seq = envelope.seq;
         state.apply(seq, envelope.timestamp_ms(), &envelope.event)?;
         match &envelope.event {
@@ -68,7 +60,7 @@ pub(crate) fn scan_log(
             ConversationEvent::ContextCheckpoint(_) => {
                 if let Some(turn) = open_turn.as_mut() {
                     *turn = OpenTurn {
-                        truncate_from: reader.offset(),
+                        truncate_from: frames.offset(),
                         prior_seq: seq,
                         checkpointed: true,
                     };
@@ -80,11 +72,14 @@ pub(crate) fn scan_log(
             | ConversationEvent::Steering(_) => {}
         }
         replay.observe(offset, seq, &envelope.event)?;
+        if let (Some(tee), Some(line)) = (tee.as_mut(), frame.line.as_deref()) {
+            tee.append(offset, line, envelope);
+        }
     }
     Ok(LogScan {
         state,
-        complete_bytes: reader.offset(),
-        torn,
+        complete_bytes: frames.offset(),
+        torn: frames.torn(),
         open_turn,
     })
 }
@@ -110,9 +105,11 @@ impl ConversationWriter {
         }
     }
 
-    pub(crate) fn open(file: File, replay: &mut ReplayScan) -> Result<Self, SessionError> {
-        let length = file.metadata()?.len();
-        let scan = scan_log(&file, length, replay)?;
+    pub(crate) fn open(
+        file: File,
+        scan: LogScan,
+        replay: &mut ReplayScan,
+    ) -> Result<Self, SessionError> {
         let mut writer = Self::new(file);
         writer.state = scan.state;
         writer.committed_bytes = scan.complete_bytes;

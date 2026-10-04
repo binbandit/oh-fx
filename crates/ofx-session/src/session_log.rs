@@ -17,6 +17,7 @@ use ofx_contract::{
 };
 use ofx_text::lowercase_hex;
 
+use crate::history_snapshot::{CacheWriter, HistoryCache};
 use crate::session::infer_conversation_language;
 use crate::session_children::CONTROL_DIR;
 use crate::session_codec::recovery_checkpoint::{RecoveryTranscript, RouteCredential};
@@ -28,11 +29,12 @@ use crate::session_display_metadata::{derive_display_title, prompt_title};
 use crate::session_error::SessionError;
 use crate::session_event::{ContextCheckpointEvent, ConversationEvent, ToolResultEvent};
 use crate::session_layout::is_valid_session_id;
+use crate::session_replay::History;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
 use conversation_progress::ProgressPoint;
-use conversation_writer::{ConversationWriter, scan_log};
+use conversation_writer::{ConversationWriter, LogScan, scan_log};
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
     open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
@@ -101,6 +103,7 @@ impl Drop for OwnedSessionDir {
 pub struct WritableSession {
     owned: OwnedSessionDir,
     writer: ConversationWriter,
+    cache: Option<HistoryCache>,
     metadata: SessionMetadata,
     history: SavedHistory,
     started: bool,
@@ -135,7 +138,14 @@ impl WritableSession {
     }
 
     pub fn visit_transcript(&self, visit: impl FnMut(SavedTurn)) -> Result<(), SessionError> {
-        visit_turns(self.writer.file(), self.writer.committed_bytes(), visit)
+        visit_turns(self.history(), self.writer.committed_bytes(), visit)
+    }
+
+    fn history(&self) -> History<'_> {
+        match &self.cache {
+            Some(cache) => History::cached(self.writer.file(), cache.view()),
+            None => History::log(self.writer.file()),
+        }
     }
 
     pub fn begin_work(&mut self, work_id: &str) {
@@ -258,7 +268,7 @@ impl WritableSession {
             &self.metadata.preferences.provider,
             checkpoint,
         )?;
-        self.history = replayed_history(self.writer.file(), self.writer.committed_bytes())?;
+        self.history = replayed_history(self.history(), self.writer.committed_bytes())?;
         Ok(())
     }
 
@@ -527,6 +537,7 @@ pub(crate) fn start_session(
         prepare_session(sessions, &staging, &manifest).map(|(owned, writer)| WritableSession {
             owned,
             writer,
+            cache: None,
             metadata,
             history: SavedHistory::default(),
             started: true,
@@ -583,16 +594,21 @@ pub(crate) fn resume_session(
     let file = open_managed_file(&owned.dir, EVENTS_FILE, Access::Writable)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let mut replay = ReplayScan::default();
-    let mut writer = ConversationWriter::open(file, &mut replay)?;
+    let (scan, cache) = scan_writable(&owned.dir, id, &file, &mut replay)?;
+    let mut writer = ConversationWriter::open(file, scan, &mut replay)?;
+    let cache = cache.and_then(|cache| cache.finish(&owned.dir, writer.committed_bytes()));
     let closed_from = writer.committed_bytes();
     let recovery = open_unfinished_turn(&owned.dir, &mut writer, &metadata.preferences.provider)?;
     let end = writer.committed_bytes();
-    replay.observe_range(writer.file(), closed_from, end)?;
-    let window = replay.finish(writer.file(), end)?;
-    let history = replay_history(writer.file(), end, &window)?;
+    replay.observe_range(History::log(writer.file()), closed_from, end)?;
+    let history = with_history(writer.file(), cache.as_ref(), |history| {
+        let window = replay.finish(history, end)?;
+        replay_history(history, end, &window)
+    })?;
     Ok(WritableSession {
         owned,
         writer,
+        cache,
         language: metadata.conversation_language.clone(),
         metadata,
         history,
@@ -613,11 +629,52 @@ pub(crate) fn load_session(sessions: &PrivateDir, id: &str) -> Result<SavedSessi
     let file = open_managed_file(&dir, EVENTS_FILE, Access::ReadOnly)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let length = file.metadata()?.len();
-    let mut replay = ReplayScan::default();
-    let scan = scan_log(&file, length, &mut replay)?;
-    let window = replay.finish(&file, scan.complete_bytes)?;
-    let history = replay_history(&file, scan.complete_bytes, &window)?;
+    let cache = HistoryCache::open(&dir, id, &file, length);
+    let history = with_history(&file, cache.as_ref(), |history| {
+        let mut replay = ReplayScan::default();
+        let scan = scan_log(history, length, &mut replay, None)?;
+        let window = replay.finish(history, scan.complete_bytes)?;
+        replay_history(history, scan.complete_bytes, &window)
+    })?;
     Ok(SavedSession { metadata, history })
+}
+
+fn scan_writable(
+    dir: &PrivateDir,
+    id: &str,
+    file: &File,
+    replay: &mut ReplayScan,
+) -> Result<(LogScan, Option<CacheWriter>), SessionError> {
+    let length = file.metadata()?.len();
+    if let Some(mut cache) = CacheWriter::open(dir, id, file, length) {
+        let (view, tee) = cache.split();
+        let mut cached = ReplayScan::default();
+        if let Ok(scan) = scan_log(History::cached(file, view), length, &mut cached, Some(tee)) {
+            *replay = cached;
+            return Ok((scan, Some(cache)));
+        }
+    }
+    let mut cache = if length == 0 {
+        None
+    } else {
+        CacheWriter::create(dir, id)
+    };
+    let tee = cache.as_mut().map(CacheWriter::tee);
+    let scan = scan_log(History::log(file), length, replay, tee)?;
+    Ok((scan, cache))
+}
+
+fn with_history<T>(
+    file: &File,
+    cache: Option<&HistoryCache>,
+    read: impl Fn(History<'_>) -> Result<T, SessionError>,
+) -> Result<T, SessionError> {
+    if let Some(cache) = cache
+        && let Ok(value) = read(History::cached(file, cache.view()))
+    {
+        return Ok(value);
+    }
+    read(History::log(file))
 }
 
 pub(crate) fn work_reply(
@@ -635,9 +692,14 @@ pub(crate) fn work_reply(
     let file = open_managed_file(&dir, EVENTS_FILE, Access::ReadOnly)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let length = file.metadata()?.len();
-    let scan = scan_log(&file, length, &mut ReplayScan::default())?;
+    let scan = scan_log(
+        History::log(&file),
+        length,
+        &mut ReplayScan::default(),
+        None,
+    )?;
     let mut reply = None;
-    visit_turns(&file, scan.complete_bytes, |turn| {
+    visit_turns(History::log(&file), scan.complete_bytes, |turn| {
         if let Some(text) = turn.reply_for_work(work_id) {
             reply = Some(text);
         }
@@ -679,11 +741,11 @@ pub(crate) fn read_metadata(dir: &PrivateDir, id: &str) -> Result<SessionMetadat
     Ok(metadata)
 }
 
-fn replayed_history(file: &File, end: u64) -> Result<SavedHistory, SessionError> {
+fn replayed_history(history: History<'_>, end: u64) -> Result<SavedHistory, SessionError> {
     let mut replay = ReplayScan::default();
-    scan_log(file, end, &mut replay)?;
-    let window = replay.finish(file, end)?;
-    replay_history(file, end, &window)
+    scan_log(history, end, &mut replay, None)?;
+    let window = replay.finish(history, end)?;
+    replay_history(history, end, &window)
 }
 
 pub(crate) fn now_ms() -> i64 {
