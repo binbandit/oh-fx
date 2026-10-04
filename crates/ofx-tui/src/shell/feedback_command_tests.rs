@@ -20,6 +20,8 @@ fn feedback_submits_to_the_controller_and_paints_its_notices() {
                 command: "/feedback".to_owned(),
                 aliases: Vec::new(),
                 description: "open the fx feedback form".to_owned(),
+                help_entry: "/feedback".to_owned(),
+                takes_arguments: false,
                 category: 10,
                 compacts: false,
             });
