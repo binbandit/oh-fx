@@ -28,7 +28,13 @@ impl Platform {
     }
 }
 
-pub(crate) fn open_url(url: &str) -> bool {
+const NO_OPEN_BROWSER_VARIABLE: &str = "OH_FX_NO_OPEN_BROWSER";
+
+pub fn browser_allowed() -> bool {
+    std::env::var_os(NO_OPEN_BROWSER_VARIABLE).is_none()
+}
+
+pub fn open_url(url: &str) -> bool {
     let Some(launcher) = Platform::current().launcher() else {
         return false;
     };
