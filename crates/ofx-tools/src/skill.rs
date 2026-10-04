@@ -10,7 +10,7 @@ use ofx_contract::{
 };
 use ofx_skills::{
     CallPreparation, ExecuteOutput, ExecuteResult, Locations, PreparedSkill, RootPolicy,
-    SkillDiscoveryContext, SkillInventory, SkillLoader, prepare_identity,
+    SkillDiscoveryContext, SkillInventory, SkillLoader, display_name_from_output, prepare_identity,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -99,14 +99,34 @@ impl Tool for SkillTool {
     }
 
     fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {
-        let label = label(arguments, None);
-        Some(CallDescription {
-            title: format_plain_action(TOOL_NAME, label.as_ref()),
-            label,
-            activity: ToolActivity::Read,
-            effect: ToolEffect::None,
-            concurrency: Concurrency::Parallel,
-        })
+        Some(saved_description(arguments, None))
+    }
+}
+
+pub fn resumed_skill_description(
+    tool_name: &str,
+    arguments: &str,
+    output: &str,
+) -> Option<CallDescription> {
+    if tool_name != TOOL_NAME {
+        return None;
+    }
+    let parsed = parse_tool_args_object(arguments).ok()?;
+    if resource_label(&parsed).is_some() || parsed.optional_string("name").is_some() {
+        return None;
+    }
+    let name = display_name_from_output(output)?;
+    Some(saved_description(arguments, Some(&name)))
+}
+
+fn saved_description(arguments: &str, resolved_name: Option<&str>) -> CallDescription {
+    let label = label(arguments, resolved_name);
+    CallDescription {
+        title: format_plain_action(TOOL_NAME, label.as_ref()),
+        label,
+        activity: ToolActivity::Read,
+        effect: ToolEffect::None,
+        concurrency: Concurrency::Parallel,
     }
 }
 
