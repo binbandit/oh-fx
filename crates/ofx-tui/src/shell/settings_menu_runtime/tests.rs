@@ -46,6 +46,7 @@ fn step(setting: SettingId, delta: isize) -> UiCommand {
 
 fn listed(test: &mut TestShell, ids: &[&str]) {
     test.deliver(UiEvent::ModelCatalog {
+        provider: "local".to_owned(),
         catalog: ModelCatalog::Listed {
             models: ids.iter().map(|id| option(id)).collect(),
             source: ModelCatalogSource::ProfileSettings,

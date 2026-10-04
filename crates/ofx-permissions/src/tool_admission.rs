@@ -4,7 +4,7 @@ use std::fmt;
 use std::iter;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalScope, BoxFuture, CommandRequest, FileMutation,
@@ -55,7 +55,7 @@ pub struct PermissionPolicy {
     additional_roots: Vec<PathBuf>,
     session_grants: Arc<SessionGrants>,
     inherited_grants: Option<Arc<SessionGrants>>,
-    reviewer: Option<Reviewer>,
+    reviewer: RwLock<Option<Arc<Reviewer>>>,
 }
 
 impl fmt::Debug for PermissionPolicy {
@@ -67,7 +67,7 @@ impl fmt::Debug for PermissionPolicy {
             .field("additional_roots", &self.additional_roots)
             .field("session_grants", &self.session_grants)
             .field("inherited_grants", &self.inherited_grants)
-            .field("reviewer", &self.reviewer.is_some())
+            .field("reviewer", &self.reviewer().is_some())
             .finish()
     }
 }
@@ -80,7 +80,7 @@ impl PermissionPolicy {
             additional_roots: Vec::new(),
             session_grants: Arc::default(),
             inherited_grants: None,
-            reviewer: None,
+            reviewer: RwLock::new(None),
         }
     }
 
@@ -107,8 +107,8 @@ impl PermissionPolicy {
     }
 
     #[must_use]
-    pub fn with_reviewer(mut self, reviewer: Reviewer) -> Self {
-        self.reviewer = Some(reviewer);
+    pub fn with_reviewer(self, reviewer: Reviewer) -> Self {
+        self.set_reviewer(reviewer);
         self
     }
 
@@ -116,6 +116,20 @@ impl PermissionPolicy {
     pub fn inheriting_grants_of(mut self, parent: &Self) -> Self {
         self.inherited_grants = Some(Arc::clone(&parent.session_grants));
         self
+    }
+
+    pub fn set_reviewer(&self, reviewer: Reviewer) {
+        *self
+            .reviewer
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(reviewer));
+    }
+
+    fn reviewer(&self) -> Option<Arc<Reviewer>> {
+        self.reviewer
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -241,7 +255,7 @@ impl PermissionGate for PermissionPolicy {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<Reviewed>> {
         Box::pin(async move {
-            let Some(reviewer) = &self.reviewer else {
+            let Some(reviewer) = self.reviewer() else {
                 return Some(Reviewed::unavailable(ReviewFailure::ReviewerUnconfigured));
             };
             if !request.attempt_available {

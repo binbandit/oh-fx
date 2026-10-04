@@ -274,6 +274,8 @@ fn options() -> ShellOptions {
     ShellOptions {
         version: "0.1.0".to_owned(),
         model: "model-a".to_owned(),
+        provider: "local".to_owned(),
+        providers: vec!["codex".to_owned(), "local".to_owned(), "portkey".to_owned()],
         permission_mode: PermissionMode::Auto,
         full_access_warning: false,
         workspace_label: "workspace".to_owned(),

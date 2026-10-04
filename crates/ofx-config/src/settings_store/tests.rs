@@ -649,6 +649,25 @@ fn a_picked_effort_is_saved_beside_the_model_and_replaces_workspace_efforts() {
 }
 
 #[test]
+fn a_provider_switch_saves_the_provider_and_its_model_and_unbinds_fast_mode() {
+    let fixture = Fixture::with_settings(concat!(
+        "{\"provider\":\"codex\",\"effort\":\"low\",\"fast_mode\":true,\"fast_mode_model_bound\":true,",
+        "\"workspaces\":{\"/workspace\":{\"fast_mode_model_bound\":true,\"effort\":\"high\"}}}"
+    ));
+    let local = ProviderId::Configured("local".to_owned());
+    save_provider_model(&fixture.paths, &local, "m-1").unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"provider\":\"local\",\"effort\":\"low\",\"fast_mode\":true,\"workspaces\":{\"/workspace\":{\"effort\":\"high\"}},\"models\":{\"local\":\"m-1\"}}\n"
+    );
+    save_provider_model(&fixture.paths, &ProviderId::Codex, MODEL).unwrap();
+    let settings = Settings::load(&fixture.paths, Path::new("/elsewhere")).unwrap();
+    assert_eq!(settings.saved_model(&ProviderId::Codex), Some(MODEL));
+    assert_eq!(settings.saved_model(&local), Some("m-1"));
+    assert!(settings.codex_selected(&|_| None).unwrap());
+}
+
+#[test]
 fn a_model_preference_refuses_a_model_settings_cannot_hold() {
     let original = "{\"provider\":\"codex\"}";
     let fixture = Fixture::with_settings(original);

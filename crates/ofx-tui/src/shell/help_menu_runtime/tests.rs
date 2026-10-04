@@ -237,6 +237,7 @@ fn a_late_help_reply_over_an_effort_column_keeps_left_for_the_cursor() {
     let mut test = TestShell::start();
     press(&mut test, b"/model\r");
     test.deliver(UiEvent::ModelCatalog {
+        provider: "local".to_owned(),
         catalog: ModelCatalog::Listed {
             models: vec![ModelOption {
                 id: "vendor/model".to_owned(),

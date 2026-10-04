@@ -518,6 +518,24 @@ async fn exact_input_usage_calibrates_the_next_estimate() {
 }
 
 #[tokio::test]
+async fn a_switched_provider_estimates_without_the_previous_provider_s_calibration() {
+    let first = FakeProvider::new(vec![
+        unmetered(text_reply("first answer")),
+        metered(text_reply("short answer"), Some(40_000)),
+    ]);
+    let second = FakeProvider::new(vec![unmetered(text_reply("from the second provider"))]);
+    let (mut agent, window) = windowed(&first, 45_000, 64);
+    run(&mut agent, "warm up").await;
+    run(&mut agent, "short question").await;
+    let provider: Arc<FakeProvider> = Arc::clone(&second);
+    agent.set_provider(provider, Some(window as Arc<dyn CapabilityResolver>));
+    let (report, _) = run(&mut agent, "another short question").await;
+    assert_eq!(report.final_text, "from the second provider");
+    assert_eq!(first.requests().len(), 2);
+    assert_eq!(second.requests()[0].messages.len(), 5);
+}
+
+#[tokio::test]
 async fn a_context_overflow_compacts_once_and_retries() {
     let rejections = [
         overflow(

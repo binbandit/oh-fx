@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use ofx_contract::{
     CallDescription, CompactionActivity, CompactionEnd, Notice, NoticeTone, RouteRecoveryStatus,
-    ToolActivity, TurnId, TurnOutcome, UiCommand, UiEvent,
+    ToolActivity, TurnId, TurnOutcome, UiCommand, UiEvent, Usage,
 };
 
 use super::leading_whitespace::LeadingWhitespace;
@@ -156,13 +156,7 @@ impl Shell<'_> {
                 turn_id,
                 usage,
                 context_window,
-            } => {
-                self.statusline
-                    .usage_reported(usage.input_tokens, context_window);
-                if let Some(turn) = self.visible_turn(turn_id) {
-                    turn.tokens.settle(usage.output_tokens);
-                }
-            }
+            } => self.usage_reported(turn_id, usage, context_window),
             UiEvent::TurnFinished { turn_id, outcome } => self.turn_finished(turn_id, outcome),
             UiEvent::ApiStatus { turn_id, text } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
@@ -183,7 +177,9 @@ impl Shell<'_> {
             }
             UiEvent::SessionTitleChanged { title } => self.session_title_changed(title),
             UiEvent::StatuslineChanged { item, enabled } => self.statusline.set(item, enabled),
-            UiEvent::ModelCatalog { catalog } => self.catalog_received(catalog),
+            event @ (UiEvent::ModelCatalog { .. }
+            | UiEvent::ProviderPicker { .. }
+            | UiEvent::ProviderSelected { .. }) => self.provider_event(event),
             UiEvent::StatuslineMenuOpened => self.open_statusline_menu(),
             UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
@@ -212,6 +208,14 @@ impl Shell<'_> {
             }
             UiEvent::SessionResumed { history } => self.session_resumed(history),
             UiEvent::ExitRequested => self.should_exit = true,
+        }
+    }
+
+    fn usage_reported(&mut self, turn_id: TurnId, usage: Usage, context_window: Option<u32>) {
+        self.statusline
+            .usage_reported(usage.input_tokens, context_window);
+        if let Some(turn) = self.visible_turn(turn_id) {
+            turn.tokens.settle(usage.output_tokens);
         }
     }
 

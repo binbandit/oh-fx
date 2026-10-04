@@ -683,10 +683,18 @@ impl Settings {
         self.saved_model(&ProviderId::Codex)
     }
 
-    fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
+    pub fn saved_model(&self, provider: &ProviderId) -> Option<&str> {
         self.workspace
             .saved_model(provider)
             .or_else(|| self.global.saved_model(provider))
+    }
+
+    pub fn connections(&self) -> &[ProviderDefinition] {
+        self.providers.definitions()
+    }
+
+    pub fn connection(&self, id: &str) -> Option<&ProviderDefinition> {
+        self.providers.get(id)
     }
 
     pub fn selected_connection(
@@ -1355,6 +1363,23 @@ mod tests {
             settings.selected_provider(&blank),
             Ok(ProviderId::Configured("portkey".to_owned()))
         );
+    }
+
+    #[test]
+    fn connections_are_listed_in_settings_order_and_found_by_id() {
+        let json = r#"{"provider":"zeta","providers":{"zeta":{"protocol":"openai-chat-completions","base_url":"http://localhost:1/v1","auth":{"type":"none"}},"alpha":{"protocol":"openai-chat-completions","base_url":"http://localhost:2/v1","auth":{"type":"none"}}}}"#;
+        let settings = fixture_settings(json);
+        let ids: Vec<&str> = settings
+            .connections()
+            .iter()
+            .map(ProviderDefinition::id)
+            .collect();
+        assert_eq!(ids, ["zeta", "alpha"]);
+        assert_eq!(
+            settings.connection("alpha").map(ProviderDefinition::id),
+            Some("alpha")
+        );
+        assert!(settings.connection("missing").is_none());
     }
 
     #[test]

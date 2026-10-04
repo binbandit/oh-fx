@@ -130,6 +130,8 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         }
         SlashKind::ResumeSession => CommandEffect::OpenSessions,
         SlashKind::RenameSession => CommandEffect::Rename(command.payload.to_owned()),
+        SlashKind::Login => provider_effect(state, work, "/login "),
+        SlashKind::Provider => provider_effect(state, work, "/provider "),
         SlashKind::Fast => CommandEffect::ToggleFast,
         SlashKind::Settings if command.payload.trim().is_empty() => CommandEffect::OpenSettings,
         SlashKind::Compact => compaction_effect(state, work),
@@ -143,6 +145,15 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
             CommandEffect::None
         }
     }
+}
+
+fn provider_effect(state: &ControllerState, work: Work, prefix: &str) -> CommandEffect {
+    if work == Work::Idle {
+        state.open_provider_picker(prefix);
+    } else {
+        state.provider_busy();
+    }
+    CommandEffect::None
 }
 
 fn compaction_effect(state: &ControllerState, work: Work) -> CommandEffect {
@@ -205,6 +216,8 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         | SlashKind::ResetSession
         | SlashKind::ResumeSession
         | SlashKind::RenameSession
+        | SlashKind::Login
+        | SlashKind::Provider
         | SlashKind::Fast
         | SlashKind::Compact => {}
     }
@@ -437,6 +450,7 @@ mod tests {
         assert_eq!(listed("/new").description, "start a fresh session");
         assert_eq!(listed("/resume").description, "resume a saved session");
         assert_eq!(listed("/rename").description, "rename the current session");
+        assert_eq!(listed("/provider").aliases, ["/setup"]);
         assert_eq!(
             listed("/mcp").description,
             "manage local and remote MCP servers, resources, prompts, and project trust"
