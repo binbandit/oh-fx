@@ -628,6 +628,13 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
     )
     .with_payload(),
     SlashSpec::new(
+        SlashKind::Shell,
+        "/shell",
+        "reload shell startup files for commands",
+        SlashPresentationCategory::Workspace,
+    )
+    .with_payload(),
+    SlashSpec::new(
         SlashKind::Version,
         "/version",
         "show the oh-fx version",

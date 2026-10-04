@@ -19,6 +19,10 @@ const RESET_NOTICE: &str = "permissions reset to ask, session grants cleared";
 const SAVED_SESSION_REQUIRED: &str =
     "saved-session permission rules require an active saved session";
 const NO_SAVED_SESSION_RULES: &str = "saved-session permission rules: none";
+const SHELL_TOPIC: &str = "shell";
+const SHELL_USAGE: &str = "usage: /shell reload";
+const SHELL_RELOADED: &str =
+    "The next command reloads your shell startup files. Remembered command approvals were reset.";
 
 pub(crate) struct PermissionRuntime {
     mode: LivePermissionMode,
@@ -93,6 +97,15 @@ impl PermissionRuntime {
             return;
         }
         self.notice(NoticeTone::Error, "", PERMISSIONS_USAGE);
+    }
+
+    pub(crate) fn reload_shell(&self, rest: &str) {
+        if rest.trim_matches([' ', '\t']) != "reload" {
+            self.notice(NoticeTone::Error, "", SHELL_USAGE);
+            return;
+        }
+        self.policy.forget_command_approvals();
+        self.notice(NoticeTone::Neutral, SHELL_TOPIC, SHELL_RELOADED);
     }
 
     pub(crate) fn full_access_warning_shown(&mut self) {
