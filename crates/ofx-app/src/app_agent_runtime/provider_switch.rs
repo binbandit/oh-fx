@@ -15,6 +15,8 @@ const PROVIDER_BUSY: &str =
 const PROVIDER_MISSING: &str =
     "The target provider catalog is unavailable. The current provider is unchanged.";
 const UNSAVED: &str = "Provider switched for this run, but the selection could not be saved.";
+const LOGIN_UNSAVED: &str =
+    "Signed in to Codex for this run, but the saved session could not record it.";
 
 impl ControllerState {
     pub(crate) fn provider_busy(&self) {
@@ -95,6 +97,10 @@ impl Controller {
         {
             Ok(route) => {
                 self.install(&ProviderId::Codex, route);
+                if !self.bind_session() {
+                    self.state
+                        .notice(NoticeTone::Warning, PROVIDER_TOPIC, LOGIN_UNSAVED);
+                }
                 true
             }
             Err(_) => false,
@@ -122,13 +128,7 @@ impl Controller {
         self.state.emit(UiEvent::ModelSelected {
             model: self.state.model.clone(),
         });
-        let session = match (&mut self.persistence, session_route(&self.state.setup)) {
-            (Some(persistence), Ok(route)) => persistence
-                .select_provider(&mut self.agent, route, &self.state.model)
-                .is_ok(),
-            (None, _) => true,
-            (Some(_), Err(_)) => false,
-        };
+        let session = self.bind_session();
         let state = &self.state;
         let settings = user_settings::save(state.setup.preferences(), |paths| {
             save_provider_model(paths, target, &state.model).map_err(Into::into)
@@ -140,5 +140,15 @@ impl Controller {
             Notice::new(NoticeTone::Warning, PROVIDER_TOPIC, UNSAVED)
         };
         state.emit(UiEvent::Notice { notice });
+    }
+
+    fn bind_session(&mut self) -> bool {
+        match (&mut self.persistence, session_route(&self.state.setup)) {
+            (Some(persistence), Ok(route)) => persistence
+                .select_provider(&mut self.agent, route, &self.state.model)
+                .is_ok(),
+            (None, _) => true,
+            (Some(_), Err(_)) => false,
+        }
     }
 }
