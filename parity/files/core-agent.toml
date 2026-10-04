@@ -92,7 +92,7 @@ note = "History, usage and request calibration exist; inline images and kernel c
 upstream = "src/core/agent/runtime/assistant_stream.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/assistant_stream.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Assistant normalization, text deltas, response language staging and the restart of an interrupted response with its notice exist; restoring a checkpoint's saved assistant source is deferred to the next recovery slice; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
+note = "Assistant normalization, text deltas, response language staging, the restart of an interrupted response with its notice, and tool-start evidence with streamed tool input counted as progress exist; restoring a checkpoint's saved assistant source is deferred to the next recovery slice; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
 
 [[file]]
 upstream = "src/core/agent/runtime/checkpoint.zig"
@@ -152,7 +152,7 @@ note = "Prepared calls and cancellation lifecycle exist; durable stop/attention 
 upstream = "src/core/agent/runtime/model_response_recovery.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/model_response_recovery.rs"]
-note = "The recovery policy retries without a turn budget, throttles past the 15-minute billable window, stream timeouts included, waits on connectivity, checks the connection on a stream timeout and stops a recovery stalled by network or in-stream provider failures, and restarts a response interrupted after partial output; regeneration and reconciliation of tool calls, delivery evidence and the response-interrupted, system-resumed, authentication, request-limit, content-filter and compaction causes are absent."
+note = "The recovery policy retries without a turn budget, throttles past the 15-minute billable window, stream timeouts included, waits on connectivity, checks the connection on a stream timeout and stops a recovery stalled by network or in-stream provider failures, restarts a response interrupted after partial output, and regenerates or reconciles a tool call from tool-start evidence that holds across retries and continued checkpoints; delivery evidence, the inspect_uncertain_tool and continue_later required actions and the response-interrupted, system-resumed, authentication, request-limit, content-filter and compaction causes are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/orchestrator.zig"
@@ -260,7 +260,7 @@ note = "Vision call image preparation and model execution are unimplemented."
 upstream = "src/core/agent/stream_provider.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/stream_provider.rs"]
-note = "Streaming text/reasoning, provider admission and completions exist; tool-start/input callbacks, image request modes and delivery evidence are absent on main."
+note = "Streaming text/reasoning, tool starts and streamed tool input, provider admission and completions exist; image request modes and delivery evidence are absent on main."
 
 [[file]]
 upstream = "src/core/agent/tool_preparation.zig"

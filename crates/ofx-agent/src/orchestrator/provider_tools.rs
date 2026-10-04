@@ -3,7 +3,7 @@ use std::mem;
 use ofx_contract::{
     ChatMessage, Completion, DEFAULT_MAX_TOOL_RESULT_BYTES, FinishReason, ProviderReplay,
     ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance, ToolOutput, ToolResultStatus,
-    is_provider_search_alias, is_tool_output_error, prepare_model_output,
+    ToolSpec, is_provider_search_alias, is_tool_output_error, prepare_model_output,
     provider_search_description,
 };
 
@@ -12,6 +12,14 @@ use super::{
     tool_started,
 };
 use crate::execution_memory::partial_view;
+
+pub(super) fn may_run_at_provider(name: &str, specs: &[ToolSpec], executed: &[bool]) -> bool {
+    is_provider_search_alias(name)
+        || specs
+            .iter()
+            .zip(executed)
+            .any(|(spec, executed)| *executed && spec.name == name)
+}
 
 pub(super) fn provider_executed(call: &ToolCall) -> bool {
     call.provenance == ToolExecutionProvenance::ProviderExecuted
