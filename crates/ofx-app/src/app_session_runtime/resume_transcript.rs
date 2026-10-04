@@ -11,6 +11,7 @@ use ofx_tools::answered_questions;
 const RESUMED_TOPIC: &str = "session resumed";
 const SYSTEM_TOPIC: &str = "system";
 const FAILED_TURN: &str = "failed";
+const WHOLE_RESULT_TOOLS: [&str; 2] = ["subagent", "ask_user_question"];
 
 pub(crate) type DescribeSaved<'a> = &'a dyn Fn(&str, &str) -> Option<CallDescription>;
 
@@ -101,11 +102,10 @@ impl TurnReplay<'_, '_> {
         let Some(call) = self.running.remove(&result.call_id) else {
             return;
         };
-        let output = self
-            .session
-            .tool_result_output(&result)
-            .or(result.preview)
-            .unwrap_or_default();
+        let whole = reads_whole_result(&result.tool_name)
+            .then(|| self.session.tool_result_output(&result))
+            .flatten();
+        let output = whole.or(result.preview).unwrap_or_default();
         let answers = (result.status == ToolResultStatus::Success)
             .then(|| answered_questions(&result.tool_name, || Some(output.clone())))
             .flatten();
@@ -121,5 +121,31 @@ impl TurnReplay<'_, '_> {
             }),
         };
         self.shown[call.slot] = Some(entry);
+    }
+}
+
+fn reads_whole_result(tool_name: &str) -> bool {
+    WHOLE_RESULT_TOOLS.contains(&tool_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_whole_result;
+
+    #[test]
+    fn only_results_with_a_structured_outcome_are_read_whole() {
+        for tool in ["subagent", "ask_user_question"] {
+            assert!(reads_whole_result(tool), "{tool}");
+        }
+        for tool in [
+            "read_file",
+            "write_file",
+            "shell",
+            "grep_files",
+            "web_fetch",
+            "skill",
+        ] {
+            assert!(!reads_whole_result(tool), "{tool}");
+        }
     }
 }
