@@ -8,8 +8,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
-    HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, RecoveryStrategy, StepResult,
-    ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd, TurnStop,
+    HistoryEntry, HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, RecoveryStrategy,
+    StepResult, ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd, TurnStop,
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
@@ -67,6 +67,8 @@ pub(crate) struct RecoveryCheckpoint {
     execution: SavedExecution,
     strategy: RecoveryStrategy,
     route: RecoveryRoute,
+    compaction_prepared: bool,
+    uncertain_tool: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +149,33 @@ impl RecoveryCheckpoint {
                 reason: TurnStop::Failed,
                 partial: &self.assistant_source,
             },
+        }
+    }
+
+    pub(crate) fn compaction_prepared(&self) -> bool {
+        self.compaction_prepared
+    }
+
+    pub(crate) fn transcript(&self) -> RecoveryTranscript {
+        let mut entries = vec![HistoryEntry::User(self.user.clone())];
+        let mut steering = self.execution.steering.iter().peekable();
+        for (index, step) in self.execution.tool_steps.iter().enumerate() {
+            while let Some(entry) = steering.next_if(|entry| entry.after_tool_step_count <= index) {
+                push_steering(&mut entries, entry);
+            }
+            if let Some(text) = step.assistant.as_ref().filter(|text| !text.is_empty()) {
+                entries.push(HistoryEntry::Assistant(text.clone()));
+            }
+        }
+        for entry in steering {
+            push_steering(&mut entries, entry);
+        }
+        if !self.assistant_source.is_empty() {
+            entries.push(HistoryEntry::Assistant(self.assistant_source.clone()));
+        }
+        RecoveryTranscript {
+            entries,
+            uncertain_tool: self.uncertain_tool,
         }
     }
 
@@ -238,6 +267,8 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
     let outstanding_reservation = fields.flag("outstanding_reservation")?;
     let checkpoint = RecoveryCheckpoint {
         strategy: strategy(cause, tool_state, &assistant_source),
+        compaction_prepared: cause == "compaction_prepared",
+        uncertain_tool: tool_state == "uncertain",
         user,
         assistant_source,
         execution,
@@ -251,6 +282,25 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
         },
     };
     fields.finish(checkpoint)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryTranscript {
+    pub entries: Vec<HistoryEntry>,
+    pub uncertain_tool: bool,
+}
+
+fn push_steering(entries: &mut Vec<HistoryEntry>, entry: &SavedSteering) {
+    if let Some(prefix) = entry
+        .assistant_prefix
+        .as_ref()
+        .filter(|text| !text.is_empty())
+    {
+        entries.push(HistoryEntry::Assistant(prefix.clone()));
+    }
+    if !entry.text.is_empty() {
+        entries.push(HistoryEntry::User(entry.text.clone()));
+    }
 }
 
 fn strategy(cause: &str, tool_state: &str, assistant_source: &str) -> RecoveryStrategy {
