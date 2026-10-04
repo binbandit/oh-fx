@@ -81,8 +81,15 @@ impl ProgressTracker {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Output {
+    None,
+    Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Strategy {
     RetryRequest,
+    ContinueResponse,
     WaitForConnectivity,
     ProbeLiveness,
     Stop,
@@ -92,6 +99,7 @@ impl Strategy {
     pub(crate) fn action(self) -> Option<ModelRecoveryAction> {
         match self {
             Self::RetryRequest => Some(ModelRecoveryAction::RetryingRequest),
+            Self::ContinueResponse => Some(ModelRecoveryAction::ContinuingResponse),
             Self::WaitForConnectivity => Some(ModelRecoveryAction::WaitingForConnectivity),
             Self::ProbeLiveness => Some(ModelRecoveryAction::CheckingLiveness),
             Self::Stop => None,
@@ -105,6 +113,7 @@ pub(crate) struct Evidence {
     pub(crate) retry_after_seconds: Option<u64>,
     pub(crate) pacing: RetryPacing,
     pub(crate) progress: Progress,
+    pub(crate) output: Output,
     pub(crate) recovery_elapsed: Option<Duration>,
 }
 
@@ -172,7 +181,11 @@ pub(crate) fn decide(evidence: Evidence) -> Decision {
         _ if throttled => THROTTLED_RETRY_DELAY,
         _ => retry_delay(next_pacing.attempt()),
     };
-    Decision::paced(Strategy::RetryRequest, delay, next_pacing)
+    let strategy = match evidence.output {
+        Output::None => Strategy::RetryRequest,
+        Output::Partial => Strategy::ContinueResponse,
+    };
+    Decision::paced(strategy, delay, next_pacing)
 }
 
 #[derive(Debug, Default)]
@@ -188,6 +201,7 @@ impl Recovery {
         cause: ModelRecoveryCause,
         error: &ProviderError,
         streamed_bytes: usize,
+        output: Output,
     ) -> Decision {
         let started = *self.started.get_or_insert_with(Instant::now);
         let decision = decide(Evidence {
@@ -199,6 +213,7 @@ impl Recovery {
             } else {
                 Progress::Unknown
             },
+            output,
             recovery_elapsed: Some(started.elapsed()),
         });
         self.pacing = decision.next_pacing;

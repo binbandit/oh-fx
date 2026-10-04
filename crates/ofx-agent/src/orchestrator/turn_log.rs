@@ -201,6 +201,7 @@ impl Agent {
         cause: ModelRecoveryCause,
         action: ModelRecoveryAction,
         consumed_attempts: usize,
+        partial: &str,
     ) -> Result<(), Stop> {
         self.record_recovery(
             turn,
@@ -210,7 +211,7 @@ impl Agent {
         )
         .map_err(|failure| Stop::Failed {
             failure: TurnFailure::Persistence(failure),
-            partial: String::new(),
+            partial: partial.to_owned(),
         })
     }
 
