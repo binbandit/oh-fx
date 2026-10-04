@@ -1,12 +1,10 @@
 use std::env;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
-use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
 
 use ofx_auth::{
-    AuthMode, ChatGptError, DeleteOutcome, HOST_MANAGED_AUTH_MESSAGE, login_failure_detail,
-    parse_auth_mode,
+    ChatGptError, DeleteOutcome, HOST_MANAGED_AUTH_MESSAGE, host_managed_auth, login_failure_detail,
 };
 use ofx_config::ProviderId;
 
@@ -17,7 +15,7 @@ const LOGOUT_FAILURE: &str = "oh-fx logout: failed to durably remove saved Codex
 
 pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
-    if host_managed() {
+    if host_managed_auth() {
         return print(&format!("{HOST_MANAGED_AUTH_MESSAGE}\n"));
     }
     if !matches!(provider, Some(ProviderId::Codex | ProviderId::Grok)) {
@@ -82,7 +80,7 @@ pub(crate) async fn login_grok<F: AsFd>(
 
 pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
-    if host_managed() {
+    if host_managed_auth() {
         return print(&format!("{HOST_MANAGED_AUTH_MESSAGE}\n"));
     }
     if provider == Some(&ProviderId::Grok) {
@@ -145,11 +143,6 @@ async fn logout_grok(
 
 pub(crate) fn open_browser() -> bool {
     env::var_os(NO_OPEN_BROWSER_VARIABLE).is_none()
-}
-
-pub(crate) fn host_managed() -> bool {
-    let mode = env::var_os(crate::AUTH_MODE_VARIABLE);
-    parse_auth_mode(mode.as_deref().map(OsStrExt::as_bytes)) == Some(AuthMode::HostManaged)
 }
 
 fn unavailable(command: &str) -> ExitCode {

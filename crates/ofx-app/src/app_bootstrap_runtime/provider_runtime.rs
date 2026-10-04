@@ -1,12 +1,13 @@
 use std::env;
 use std::sync::Arc;
 
+use ofx_auth::{ChatGptOAuth, GrokOAuth};
 use ofx_config::{ProviderDefinition, ProviderId, Settings};
 use ofx_contract::{ModelCatalog, ModelProvider, Notice, NoticeTone};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, Reviewer};
 use tokio_util::sync::CancellationToken;
 
-use super::{AgentSetup, ConnectError, Profile, Route, Switchboard, connection_route};
+use super::{AgentSetup, ConnectError, Profile, Route, Switchboard, connection_route, user_agent};
 use crate::app_subagent_runtime::ChildRoute;
 use crate::codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 use crate::model_cache_runtime::ModelSource;
@@ -45,6 +46,33 @@ pub(crate) fn provider_names(settings: &Settings) -> Vec<String> {
 }
 
 impl AgentSetup {
+    pub(crate) fn chatgpt_oauth(&self) -> Option<ChatGptOAuth> {
+        let endpoints = self.endpoints().chatgpt;
+        ChatGptOAuth::new(
+            self.preferences.as_ref()?.data.clone(),
+            &user_agent(),
+            endpoints,
+        )
+        .ok()
+    }
+
+    pub(crate) fn grok_oauth(&self) -> Option<GrokOAuth> {
+        let endpoints = self.endpoints().grok;
+        GrokOAuth::new(
+            self.preferences.as_ref()?.data.clone(),
+            &user_agent(),
+            endpoints,
+        )
+        .ok()
+    }
+
+    fn endpoints(&self) -> SubscriptionEndpoints {
+        self.switchboard
+            .as_ref()
+            .map(|switchboard| switchboard.endpoints.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn listed_providers(&self) -> Vec<String> {
         let Some(switchboard) = &self.switchboard else {
             return Vec::new();
@@ -84,11 +112,7 @@ impl AgentSetup {
         let settings = &target.profile.settings;
         let ProviderId::Configured(id) = &target.provider else {
             let preferred = settings.selected_codex_model(None, &lookup).ok();
-            let endpoints = self
-                .switchboard
-                .as_ref()
-                .map(|switchboard| switchboard.endpoints.clone())
-                .unwrap_or_default();
+            let endpoints = self.endpoints();
             let mut route = target
                 .profile
                 .subscription_route(
