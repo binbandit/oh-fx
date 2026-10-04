@@ -364,6 +364,13 @@ mod tests {
 
     #[test]
     fn delivered_signals_set_flags_and_wake_the_pipe() {
+        if std::env::var_os(CHILD).is_none() {
+            let status = run_in_child(
+                "terminal::signal_pipe::tests::delivered_signals_set_flags_and_wake_the_pipe",
+            );
+            assert_eq!(status.code(), Some(0));
+            return;
+        }
         let pipe = SignalPipe::install().unwrap();
         signal_hook::low_level::raise(SIGWINCH).unwrap();
         signal_hook::low_level::raise(SIGCONT).unwrap();
