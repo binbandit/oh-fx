@@ -259,6 +259,15 @@ mod tests {
         assert!(std::str::from_utf8(&output).is_err());
     }
     fn capture(reply: bool, count: usize, run: impl FnOnce(&mut Herdr)) -> Vec<Vec<u8>> {
+        capture_after(Duration::ZERO, reply, count, run)
+    }
+
+    fn capture_after(
+        accept_delay: Duration,
+        reply: bool,
+        count: usize,
+        run: impl FnOnce(&mut Herdr),
+    ) -> Vec<Vec<u8>> {
         use std::io::{BufRead, BufReader};
         let root = tempfile::tempdir().unwrap();
         let path = std::fs::canonicalize(root.path())
@@ -272,19 +281,18 @@ mod tests {
             let started = std::time::Instant::now();
             let mut lines = Vec::new();
             while started.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(accept_delay);
                 match listener.accept() {
                     Ok((mut socket, _)) => {
                         socket.set_nonblocking(false).unwrap();
-                        socket
-                            .set_read_timeout(Some(Duration::from_secs(1)))
-                            .unwrap();
+                        let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
                         let mut line = Vec::new();
                         BufReader::new(socket.try_clone().unwrap())
                             .read_until(b'\n', &mut line)
                             .unwrap();
                         lines.push(line);
                         if reply {
-                            socket.write_all(b"{}\n").unwrap();
+                            let _ = socket.write_all(b"{}\n");
                         } else {
                             let _ = socket.read(&mut [0]);
                         }
@@ -392,6 +400,28 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&lines[0]).unwrap()["params"]["state"],
             "working"
+        );
+    }
+
+    #[test]
+    fn a_peer_slower_than_the_receive_timeout_still_gets_every_request() {
+        let lines = capture_after(Duration::from_millis(300), true, 4, |client| {
+            client.report(ForegroundState::Working, None);
+        });
+        let states: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|line| {
+                serde_json::from_slice::<serde_json::Value>(line).unwrap()["method"].clone()
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                "pane.report_agent",
+                "agent.rename",
+                "pane.clear_agent_authority",
+                "pane.rename"
+            ]
         );
     }
 
