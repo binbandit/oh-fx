@@ -1,6 +1,7 @@
 mod app_input_runtime;
 mod app_permission_runtime;
 mod app_worker_runtime;
+mod approval_amendment;
 mod approval_runtime;
 mod directory_completion_job;
 mod event_loop;

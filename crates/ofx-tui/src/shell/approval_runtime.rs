@@ -1,10 +1,14 @@
 use ofx_contract::{
-    ApprovalDecision, ApprovalOrigin, ApprovalRequest, PermissionMode, TurnId, UiCommand,
+    ApprovalAnswer, ApprovalDecision, ApprovalOrigin, ApprovalRequest, PermissionMode, TurnId,
+    UiCommand,
 };
 
 use super::Shell;
+use super::approval_amendment::Amendment;
 use crate::footer::approval_content::ApprovalContent;
-use crate::footer::approval_panel::{Choice, PanelFrame, Review, approval_panel_rows, choices_for};
+use crate::footer::approval_panel::{
+    Choice, Choosing, PanelFrame, Review, approval_panel_rows, choices_for,
+};
 use crate::footer::file_approval::{FileApproval, ReviewLayout, file_approval_rows};
 use crate::footer::input_presentation::ComposerView;
 use crate::input::{Action, COMPOSER_INPUT_LIMIT_BYTES, InputEvent, PasteOwner};
@@ -22,6 +26,7 @@ pub(super) struct ApprovalPrompt {
     review_layout: Option<ReviewLayout>,
     choices: Vec<Choice>,
     choice: usize,
+    amendment: Amendment,
     shown: Option<Shown>,
     typed_ms: Option<i64>,
     held_ms: Option<i64>,
@@ -61,6 +66,7 @@ impl ApprovalPrompt {
             review_layout: None,
             choices,
             choice: 0,
+            amendment: Amendment::default(),
             shown: None,
             typed_ms: None,
             held_ms: None,
@@ -93,24 +99,20 @@ impl ApprovalPrompt {
             scroll: self.scroll,
             seen,
         };
+        let choosing = Choosing {
+            choices: &self.choices,
+            selected: self.choice,
+            amendable: Amendment::can_amend(self.choices[self.choice].decision),
+            amending: self.amendment.amending(),
+        };
         let panel = match &self.content {
-            PromptContent::Request(content) => {
-                approval_panel_rows(theme, content, &self.choices, self.choice, frame)
-            }
+            PromptContent::Request(content) => approval_panel_rows(theme, content, choosing, frame),
             PromptContent::FileChange(file) => {
                 let review = match &mut self.review_layout {
                     Some(review) if review.cols() == cols => review,
                     slot => slot.insert(ReviewLayout::measure(file, cols)),
                 };
-                file_approval_rows(
-                    theme,
-                    file,
-                    review,
-                    &self.choices,
-                    self.choice,
-                    frame,
-                    self.change_seen,
-                )
+                file_approval_rows(theme, file, review, choosing, frame, self.change_seen)
             }
         };
         ComposerView {
@@ -194,6 +196,22 @@ impl ApprovalPrompt {
     fn choices(&self) -> &[Choice] {
         &self.choices
     }
+
+    pub(super) fn amending_open(&self) -> bool {
+        self.amendment.is_open()
+    }
+
+    pub(super) fn amendment_mut(&mut self) -> &mut Amendment {
+        &mut self.amendment
+    }
+
+    pub(super) fn note_typed(&mut self, now_ms: i64) {
+        self.typed_ms = Some(now_ms);
+    }
+
+    fn selected_decision(&self) -> ApprovalDecision {
+        self.choices[self.choice].decision
+    }
 }
 
 impl Shell<'_> {
@@ -206,7 +224,7 @@ impl Shell<'_> {
         if !self.is_visible_turn(turn_id) {
             self.send(UiCommand::Approval {
                 request_id: request.id,
-                decision: ApprovalDecision::Deny,
+                answer: ApprovalDecision::Deny.into(),
             });
             return;
         }
@@ -222,7 +240,7 @@ impl Shell<'_> {
         if let Some(displaced) = self.approval.replace(ApprovalPrompt::new(request, file)) {
             self.send(UiCommand::Approval {
                 request_id: displaced.request.id,
-                decision: ApprovalDecision::Deny,
+                answer: ApprovalDecision::Deny.into(),
             });
         }
         self.foreground(super::ForegroundState::Blocked, Some(b"permission"));
@@ -233,12 +251,15 @@ impl Shell<'_> {
         &mut self,
         event: &InputEvent,
     ) -> Result<(), TerminalError> {
+        if self.amend_with(event) {
+            return Ok(());
+        }
         match event {
             InputEvent::Raw(raw) => match raw.byte {
                 26 => return self.suspend(),
-                3 => self.decide(ApprovalDecision::Deny),
+                3 => self.decide(ApprovalDecision::Deny.into()),
                 b'\r' | b'\n' => self.decide_selected(),
-                b'\t' => self.move_choice(1),
+                b'\t' => self.approval_tab(),
                 key => self.approval_key(key),
             },
             InputEvent::Action(decoded) => match decoded.action {
@@ -247,8 +268,10 @@ impl Shell<'_> {
                     .input
                     .begin_paste(PasteOwner::DecisionPrompt, COMPOSER_INPUT_LIMIT_BYTES),
                 Action::Escape => self.approval_escape(),
-                Action::CursorUp => self.move_choice(-1),
-                Action::CursorDown => self.move_choice(1),
+                Action::CursorUp | Action::CursorLeft | Action::WordLeft => self.move_choice(-1),
+                Action::CursorDown | Action::CursorRight | Action::WordRight => {
+                    self.move_choice(1);
+                }
                 Action::PageUp => self.scroll_approval(-1),
                 Action::PageDown => self.scroll_approval(1),
                 _ => {}
@@ -271,7 +294,7 @@ impl Shell<'_> {
             .as_ref()
             .is_some_and(|prompt| matches!(prompt.request.origin, ApprovalOrigin::Subagent(_)));
         if subagent {
-            self.decide(ApprovalDecision::Deny);
+            self.decide(ApprovalDecision::Deny.into());
             return;
         }
         self.cancel_visible_turn();
@@ -368,6 +391,19 @@ impl Shell<'_> {
         if let Some(prompt) = &mut self.approval {
             let count = prompt.choices().len();
             prompt.choice = (prompt.choice + count).saturating_add_signed(step) % count;
+            prompt.amendment.close();
+        }
+    }
+
+    fn approval_tab(&mut self) {
+        let Some(prompt) = &mut self.approval else {
+            return;
+        };
+        let decision = prompt.selected_decision();
+        if Amendment::can_amend(decision) {
+            prompt.amendment.begin(decision);
+        } else {
+            self.move_choice(1);
         }
     }
 
@@ -377,26 +413,28 @@ impl Shell<'_> {
             return;
         }
         let now_ms = self.now_ms();
-        let Some(decision) = self
-            .approval
-            .as_ref()
-            .map(|prompt| prompt.choices()[prompt.choice].decision)
-        else {
+        let Some(answer) = self.approval.as_ref().map(|prompt| {
+            let decision = prompt.selected_decision();
+            ApprovalAnswer {
+                decision,
+                feedback: prompt.amendment.feedback(decision),
+            }
+        }) else {
             return;
         };
-        if decision == ApprovalDecision::Deny || self.affirmative_armed(now_ms) {
-            self.decide(decision);
+        if answer.decision == ApprovalDecision::Deny || self.affirmative_armed(now_ms) {
+            self.decide(answer);
         } else {
             self.hold_yes();
         }
     }
 
-    fn decide(&mut self, decision: ApprovalDecision) {
+    fn decide(&mut self, answer: ApprovalAnswer) {
         if let Some(prompt) = self.approval.take() {
             self.invalidate();
             self.send(UiCommand::Approval {
                 request_id: prompt.request.id,
-                decision,
+                answer,
             });
         }
     }
@@ -405,6 +443,9 @@ impl Shell<'_> {
 fn starts_before_permission(request: &ApprovalRequest, mode: PermissionMode) -> bool {
     request.file.is_none() && !(mode == PermissionMode::Auto && request.command.is_some())
 }
+
+#[cfg(test)]
+mod amendment_tests;
 
 #[cfg(test)]
 mod tests {
@@ -425,7 +466,7 @@ mod tests {
     use super::super::test_shell::TestShell;
 
     const PANEL: &str = "Permission needed · Choose one";
-    const ARMED_MS: u64 = 600;
+    pub(super) const ARMED_MS: u64 = 600;
 
     fn request(turn: u64, id: u64) -> UiEvent {
         request_with(
@@ -464,7 +505,7 @@ mod tests {
         }
     }
 
-    fn approving() -> TestShell {
+    pub(super) fn approving() -> TestShell {
         let mut test = TestShell::start();
         test.submit("read the notes");
         test.deliver(UiEvent::TurnStarted {
@@ -479,11 +520,11 @@ mod tests {
     fn decision(id: u64, decision: ApprovalDecision) -> UiCommand {
         UiCommand::Approval {
             request_id: RequestId::new(id),
-            decision,
+            answer: decision.into(),
         }
     }
 
-    fn press(test: &mut TestShell, bytes: &[u8]) {
+    pub(super) fn press(test: &mut TestShell, bytes: &[u8]) {
         test.type_bytes(bytes);
         test.step();
     }
@@ -622,7 +663,7 @@ mod tests {
         );
     }
 
-    fn file_request(
+    pub(super) fn file_request(
         id: u64,
         tool: &str,
         path: &str,
@@ -668,7 +709,7 @@ mod tests {
         }
     }
 
-    fn editing() -> TestShell {
+    pub(super) fn editing() -> TestShell {
         let mut test = TestShell::start();
         test.submit("edit it");
         test.deliver(UiEvent::TurnStarted {
@@ -708,7 +749,7 @@ mod tests {
         press(&mut test, b"1");
         assert!(!approved(&test));
         test.advance(ARMED_MS);
-        press(&mut test, b"\t");
+        press(&mut test, b"\x1b[B");
         press(&mut test, b"\r");
         assert_eq!(
             test.sent().last(),
@@ -1241,7 +1282,7 @@ mod tests {
         );
     }
 
-    fn approved(test: &TestShell) -> bool {
+    pub(super) fn approved(test: &TestShell) -> bool {
         test.sent()
             .iter()
             .any(|command| matches!(command, UiCommand::Approval { .. }))

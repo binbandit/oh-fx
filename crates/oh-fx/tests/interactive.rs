@@ -198,6 +198,43 @@ fn reads_outside_the_workspace_wait_for_approval_in_the_footer() {
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
 }
 
+#[test]
+fn feedback_drafted_at_the_approval_prompt_follows_the_tool_result() {
+    let read = chat_tool_call_events("call-1", "read_file", r#"{"path":"../notes.txt"}"#);
+    let server = FakeServer::start([
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["Summarized."])),
+    ]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    fs::write(home.root.join("notes.txt"), "outside notes\n").expect("write the outside file");
+    let mut session = home.shell(30, 100);
+    session.send(b"read the notes\r");
+    let screen = wait(&session, "Permission needed · Choose one");
+    assert!(screen.contains("tab amend"), "{screen}");
+    session.send(b"\t");
+    wait(&session, "❯ 1. Yes, and tell oh-fx what to do next");
+    session.send(b"then summarize them");
+    wait(&session, "❯ 1. Yes, then summarize them");
+    thread::sleep(APPROVAL_ARMING);
+    session.send(b"\r");
+    let screen = wait(&session, "Summarized.");
+    assert!(screen.contains("┃ then summarize them"), "{screen}");
+    let body = server.requests()[1].json();
+    let messages = body["messages"].as_array().expect("messages");
+    let tail = &messages[messages.len() - 2..];
+    assert_eq!(tail[0]["role"], "tool", "{body}");
+    assert!(
+        tail[0]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("outside notes")),
+        "{body}"
+    );
+    assert_eq!(tail[1]["role"], "user", "{body}");
+    assert_eq!(tail[1]["content"], "then summarize them", "{body}");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
 fn last_tool_result(request: &ofx_testkit::RecordedRequest) -> String {
     let body = request.json();
     body["messages"]

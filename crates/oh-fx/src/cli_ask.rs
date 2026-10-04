@@ -1061,6 +1061,7 @@ impl Presenter {
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
             | UiEvent::ApprovalRequested { .. }
+            | UiEvent::ApprovalFeedback { .. }
             | UiEvent::QuestionRequested { .. }
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }

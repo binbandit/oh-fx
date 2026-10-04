@@ -54,7 +54,7 @@ fn approve(harness: &Harness) {
         .unwrap();
     harness.send(UiCommand::Approval {
         request_id,
-        decision: ApprovalDecision::Once,
+        answer: ApprovalDecision::Once.into(),
     });
 }
 

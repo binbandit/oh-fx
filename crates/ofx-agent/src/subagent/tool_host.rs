@@ -41,6 +41,8 @@ pub trait ChildAgents: Send + Sync {
     fn approval_requested(&self, turn_id: Option<TurnId>, request: ApprovalRequest);
 
     fn root_user_context(&self, requests: &RootUserRequests) -> String;
+
+    fn approval_feedback(&self, turn_id: Option<TurnId>, text: String);
 }
 
 pub trait ChildStore: Send + Sync {

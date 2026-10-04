@@ -35,9 +35,9 @@ pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
 pub use modes::{ActiveMode, ModeRegistry, ModeSpec, ToolPolicy};
 pub use permission_gate::{
-    Admission, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest, FileChange,
-    FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ProposedFileChange,
-    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
+    Admission, ApprovalAnswer, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest,
+    FileChange, FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate,
+    ProposedFileChange, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
 };
 pub use session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope};
 pub use settings_catalog::{
