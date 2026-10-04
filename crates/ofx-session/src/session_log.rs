@@ -26,16 +26,14 @@ use crate::session_codec::{
 };
 use crate::session_display_metadata::{derive_display_title, prompt_title};
 use crate::session_error::SessionError;
-use crate::session_event::{
-    ContextCheckpointEvent, ConversationEvent, FileEvidence, ToolResultEvent,
-};
+use crate::session_event::{ContextCheckpointEvent, ConversationEvent, ToolResultEvent};
 use crate::session_layout::is_valid_session_id;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
 use conversation_progress::ProgressPoint;
 use conversation_writer::{ConversationWriter, scan_log};
-use file_evidence::steps_file_evidence;
+use file_evidence::EarlierEvidence;
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
     open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
@@ -108,7 +106,7 @@ pub struct WritableSession {
     started: bool,
     language: String,
     recovery: Recovery,
-    compacted_files: Vec<FileEvidence>,
+    earlier: EarlierEvidence,
 }
 
 impl WritableSession {
@@ -295,6 +293,10 @@ impl WritableSession {
         match mem::take(&mut self.recovery) {
             Recovery::Pending(checkpoint) => {
                 self.recovery = Recovery::Continuing;
+                self.earlier = EarlierEvidence::recovered(
+                    checkpoint.files().to_vec(),
+                    checkpoint.recovered_call_ids(),
+                );
                 Some(PendingRecovery::new(checkpoint, &self.owned.dir))
             }
             other => {
@@ -314,7 +316,7 @@ impl WritableSession {
         let written = self.written()?;
         let events = turn_events(&self.artifacts(provider, timestamp_ms), turn, written)?;
         self.append(timestamp_ms, &events[usize::from(open)..])?;
-        self.compacted_files.clear();
+        self.earlier = EarlierEvidence::default();
         Ok(())
     }
 
@@ -348,8 +350,7 @@ impl WritableSession {
         };
         if cut.turns == active_turn {
             let covered = cut.tool_steps.min(active.steps.len());
-            self.compacted_files
-                .extend(steps_file_evidence(&active.steps[..covered]));
+            self.earlier.keep_compacted(&active.steps[..covered]);
         }
         self.write_first_title(fresh, active.user)
     }
@@ -405,7 +406,7 @@ impl WritableSession {
             dir: &self.owned.dir,
             provider,
             timestamp_ms,
-            earlier_files: &self.compacted_files,
+            earlier: &self.earlier,
         }
     }
 
@@ -496,7 +497,7 @@ pub(crate) fn start_session(
             started: true,
             language,
             recovery: Recovery::Absent,
-            compacted_files: Vec::new(),
+            earlier: EarlierEvidence::default(),
         });
     let session = match prepared {
         Ok(session) => session,
@@ -562,7 +563,7 @@ pub(crate) fn resume_session(
         history,
         started: false,
         recovery,
-        compacted_files: Vec::new(),
+        earlier: EarlierEvidence::default(),
     })
 }
 

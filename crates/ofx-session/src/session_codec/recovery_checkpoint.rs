@@ -152,6 +152,19 @@ impl RecoveryCheckpoint {
     pub(crate) fn into_files(self) -> Vec<FileEvidence> {
         self.execution.files
     }
+
+    pub(crate) fn files(&self) -> &[FileEvidence] {
+        &self.execution.files
+    }
+
+    pub(crate) fn recovered_call_ids(&self) -> Vec<String> {
+        self.execution
+            .tool_steps
+            .iter()
+            .flat_map(|step| &step.tool_results)
+            .map(|result| result.tool_call_id.clone())
+            .collect()
+    }
 }
 
 impl SavedToolStep {

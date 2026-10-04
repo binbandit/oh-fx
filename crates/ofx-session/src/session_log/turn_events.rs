@@ -8,18 +8,18 @@ use crate::result_store::{make_handle, preview, store_result};
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{
-    ArtifactCompleteness, AssistantEvent, ConversationEvent, FileEvidence, InterruptReason,
-    InterruptedEvent, SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent,
-    ToolResultEvent, TurnCompletedEvent, UserEvent,
+    ArtifactCompleteness, AssistantEvent, ConversationEvent, InterruptReason, InterruptedEvent,
+    SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
+    TurnCompletedEvent, UserEvent,
 };
 use crate::session_log::conversation_progress::ProgressPoint;
-use crate::session_log::file_evidence::turn_file_evidence;
+use crate::session_log::file_evidence::EarlierEvidence;
 
 pub(crate) struct TurnArtifacts<'a> {
     pub(crate) dir: &'a PrivateDir,
     pub(crate) provider: &'a SavedProvider,
     pub(crate) timestamp_ms: i64,
-    pub(crate) earlier_files: &'a [FileEvidence],
+    pub(crate) earlier: &'a EarlierEvidence,
 }
 
 pub(crate) fn turn_events(
@@ -69,7 +69,7 @@ pub(crate) fn turn_events(
                 }));
             }
             let mut completed = TurnCompletedEvent::default();
-            completed.files = turn_file_evidence(artifacts.earlier_files, &turn.steps);
+            completed.files = artifacts.earlier.turn_files(&turn.steps);
             events.push(ConversationEvent::TurnCompleted(completed));
         }
         TurnEnd::Stopped { reason, partial } => {
@@ -79,7 +79,7 @@ pub(crate) fn turn_events(
             };
             let partial = (!partial.is_empty()).then(|| partial.to_owned());
             let mut interrupted = InterruptedEvent::new(reason, partial);
-            interrupted.files = turn_file_evidence(artifacts.earlier_files, &turn.steps);
+            interrupted.files = artifacts.earlier.turn_files(&turn.steps);
             events.push(ConversationEvent::Interrupted(interrupted));
         }
     }
