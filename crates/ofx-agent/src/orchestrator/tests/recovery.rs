@@ -144,7 +144,9 @@ async fn a_reconciling_turn_keeps_its_note_and_withheld_tools_across_a_preflight
     let provider = FakeProvider::new(vec![
         spoken_tool_reply("Reading first.", "call-9", r#"{"value":"first.txt"}"#),
         unmetered(text_reply(&big_reply)),
-        unmetered(text_reply("Turn 1\nT1: echoed first.txt")),
+        unmetered(text_reply(
+            "Turn 1\nIn between: Finish after the verified read and return the result.\nT1: echoed first.txt",
+        )),
         unmetered(text_reply("reconciled")),
     ]);
     let (mut agent, _) = windowed(&provider, 45_000, 64);
