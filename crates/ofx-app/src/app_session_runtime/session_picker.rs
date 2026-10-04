@@ -1,6 +1,6 @@
 use ofx_agent::Agent;
 use ofx_contract::{HistoryEntry, Notice, NoticeTone, ResumeRefusal};
-use ofx_session::{SessionCatalog, SessionError};
+use ofx_session::{PendingRecovery, SessionCatalog, SessionError};
 use tokio::time::Instant;
 
 use super::persistence::{Persistence, SESSION_TOPIC};
@@ -10,6 +10,7 @@ use super::{
 use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(crate) struct Switched {
+    pub(crate) pending: Option<PendingRecovery>,
     pub(crate) history: Vec<HistoryEntry>,
     pub(crate) title: Option<String>,
     pub(crate) preferences: RestoredPreferences,
@@ -62,8 +63,8 @@ impl Persistence {
             });
         }
         self.store.move_here(&mut session).map_err(refused)?;
-        session.settle_recovery().map_err(refused)?;
-        let resumed = ResumedSession::load(session).map_err(refused)?;
+        let mut resumed = ResumedSession::for_shell(session).map_err(refused)?;
+        let pending = resumed.take_pending_recovery();
         let history = resumed.transcript(setup).map_err(refused)?;
         let title = resumed.display_title().map(str::to_owned);
         let preferences = self.overrides.restore(resumed.preferences());
@@ -75,6 +76,7 @@ impl Persistence {
         let notice = self.remember(live.id());
         self.live = Some(live);
         Ok(Switched {
+            pending,
             history,
             title,
             preferences,

@@ -1965,3 +1965,126 @@ fn a_resumed_subagent_row_reads_its_outcome_from_the_whole_saved_result() {
     );
     exit(session);
 }
+
+const CONFIGURED_IDENTITY: &str =
+    "40122b758656199048961e6e8369383c25ebcdeddced75b64ad736e527014da8";
+
+fn pause_a_response(home: &Home, id: &str) {
+    let checkpoint = json!({
+        "version": 2,
+        "turn_id": 2,
+        "user": {"text": "fix the build", "images": []},
+        "assistant_source": "",
+        "execution": {
+            "schema_version": 10,
+            "tool_steps": [],
+            "files": [],
+            "steering": [],
+            "turn_summary": null
+        },
+        "cause": "rate_limited",
+        "action": "retrying_request",
+        "tool_state": "none",
+        "authority": {
+            "provider": home.metadata(id)["provider"],
+            "model": "model-a",
+            "credential_source": "configured",
+            "credential_identity": CONFIGURED_IDENTITY
+        },
+        "requested_fast_mode": false,
+        "fast_mode": false,
+        "max_provider_attempts": 10,
+        "consumed_provider_attempts": 1,
+        "outstanding_reservation": false
+    });
+    let seq = home.frames(id).len();
+    fs::write(
+        home.sessions().join(id).join("recovery.json"),
+        format!("{{\"conversation_seq\":{seq},\"checkpoint\":{checkpoint}}}\n"),
+    )
+    .expect("write recovery.json");
+}
+
+#[test]
+fn a_resumed_shell_continues_a_paused_response_on_its_own() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Build fixed."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    pause_a_response(&home, &id);
+
+    let session = home.shell(&["-c"], "session resumed: first question");
+    let screen = wait(&session, "Build fixed.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "First answer.",
+                "fix the build",
+                "model response recovery paused and continues automatically",
+                "Build fixed."
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+    assert_eq!(
+        chat(&server.requests()[1]),
+        [
+            turn("first question", "First answer."),
+            vec![("user".to_owned(), "fix the build".to_owned())]
+        ]
+        .concat()
+    );
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+    assert_eq!(
+        kinds(&home.frames(&id)),
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+}
+
+#[test]
+fn a_shell_that_quit_unexpectedly_asks_before_continuing_a_paused_response() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["First answer."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    pause_a_response(&home, &id);
+    fs::write(
+        home.sessions().join(&id).join("owner.live"),
+        "{\"pid\":1,\"opened_at_ms\":1}\n",
+    )
+    .expect("leave an owner marker behind");
+
+    for _ in 0..2 {
+        let session = home.shell(&["-c"], "session resumed: first question");
+        let screen = wait(&session, "quit unexpectedly");
+        assert!(
+            appears_in_order(
+                &screen,
+                &["First answer.", "fix the build", "quit unexpectedly"]
+            ),
+            "{screen}"
+        );
+        exit(session);
+        assert!(home.sessions().join(&id).join("recovery.asked").exists());
+        assert!(home.sessions().join(&id).join("recovery.json").exists());
+    }
+    assert_eq!(server.requests().len(), 1);
+}

@@ -5,6 +5,7 @@ mod resume_transcript;
 mod session_listing;
 mod session_picker;
 mod session_titles;
+mod shell_recovery;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -24,6 +25,8 @@ pub(crate) use persistence::{Persistence, Resumption};
 pub(crate) use session_listing::{Answer, Listed, PageRequest, SessionListing};
 pub use session_titles::TitleGeneration;
 pub(crate) use session_titles::{RenameError, SessionTitle, validate_session_title};
+pub(crate) use shell_recovery::{NOT_CONTINUED, RECOVERY_TOPIC};
+use shell_recovery::{ShellRecovery, shell_recovery};
 
 #[derive(Debug)]
 pub enum ResumeFailure {
@@ -42,6 +45,7 @@ pub struct ResumedSession {
     history: RestoredHistory,
     title: String,
     title_present: bool,
+    recovery: Option<ShellRecovery>,
 }
 
 impl ResumedSession {
@@ -50,10 +54,22 @@ impl ResumedSession {
         profile: &mut Profile,
         target: &ResumeTarget,
     ) -> Result<Self, ResumeFailure> {
-        let mut session = store.resume_target(target)?;
+        let session = store.resume_target(target)?;
         select(profile, &session)?;
-        session.settle_recovery()?;
-        Ok(Self::load(session)?)
+        Ok(Self::for_shell(session)?)
+    }
+
+    fn for_shell(mut session: WritableSession) -> Result<Self, SessionError> {
+        let recovery = shell_recovery(&mut session)?;
+        let mut resumed = Self::load(session)?;
+        resumed.recovery = recovery;
+        Ok(resumed)
+    }
+
+    pub(crate) fn take_pending_recovery(&mut self) -> Option<PendingRecovery> {
+        self.recovery
+            .as_mut()
+            .and_then(|recovery| recovery.pending.take())
     }
 
     pub fn open_for_ask(
@@ -88,6 +104,7 @@ impl ResumedSession {
             history,
             title,
             title_present,
+            recovery: None,
         })
     }
 
@@ -96,9 +113,14 @@ impl ResumedSession {
     }
 
     pub(crate) fn transcript(&self, setup: &AgentSetup) -> Result<Vec<HistoryEntry>, SessionError> {
-        resume_transcript::transcript(&self.session, &self.title, &|tool_name, arguments| {
-            setup.describe_saved_call(tool_name, arguments)
-        })
+        let mut entries =
+            resume_transcript::transcript(&self.session, &self.title, &|tool_name, arguments| {
+                setup.describe_saved_call(tool_name, arguments)
+            })?;
+        if let Some(recovery) = &self.recovery {
+            entries.extend(recovery.entries.iter().cloned());
+        }
+        Ok(entries)
     }
 
     pub(crate) fn display_title(&self) -> Option<&str> {
@@ -121,10 +143,19 @@ pub fn recovered_turn(
     pending: PendingRecovery,
     setup: &AgentSetup,
 ) -> Result<RecoveredTurn, SessionError> {
+    continued_turn(pending, setup, setup.model(), setup.fast_mode())
+}
+
+pub(crate) fn continued_turn(
+    pending: PendingRecovery,
+    setup: &AgentSetup,
+    model: &str,
+    fast_mode: bool,
+) -> Result<RecoveredTurn, SessionError> {
     if !pending.authorizes(setup.route_credential()) {
         return Err(SessionError::RecoveryCredentialAuthorityChanged);
     }
-    Ok(pending.into_turn(&running_provider(setup)?, setup.model(), setup.fast_mode()))
+    Ok(pending.into_turn(&running_provider(setup)?, model, fast_mode))
 }
 
 pub struct LiveSession {
