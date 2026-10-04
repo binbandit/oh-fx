@@ -7,7 +7,7 @@ use crate::session_error::SessionError;
 pub(crate) const PREVIEW_BYTES: usize = 4 * 1024;
 pub(crate) const RESULT_UNAVAILABLE: &str =
     "Saved tool-result content is unavailable. The complete output could not be restored.";
-const STORED_TEXT_MAX_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const STORED_TEXT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const TOOL_RESULTS_DIR: &str = "tool-results";
 const HANDLE_PREFIX: &str = "result-";
 const HANDLE_SUFFIX: &str = ".txt";

@@ -1036,7 +1036,7 @@ mod tests {
 
     use super::*;
     use crate::app_bootstrap_runtime::{Launch, Profile};
-    use crate::app_session_runtime::{LaunchOverrides, running_provider};
+    use crate::app_session_runtime::{LaunchOverrides, session_route};
     use crate::codex_provider::SubscriptionEndpoints;
 
     struct Harness {
@@ -1252,9 +1252,9 @@ mod tests {
             let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
             let store =
                 SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
-            let provider = running_provider(&setup).unwrap();
+            let route = session_route(&setup).unwrap();
             let preferences = SessionPreferences {
-                provider: provider.clone(),
+                provider: route.provider.clone(),
                 model: setup.configured_model().to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
@@ -1264,7 +1264,7 @@ mod tests {
                 effort: None,
                 fast_mode: None,
             };
-            let persistence = Persistence::new(store, provider, preferences, overrides, None);
+            let persistence = Persistence::new(store, route, preferences, overrides, None);
             Self::spawn(home, setup, Some(persistence))
         }
 

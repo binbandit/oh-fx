@@ -148,7 +148,10 @@ fn step_events(
     Ok(())
 }
 
-fn saved_replay(replay: &ProviderReplay, running: &SavedProvider) -> Option<SavedReplay> {
+pub(crate) fn saved_replay(
+    replay: &ProviderReplay,
+    running: &SavedProvider,
+) -> Option<SavedReplay> {
     let id = ProviderId::parse(&replay.source.provider)?;
     let provider = match replay.source.binding {
         Some(binding) => SavedProvider::new(id, Some(binding))?,
