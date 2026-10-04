@@ -3,9 +3,10 @@ use std::path::PathBuf;
 
 use ofx_config::ProviderId;
 use ofx_contract::{
-    ChatMessage, HistoryCut, HistoryStep, HistoryTurn, ProviderReplay, ReasoningEffort,
-    RecoveredTurn, RecoveryStrategy, ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall,
-    ToolCallId, ToolResultStatus, TurnEnd,
+    ChatMessage, HistoryCut, HistoryStep, HistoryTurn, ModelRecoveryCause, ProviderReplay,
+    ReasoningEffort, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
+    ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolResultStatus,
+    TurnEnd, TurnId,
 };
 
 use super::*;
@@ -821,4 +822,114 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
         steering: Vec::new(),
         end,
     }
+}
+
+#[test]
+fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_saved_turn() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let provider = metadata().preferences.provider;
+    let large = "x".repeat(5_000);
+    let calls = vec![ToolCall::new("c2", "shell", "{\"command\":\"ls\"}")];
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn: HistoryTurn {
+            user: "fix the build",
+            steps: vec![HistoryStep {
+                assistant: "",
+                provider_replay: None,
+                tool_calls: &calls,
+                tool_results: vec![StepResult {
+                    call_id: "c2",
+                    tool_name: "shell",
+                    output: &large,
+                    output_bytes: large.len(),
+                    status: ToolResultStatus::Success,
+                }],
+            }],
+            steering: Vec::new(),
+            end: TurnEnd::Replied {
+                text: "",
+                provider_replay: None,
+            },
+        },
+        cause: ModelRecoveryCause::ProviderUnavailable,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 10,
+    };
+    let mut session = fixture.resume().unwrap();
+    fs::write(fixture.path(RECOVERY_ASKED_FILE), "{\"asked_at_ms\":3}\n").unwrap();
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    assert!(fixture.path(RECOVERY_FILE).exists());
+    assert!(!fixture.path(RECOVERY_ASKED_FILE).exists());
+    let saved = fs::read_to_string(fixture.path(RECOVERY_FILE)).unwrap();
+    assert!(saved.starts_with("{\"conversation_seq\":3,"), "{saved}");
+    assert!(
+        saved.contains("\"output\":\"\",\"output_handle\":\"result-shell-"),
+        "{saved}"
+    );
+    drop(session);
+    let mut resumed = fixture.resume().unwrap();
+    assert_eq!(fixture.log().len(), 3);
+    let pending = resumed.take_recovery().unwrap();
+    assert!(pending.authorizes(RouteCredential::configured()));
+    assert!(!pending.authorizes(RouteCredential::chatgpt_subscription("acct_1")));
+    let continued = pending.into_turn(&provider, "openai/gpt-5", false);
+    assert_eq!(continued.strategy, RecoveryStrategy::RetryRequest);
+    assert!(matches!(
+        &continued.messages[1],
+        ChatMessage::Tool { content, .. } if *content == large
+    ));
+    let finished = HistoryTurn {
+        user: "fix the build",
+        steps: Vec::new(),
+        steering: Vec::new(),
+        end: TurnEnd::Replied {
+            text: "fixed",
+            provider_replay: None,
+        },
+    };
+    resumed.record_turn(&finished, &provider).unwrap();
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
+fn a_checkpoint_written_during_a_continued_turn_keeps_the_recovered_replay_bindings() {
+    let fixture = Fixture::new();
+    let running = portkey(0x33);
+    fixture.start_under(running.clone(), &finished_turn());
+    fixture.save_checkpoint(
+        3,
+        &checkpoint("fix the build", &[replayed_step("c1", "11")], "", ""),
+    );
+    let mut resumed = fixture.resume().unwrap();
+    let continued = resumed
+        .take_recovery()
+        .unwrap()
+        .into_turn(&running, "claude", false);
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn: continued_history(&continued, replied("")),
+        cause: ModelRecoveryCause::RateLimited,
+        progress: RecoveryProgress::Paused,
+        model: "claude",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 10,
+    };
+    resumed
+        .record_recovery(&point, &running, RouteCredential::configured())
+        .unwrap();
+    let saved = fs::read_to_string(fixture.path(RECOVERY_FILE)).unwrap();
+    assert!(
+        saved.contains(&format!("\"provider_replay\":{}", bound_replay("11"))),
+        "{saved}"
+    );
 }

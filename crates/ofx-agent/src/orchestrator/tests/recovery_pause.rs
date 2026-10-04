@@ -1,6 +1,18 @@
 use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 
+const CONNECTIVITY: ModelRecoveryAction = ModelRecoveryAction::WaitingForConnectivity;
+
+fn checkpoint(progress: RecoveryProgress, consumed_attempts: usize) -> Logged {
+    Logged::Recovery {
+        user: "go".to_owned(),
+        steps: Vec::new(),
+        progress,
+        consumed_attempts,
+        fast_mode: false,
+    }
+}
+
 fn lost() -> Script {
     Script::Fail(
         Vec::new(),
@@ -79,12 +91,16 @@ async fn a_paused_turn_is_saved_as_failed_and_stays_in_the_history() {
     pause_on(&mut agent, "go", waiting).await;
     assert_eq!(
         *entries.lock().unwrap(),
-        [Logged::Turn {
-            user: "go".to_owned(),
-            steps: Vec::new(),
-            steering: Vec::new(),
-            end: r#"Failed """#.to_owned(),
-        }]
+        [
+            checkpoint(RecoveryProgress::Waiting(CONNECTIVITY), 1),
+            checkpoint(RecoveryProgress::Paused, 1),
+            Logged::Turn {
+                user: "go".to_owned(),
+                steps: Vec::new(),
+                steering: Vec::new(),
+                end: r#"Failed """#.to_owned(),
+            }
+        ]
     );
     run(&mut agent, "again").await;
     assert_eq!(
@@ -133,12 +149,16 @@ async fn a_paused_turn_keeps_the_text_its_retried_request_streamed() {
         if saved {
             assert_eq!(
                 *entries.lock().unwrap(),
-                [Logged::Turn {
-                    user: "go".to_owned(),
-                    steps: Vec::new(),
-                    steering: Vec::new(),
-                    end: r#"Failed "Half an answer""#.to_owned(),
-                }]
+                [
+                    checkpoint(RecoveryProgress::Waiting(CONNECTIVITY), 1),
+                    checkpoint(RecoveryProgress::Paused, 2),
+                    Logged::Turn {
+                        user: "go".to_owned(),
+                        steps: Vec::new(),
+                        steering: Vec::new(),
+                        end: r#"Failed "Half an answer""#.to_owned(),
+                    }
+                ]
             );
         }
         run(&mut agent, "again").await;
