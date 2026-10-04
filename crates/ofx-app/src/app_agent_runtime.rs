@@ -5091,6 +5091,70 @@ mod tests {
         }
     }
 
+    fn save_login_as(harness: &Harness, account: &str) {
+        let data = harness.home.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+        let session = json!({
+            "version": 1,
+            "access_token": "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl",
+            "refresh_token": "rt-refresh-secret-0123456789",
+            "expires_at_ms": 4_102_444_800_000_i64,
+            "account_id": account,
+        });
+        let file = data.join("chatgpt-auth.json");
+        fs::write(&file, format!("{session}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn rejected_after_a_retry() -> FakeServer {
+        FakeServer::start([
+            Reply::status(429, r#"{"error":{"message":"slow down"}}"#),
+            Reply::status(400, r#"{"error":{"message":"bad"}}"#),
+        ])
+    }
+
+    async fn checkpoint_identity(harness: &mut Harness, account: &str) -> Value {
+        save_login_as(harness, account);
+        harness.send(UiCommand::RetryHeldPrompt);
+        within(harness.until(finished(TurnOutcome::Failed))).await;
+        let id = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let recovery = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(id)
+            .join("recovery.json");
+        let saved: Value = serde_json::from_slice(&fs::read(recovery).unwrap()).unwrap();
+        saved["checkpoint"]["authority"]["credential_identity"].clone()
+    }
+
+    #[tokio::test]
+    async fn a_restored_login_signs_the_recovery_checkpoints_of_the_prompts_it_releases() {
+        let codex = rejected_after_a_retry();
+        let catalog = codex_catalog(false, 2);
+        let home = tempfile::tempdir().unwrap();
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let setup = agent_setup_with(&home, &settings, codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::saved(home, setup);
+        held(&mut harness, "first").await;
+        let launched_signed_out = checkpoint_identity(&mut harness, "acct_test").await;
+        assert!(launched_signed_out.is_string(), "{launched_signed_out}");
+
+        let codex = rejected_after_a_retry();
+        let catalog = codex_catalog(false, 3);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        notices_of(&mut harness, "/logout codex").await;
+        held(&mut harness, "second").await;
+        let changed_account = checkpoint_identity(&mut harness, "acct_other").await;
+        assert!(changed_account.is_string(), "{changed_account}");
+        assert_ne!(changed_account, launched_signed_out);
+    }
+
     #[tokio::test]
     async fn a_codex_launch_without_a_login_opens_signed_out() {
         let codex = FakeServer::start([]);
