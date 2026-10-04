@@ -347,6 +347,55 @@ fn the_permission_mode_variable_picks_the_starting_mode_and_shift_tab_cycles_on_
 }
 
 #[test]
+fn logout_in_a_host_managed_shell_leaves_authentication_to_the_host() {
+    let home = Home::with_settings(&settings("http://127.0.0.1:9"));
+    let mut command = home.command();
+    command.env("OH_FX_AUTH_MODE", "host-managed");
+    let mut session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "auto · model-a");
+    session.send(b"/logout codex\r");
+    wait(&session, "* auth: Authentication is managed by the host.");
+    session.send(b"/login\r");
+    let screen = session
+        .wait_for(WAIT, |screen| {
+            screen
+                .matches("* auth: Authentication is managed by the host.")
+                .count()
+                == 2
+        })
+        .unwrap_or_else(|screen| panic!("/login is not left to the host:\n{screen}"));
+    assert!(!screen.contains("┃ /login"), "{screen}");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn a_codex_shell_without_a_login_holds_a_prompt_until_ctrl_c_drops_it() {
+    let home = Home::with_settings(&json!({
+        "provider": "codex",
+        "models": {"codex": "gpt-6.1-sol"},
+        "session_titles": false
+    }));
+    let mut session = PtySession::spawn(home.command(), 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "run /login · auto · gpt-6.1-sol");
+    session.send(b"hello there\r");
+    let held = "! auth: Codex needs a subscription login. Run /login, open Connections, then";
+    let screen = wait(&session, held);
+    assert!(screen.contains("┃ hello there"), "{screen}");
+    assert!(!screen.contains("Thinking"), "{screen}");
+    session.send(b"draft");
+    session.send(b"\x03");
+    wait(&session, "press ctrl+c again to exit");
+    wait(&session, "┃ draft");
+    session.send(b"\x15again\r");
+    session
+        .wait_for(WAIT, |screen| screen.matches(held).count() == 2)
+        .unwrap_or_else(|screen| panic!("the next prompt is not held:\n{screen}"));
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
 fn a_mode_that_cannot_be_saved_still_applies_and_says_so() {
     let home = Home::with_settings(&settings("http://127.0.0.1:9"));
     let unsaveable = fs::read_to_string(settings_file(&home))
@@ -915,6 +964,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
         "  /rename         rename the current session",
         "  /undo           undo the latest tracked file operation",
         "  /ultrafast      request Ultra mode when supported",
+        "  /logout         sign out of a provider session",
     ];
     session
         .wait_for(WAIT, |screen| menu.iter().all(|line| screen.contains(line)))
