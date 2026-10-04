@@ -15,6 +15,7 @@ pub(super) enum Ending {
     Replied,
     Stopped(TurnStop),
     Discarded,
+    Paused,
 }
 
 impl Agent {
@@ -57,8 +58,10 @@ impl Agent {
 
     fn note_recorded(&mut self, turn: &Turn, ending: Ending, saved: bool) {
         let record = match ending {
-            Ending::Discarded if saved && turn.compaction.checkpointed() => TurnRecord::LogOnly,
-            Ending::Discarded => return,
+            Ending::Discarded | Ending::Paused if saved && turn.compaction.checkpointed() => {
+                TurnRecord::LogOnly
+            }
+            Ending::Discarded | Ending::Paused => return,
             _ if saved => TurnRecord::Saved,
             _ => TurnRecord::Unsaved,
         };
@@ -113,7 +116,7 @@ impl Agent {
         files: &[FileEvidence],
     ) -> Result<(), LogFailure> {
         let start = turn.start;
-        let Some(log) = self.log.as_mut() else {
+        let Some(log) = self.log.as_mut().filter(|_| ending != Ending::Paused) else {
             return Ok(());
         };
         let parsed = (ending != Ending::Discarded && start < self.history.len())

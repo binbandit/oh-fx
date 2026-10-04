@@ -313,6 +313,10 @@ impl PtySession {
         self.signal(Signal::TERM)
     }
 
+    pub fn kill(&self) -> io::Result<()> {
+        self.signal(Signal::KILL)
+    }
+
     pub fn send(&self, bytes: &[u8]) {
         let mut remaining = bytes;
         while !remaining.is_empty() {
