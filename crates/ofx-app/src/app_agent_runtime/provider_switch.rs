@@ -101,14 +101,16 @@ impl Controller {
         }
     }
 
-    fn install(&mut self, target: &ProviderId, route: Route) {
+    pub(super) fn install(&mut self, target: &ProviderId, route: Route) {
         let (provider, models) = self.state.setup.adopt(route);
         let resolver: Arc<dyn CapabilityResolver> = Arc::new(models.clone());
         self.agent.set_provider(provider, Some(resolver));
         self.catalog.retarget(models, target.label());
         self.state.setup.model().clone_into(&mut self.state.model);
         self.reconfigure();
-        self.state.emit(UiEvent::LoginChanged { missing: false });
+        self.state.emit(UiEvent::LoginChanged {
+            missing: self.state.login_missing(),
+        });
     }
 
     fn adopt(&mut self, target: &ProviderId, route: Route) {
