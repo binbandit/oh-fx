@@ -33,7 +33,7 @@ use ofx_mcp::{
     load_native_configs, profile_config_path,
 };
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
-use ofx_session::CredentialAuthority;
+use ofx_session::RouteCredential;
 use ofx_tools::WebFetchProgress;
 use ofx_workspace::ChangeTracker;
 use tokio_util::sync::CancellationToken;
@@ -575,12 +575,12 @@ impl AgentSetup {
         self.source
     }
 
-    pub(crate) fn credential_authority(&self) -> CredentialAuthority<'_> {
+    pub fn route_credential(&self) -> RouteCredential {
         match self.source {
-            CredentialSource::Configured => CredentialAuthority::Configured,
-            CredentialSource::Codex => CredentialAuthority::ChatgptSubscription {
-                account_id: self.account_id.as_deref().unwrap_or_default(),
-            },
+            CredentialSource::Configured => RouteCredential::configured(),
+            CredentialSource::Codex => RouteCredential::chatgpt_subscription(
+                self.account_id.as_deref().unwrap_or_default(),
+            ),
         }
     }
 

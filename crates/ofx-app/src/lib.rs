@@ -28,8 +28,8 @@ pub use app_bootstrap_runtime::{
 };
 pub use app_lifecycle::run_interactive;
 pub use app_session_runtime::{
-    LiveSession, ResumeFailure, ResumedSession, TitleGeneration, configured_preferences,
-    open_store, recovered_turn, running_provider,
+    LiveSession, ResumeFailure, ResumedSession, SessionRoute, TitleGeneration,
+    configured_preferences, open_store, recovered_turn, running_provider, session_route,
 };
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 pub use modes::default_mode;

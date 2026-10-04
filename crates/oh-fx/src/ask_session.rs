@@ -1,7 +1,7 @@
 use ofx_agent::Agent;
 use ofx_app::{
     AgentSetup, LiveSession, Profile, ResumedSession, TitleGeneration, configured_preferences,
-    running_provider,
+    session_route,
 };
 use ofx_session::{SessionDisposal, SessionError, SessionStore};
 
@@ -18,7 +18,7 @@ impl SavedAsk {
         setup: &AgentSetup,
         agent: &mut Agent,
     ) -> Result<Self, SessionError> {
-        let live = LiveSession::resume(resumed, running_provider(setup)?, agent);
+        let live = LiveSession::resume(resumed, session_route(setup)?, agent);
         live.attach(agent);
         Ok(Self {
             store,
@@ -33,9 +33,9 @@ impl SavedAsk {
         setup: &AgentSetup,
         agent: &mut Agent,
     ) -> Result<Self, SessionError> {
-        let provider = running_provider(setup)?;
-        let preferences = configured_preferences(profile, setup, provider.clone());
-        let live = LiveSession::start(&store, preferences, provider)?;
+        let route = session_route(setup)?;
+        let preferences = configured_preferences(profile, setup, route.provider().clone());
+        let live = LiveSession::start(&store, preferences, route)?;
         live.attach(agent);
         Ok(Self {
             store,
