@@ -60,15 +60,21 @@ fn oh_fx<S: AsRef<OsStr>>(args: &[S], environment: &[(&str, &str)]) -> Output {
 }
 
 #[test]
-fn the_background_upgrade_leaves_the_install_lock_alone_when_settings_turn_auto_upgrade_off() {
+fn the_background_upgrade_skips_disabled_or_unusable_profiles_before_the_install_lock() {
     for (settings, locked) in [
-        (r#"{"auto_upgrade":false}"#, false),
-        (r#"{"auto_upgrade":true}"#, true),
+        (Some(r#"{"auto_upgrade":false}"#), false),
+        (Some(r#"{"auto_upgrade":true}"#), true),
+        (Some(r#"{"auto_upgrade":false,"theme":5}"#), false),
+        (Some(r#"{"auto_upgrade":false,"providers":5}"#), false),
+        (Some(r#"{"auto_upgrade":true,"theme":5}"#), false),
+        (None, true),
     ] {
         let home = tempfile::tempdir().expect("create a temporary home");
         let config = home.path().join(".config/oh-fx");
         std::fs::create_dir_all(&config).expect("create the config directory");
-        std::fs::write(config.join("settings.json"), settings).expect("write settings.json");
+        if let Some(settings) = settings {
+            std::fs::write(config.join("settings.json"), settings).expect("write settings.json");
+        }
         let status = spawn(
             Command::new(env!("CARGO_BIN_EXE_oh-fx"))
                 .args(["upgrade", "--background"])
@@ -81,13 +87,49 @@ fn the_background_upgrade_leaves_the_install_lock_alone_when_settings_turn_auto_
         )
         .wait()
         .expect("wait for oh-fx");
-        assert!(status.success(), "{settings}");
+        assert!(status.success(), "{settings:?}");
         assert_eq!(
             home.path().join(".local/state/oh-fx/upgrade.lock").exists(),
             locked,
-            "{settings}"
+            "{settings:?}"
         );
+        if !locked {
+            assert!(
+                !home.path().join(".local/state/oh-fx").exists(),
+                "{settings:?}"
+            );
+        }
     }
+}
+
+#[test]
+fn a_manual_upgrade_still_acquires_the_install_lock_with_an_unusable_opt_out_profile() {
+    let home = tempfile::tempdir().expect("create a temporary home");
+    let config = home.path().join(".config/oh-fx");
+    std::fs::create_dir_all(&config).expect("create the config directory");
+    std::fs::write(
+        config.join("settings.json"),
+        r#"{"auto_upgrade":false,"theme":5}"#,
+    )
+    .expect("write settings.json");
+    let output = spawn(
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(["upgrade", "--json"])
+            .current_dir(home.path())
+            .env_clear()
+            .env("HOME", home.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .expect("wait for oh-fx");
+    assert!(!output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["error"],
+        "this is a local build; install a release to enable upgrades"
+    );
+    assert!(home.path().join(".local/state/oh-fx/upgrade.lock").exists());
 }
 
 #[cfg(target_os = "linux")]

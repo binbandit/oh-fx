@@ -48,7 +48,7 @@ fn automatic_upgrades_enabled() -> bool {
         .unwrap_or_else(|_| PathBuf::from("/"));
     ProfilePaths::from_environment()
         .and_then(|paths| Settings::load(&paths, &workspace).ok())
-        .is_none_or(|settings| settings.auto_upgrade_enabled())
+        .is_some_and(|settings| !settings.profile_is_unusable() && settings.auto_upgrade_enabled())
 }
 
 fn state_directory() -> PathBuf {
