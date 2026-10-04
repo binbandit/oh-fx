@@ -1,11 +1,12 @@
 use ofx_agent::{Agent, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, ReasoningEffort, TurnOutcome};
-use ofx_session::{SavedProvider, SessionCatalog, SessionError, SessionPreferences, SessionStore};
+use ofx_session::{SessionCatalog, SessionError, SessionPreferences, SessionStore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    LaunchOverrides, LiveSession, RenameError, ResumedSession, SessionTitle, validate_session_title,
+    LaunchOverrides, LiveSession, RenameError, ResumedSession, SessionRoute, SessionTitle,
+    validate_session_title,
 };
 use crate::app_bootstrap_runtime::AgentSetup;
 
@@ -18,7 +19,7 @@ pub(crate) struct Resumption {
 
 pub(crate) struct Persistence {
     pub(super) store: SessionStore,
-    pub(super) provider: SavedProvider,
+    pub(super) route: SessionRoute,
     preferences: SessionPreferences,
     pub(super) live: Option<LiveSession>,
     pub(super) overrides: LaunchOverrides,
@@ -32,14 +33,14 @@ pub(crate) struct Persistence {
 impl Persistence {
     pub(crate) fn new(
         store: SessionStore,
-        provider: SavedProvider,
+        route: SessionRoute,
         preferences: SessionPreferences,
         overrides: LaunchOverrides,
         resumption: Option<Resumption>,
     ) -> Self {
         Self {
             store,
-            provider,
+            route,
             preferences,
             live: None,
             overrides,
@@ -62,7 +63,7 @@ impl Persistence {
         let Some(Resumption { session, remember }) = self.resumption.take() else {
             return self.begin_fresh(agent);
         };
-        let live = LiveSession::resume(session, self.provider.clone(), agent);
+        let live = LiveSession::resume(session, self.route.clone(), agent);
         live.attach(agent);
         let notice = if remember {
             self.remember(live.id())
@@ -75,7 +76,7 @@ impl Persistence {
 
     pub(crate) fn begin_fresh(&mut self, agent: &mut Agent) -> Option<Notice> {
         self.close(agent);
-        match LiveSession::start(&self.store, self.preferences.clone(), self.provider.clone()) {
+        match LiveSession::start(&self.store, self.preferences.clone(), self.route.clone()) {
             Ok(live) => {
                 live.attach(agent);
                 self.live = Some(live);

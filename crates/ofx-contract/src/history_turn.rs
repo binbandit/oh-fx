@@ -1,6 +1,10 @@
 use std::fmt;
 
-use crate::types::{ChatMessage, ProviderReplay, ToolCall, ToolResultStatus};
+use crate::ids::TurnId;
+use crate::types::{
+    ChatMessage, ModelRecoveryAction, ModelRecoveryCause, ProviderReplay, ToolCall,
+    ToolResultStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepResult<'a> {
@@ -69,6 +73,25 @@ pub struct RecoveredTurn {
     pub fast_mode: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryProgress {
+    Waiting(ModelRecoveryAction),
+    Paused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryPoint<'a> {
+    pub turn_id: TurnId,
+    pub turn: HistoryTurn<'a>,
+    pub cause: ModelRecoveryCause,
+    pub progress: RecoveryProgress,
+    pub model: &'a str,
+    pub requested_fast_mode: bool,
+    pub fast_mode: bool,
+    pub attempt_limit: usize,
+    pub consumed_attempts: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HistoryCut {
     pub turns: usize,
@@ -107,4 +130,8 @@ pub trait ConversationLog: Send + Sync {
         cut: HistoryCut,
         active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure>;
+
+    fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure>;
+
+    fn clear_recovery(&self) -> Result<(), LogFailure>;
 }
