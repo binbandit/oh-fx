@@ -1,9 +1,17 @@
 use std::time::Duration;
 
-use ofx_contract::{ModelRecoveryAction, ModelRecoveryCause, ProviderErrorKind};
+use tokio::time::Instant;
+
+use ofx_contract::{
+    ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ProviderError,
+    ProviderErrorKind,
+};
 
 pub(crate) const DEFAULT_MAX_PROVIDER_ATTEMPTS: usize = 10;
 const MAX_RETRY_AFTER_SECONDS: u64 = 30;
+const BILLABLE_RETRY_WINDOW: Duration = Duration::from_mins(15);
+const THROTTLED_RETRY_DELAY: Duration = Duration::from_mins(1);
+const STALLED_STREAK: usize = 2;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum RetryPacing {
@@ -41,34 +49,170 @@ impl RetryPacing {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Decision {
-    pub(crate) action: ModelRecoveryAction,
-    pub(crate) delay: Duration,
-    pub(crate) next_pacing: RetryPacing,
+pub(crate) enum Progress {
+    Unknown,
+    Advancing,
+    Stalled,
 }
 
-pub(crate) fn decide(
-    cause: ModelRecoveryCause,
-    retry_after_seconds: Option<u64>,
-    pacing: RetryPacing,
-) -> Decision {
-    if cause == ModelRecoveryCause::ConnectivityLost {
-        let next_pacing = pacing.after_failure(cause, None);
-        return Decision {
-            action: ModelRecoveryAction::WaitingForConnectivity,
-            delay: connectivity_probe_delay(next_pacing.attempt()),
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ProgressTracker {
+    last: Option<usize>,
+    streak: usize,
+}
+
+impl ProgressTracker {
+    pub(crate) fn observe(&mut self, streamed_bytes: usize) -> Progress {
+        let had_previous = self.last.is_some();
+        if self.last == Some(streamed_bytes) {
+            self.streak += 1;
+        } else {
+            self.streak = 0;
+        }
+        self.last = Some(streamed_bytes);
+        if self.streak >= STALLED_STREAK {
+            Progress::Stalled
+        } else if had_previous {
+            Progress::Advancing
+        } else {
+            Progress::Unknown
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Strategy {
+    RetryRequest,
+    WaitForConnectivity,
+    ProbeLiveness,
+    Stop,
+}
+
+impl Strategy {
+    pub(crate) fn action(self) -> Option<ModelRecoveryAction> {
+        match self {
+            Self::RetryRequest => Some(ModelRecoveryAction::RetryingRequest),
+            Self::WaitForConnectivity => Some(ModelRecoveryAction::WaitingForConnectivity),
+            Self::ProbeLiveness => Some(ModelRecoveryAction::CheckingLiveness),
+            Self::Stop => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Evidence {
+    pub(crate) cause: ModelRecoveryCause,
+    pub(crate) retry_after_seconds: Option<u64>,
+    pub(crate) pacing: RetryPacing,
+    pub(crate) progress: Progress,
+    pub(crate) recovery_elapsed: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Decision {
+    pub(crate) strategy: Strategy,
+    pub(crate) delay: Duration,
+    pub(crate) next_pacing: RetryPacing,
+    pub(crate) required_action: ModelRecoveryRequiredAction,
+}
+
+impl Decision {
+    fn paced(strategy: Strategy, delay: Duration, next_pacing: RetryPacing) -> Self {
+        Self {
+            strategy,
+            delay,
             next_pacing,
+            required_action: ModelRecoveryRequiredAction::None,
+        }
+    }
+}
+
+pub(crate) fn decide(evidence: Evidence) -> Decision {
+    let cause = evidence.cause;
+    if cause == ModelRecoveryCause::ConnectivityLost {
+        let next_pacing = evidence.pacing.after_failure(cause, None);
+        return Decision::paced(
+            Strategy::WaitForConnectivity,
+            connectivity_probe_delay(next_pacing.attempt()),
+            next_pacing,
+        );
+    }
+    if evidence.progress == Progress::Stalled {
+        return Decision {
+            strategy: Strategy::Stop,
+            delay: Duration::ZERO,
+            next_pacing: RetryPacing::Idle,
+            required_action: ModelRecoveryRequiredAction::SurfaceStall,
         };
     }
-    let next_pacing = pacing.after_failure(cause, retry_after_seconds);
-    let delay = match retry_after_seconds {
-        Some(seconds) if seconds > 0 => Duration::from_secs(seconds.min(MAX_RETRY_AFTER_SECONDS)),
+    let throttled = evidence
+        .recovery_elapsed
+        .is_some_and(|elapsed| elapsed > BILLABLE_RETRY_WINDOW);
+    if cause == ModelRecoveryCause::ProviderStreamTimeout {
+        let next_pacing = evidence.pacing.after_failure(cause, None);
+        let delay = if throttled {
+            THROTTLED_RETRY_DELAY
+        } else {
+            retry_delay(next_pacing.attempt())
+        };
+        return Decision::paced(Strategy::ProbeLiveness, delay, next_pacing);
+    }
+    let next_pacing = evidence
+        .pacing
+        .after_failure(cause, evidence.retry_after_seconds);
+    let delay = match evidence.retry_after_seconds {
+        Some(seconds) if seconds > 0 => {
+            let hinted = Duration::from_secs(seconds.min(MAX_RETRY_AFTER_SECONDS));
+            if throttled {
+                hinted.max(THROTTLED_RETRY_DELAY)
+            } else {
+                hinted
+            }
+        }
+        _ if throttled => THROTTLED_RETRY_DELAY,
         _ => retry_delay(next_pacing.attempt()),
     };
-    Decision {
-        action: ModelRecoveryAction::RetryingRequest,
-        delay,
-        next_pacing,
+    Decision::paced(Strategy::RetryRequest, delay, next_pacing)
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Recovery {
+    pacing: RetryPacing,
+    progress: ProgressTracker,
+    started: Option<Instant>,
+}
+
+impl Recovery {
+    pub(crate) fn decide(
+        &mut self,
+        cause: ModelRecoveryCause,
+        error: &ProviderError,
+        streamed_bytes: usize,
+    ) -> Decision {
+        let started = *self.started.get_or_insert_with(Instant::now);
+        let decision = decide(Evidence {
+            cause,
+            retry_after_seconds: error.retry_after.map(|delay| delay.as_secs()),
+            pacing: self.pacing,
+            progress: if tracks_progress(cause, error) {
+                self.progress.observe(streamed_bytes)
+            } else {
+                Progress::Unknown
+            },
+            recovery_elapsed: Some(started.elapsed()),
+        });
+        self.pacing = decision.next_pacing;
+        decision
+    }
+}
+
+fn tracks_progress(cause: ModelRecoveryCause, error: &ProviderError) -> bool {
+    match cause {
+        ModelRecoveryCause::NetworkInterrupted
+        | ModelRecoveryCause::ConnectivityLost
+        | ModelRecoveryCause::ProviderStreamTimeout => true,
+        ModelRecoveryCause::ProviderUnavailable => error.status.is_none(),
+        ModelRecoveryCause::RateLimited => false,
     }
 }
 
@@ -80,9 +224,8 @@ pub(crate) fn recovery_cause(kind: ProviderErrorKind) -> Option<ModelRecoveryCau
         | ProviderErrorKind::Unavailable
         | ProviderErrorKind::GatewayTimeout => Some(ModelRecoveryCause::ProviderUnavailable),
         ProviderErrorKind::ConnectivityLost => Some(ModelRecoveryCause::ConnectivityLost),
-        ProviderErrorKind::TransportInterrupted | ProviderErrorKind::Timeout => {
-            Some(ModelRecoveryCause::NetworkInterrupted)
-        }
+        ProviderErrorKind::TransportInterrupted => Some(ModelRecoveryCause::NetworkInterrupted),
+        ProviderErrorKind::Timeout => Some(ModelRecoveryCause::ProviderStreamTimeout),
         _ => None,
     }
 }
@@ -112,76 +255,4 @@ fn retry_delay(attempt: usize) -> Duration {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const RATE_LIMITED: ModelRecoveryCause = ModelRecoveryCause::RateLimited;
-    const UNAVAILABLE: ModelRecoveryCause = ModelRecoveryCause::ProviderUnavailable;
-    const INTERRUPTED: ModelRecoveryCause = ModelRecoveryCause::NetworkInterrupted;
-    const CONNECTIVITY: ModelRecoveryCause = ModelRecoveryCause::ConnectivityLost;
-
-    #[test]
-    fn retry_schedule_uses_the_approved_cap() {
-        let expected = [
-            Duration::from_millis(250),
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-            Duration::from_secs(4),
-            Duration::from_secs(8),
-            Duration::from_secs(16),
-            Duration::from_secs(30),
-            Duration::from_secs(30),
-            Duration::from_secs(30),
-        ];
-        let mut total = Duration::ZERO;
-        for (attempt, delay) in (1..).zip(expected) {
-            assert_eq!(retry_delay(attempt), delay);
-            total += delay;
-        }
-        assert_eq!(total, Duration::from_millis(121_250));
-    }
-
-    #[test]
-    fn model_response_recovery_policy_is_deterministic() {
-        let first = decide(INTERRUPTED, None, RetryPacing::Idle);
-        assert_eq!(first, decide(INTERRUPTED, None, RetryPacing::Idle));
-        assert_eq!(first.action, ModelRecoveryAction::RetryingRequest);
-        assert_eq!(first.delay, Duration::from_millis(250));
-    }
-
-    #[test]
-    fn connectivity_loss_waits_with_a_gentle_cadence() {
-        let mut pacing = RetryPacing::Idle;
-        for expected in [1, 2, 5, 5] {
-            let waiting = decide(CONNECTIVITY, None, pacing);
-            assert_eq!(waiting.action, ModelRecoveryAction::WaitingForConnectivity);
-            assert_eq!(waiting.delay, Duration::from_secs(expected));
-            pacing = waiting.next_pacing;
-        }
-    }
-
-    #[test]
-    fn retry_after_is_honoured_up_to_the_cap() {
-        for (hint, expected) in [(30, 30), (31, 30), (u64::MAX, 30), (4, 4)] {
-            let decision = decide(RATE_LIMITED, Some(hint), RetryPacing::Idle);
-            assert_eq!(decision.delay, Duration::from_secs(expected));
-            assert_eq!(decision.next_pacing, RetryPacing::Idle);
-        }
-    }
-
-    #[test]
-    fn implicit_retry_pacing_resets_on_a_new_cause_and_ignores_zero_hints() {
-        let first = decide(INTERRUPTED, None, RetryPacing::Idle);
-        let second = decide(INTERRUPTED, None, first.next_pacing);
-        assert_eq!(second.delay, Duration::from_secs(1));
-        let switched = decide(UNAVAILABLE, None, second.next_pacing);
-        assert_eq!(switched.delay, Duration::from_millis(250));
-        let zero_hinted = decide(UNAVAILABLE, Some(0), switched.next_pacing);
-        assert_eq!(zero_hinted.delay, Duration::from_secs(1));
-        let zero_again = decide(UNAVAILABLE, Some(0), zero_hinted.next_pacing);
-        assert_eq!(zero_again.delay, Duration::from_secs(2));
-        let timed = decide(UNAVAILABLE, Some(4), zero_again.next_pacing);
-        assert_eq!(timed.delay, Duration::from_secs(4));
-        assert_eq!(timed.next_pacing, RetryPacing::Idle);
-    }
-}
+mod tests;

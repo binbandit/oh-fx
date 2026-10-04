@@ -360,6 +360,7 @@ pub fn is_valid_reasoning_effort(raw: &str) -> bool {
 pub enum ModelRecoveryCause {
     NetworkInterrupted,
     ConnectivityLost,
+    ProviderStreamTimeout,
     ProviderUnavailable,
     RateLimited,
 }
@@ -369,6 +370,7 @@ impl ModelRecoveryCause {
         match self {
             Self::NetworkInterrupted => "network_interrupted",
             Self::ConnectivityLost => "connectivity_lost",
+            Self::ProviderStreamTimeout => "provider_stream_timeout",
             Self::ProviderUnavailable => "provider_unavailable",
             Self::RateLimited => "rate_limited",
         }
@@ -378,6 +380,7 @@ impl ModelRecoveryCause {
         match self {
             Self::NetworkInterrupted => "Network interrupted",
             Self::ConnectivityLost => "Connection lost",
+            Self::ProviderStreamTimeout => "Gateway stream timed out",
             Self::ProviderUnavailable => "Provider unavailable",
             Self::RateLimited => "Rate limited",
         }
@@ -388,6 +391,7 @@ impl ModelRecoveryCause {
 pub enum ModelRecoveryAction {
     RetryingRequest,
     WaitingForConnectivity,
+    CheckingLiveness,
     Paused,
 }
 
@@ -396,6 +400,7 @@ impl ModelRecoveryAction {
         match self {
             Self::RetryingRequest => "retrying_request",
             Self::WaitingForConnectivity => "waiting_for_connectivity",
+            Self::CheckingLiveness => "checking_liveness",
             Self::Paused => "paused",
         }
     }
@@ -404,9 +409,17 @@ impl ModelRecoveryAction {
         match self {
             Self::RetryingRequest => "retrying request",
             Self::WaitingForConnectivity => "waiting for connection",
+            Self::CheckingLiveness => "checking the connection",
             Self::Paused => "recovery paused",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ModelRecoveryRequiredAction {
+    #[default]
+    None,
+    SurfaceStall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -479,6 +492,7 @@ pub struct RouteRecoveryStatus {
     pub attempt_limit: usize,
     pub cause: Option<ModelRecoveryCause>,
     pub action: Option<ModelRecoveryAction>,
+    pub required_action: ModelRecoveryRequiredAction,
     pub delay_seconds: u64,
     pub diagnostic: Option<ModelFailureDiagnostic>,
     pub retry_wait: Option<Duration>,
@@ -517,6 +531,9 @@ impl RouteRecoveryStatus {
     }
 
     fn stopped_label(&self) -> String {
+        if self.required_action == ModelRecoveryRequiredAction::SurfaceStall {
+            return self.stalled_label();
+        }
         let attempt = self.failed_attempt;
         let Some(cause) = self.cause else {
             return self.stopped_cause_label(ModelRecoveryCause::ProviderUnavailable.display());
@@ -533,6 +550,19 @@ impl RouteRecoveryStatus {
             };
         }
         self.stopped_cause_label(cause.display())
+    }
+
+    fn stalled_label(&self) -> String {
+        let cause = self
+            .cause
+            .map_or("Response failed", ModelRecoveryCause::display);
+        match &self.diagnostic {
+            Some(diagnostic) => format!(
+                "⚠ {cause} · {} · kept failing at the same point · stopped",
+                diagnostic.human_text()
+            ),
+            None => format!("⚠ {cause} · kept failing at the same point · stopped"),
+        }
     }
 
     fn stopped_cause_label(&self, name: &str) -> String {
@@ -560,7 +590,10 @@ impl RouteRecoveryStatus {
         let action = self.action.unwrap_or(ModelRecoveryAction::RetryingRequest);
         let action_text = action.display();
         let delay = self.delay_seconds;
-        if action == ModelRecoveryAction::WaitingForConnectivity {
+        if matches!(
+            action,
+            ModelRecoveryAction::WaitingForConnectivity | ModelRecoveryAction::CheckingLiveness
+        ) {
             return if delay > 0 {
                 format!("⚠ {cause} · {action_text} · {delay}s")
             } else {
@@ -635,6 +668,7 @@ mod tests {
             } else {
                 ModelRecoveryAction::RetryingRequest
             }),
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds,
             diagnostic: diagnostic.map(ModelFailureDiagnostic::new),
             retry_wait: None,
@@ -808,6 +842,7 @@ mod tests {
             attempt_limit: 10,
             cause: None,
             action: None,
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds: 0,
             diagnostic: None,
             retry_wait: None,
@@ -828,6 +863,7 @@ mod tests {
             attempt_limit: 10,
             cause,
             action: None,
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds: 0,
             diagnostic: diagnostic.map(ModelFailureDiagnostic::new),
             retry_wait: None,
@@ -903,6 +939,64 @@ mod tests {
         assert_eq!(ModelRecoveryAction::Paused.as_str(), "paused");
         assert!(paused.is_paused());
         assert!(!stopped(None, 3, None).is_paused());
+    }
+
+    #[test]
+    fn a_liveness_check_names_no_attempt_or_raw_error() {
+        let probe = |delay_seconds| RouteRecoveryStatus {
+            kind: RouteRecoveryKind::AutoRetry,
+            action: Some(ModelRecoveryAction::CheckingLiveness),
+            required_action: ModelRecoveryRequiredAction::None,
+            delay_seconds,
+            ..stopped(
+                Some(ModelRecoveryCause::ProviderStreamTimeout),
+                2,
+                Some("Timeout"),
+            )
+        };
+        assert_eq!(
+            probe(0).label(),
+            "⚠ Gateway stream timed out · checking the connection"
+        );
+        assert_eq!(
+            probe(2).label(),
+            "⚠ Gateway stream timed out · checking the connection · 2s"
+        );
+        assert_eq!(
+            ModelRecoveryCause::ProviderStreamTimeout.as_str(),
+            "provider_stream_timeout"
+        );
+        assert_eq!(
+            ModelRecoveryAction::CheckingLiveness.as_str(),
+            "checking_liveness"
+        );
+    }
+
+    #[test]
+    fn a_stalled_recovery_says_it_kept_failing_at_the_same_point() {
+        let mut stalled = stopped(
+            Some(ModelRecoveryCause::NetworkInterrupted),
+            3,
+            Some("ReadFailed"),
+        );
+        stalled.required_action = ModelRecoveryRequiredAction::SurfaceStall;
+        assert_eq!(
+            stalled.label(),
+            "⚠ Network interrupted · connection dropped · kept failing at the same point · stopped"
+        );
+        stalled.diagnostic = None;
+        stalled.cause = Some(ModelRecoveryCause::ProviderStreamTimeout);
+        assert_eq!(
+            stalled.label(),
+            "⚠ Gateway stream timed out · kept failing at the same point · stopped"
+        );
+        stalled.cause = None;
+        assert_eq!(
+            stalled.label(),
+            "⚠ Response failed · kept failing at the same point · stopped"
+        );
+        assert!(stalled.is_terminal());
+        assert!(!stalled.is_paused());
     }
 
     #[test]

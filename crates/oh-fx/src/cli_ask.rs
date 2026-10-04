@@ -1438,8 +1438,8 @@ mod tests {
     use ofx_cli::{CommandLaunch, Invocation};
     use ofx_config::ProfilePaths;
     use ofx_contract::{
-        CallDescription, Concurrency, ModelFailureDiagnostic, ProviderError, ProviderErrorKind,
-        RouteRecoveryKind, ToolActivity, TurnId,
+        CallDescription, Concurrency, ModelFailureDiagnostic, ModelRecoveryRequiredAction,
+        ProviderError, ProviderErrorKind, RouteRecoveryKind, ToolActivity, TurnId,
     };
     use ofx_gateway::CodexEndpoints;
     use ofx_testkit::{FakeServer, Reply};
@@ -1916,6 +1916,7 @@ mod tests {
             attempt_limit: 10,
             cause: None,
             action: None,
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds: 0,
             diagnostic: None,
             retry_wait: None,
@@ -1937,6 +1938,7 @@ mod tests {
             attempt_limit: 10,
             cause: Some(ModelRecoveryCause::RateLimited),
             action: Some(ModelRecoveryAction::RetryingRequest),
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds: 2,
             diagnostic: Some(ModelFailureDiagnostic::new("HTTP 429 · slow")),
             retry_wait: None,
@@ -1956,6 +1958,7 @@ mod tests {
             attempt_limit: 10,
             cause: Some(ModelRecoveryCause::ProviderUnavailable),
             action: None,
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds: 0,
             diagnostic: Some(ModelFailureDiagnostic::new("ConnectionFailed")),
             retry_wait: None,
@@ -2460,6 +2463,7 @@ mod tests {
             attempt_limit: 10,
             cause: Some(ModelRecoveryCause::RateLimited),
             action: Some(ModelRecoveryAction::RetryingRequest),
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds: 2,
             diagnostic: None,
             retry_wait: None,
@@ -2470,6 +2474,7 @@ mod tests {
             succeeded_attempt: 2,
             cause: None,
             action: None,
+            required_action: ModelRecoveryRequiredAction::None,
             delay_seconds: 0,
             ..retrying.clone()
         };
@@ -2648,6 +2653,7 @@ mod tests {
                     attempt_limit: 10,
                     cause: None,
                     action: None,
+                    required_action: ModelRecoveryRequiredAction::None,
                     delay_seconds: 0,
                     diagnostic: None,
                     retry_wait: None,

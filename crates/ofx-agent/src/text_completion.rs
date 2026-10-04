@@ -2,7 +2,7 @@ use ofx_contract::{FinishReason, ModelProvider, ModelRequest, ProviderErrorKind,
 use tokio_util::sync::CancellationToken;
 
 use crate::model_response_recovery::{
-    DEFAULT_MAX_PROVIDER_ATTEMPTS, RetryPacing, decide, recovery_cause,
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, Evidence, Progress, RetryPacing, decide, recovery_cause,
 };
 
 const OUTPUT_TRUNCATED: &str = "OutputTruncated";
@@ -63,11 +63,13 @@ pub(crate) async fn complete(
         let Some(cause) = cause.filter(|_| attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS) else {
             return Err(Failure::Unusable);
         };
-        let decision = decide(
+        let decision = decide(Evidence {
             cause,
-            error.retry_after.map(|delay| delay.as_secs()),
+            retry_after_seconds: error.retry_after.map(|delay| delay.as_secs()),
             pacing,
-        );
+            progress: Progress::Unknown,
+            recovery_elapsed: None,
+        });
         tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(Failure::Cancelled),

@@ -79,11 +79,11 @@ pub use tool_set::ToolSet;
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,
     FileChangeStats, FinishReason, LivePermissionMode, ModelFailureDiagnostic, ModelRecoveryAction,
-    ModelRecoveryCause, PermissionAction, PermissionMode, PermissionRule, ProviderReplay,
-    QuestionBatchEntry, QuestionOption, ReasoningEffort, ReplaySource, RouteRecoveryKind,
-    RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice,
-    ToolExecutionProvenance, ToolResultStatus, ToolStatusDetail, Usage, is_valid_reasoning_effort,
-    valid_credential_account_id,
+    ModelRecoveryCause, ModelRecoveryRequiredAction, PermissionAction, PermissionMode,
+    PermissionRule, ProviderReplay, QuestionBatchEntry, QuestionOption, ReasoningEffort,
+    ReplaySource, RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolResultStatus,
+    ToolStatusDetail, Usage, is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,
