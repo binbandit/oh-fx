@@ -51,7 +51,7 @@ impl Status {
     fn label(&self) -> String {
         match self.state {
             UpgradeState::Downloading => format!("upgrading to {}...", self.latest),
-            UpgradeState::Ready => "update ready: restart oh-fx".to_owned(),
+            UpgradeState::Ready => "update ready: ctrl+g to reload".to_owned(),
             UpgradeState::Failed => "upgrade failed".to_owned(),
             UpgradeState::Idle | UpgradeState::Checking | UpgradeState::Waiting => String::new(),
         }
@@ -96,8 +96,27 @@ impl<P: Fn(String)> Reporter<P> {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct Readiness(Arc<Mutex<Status>>);
+
+impl Readiness {
+    #[cfg(test)]
+    pub(crate) fn settled(state: UpgradeState) -> Self {
+        Self(Arc::new(Mutex::new(Status {
+            state,
+            latest: String::new(),
+            label: String::new(),
+        })))
+    }
+
+    pub(crate) fn ready(&self) -> bool {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).state == UpgradeState::Ready
+    }
+}
+
 pub(crate) struct SessionUpgrader {
     control: Arc<UpgradeControl>,
+    status: Arc<Mutex<Status>>,
 }
 
 impl SessionUpgrader {
@@ -115,14 +134,21 @@ impl SessionUpgrader {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let reporter = Reporter { status, publish };
+        let reporter = Reporter {
+            status: Arc::clone(&status),
+            publish,
+        };
         let worker_control = Arc::clone(&control);
         thread::Builder::new()
             .name(THREAD_NAME.to_owned())
             .spawn(move || {
                 runtime.block_on(run(&mut check, &worker_control, timing, &reporter));
             })?;
-        Ok(Self { control })
+        Ok(Self { control, status })
+    }
+
+    pub(crate) fn readiness(&self) -> Readiness {
+        Readiness(Arc::clone(&self.status))
     }
 
     pub(crate) fn stop_for_process_exit(&self) {

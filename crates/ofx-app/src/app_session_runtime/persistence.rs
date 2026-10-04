@@ -11,6 +11,7 @@ use super::{
     validate_session_title,
 };
 use crate::app_bootstrap_runtime::AgentSetup;
+use crate::app_upgrade_runtime::{Relaunch, ResumeHandoff, Unresumable};
 
 pub(super) const SESSION_TOPIC: &str = "session";
 
@@ -29,6 +30,7 @@ pub(crate) struct Persistence {
     remember_fresh: bool,
     degraded: bool,
     title_task: Option<JoinHandle<()>>,
+    relaunch: Option<Relaunch>,
 }
 
 impl Persistence {
@@ -49,6 +51,7 @@ impl Persistence {
             remember_fresh: false,
             degraded: false,
             title_task: None,
+            relaunch: None,
         }
     }
 
@@ -230,10 +233,18 @@ impl Persistence {
     pub(crate) fn close(&mut self, agent: &mut Agent) {
         self.stop_title_generation();
         agent.detach_session();
-        if let Some(live) = self.live.take()
-            && !live.titled()
-        {
-            live.discard_if_pristine(&self.store);
+        if let Some(live) = self.live.take() {
+            match self.relaunch.take() {
+                Some(relaunch) => {
+                    if live.session().require_writable().is_ok() {
+                        relaunch.hand_off(live.id());
+                    }
+                }
+                None if !live.titled() => {
+                    live.discard_if_pristine(&self.store);
+                }
+                None => {}
+            }
         }
         self.remember_fresh = false;
     }
@@ -247,6 +258,19 @@ impl Persistence {
                 "Session saved, but could not remember it for -c ({error}). Resume with oh-fx --resume {id}."
             ),
         ))
+    }
+}
+
+impl ResumeHandoff for Persistence {
+    fn prepare_resume_handoff(&self) -> Result<(), Unresumable> {
+        let live = self.live.as_ref().ok_or(Unresumable::Unavailable)?;
+        live.session()
+            .require_writable()
+            .map_err(Unresumable::Session)
+    }
+
+    fn request_resume_handoff(&mut self, relaunch: Relaunch) {
+        self.relaunch = Some(relaunch);
     }
 }
 

@@ -1,6 +1,9 @@
 mod live_release;
+mod ready_upgrade;
+mod relaunch;
 mod session_upgrader;
 
+use std::ffi::OsString;
 use std::time::Duration;
 
 use ofx_config::ProfilePaths;
@@ -8,8 +11,10 @@ use ofx_contract::{Notice, NoticeTone, UiEvent};
 use ofx_tui::UiEventSender;
 
 use live_release::LiveRelease;
+pub(crate) use ready_upgrade::{ResumeHandoff, Unresumable, UpgradeShortcut};
+pub(crate) use relaunch::{Relaunch, RelaunchFailure};
 #[cfg(test)]
-pub(crate) use session_upgrader::{CheckOutcome, ReleaseCheck};
+pub(crate) use session_upgrader::{CheckOutcome, Readiness, ReleaseCheck, UpgradeState};
 pub(crate) use session_upgrader::{SessionUpgrader, Timing};
 
 const SESSION_TIMING: Timing = Timing {
@@ -22,7 +27,36 @@ pub(crate) fn announce_update() -> Option<Notice> {
     ofx_upgrade::version_change_since_last_run(&paths.state).map(updated_notice)
 }
 
-pub(crate) fn start_session_upgrader(events: UiEventSender) -> Option<SessionUpgrader> {
+pub(crate) struct InteractiveUpgrade {
+    upgrader: Option<SessionUpgrader>,
+    relaunch: Relaunch,
+}
+
+impl InteractiveUpgrade {
+    pub(crate) fn start(events: UiEventSender, launch: Vec<OsString>) -> Self {
+        Self {
+            upgrader: start_session_upgrader(events),
+            relaunch: Relaunch::carrying(launch),
+        }
+    }
+
+    pub(crate) fn shortcut(&self) -> UpgradeShortcut {
+        UpgradeShortcut::new(
+            self.upgrader.as_ref().map(SessionUpgrader::readiness),
+            self.relaunch.clone(),
+        )
+    }
+
+    pub(crate) fn upgrader(&self) -> Option<&SessionUpgrader> {
+        self.upgrader.as_ref()
+    }
+
+    pub(crate) fn relaunch(&self) -> Result<(), RelaunchFailure> {
+        self.relaunch.run()
+    }
+}
+
+fn start_session_upgrader(events: UiEventSender) -> Option<SessionUpgrader> {
     if !ofx_upgrade::auto_upgrade_allowed() {
         return None;
     }

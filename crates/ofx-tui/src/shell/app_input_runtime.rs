@@ -1,5 +1,6 @@
 use ofx_contract::{Notice, NoticeTone, UiCommand};
 
+use super::upgrade_shortcut::requests_upgrade;
 use super::{FreshScreen, Shell};
 use crate::composer::{
     DeletionKind, HistoryNavigation, InsertResult, KillKind, VerticalDirection, VerticalOutcome,
@@ -77,6 +78,10 @@ impl Shell<'_> {
             _ => {}
         }
         self.invalidate();
+        if requests_upgrade(&event) {
+            self.apply_ready_upgrade();
+            return Ok(());
+        }
         if self.approval.is_some() {
             return self.handle_approval_input(&event);
         }
