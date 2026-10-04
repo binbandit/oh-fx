@@ -3194,6 +3194,7 @@ async fn failed_local_streamed_starts_retry_without_executing_the_call() {
     let (report, events) = run(&mut agent, "read").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(provider.requests().len(), 2);
+    assert_eq!(provider.requests()[1], provider.requests()[0]);
     assert_eq!(preparations.load(Ordering::SeqCst), 0);
     assert!(
         events

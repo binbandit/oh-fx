@@ -70,6 +70,8 @@ fn streamed_start_presents_management_without_running_a_child() {
         .expect("management progress");
     assert_eq!(presentation.activity, ToolActivity::Subagent);
     assert_eq!(presentation.action_label, "Managing");
+    assert_eq!(presentation.completed_label, "Managed");
+    assert_eq!(presentation.label_default, "");
     assert!(recorder.calls.lock().unwrap().is_empty());
 }
 

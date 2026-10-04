@@ -67,8 +67,6 @@ The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `
 
 | PR | Merge | Title | Status | oh-fx | Note |
 |---|---|---|---|---|---|
-| baseline | `34f1ed1` | Streamed tool lifecycle in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Validated Responses tool identities publish provisional progress before arguments finish; read, rejected read, parallel calls and partial failures are covered. Rejected provisional calls count no executed step. Plain transcript and retry differences are recorded in [ask](differences/ask.md) and [recovery](differences/recovery.md). |
-| baseline | `34f1ed1` | Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle and assistant-boundary events; provisional rows and their replacement remain deferred. |
 | #1092 | `7087733` | Keep steering typed after a tool result when a turn is cancelled | `ported` | `ofx-agent`, `ofx-session` | A cancelled turn keeps the steering it took right after a tool result, with its tool-step boundary, and saves and restores it, as `buildInterruptedExecutionMemory` with `isSteering` does. The test "interrupted execution memory keeps steering typed right after a tool result" is ported, and the shell's end-to-end check saves the steering once. |
 | #1092 | `7087733` | (same) | `defer:subagents` | future subagent runtime | The end-to-end check in `gateway-stream-lifecycle.test.ts` steers a parent turn while a running child holds it (`STEERING_FIRST`); see [Steering](#steering). |
 | #1099 | `07f4e4d` | Keep the FIFO test's reader open until its writer joins | `n/a` | none | This fixes a race in a Zig test's blocked-writer thread. The Rust port of "linked metadata FIFO is rejected before descriptor open" starts no writer thread. |
@@ -94,6 +92,13 @@ The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `
 | #1062 | `34f1ed1` | (same) | `n/a` | none | `scripts/check-compactor-boundary.sh` and its CI steps, AGENTS.md and CONTRIBUTING.md process text, the SDK compaction test. |
 
 The `slack` command (`slack install`, `slack status`, and `slack refresh`) predates this range and is omitted for the same reason as the Slack MCP preset. `oh-fx slack` fails as any unknown command does.
+
+## Streamed tool lifecycle at the sync point
+
+| Area | Status | oh-fx | Note |
+|---|---|---|---|
+| Streamed tool lifecycle in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Validated Responses tool identities publish provisional progress before arguments finish; read, rejected read, parallel calls and partial failures are covered. Rejected provisional calls count no executed step. Plain transcript and retry differences are recorded in [ask](differences/ask.md) and [recovery](differences/recovery.md). |
+| Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle and assistant-boundary events; provisional rows and their replacement remain deferred, as recorded in [the interactive transcript](differences/shell-transcript.md). |
 
 ## Capability search at the sync point
 
