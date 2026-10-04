@@ -147,7 +147,10 @@ impl AgentSetup {
         connection_route(connection, Ok(model), preferred).map_err(|error| failure(&error))
     }
 
-    pub(crate) fn signed_out_route(&self, model: &str) -> Route {
+    pub(crate) fn sign_out(&self, model: &str) -> Route {
+        if let Some(login) = &self.subscription {
+            login.sign_out();
+        }
         Route::signed_out(model.to_owned(), self.configured_model.clone())
     }
 
@@ -165,6 +168,7 @@ impl AgentSetup {
         self.connection = route.connection;
         self.source = route.source;
         self.account_id = route.account_id;
+        self.subscription = route.subscription;
         self.configured_model = route.configured_model;
         self.config.model = route.model;
         (Arc::clone(&self.provider), self.models.clone())
@@ -184,6 +188,7 @@ impl Route {
             configured_model,
             source: CredentialSource::Codex,
             account_id: None,
+            subscription: None,
             uses_tls: false,
             login: Login::Missing,
         }

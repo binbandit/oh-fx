@@ -5186,6 +5186,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signing_out_stops_a_title_request_still_running_on_the_removed_login() {
+        let title_held = Gate::default();
+        let listing_held = Gate::default();
+        let codex = FakeServer::start([
+            codex_text("Fix the renderer").after(&title_held),
+            codex_text("done"),
+        ]);
+        let catalog = FakeServer::start([
+            catalog_version(),
+            catalog_listing(false).after(&listing_held),
+            catalog_listing(false),
+        ]);
+        let mut settings = codex_settings();
+        settings["effort"] = json!("low");
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        harness.submit("please fix the renderer");
+        within(async {
+            while codex.requests().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert_eq!(title_requests(&codex).len(), 1);
+        listing_held.open();
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        notices_of(&mut harness, "/logout codex").await;
+        title_held.open();
+        let named = timeout(
+            Duration::from_millis(500),
+            harness.until(titled(Some("Fix the renderer"))),
+        )
+        .await;
+        assert!(named.is_err(), "{:?}", harness.seen);
+        assert_eq!(
+            saved_sessions(&harness.home)[0]["title"],
+            "please fix the renderer"
+        );
+        assert_eq!(codex.requests().len(), 2);
+    }
+
+    #[tokio::test]
     async fn clearing_the_conversation_drops_prompts_held_while_signed_out() {
         for command in ["/clear", "/new", "/reset"] {
             let codex = FakeServer::start([codex_text("only the next one")]);
