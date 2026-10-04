@@ -39,7 +39,7 @@ fn mutate_tool() -> Arc<dyn Tool> {
         spec: ToolSpec {
             name: "mutate".to_owned(),
             description: "Mutate the workspace.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
         cleaned_up: Arc::new(AtomicBool::new(false)),
         meeting: Arc::new(tokio::sync::Barrier::new(2)),
@@ -187,4 +187,19 @@ async fn work_tools_given_to_a_child_keep_its_modes_projection_and_denials() {
             status: ToolResultStatus::Failure,
         })
     );
+}
+
+#[tokio::test]
+async fn the_mode_governs_dynamic_tools_as_they_arrive() {
+    let provider = FakeProvider::new(vec![text_reply("Done.")]);
+    let source = Arc::new(SwitchedTools {
+        generation: AtomicUsize::new(1),
+        tools: Mutex::new(vec![echo_tool(), mutate_tool()]),
+        notices: Mutex::new(Vec::new()),
+    });
+    let mut agent = new_agent(Arc::clone(&provider), Vec::new())
+        .with_dynamic_tools(Arc::clone(&source) as _)
+        .with_mode(mode("inspect"));
+    run(&mut agent, "go").await;
+    assert_eq!(advertised(&provider.requests()[0]), ["echo"]);
 }

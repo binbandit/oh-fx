@@ -5,7 +5,7 @@ fn spec(name: &str) -> ToolSpec {
     ToolSpec {
         name: name.to_owned(),
         description: name.to_owned(),
-        input_schema: "{}",
+        input_schema: "{}".into(),
     }
 }
 
