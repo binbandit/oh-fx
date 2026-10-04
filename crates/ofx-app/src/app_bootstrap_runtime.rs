@@ -702,7 +702,12 @@ impl AgentSetup {
             .unwrap_or(ReasoningEffort::Auto)
     }
 
-    pub(crate) fn status<'a>(&'a self, model: &'a str, history_turns: usize) -> StatusSnapshot<'a> {
+    pub(crate) fn status<'a>(
+        &'a self,
+        model: &'a str,
+        history_turns: usize,
+        ultrafast_requested: bool,
+    ) -> StatusSnapshot<'a> {
         StatusSnapshot {
             model,
             connection: self.connection.as_ref(),
@@ -712,6 +717,7 @@ impl AgentSetup {
             history_turns,
             session_permission_grants: self.permissions.session_grant_count(),
             agent_step_limit: self.config.step_limit,
+            ultrafast_requested,
         }
     }
 

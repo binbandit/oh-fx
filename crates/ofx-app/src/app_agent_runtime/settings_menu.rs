@@ -191,7 +191,7 @@ impl ControllerState {
             model: self.model.clone(),
             effort: self.effort.display_label().to_owned(),
             reasoning_efforts: capabilities_of(models, &self.model).reasoning_efforts,
-            fast_mode: FastModeSetting::new(self.fast_mode, supports_fast_mode),
+            fast_mode: FastModeSetting::new(self.fast_mode(), supports_fast_mode),
             permission_mode: self.permissions.mode(),
             statusline: self.statusline,
             session_titles: self.setup.session_titles_enabled(),
