@@ -17,7 +17,7 @@ pub use skill_contract::{
 };
 pub use skill_invocation::{
     ExecuteResult, ExplicitBinding, ExplicitPromptSection, LoadNotice, NoticeTone, SkillError,
-    SkillInventory, SkillLoader, prepare_identity,
+    SkillInventory, SkillLoader, display_name_from_output, prepare_identity,
 };
 pub use skill_runtime::{
     SkillCatalog, SkillDiscovery, SkillDiscoveryContext, SymlinkAuthorities, build_skill_prompt,
