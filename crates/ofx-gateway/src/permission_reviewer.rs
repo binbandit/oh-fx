@@ -136,6 +136,7 @@ fn responses_failure(error: &ProviderError) -> ReviewTransportOutcome {
         | ProviderErrorKind::ConnectionFailed
         | ProviderErrorKind::ConnectivityLost
         | ProviderErrorKind::TransportInterrupted
+        | ProviderErrorKind::StreamStalled
         | ProviderErrorKind::Protocol => ReviewTransportOutcome::TransientFailure,
         ProviderErrorKind::InvalidRequest
         | ProviderErrorKind::Unauthorized

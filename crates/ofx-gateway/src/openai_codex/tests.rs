@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
 use std::fmt::Write;
+use std::time::Duration;
 
 use ofx_contract::{ProviderOptions, ToolCall, ToolCallId, ToolChoice, ToolResultStatus, ToolSpec};
-use ofx_testkit::{FakeServer, Reply};
+use ofx_testkit::{FakeServer, Gate, Reply};
 use serde_json::{Value, json};
 
 use super::*;
+use crate::test_sources::Paced;
 
 struct Chunks(VecDeque<Vec<u8>>);
 
@@ -872,6 +874,68 @@ async fn a_nested_server_error_event_is_retryable_and_keeps_its_message() {
             "provider error: server_error: The server had an error while processing your request."
         )
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_codex_stream_stalls_ten_minutes_after_its_last_event() {
+    let reasoning = "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"thinking\"}\n\n";
+    let mut source = Paced::new([(Duration::from_mins(3), reasoning)]);
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let cancel = CancellationToken::new();
+    let started = tokio::time::Instant::now();
+    let consumed = consume_stream(&mut source, &mut sink, &cancel, STREAM_LIMITS, &[]);
+    let error = tokio::time::timeout(Duration::from_hours(1), consumed)
+        .await
+        .expect("the stream stalls")
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::StreamStalled);
+    assert_eq!(error.code, "StreamStalled");
+    assert_eq!(started.elapsed(), Duration::from_mins(13));
+    assert_eq!(
+        events,
+        [StreamEvent::ReasoningDelta {
+            text: "thinking".to_owned()
+        }]
+    );
+}
+
+#[tokio::test]
+async fn codex_waits_for_a_response_head_however_long_it_takes() {
+    let head = Gate::default();
+    let completed = r#"{"type":"response.completed","response":{"status":"completed"}}"#;
+    let server = FakeServer::start([Reply::sse(&[completed]).after(&head)]);
+    let codex = CodexProvider::new(
+        CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let messages = [ChatMessage::user("Hello.")];
+    let request = request(&messages, &[], &[]);
+    let mut sink = |_: StreamEvent| {};
+    let cancel = CancellationToken::new();
+    let mut stream = codex.stream(&request, &mut sink, &cancel);
+    while server.requests().is_empty() {
+        tokio::select! {
+            biased;
+            outcome = &mut stream => panic!("{outcome:?}"),
+            () = tokio::time::sleep(Duration::from_millis(5)) => {}
+        }
+    }
+    tokio::time::pause();
+    tokio::select! {
+        biased;
+        outcome = &mut stream => panic!("{outcome:?}"),
+        () = tokio::time::sleep(Duration::from_mins(30)) => {}
+    }
+    tokio::time::resume();
+    head.open();
+    let completion = stream.await.unwrap();
+    assert_eq!(completion.finish_reason, FinishReason::Stop);
 }
 
 #[tokio::test]

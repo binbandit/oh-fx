@@ -6,6 +6,7 @@ use ofx_testkit::{FakeServer, RefusedPort, Reply, chat_text_events};
 
 use super::*;
 use crate::chat_completions_protocol::Selection;
+use crate::test_sources::Paced;
 
 const TEST_STOP: &str = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
 const TEST_TEXT: &str = r#"{"id":"chat-1","model":"resolved-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#;
@@ -126,6 +127,46 @@ fn sse(events: &[&str]) -> Vec<u8> {
         .flat_map(|event| ["data: ", event, "\n\n"])
         .collect::<String>()
         .into_bytes()
+}
+
+async fn consume_paced(mut source: Paced) -> ProviderError {
+    let request = test_request();
+    let limits = Limits::default();
+    let mut reducer = Reducer::new(selection(&request), limits);
+    let stream = Stream {
+        limits,
+        secrets: &[],
+    };
+    let cancel = CancellationToken::new();
+    let mut sink = |_: StreamEvent| {};
+    let consumed = stream.consume(&mut source, &mut reducer, &mut sink, &cancel);
+    tokio::time::timeout(Duration::from_hours(1), consumed)
+        .await
+        .expect("the stream stalls")
+        .unwrap_err()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_silent_for_ten_minutes_after_its_head_stalls() {
+    let started = tokio::time::Instant::now();
+    let error = consume_paced(Paced::new([])).await;
+    assert_eq!(error.kind, ProviderErrorKind::StreamStalled);
+    assert_eq!(error.code, "StreamStalled");
+    assert_eq!(started.elapsed(), Duration::from_mins(10));
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_stream_events_hold_off_a_stall() {
+    let text = String::from_utf8(sse(&[TEST_TEXT])).unwrap();
+    let started = tokio::time::Instant::now();
+    let error = consume_paced(Paced::new([
+        (Duration::from_mins(9), text.as_str()),
+        (Duration::from_mins(9), ": keep-alive\n\n"),
+        (Duration::from_mins(9), text.as_str()),
+    ]))
+    .await;
+    assert_eq!(error.kind, ProviderErrorKind::StreamStalled);
+    assert_eq!(started.elapsed(), Duration::from_mins(19));
 }
 
 #[tokio::test]
