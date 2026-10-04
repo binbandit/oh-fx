@@ -162,6 +162,9 @@ enum Stop {
         failure: TurnFailure,
         partial: String,
     },
+    Paused {
+        failure: TurnFailure,
+    },
 }
 
 impl Stop {
@@ -540,12 +543,19 @@ impl Agent {
                     Ending::Stopped(TurnStop::Cancelled),
                 )
             }
+            Err(Stop::Paused { failure }) => {
+                self.history.truncate(turn.start);
+                self.turn_starts.pop();
+                (
+                    TurnOutcome::Failed,
+                    String::new(),
+                    Some(failure),
+                    Ending::Paused,
+                )
+            }
             Err(Stop::Failed { failure, partial }) => {
                 let spoke = !partial.trim_matches(TRIMMED).is_empty();
-                let ending = if failure == TurnFailure::RecoveryPaused && self.log.is_some() {
-                    self.keep_partial_turn(turn.start, &partial);
-                    Ending::Stopped(TurnStop::Failed)
-                } else if !spoke
+                let ending = if !spoke
                     && !self.has_turn_progress(turn.start)
                     && !turn.compaction.compacted_steps
                     && failure != TurnFailure::StepLimitReached
@@ -1041,9 +1051,8 @@ impl Agent {
                 retry_wait: None,
             },
         });
-        Stop::Failed {
+        Stop::Paused {
             failure: TurnFailure::RecoveryPaused,
-            partial,
         }
     }
 

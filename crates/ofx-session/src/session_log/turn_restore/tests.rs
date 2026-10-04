@@ -1001,11 +1001,11 @@ fn a_failed_save_of_a_closed_log_leaves_later_saves_allowed() {
             .is_err()
     );
     assert_eq!(session.require_writable(), Ok(()));
-    assert_eq!(session.last_seq(), 0);
+    assert_eq!(session.writer.last_seq(), 0);
     session
         .record_turn(&simple_turn("second", "two"), &gateway())
         .unwrap();
-    assert_eq!(session.last_seq(), 3);
+    assert_eq!(session.writer.last_seq(), 3);
 }
 
 #[test]
@@ -1156,7 +1156,7 @@ fn a_title_that_cannot_be_written_leaves_the_turn_saved() {
         .record_turn(&simple_turn("named", "ok"), &gateway())
         .unwrap();
     assert_eq!(session.require_writable(), Ok(()));
-    assert_eq!(session.last_seq(), 3);
+    assert_eq!(session.writer.last_seq(), 3);
 }
 
 #[test]

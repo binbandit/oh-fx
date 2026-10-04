@@ -42,7 +42,7 @@ use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
 use turn_recovery::{
     Recovery, clear_recovery, commit_checkpoint, mark_recovery_asked, open_unfinished_turn,
-    recovery_was_asked, save_checkpoint,
+    read_checkpoint, recovery_was_asked, save_checkpoint,
 };
 use turn_restore::{complete_result_output, restored_history};
 
@@ -124,10 +124,6 @@ impl WritableSession {
 
     pub fn turn_open(&self) -> bool {
         self.writer.turn_open()
-    }
-
-    pub fn last_seq(&self) -> u64 {
-        self.writer.last_seq()
     }
 
     pub fn require_writable(&self) -> Result<(), SessionError> {
@@ -247,6 +243,14 @@ impl WritableSession {
     pub fn settle_recovery(&mut self) -> Result<(), SessionError> {
         let checkpoint = match mem::take(&mut self.recovery) {
             Recovery::Pending(checkpoint) => checkpoint,
+            Recovery::Saved => match read_checkpoint(&self.owned.dir, self.writer.last_seq()) {
+                Ok(Some(checkpoint)) => Box::new(checkpoint),
+                Ok(None) => return Ok(()),
+                Err(error) => {
+                    self.recovery = Recovery::Saved;
+                    return Err(error);
+                }
+            },
             other => {
                 self.recovery = other;
                 return Ok(());
@@ -287,6 +291,14 @@ impl WritableSession {
             clear_recovery(&self.owned.dir);
             self.recovery = Recovery::Absent;
         }
+    }
+
+    pub fn holds_recovery(&self) -> bool {
+        matches!(self.recovery, Recovery::Pending(_) | Recovery::Saved)
+    }
+
+    pub fn has_durable_work(&self) -> bool {
+        self.writer.last_seq() != 0 || self.holds_recovery()
     }
 
     pub fn recovery_transcript(&self) -> Option<RecoveryTranscript> {
@@ -411,7 +423,7 @@ impl WritableSession {
     }
 
     pub(crate) fn is_pristine(&self) -> bool {
-        self.started && self.writer.last_seq() == 0 && !self.writer.turn_open()
+        self.started && !self.has_durable_work() && !self.writer.turn_open()
     }
 
     fn written(&self) -> Result<ProgressPoint, SessionError> {

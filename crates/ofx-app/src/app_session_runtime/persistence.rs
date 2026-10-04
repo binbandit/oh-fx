@@ -135,7 +135,7 @@ impl Persistence {
                 ),
             ));
         }
-        if !self.remember_fresh || live.session().last_seq() == 0 {
+        if !self.remember_fresh || !live.session().has_durable_work() {
             return None;
         }
         self.remember_fresh = false;
