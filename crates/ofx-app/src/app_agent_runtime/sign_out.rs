@@ -132,8 +132,8 @@ impl Controller {
             self.state.emit(UiEvent::Notice { notice });
         }
         if target != ProviderId::Gateway && target == self.state.setup.provider() {
-            self.state.setup.sign_out();
-            self.state.emit(UiEvent::LoginChanged { missing: true });
+            let route = self.state.setup.signed_out_route(&self.state.model);
+            self.install(&target, route);
             self.state
                 .notice(NoticeTone::Warning, PROVIDER_TOPIC, NO_PROVIDER);
         }

@@ -42,8 +42,7 @@ use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
-    CodexUnavailable, DetachedRefreshes, SignedOutProvider, SubscriptionEndpoints,
-    codex_subscription,
+    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, codex_subscription,
 };
 use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
@@ -523,20 +522,10 @@ impl Profile {
             self.settings.selected_codex_model(model, &lookup)
         })?
         .map_err(ConnectError::InvalidModel)?;
-        let provider: Arc<dyn ModelProvider> = Arc::new(SignedOutProvider);
-        Ok(Route {
-            reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
-            title_model: Some(CODEX_TITLE_MODEL),
-            provider,
-            models: ModelSource::Unavailable,
-            connection: None,
+        Ok(Route::signed_out(
             model,
-            configured_model: self.settings.selected_codex_model(None, &lookup).ok(),
-            source: CredentialSource::Codex,
-            account_id: None,
-            uses_tls: false,
-            login: Login::Missing,
-        })
+            self.settings.selected_codex_model(None, &lookup).ok(),
+        ))
     }
 
     async fn subscription_route(
@@ -686,10 +675,6 @@ impl AgentSetup {
 
     pub(crate) fn login(&self) -> Login {
         self.login
-    }
-
-    pub(crate) fn sign_out(&mut self) {
-        self.login = Login::Missing;
     }
 
     pub fn source(&self) -> CredentialSource {
