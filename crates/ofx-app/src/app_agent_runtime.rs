@@ -29,7 +29,7 @@ use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{
     Listed, NOT_CONTINUED, PageRequest, Persistence, RECOVERY_TOPIC, RestoredPreferences,
-    SessionListing, SessionTitle,
+    SIGN_IN_TO_CONTINUE, SessionListing, SessionTitle,
 };
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
@@ -840,6 +840,11 @@ impl Controller {
         let Some(persistence) = self.persistence.as_ref().filter(|_| continues) else {
             return;
         };
+        if self.state.login_missing() {
+            return self
+                .state
+                .notice(NoticeTone::Warning, RECOVERY_TOPIC, SIGN_IN_TO_CONTINUE);
+        }
         match persistence.continue_recovery(
             &self.state.setup,
             &self.state.model,
@@ -1446,7 +1451,7 @@ mod tests {
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
-    use ofx_session::{SessionPreferences, SessionStore};
+    use ofx_session::{ResumeTarget, SessionPreferences, SessionStore};
     use ofx_testkit::{
         FakeServer, Gate, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
     };
@@ -1456,7 +1461,7 @@ mod tests {
 
     use super::*;
     use crate::app_bootstrap_runtime::{Launch, Profile};
-    use crate::app_session_runtime::{LaunchOverrides, session_route};
+    use crate::app_session_runtime::{LaunchOverrides, ResumedSession, Resumption, session_route};
     use crate::codex_provider::SubscriptionEndpoints;
 
     mod steering;
@@ -1693,6 +1698,54 @@ mod tests {
 
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
             Self::spawn(home, setup, None)
+        }
+
+        async fn resuming(
+            home: tempfile::TempDir,
+            settings: &Value,
+            endpoints: SubscriptionEndpoints,
+            id: &str,
+        ) -> Self {
+            let (mut profile, setup) = profile_setup(&home, settings, endpoints).await;
+            let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
+            let store =
+                SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
+            let Ok(session) =
+                ResumedSession::open(&store, &mut profile, &ResumeTarget::Id(id.to_owned()))
+            else {
+                panic!("the saved session reopens");
+            };
+            let route = session_route(&setup).unwrap();
+            let preferences = SessionPreferences {
+                provider: route.provider.clone(),
+                model: setup.configured_model().to_owned(),
+                effort: ReasoningEffort::Auto,
+                fast_mode: false,
+            };
+            let overrides = LaunchOverrides {
+                model: None,
+                effort: None,
+                fast_mode: None,
+            };
+            let resumption = Resumption {
+                session,
+                remember: false,
+            };
+            let persistence =
+                Persistence::new(store, route, preferences, overrides, Some(resumption));
+            Self::spawn(home, setup, Some(persistence))
+        }
+
+        async fn finish(self) -> tempfile::TempDir {
+            let Self {
+                home,
+                commands,
+                mut events,
+                ..
+            } = self;
+            drop(commands);
+            while events.recv().await.is_some() {}
+            home
         }
 
         fn with_setup_observer(
@@ -5219,6 +5272,98 @@ mod tests {
             "{ran:?}"
         );
         assert_eq!(codex.requests()[0].json()["model"], CODEX_MODEL);
+    }
+
+    fn continues_nothing(shown: &[UiEvent]) {
+        assert!(
+            !shown.iter().any(|event| matches!(
+                event,
+                UiEvent::RecoveryContinuing { .. }
+                    | UiEvent::TurnStarted { .. }
+                    | UiEvent::PromptHeld
+            )),
+            "{shown:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_paused_response_reopened_signed_out_at_launch_waits_for_a_sign_in() {
+        let codex = FakeServer::start([codex_text("first answer")]);
+        let catalog = codex_catalog(false, 2);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        chat(&mut harness, &["first question"]).await;
+        let id = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let home = harness.finish().await;
+        pause_a_saved_response(&home, &id);
+        fs::remove_file(home.path().join("data/chatgpt-auth.json")).unwrap();
+        let mut harness =
+            Harness::resuming(home, &settings, codex_endpoints(&codex, &catalog), &id).await;
+        let shown = notices_of(&mut harness, "/status").await;
+        assert!(
+            shown.contains(&(
+                NoticeTone::Warning,
+                "recovery".to_owned(),
+                SIGN_IN_TO_CONTINUE.to_owned()
+            )),
+            "{shown:?}"
+        );
+        continues_nothing(&harness.seen);
+        let recovery = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(&id)
+            .join("recovery.json");
+        assert!(recovery.exists());
+        assert_eq!(codex.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_paused_response_resumed_signed_out_from_the_picker_waits_for_a_sign_in() {
+        let codex = FakeServer::start([codex_text("first answer")]);
+        let catalog = codex_catalog(false, 2);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        chat(&mut harness, &["first question"]).await;
+        let first = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        notices_of(&mut harness, "/logout codex").await;
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        pause_a_saved_response(&harness.home, &first);
+        let resumed_from = harness.seen.len();
+        harness.send(UiCommand::ResumeSession { id: first.clone() });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+        let shown = notices_of(&mut harness, "/status").await;
+        assert!(
+            shown.contains(&(
+                NoticeTone::Warning,
+                "recovery".to_owned(),
+                SIGN_IN_TO_CONTINUE.to_owned()
+            )),
+            "{shown:?}"
+        );
+        continues_nothing(&harness.seen[resumed_from..]);
+        let recovery = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(&first)
+            .join("recovery.json");
+        assert!(recovery.exists());
+        assert_eq!(codex.requests().len(), 1);
     }
 
     #[tokio::test]
