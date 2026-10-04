@@ -1,10 +1,10 @@
 use ofx_contract::{
-    ChatMessage, ConversationLog, HistoryTurn, LogFailure, ModelRecoveryCause, RecoveryPoint,
-    RecoveryProgress, RestoredHistory, TurnEnd, TurnStop,
+    ChatMessage, ConversationLog, HistoryTurn, LogFailure, ModelRecoveryAction, ModelRecoveryCause,
+    ProviderError, RecoveryPoint, RecoveryProgress, RestoredHistory, TurnEnd, TurnStop,
 };
 
 use super::turn_ledger::TurnRecord;
-use super::{Agent, Turn};
+use super::{Agent, Stop, Turn, TurnFailure};
 use crate::compactor::{Compacted, encode_checkpoint, restore_checkpoint};
 use crate::execution_memory::{history_turn, logged_steps};
 use crate::model_response_recovery::DEFAULT_MAX_PROVIDER_ATTEMPTS;
@@ -145,6 +145,41 @@ impl Agent {
             attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
             consumed_attempts,
         })
+    }
+
+    pub(super) fn record_wait(
+        &self,
+        turn: &Turn,
+        cause: ModelRecoveryCause,
+        action: ModelRecoveryAction,
+        consumed_attempts: usize,
+    ) -> Result<(), Stop> {
+        self.record_recovery(
+            turn,
+            cause,
+            RecoveryProgress::Waiting(action),
+            consumed_attempts,
+        )
+        .map_err(|failure| Stop::Failed {
+            failure: TurnFailure::Persistence(failure),
+            partial: String::new(),
+        })
+    }
+
+    pub(super) fn exhausted_failure(
+        &self,
+        turn: &Turn,
+        cause: Option<ModelRecoveryCause>,
+        consumed_attempts: usize,
+        error: ProviderError,
+    ) -> TurnFailure {
+        let paused = cause.map(|cause| {
+            self.record_recovery(turn, cause, RecoveryProgress::Paused, consumed_attempts)
+        });
+        match paused {
+            Some(Err(failure)) => TurnFailure::Persistence(failure),
+            Some(Ok(())) | None => TurnFailure::Provider(error),
+        }
     }
 
     pub(super) fn discard_recovery(&self) {

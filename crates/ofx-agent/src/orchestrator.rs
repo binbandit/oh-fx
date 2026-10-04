@@ -828,13 +828,7 @@ impl Agent {
                 ) {
                     events(UiEvent::Recovery { turn_id, status });
                 }
-                let paused = cause.map(|cause| {
-                    self.record_recovery(turn, cause, RecoveryProgress::Paused, consumed)
-                });
-                let failure = match paused {
-                    Some(Err(failure)) => TurnFailure::Persistence(failure),
-                    Some(Ok(())) | None => TurnFailure::Provider(error),
-                };
+                let failure = self.exhausted_failure(turn, cause, consumed, error);
                 return Err(Stop::Failed { failure, partial });
             };
             if cause == ModelRecoveryCause::ProviderUnavailable {
@@ -844,17 +838,7 @@ impl Agent {
             let retry_after = error.retry_after.map(|delay| delay.as_secs());
             let decision = decide(cause, retry_after, pacing);
             let mut status = retry_status(attempt, cause, &decision, &error);
-            if let Err(failure) = self.record_recovery(
-                turn,
-                cause,
-                RecoveryProgress::Waiting(decision.action),
-                consumed,
-            ) {
-                return Err(Stop::Failed {
-                    failure: TurnFailure::Persistence(failure),
-                    partial,
-                });
-            }
+            self.record_wait(turn, cause, decision.action, consumed)?;
             events(UiEvent::Recovery {
                 turn_id,
                 status: status.clone(),
