@@ -12,6 +12,7 @@ mod app_upgrade_runtime;
 mod approval_queue;
 mod codex_provider;
 mod context;
+mod doctor_runtime;
 mod file_mention_runtime;
 mod herdr;
 mod mcp_commands;
@@ -36,6 +37,7 @@ pub use app_session_runtime::{
     configured_preferences, open_store, recovered_turn, running_provider, session_route,
 };
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
+pub use doctor_runtime::Doctor;
 pub use modes::default_mode;
 pub use ofx_tools::WebFetchProgress;
 

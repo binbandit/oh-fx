@@ -11,7 +11,9 @@ use ofx_config::{
     ConfigDiagnostic, ConnectionError, ProfilePaths, ProviderDefinition, ProviderId,
     SelectionError, Settings, SettingsError,
 };
-use ofx_mcp::{ProjectMcpChoices, inspect_local_config, profile_config_path};
+use ofx_mcp::{
+    LocalConfigInspection, ProjectMcpChoices, inspect_local_config, profile_config_path,
+};
 
 use crate::output_contracts::status::{AuthStatus, Credential, SavedLogins, StatusReport};
 
@@ -66,11 +68,11 @@ impl StartupStatus {
     }
 }
 
-struct StatusSources<'a> {
-    paths: Option<&'a ProfilePaths>,
-    home: Option<&'a Path>,
-    lookup: Lookup<'a>,
-    host_managed: bool,
+pub(crate) struct StatusSources<'a> {
+    pub(crate) paths: Option<&'a ProfilePaths>,
+    pub(crate) home: Option<&'a Path>,
+    pub(crate) lookup: Lookup<'a>,
+    pub(crate) host_managed: bool,
 }
 
 impl StatusSources<'_> {
@@ -90,14 +92,7 @@ impl StatusSources<'_> {
                 Some(connection),
             )
         };
-        let choices = ProjectMcpChoices::parse(settings.workspace_entry(), &mut Vec::new()).ok();
-        let profile_path = self.paths.map(profile_config_path);
-        let mcp = inspect_local_config(
-            profile_path.as_deref(),
-            &workspace_root,
-            choices.as_ref(),
-            lookup,
-        );
+        let mcp = self.mcp(Some(settings), &workspace_root);
         Ok(StatusReport {
             model,
             model_origin: settings.model_origin(&provider, lookup),
@@ -107,7 +102,7 @@ impl StatusSources<'_> {
             ),
             connection: connection.map(|connection| connection.id().to_owned()),
             provider_endpoint: connection.map(|connection| connection.base_url().to_owned()),
-            auth: self.auth(connection),
+            auth: self.auth(&provider, connection),
             permission_mode: settings.permission_mode(lookup),
             workspace_root,
             agent_step_limit: settings.max_agent_steps(lookup),
@@ -115,7 +110,28 @@ impl StatusSources<'_> {
         })
     }
 
-    fn auth(&self, connection: Option<&ProviderDefinition>) -> AuthStatus {
+    pub(crate) fn mcp(
+        &self,
+        settings: Option<&Settings>,
+        workspace_root: &Path,
+    ) -> LocalConfigInspection {
+        let choices = settings.and_then(|settings| {
+            ProjectMcpChoices::parse(settings.workspace_entry(), &mut Vec::new()).ok()
+        });
+        let profile_path = self.paths.map(profile_config_path);
+        inspect_local_config(
+            profile_path.as_deref(),
+            workspace_root,
+            choices.as_ref(),
+            self.lookup,
+        )
+    }
+
+    pub(crate) fn auth(
+        &self,
+        provider: &ProviderId,
+        connection: Option<&ProviderDefinition>,
+    ) -> AuthStatus {
         if self.host_managed {
             let logins = SavedLogins {
                 codex: true,
@@ -135,6 +151,10 @@ impl StatusSources<'_> {
                 }
                 _ => active(Credential::Connection, logins),
             };
+        }
+        if *provider != ProviderId::Codex {
+            let unavailable = SelectionError::ProviderUnavailable(provider.label().to_owned());
+            return missing(unavailable.to_string(), logins);
         }
         match data.map_or(StoredLogin::Missing, stored_codex_login) {
             StoredLogin::Saved { expired } => active(
