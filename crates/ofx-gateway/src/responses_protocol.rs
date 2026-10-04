@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use ofx_contract::{
-    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance,
+    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolExecutionProvenance,
     ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};

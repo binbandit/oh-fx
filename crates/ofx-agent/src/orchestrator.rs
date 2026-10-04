@@ -221,6 +221,9 @@ struct StreamText {
 impl StreamText {
     fn push(&mut self, text: &str) {
         self.partial.push_str(text);
+    }
+
+    fn displayed(&mut self, text: &str) {
         if !text.is_empty() {
             self.visible |= !text.trim_matches([' ', '\t', '\r', '\n']).is_empty();
             self.ends_in_newline = text.ends_with('\n');
@@ -1002,6 +1005,7 @@ impl Agent {
                 streamed_bytes += text.len();
                 streamed_text.push(&text);
                 if let Some(text) = turn.language.stage.admit(text) {
+                    streamed_text.displayed(&text);
                     events(UiEvent::AssistantText { turn_id, text });
                 }
             }
