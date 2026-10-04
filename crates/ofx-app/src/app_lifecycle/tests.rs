@@ -516,6 +516,7 @@ fn run_a_local_install_session(home: &Path) -> ! {
         .block_on(profile.connect_interactive(
             Launch {
                 model: None,
+                mode: None,
                 permission_mode: PermissionMode::Auto,
                 system_prompt: None,
                 reasoning_effort: None,
