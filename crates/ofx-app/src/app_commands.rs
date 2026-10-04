@@ -1,6 +1,7 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+use ofx_auth::HOST_MANAGED_AUTH_MESSAGE;
 use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
 use ofx_contract::{
     CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, ModelOption, Notice,
@@ -18,6 +19,7 @@ use crate::session_commands::{handle_allowlist, handle_settings};
 use crate::skill_commands::{InstallRequest, handle_skills};
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
+const AUTH_TOPIC: &str = "auth";
 const CLIPBOARD_TOPIC: &str = "clipboard";
 const NO_REPLY_TO_COPY: &str = "No assistant reply to copy.";
 const COPIED: &str = "Copied to clipboard.";
@@ -53,6 +55,7 @@ pub(crate) enum CommandEffect {
     OpenSessions,
     OpenSettings,
     Rename(String),
+    Logout(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +137,11 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         }
         SlashKind::ResumeSession => CommandEffect::OpenSessions,
         SlashKind::RenameSession => CommandEffect::Rename(command.payload.to_owned()),
+        SlashKind::Logout => CommandEffect::Logout(command.payload.to_owned()),
+        SlashKind::Login if ofx_auth::host_managed_auth() => {
+            state.notice(NoticeTone::Neutral, AUTH_TOPIC, HOST_MANAGED_AUTH_MESSAGE);
+            CommandEffect::None
+        }
         SlashKind::Login => provider_effect(state, work, "/login "),
         SlashKind::Provider => provider_effect(state, work, "/provider "),
         SlashKind::Fast => CommandEffect::ToggleFast,
@@ -165,6 +173,15 @@ fn compaction_effect(state: &ControllerState, work: Work) -> CommandEffect {
         Work::Compaction => CommandEffect::None,
         _ if !state.has_context_to_compact() => {
             state.compaction(CompactionActivity::Ended(CompactionEnd::NothingToCompact));
+            CommandEffect::None
+        }
+        Work::Idle if state.login_missing() => {
+            let end = if state.holds_prompt() {
+                CompactionEnd::Busy
+            } else {
+                CompactionEnd::AuthenticationRejected
+            };
+            state.compaction(CompactionActivity::Ended(end));
             CommandEffect::None
         }
         Work::Idle => CommandEffect::Compact,
@@ -222,6 +239,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         | SlashKind::ResumeSession
         | SlashKind::RenameSession
         | SlashKind::Login
+        | SlashKind::Logout
         | SlashKind::Provider
         | SlashKind::Fast
         | SlashKind::Compact => {}
@@ -474,6 +492,10 @@ mod tests {
         assert_eq!(listed("/new").description, "start a fresh session");
         assert_eq!(listed("/resume").description, "resume a saved session");
         assert_eq!(listed("/rename").description, "rename the current session");
+        assert_eq!(
+            listed("/logout").description,
+            "sign out of a provider session"
+        );
         assert_eq!(listed("/provider").aliases, ["/setup"]);
         assert_eq!(
             listed("/mcp").description,
