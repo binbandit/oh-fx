@@ -441,6 +441,10 @@ async fn consume_stream<S: ChunkSource + Send>(
                 sink.emit(match delta {
                     Delta::Text(text) => StreamEvent::TextDelta { text },
                     Delta::Reasoning(text) => StreamEvent::ReasoningDelta { text },
+                    Delta::ToolCallStarted { call_id, tool_name } => {
+                        StreamEvent::ToolCallStarted { call_id, tool_name }
+                    }
+                    Delta::ToolInput(text) => StreamEvent::ToolInputDelta { text },
                 });
             }
             match result {
