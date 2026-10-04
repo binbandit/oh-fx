@@ -105,6 +105,7 @@ pub struct ToolOutput {
     pub process: Option<CommandProcessPresentation>,
     pub status_detail: Option<ToolStatusDetail>,
     pub file_change: Option<FileChangeStats>,
+    pub model_view_covers_full_file: Option<bool>,
 }
 
 impl ToolOutput {
@@ -117,6 +118,7 @@ impl ToolOutput {
             process: None,
             status_detail: None,
             file_change: None,
+            model_view_covers_full_file: None,
         }
     }
 
@@ -129,6 +131,7 @@ impl ToolOutput {
             process: None,
             status_detail: None,
             file_change: None,
+            model_view_covers_full_file: None,
         }
     }
 
@@ -159,6 +162,12 @@ impl ToolOutput {
     #[must_use]
     pub fn with_file_change(mut self, change: FileChangeStats) -> Self {
         self.file_change = Some(change);
+        self
+    }
+
+    #[must_use]
+    pub fn covering_full_file(mut self, covered: bool) -> Self {
+        self.model_view_covers_full_file = Some(covered);
         self
     }
 }

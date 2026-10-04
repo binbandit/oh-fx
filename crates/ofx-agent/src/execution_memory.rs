@@ -238,9 +238,26 @@ fn steering_after<'a>(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RawOutput {
+    pub(crate) call_id: ToolCallId,
+    pub(crate) bytes: usize,
+    pub(crate) whole_file: bool,
+}
+
+impl RawOutput {
+    pub(crate) fn partial_view(call_id: ToolCallId, bytes: usize) -> Self {
+        Self {
+            call_id,
+            bytes,
+            whole_file: false,
+        }
+    }
+}
+
 pub(crate) fn logged_steps<'a>(
     steps: &[ToolStep<'a>],
-    raw_outputs: &[(ToolCallId, usize)],
+    raw_outputs: &[RawOutput],
 ) -> Vec<HistoryStep<'a>> {
     let kept = steps.iter().map(|step| step.results.len()).sum::<usize>();
     let mut recorded = raw_outputs
@@ -260,17 +277,18 @@ pub(crate) fn logged_steps<'a>(
                 .map(|result| {
                     let raw = recorded
                         .next()
-                        .filter(|(call_id, _)| call_id.as_str() == result.call_id);
+                        .filter(|raw| raw.call_id.as_str() == result.call_id);
                     StepResult {
                         call_id: result.call_id,
                         tool_name: result.tool_name,
                         output: result.output,
-                        output_bytes: raw.map_or(result.output.len(), |(_, bytes)| *bytes),
+                        output_bytes: raw.map_or(result.output.len(), |raw| raw.bytes),
                         status: if result.failed {
                             ToolResultStatus::Failure
                         } else {
                             ToolResultStatus::Success
                         },
+                        model_view_covers_full_file: raw.is_some_and(|raw| raw.whole_file),
                     }
                 })
                 .collect(),

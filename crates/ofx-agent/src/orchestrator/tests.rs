@@ -457,6 +457,10 @@ impl PreparedCall for EchoCall {
                 });
                 return ToolOutput::success("status published");
             }
+            if self.arguments.contains("whole") {
+                return ToolOutput::success(format!("echo {}", self.arguments))
+                    .covering_full_file(true);
+            }
             if self.arguments.contains("noticed") {
                 return ToolOutput::success(format!("echo {}", self.arguments))
                     .with_context_notices(["echo notice".to_owned()]);

@@ -20,7 +20,7 @@ note = "Filesystem grep files schema, ordering, output caps and literal/path fil
 upstream = "src/tools/filesystem/read_file.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/filesystem/read_file.rs"]
-note = "Bounded text reads and line selection exist; image attachment results and session ReadTracker snapshots are absent."
+note = "Bounded text reads and line selection exist, and each read reports whether the model saw the whole file; image attachment results are absent."
 
 [[file]]
 upstream = "src/tools/filesystem/write_file.zig"

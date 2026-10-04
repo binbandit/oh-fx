@@ -128,18 +128,32 @@ fn finished_turn() -> Vec<ConversationEvent> {
 }
 
 fn step(call_id: &str, output: &str) -> String {
+    tool_step(call_id, "shell", r#"{\"command\":\"ls\"}"#, output)
+}
+
+fn tool_step(call_id: &str, name: &str, arguments: &str, output: &str) -> String {
     let bytes = output.len();
     format!(
-        "{{\"assistant\":null,\"provider_replay\":null,\"tool_calls\":[{{\"id\":\"{call_id}\",\"name\":\"shell\",\"arguments_json\":\"{{\\\"command\\\":\\\"ls\\\"}}\",\"provider_result\":null}}],\"tool_results\":[{{\"tool_call_id\":\"{call_id}\",\"tool_name\":\"shell\",\"status\":\"success\",\"output\":\"{output}\",\"output_handle\":null,\"preview\":null,\"output_bytes\":{bytes},\"stored_output_bytes\":{bytes},\"truncated\":false,\"provider_native\":false,\"review_feedback\":false,\"created_at_ms\":5,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_output_replay\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}]}}"
+        "{{\"assistant\":null,\"provider_replay\":null,\"tool_calls\":[{{\"id\":\"{call_id}\",\"name\":\"{name}\",\"arguments_json\":\"{arguments}\",\"provider_result\":null}}],\"tool_results\":[{{\"tool_call_id\":\"{call_id}\",\"tool_name\":\"{name}\",\"status\":\"success\",\"output\":\"{output}\",\"output_handle\":null,\"preview\":null,\"output_bytes\":{bytes},\"stored_output_bytes\":{bytes},\"truncated\":false,\"provider_native\":false,\"review_feedback\":false,\"created_at_ms\":5,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_output_replay\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}]}}"
     )
 }
 
 const EVIDENCE: &str = "{\"path\":\"a.rs\",\"new_path\":null,\"tool_call_id\":\"c2\",\"tool_name\":\"shell\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":true,\"stale\":false}";
 
 fn checkpoint(user: &str, steps: &[String], steering: &str, partial: &str) -> String {
+    checkpoint_with_files(user, steps, steering, partial, EVIDENCE)
+}
+
+fn checkpoint_with_files(
+    user: &str,
+    steps: &[String],
+    steering: &str,
+    partial: &str,
+    files: &str,
+) -> String {
     let steps = steps.join(",");
     format!(
-        "{{\"version\":2,\"turn_id\":7,\"user\":{{\"text\":\"{user}\",\"images\":[]}},\"assistant_source\":\"{partial}\",\"execution\":{{\"schema_version\":10,\"tool_steps\":[{steps}],\"files\":[{EVIDENCE}],\"steering\":[{steering}],\"turn_summary\":null}},\"cause\":\"network_interrupted\",\"action\":\"retrying_request\",\"tool_state\":\"none\",\"authority\":{{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"credential_source\":null,\"credential_identity\":null}},\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":1,\"outstanding_reservation\":false}}"
+        "{{\"version\":2,\"turn_id\":7,\"user\":{{\"text\":\"{user}\",\"images\":[]}},\"assistant_source\":\"{partial}\",\"execution\":{{\"schema_version\":10,\"tool_steps\":[{steps}],\"files\":[{files}],\"steering\":[{steering}],\"turn_summary\":null}},\"cause\":\"network_interrupted\",\"action\":\"retrying_request\",\"tool_state\":\"none\",\"authority\":{{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"credential_source\":null,\"credential_identity\":null}},\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":1,\"outstanding_reservation\":false}}"
     )
 }
 
@@ -455,6 +469,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
                 output: "out",
                 output_bytes: 3,
                 status: ToolResultStatus::Success,
+                model_view_covers_full_file: false,
             }],
         }],
         steering: Vec::new(),
@@ -499,6 +514,7 @@ fn continued_turn<'a>(
                     output: "out",
                     output_bytes: 3,
                     status: ToolResultStatus::Success,
+                    model_view_covers_full_file: false,
                 }],
             })
             .collect(),
@@ -806,6 +822,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
                 output: content,
                 output_bytes: content.len(),
                 status: *status,
+                model_view_covers_full_file: false,
             });
             messages.next();
         }
@@ -845,6 +862,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                     output: &large,
                     output_bytes: large.len(),
                     status: ToolResultStatus::Success,
+                    model_view_covers_full_file: false,
                 }],
             }],
             steering: Vec::new(),
@@ -931,5 +949,188 @@ fn a_checkpoint_written_during_a_continued_turn_keeps_the_recovered_replay_bindi
     assert!(
         saved.contains(&format!("\"provider_replay\":{}", bound_replay("11"))),
         "{saved}"
+    );
+}
+
+fn evidence_json(path: &str, call_id: &str, tool: &str, action: &str, flags: [bool; 2]) -> String {
+    let [whole, stale] = flags;
+    format!(
+        "{{\"path\":\"{path}\",\"new_path\":null,\"tool_call_id\":\"{call_id}\",\"tool_name\":\"{tool}\",\"action\":\"{action}\",\"status\":\"success\",\"model_view_covers_full_file\":{whole},\"stale\":{stale}}}"
+    )
+}
+
+fn continued_files(end: TurnEnd<'_>, kind: &str, cut: usize, write_id: &str) -> serde_json::Value {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let saved = [
+        evidence_json("gone.rs", "c0", "read_file", "read", [true, false]),
+        evidence_json("a.rs", "r1", "read_file", "read", [true, false]),
+    ]
+    .join(",");
+    fixture.save_checkpoint(
+        3,
+        &checkpoint_with_files(
+            "fix the build",
+            &[tool_step(
+                "r1",
+                "read_file",
+                r#"{\"path\":\"a.rs\"}"#,
+                "text",
+            )],
+            "",
+            "",
+            &saved,
+        ),
+    );
+    finish_continued(&fixture, end, kind, cut, write_id)
+}
+
+fn finish_continued(
+    fixture: &Fixture,
+    end: TurnEnd<'_>,
+    kind: &str,
+    cut: usize,
+    write_id: &str,
+) -> serde_json::Value {
+    let mut resumed = fixture.resume().unwrap();
+    let provider = metadata().preferences.provider;
+    let continued = resumed
+        .take_recovery()
+        .unwrap()
+        .into_turn(&provider, "openai/gpt-5", false);
+    let write = [ToolCall::new(
+        write_id,
+        "write_file",
+        r#"{"path":"a.rs","content":"x"}"#,
+    )];
+    let mut turn = continued_history(&continued, end);
+    turn.steps.push(HistoryStep {
+        assistant: "",
+        provider_replay: None,
+        tool_calls: &write,
+        tool_results: vec![StepResult {
+            call_id: write_id,
+            tool_name: "write_file",
+            output: "written",
+            output_bytes: 7,
+            status: ToolResultStatus::Success,
+            model_view_covers_full_file: false,
+        }],
+    });
+    if cut > 0 {
+        let mut active = continued_history(&continued, replied(""));
+        active.steps.clone_from(&turn.steps);
+        resumed
+            .record_compaction(
+                "<summary>worked on a.rs</summary>",
+                HistoryCut {
+                    turns: 1,
+                    tool_steps: cut,
+                    steering: 0,
+                },
+                Some(&active),
+                &provider,
+            )
+            .unwrap();
+        turn.steps.drain(..cut);
+    }
+    resumed.record_turn(&turn, &provider).unwrap();
+    drop(resumed);
+    fixture
+        .log()
+        .iter()
+        .rev()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find_map(|frame| frame["event"].get(kind).map(|event| event["files"].clone()))
+        .unwrap()
+}
+
+#[test]
+fn a_continued_turn_keeps_the_checkpoints_file_evidence_and_adds_its_own() {
+    for write_id in ["w1", "r1"] {
+        let expected: serde_json::Value = serde_json::from_str(&format!(
+            "[{},{},{}]",
+            evidence_json("gone.rs", "c0", "read_file", "read", [true, false]),
+            evidence_json("a.rs", "r1", "read_file", "read", [true, true]),
+            evidence_json("a.rs", write_id, "write_file", "write", [false, false]),
+        ))
+        .unwrap();
+        for cut in 0..=2 {
+            assert_eq!(
+                continued_files(replied("fixed"), "turn_completed", cut, write_id),
+                expected,
+                "cut={cut} write={write_id}"
+            );
+            assert_eq!(
+                continued_files(
+                    TurnEnd::Stopped {
+                        reason: ofx_contract::TurnStop::Cancelled,
+                        partial: "half",
+                    },
+                    "interrupted",
+                    cut,
+                    write_id
+                ),
+                expected,
+                "cut={cut} write={write_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_recorded_checkpoint_saves_the_turns_file_evidence_for_its_continuation() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let provider = metadata().preferences.provider;
+    let read = [ToolCall::new("r1", "read_file", r#"{"path":"a.rs"}"#)];
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn: HistoryTurn {
+            user: "fix the build",
+            steps: vec![HistoryStep {
+                assistant: "",
+                provider_replay: None,
+                tool_calls: &read,
+                tool_results: vec![StepResult {
+                    call_id: "r1",
+                    tool_name: "read_file",
+                    output: "text",
+                    output_bytes: 4,
+                    status: ToolResultStatus::Success,
+                    model_view_covers_full_file: true,
+                }],
+            }],
+            steering: Vec::new(),
+            end: replied(""),
+        },
+        cause: ModelRecoveryCause::ProviderUnavailable,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 10,
+    };
+    let mut session = fixture.resume().unwrap();
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    drop(session);
+    let read_whole = evidence_json("a.rs", "r1", "read_file", "read", [true, false]);
+    let saved = fs::read_to_string(fixture.path(RECOVERY_FILE)).unwrap();
+    assert!(
+        saved.contains(&format!("\"files\":[{read_whole}]")),
+        "{saved}"
+    );
+    let expected: serde_json::Value = serde_json::from_str(&format!(
+        "[{},{}]",
+        evidence_json("a.rs", "r1", "read_file", "read", [true, true]),
+        evidence_json("a.rs", "w1", "write_file", "write", [false, false]),
+    ))
+    .unwrap();
+    assert_eq!(
+        finish_continued(&fixture, replied("fixed"), "turn_completed", 0, "w1"),
+        expected
     );
 }

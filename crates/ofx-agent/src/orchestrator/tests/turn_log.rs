@@ -79,8 +79,13 @@ fn described_steps(turn: &HistoryTurn<'_>) -> Vec<String> {
                     } else {
                         format!(" raw={}", result.output_bytes)
                     };
+                    let whole = if result.model_view_covers_full_file {
+                        " whole"
+                    } else {
+                        ""
+                    };
                     format!(
-                        "{}={}:{:?}{raw}",
+                        "{}={}:{:?}{raw}{whole}",
                         result.call_id, result.output, result.status
                     )
                 })
@@ -460,5 +465,39 @@ async fn results_cut_for_the_model_are_logged_with_the_length_the_tool_returned(
         )),
         "{}",
         &steps[0][steps[0].len() - 200..]
+    );
+}
+
+#[tokio::test]
+async fn a_whole_file_view_is_logged_only_when_the_model_saw_all_of_it() {
+    let large = format!(r#"{{"whole":"{}"}}"#, "x".repeat(70_000));
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"whole":1}"#),
+            ("call-2", &large),
+            ("call-3", "{}"),
+        ]),
+        text_reply("done"),
+    ]);
+    let (mut agent, entries) = logging_agent(&provider);
+    let (report, _) = run(&mut agent, "read").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let entries = entries.lock().unwrap().clone();
+    let Logged::Turn { steps, .. } = &entries[0] else {
+        panic!("{entries:?}");
+    };
+    assert!(
+        steps[0].contains(r#""call-1=echo {\"whole\":1}:Success whole""#),
+        "{}",
+        &steps[0][..200]
+    );
+    assert!(
+        !steps[0].contains(":Success raw=70016 whole"),
+        "truncated output kept its view"
+    );
+    assert!(
+        steps[0].ends_with(r#""call-3=echo {}:Success"]"#),
+        "{}",
+        &steps[0][steps[0].len() - 80..]
     );
 }

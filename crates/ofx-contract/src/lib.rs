@@ -72,7 +72,9 @@ pub use tool_result_errors::{
     shell_request_invalid_field_count, tool_execution_failure_json, tool_permission_denial_reason,
     tool_permission_denied_json, tool_review_held_json, valued_execution_failure_json,
 };
-pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
+pub use tool_result_limits::{
+    DEFAULT_MAX_TOOL_RESULT_BYTES, bound_model_output, prepare_model_output,
+};
 pub use tool_set::ToolSet;
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,

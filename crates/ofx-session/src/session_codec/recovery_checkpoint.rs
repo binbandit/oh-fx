@@ -152,6 +152,18 @@ impl RecoveryCheckpoint {
     pub(crate) fn into_files(self) -> Vec<FileEvidence> {
         self.execution.files
     }
+
+    pub(crate) fn files(&self) -> &[FileEvidence] {
+        &self.execution.files
+    }
+
+    pub(crate) fn recovered_results(&self) -> usize {
+        self.execution
+            .tool_steps
+            .iter()
+            .map(|step| step.tool_results.len())
+            .sum()
+    }
 }
 
 impl SavedToolStep {
@@ -169,6 +181,7 @@ impl SavedToolStep {
                     output: &result.output,
                     output_bytes: result.output_bytes,
                     status: result.status,
+                    model_view_covers_full_file: false,
                 })
                 .collect(),
         }
