@@ -96,7 +96,7 @@ note = "Native HOME resolution and visible-skill discovery are implemented by Ho
 upstream = "src/core/app/app_session_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_session_runtime.rs", "crates/ofx-app/src/app_session_runtime/session_titles.rs", "crates/ofx-app/src/app_session_runtime/session_listing.rs"]
-note = "V1 session save/resume, the session picker, generated session titles, and /rename exist, and the picker keeps its listing in memory for upstream's five seconds, lists in the background, and preloads it at startup when the index exists; the early paint from the saved index is left out as docs/differences/sessions.md records, and session-v2 is absent."
+note = "V1 session save/resume, the session picker, generated session titles, /rename, and continuing or asking about a paused recovery on resume exist, and the picker keeps its listing in memory for upstream's five seconds, lists in the background, and preloads it at startup when the index exists; the early paint from the saved index is left out as docs/differences/sessions.md records, and session-v2 is absent."
 
 [[file]]
 upstream = "src/core/app/app_upgrade_runtime.zig"
