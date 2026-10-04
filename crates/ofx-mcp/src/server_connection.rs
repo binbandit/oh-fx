@@ -1,5 +1,7 @@
+use std::future::{Future, poll_fn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::Poll;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -12,10 +14,10 @@ use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
     ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse, connect_stdio,
 };
-use crate::transport::{McpTransport, ShutdownMode};
+use crate::transport::{McpTransport, ShutdownMode, Transport};
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ServerNotification {
+pub(crate) enum ServerNotification {
     ToolsListChanged,
     ResourcesListChanged,
     PromptsListChanged,
@@ -28,20 +30,18 @@ pub enum ServerNotification {
     },
 }
 
-pub struct McpClient {
-    pub(crate) name: String,
-    pub(crate) transport: Box<dyn McpTransport>,
+pub(crate) struct McpClient {
+    pub(crate) transport: Transport,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
     pub(crate) operation_timeout: Duration,
     pub(crate) catalog: Mutex<Arc<ToolCatalog>>,
     pub(crate) tools_stale: AtomicBool,
     notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
-    received: Mutex<Vec<ServerNotification>>,
 }
 
 impl McpClient {
-    pub async fn connect(
+    pub(crate) async fn connect(
         config: &McpServerConfig,
         options: &ConnectOptions,
     ) -> Result<Self, StartupFailure> {
@@ -60,7 +60,6 @@ impl McpClient {
 
     fn from_connected(config: &McpServerConfig, connected: Connected) -> Self {
         Self {
-            name: config.name.clone(),
             transport: connected.transport,
             info: connected.info,
             wire: connected.wire,
@@ -68,37 +67,42 @@ impl McpClient {
             catalog: Mutex::new(Arc::new(connected.catalog)),
             tools_stale: AtomicBool::new(false),
             notifications: Mutex::new(connected.notifications),
-            received: Mutex::new(Vec::new()),
         }
     }
 
-    pub fn server_name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn server_info(&self) -> &ServerInfo {
+    pub(crate) fn server_info(&self) -> &ServerInfo {
         &self.info
     }
 
-    pub fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         self.transport.is_running()
     }
 
-    pub fn tool_catalog(&self) -> Arc<ToolCatalog> {
+    pub(crate) fn tool_catalog(&self) -> Arc<ToolCatalog> {
         Arc::clone(&lock(&self.catalog))
     }
 
-    pub fn poll_notifications(&self) -> Vec<ServerNotification> {
-        self.receive_notifications();
-        std::mem::take(&mut *lock(&self.received))
+    pub(crate) fn next_notification(&self) -> impl Future<Output = Option<ServerNotification>> {
+        poll_fn(|context| {
+            let mut notifications = lock(&self.notifications);
+            loop {
+                let Poll::Ready(value) = notifications.poll_recv(context) else {
+                    return Poll::Pending;
+                };
+                let Some(value) = value else {
+                    return Poll::Ready(None);
+                };
+                if let Some(notification) = self.classify_notification(&value) {
+                    return Poll::Ready(Some(notification));
+                }
+            }
+        })
     }
 
-    pub(crate) fn receive_notifications(&self) {
+    pub(crate) fn receive_pending_notifications(&self) {
         let mut notifications = lock(&self.notifications);
         while let Ok(value) = notifications.try_recv() {
-            if let Some(notification) = self.classify_notification(&value) {
-                lock(&self.received).push(notification);
-            }
+            self.classify_notification(&value);
         }
     }
 
@@ -136,7 +140,7 @@ impl McpClient {
         }
     }
 
-    pub async fn shutdown(self, mode: ShutdownMode) {
+    pub(crate) async fn shutdown(&self, mode: ShutdownMode) {
         self.transport.shutdown(mode).await;
     }
 }
@@ -157,7 +161,7 @@ mod tests {
     use super::*;
     use crate::features::tools::{ToolCallOutcome, ToolContent};
     use crate::tool_operations::CallOptions;
-    use crate::transport::Progress;
+    use crate::transport::ProgressNotification;
 
     const SERVER_LOOP: &str = r#"
 reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
@@ -305,7 +309,7 @@ done
         assert_eq!(result.structured_content, Some(json!({"ok": true})));
         assert_eq!(
             *lock(&progress),
-            vec![Progress {
+            vec![ProgressNotification {
                 progress: 1.0,
                 total: Some(2.0),
                 message: Some("half".to_owned()),
@@ -583,15 +587,15 @@ printf '%s\n' "$3" > "$STATE/cidfile"
                 params: Some(json!({"level": "info"})),
             })
         );
-        assert!(client.poll_notifications().is_empty());
         client
             .call_tool("alpha", &json!({}), CallOptions::default())
             .await
             .unwrap();
-        client.current_tools().await.unwrap();
         assert_eq!(
-            client.poll_notifications(),
-            vec![ServerNotification::ToolsListChanged]
+            tokio::time::timeout(Duration::from_secs(5), client.next_notification())
+                .await
+                .unwrap(),
+            Some(ServerNotification::ToolsListChanged)
         );
         client.shutdown(ShutdownMode::Immediate).await;
     }

@@ -114,7 +114,7 @@ fn the_schema_and_description_match_upstream_byte_for_byte() {
     ] {
         assert!(spec.input_schema.contains(fragment), "{fragment}");
     }
-    let schema: Value = serde_json::from_str(spec.input_schema).unwrap();
+    let schema: Value = serde_json::from_str(&spec.input_schema).unwrap();
     assert_eq!(schema.to_string(), spec.input_schema);
 }
 

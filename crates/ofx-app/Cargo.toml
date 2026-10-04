@@ -15,6 +15,7 @@ ofx-contract.workspace = true
 ofx-exec.workspace = true
 ofx-gateway.workspace = true
 ofx-http.workspace = true
+ofx-mcp.workspace = true
 ofx-permissions.workspace = true
 ofx-session.workspace = true
 ofx-skills.workspace = true

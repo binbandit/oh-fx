@@ -1,11 +1,14 @@
 use std::env;
 use std::fmt;
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 use std::time::Duration;
 
 use ofx_http::ConnectionOptions;
+use ofx_text::{HeadRounding, encode_terminal_safe, mask_secrets, write_head_tail_bounded};
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::features::tools::{CatalogBuilder, Limits, ToolCatalog};
@@ -25,9 +28,12 @@ use crate::protocol_negotiation::{
     decide_legacy_initialize_transition, validate_startup_mode,
 };
 use crate::server_auth::resolve_headers;
-use crate::stdio_dispatcher::{ChildDiagnostics, StdioDispatcher, StdioLaunch, StopMode};
+use crate::stdio_dispatcher::{
+    ChildDiagnostics, StderrCapture, StdioDispatcher, StdioLaunch, StopMode,
+};
 use crate::streamable_http::validate_endpoint;
-use crate::transport::{McpTransport, ShutdownMode, TransportRequest};
+use crate::timing::timeout_at;
+use crate::transport::{McpTransport, ShutdownMode, Transport, TransportRequest};
 
 pub(crate) const DISCOVERY_RESPONSE_FRAME_CAP_BYTES: usize = 1024 * 1024;
 
@@ -48,7 +54,7 @@ impl Default for ConnectOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerInfo {
+pub(crate) struct ServerInfo {
     pub protocol_version: &'static str,
     pub name: Option<String>,
     pub version: Option<String>,
@@ -57,7 +63,7 @@ pub struct ServerInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct StartupFailure {
+pub(crate) struct StartupFailure {
     pub error: McpError,
     pub diagnostics: Option<ChildDiagnostics>,
 }
@@ -83,7 +89,7 @@ impl fmt::Display for StartupFailure {
 impl std::error::Error for StartupFailure {}
 
 pub(crate) struct Connected {
-    pub(crate) transport: Box<dyn McpTransport>,
+    pub(crate) transport: Transport,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
     pub(crate) catalog: ToolCatalog,
@@ -183,24 +189,19 @@ async fn connect_stdio_once(
     deadline: Instant,
 ) -> Result<Connected, StartupFailure> {
     let handshake = negotiate_stdio(launch, options, deadline).await?;
-    let dispatcher = handshake.dispatcher;
-    match finish_stdio_startup(
-        &dispatcher,
-        &handshake.response,
-        handshake.version,
+    let started = Started {
+        info: server_info(&handshake.response, handshake.version.as_str()),
+        transport: Transport::Stdio(handshake.dispatcher),
+        wire: handshake.version.wire(),
+        notifications: handshake.notifications,
+    };
+    finish_startup(
+        started,
+        STDIO_INITIALIZED_NOTIFICATION,
         deadline,
+        stdio_discovery_error,
     )
     .await
-    {
-        Ok((info, catalog)) => Ok(Connected {
-            transport: Box::new(dispatcher),
-            info,
-            wire: handshake.version.wire(),
-            catalog,
-            notifications: handshake.notifications,
-        }),
-        Err(error) => Err(fail_launch(dispatcher, error, StopMode::Graceful).await),
-    }
 }
 
 async fn negotiate_stdio(
@@ -319,20 +320,6 @@ async fn fail_launch(
     StartupFailure::new(error, Some(diagnostics))
 }
 
-async fn finish_stdio_startup(
-    dispatcher: &StdioDispatcher,
-    response: &Value,
-    version: LegacyStdioVersion,
-    deadline: Instant,
-) -> Result<(ServerInfo, ToolCatalog), McpError> {
-    let info = server_info(response, version.as_str())?;
-    dispatcher
-        .notify(STDIO_INITIALIZED_NOTIFICATION.to_owned(), deadline)
-        .await?;
-    let catalog = discover_tools(dispatcher, deadline, stdio_discovery_error).await?;
-    Ok((info, catalog))
-}
-
 pub(crate) async fn connect_http(
     config: &McpServerConfig,
     options: &ConnectOptions,
@@ -356,24 +343,20 @@ pub(crate) async fn connect_http(
     let (client, response) = timeout_at(deadline, initialize)
         .await
         .map_err(|_| McpError::McpRequestTimedOut)??;
-    match finish_http_startup(&client, &response, deadline).await {
-        Ok((info, catalog)) => {
-            if wants_notification_stream(info.capabilities) {
-                client.start_notification_listener();
-            }
-            Ok(Connected {
-                wire: client.version().wire(),
-                transport: Box::new(client),
-                info,
-                catalog,
-                notifications,
-            })
-        }
-        Err(error) => {
-            Box::new(client).shutdown(ShutdownMode::Graceful).await;
-            Err(error.into())
-        }
+    let started = Started {
+        info: server_info(&response, client.version().as_str()),
+        wire: client.version().wire(),
+        transport: Transport::Http(client),
+        notifications,
+    };
+    let connected =
+        finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error).await?;
+    if let Transport::Http(client) = &connected.transport
+        && wants_notification_stream(connected.info.capabilities)
+    {
+        client.start_notification_listener();
     }
+    Ok(connected)
 }
 
 fn http_endpoint(
@@ -397,19 +380,6 @@ fn http_endpoint(
     Ok((endpoint, notifications))
 }
 
-async fn finish_http_startup(
-    client: &LegacyHttpClient,
-    response: &Value,
-    deadline: Instant,
-) -> Result<(ServerInfo, ToolCatalog), McpError> {
-    let info = server_info(response, client.version().as_str())?;
-    client
-        .notify(HTTP_INITIALIZED_NOTIFICATION.to_owned(), deadline)
-        .await?;
-    let catalog = discover_tools(client, deadline, |error| error).await?;
-    Ok((info, catalog))
-}
-
 pub(crate) async fn connect_sse(
     config: &McpServerConfig,
     options: &ConnectOptions,
@@ -418,27 +388,22 @@ pub(crate) async fn connect_sse(
     let (endpoint, notifications) = http_endpoint(config, options)?;
     let client =
         LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline).await?;
-    match finish_sse_startup(&client, options, deadline).await {
-        Ok((info, catalog)) => Ok(Connected {
-            transport: Box::new(client),
-            info,
-            wire: None,
-            catalog,
-            notifications,
-        }),
-        Err(error) => {
-            Box::new(client).shutdown(ShutdownMode::Graceful).await;
-            Err(error.into())
-        }
-    }
+    let transport = Transport::Sse(client);
+    let started = Started {
+        info: initialize_sse(&transport, options, deadline).await,
+        transport,
+        wire: None,
+        notifications,
+    };
+    finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error).await
 }
 
-async fn finish_sse_startup(
-    client: &LegacySseClient,
+async fn initialize_sse(
+    transport: &Transport,
     options: &ConnectOptions,
     deadline: Instant,
-) -> Result<(ServerInfo, ToolCatalog), McpError> {
-    let id = client.next_request_id()?;
+) -> Result<ServerInfo, McpError> {
+    let id = transport.next_request_id()?;
     let body = build_legacy_initialize_request(
         id,
         SSE_PROTOCOL_VERSION,
@@ -446,7 +411,7 @@ async fn finish_sse_startup(
         ElicitationCapabilities::default(),
         &options.client_version,
     );
-    let response = client
+    let response = transport
         .request(TransportRequest::new(
             id,
             body,
@@ -456,12 +421,61 @@ async fn finish_sse_startup(
         .await?;
     let value: Value = serde_json::from_str(&response).map_err(|_| McpError::McpInvalidJson)?;
     validate_initialize_response(&value)?;
-    let info = server_info(&value, SSE_PROTOCOL_VERSION)?;
-    client
-        .notify(HTTP_INITIALIZED_NOTIFICATION.to_owned(), deadline)
-        .await?;
-    let catalog = discover_tools(client, deadline, |error| error).await?;
+    server_info(&value, SSE_PROTOCOL_VERSION)
+}
+
+struct Started {
+    transport: Transport,
+    info: Result<ServerInfo, McpError>,
+    wire: Option<ElicitationWire>,
+    notifications: mpsc::UnboundedReceiver<Value>,
+}
+
+async fn finish_startup(
+    started: Started,
+    initialized: &str,
+    deadline: Instant,
+    request_error: fn(McpError) -> McpError,
+) -> Result<Connected, StartupFailure> {
+    let Started {
+        transport,
+        info,
+        wire,
+        notifications,
+    } = started;
+    match discover(&transport, info, initialized, deadline, request_error).await {
+        Ok((info, catalog)) => Ok(Connected {
+            transport,
+            info,
+            wire,
+            catalog,
+            notifications,
+        }),
+        Err(error) => Err(abandon(transport, error).await),
+    }
+}
+
+async fn discover(
+    transport: &Transport,
+    info: Result<ServerInfo, McpError>,
+    initialized: &str,
+    deadline: Instant,
+    request_error: fn(McpError) -> McpError,
+) -> Result<(ServerInfo, ToolCatalog), McpError> {
+    let info = info?;
+    transport.notify(initialized.to_owned(), deadline).await?;
+    let catalog = discover_tools(transport, deadline, request_error).await?;
     Ok((info, catalog))
+}
+
+async fn abandon(transport: Transport, error: McpError) -> StartupFailure {
+    match transport {
+        Transport::Stdio(dispatcher) => fail_launch(dispatcher, error, StopMode::Graceful).await,
+        transport => {
+            transport.shutdown(ShutdownMode::Graceful).await;
+            error.into()
+        }
+    }
 }
 
 fn wants_notification_stream(capabilities: ServerCapabilities) -> bool {
@@ -490,6 +504,10 @@ pub(crate) fn server_info(
     })
 }
 
+fn same_error(error: McpError) -> McpError {
+    error
+}
+
 fn stdio_discovery_error(error: McpError) -> McpError {
     match error {
         McpError::Cancelled | McpError::McpRequestTimedOut => error,
@@ -498,7 +516,7 @@ fn stdio_discovery_error(error: McpError) -> McpError {
 }
 
 pub(crate) async fn discover_tools(
-    transport: &dyn McpTransport,
+    transport: &Transport,
     deadline: Instant,
     request_error: fn(McpError) -> McpError,
 ) -> Result<ToolCatalog, McpError> {
@@ -518,6 +536,182 @@ pub(crate) async fn discover_tools(
         if builder.append_response(&response, Limits::default())? {
             return builder.finish();
         }
+    }
+}
+
+const STDERR_DISPLAY_BYTES: usize = 400;
+const WORD_SEPARATORS: [char; 4] = [' ', '\t', '\r', '\n'];
+
+pub(crate) fn startup_failure_message(failure: &StartupFailure, startup_timeout_ms: u32) -> String {
+    let diagnostics = failure.diagnostics.as_ref();
+    if let Some(diagnostics) = diagnostics
+        && let Some(rejected) = &diagnostics.rejected_output
+    {
+        let mut message = String::from(
+            "MCP server wrote output that is not an MCP message before completing startup",
+        );
+        let mut line = without_ansi(&rejected.bytes);
+        if rejected.truncated {
+            line = without_trailing_word(&line).to_owned();
+        }
+        let text = display_plain(&line);
+        if !text.is_empty() {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        let stderr = display_stderr(&diagnostics.stderr);
+        if !stderr.is_empty() {
+            message.push_str("; stderr: ");
+            message.push_str(&stderr);
+        }
+        return message;
+    }
+    match failure.error {
+        McpError::McpServerExitedDuringStartup | McpError::McpConnectionClosed => {
+            let mut message = format!(
+                "MCP server {} before completing startup",
+                term_phrase(diagnostics.and_then(|diagnostics| diagnostics.status))
+            );
+            push_stderr_suffix(&mut message, diagnostics);
+            message
+        }
+        McpError::McpRequestTimedOut => {
+            let mut message = format!(
+                "MCP server did not complete startup within {startup_timeout_ms} ms (startup_timeout_ms)"
+            );
+            match diagnostics {
+                Some(earlier) if earlier.status.is_some() => {
+                    message.push_str("; an earlier launch ");
+                    message.push_str(&term_phrase(earlier.status));
+                    push_stderr_suffix(&mut message, Some(earlier));
+                }
+                Some(live) => {
+                    let stderr = display_stderr(&live.stderr);
+                    if !stderr.is_empty() {
+                        message.push_str("; last stderr: ");
+                        message.push_str(&stderr);
+                    }
+                }
+                None => {}
+            }
+            message
+        }
+        ref error => error.to_string(),
+    }
+}
+
+fn push_stderr_suffix(message: &mut String, diagnostics: Option<&ChildDiagnostics>) {
+    let Some(diagnostics) = diagnostics else {
+        return;
+    };
+    let stderr = display_stderr(&diagnostics.stderr);
+    if !stderr.is_empty() {
+        message.push_str(": ");
+        message.push_str(&stderr);
+    }
+}
+
+fn term_phrase(status: Option<ExitStatus>) -> String {
+    let Some(status) = status else {
+        return "closed its connection".to_owned();
+    };
+    if let Some(code) = status.code() {
+        format!("exited with code {code}")
+    } else if let Some(signal) = status.signal() {
+        format!("was killed by signal {signal}")
+    } else if let Some(signal) = status.stopped_signal() {
+        format!("was stopped by signal {signal}")
+    } else {
+        format!("ended with status {}", status.into_raw())
+    }
+}
+
+fn display_stderr(capture: &StderrCapture) -> String {
+    if !capture.omitted() {
+        let mut joined = capture.head().to_vec();
+        joined.extend_from_slice(capture.tail());
+        return display_plain(&without_ansi(&joined));
+    }
+    let head = without_ansi(capture.head());
+    let tail = without_ansi(capture.tail());
+    let joined = format!(
+        "{} ... {}",
+        without_trailing_word(&head),
+        without_leading_word(&tail)
+    );
+    display_plain(&joined)
+}
+
+fn display_plain(plain: &str) -> String {
+    let masked = mask_secrets(plain);
+    let mut flattened = String::with_capacity(masked.len());
+    for word in masked.split_ascii_whitespace() {
+        if !flattened.is_empty() {
+            flattened.push(' ');
+        }
+        flattened.push_str(word);
+    }
+    let encoded = encode_terminal_safe(flattened.as_bytes(), usize::MAX).text;
+    String::from_utf8_lossy(&write_head_tail_bounded(
+        encoded.as_bytes(),
+        STDERR_DISPLAY_BYTES,
+        " ... ",
+        HeadRounding::Down,
+    ))
+    .into_owned()
+}
+
+fn without_trailing_word(text: &str) -> &str {
+    text.rfind(WORD_SEPARATORS)
+        .and_then(|end| text.get(..=end))
+        .unwrap_or_default()
+}
+
+fn without_leading_word(text: &str) -> &str {
+    text.find(WORD_SEPARATORS)
+        .and_then(|start| text.get(start..))
+        .unwrap_or_default()
+}
+
+fn without_ansi(raw: &[u8]) -> String {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some((text, sequence)) = rest
+        .iter()
+        .position(|byte| *byte == 0x1b)
+        .and_then(|escape| rest.split_at_checked(escape))
+    {
+        out.extend_from_slice(text);
+        rest = sequence
+            .get(ansi_sequence_len(sequence)..)
+            .unwrap_or_default();
+    }
+    out.extend_from_slice(rest);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn ansi_sequence_len(sequence: &[u8]) -> usize {
+    match sequence.get(1) {
+        None => sequence.len(),
+        Some(b'[') => sequence
+            .iter()
+            .skip(2)
+            .position(|byte| (b'@'..=b'~').contains(byte))
+            .map_or(sequence.len(), |offset| offset + 3),
+        Some(b']') => {
+            let mut position = 2;
+            while let Some(byte) = sequence.get(position) {
+                if *byte == 0x07 {
+                    return position + 1;
+                }
+                if *byte == 0x1b && sequence.get(position + 1) == Some(&b'\\') {
+                    return position + 2;
+                }
+                position += 1;
+            }
+            sequence.len()
+        }
+        Some(_) => 2,
     }
 }
 

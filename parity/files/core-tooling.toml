@@ -96,9 +96,9 @@ note = "Tool/PreparedCall traits replace the registry coupling; dynamic schema r
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_dispatch.zig"
-status = "todo"
-modules = []
-note = "MCP selected-tool execution and read-only classification are unimplemented."
+status = "partial"
+modules = ["crates/ofx-mcp/src/tool_mcp_registry.rs"]
+note = "Advertised MCP tool calls run through the permission gate; selected-tool execution and read-only classification are missing."
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_feature_dispatch.zig"
@@ -108,15 +108,15 @@ note = "Server-qualified MCP resource/prompt tools and typed input-required resu
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_registry.zig"
-status = "todo"
-modules = []
-note = "Selected/unselected dynamic MCP resolution are unimplemented."
+status = "partial"
+modules = ["crates/ofx-mcp/src/tool_mcp_registry.rs"]
+note = "Every tool of a connected server is advertised with its selected schema; selected and unselected resolution through capability_search and mcp_select_tool is missing."
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_runtime.zig"
-status = "todo"
-modules = []
-note = "MCP advertised dynamic capability execution and availability checks are unimplemented."
+status = "partial"
+modules = ["crates/ofx-mcp/src/mcp_runtime.rs"]
+note = "The runtime publishes its tools as a dynamic tool source the agent reads before each step; availability checks for selected capabilities are missing."
 
 [[file]]
 upstream = "src/core/tooling/tool_presentation.zig"

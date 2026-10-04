@@ -15,8 +15,7 @@ pub fn apply_project_mcp_action(
     workspace: &mut Map<String, Value>,
     action: &ProjectMcpAction,
 ) -> Result<ProjectMcpSettingsChange, InvalidProjectMcpChoices> {
-    let current =
-        ProjectMcpChoices::parse(Some(&Value::Object(workspace.clone())), &mut Vec::new())?;
+    let current = ProjectMcpChoices::parse(Some(workspace), &mut Vec::new())?;
     let transition = current.apply(action);
     let mut changed =
         put_string_array(workspace, ENABLED_SERVERS_KEY, &transition.choices.approved);

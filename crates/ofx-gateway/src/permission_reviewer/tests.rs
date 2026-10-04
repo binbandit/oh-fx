@@ -81,7 +81,7 @@ fn review_tools() -> [ToolSpec; 1] {
     [ToolSpec {
         name: "permission_decision".to_owned(),
         description: "Return bounded safety advice for one exact fx action.".to_owned(),
-        input_schema: SCHEMA,
+        input_schema: SCHEMA.into(),
     }]
 }
 
