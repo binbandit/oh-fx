@@ -114,9 +114,9 @@ note = "Session rows with the right metadata cluster, header scope tabs, loading
 
 [[file]]
 upstream = "src/ui/footer/row_text.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tui/src/row_text.rs"]
-note = "Styled rows, clipping and spaces exist; upstream single-line middle/prefix-biased ellipsis and absolute-column footer helpers are absent."
+note = "A Row holds styled cells instead of escape-coded bytes. Row::clipped is appendClipped, single_line_ellipsized and single_line_middle_ellipsized are the single-line ellipsis appenders, whose EllipsisPlacement also cuts the @ picker's paths with its prefix-biased placement, and Row::pad_to_column is appendSpacesToColumn. A picker row reaches its start column with spaces in picker_row_at instead of appendAbsoluteColumn's cursor move, and the divider rows are picker_divider and the approval divider. Upstream's ellipsis and clipping tests are ported; the image badge test belongs with image attachments, which are absent. The ellipsized tail never starts with a zero-width mark, as recorded in docs/differences/text.md."
 
 [[file]]
 upstream = "src/ui/footer/runtime.zig"

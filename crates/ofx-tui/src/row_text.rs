@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use ofx_text::{
     DisplayUnit, display_unit_at, encode_terminal_safe, is_terminal_control, prefix_by_width,
-    visible_width,
+    suffix_by_width, visible_width,
 };
 
 use crate::render_engine::display_units::{Unit, display_units};
@@ -233,6 +233,10 @@ impl Row {
         }
     }
 
+    pub(crate) fn pad_to_column(&mut self, column: usize) {
+        self.push_spaces(column.saturating_sub(self.width()));
+    }
+
     pub(crate) fn indent(&mut self, spaces: usize) {
         if spaces == 0 {
             return;
@@ -396,24 +400,68 @@ impl Row {
     }
 }
 
-pub(crate) fn single_line_ellipsized(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EllipsisPlacement {
+    Trailing,
+    Middle,
+    PrefixBiased,
+}
+
+impl EllipsisPlacement {
+    pub(crate) const fn split(self, content_width: usize) -> (usize, usize) {
+        match self {
+            Self::Trailing => (content_width, 0),
+            Self::Middle => (content_width.div_ceil(2), content_width / 2),
+            Self::PrefixBiased => (content_width - content_width / 4, content_width / 4),
+        }
     }
-    let line: String = text
-        .chars()
-        .map(|character| {
-            if matches!(character, '\n' | '\r') {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect();
+}
+
+pub(crate) fn single_line_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
+    projected_single_line(text, width, EllipsisPlacement::Trailing)
+}
+
+pub(crate) fn single_line_middle_ellipsized(text: &str, width: usize) -> Cow<'_, str> {
+    projected_single_line(text, width, EllipsisPlacement::Middle)
+}
+
+fn projected_single_line(text: &str, width: usize, placement: EllipsisPlacement) -> Cow<'_, str> {
+    if width == 0 {
+        return Cow::Borrowed("");
+    }
+    let line = if text.contains(['\n', '\r']) {
+        Cow::Owned(text.replace(['\n', '\r'], " "))
+    } else {
+        Cow::Borrowed(text)
+    };
     if visible_width(&line) <= width {
         return line;
     }
-    format!("{}\u{2026}", prefix_by_width(&line, width - 1))
+    if width == 1 {
+        return Cow::Borrowed(SUMMARY_ELLIPSIS);
+    }
+    let (prefix_width, suffix_width) = placement.split(width - 1);
+    Cow::Owned(format!(
+        "{}{SUMMARY_ELLIPSIS}{}",
+        prefix_by_width(&line, prefix_width),
+        display_safe_suffix(&line, suffix_width)
+    ))
+}
+
+pub(crate) fn display_safe_suffix(source: &str, width: usize) -> &str {
+    let suffix = suffix_by_width(source, width);
+    if suffix.is_empty() || suffix.len() == source.len() {
+        return suffix;
+    }
+    let mut start = 0;
+    while start < suffix.len() {
+        let unit = display_unit_at(suffix, start);
+        if unit.cell_width != 0 {
+            break;
+        }
+        start += unit.byte_len;
+    }
+    suffix.get(start..).unwrap_or_default()
 }
 
 pub(crate) fn escaped_in_rows(character: char) -> bool {
@@ -581,6 +629,62 @@ mod tests {
         assert_eq!(escaped_prefix_by_width("ab\u{202e}c", 10), "ab\u{202e}");
         assert_eq!(escaped_prefix_by_width("ab\u{202e}c", 0), "");
         assert_eq!(escaped_width("plain é"), visible_width("plain é"));
+    }
+
+    #[test]
+    fn footer_tiny_widths_clip_prefixes_and_suppress_content_units() {
+        let input = Row::plain("界\u{301}\n[Image #5]");
+        assert_eq!(input.clipped(0).text(), "");
+        assert_eq!(input.clipped(2).text(), "界\u{301}");
+    }
+
+    #[test]
+    fn footer_clipping_never_splits_unicode_display_units() {
+        let emoji = "\u{1F469}\u{200D}\u{1F4BB}";
+        assert_eq!(Row::plain(emoji).clipped(1).text(), "");
+        assert_eq!(Row::plain(emoji).clipped(2).text(), emoji);
+        let text_presentation = "\u{2600}\u{FE0E}";
+        assert_eq!(
+            Row::plain(text_presentation).clipped(1).text(),
+            text_presentation
+        );
+    }
+
+    #[test]
+    fn padding_to_a_column_stops_at_the_rows_current_width() {
+        let mut row = Row::plain("a界");
+        row.pad_to_column(6);
+        assert_eq!(row.text(), "a界   ");
+        row.pad_to_column(4);
+        assert_eq!(row.width(), 6);
+    }
+
+    #[test]
+    fn single_line_ellipsis_projections_preserve_semantic_tails() {
+        assert_eq!(single_line_ellipsized("abcdef", 4), "abc…");
+        assert_eq!(single_line_middle_ellipsized("abcdef", 5), "ab…ef");
+        assert_eq!(
+            projected_single_line("abcdefghijkl", 7, EllipsisPlacement::PrefixBiased),
+            "abcde…l"
+        );
+        assert_eq!(single_line_middle_ellipsized("a\nb", 3), "a b");
+        assert_eq!(single_line_middle_ellipsized("界a", 1), "…");
+        let unicode = single_line_middle_ellipsized("界abcdef", 5);
+        assert_eq!(unicode, "界…ef");
+        assert_eq!(visible_width(&unicode), 5);
+        assert!(single_line_middle_ellipsized("abcdef", 0).is_empty());
+    }
+
+    #[test]
+    fn a_shortened_tail_never_starts_with_a_zero_width_mark() {
+        assert_eq!(
+            single_line_middle_ellipsized("abcdefgh\u{301}ij", 6),
+            "abc…ij"
+        );
+        assert_eq!(
+            projected_single_line("zzabcd\u{301}e", 6, EllipsisPlacement::PrefixBiased),
+            "zzab…e"
+        );
     }
 
     #[test]
