@@ -47,6 +47,7 @@ pub(crate) enum CommandEffect {
     ToggleFast,
     Compact,
     OpenSessions,
+    OpenSettings,
     Rename(String),
 }
 
@@ -128,6 +129,7 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         SlashKind::ResumeSession => CommandEffect::OpenSessions,
         SlashKind::RenameSession => CommandEffect::Rename(command.payload.to_owned()),
         SlashKind::Fast => CommandEffect::ToggleFast,
+        SlashKind::Settings if command.payload.trim().is_empty() => CommandEffect::OpenSettings,
         SlashKind::Compact => compaction_effect(state, work),
         SlashKind::Skills => handle_skills(state, command.payload)
             .map_or(CommandEffect::None, CommandEffect::Install),
@@ -266,7 +268,7 @@ fn pick_model(
     Outcome::Changed { effort }
 }
 
-fn capabilities_of(models: &[ModelOption], model: &str) -> ModelCapabilities {
+pub(crate) fn capabilities_of(models: &[ModelOption], model: &str) -> ModelCapabilities {
     models
         .iter()
         .find(|option| option.id == model)

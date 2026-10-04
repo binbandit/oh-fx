@@ -1,7 +1,7 @@
 use ofx_contract::{StatuslineItem, StatuslineToggles};
 use ofx_text::{prefix_by_width, visible_width};
 
-use crate::row_text::Row;
+use crate::row_text::{Row, single_line_ellipsized};
 use crate::theme::Theme;
 
 const TITLE: &str = "Status line";
@@ -83,7 +83,7 @@ fn choice_row(
         theme.dim
     };
     let room = value_column.saturating_sub(indent + 2);
-    row.push(&ellipsized(label, room), label_paint);
+    row.push(&single_line_ellipsized(label, room), label_paint);
     row.push_spaces(value_column.saturating_sub(row.width()));
     let current = if toggles.enabled(item) { "on" } else { "off" };
     for (option_index, option) in OPTIONS.into_iter().enumerate() {
@@ -100,7 +100,7 @@ fn choice_row(
             theme.dim
         };
         let room = width.saturating_sub(row.width());
-        row.push(&ellipsized(option, room), paint);
+        row.push(&single_line_ellipsized(option, room), paint);
         if row.width() >= width {
             break;
         }
@@ -116,16 +116,6 @@ fn value_column(width: usize) -> usize {
         .max()
         .unwrap_or(0);
     (indent + widest + COLUMN_GAP).min(width)
-}
-
-fn ellipsized(text: &str, width: usize) -> String {
-    if visible_width(text) <= width {
-        return text.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    format!("{}…", prefix_by_width(text, width - 1))
 }
 
 #[cfg(test)]
