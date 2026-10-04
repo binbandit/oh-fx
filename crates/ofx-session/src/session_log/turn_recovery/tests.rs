@@ -959,7 +959,7 @@ fn evidence_json(path: &str, call_id: &str, tool: &str, action: &str, flags: [bo
     )
 }
 
-fn continued_files(end: TurnEnd<'_>, kind: &str, compact: bool) -> serde_json::Value {
+fn continued_files(end: TurnEnd<'_>, kind: &str, cut: usize, write_id: &str) -> serde_json::Value {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());
     let saved = [
@@ -982,14 +982,15 @@ fn continued_files(end: TurnEnd<'_>, kind: &str, compact: bool) -> serde_json::V
             &saved,
         ),
     );
-    finish_continued(&fixture, end, kind, compact)
+    finish_continued(&fixture, end, kind, cut, write_id)
 }
 
 fn finish_continued(
     fixture: &Fixture,
     end: TurnEnd<'_>,
     kind: &str,
-    compact: bool,
+    cut: usize,
+    write_id: &str,
 ) -> serde_json::Value {
     let mut resumed = fixture.resume().unwrap();
     let provider = metadata().preferences.provider;
@@ -998,34 +999,17 @@ fn finish_continued(
         .unwrap()
         .into_turn(&provider, "openai/gpt-5", false);
     let write = [ToolCall::new(
-        "w1",
+        write_id,
         "write_file",
         r#"{"path":"a.rs","content":"x"}"#,
     )];
-    if compact {
-        resumed
-            .record_compaction(
-                "<summary>read a.rs</summary>",
-                HistoryCut {
-                    turns: 1,
-                    tool_steps: 1,
-                    steering: 0,
-                },
-                Some(&continued_history(&continued, replied(""))),
-                &provider,
-            )
-            .unwrap();
-    }
     let mut turn = continued_history(&continued, end);
-    if compact {
-        turn.steps.clear();
-    }
     turn.steps.push(HistoryStep {
         assistant: "",
         provider_replay: None,
         tool_calls: &write,
         tool_results: vec![StepResult {
-            call_id: "w1",
+            call_id: write_id,
             tool_name: "write_file",
             output: "written",
             output_bytes: 7,
@@ -1033,6 +1017,23 @@ fn finish_continued(
             model_view_covers_full_file: false,
         }],
     });
+    if cut > 0 {
+        let mut active = continued_history(&continued, replied(""));
+        active.steps.clone_from(&turn.steps);
+        resumed
+            .record_compaction(
+                "<summary>worked on a.rs</summary>",
+                HistoryCut {
+                    turns: 1,
+                    tool_steps: cut,
+                    steering: 0,
+                },
+                Some(&active),
+                &provider,
+            )
+            .unwrap();
+        turn.steps.drain(..cut);
+    }
     resumed.record_turn(&turn, &provider).unwrap();
     drop(resumed);
     fixture
@@ -1046,31 +1047,34 @@ fn finish_continued(
 
 #[test]
 fn a_continued_turn_keeps_the_checkpoints_file_evidence_and_adds_its_own() {
-    let expected: serde_json::Value = serde_json::from_str(&format!(
-        "[{},{},{}]",
-        evidence_json("gone.rs", "c0", "read_file", "read", [true, false]),
-        evidence_json("a.rs", "r1", "read_file", "read", [true, true]),
-        evidence_json("a.rs", "w1", "write_file", "write", [false, false]),
-    ))
-    .unwrap();
-    for compact in [false, true] {
-        assert_eq!(
-            continued_files(replied("fixed"), "turn_completed", compact),
-            expected,
-            "compact={compact}"
-        );
-        assert_eq!(
-            continued_files(
-                TurnEnd::Stopped {
-                    reason: ofx_contract::TurnStop::Cancelled,
-                    partial: "half",
-                },
-                "interrupted",
-                compact
-            ),
-            expected,
-            "compact={compact}"
-        );
+    for write_id in ["w1", "r1"] {
+        let expected: serde_json::Value = serde_json::from_str(&format!(
+            "[{},{},{}]",
+            evidence_json("gone.rs", "c0", "read_file", "read", [true, false]),
+            evidence_json("a.rs", "r1", "read_file", "read", [true, true]),
+            evidence_json("a.rs", write_id, "write_file", "write", [false, false]),
+        ))
+        .unwrap();
+        for cut in 0..=2 {
+            assert_eq!(
+                continued_files(replied("fixed"), "turn_completed", cut, write_id),
+                expected,
+                "cut={cut} write={write_id}"
+            );
+            assert_eq!(
+                continued_files(
+                    TurnEnd::Stopped {
+                        reason: ofx_contract::TurnStop::Cancelled,
+                        partial: "half",
+                    },
+                    "interrupted",
+                    cut,
+                    write_id
+                ),
+                expected,
+                "cut={cut} write={write_id}"
+            );
+        }
     }
 }
 
@@ -1126,7 +1130,7 @@ fn a_recorded_checkpoint_saves_the_turns_file_evidence_for_its_continuation() {
     ))
     .unwrap();
     assert_eq!(
-        finish_continued(&fixture, replied("fixed"), "turn_completed", false),
+        finish_continued(&fixture, replied("fixed"), "turn_completed", 0, "w1"),
         expected
     );
 }

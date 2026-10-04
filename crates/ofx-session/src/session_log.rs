@@ -296,7 +296,7 @@ impl WritableSession {
                 self.recovery = Recovery::Continuing;
                 self.earlier = EarlierEvidence::recovered(
                     checkpoint.files().to_vec(),
-                    checkpoint.recovered_call_ids(),
+                    checkpoint.recovered_results(),
                 );
                 Some(PendingRecovery::new(checkpoint, &self.owned.dir))
             }

@@ -10,49 +10,47 @@ const REDACTED_DIGEST_BYTES: usize = 12;
 #[derive(Debug, Default)]
 pub(crate) struct EarlierEvidence {
     files: Vec<FileEvidence>,
-    recovered_calls: Vec<String>,
+    recovered_results: usize,
 }
 
 impl EarlierEvidence {
-    pub(crate) fn recovered(files: Vec<FileEvidence>, recovered_calls: Vec<String>) -> Self {
+    pub(crate) fn recovered(files: Vec<FileEvidence>, recovered_results: usize) -> Self {
         Self {
             files,
-            recovered_calls,
+            recovered_results,
         }
     }
 
     pub(crate) fn turn_files(&self, steps: &[HistoryStep<'_>]) -> Vec<FileEvidence> {
         let mut files = self.files.clone();
-        files.extend(self.steps_files(steps));
+        files.extend(steps_file_evidence(steps, self.recovered_results));
         mark_stale(&mut files);
         files
     }
 
     pub(crate) fn keep_compacted(&mut self, steps: &[HistoryStep<'_>]) {
-        let compacted = self.steps_files(steps);
+        let compacted = steps_file_evidence(steps, self.recovered_results);
         self.files.extend(compacted);
-    }
-
-    fn steps_files(&self, steps: &[HistoryStep<'_>]) -> Vec<FileEvidence> {
-        steps_file_evidence(steps)
-            .filter(|(call_id, _)| !self.recovered_calls.iter().any(|id| id == call_id))
-            .map(|(_, file)| file)
-            .collect()
+        let results = steps.iter().map(|step| step.tool_results.len()).sum();
+        self.recovered_results = self.recovered_results.saturating_sub(results);
     }
 }
 
 fn steps_file_evidence<'a>(
     steps: &'a [HistoryStep<'a>],
-) -> impl Iterator<Item = (&'a str, FileEvidence)> + 'a {
-    steps.iter().flat_map(|step| {
-        step.tool_results.iter().filter_map(|result| {
+    recovered_results: usize,
+) -> impl Iterator<Item = FileEvidence> + 'a {
+    steps
+        .iter()
+        .flat_map(|step| step.tool_results.iter().map(move |result| (step, result)))
+        .skip(recovered_results)
+        .filter_map(|(step, result)| {
             let call = step
                 .tool_calls
                 .iter()
                 .find(|call| call.id.as_str() == result.call_id)?;
-            Some((result.call_id, file_evidence(call, result)?))
+            file_evidence(call, result)
         })
-    })
 }
 
 fn file_evidence(call: &ToolCall, result: &StepResult<'_>) -> Option<FileEvidence> {

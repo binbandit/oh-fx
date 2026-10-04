@@ -157,13 +157,12 @@ impl RecoveryCheckpoint {
         &self.execution.files
     }
 
-    pub(crate) fn recovered_call_ids(&self) -> Vec<String> {
+    pub(crate) fn recovered_results(&self) -> usize {
         self.execution
             .tool_steps
             .iter()
-            .flat_map(|step| &step.tool_results)
-            .map(|result| result.tool_call_id.clone())
-            .collect()
+            .map(|step| step.tool_results.len())
+            .sum()
     }
 }
 
