@@ -112,13 +112,13 @@ fn codex_settings() -> Value {
 
 fn tail(workspace: &str) -> String {
     format!(
-        "[status] permission_mode=auto\n[status] workspace={workspace}\n[status] history_turns=0\n[status] session_permission_grants=0\n[status] agent_step_limit=0\n"
+        "[status] permission_mode=auto\n[status] workspace={workspace}\n[status] history_turns=0\n[status] session_permission_grants=0\n[status] agent_step_limit=0\n[status] ultrafast_requested=false\n"
     )
 }
 
 fn json_tail(workspace: &str) -> String {
     format!(
-        r#""permission_mode":"auto","workspace":"{workspace}","history_turns":0,"session_permission_grants":0,"agent_step_limit":0"#
+        r#""permission_mode":"auto","workspace":"{workspace}","history_turns":0,"session_permission_grants":0,"agent_step_limit":0,"ultrafast_requested":false"#
     )
 }
 

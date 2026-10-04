@@ -58,7 +58,7 @@ fn the_text_snapshot_follows_upstreams_line_order_and_encodes_untrusted_text() {
     .render(OutputFormat::Text);
     assert_eq!(
         text,
-        "[status] model=model-a\n[status] model_origin=default\n[status] model_source=local\n[status] mcp_config_warning=suspicious_server_key key=MCP\\x07 additional_matches=2\n[status] auth=missing\n[status] connected_providers=none\n[status] auth_refreshable=false\n[status] auth_help=sign in\n[status] permission_mode=full access\n[status] workspace=/work\n[status] history_turns=0\n[status] session_permission_grants=0\n[status] agent_step_limit=9\n[status] mcp_connection_check=not_checked\n[status] mcp_servers=1 mcp_configuration_issues=1\n[status] mcp_server=tool source=workspace scope=workspace admission=approved transport=http connection=not_checked authentication=not_checked\n[status] mcp_configuration_issue=skipped\\x1b\n"
+        "[status] model=model-a\n[status] model_origin=default\n[status] model_source=local\n[status] mcp_config_warning=suspicious_server_key key=MCP\\x07 additional_matches=2\n[status] auth=missing\n[status] connected_providers=none\n[status] auth_refreshable=false\n[status] auth_help=sign in\n[status] permission_mode=full access\n[status] workspace=/work\n[status] history_turns=0\n[status] session_permission_grants=0\n[status] agent_step_limit=9\n[status] ultrafast_requested=false\n[status] mcp_connection_check=not_checked\n[status] mcp_servers=1 mcp_configuration_issues=1\n[status] mcp_server=tool source=workspace scope=workspace admission=approved transport=http connection=not_checked authentication=not_checked\n[status] mcp_configuration_issue=skipped\\x1b\n"
     );
 }
 
@@ -79,7 +79,7 @@ fn the_json_snapshot_keeps_raw_values_and_wire_labels() {
     .render(OutputFormat::Json);
     assert_eq!(
         json,
-        "{\"kind\":\"status\",\"model\":\"model-a\",\"model_origin\":\"default\",\"model_source\":\"local\",\"mcp_config_error\":\"StreamTooLong\",\"auth\":\"Codex subscription\",\"connected_providers\":[\"codex\"],\"auth_refreshable\":true,\"auth_expired\":true,\"permission_mode\":\"yolo\",\"workspace\":\"/work\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":9,\"mcp\":{\"connection_check\":\"not_checked\",\"servers\":[{\"name\":\"tool\",\"source\":\"workspace\",\"scope\":\"workspace\",\"admission\":\"approved\",\"required\":true,\"transport\":\"http\",\"connection\":\"not_checked\",\"authentication\":\"not_checked\"}],\"configuration_issues\":[\"skipped\\u001b\"],\"inspection_error\":null}}\n"
+        "{\"kind\":\"status\",\"model\":\"model-a\",\"model_origin\":\"default\",\"model_source\":\"local\",\"mcp_config_error\":\"StreamTooLong\",\"auth\":\"Codex subscription\",\"connected_providers\":[\"codex\"],\"auth_refreshable\":true,\"auth_expired\":true,\"permission_mode\":\"yolo\",\"workspace\":\"/work\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":9,\"ultrafast_requested\":false,\"mcp\":{\"connection_check\":\"not_checked\",\"servers\":[{\"name\":\"tool\",\"source\":\"workspace\",\"scope\":\"workspace\",\"admission\":\"approved\",\"required\":true,\"transport\":\"http\",\"connection\":\"not_checked\",\"authentication\":\"not_checked\"}],\"configuration_issues\":[\"skipped\\u001b\"],\"inspection_error\":null}}\n"
     );
 }
 
