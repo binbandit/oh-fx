@@ -210,6 +210,7 @@ impl Shell<'_> {
     pub(super) fn session_resumed(&mut self, history: Vec<HistoryEntry>) {
         self.picker = None;
         self.kept_recovery = None;
+        self.prompts_before_resume = self.submitted_prompts;
         self.statusline.conversation_cleared();
         self.composer.clear();
         self.restart_transcript(FreshScreen::Erase, replayed_entries(history));
