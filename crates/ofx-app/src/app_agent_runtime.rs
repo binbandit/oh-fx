@@ -4,8 +4,8 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{
-    Agent, Compaction, CompactionError, QuestionRequests, QueuedPrompt, TurnFailure, TurnReport,
-    WorkerRuntime,
+    Agent, Compaction, CompactionError, EventSink, QuestionRequests, QueuedPrompt, TurnFailure,
+    TurnReport, WorkerRuntime,
 };
 use ofx_config::save_model_preference;
 use ofx_contract::{
@@ -499,7 +499,7 @@ impl Controller {
             if self.installation.is_none()
                 && let Some(prompt) = self.state.worker.take_next()
             {
-                if prompt.recovered.is_none() {
+                if prompt.recovered().is_none() {
                     let settled = self
                         .persistence
                         .as_mut()
@@ -870,18 +870,7 @@ impl Controller {
         let mut open = true;
         let installation = &mut self.installation;
         let report = {
-            let agent = &mut self.agent;
-            let recovered = prompt.recovered().cloned();
-            let turn = async {
-                match recovered {
-                    Some(recovered) => agent.continue_turn(recovered, &mut sink, &cancel).await,
-                    None => {
-                        agent
-                            .run_turn_with_skills(&prompt.text, &prompt.skills, &mut sink, &cancel)
-                            .await
-                    }
-                }
-            };
+            let turn = run_prompt(&mut self.agent, prompt, &mut sink, &cancel);
             tokio::pin!(turn);
             loop {
                 tokio::select! {
@@ -1174,6 +1163,22 @@ fn refuse_session_command(state: &ControllerState, command: UiCommand) {
         }),
         UiCommand::OpenSessions { .. } => refuse_resume_during_turn(state),
         _ => {}
+    }
+}
+
+async fn run_prompt(
+    agent: &mut Agent,
+    prompt: &QueuedPrompt,
+    events: EventSink<'_>,
+    cancel: &CancellationToken,
+) -> TurnReport {
+    match prompt.recovered().cloned() {
+        Some(recovered) => agent.continue_turn(recovered, events, cancel).await,
+        None => {
+            agent
+                .run_turn_with_skills(&prompt.text, &prompt.skills, events, cancel)
+                .await
+        }
     }
 }
 
