@@ -44,7 +44,7 @@ note = "Native model and permission preferences persist; host-owned configuratio
 upstream = "src/core/app/app_input_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_input_runtime.rs", "crates/ofx-tui/src/shell/help_menu_runtime.rs"]
-note = "Terminal input routing, the help menu's keys, the `$` skill mention trigger and the session picker, model menu, model column, Ctrl+P, status line menu and settings menu routes, the settings menu's inline model menu included, exist; image ingress, deferred session-transition input, inline skill and slash completion and the provider/login picker routes are absent."
+note = "Terminal input routing, the help menu's keys, the `$` skill mention trigger and the session picker, model menu, model column, provider column, Ctrl+P, status line menu and settings menu routes, the settings menu's inline model menu included, exist; image ingress, deferred session-transition input, inline skill and slash completion and the login picker routes are absent."
 
 [[file]]
 upstream = "src/core/app/app_lifecycle.zig"
@@ -126,7 +126,7 @@ note = "Approval keyboard actions exist with documented safety gating; upstream 
 upstream = "src/core/app/input_completion_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs", "crates/ofx-tui/src/shell/input_submit_runtime.rs"]
-note = "Slash/file completion, history routes and the model column routing exist; session and provider picker routing is absent."
+note = "Slash/file completion, history routes and the model and provider column routing exist; session picker routing is absent."
 
 [[file]]
 upstream = "src/core/app/input_full_transcript_runtime.zig"
@@ -189,14 +189,15 @@ note = "Durable text history and its settings-menu switch are implemented; inval
 
 [[file]]
 upstream = "src/core/app/provider_picker_runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/provider_picker_runtime.rs", "crates/ofx-app/src/app_agent_runtime/provider_switch.rs"]
+note = "The inline provider column, its busy limits and the live switch with its notices exist for Codex and configured connections; the Vercel and Grok rows, sign-in method, team and API key stages and in-shell sign-in are absent as architecture.md describes."
 
 [[file]]
 upstream = "src/core/app/provider_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/app_bootstrap_runtime.rs", "crates/ofx-app/src/codex_provider.rs"]
-note = "Native custom/Codex selection exists; Vercel shared HTTP pool, Grok selection and full credential-authority transfer are absent."
+modules = ["crates/ofx-app/src/app_bootstrap_runtime.rs", "crates/ofx-app/src/codex_provider.rs", "crates/ofx-app/src/app_bootstrap_runtime/provider_runtime.rs"]
+note = "Native custom/Codex selection and a live switch between them exist; Vercel shared HTTP pool, Grok selection and full credential-authority transfer are absent."
 
 [[file]]
 upstream = "src/core/app/usage_dashboard_runtime.zig"

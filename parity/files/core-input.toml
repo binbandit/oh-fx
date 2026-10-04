@@ -138,8 +138,8 @@ note = "Registered paste expansion, length admission and placeholders exist; pro
 [[file]]
 upstream = "src/core/input/picker_state.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs", "crates/ofx-tui/src/shell/skills_menu_runtime.rs", "crates/ofx-tui/src/shell/picker_state.rs", "crates/ofx-tui/src/shell/model_picker_runtime.rs"]
-note = "File and skill picker routing exist in shell adapters, and the model, effort and Fast stages of the inline model column with their dismissal; provider and login stages are absent."
+modules = ["crates/ofx-tui/src/shell/input_completion_runtime.rs", "crates/ofx-tui/src/shell/skills_menu_runtime.rs", "crates/ofx-tui/src/shell/picker_state.rs", "crates/ofx-tui/src/shell/model_picker_runtime.rs", "crates/ofx-tui/src/shell/provider_picker_runtime.rs"]
+note = "File and skill picker routing exist in shell adapters, and the model, effort and Fast stages of the inline model column and the provider stage with their dismissal; login stages are absent."
 
 [[file]]
 upstream = "src/core/input/registered_entities.zig"
