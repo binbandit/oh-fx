@@ -628,15 +628,41 @@ impl Shell<'_> {
     }
 
     fn recovery_continuing(&mut self, prompt: String) {
-        self.outstanding.push_back(Submission {
-            prompt,
-            state: SubmissionState::Queued,
-            turn_id: None,
-            sequence: self.submitted_prompts,
-            presented: true,
-        });
+        let ahead = self
+            .outstanding
+            .iter()
+            .position(|submission| submission.turn_id.is_none())
+            .unwrap_or(self.outstanding.len());
+        let displaced = self.displace_unstarted_turn();
+        self.outstanding.insert(
+            ahead,
+            Submission {
+                prompt,
+                state: SubmissionState::Queued,
+                turn_id: None,
+                sequence: self.submitted_prompts,
+                presented: !displaced,
+            },
+        );
         self.submitted_prompts += 1;
         self.promote_next();
+    }
+
+    fn displace_unstarted_turn(&mut self) -> bool {
+        if self.turn.as_ref().is_none_or(|turn| turn.turn_id.is_some()) {
+            return false;
+        }
+        let Some(submission) = self
+            .outstanding
+            .iter_mut()
+            .find(|submission| submission.state == SubmissionState::Active)
+        else {
+            return false;
+        };
+        submission.state = SubmissionState::Queued;
+        submission.presented = false;
+        self.turn = None;
+        true
     }
 
     pub(super) fn cancel_visible_turn(&mut self) {
@@ -1330,6 +1356,98 @@ mod tests {
         let screen = test.screen();
         assert!(screen.contains("┃ next"), "{screen}");
         assert!(screen.contains("Next answer."), "{screen}");
+    }
+
+    fn in_order(screen: &str, pieces: &[&str]) -> bool {
+        let mut rest = screen;
+        pieces.iter().all(|piece| {
+            rest.find(piece)
+                .map(|at| rest = &rest[at + piece.len()..])
+                .is_some()
+        })
+    }
+
+    fn resumed_with_typeahead() -> TestShell {
+        let mut test = TestShell::start();
+        test.deliver(UiEvent::SessionResumed {
+            history: vec![HistoryEntry::User("fix the build".to_owned())],
+        });
+        test.submit("new prompt");
+        test
+    }
+
+    #[test]
+    fn a_recovery_that_starts_after_typeahead_runs_first_under_its_own_prompt() {
+        let mut test = resumed_with_typeahead();
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+        });
+        test.deliver(started(1));
+        test.deliver(text(1, "Build fixed.\n"));
+        test.type_bytes(b"\x03");
+        test.step();
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::Cancel {
+                turn_id: TurnId::new(1)
+            })
+        );
+        test.deliver(finished(1, TurnOutcome::Interrupted));
+        test.deliver(started(2));
+        test.deliver(text(2, "New answer.\n"));
+        test.deliver(finished(2, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(
+            in_order(
+                &screen,
+                &[
+                    "┃ fix the build",
+                    "┃ new prompt",
+                    "┃ fix the build",
+                    "Cancelled",
+                    "┃ new prompt",
+                    "New answer.",
+                ]
+            ),
+            "{screen}"
+        );
+        assert!(!test.sent().contains(&UiCommand::Cancel {
+            turn_id: TurnId::new(2)
+        }));
+    }
+
+    #[test]
+    fn typeahead_cancelled_before_a_recovery_starts_stays_cancelled_behind_it() {
+        let mut test = resumed_with_typeahead();
+        test.type_bytes(b"\x03");
+        test.step();
+        test.deliver(UiEvent::RecoveryContinuing {
+            prompt: "fix the build".to_owned(),
+        });
+        test.deliver(started(1));
+        test.deliver(text(1, "Build fixed.\n"));
+        assert!(!test.sent().contains(&UiCommand::Cancel {
+            turn_id: TurnId::new(1)
+        }));
+        test.deliver(started(2));
+        assert_eq!(
+            test.sent().last(),
+            Some(&UiCommand::Cancel {
+                turn_id: TurnId::new(2)
+            })
+        );
+        test.deliver(finished(2, TurnOutcome::Interrupted));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        let screen = test.screen();
+        assert!(
+            in_order(&screen, &["┃ new prompt", "Build fixed."]),
+            "{screen}"
+        );
+        test.submit("after");
+        test.deliver(started(3));
+        test.deliver(text(3, "After answer.\n"));
+        test.deliver(finished(3, TurnOutcome::Completed));
+        assert!(test.screen().contains("After answer."));
     }
 
     #[test]
